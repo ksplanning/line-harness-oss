@@ -1,0 +1,33 @@
+# --- secrets (NEVER commit) ---
+.env
+.env.*
+*.key
+*.pem
+
+# --- workspace work artifacts (not source) ---
+.ars-state/
+REPORT_*.md
+SUMMARY_*.md
+FINDINGS_*.md
+ANALYSIS_*.md
+BRIEFING.md
+CLAUDE.local.md
+inbox/
+.plans/
+.agents/
+.codex/
+
+# --- editor/agent local config ---
+.claude/access.json
+.claude/settings.local.json
+
+# --- node / build ---
+node_modules/
+dist/
+build/
+*.log
+
+# --- backups / temp ---
+*.bak
+*.tmp
+*~
