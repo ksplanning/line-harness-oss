@@ -15,3 +15,9 @@ apps/web/out/
 apps/worker/dist/
 .worktrees/
 .claude/worktrees/
+
+# --- backups / temp ---
+*.bak
+*.tmp
+*~
+.ars-state/backups/
