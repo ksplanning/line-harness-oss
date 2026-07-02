@@ -688,32 +688,47 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                       </div>
                     )}
 
-                    <textarea
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-                      rows={stepForm.messageType === 'flex' ? 8 : stepForm.messageType === 'image' ? 3 : 4}
-                      placeholder={
-                        stepForm.messageType === 'text'
-                          ? 'メッセージ内容を入力...'
-                          : stepForm.messageType === 'image'
-                          ? '{"originalContentUrl":"...","previewImageUrl":"..."}'
-                          : '{"type":"bubble","body":{...}}  ← contents(bubble/carousel)だけを貼ってください'
-                      }
-                      value={stepForm.messageContent}
-                      onChange={(e) => {
-                        let next = e.target.value
-                        // Flex: message object 丸ごと貼付 ({type:'flex',altText,contents}) を自動アンラップ (W5 T-E3(c))
-                        if (stepForm.messageType === 'flex') {
-                          try {
-                            const parsed = JSON.parse(next)
-                            if (parsed && typeof parsed === 'object' && parsed.type === 'flex' && parsed.contents) {
-                              next = JSON.stringify(parsed.contents, null, 2)
-                            }
-                          } catch { /* 入力途中は無視 */ }
+                    {/* 生 JSON テキストエリア: text/flex は主要入力なので常時表示。
+                        image は ImageUploader が主でありデフォルトで生 JSON を露出しない (reviewer G2 /
+                        findings A3「生 JSON 露出解消」) → <details> で「上級者向け」に格下げ。 */}
+                    {stepForm.messageType === 'image' ? (
+                      <details className="mt-1">
+                        <summary className="text-xs text-gray-400 cursor-pointer select-none">上級者向け: 画像 JSON を直接編集</summary>
+                        <textarea
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y mt-2"
+                          rows={3}
+                          placeholder='{"originalContentUrl":"...","previewImageUrl":"..."}'
+                          value={stepForm.messageContent}
+                          onChange={(e) => setStepForm({ ...stepForm, messageContent: e.target.value })}
+                          style={{ fontFamily: 'monospace' }}
+                        />
+                      </details>
+                    ) : (
+                      <textarea
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+                        rows={stepForm.messageType === 'flex' ? 8 : 4}
+                        placeholder={
+                          stepForm.messageType === 'text'
+                            ? 'メッセージ内容を入力...'
+                            : '{"type":"bubble","body":{...}}  ← contents(bubble/carousel)だけを貼ってください'
                         }
-                        setStepForm({ ...stepForm, messageContent: next })
-                      }}
-                      style={{ fontFamily: stepForm.messageType !== 'text' ? 'monospace' : 'inherit' }}
-                    />
+                        value={stepForm.messageContent}
+                        onChange={(e) => {
+                          let next = e.target.value
+                          // Flex: message object 丸ごと貼付 ({type:'flex',altText,contents}) を自動アンラップ (W5 T-E3(c))
+                          if (stepForm.messageType === 'flex') {
+                            try {
+                              const parsed = JSON.parse(next)
+                              if (parsed && typeof parsed === 'object' && parsed.type === 'flex' && parsed.contents) {
+                                next = JSON.stringify(parsed.contents, null, 2)
+                              }
+                            } catch { /* 入力途中は無視 */ }
+                          }
+                          setStepForm({ ...stepForm, messageContent: next })
+                        }}
+                        style={{ fontFamily: stepForm.messageType !== 'text' ? 'monospace' : 'inherit' }}
+                      />
+                    )}
                     {stepForm.messageType === 'flex' && (
                       <p className="text-xs text-gray-400 mt-1">
                         ⓘ Flex は contents(bubble/carousel)だけを貼ってください。
