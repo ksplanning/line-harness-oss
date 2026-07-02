@@ -238,90 +238,92 @@ export default function TrackedLinksPage() {
           </button>
         </div>
       ) : (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">リンク名</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">遷移先 URL</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">クリック数</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">タグ</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">短縮 URL（クリック計測あり）</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {links.map((link) => {
-                const tag = link.tagId ? tags.find((t) => t.id === link.tagId) : null
-                return (
-                  <tr key={link.id}>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{link.name}</td>
-                    <td className="px-4 py-3 text-sm text-gray-600 max-w-[240px] truncate" title={link.originalUrl}>
-                      {link.originalUrl}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-right tabular-nums text-gray-900">{link.clickCount}</td>
-                    <td className="px-4 py-3 text-sm">
-                      {tag ? (
-                        <span
-                          className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
-                          style={{ backgroundColor: `${tag.color}22`, color: tag.color }}
-                        >
-                          {tag.name}
-                        </span>
-                      ) : (
-                        <span className="text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs text-blue-600">{shortPath(link.trackingUrl)}</span>
-                        <button
-                          onClick={() => handleCopy(link)}
-                          className="text-xs text-blue-500 hover:text-blue-700"
-                        >
-                          {copiedId === link.id ? 'コピー済' : 'コピー'}
-                        </button>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
-                      {pendingRemoveId === link.id ? (
-                        <span className="inline-flex items-center gap-1 justify-end">
-                          <span className="text-xs text-gray-600">「{link.name}」を削除しますか？</span>
-                          <button
-                            onClick={() => handleDelete(link.id)}
-                            className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700"
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px]">
+              <thead className="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">リンク名</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">遷移先 URL</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">クリック数</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">タグ</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">短縮 URL（クリック計測あり）</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider sticky right-0 z-10 bg-gray-50 border-l border-gray-200">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {links.map((link) => {
+                  const tag = link.tagId ? tags.find((t) => t.id === link.tagId) : null
+                  return (
+                    <tr key={link.id} className="group hover:bg-gray-50">
+                      <td className="px-4 py-3 text-sm font-medium text-gray-900">{link.name}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 max-w-[240px] truncate" title={link.originalUrl}>
+                        {link.originalUrl}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-right tabular-nums text-gray-900">{link.clickCount}</td>
+                      <td className="px-4 py-3 text-sm">
+                        {tag ? (
+                          <span
+                            className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+                            style={{ backgroundColor: `${tag.color}22`, color: tag.color }}
                           >
-                            はい
-                          </button>
+                            {tag.name}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs text-blue-600">{shortPath(link.trackingUrl)}</span>
                           <button
-                            onClick={() => setPendingRemoveId(null)}
-                            className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
+                            onClick={() => handleCopy(link)}
+                            className="text-xs text-blue-500 hover:text-blue-700"
                           >
-                            いいえ
+                            {copiedId === link.id ? 'コピー済' : 'コピー'}
                           </button>
-                        </span>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => openEdit(link)}
-                            className="px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-md"
-                          >
-                            編集
-                          </button>
-                          <button
-                            onClick={() => setPendingRemoveId(link.id)}
-                            className="ml-1 px-2.5 py-1 text-xs font-medium text-red-500 hover:bg-red-50 rounded-md"
-                          >
-                            削除
-                          </button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap sticky right-0 z-10 bg-white group-hover:bg-gray-50 border-l border-gray-100">
+                        {pendingRemoveId === link.id ? (
+                          <span className="inline-flex items-center gap-1 justify-end">
+                            <span className="text-xs text-gray-600">「{link.name}」を削除しますか？</span>
+                            <button
+                              onClick={() => handleDelete(link.id)}
+                              className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700"
+                            >
+                              はい
+                            </button>
+                            <button
+                              onClick={() => setPendingRemoveId(null)}
+                              className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
+                            >
+                              いいえ
+                            </button>
+                          </span>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => openEdit(link)}
+                              className="px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-md"
+                            >
+                              編集
+                            </button>
+                            <button
+                              onClick={() => setPendingRemoveId(link.id)}
+                              className="ml-1 px-2.5 py-1 text-xs font-medium text-red-500 hover:bg-red-50 rounded-md"
+                            >
+                              削除
+                            </button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

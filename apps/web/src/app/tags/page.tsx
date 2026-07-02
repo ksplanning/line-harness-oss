@@ -187,58 +187,61 @@ export default function TagsPage() {
         </div>
       ) : (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">タグ名</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">色</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">作成日</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {tags.map((tag) => (
-                <tr key={tag.id}>
-                  <td className="px-4 py-3 text-sm font-medium text-gray-900">{tag.name}</td>
-                  <td className="px-4 py-3">
-                    <span
-                      className="inline-block w-4 h-4 rounded-full shrink-0 align-middle"
-                      style={{ backgroundColor: tag.color }}
-                    />
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-500">{formatDate(tag.createdAt)}</td>
-                  <td className="px-4 py-3 text-right">
-                    {pendingRemoveId === tag.id ? (
-                      <span className="inline-flex items-center gap-1 justify-end">
-                        <span className="text-xs text-gray-600">
-                          「{tag.name}」を削除しますか？友だちに付いているタグも外れます。
-                        </span>
-                        <button
-                          onClick={() => handleDelete(tag.id)}
-                          className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700"
-                        >
-                          はい
-                        </button>
-                        <button
-                          onClick={() => setPendingRemoveId(null)}
-                          className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
-                        >
-                          いいえ
-                        </button>
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => setPendingRemoveId(tag.id)}
-                        className="ml-1 px-2.5 py-1 text-xs font-medium text-red-500 hover:bg-red-50 rounded-md"
-                      >
-                        削除
-                      </button>
-                    )}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[520px]">
+              <thead className="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">タグ名</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">色</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">作成日</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider sticky right-0 z-10 bg-gray-50 border-l border-gray-200">操作</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {tags.map((tag) => (
+                  <tr key={tag.id} className="group hover:bg-gray-50">
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{tag.name}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className="inline-block w-4 h-4 rounded-full shrink-0 align-middle"
+                        style={{ backgroundColor: tag.color }}
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-500">{formatDate(tag.createdAt)}</td>
+                    <td className="px-4 py-3 text-right sticky right-0 z-10 bg-white group-hover:bg-gray-50 border-l border-gray-100">
+                      {pendingRemoveId === tag.id ? (
+                        <span className="inline-flex items-center gap-1 justify-end">
+                          <span className="hidden sm:inline text-xs text-gray-600">
+                            「{tag.name}」を削除しますか？友だちに付いているタグも外れます。
+                          </span>
+                          <span className="sm:hidden text-xs text-gray-600">削除しますか？</span>
+                          <button
+                            onClick={() => handleDelete(tag.id)}
+                            className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700"
+                          >
+                            はい
+                          </button>
+                          <button
+                            onClick={() => setPendingRemoveId(null)}
+                            className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
+                          >
+                            いいえ
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setPendingRemoveId(tag.id)}
+                          className="ml-1 px-2.5 py-1 text-xs font-medium text-red-500 hover:bg-red-50 rounded-md"
+                        >
+                          削除
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

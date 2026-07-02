@@ -160,12 +160,13 @@ export default function EnrollDialog({ reminderId, onClose, onEnrolled }: Enroll
             </label>
             <input
               type="date"
+              lang="ja"
               value={targetDate}
               onChange={(e) => setTargetDate(e.target.value)}
               className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
             />
             <p className="text-xs text-gray-400 mt-1">
-              ※ 基準日を起点に各ステップのメッセージが送信されます
+              日付は「年 / 月 / 日」の順で選びます。※ 基準日を起点に各ステップのメッセージが送信されます
             </p>
           </div>
 
