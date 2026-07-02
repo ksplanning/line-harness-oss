@@ -63,6 +63,14 @@ for (const [name, buildMessage] of impls) {
       expect(() => buildMessage('flex', '{broken')).toThrow(MessageBuildError);
     });
 
+    test('FAIL-CLOSED: flex with non-object contents throws (e.g. {"type":"flex","contents":"x"})', () => {
+      expect(() => buildMessage('flex', '{"type":"flex","altText":"a","contents":"x"}')).toThrow(MessageBuildError);
+    });
+
+    test('FAIL-CLOSED: flex that parses to a bare string throws (contents not an object)', () => {
+      expect(() => buildMessage('flex', '"just a string"')).toThrow(MessageBuildError);
+    });
+
     test('FAIL-CLOSED: the raw JSON string is never returned as a text message', () => {
       let sent: unknown;
       try {

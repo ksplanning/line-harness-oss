@@ -35,12 +35,19 @@ export class MessageBuildError extends Error {
  * ({ type:'flex', altText, contents }) instead of the bare contents
  * (bubble/carousel), unwrap it to the contents and surface the altText.
  *
- * Returns { contents, altText? }. For already-bare contents, returns it unchanged.
+ * Returns { contents: object, altText? }. For already-bare contents, returns it unchanged.
+ *
+ * Throws MessageBuildError if the resolved contents is not a non-null object
+ * (e.g. {"type":"flex","contents":"x"} or a bare string/number) — this keeps a
+ * malformed flex payload from reaching the LINE API as an invalid Message.
  */
 export function unwrapFlexMessageObject(parsed: unknown): {
-  contents: unknown;
+  contents: object;
   altText?: string;
 } {
+  let contents: unknown = parsed;
+  let altText: string | undefined;
+
   if (
     parsed &&
     typeof parsed === 'object' &&
@@ -48,10 +55,14 @@ export function unwrapFlexMessageObject(parsed: unknown): {
     (parsed as Record<string, unknown>).contents
   ) {
     const obj = parsed as Record<string, unknown>;
-    return {
-      contents: obj.contents,
-      altText: typeof obj.altText === 'string' ? obj.altText : undefined,
-    };
+    contents = obj.contents;
+    altText = typeof obj.altText === 'string' ? obj.altText : undefined;
   }
-  return { contents: parsed };
+
+  // contents must be a non-null object (bubble/carousel). Reject strings/numbers/null/arrays-of-primitives.
+  if (!contents || typeof contents !== 'object') {
+    throw new MessageBuildError('flex');
+  }
+
+  return { contents: contents as object, altText };
 }

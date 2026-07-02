@@ -61,10 +61,12 @@ export async function processBroadcastSend(
   try {
     message = buildMessage(finalType, finalContent, altText || undefined);
   } catch (err) {
-    // fail-closed: 不正な image/flex JSON は送信スキップ + broadcast を失敗マーク (W5 T-E2)
+    // fail-closed: 不正な image/flex JSON は送信スキップ (生 JSON を送らない / W5 T-E2)。
+    // status は既存の rollback 流儀に合わせ 'draft' に戻す ('sending' で stuck させない)。
+    // 'failed' は BroadcastStatus / CHECK 制約に無いので使わない。owner が draft を修正して送り直す。
     if (err instanceof MessageBuildError) {
-      console.error(`Broadcast ${broadcastId} 送信スキップ: ${err.message}`);
-      await updateBroadcastStatus(db, broadcastId, 'failed');
+      console.error(`Broadcast ${broadcastId} 送信スキップ (内容不正): ${err.message}`);
+      await updateBroadcastStatus(db, broadcastId, 'draft');
     }
     throw err;
   }
@@ -288,10 +290,16 @@ async function processQueuedBroadcastBatches(
   try {
     message = buildMessage(finalType, finalContent, altText || undefined);
   } catch (err) {
-    // fail-closed: 不正な image/flex JSON は送信スキップ + ロック解除 + 失敗マーク (W5 T-E2)
+    // fail-closed: 不正な image/flex JSON は送信スキップ (生 JSON を送らない / W5 T-E2)。
+    // batch_offset の排他ロック (-1) を解除しつつ status は既存 rollback 流儀の 'draft' に戻す。
+    // 'failed' は BroadcastStatus / CHECK 制約に無いので使わない。次 cron の doomed retry を
+    // 避けるためロックは 0 に戻さず -1 のまま status のみ draft にする手もあるが、recover が
+    // 拾えるよう offset は解除する (owner が draft を修正して送り直す運用)。
     if (err instanceof MessageBuildError) {
-      console.error(`Queued broadcast ${broadcast.id} 送信スキップ: ${err.message}`);
-      await updateBroadcastStatus(db, broadcast.id, 'failed');
+      console.error(`Queued broadcast ${broadcast.id} 送信スキップ (内容不正): ${err.message}`);
+      await db.prepare('UPDATE broadcasts SET batch_offset = 0, batch_lock_at = NULL WHERE id = ?')
+        .bind(broadcast.id).run();
+      await updateBroadcastStatus(db, broadcast.id, 'draft');
     }
     throw err;
   }
