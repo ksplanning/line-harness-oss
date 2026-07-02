@@ -161,3 +161,73 @@ describe('カード操作 (カルーセル / D-13)', () => {
     expect(removeCard(oneLeft, 0).cards.length).toBe(1);
   });
 });
+
+/**
+ * 削除がプレビューに反映される回帰テスト (visual-qa O-5 差し戻し)。
+ * 症状: 削除だけプレビューに反映されない (移動/書換は反映される非対称)。
+ * 根因1: native window.confirm が headless で自動キャンセル→削除が実行されない (UI 側を行内確認に置換で解消)。
+ * 根因2予防: setState updater 形式でないと古い model を掴む参照劣化の恐れ→純関数が新オブジェクト/新配列を
+ *   返すこと + プレビュー出力の部品数が確実に減ることを結線レベルで assert。
+ */
+describe('削除→プレビュー反映 (O-5 回帰)', () => {
+  test('removePart は元 model を破壊せず新オブジェクト/新配列を返す (in-place mutate でない)', () => {
+    const m: BuilderModel = {
+      cards: [{ id: 'c', parts: [
+        { kind: 'heading', id: 'p1', text: 'A' },
+        { kind: 'body', id: 'p2', text: 'B' },
+      ] }],
+    };
+    const originalPartsRef = m.cards[0].parts;
+    const after = removePart(m, 0, 'p1');
+    // 参照が変わっている (React が再描画するために必須)
+    expect(after).not.toBe(m);
+    expect(after.cards[0].parts).not.toBe(originalPartsRef);
+    // 元 model は不変 (2 部品のまま)
+    expect(m.cards[0].parts.length).toBe(2);
+    // 新 model は 1 部品
+    expect(after.cards[0].parts.length).toBe(1);
+  });
+
+  test('削除でプレビュー出力の部品数が減る (buildModelToFlex 結線・5→4)', () => {
+    const parts = ['p1', 'p2', 'p3', 'p4', 'p5'].map((id, i) => ({
+      kind: 'body' as const, id, text: `本文${i + 1}`,
+    }));
+    let model: BuilderModel = { cards: [{ id: 'c', parts }] };
+    const before = buildModelToFlex(model);
+    if (before.type !== 'bubble') throw new Error();
+    expect(before.body?.contents.length).toBe(5);
+
+    // コンポーネントと同じ setState updater 合成を模倣 (handleRemove の中身)
+    model = removePart(model, 0, 'p3');
+
+    const after = buildModelToFlex(model);
+    if (after.type !== 'bubble') throw new Error();
+    expect(after.body?.contents.length).toBe(4); // 5→4 (削除が反映)
+    // previewJson (プレビューに渡す文字列) も変化している
+    expect(previewJson(model)).not.toBe(previewJson({ cards: [{ id: 'c', parts }] }));
+    // 消した部品 (本文3) が消えている
+    const texts = (after.body!.contents as Array<{ text?: string }>).map((n) => n.text);
+    expect(texts).not.toContain('本文3');
+  });
+
+  test('連続削除でも各段でプレビュー出力の部品数が単調に減る (updater 合成の安定性)', () => {
+    let model: BuilderModel = {
+      cards: [{ id: 'c', parts: [
+        { kind: 'body', id: 'a', text: 'A' },
+        { kind: 'body', id: 'b', text: 'B' },
+        { kind: 'body', id: 'd', text: 'C' },
+      ] }],
+    };
+    const count = () => {
+      const out = buildModelToFlex(model);
+      return out.type === 'bubble' ? (out.body?.contents.length ?? 0) : -1;
+    };
+    expect(count()).toBe(3);
+    model = removePart(model, 0, 'a');
+    expect(count()).toBe(2);
+    model = removePart(model, 0, 'b');
+    expect(count()).toBe(1);
+    model = removePart(model, 0, 'd');
+    expect(count()).toBe(0);
+  });
+});

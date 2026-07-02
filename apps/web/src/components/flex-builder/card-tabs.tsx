@@ -4,7 +4,10 @@
  * カードタブ (F7 / ui-design §3)。カードが 2 枚以上のとき表示。
  * 「＋ カードを横に増やす」で複製 (bubble→carousel)。カードの左右移動・複製・削除。
  * 1 枚のときはタブを出さず「＋ カードを横に増やす」だけ (認知負荷ゼロ)。
+ * 削除は行内「消す?[はい][いいえ]」確認 (native confirm は headless で自動キャンセルされ反映されないため)。
  */
+import { useState } from 'react'
+
 interface Props {
   cardCount: number
   activeIndex: number
@@ -23,6 +26,7 @@ export default function CardTabs({
   onRemove,
 }: Props) {
   const isCarousel = cardCount >= 2
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
 
   return (
     <div className="space-y-2">
@@ -71,13 +75,33 @@ export default function CardTabs({
             >
               右へ ▶
             </button>
-            <button
-              type="button"
-              onClick={onRemove}
-              className="min-h-[36px] px-3 rounded-md border border-gray-300 text-gray-500 text-sm hover:text-red-600 hover:border-red-300"
-            >
-              🗑 このカードを消す
-            </button>
+            {confirmingRemove ? (
+              <span className="flex items-center gap-1">
+                <span className="text-xs text-gray-600">このカードを消す?</span>
+                <button
+                  type="button"
+                  onClick={() => { onRemove(); setConfirmingRemove(false) }}
+                  className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700"
+                >
+                  はい
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingRemove(false)}
+                  className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
+                >
+                  いいえ
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmingRemove(true)}
+                className="min-h-[36px] px-3 rounded-md border border-gray-300 text-gray-500 text-sm hover:text-red-600 hover:border-red-300"
+              >
+                🗑 このカードを消す
+              </button>
+            )}
           </>
         )}
       </div>

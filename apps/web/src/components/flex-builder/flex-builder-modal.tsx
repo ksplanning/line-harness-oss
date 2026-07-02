@@ -71,6 +71,9 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
   const [activeCard, setActiveCard] = useState(0)
   const [selectedPartId, setSelectedPartId] = useState<string | null>(null)
   const [saveErrors, setSaveErrors] = useState<ValidationError[]>([])
+  // 部品削除のインライン確認 (native window.confirm は headless で自動キャンセルされ削除が反映されない
+  // 不具合を招くため、行内の「消す?[はい][いいえ]」に置換 = おばあちゃんにも分かりやすく確実に反映される)
+  const [confirmingRemoveId, setConfirmingRemoveId] = useState<string | null>(null)
 
   const dirty = step === 'edit' && isModelDirty(snapshot, model)
 
@@ -101,40 +104,50 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
   const card = model.cards[activeCard]
   const selectedPart = card?.parts.find((p) => p.id === selectedPartId) ?? null
 
+  // 全操作は setState の updater 形式 (prev => ...) で最新 model から派生させる
+  // (イベントハンドラのクロージャが古い model を掴む参照劣化を排除 = 削除だけ反映されない不具合の再発防止)。
   const handleAdd = (kind: PartKind) => {
-    const { model: next, partId } = addPart(model, activeCard, kind)
-    setModel(next)
-    setSelectedPartId(partId)
+    let newPartId = ''
+    setModel((prev) => {
+      const { model: next, partId } = addPart(prev, activeCard, kind)
+      newPartId = partId
+      return next
+    })
+    setSelectedPartId(newPartId)
   }
-  const handleMove = (partId: string, dir: 'up' | 'down') => setModel(movePart(model, activeCard, partId, dir))
+  const handleMove = (partId: string, dir: 'up' | 'down') =>
+    setModel((prev) => movePart(prev, activeCard, partId, dir))
+  // 行内「はい」で実行 (確認は UI で先に表示済み)。setState updater 形式で確実に新配列を反映。
   const handleRemove = (partId: string) => {
-    if (!window.confirm('この部品を消しますか？')) return
-    setModel(removePart(model, activeCard, partId))
+    setModel((prev) => removePart(prev, activeCard, partId))
     if (selectedPartId === partId) setSelectedPartId(null)
+    setConfirmingRemoveId(null)
   }
   const handlePartChange = (patch: Partial<BuilderPart>) => {
     if (!selectedPartId) return
-    setModel(updatePart(model, activeCard, selectedPartId, patch))
+    setModel((prev) => updatePart(prev, activeCard, selectedPartId, patch))
   }
 
   // カード操作 (カルーセル / F7)
   const handleDuplicateCard = () => {
-    const { model: next, newIndex } = duplicateCard(model, activeCard)
-    setModel(next)
-    setActiveCard(newIndex)
+    setModel((prev) => {
+      const { model: next } = duplicateCard(prev, activeCard)
+      return next
+    })
+    setActiveCard(model.cards.length) // 複製は末尾に足されるので新 index = 現 length
     setSelectedPartId(null)
   }
   const handleMoveCard = (dir: 'left' | 'right') => {
-    setModel(moveCard(model, activeCard, dir))
+    setModel((prev) => moveCard(prev, activeCard, dir))
     setActiveCard((i) => {
       const t = dir === 'left' ? i - 1 : i + 1
       return t < 0 || t >= model.cards.length ? i : t
     })
   }
+  // 確認は card-tabs の行内「はい」で済んでいる。setState updater で確実に反映。
   const handleRemoveCard = () => {
     if (model.cards.length <= 1) return
-    if (!window.confirm('このカードを消しますか？')) return
-    setModel(removeCard(model, activeCard))
+    setModel((prev) => removeCard(prev, activeCard))
     setActiveCard((i) => Math.max(0, i - (i > 0 ? 1 : 0)))
     setSelectedPartId(null)
   }
@@ -227,12 +240,30 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
                         className="w-8 h-8 rounded text-gray-500 disabled:opacity-30 hover:bg-gray-100"
                         aria-label="下へ移動"
                       >↓</button>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); handleRemove(part.id) }}
-                        className="w-8 h-8 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
-                        aria-label="この部品を消す"
-                      >🗑</button>
+                      {confirmingRemoveId === part.id ? (
+                        <span className="flex items-center gap-1">
+                          <span className="text-[11px] text-gray-600">消す?</span>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleRemove(part.id) }}
+                            className="px-2 h-8 rounded text-xs font-medium text-white bg-red-600 hover:bg-red-700"
+                            aria-label="はい、この部品を消す"
+                          >はい</button>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setConfirmingRemoveId(null) }}
+                            className="px-2 h-8 rounded text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
+                            aria-label="いいえ、消さない"
+                          >いいえ</button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setConfirmingRemoveId(part.id) }}
+                          className="w-8 h-8 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
+                          aria-label="この部品を消す"
+                        >🗑</button>
+                      )}
                     </li>
                   )
                 })}
