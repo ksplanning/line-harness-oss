@@ -630,6 +630,96 @@ export const api = {
         method: 'DELETE',
       }),
   },
+  faqs: {
+    list: (params?: { accountId?: string }) => {
+      const query = params?.accountId ? '?accountId=' + encodeURIComponent(params.accountId) : ''
+      return fetchApi<ApiResponse<Array<{
+        id: string;
+        lineAccountId: string | null;
+        question: string;
+        variants: string[];
+        answer: string;
+        isActive: boolean;
+        hitCount: number;
+        createdAt: string;
+        updatedAt: string;
+      }>>>('/api/faqs' + query)
+    },
+    create: (body: {
+      question: string;
+      variants?: string[];
+      answer: string;
+      lineAccountId?: string | null;
+      isActive?: boolean;
+    }) =>
+      fetchApi<ApiResponse<{ id: string }>>('/api/faqs', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    update: (id: string, body: {
+      question?: string;
+      variants?: string[];
+      answer?: string;
+      lineAccountId?: string | null;
+      isActive?: boolean;
+    }) =>
+      fetchApi<ApiResponse<{ id: string }>>(`/api/faqs/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/faqs/${id}`, { method: 'DELETE' }),
+    unmatched: (params?: { accountId?: string }) => {
+      const query = params?.accountId ? '?accountId=' + encodeURIComponent(params.accountId) : ''
+      return fetchApi<ApiResponse<Array<{
+        id: string;
+        lineAccountId: string | null;
+        friendId: string | null;
+        question: string;
+        topScore: number | null;
+        resolvedFaqId: string | null;
+        createdAt: string;
+      }>>>('/api/faqs/unmatched' + query)
+    },
+    createFromUnmatched: (id: string, body: {
+      answer: string;
+      variants?: string[];
+      question?: string;
+      lineAccountId?: string | null;
+    }) =>
+      fetchApi<ApiResponse<{ id: string }>>(`/api/faqs/from-unmatched/${id}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    settings: {
+      get: (params: { accountId: string }) =>
+        fetchApi<ApiResponse<{
+          enabled: boolean;
+          threshold: number;
+          handoffMessage: string;
+          autoReplyNotice: string;
+          maxRepliesPerDay: number;
+        }>>(`/api/account-settings/faq-bot?accountId=${encodeURIComponent(params.accountId)}`),
+      put: (body: {
+        accountId: string;
+        enabled: boolean;
+        threshold: number;
+        handoffMessage: string;
+        autoReplyNotice: string;
+        maxRepliesPerDay: number;
+      }) =>
+        fetchApi<ApiResponse<{
+          enabled: boolean;
+          threshold: number;
+          handoffMessage: string;
+          autoReplyNotice: string;
+          maxRepliesPerDay: number;
+        }>>('/api/account-settings/faq-bot', {
+          method: 'PUT',
+          body: JSON.stringify(body),
+        }),
+    },
+  },
   automations: {
     list: (params?: { accountId?: string }) => {
       const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
