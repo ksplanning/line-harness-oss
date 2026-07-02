@@ -68,10 +68,16 @@ export default function BulkImportDialog({ selectedAccountId, existingFaqs, onCl
 
   const scopeAccountId = global ? null : selectedAccountId
 
-  // 現在スコープの既存FAQ (重複突合用)。
+  // 重複突合に使う既存FAQ (reviewer R1-I1)。
+  // 「上書き」は同一スコープの既存FAQ に対してのみ許可される (サーバ D-18: overwriteId の
+  // line_account_id が body の lineAccountId と一致しないと error)。よって duplicate マーク
+  // (=スキップ/上書き選択) は **同一スコープの既存FAQ のみ**を対象にする。
+  // 別スコープ (例: 選択中アカウントへの取込 vs 全アカ共通の既存FAQ) で question が同じでも、
+  // その行は overwrite 不可なので duplicate にせず create として送る → サーバが安全に skip する
+  // (getFaqs(account) は NULL+一致を返し create 重複を skip 計上)。UI は上書き選択肢を出さない。
   const existingRefs: ExistingFaqRef[] = useMemo(() => {
     return existingFaqs
-      .filter((f) => (scopeAccountId === null ? f.lineAccountId === null : true))
+      .filter((f) => f.lineAccountId === scopeAccountId)
       .map((f) => ({ id: f.id, question: f.question }))
   }, [existingFaqs, scopeAccountId])
 
@@ -174,16 +180,19 @@ export default function BulkImportDialog({ selectedAccountId, existingFaqs, onCl
       setError('内容が空です。質問と答えを入力してください。')
       return
     }
-    // 行数上限 (見出し行を除いた本文行で判定)。
-    if (trimmed.length - 1 > MAX_ROWS) {
+    // 見出し推定を先に行う。見出しが1つも当たらなければ「見出しなし」= 全行がデータ行。
+    const auto = autoDetectColumns(trimmed[0] ?? [])
+    const anyMatched = auto.question !== null || auto.answer !== null || auto.variants !== null || auto.isActive !== null
+    // reviewer R1-I2: 行数上限は「実際に登録されるデータ行数」で判定する。
+    // 見出しありなら -1、見出しなしなら全行がデータ。ヘッダ有無に依らず client 側で弾き、
+    // ヘッダ無し501行が server 400 で late 失敗するのを防ぐ。
+    const dataRowCount = anyMatched ? trimmed.length - 1 : trimmed.length
+    if (dataRowCount > MAX_ROWS) {
       setError('一度に登録できるのは500件までです。ファイルを分けてください。')
       return
     }
     setGrid(trimmed)
     setQaRows(null)
-    const auto = autoDetectColumns(trimmed[0] ?? [])
-    // 見出しが1つも当たらなければ「見出しなし」推定。
-    const anyMatched = auto.question !== null || auto.answer !== null || auto.variants !== null || auto.isActive !== null
     setHasHeader(anyMatched)
     setMapping(anyMatched ? auto : { question: 0, variants: null, answer: 1, isActive: null })
     setStep('mapping')
