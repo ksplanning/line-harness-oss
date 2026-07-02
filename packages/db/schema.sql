@@ -206,6 +206,39 @@ CREATE TABLE IF NOT EXISTS auto_replies (
 CREATE INDEX IF NOT EXISTS idx_auto_replies_template_id ON auto_replies(template_id);
 
 -- ============================================================
+-- FAQs
+-- ============================================================
+CREATE TABLE IF NOT EXISTS faqs (
+  id               TEXT PRIMARY KEY,
+  line_account_id  TEXT DEFAULT NULL,
+  question         TEXT NOT NULL,
+  variants         TEXT NOT NULL DEFAULT '[]',
+  answer           TEXT NOT NULL,
+  is_active        INTEGER NOT NULL DEFAULT 1,
+  hit_count        INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
+  -- Phase B reserved (add with additive ALTER in Phase B):
+  --   answer_type TEXT DEFAULT 'text'
+  --   embedding   BLOB
+  --   source_doc_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_faqs_account_active ON faqs(line_account_id, is_active);
+
+CREATE TABLE IF NOT EXISTS unmatched_questions (
+  id               TEXT PRIMARY KEY,
+  line_account_id  TEXT DEFAULT NULL,
+  friend_id        TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  question         TEXT NOT NULL,
+  top_score        REAL,
+  resolved_faq_id  TEXT REFERENCES faqs(id) ON DELETE SET NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_unmatched_account_created ON unmatched_questions(line_account_id, created_at);
+
+-- ============================================================
 -- Admin Users
 -- ============================================================
 CREATE TABLE IF NOT EXISTS admin_users (

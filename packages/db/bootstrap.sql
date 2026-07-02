@@ -343,6 +343,22 @@ CREATE TABLE events (
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
 );
 
+CREATE TABLE faqs (
+  id               TEXT PRIMARY KEY,
+  line_account_id  TEXT DEFAULT NULL,
+  question         TEXT NOT NULL,
+  variants         TEXT NOT NULL DEFAULT '[]',
+  answer           TEXT NOT NULL,
+  is_active        INTEGER NOT NULL DEFAULT 1,
+  hit_count        INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
+  -- Phase B reserved (add with additive ALTER in Phase B):
+  --   answer_type TEXT DEFAULT 'text'
+  --   embedding   BLOB
+  --   source_doc_id TEXT
+);
+
 CREATE TABLE form_opens (
   id TEXT PRIMARY KEY,
   form_id TEXT NOT NULL,
@@ -776,6 +792,16 @@ CREATE TABLE traffic_pools (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE unmatched_questions (
+  id               TEXT PRIMARY KEY,
+  line_account_id  TEXT DEFAULT NULL,
+  friend_id        TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  question         TEXT NOT NULL,
+  top_score        REAL,
+  resolved_faq_id  TEXT REFERENCES faqs(id) ON DELETE SET NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
+);
+
 CREATE TABLE update_history (
   id                          TEXT PRIMARY KEY,
   started_at                  INTEGER NOT NULL,
@@ -867,6 +893,8 @@ CREATE INDEX idx_event_slots_event_starts ON event_slots (event_id, starts_at);
 
 CREATE INDEX idx_events_account_published_sort ON events (line_account_id, is_published, sort_order);
 
+CREATE INDEX idx_faqs_account_active ON faqs(line_account_id, is_active);
+
 CREATE INDEX idx_form_opens_form ON form_opens (form_id, opened_at);
 
 CREATE INDEX idx_form_submissions_form ON form_submissions (form_id);
@@ -953,6 +981,8 @@ CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
 CREATE INDEX idx_stripe_events_type ON stripe_events (event_type);
 
 CREATE INDEX idx_templates_category ON templates (category);
+
+CREATE INDEX idx_unmatched_account_created ON unmatched_questions(line_account_id, created_at);
 
 CREATE INDEX idx_update_history_started ON update_history(started_at DESC);
 
