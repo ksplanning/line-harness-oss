@@ -2,6 +2,10 @@
 
 import { useState } from 'react'
 import type { ScenarioStep, MessageType } from '@line-crm/shared'
+import FlexPreview from '@/components/flex-preview'
+import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
+import { flexToModel } from '@/lib/flex-builder/from-flex'
+import type { BuilderModel } from '@/lib/flex-builder/types'
 
 interface StepEditorProps {
   step?: ScenarioStep
@@ -37,6 +41,26 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
   const [messageContent, setMessageContent] = useState(step?.messageContent ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // Flex ビジュアルビルダー: flex 作成/編集をビルダー起動に置換 (raw textarea は上級者折りたたみへ)
+  const [builderOpen, setBuilderOpen] = useState(false)
+  const [builderInitial, setBuilderInitial] = useState<BuilderModel | undefined>(undefined)
+  const [advancedJsonOpen, setAdvancedJsonOpen] = useState(false)
+
+  const openBuilder = () => {
+    if (messageContent.trim()) {
+      const model = flexToModel(messageContent)
+      if (!model) {
+        setAdvancedJsonOpen(true)
+        setError('このFlexは高度な形式のため、ビジュアル編集できません。下の「上級者向け」で編集してください。')
+        return
+      }
+      setBuilderInitial(model)
+    } else {
+      setBuilderInitial(undefined)
+    }
+    setError('')
+    setBuilderOpen(true)
+  }
 
   const handleSave = async () => {
     if (!messageContent.trim()) {
@@ -68,6 +92,7 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
   }
 
   return (
+    <>
     <div className="bg-white border border-gray-200 rounded-lg p-5 space-y-4">
       <h3 className="text-sm font-semibold text-gray-800">
         {step ? 'ステップを編集' : `ステップ ${stepOrder} を追加`}
@@ -142,7 +167,7 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
       <div>
         <label className="block text-xs font-medium text-gray-600 mb-2">
           メッセージ内容
-          {(messageType === 'flex' || messageType === 'image') && (
+          {messageType === 'image' && (
             <span className="ml-1 text-gray-400">(JSON形式)</span>
           )}
         </label>
@@ -184,22 +209,96 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
           )
         })()}
 
-        <textarea
-          className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-          rows={messageType === 'flex' ? 8 : messageType === 'image' ? 3 : 4}
-          placeholder={
-            messageType === 'text'
-              ? 'メッセージテキストを入力...'
-              : messageType === 'image'
-              ? '{"originalContentUrl":"...","previewImageUrl":"..."}'
-              : '{"type":"bubble","body":{...}}'
-          }
-          value={messageContent}
-          onChange={(e) => setMessageContent(e.target.value)}
-          style={{ fontFamily: messageType !== 'text' ? 'monospace' : 'inherit' }}
-        />
-        {messageType === 'image' && (
-          <p className="text-xs text-gray-400 mt-1">上のURLフォームか、直接JSONを編集できます</p>
+        {/* text / image: 従来どおり textarea */}
+        {messageType !== 'flex' && (
+          <>
+            <textarea
+              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+              rows={messageType === 'image' ? 3 : 4}
+              placeholder={
+                messageType === 'text'
+                  ? 'メッセージテキストを入力...'
+                  : '{"originalContentUrl":"...","previewImageUrl":"..."}'
+              }
+              value={messageContent}
+              onChange={(e) => setMessageContent(e.target.value)}
+              style={{ fontFamily: messageType === 'image' ? 'monospace' : 'inherit' }}
+            />
+            {messageType === 'image' && (
+              <p className="text-xs text-gray-400 mt-1">上のURLフォームか、直接JSONを編集できます</p>
+            )}
+          </>
+        )}
+
+        {/* flex: ビジュアルビルダー起動 + プレビュー。生 JSON textarea は上級者折りたたみへ */}
+        {messageType === 'flex' && (
+          <div className="space-y-3">
+            {messageContent && (() => { try { JSON.parse(messageContent); return true } catch { return false } })() ? (
+              <div className="border border-gray-200 rounded-lg p-3">
+                <FlexPreview content={messageContent} maxWidth={300} />
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={openBuilder}
+                    className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100"
+                  >
+                    ✎ カードを編集
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMessageContent('')}
+                    className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-gray-500 border border-gray-300 rounded-md hover:text-red-600"
+                  >
+                    🗑 削除
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={openBuilder}
+                className="w-full min-h-[44px] px-4 py-3 text-sm font-medium text-white rounded-md"
+                style={{ backgroundColor: '#06C755' }}
+              >
+                🎨 ビジュアルでカードを作る
+              </button>
+            )}
+
+            {/* 上級者向け: 生 JSON 直貼り (既定閉・後方互換 / A9) */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setAdvancedJsonOpen((v) => !v)}
+                className="text-xs text-gray-500 hover:text-gray-700"
+              >
+                {advancedJsonOpen ? '▾' : '▸'} 上級者向け: JSONを直接貼り付ける
+              </button>
+              {advancedJsonOpen && (
+                <div className="mt-2">
+                  <textarea
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+                    rows={8}
+                    placeholder='{"type":"bubble","body":{...}}'
+                    value={messageContent}
+                    onChange={(e) => {
+                      let next = e.target.value
+                      try {
+                        const parsed = JSON.parse(next)
+                        if (parsed && typeof parsed === 'object' && parsed.type === 'flex' && parsed.contents) {
+                          next = JSON.stringify(parsed.contents, null, 2)
+                        }
+                      } catch { /* 入力途中は無視 */ }
+                      setMessageContent(next)
+                    }}
+                    style={{ fontFamily: 'monospace' }}
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    ⓘ contents(bubble/carousel)だけを貼ってください。
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
@@ -227,5 +326,13 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
         </button>
       </div>
     </div>
+    {builderOpen && (
+      <FlexBuilderModal
+        initialModel={builderInitial}
+        onSave={(jsonString) => { setMessageContent(jsonString); setBuilderOpen(false) }}
+        onClose={() => setBuilderOpen(false)}
+      />
+    )}
+    </>
   )
 }

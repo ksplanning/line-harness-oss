@@ -6,6 +6,9 @@ import Header from '@/components/layout/header'
 import FlexPreviewComponent from '@/components/flex-preview'
 import CcPromptButton from '@/components/cc-prompt-button'
 import ImageUploader from '@/components/shared/image-uploader'
+import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
+import { flexToModel } from '@/lib/flex-builder/from-flex'
+import type { BuilderModel } from '@/lib/flex-builder/types'
 
 interface Template {
   id: string
@@ -93,6 +96,37 @@ export default function TemplatesPage() {
   const [editContent, setEditContent] = useState<string | null>(null)
   const [editName, setEditName] = useState<string | null>(null)
   const [savingEdit, setSavingEdit] = useState(false)
+  // Flex ビジュアルビルダー: 作成/編集フォームの flex 生 JSON textarea をビルダー起動に置換
+  const [builderTarget, setBuilderTarget] = useState<'create' | 'edit' | null>(null)
+  const [builderInitial, setBuilderInitial] = useState<BuilderModel | undefined>(undefined)
+  const [advCreateOpen, setAdvCreateOpen] = useState(false)
+  const [advEditOpen, setAdvEditOpen] = useState(false)
+  // ビルダーで編集したら保存時 message_type='flex' に統一 (carousel 値を新規書き込みしない / F9)
+  const [editViaBuilder, setEditViaBuilder] = useState(false)
+
+  // ビルダーを開く。既存内容があれば逆変換 (再編集)。範囲外なら上級者 JSON に誘導。
+  const openBuilder = (target: 'create' | 'edit', currentContent: string, openAdv: () => void) => {
+    if (currentContent.trim()) {
+      const model = flexToModel(currentContent)
+      if (!model) {
+        openAdv()
+        return
+      }
+      setBuilderInitial(model)
+    } else {
+      setBuilderInitial(undefined)
+    }
+    setBuilderTarget(target)
+  }
+  const handleBuilderSave = (jsonString: string) => {
+    if (builderTarget === 'create') {
+      setForm((prev) => ({ ...prev, messageContent: jsonString, messageType: 'flex' }))
+    } else if (builderTarget === 'edit') {
+      setEditContent(jsonString)
+      setEditViaBuilder(true)
+    }
+    setBuilderTarget(null)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -188,11 +222,14 @@ export default function TemplatesPage() {
       const updates: Record<string, string> = {}
       if (editContent !== null) updates.messageContent = editContent
       if (editName !== null) updates.name = editName
+      // ビルダーで編集した場合は message_type を 'flex' に統一 (carousel 値を新規に書かない / F9)
+      if (editViaBuilder) updates.messageType = 'flex'
       await api.templates.update(drawerData.id, updates)
       const r = await api.templates.get(drawerData.id)
       if (r.success && r.data) setDrawerData(r.data)
       setEditContent(null)
       setEditName(null)
+      setEditViaBuilder(false)
       load()
     } catch {
       setError('更新に失敗しました')
@@ -325,11 +362,62 @@ export default function TemplatesPage() {
                   }}
                   label="テンプレート画像"
                 />
+              ) : form.messageType === 'flex' ? (
+                <div className="space-y-3">
+                  {form.messageContent && (() => { try { JSON.parse(form.messageContent); return true } catch { return false } })() ? (
+                    <div className="border border-gray-200 rounded-lg p-3">
+                      <FlexPreviewComponent content={form.messageContent} maxWidth={300} />
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openBuilder('create', form.messageContent, () => setAdvCreateOpen(true))}
+                          className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100"
+                        >
+                          ✎ カードを編集
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setForm({ ...form, messageContent: '' })}
+                          className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-gray-500 border border-gray-300 rounded-md hover:text-red-600"
+                        >
+                          🗑 削除
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => openBuilder('create', form.messageContent, () => setAdvCreateOpen(true))}
+                      className="w-full min-h-[44px] px-4 py-3 text-sm font-medium text-white rounded-md"
+                      style={{ backgroundColor: '#06C755' }}
+                    >
+                      🎨 ビジュアルでカードを作る
+                    </button>
+                  )}
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setAdvCreateOpen((v) => !v)}
+                      className="text-xs text-gray-500 hover:text-gray-700"
+                    >
+                      {advCreateOpen ? '▾' : '▸'} 上級者向け: JSONを直接貼り付ける
+                    </button>
+                    {advCreateOpen && (
+                      <textarea
+                        className="mt-2 w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+                        rows={10}
+                        placeholder='{"type":"bubble","body":...}'
+                        value={form.messageContent}
+                        onChange={(e) => setForm({ ...form, messageContent: e.target.value })}
+                      />
+                    )}
+                  </div>
+                </div>
               ) : (
                 <textarea
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-                  rows={form.messageType === 'flex' ? 10 : 4}
-                  placeholder={form.messageType === 'flex' ? '{"type":"bubble","body":...}' : 'メッセージ内容'}
+                  rows={4}
+                  placeholder="メッセージ内容"
                   value={form.messageContent}
                   onChange={(e) => setForm({ ...form, messageContent: e.target.value })}
                 />
@@ -520,15 +608,44 @@ export default function TemplatesPage() {
                   </div>
                 </div>
 
-                {/* Edit JSON / content */}
+                {/* Edit content: flex/carousel はビルダー起動、text/image は textarea */}
                 <div>
-                  <h4 className="text-[11px] font-medium text-gray-500 mb-1.5 uppercase tracking-wide">内容 / JSON 編集</h4>
-                  <textarea
-                    rows={drawerData.messageType === 'flex' ? 12 : 4}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-                    value={editContent ?? drawerData.messageContent}
-                    onChange={(e) => setEditContent(e.target.value)}
-                  />
+                  <h4 className="text-[11px] font-medium text-gray-500 mb-1.5 uppercase tracking-wide">内容の編集</h4>
+                  {(drawerData.messageType === 'flex' || drawerData.messageType === 'carousel') ? (
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => openBuilder('edit', editContent ?? drawerData.messageContent, () => setAdvEditOpen(true))}
+                        className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100"
+                      >
+                        ✎ ビジュアルでカードを編集
+                      </button>
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setAdvEditOpen((v) => !v)}
+                          className="text-xs text-gray-500 hover:text-gray-700"
+                        >
+                          {advEditOpen ? '▾' : '▸'} 上級者向け: JSONを直接編集する
+                        </button>
+                        {advEditOpen && (
+                          <textarea
+                            rows={12}
+                            className="mt-2 w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+                            value={editContent ?? drawerData.messageContent}
+                            onChange={(e) => setEditContent(e.target.value)}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <textarea
+                      rows={4}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+                      value={editContent ?? drawerData.messageContent}
+                      onChange={(e) => setEditContent(e.target.value)}
+                    />
+                  )}
                 </div>
 
                 {(editContent !== null || editName !== null) && (
@@ -597,6 +714,14 @@ export default function TemplatesPage() {
       )}
 
       <CcPromptButton prompts={ccPrompts} />
+
+      {builderTarget && (
+        <FlexBuilderModal
+          initialModel={builderInitial}
+          onSave={handleBuilderSave}
+          onClose={() => setBuilderTarget(null)}
+        />
+      )}
     </div>
   )
 }
