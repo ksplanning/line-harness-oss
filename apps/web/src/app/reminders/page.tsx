@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import EnrollDialog, { type EnrolledFriendRow } from '@/components/reminders/enroll-dialog'
 
 interface Reminder {
   id: string
@@ -108,6 +109,13 @@ export default function RemindersPage() {
   const [stepSaving, setStepSaving] = useState(false)
   const [stepFormError, setStepFormError] = useState('')
 
+  // 友だち手動登録 (G57)。1 度に 1 リマインダしか展開しないため展開中カード用の
+  // ローカル state で管理。worker に「リマインダ別登録一覧」API が無いため、
+  // enroll 成功分を state に push し、解除で filter 除去する (ui-design.md §5)。
+  const [enrollments, setEnrollments] = useState<EnrolledFriendRow[]>([])
+  const [showEnrollDialog, setShowEnrollDialog] = useState(false)
+  const [pendingUnenrollId, setPendingUnenrollId] = useState<string | null>(null)
+
   const loadReminders = useCallback(async () => {
     setLoading(true)
     setError('')
@@ -150,13 +158,33 @@ export default function RemindersPage() {
       setExpandedId(null)
       setExpandedData(null)
       setShowStepForm(false)
+      resetEnrollState()
       return
     }
     setExpandedId(id)
     setExpandedData(null)
     setShowStepForm(false)
     setStepFormError('')
+    resetEnrollState()
     loadDetail(id)
+  }
+
+  // 展開カード切替時に手動登録 state をクリア (別リマインダの登録が残らないように)。
+  const resetEnrollState = () => {
+    setEnrollments([])
+    setShowEnrollDialog(false)
+    setPendingUnenrollId(null)
+  }
+
+  const handleUnenroll = async (enrollmentId: string) => {
+    try {
+      await api.reminders.unenroll(enrollmentId)
+      setEnrollments((prev) => prev.filter((e) => e.enrollmentId !== enrollmentId))
+      setPendingUnenrollId(null)
+    } catch {
+      setError('登録解除に失敗しました')
+      setPendingUnenrollId(null)
+    }
   }
 
   const handleCreate = async () => {
@@ -521,6 +549,72 @@ export default function RemindersPage() {
                             </div>
                           </div>
                         )}
+
+                        {/* ── 友だちを手動登録 (G57) ─────────────────────── */}
+                        <div className="mt-6 pt-5 border-t border-gray-200">
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-xs font-semibold text-gray-700">友だちを手動登録</h4>
+                            <button
+                              onClick={() => setShowEnrollDialog(true)}
+                              className="px-3 py-1 min-h-[44px] text-xs font-medium text-white rounded-md transition-opacity hover:opacity-90"
+                              style={{ backgroundColor: '#06C755' }}
+                            >
+                              ＋ 友だちを登録する
+                            </button>
+                          </div>
+
+                          {enrollments.length === 0 ? (
+                            <div className="py-4 text-center">
+                              <p className="text-xs text-gray-500">まだ手動登録した友だちはいません</p>
+                              <p className="text-xs text-gray-400 mt-1">
+                                「友だちを登録する」から名前で検索して登録できます。
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {enrollments.map((en) => (
+                                <div
+                                  key={en.enrollmentId}
+                                  className="flex flex-wrap items-center justify-between gap-2 bg-white border border-gray-100 rounded-lg px-3 py-2"
+                                >
+                                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                                    <span className="font-medium text-gray-900">{en.displayName}</span>
+                                    <span className="text-xs text-gray-500">基準日: {en.targetDate}</span>
+                                    <span className="text-xs text-gray-500">
+                                      状態: {en.status === 'active' ? '有効' : en.status}
+                                    </span>
+                                  </div>
+                                  {pendingUnenrollId === en.enrollmentId ? (
+                                    <span className="inline-flex items-center gap-1">
+                                      <span className="text-xs text-gray-600">
+                                        「{en.displayName}」の登録を解除しますか？
+                                      </span>
+                                      <button
+                                        onClick={() => handleUnenroll(en.enrollmentId)}
+                                        className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700"
+                                      >
+                                        はい
+                                      </button>
+                                      <button
+                                        onClick={() => setPendingUnenrollId(null)}
+                                        className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
+                                      >
+                                        いいえ
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      onClick={() => setPendingUnenrollId(en.enrollmentId)}
+                                      className="px-2.5 py-1 text-xs font-medium text-red-500 hover:bg-red-50 rounded-md"
+                                    >
+                                      登録解除
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -530,6 +624,15 @@ export default function RemindersPage() {
           })}
         </div>
       )}
+
+      {showEnrollDialog && expandedId && (
+        <EnrollDialog
+          reminderId={expandedId}
+          onClose={() => setShowEnrollDialog(false)}
+          onEnrolled={(row) => setEnrollments((prev) => [...prev, row])}
+        />
+      )}
+
       <CcPromptButton prompts={ccPrompts} />
     </div>
   )
