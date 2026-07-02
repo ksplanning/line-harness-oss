@@ -20,4 +20,6 @@ apps/worker/dist/
 *.bak
 *.tmp
 *~
+# harness runtime state (never commit to this PUBLIC repo — may contain D1 dumps with secrets)
+.ars-state/
 .ars-state/backups/
