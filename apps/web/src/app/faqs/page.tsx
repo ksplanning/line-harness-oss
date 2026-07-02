@@ -6,6 +6,7 @@ import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import Toggle from '@/components/shared/toggle'
 import EditDialog, { type FaqDraft } from '@/components/faqs/edit-dialog'
+import BulkImportDialog from '@/components/faqs/bulk-import-dialog'
 
 interface Faq {
   id: string
@@ -70,6 +71,7 @@ export default function FaqsPage() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<FaqDraft | null>(null)
+  const [bulkOpen, setBulkOpen] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
 
   const accountName =
@@ -165,13 +167,23 @@ export default function FaqsPage() {
         title="よくある質問（自動応答）"
         description="お客さまがLINEで送ってきた質問に、あらかじめ登録した答えを自動で返します。"
         action={
-          <button
-            onClick={openNewFaq}
-            className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
-            style={{ backgroundColor: '#06C755' }}
-          >
-            + 質問を追加
-          </button>
+          <div className="flex items-center gap-2">
+            {tab === 'faqs' && (
+              <button
+                onClick={() => setBulkOpen(true)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                まとめて登録
+              </button>
+            )}
+            <button
+              onClick={openNewFaq}
+              className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              + 質問を追加
+            </button>
+          </div>
         }
       />
 
@@ -227,6 +239,10 @@ export default function FaqsPage() {
             >
               ＋ 最初の質問を追加
             </button>
+            <p className="mt-3 text-xs text-gray-500">
+              エクセルやCSVでまとめて用意した質問がある場合は
+              <button onClick={() => setBulkOpen(true)} className="text-gray-600 hover:text-gray-800 underline">まとめて登録</button>
+            </p>
             <p className="mt-4 text-xs text-gray-400">
               答え方の設定（自信のしきい値など）は「設定」タブから
             </p>
@@ -488,6 +504,15 @@ export default function FaqsPage() {
           selectedAccountId={selectedAccountId}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); load() }}
+        />
+      )}
+
+      {bulkOpen && (
+        <BulkImportDialog
+          selectedAccountId={selectedAccountId}
+          existingFaqs={faqs.map((f) => ({ id: f.id, lineAccountId: f.lineAccountId, question: f.question }))}
+          onClose={() => setBulkOpen(false)}
+          onImported={() => { setBulkOpen(false); load() }}
         />
       )}
     </div>

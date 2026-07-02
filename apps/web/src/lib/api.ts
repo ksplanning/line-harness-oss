@@ -691,6 +691,33 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+    // 一括登録 (A+)。fetchApi が CSRF を自動付与 (api.ts:87-92)。
+    bulk: (body: {
+      lineAccountId: string | null;
+      items: Array<{
+        question: string;
+        variants?: string[];
+        answer: string;
+        isActive?: boolean;
+        mode?: 'create' | 'overwrite';
+        overwriteId?: string;
+      }>;
+    }) =>
+      fetchApi<ApiResponse<{
+        created: number;
+        updated: number;
+        skipped: number;
+        errors: number;
+        results: Array<{
+          index: number;
+          status: 'created' | 'updated' | 'skipped' | 'error';
+          faqId?: string;
+          error?: string;
+        }>;
+      }>>('/api/faqs/bulk', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
     settings: {
       get: (params: { accountId: string }) =>
         fetchApi<ApiResponse<{
