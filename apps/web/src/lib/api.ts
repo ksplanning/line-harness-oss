@@ -1354,6 +1354,21 @@ export const api = {
       })
     },
   },
+
+  // 計測リンク (tracked link) 一覧 — Flex ビルダーのボタン/画像タップで trackingUrl を選ぶために使う。
+  // worker GET /api/tracked-links が serializeTrackedLink で {id,name,originalUrl,trackingUrl,...} を返す。
+  trackedLinks: {
+    list: () =>
+      fetchApi<ApiResponse<TrackedLinkListItem[]>>('/api/tracked-links'),
+  },
+}
+
+/** Flex ビルダーの link-picker が使う計測リンクの最小形 (worker serializeTrackedLink の一部)。 */
+export interface TrackedLinkListItem {
+  id: string
+  name: string
+  originalUrl: string
+  trackingUrl: string
 }
 
 // ----------------------------------------------------------------

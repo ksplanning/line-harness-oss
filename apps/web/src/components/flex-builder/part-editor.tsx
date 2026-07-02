@@ -2,11 +2,13 @@
 
 /**
  * 選択中部品の編集フォーム (F3)。kind に応じて入力欄が切り替わる。
- * C2: heading/body/separator/spacer を実装。
- * C3: image(ImageUploader 埋込)/button(link-picker) を差し替え・拡張する。
+ * heading/body/separator/spacer + image(ImageUploader 埋込 / F5)/button(link-picker / F6)。
  * 専門語ゼロ・日本語ラベル。
  */
-import type { BuilderPart } from '@/lib/flex-builder/types'
+import ImageUploader from '@/components/shared/image-uploader'
+import LinkPicker from './link-picker'
+import { BUTTON_STYLE_OPTIONS } from '@/lib/flex-builder/link'
+import type { BuilderPart, ImageAspect, ButtonStyle, LinkSpec } from '@/lib/flex-builder/types'
 
 interface Props {
   part: BuilderPart
@@ -67,18 +69,75 @@ export default function PartEditor({ part, onChange }: Props) {
     )
   }
 
-  // image / button は C3 で ImageUploader / link-picker を埋め込む (C2 は最小欄)。
   if (part.kind === 'image') {
+    const aspects: { v: ImageAspect; label: string }[] = [
+      { v: 'original', label: 'そのまま' },
+      { v: 'landscape', label: '横長' },
+      { v: 'square', label: '正方形' },
+    ]
     return (
-      <div>
-        <label className="block text-xs text-gray-600 mb-1">画像のリンク先 (この欄は次の工程でアップローダに置き換わります)</label>
-        <input
-          type="text"
-          value={part.url}
-          onChange={(e) => onChange({ url: e.target.value } as Partial<BuilderPart>)}
-          className={inputCls}
-          placeholder="https://..."
-        />
+      <div className="space-y-3">
+        <div>
+          <label className="block text-xs text-gray-600 mb-1">画像</label>
+          <ImageUploader
+            mode="url"
+            value={part.url ? { mode: 'url', url: part.url } : null}
+            onChange={(next) =>
+              onChange({ url: next && next.mode === 'url' ? next.url : '' } as Partial<BuilderPart>)
+            }
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-600 mb-1">画像の形</label>
+          <div className="flex gap-2">
+            {aspects.map((a) => (
+              <button
+                key={a.v}
+                type="button"
+                onClick={() => onChange({ aspect: a.v } as Partial<BuilderPart>)}
+                className={`min-h-[44px] px-3 rounded-md border text-sm ${
+                  (part.aspect ?? 'original') === a.v
+                    ? 'border-green-500 text-green-700 bg-green-50'
+                    : 'border-gray-300 text-gray-600'
+                }`}
+              >
+                {a.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <label className="inline-flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={Boolean(part.rounded)}
+            onChange={(e) => onChange({ rounded: e.target.checked } as Partial<BuilderPart>)}
+            className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+          />
+          <span className="text-xs text-gray-600">角を少し丸くする</span>
+        </label>
+        <div>
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={Boolean(part.tapLink)}
+              onChange={(e) =>
+                onChange({
+                  tapLink: e.target.checked ? { type: 'url', uri: '' } : undefined,
+                } as Partial<BuilderPart>)
+              }
+              className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+            />
+            <span className="text-xs text-gray-600">画像を押したら移動する</span>
+          </label>
+          {part.tapLink && (
+            <div className="mt-2">
+              <LinkPicker
+                value={part.tapLink}
+                onChange={(link: LinkSpec) => onChange({ tapLink: link } as Partial<BuilderPart>)}
+              />
+            </div>
+          )}
+        </div>
       </div>
     )
   }
@@ -96,17 +155,28 @@ export default function PartEditor({ part, onChange }: Props) {
           placeholder="例: 予約する"
         />
       </div>
+      <LinkPicker
+        value={part.link}
+        onChange={(link: LinkSpec) => onChange({ link } as Partial<BuilderPart>)}
+      />
       <div>
-        <label className="block text-xs text-gray-600 mb-1">リンク先 (この欄は次の工程で選択式に置き換わります)</label>
-        <input
-          type="text"
-          value={part.link.uri}
-          onChange={(e) =>
-            onChange({ link: { type: 'url', uri: e.target.value } } as Partial<BuilderPart>)
-          }
-          className={inputCls}
-          placeholder="https://..."
-        />
+        <label className="block text-xs text-gray-600 mb-1">ボタンの色</label>
+        <div className="flex gap-2">
+          {BUTTON_STYLE_OPTIONS.map((s: { value: ButtonStyle; label: string }) => (
+            <button
+              key={s.value}
+              type="button"
+              onClick={() => onChange({ style: s.value } as Partial<BuilderPart>)}
+              className={`min-h-[44px] px-3 rounded-md border text-sm ${
+                part.style === s.value
+                  ? 'border-green-500 text-green-700 bg-green-50'
+                  : 'border-gray-300 text-gray-600'
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )
