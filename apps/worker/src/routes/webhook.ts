@@ -164,7 +164,7 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES);
+        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES, c.env.FAQ_BOT_ENABLED);
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -185,6 +185,7 @@ async function handleEvent(
   workerUrl?: string,
   liffUrl?: string,
   r2?: R2Bucket,
+  faqBotEnabled?: string,
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -659,6 +660,23 @@ async function handleEvent(
 
         matched = true;
         break;
+      }
+    }
+
+    // FAQ bot (flag-gated / only when auto-reply did not match / default OFF)
+    if (!matched && faqBotEnabled === 'true') {
+      const { tryFaqReply } = await import('../services/faq-reply.js');
+      const faqResult = await tryFaqReply(db, lineClient, {
+        friend,
+        incomingText,
+        lineAccountId,
+        replyToken: event.replyToken,
+      });
+      if (faqResult.replied) {
+        matched = true;
+        replyTokenConsumed = true;
+      } else if (faqResult.handoff) {
+        replyTokenConsumed = true;
       }
     }
 

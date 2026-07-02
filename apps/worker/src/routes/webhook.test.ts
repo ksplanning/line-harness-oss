@@ -41,6 +41,10 @@ vi.mock('../services/event-bus.js', () => ({
   fireEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../services/faq-reply.js', () => ({
+  tryFaqReply: vi.fn(),
+}));
+
 vi.mock('../services/step-delivery.js', () => ({
   buildMessage: vi.fn(),
   expandVariables: vi.fn(),
@@ -66,6 +70,7 @@ import {
   upsertFriend,
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
+import { tryFaqReply } from '../services/faq-reply.js';
 import { webhook } from './webhook.js';
 
 function setupApp() {
@@ -295,5 +300,181 @@ describe('POST /webhook — first-contact existing friends', () => {
     expect(addTagToFriend).not.toHaveBeenCalled();
     expect(getEntryRouteByRefCode).not.toHaveBeenCalled();
     expect(getMessageTemplateById).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /webhook — FAQ bot flag gate', () => {
+  function existingFriend() {
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U-existing',
+      display_name: 'Existing Friend',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: null,
+      line_account_id: 'acc-1',
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-07-02T00:00:00+09:00',
+      updated_at: '2026-07-02T00:00:00+09:00',
+    });
+  }
+
+  function makeStmt(autoReplies: Array<{
+    id: string;
+    keyword: string;
+    match_type: 'exact' | 'contains';
+    response_type: string;
+    response_content: string;
+    template_id: string | null;
+    is_active: number;
+    created_at: string;
+  }> = []) {
+    const stmt = {
+      bind: vi.fn(),
+      run: vi.fn().mockResolvedValue({}),
+      all: vi.fn().mockResolvedValue({ results: autoReplies }),
+      first: vi.fn().mockResolvedValue(null),
+    };
+    stmt.bind.mockReturnValue(stmt);
+    return stmt;
+  }
+
+  async function postTextWebhook(envOverrides: Record<string, unknown>, incomingText = '営業時間は？', autoReplies = []) {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    existingFriend();
+    vi.mocked(upsertChatOnMessage).mockResolvedValue({
+      id: 'chat-1',
+      friend_id: 'friend-1',
+      operator_id: null,
+      status: 'unread',
+      notes: null,
+      last_message_at: '2026-07-02T00:00:00+09:00',
+      created_at: '2026-07-02T00:00:00+09:00',
+      updated_at: '2026-07-02T00:00:00+09:00',
+    });
+
+    const stmt = makeStmt(autoReplies);
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database;
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+    const app = setupApp();
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [
+            {
+              type: 'message',
+              replyToken: 'reply-token',
+              message: { type: 'text', id: 'message-1', text: incomingText },
+              timestamp: Date.now(),
+              source: { type: 'user', userId: 'U-existing' },
+              webhookEventId: 'event-1',
+              deliveryContext: { isRedelivery: false },
+              mode: 'active',
+            },
+          ],
+        }),
+      },
+      { ...baseEnv, DB: db, ...envOverrides },
+      executionCtx,
+    );
+    expect(res.status).toBe(200);
+    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
+    await processing;
+    return { db };
+  }
+
+  test('flag OFF keeps text webhook path untouched and does not import/call FAQ reply', async () => {
+    const { db } = await postTextWebhook({});
+
+    expect(tryFaqReply).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(fireEvent).toHaveBeenCalledWith(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: '営業時間は？', matched: false },
+        replyToken: 'reply-token',
+      },
+      'env-default-token',
+      null,
+    );
+  });
+
+  test('auto-reply match prevents FAQ evaluation', async () => {
+    await postTextWebhook(
+      { FAQ_BOT_ENABLED: 'true' },
+      '営業時間',
+      [{
+        id: 'auto-1',
+        keyword: '営業時間',
+        match_type: 'exact',
+        response_type: 'silent',
+        response_content: '',
+        template_id: null,
+        is_active: 1,
+        created_at: '2026-07-02T00:00:00+09:00',
+      }],
+    );
+
+    expect(tryFaqReply).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('FAQ hit consumes reply token and keeps the chat out of unread inbox', async () => {
+    vi.mocked(tryFaqReply).mockResolvedValue({ replied: true, handoff: false });
+
+    const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' });
+
+    expect(tryFaqReply).toHaveBeenCalledWith(db, lineClientMocks, {
+      friend: expect.objectContaining({ id: 'friend-1' }),
+      incomingText: '営業時間は？',
+      lineAccountId: null,
+      replyToken: 'reply-token',
+    });
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(fireEvent).toHaveBeenCalledWith(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: '営業時間は？', matched: true },
+        replyToken: undefined,
+      },
+      'env-default-token',
+      null,
+    );
+  });
+
+  test('FAQ handoff consumes reply token but leaves the chat unread', async () => {
+    vi.mocked(tryFaqReply).mockResolvedValue({ replied: false, handoff: true });
+
+    const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' });
+
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(fireEvent).toHaveBeenCalledWith(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: '営業時間は？', matched: false },
+        replyToken: undefined,
+      },
+      'env-default-token',
+      null,
+    );
   });
 });
