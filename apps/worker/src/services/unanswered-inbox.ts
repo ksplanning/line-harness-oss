@@ -142,7 +142,7 @@ const RECENT_AUTO_REPLY_OUTGOINGS_SQL = `
   FROM messages_log ml
   LEFT JOIN last_manual lm ON lm.friend_id = ml.friend_id
   WHERE ml.direction='outgoing'
-    AND ml.source='auto_reply'
+    AND ml.source IN ('auto_reply','faq_bot')
     AND ml.delivery_type='reply'
     AND (lm.lm IS NULL OR ml.created_at > lm.lm)
   ORDER BY ml.friend_id, ml.created_at ASC

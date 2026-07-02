@@ -33,6 +33,7 @@ interface RecentIncoming {
 interface AutoReplyOutgoing {
   friend_id: string;
   created_at: string;
+  source?: string;
 }
 
 function stubDB(canned: {
@@ -62,16 +63,18 @@ function stubDB(canned: {
     created_at: ar.created_at ?? '2000-01-01T00:00:00+09:00',
   }));
 
-  const autoReplyOutgoings = canned.autoReplyOutgoings ?? [];
+  const autoReplyOutgoings = (canned.autoReplyOutgoings ?? [])
+    .filter((row) => row.source !== 'faq_handoff')
+    .map(({ source: _source, ...row }) => row);
 
   return {
     prepare(sql: string) {
       const isAutoReplies = sql.includes('FROM auto_replies');
       // 候補 friend クエリ (CANDIDATES_SQL): "FROM friends f" を含み、JOIN agg
       const isCandidates = sql.includes('FROM friends f') && sql.includes('JOIN agg');
-      // auto_reply outgoing クエリ: source='auto_reply' を WHERE に含む
+      // auto_reply/faq_bot outgoing クエリ: source 条件と outgoing を WHERE に含む
       const isAutoReplyOutgoings =
-        sql.includes("source='auto_reply'") && sql.includes('outgoing');
+        (sql.includes("source='auto_reply'") || sql.includes("'faq_bot'")) && sql.includes('outgoing');
       // それ以外で messages_log を見るのは incomings クエリ
       const isRecentIncomings =
         sql.includes('messages_log') && !isAutoReplyOutgoings && !isCandidates;
@@ -488,6 +491,54 @@ describe('auto_reply マッチ除外', () => {
     expect(result.total).toBe(0);
   });
 
+  test('FAQ bot hit は outgoing 証拠として inbox から除外される', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:00:00+09:00' }),
+      ],
+      recentIncomings: [
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: '営業時間は？',
+          created_at: '2026-05-08T10:00:00+09:00',
+        },
+      ],
+      autoReplyOutgoings: [
+        { friend_id: 'f1', created_at: '2026-05-08T10:00:02+09:00', source: 'faq_bot' },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(0);
+  });
+
+  test('FAQ handoff は outgoing 証拠に含めず inbox に残る', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:00:00+09:00' }),
+      ],
+      recentIncomings: [
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: '駐車場はありますか',
+          created_at: '2026-05-08T10:00:00+09:00',
+        },
+      ],
+      autoReplyOutgoings: [
+        { friend_id: 'f1', created_at: '2026-05-08T10:00:02+09:00', source: 'faq_handoff' },
+      ],
+      autoReplies: [
+        { keyword: '営業時間', match_type: 'exact', line_account_id: null },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].friendId).toBe('f1');
+  });
+
   test('応答ありルール: outgoing が遠すぎ (5秒超) なら証拠扱いしない', async () => {
     const db = stubDB({
       rows: [
@@ -619,5 +670,23 @@ describe('auto_reply マッチ除外', () => {
     expect(ids.has('f_keep')).toBe(true);
     expect(ids.has('f_drop')).toBe(false);
     expect(ids.size).toBe(1);
+  });
+
+  test('getUnansweredFriendIds は faq_bot matched を除外し faq_handoff は残す', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({ friend_id: 'f_hit', last_incoming_content: '営業時間' }),
+        baseRow({ friend_id: 'f_handoff', last_incoming_content: '駐車場' }),
+      ],
+      autoReplyOutgoings: [
+        { friend_id: 'f_hit', created_at: '2026-05-08T10:00:02+09:00', source: 'faq_bot' },
+        { friend_id: 'f_handoff', created_at: '2026-05-08T10:00:02+09:00', source: 'faq_handoff' },
+      ],
+    });
+
+    const { getUnansweredFriendIds } = await import('./unanswered-inbox.js');
+    const ids = await getUnansweredFriendIds(db);
+    expect(ids.has('f_hit')).toBe(false);
+    expect(ids.has('f_handoff')).toBe(true);
   });
 });
