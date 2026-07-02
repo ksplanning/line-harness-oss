@@ -160,6 +160,29 @@ describe('カード操作 (カルーセル / D-13)', () => {
     // 最後の 1 枚は消せない (no-op)
     expect(removeCard(oneLeft, 0).cards.length).toBe(1);
   });
+
+  // H3: 削除は「確認時点の index」を消す (activeCard に依存しない)。
+  // card-tabs が onRemove(index) で確認した index を渡すので、確認表示中にタブ切替しても
+  // 消えるのは確認したカードだけ (誤カード削除しない)。ここでは removeCard(index) が
+  // 指定 index を正確に消すことを担保 (結線の土台)。
+  test('H3: removeCard(index) は指定 index だけを消す (別 index を巻き込まない)', () => {
+    const m: BuilderModel = {
+      cards: [{ id: 'a', parts: [] }, { id: 'b', parts: [] }, { id: 'c', parts: [] }],
+    };
+    // 「カード2 (index 1) を消す」と確認した想定
+    const after = removeCard(m, 1);
+    expect(after.cards.map((c) => c.id)).toEqual(['a', 'c']); // b だけ消える
+    // 元 model は不変
+    expect(m.cards.length).toBe(3);
+  });
+
+  test('H3: removeCard は先頭/末尾の index も正確に消す', () => {
+    const m: BuilderModel = {
+      cards: [{ id: 'a', parts: [] }, { id: 'b', parts: [] }, { id: 'c', parts: [] }],
+    };
+    expect(removeCard(m, 0).cards.map((c) => c.id)).toEqual(['b', 'c']);
+    expect(removeCard(m, 2).cards.map((c) => c.id)).toEqual(['a', 'b']);
+  });
 });
 
 /**

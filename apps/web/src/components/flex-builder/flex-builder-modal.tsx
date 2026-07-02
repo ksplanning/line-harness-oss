@@ -117,9 +117,14 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
   }
   const handleMove = (partId: string, dir: 'up' | 'down') =>
     setModel((prev) => movePart(prev, activeCard, partId, dir))
-  // 行内「はい」で実行 (確認は UI で先に表示済み)。setState updater 形式で確実に新配列を反映。
+  // 行内「はい」で実行 (確認は UI で先に表示済み)。partId が現アクティブカードに存在する時だけ削除
+  // (別カードに切替後の stale 確認で誤操作しない / H3 同種の予防)。setState updater で確実に反映。
   const handleRemove = (partId: string) => {
-    setModel((prev) => removePart(prev, activeCard, partId))
+    setModel((prev) => {
+      const c = prev.cards[activeCard]
+      if (!c || !c.parts.some((p) => p.id === partId)) return prev
+      return removePart(prev, activeCard, partId)
+    })
     if (selectedPartId === partId) setSelectedPartId(null)
     setConfirmingRemoveId(null)
   }
@@ -144,16 +149,22 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
       return t < 0 || t >= model.cards.length ? i : t
     })
   }
-  // 確認は card-tabs の行内「はい」で済んでいる。setState updater で確実に反映。
-  const handleRemoveCard = () => {
+  // 確認は card-tabs の行内「はい」で済んでいる。削除対象は確認時点の index を受け取る (H3: 誤カード削除防止)。
+  const handleRemoveCard = (index: number) => {
     if (model.cards.length <= 1) return
-    setModel((prev) => removeCard(prev, activeCard))
-    setActiveCard((i) => Math.max(0, i - (i > 0 ? 1 : 0)))
+    if (index < 0 || index >= model.cards.length) return
+    setModel((prev) => removeCard(prev, index))
+    // アクティブが削除位置以降なら 1 つ手前へ (範囲外を指さないよう clamp)。
+    setActiveCard((i) => {
+      const next = i > index ? i - 1 : i
+      return Math.min(next, model.cards.length - 2)
+    })
     setSelectedPartId(null)
   }
   const handleSelectCard = (i: number) => {
     setActiveCard(i)
     setSelectedPartId(null)
+    setConfirmingRemoveId(null) // カード切替で部品削除の行内確認をリセット (H3 同種の予防)
   }
 
   // 保存: validateFlex 結線 (D-14)。ok:false なら保存せずエラー列挙。
