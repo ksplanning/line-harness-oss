@@ -177,8 +177,8 @@ export default function TemplatesPage() {
     return () => { cancelled = true }
   }, [drawerId])
 
-  // reset edits when drawer changes
-  useEffect(() => { setEditContent(null); setEditName(null) }, [drawerId])
+  // reset edits when drawer changes (editViaBuilder も必ずクリア = 別テンプレへの flex 誤分類を防ぐ / M2)
+  useEffect(() => { setEditContent(null); setEditName(null); setEditViaBuilder(false); setAdvEditOpen(false) }, [drawerId])
 
   const filteredTemplates = templates.filter((t) => {
     if (typeFilter === 'all') return true
@@ -222,8 +222,10 @@ export default function TemplatesPage() {
       const updates: Record<string, string> = {}
       if (editContent !== null) updates.messageContent = editContent
       if (editName !== null) updates.name = editName
-      // ビルダーで編集した場合は message_type を 'flex' に統一 (carousel 値を新規に書かない / F9)
-      if (editViaBuilder) updates.messageType = 'flex'
+      // ビルダーで編集した flex/carousel テンプレのみ message_type を 'flex' に統一 (carousel 値を新規に書かない / F9)。
+      // 二重ガード (M2): flag に加え元テンプレが flex/carousel の時だけ (text/image を flex に誤分類しない)。
+      const wasCardType = drawerData.messageType === 'flex' || drawerData.messageType === 'carousel'
+      if (editViaBuilder && wasCardType) updates.messageType = 'flex'
       await api.templates.update(drawerData.id, updates)
       const r = await api.templates.get(drawerData.id)
       if (r.success && r.data) setDrawerData(r.data)
@@ -659,7 +661,7 @@ export default function TemplatesPage() {
                       {savingEdit ? '保存中...' : '保存'}
                     </button>
                     <button
-                      onClick={() => { setEditContent(null); setEditName(null) }}
+                      onClick={() => { setEditContent(null); setEditName(null); setEditViaBuilder(false) }}
                       className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-md"
                     >
                       キャンセル
