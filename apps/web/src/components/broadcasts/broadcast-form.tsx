@@ -231,11 +231,29 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
                 : '{"type":"bubble","body":{...}}'
             }
             value={form.messageContent}
-            onChange={(e) => setForm({ ...form, messageContent: e.target.value })}
+            onChange={(e) => {
+              let next = e.target.value
+              // Flex: message object 丸ごと貼付 ({type:'flex',altText,contents}) を自動アンラップ (W5 T-E3(c))
+              if (form.messageType === 'flex') {
+                try {
+                  const parsed = JSON.parse(next)
+                  if (parsed && typeof parsed === 'object' && parsed.type === 'flex' && parsed.contents) {
+                    next = JSON.stringify(parsed.contents, null, 2)
+                  }
+                } catch { /* 入力途中は無視 */ }
+              }
+              setForm({ ...form, messageContent: next })
+            }}
             style={{ fontFamily: form.messageType !== 'text' ? 'monospace' : 'inherit' }}
           />
           {form.messageType === 'image' && (
             <p className="text-xs text-gray-400 mt-1">上のURLフォームか、直接JSONを編集できます</p>
+          )}
+          {form.messageType === 'flex' && (
+            <p className="text-xs text-gray-400 mt-1">
+              ⓘ Flex は contents(bubble/carousel)だけを貼ってください。
+              {'{"type":"flex","altText":...,"contents":{...}}'} を貼ると contents だけ自動で取り出します。
+            </p>
           )}
           {form.messageType === 'flex' && form.messageContent && (() => {
             try { JSON.parse(form.messageContent); return true } catch { return false }

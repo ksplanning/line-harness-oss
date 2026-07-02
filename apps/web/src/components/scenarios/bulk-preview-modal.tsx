@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
+import FlexPreviewComponent from '@/components/flex-preview'
 
 interface Props {
   open: boolean
@@ -21,6 +22,42 @@ function nowJstAsLocalInput(): string {
   // JST clock-time as YYYY-MM-DDTHH:MM for <input type="datetime-local">
   const d = new Date(Date.now() + 9 * 60 * 60_000)
   return d.toISOString().slice(0, 16)
+}
+
+/**
+ * Render a step's message by type instead of dumping raw JSON (W5 T-E5):
+ *  - image → <img> preview
+ *  - flex  → FlexPreviewComponent (falls back to <pre> if unparsable)
+ *  - other → <pre> (text etc.)
+ */
+function StepPreviewBody({ messageType, messageContent }: { messageType: string; messageContent: string }) {
+  if (messageType === 'image') {
+    let url = ''
+    try {
+      const parsed = JSON.parse(messageContent) as { originalContentUrl?: string; previewImageUrl?: string }
+      url = parsed.previewImageUrl || parsed.originalContentUrl || ''
+    } catch { /* fall through to raw below */ }
+    if (url) {
+      // eslint-disable-next-line @next/next/no-img-element
+      return <img src={url} alt="画像プレビュー" className="mt-2 max-h-48 rounded border border-gray-200" />
+    }
+  }
+  if (messageType === 'flex') {
+    let parsable = false
+    try { JSON.parse(messageContent); parsable = true } catch { /* not parsable */ }
+    if (parsable) {
+      return (
+        <div className="mt-2">
+          <FlexPreviewComponent content={messageContent} maxWidth={300} />
+        </div>
+      )
+    }
+  }
+  return (
+    <pre className="mt-2 text-xs text-gray-700 whitespace-pre-wrap break-words bg-gray-50 p-2 rounded max-h-48 overflow-y-auto">
+      {messageContent}
+    </pre>
+  )
 }
 
 export default function BulkPreviewModal({ open, scenarioId, onClose }: Props) {
@@ -94,9 +131,7 @@ export default function BulkPreviewModal({ open, scenarioId, onClose }: Props) {
                   <span className="text-xs text-blue-600">{s.messageType}</span>
                   <span className="text-gray-400 group-open:rotate-90 transition-transform">▶</span>
                 </summary>
-                <pre className="mt-2 text-xs text-gray-700 whitespace-pre-wrap break-words bg-gray-50 p-2 rounded max-h-48 overflow-y-auto">
-                  {s.messageContent}
-                </pre>
+                <StepPreviewBody messageType={s.messageType} messageContent={s.messageContent} />
               </details>
             ))}
           </div>

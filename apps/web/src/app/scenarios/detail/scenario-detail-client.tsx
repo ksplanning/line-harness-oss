@@ -7,6 +7,7 @@ import type { Scenario, ScenarioStep, ScenarioTriggerType, MessageType, Delivery
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import FlexPreviewComponent from '@/components/flex-preview'
+import ImageUploader from '@/components/shared/image-uploader'
 import ScheduleInput, {
   emptySchedule,
   buildSchedulePayload,
@@ -654,14 +655,80 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">メッセージ内容 <span className="text-red-500">*</span></label>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      メッセージ内容 <span className="text-red-500">*</span>
+                      {(stepForm.messageType === 'flex' || stepForm.messageType === 'image') && (
+                        <span className="ml-1 text-gray-400">(JSON形式)</span>
+                      )}
+                    </label>
+
+                    {/* 画像: アップローダで LINE 画像 JSON を自動生成 (W5 T-E4) */}
+                    {stepForm.messageType === 'image' && (
+                      <div className="mb-2">
+                        <ImageUploader
+                          mode="line-image"
+                          value={(() => {
+                            try {
+                              const parsed = JSON.parse(stepForm.messageContent) as { originalContentUrl?: string; previewImageUrl?: string }
+                              if (parsed.originalContentUrl) {
+                                return { mode: 'line-image' as const, originalContentUrl: parsed.originalContentUrl, previewImageUrl: parsed.previewImageUrl ?? parsed.originalContentUrl }
+                              }
+                            } catch { /* ignore */ }
+                            return null
+                          })()}
+                          onChange={(v) => {
+                            if (v?.mode === 'line-image') {
+                              setStepForm({ ...stepForm, messageContent: JSON.stringify({ originalContentUrl: v.originalContentUrl, previewImageUrl: v.previewImageUrl }) })
+                            } else {
+                              setStepForm({ ...stepForm, messageContent: '' })
+                            }
+                          }}
+                          label="送信する画像"
+                        />
+                      </div>
+                    )}
+
                     <textarea
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
-                      rows={4}
-                      placeholder="メッセージ内容を入力..."
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+                      rows={stepForm.messageType === 'flex' ? 8 : stepForm.messageType === 'image' ? 3 : 4}
+                      placeholder={
+                        stepForm.messageType === 'text'
+                          ? 'メッセージ内容を入力...'
+                          : stepForm.messageType === 'image'
+                          ? '{"originalContentUrl":"...","previewImageUrl":"..."}'
+                          : '{"type":"bubble","body":{...}}  ← contents(bubble/carousel)だけを貼ってください'
+                      }
                       value={stepForm.messageContent}
-                      onChange={(e) => setStepForm({ ...stepForm, messageContent: e.target.value })}
+                      onChange={(e) => {
+                        let next = e.target.value
+                        // Flex: message object 丸ごと貼付 ({type:'flex',altText,contents}) を自動アンラップ (W5 T-E3(c))
+                        if (stepForm.messageType === 'flex') {
+                          try {
+                            const parsed = JSON.parse(next)
+                            if (parsed && typeof parsed === 'object' && parsed.type === 'flex' && parsed.contents) {
+                              next = JSON.stringify(parsed.contents, null, 2)
+                            }
+                          } catch { /* 入力途中は無視 */ }
+                        }
+                        setStepForm({ ...stepForm, messageContent: next })
+                      }}
+                      style={{ fontFamily: stepForm.messageType !== 'text' ? 'monospace' : 'inherit' }}
                     />
+                    {stepForm.messageType === 'flex' && (
+                      <p className="text-xs text-gray-400 mt-1">
+                        ⓘ Flex は contents(bubble/carousel)だけを貼ってください。
+                        {'{"type":"flex","altText":...,"contents":{...}}'} を貼ると contents だけ自動で取り出します。
+                      </p>
+                    )}
+                    {/* Flex ライブプレビュー (W5 T-E4) */}
+                    {stepForm.messageType === 'flex' && stepForm.messageContent && (() => {
+                      try { JSON.parse(stepForm.messageContent); return true } catch { return false }
+                    })() && (
+                      <div className="mt-3">
+                        <p className="text-xs font-medium text-gray-500 mb-2">プレビュー</p>
+                        <FlexPreviewComponent content={stepForm.messageContent} maxWidth={300} />
+                      </div>
+                    )}
                   </div>
                 </>
               )}
