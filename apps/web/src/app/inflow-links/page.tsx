@@ -8,6 +8,7 @@ import Header from '@/components/layout/header'
 import { useAccount } from '@/contexts/account-context'
 import type { EntryRoute, TrafficPool, Scenario, Tag } from '@line-crm/shared'
 import EditRouteModal from './_components/edit-route-modal'
+import QrDialog from '@/components/shared/qr-dialog'
 
 interface MessageTemplate {
   id: string
@@ -66,6 +67,8 @@ export default function InflowLinksPage() {
     EntryRoute | 'new' | { register: string } | null
   >(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  // G35: QR 表示対象 (行の短縮 URL を QrDialog に渡す)
+  const [qrTarget, setQrTarget] = useState<{ refCode: string; url: string; name: string } | null>(null)
   // Expanded-row state for showing friends acquired through a given ref.
   // Mirrors the legacy /affiliates page UX — click row → load via
   // /api/analytics/ref/:refCode → render friend list inline.
@@ -460,6 +463,13 @@ export default function InflowLinksPage() {
                       >
                         {copiedId === r.refCode ? 'コピー済' : 'コピー'}
                       </button>
+                      <button
+                        onClick={() => setQrTarget({ refCode: r.refCode, url: `${WORKER_BASE}/r/${r.refCode}`, name: r.name })}
+                        className="ml-2 text-xs text-gray-500 hover:text-gray-700"
+                        title="QRコード(お店に貼る用)"
+                      >
+                        QRコード
+                      </button>
                     </td>
                     <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                       {editTarget ? (
@@ -509,6 +519,10 @@ export default function InflowLinksPage() {
             load()
           }}
         />
+      )}
+
+      {qrTarget && (
+        <QrDialog url={qrTarget.url} name={qrTarget.name} onClose={() => setQrTarget(null)} />
       )}
     </div>
   )
