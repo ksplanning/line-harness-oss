@@ -243,12 +243,12 @@ export default function FaqsPage() {
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">使われた回数</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">対象アカウント</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">状態</th>
-                    <th className="px-4 py-3" />
+                    <th className="px-4 py-3 sticky right-0 z-10 bg-gray-50 border-l border-gray-200" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {faqs.map((f) => (
-                    <tr key={f.id} className="hover:bg-gray-50">
+                    <tr key={f.id} className="group hover:bg-gray-50">
                       <td className="px-4 py-3 text-sm font-medium text-gray-900">{f.question}</td>
                       <td className="px-4 py-3">
                         {f.variants.length === 0 ? (
@@ -286,7 +286,7 @@ export default function FaqsPage() {
                           {f.isActive ? '有効' : '無効'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <td className="px-4 py-3 text-right whitespace-nowrap sticky right-0 z-10 bg-white group-hover:bg-gray-50 border-l border-gray-100">
                         <button
                           onClick={() => setEditing({
                             id: f.id,
