@@ -77,12 +77,15 @@ describe('T-A1: trackedLinks namespace 拡張', () => {
     expect(captured[0].body).toEqual({ name: 'x', originalUrl: 'https://ex.com', tagId: null })
   })
 
-  test('patch は PATCH /api/tracked-links/:id に部分更新を送る', async () => {
+  test('patch は PATCH /api/tracked-links/:id に部分更新を送る (originalUrl は非対応=送らない)', async () => {
+    // reviewer R1-I1: worker PATCH は original_url を更新できない (tracked-links.ts / db updateTrackedLink)。
+    // web が originalUrl を送ると silent-success (保存表示→reload で旧 URL に戻る罠) になるため、
+    // patch は name/tagId のみを送る契約に固定する。URL 変更は新規リンク作成で行う (後 batch backlog)。
     const api = await loadApi()
-    await api.trackedLinks.patch('lk_9', { name: '改名', originalUrl: 'https://ex.com/b', tagId: null })
+    await api.trackedLinks.patch('lk_9', { name: '改名', tagId: null })
     expect(captured[0].url).toBe(`${BASE}/api/tracked-links/lk_9`)
     expect(captured[0].method).toBe('PATCH')
-    expect(captured[0].body).toEqual({ name: '改名', originalUrl: 'https://ex.com/b', tagId: null })
+    expect(captured[0].body).toEqual({ name: '改名', tagId: null })
   })
 
   test('delete は DELETE /api/tracked-links/:id を叩く (body なし)', async () => {

@@ -62,24 +62,30 @@ export default function TrackedLinksPage() {
       setFormError(nameError)
       return
     }
-    const urlError = validateOriginalUrl(form.originalUrl)
-    if (urlError) {
-      setFormError(urlError)
-      return
+    // 遷移先 URL 検証は作成時のみ (編集では readOnly で変更不可 = R1-I1)。
+    if (editing === 'new') {
+      const urlError = validateOriginalUrl(form.originalUrl)
+      if (urlError) {
+        setFormError(urlError)
+        return
+      }
     }
     setFormError('')
     setSaving(true)
-    const body = {
-      name: form.name.trim(),
-      originalUrl: form.originalUrl.trim(),
-      tagId: form.tagId || null,
-    }
     try {
       const res =
         editing === 'new'
-          ? await api.trackedLinks.create(body)
+          ? await api.trackedLinks.create({
+              name: form.name.trim(),
+              originalUrl: form.originalUrl.trim(),
+              tagId: form.tagId || null,
+            })
           : editing
-            ? await api.trackedLinks.patch(editing.id, body)
+            ? // worker PATCH は original_url 非対応。originalUrl は送らない (silent-success 罠回避)。
+              await api.trackedLinks.patch(editing.id, {
+                name: form.name.trim(),
+                tagId: form.tagId || null,
+              })
             : null
       if (res && res.success) {
         setEditing(null)
@@ -166,15 +172,23 @@ export default function TrackedLinksPage() {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">
-                遷移先 URL <span className="text-red-500">*</span>
+                遷移先 URL {editing === 'new' && <span className="text-red-500">*</span>}
               </label>
               <input
                 type="text"
                 value={form.originalUrl}
                 onChange={(e) => setForm((f) => ({ ...f, originalUrl: e.target.value }))}
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                readOnly={editing !== 'new'}
+                className={`w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                  editing !== 'new' ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
+                }`}
                 placeholder="https://example.com"
               />
+              {editing !== 'new' && (
+                <p className="text-xs text-gray-400 mt-1">
+                  遷移先URLは作成後に変更できません。変える場合は新しいリンクを作成してください。
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">タグを付ける</label>

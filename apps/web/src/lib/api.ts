@@ -1380,7 +1380,10 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(body),
       }),
-    patch: (id: string, body: { name?: string; originalUrl?: string; tagId?: string | null }) =>
+    // 注意: worker PATCH は original_url を更新しない (tracked-links.ts / db updateTrackedLink)。
+    // originalUrl を送っても無視され silent-success の罠になるため patch 契約から除外 (R1-I1)。
+    // 遷移先 URL の変更は新規リンク作成で行う (worker/db 対応は後 batch backlog)。
+    patch: (id: string, body: { name?: string; tagId?: string | null }) =>
       fetchApi<ApiResponse<TrackedLinkItem>>(`/api/tracked-links/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(body),
