@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 
 export interface FaqDraft {
@@ -30,6 +30,33 @@ export default function EditDialog({ draft, selectedAccountId, onClose, onSaved 
   const [global, setGlobal] = useState(draft.lineAccountId === null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  // 入力があれば「破棄しますか？」で確認してから閉じる。
+  // 何も変えていなければ確認なしでそのまま閉じる（空なら即閉じ）。
+  const isDirty =
+    question !== draft.question ||
+    answer !== draft.answer ||
+    isActive !== draft.isActive ||
+    global !== (draft.lineAccountId === null) ||
+    variantInput.trim() !== '' ||
+    variants.length !== draft.variants.length ||
+    variants.some((v, i) => v !== draft.variants[i])
+
+  const requestClose = () => {
+    if (saving) return
+    if (isDirty && !window.confirm('入力内容を破棄しますか？')) return
+    onClose()
+  }
+
+  // Esc キーでも閉じられるように（破棄確認は requestClose 側で行う）。
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') requestClose()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+    // requestClose は毎レンダー再生成されるが、常に最新の dirty 状態を参照させたいので依存に含める。
+  }, [requestClose])
 
   const addVariant = (raw: string) => {
     const values = raw
@@ -72,10 +99,18 @@ export default function EditDialog({ draft, selectedAccountId, onClose, onSaved 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="px-5 py-4 border-b">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
           <h3 className="text-base font-semibold text-gray-900">
             {draft.id ? '質問を編集' : draft.unmatchedId ? '答えられなかった質問を登録' : '質問を追加'}
           </h3>
+          <button
+            type="button"
+            onClick={requestClose}
+            className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+            aria-label="閉じる"
+          >
+            ×
+          </button>
         </div>
         <div className="p-5 space-y-4">
           <div>
@@ -168,8 +203,8 @@ export default function EditDialog({ draft, selectedAccountId, onClose, onSaved 
 
           {error && <p className="text-xs text-red-600">{error}</p>}
         </div>
-        <div className="px-5 py-3 border-t flex gap-2 justify-end">
-          <button onClick={onClose} className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-md">キャンセル</button>
+        <div className="sticky bottom-0 px-5 py-3 border-t bg-white flex gap-2 justify-end">
+          <button onClick={requestClose} className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-md">キャンセル</button>
           <button
             onClick={handleSave}
             disabled={saving}
