@@ -111,6 +111,188 @@ faqs.post('/api/faqs', async (c) => {
   }
 });
 
+/**
+ * question 正規化 — 重複突合の「単一正典」(サーバ側・最終ガード)。
+ *
+ * ⚠️ UI 側 apps/web/src/lib/faq-bulk/normalize.ts と**同一入力→同一出力**であること。
+ * 変更時は必ず両側を一致させる (spec §API 重複判定 / D-19)。
+ * 変更したら faqs.test.ts と normalize.test.ts の両パリティテストを緑にする。
+ *
+ * ステップ: 全角ASCII→半角 / 全角スペース→半角 / 連続空白畳み+trim / 小文字化。
+ */
+export function bulkNormalizeQuestion(input: string): string {
+  if (!input) return '';
+  let s = input.replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+  s = s.replace(/　/g, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s.toLowerCase();
+}
+
+const BULK_MAX_ITEMS = 500;
+const BULK_QUESTION_MAX = 400;
+const BULK_ANSWER_MAX = 2000;
+
+interface BulkItem {
+  question?: string;
+  variants?: string[];
+  answer?: string;
+  isActive?: boolean;
+  mode?: 'create' | 'overwrite';
+  overwriteId?: string;
+}
+
+type BulkRowStatus = 'created' | 'updated' | 'skipped' | 'error';
+
+interface BulkRowResult {
+  index: number;
+  status: BulkRowStatus;
+  faqId?: string;
+  error?: string;
+}
+
+/**
+ * POST /api/faqs/bulk — FAQ の一括登録 (spec §API 契約)。
+ *
+ * - auth/CSRF: index.ts の authMiddleware でカバー済 (追加ミドルウェア不要)。
+ * - scope: body の lineAccountId 1 個で全 item 統一 (item 個別 account を持たない =
+ *   「item ごとに別 account へ漏れる」は構造的に不可能)。
+ * - overwrite: overwriteId の対象 FAQ の line_account_id が body と一致するときのみ更新
+ *   (不一致は error にして他アカFAQ上書きを拒否 / D-18)。
+ * - 重複: 既存 question と正規化突合し create でも既存があれば skipped (最終ガード / D-12)。
+ * - 部分失敗: all-or-nothing にせず行別 results を返す (1 行の失敗で全体を落とさない / D-11)。
+ * - INSERT/UPDATE は createFaq/updateFaq helper のみ (bind 済 = SQLi なし・別経路を作らない)。
+ */
+faqs.post('/api/faqs/bulk', async (c) => {
+  try {
+    const body = await c.req.json<{ lineAccountId?: string | null; items?: unknown }>();
+    const items = body.items;
+    if (!Array.isArray(items)) {
+      return c.json({ success: false, error: 'items must be an array' }, 400);
+    }
+    if (items.length > BULK_MAX_ITEMS) {
+      return c.json({ success: false, error: `一度に登録できるのは${BULK_MAX_ITEMS}件までです` }, 400);
+    }
+
+    const lineAccountId = body.lineAccountId ?? null;
+
+    // 既存 FAQ を account スコープで取得し、正規化 question → id を索引化 (最終ガード)。
+    const existing = await getFaqs(c.env.DB, lineAccountId ?? undefined);
+    const existingByKey = new Map<string, string>();
+    for (const f of existing) {
+      // 全アカ共通 (null) と個別 account の突合スコープを分ける:
+      // body が null のときは既存 null のみ、body が account のときは同 account or null を既存として扱う。
+      // getFaqs(account) は「NULL or 一致」を返すため、null-body 時のみ null に絞る。
+      if (lineAccountId === null && f.line_account_id !== null) continue;
+      const key = bulkNormalizeQuestion(f.question);
+      if (key !== '' && !existingByKey.has(key)) existingByKey.set(key, f.id);
+    }
+
+    const results: BulkRowResult[] = [];
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index] as BulkItem;
+      try {
+        const question = typeof item.question === 'string' ? item.question.trim() : '';
+        const answer = typeof item.answer === 'string' ? item.answer.trim() : '';
+        const variants = Array.isArray(item.variants)
+          ? item.variants.filter((v): v is string => typeof v === 'string')
+          : [];
+
+        if (question === '') {
+          results.push({ index, status: 'error', error: '質問が空です' });
+          errors++;
+          continue;
+        }
+        if (answer === '') {
+          results.push({ index, status: 'error', error: '答えが空です' });
+          errors++;
+          continue;
+        }
+        if (question.length > BULK_QUESTION_MAX) {
+          results.push({ index, status: 'error', error: `質問が長すぎます（${BULK_QUESTION_MAX}文字まで）` });
+          errors++;
+          continue;
+        }
+        if (answer.length > BULK_ANSWER_MAX) {
+          results.push({ index, status: 'error', error: `答えが長すぎます（${BULK_ANSWER_MAX}文字まで）` });
+          errors++;
+          continue;
+        }
+
+        if (item.mode === 'overwrite') {
+          const overwriteId = typeof item.overwriteId === 'string' ? item.overwriteId : '';
+          if (overwriteId === '') {
+            results.push({ index, status: 'error', error: '上書き対象が指定されていません' });
+            errors++;
+            continue;
+          }
+          // overwriteId の scope 検証 (D-18): 対象 FAQ の line_account_id が body と一致すること。
+          const target = await getFaqById(c.env.DB, overwriteId);
+          if (!target) {
+            results.push({ index, status: 'error', error: '上書き対象が見つかりません' });
+            errors++;
+            continue;
+          }
+          const targetScope = target.line_account_id;
+          // body null ↔ 対象 null、または body=account ↔ 対象=同 account のみ許可。
+          if (targetScope !== lineAccountId) {
+            results.push({ index, status: 'error', error: '別のアカウントの質問は上書きできません' });
+            errors++;
+            continue;
+          }
+          const upd = await updateFaq(c.env.DB, overwriteId, {
+            answer,
+            variants,
+            isActive: item.isActive,
+          });
+          if (!upd) {
+            results.push({ index, status: 'error', error: '上書きに失敗しました' });
+            errors++;
+            continue;
+          }
+          updated++;
+          results.push({ index, status: 'updated', faqId: upd.id });
+          continue;
+        }
+
+        // create モード: 既存 question と正規化突合 (最終ガード)。既にあれば skipped。
+        const key = bulkNormalizeQuestion(question);
+        const dupId = existingByKey.get(key);
+        if (dupId !== undefined) {
+          skipped++;
+          results.push({ index, status: 'skipped', faqId: dupId });
+          continue;
+        }
+
+        const createdFaq = await createFaq(c.env.DB, {
+          question,
+          variants,
+          answer,
+          lineAccountId,
+          isActive: item.isActive ?? true,
+        });
+        // 同一リクエスト内での二重登録も防ぐため索引に足す。
+        if (key !== '') existingByKey.set(key, createdFaq.id);
+        created++;
+        results.push({ index, status: 'created', faqId: createdFaq.id });
+      } catch (rowErr) {
+        console.error(`POST /api/faqs/bulk row ${index} error:`, rowErr);
+        results.push({ index, status: 'error', error: '登録に失敗しました' });
+        errors++;
+      }
+    }
+
+    return c.json({ success: true, data: { created, updated, skipped, errors, results } });
+  } catch (err) {
+    console.error('POST /api/faqs/bulk error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 faqs.put('/api/faqs/:id', async (c) => {
   try {
     const id = c.req.param('id');

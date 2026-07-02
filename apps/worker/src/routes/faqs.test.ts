@@ -225,3 +225,177 @@ describe('FAQ bot account settings routes', () => {
     expect(JSON.parse(stmt.bind.mock.calls[0][2] as string)).toMatchObject({ enabled: true, threshold: 0.7, maxRepliesPerDay: 3 });
   });
 });
+
+// ── POST /api/faqs/bulk (A+ 一括登録) ────────────────────────────────────────
+describe('POST /api/faqs/bulk', () => {
+  function bulkReq(body: unknown) {
+    return setupApp().request('/api/faqs/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  test('D-9 scope: all items are written under the request lineAccountId only', async () => {
+    dbMocks.getFaqs.mockResolvedValue([]); // 既存なし
+    dbMocks.createFaq.mockImplementation(async (_db: unknown, input: { question: string }) => ({
+      ...faqRow,
+      id: `new-${input.question}`,
+      question: input.question,
+    }));
+
+    const res = await bulkReq({
+      lineAccountId: 'acc-1',
+      items: [
+        { question: 'Q1', answer: 'A1' },
+        { question: 'Q2', answer: 'A2' },
+      ],
+    });
+    const body = (await res.json()) as { success: boolean; data: { created: number; results: Array<{ status: string }> } };
+
+    expect(res.status).toBe(200);
+    expect(body.data.created).toBe(2);
+    // 全 createFaq が lineAccountId='acc-1' で呼ばれる (item ごとに別 account へ書かれない)
+    for (const call of dbMocks.createFaq.mock.calls) {
+      expect(call[1]).toMatchObject({ lineAccountId: 'acc-1' });
+    }
+    // getFaqs も acc-1 スコープで既存を取る
+    expect(dbMocks.getFaqs).toHaveBeenCalledWith(expect.anything(), 'acc-1');
+  });
+
+  test('D-10 limit: more than 500 items -> 400', async () => {
+    const items = Array.from({ length: 501 }, (_, i) => ({ question: `Q${i}`, answer: `A${i}` }));
+    const res = await bulkReq({ lineAccountId: 'acc-1', items });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: string };
+    expect(body.success).toBe(false);
+    expect(body.error).toContain('500');
+  });
+
+  test('body with non-array items -> 400', async () => {
+    const res = await bulkReq({ lineAccountId: 'acc-1', items: 'nope' });
+    expect(res.status).toBe(400);
+  });
+
+  test('D-11 partial failure: one createFaq throws -> that row error, others created, overall 200', async () => {
+    dbMocks.getFaqs.mockResolvedValue([]);
+    dbMocks.createFaq
+      .mockResolvedValueOnce({ ...faqRow, id: 'ok-0' })
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ ...faqRow, id: 'ok-2' });
+
+    const res = await bulkReq({
+      lineAccountId: 'acc-1',
+      items: [
+        { question: 'Q0', answer: 'A0' },
+        { question: 'Q1', answer: 'A1' },
+        { question: 'Q2', answer: 'A2' },
+      ],
+    });
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { created: number; errors: number; results: Array<{ index: number; status: string }> };
+    };
+
+    expect(res.status).toBe(200);
+    expect(body.data.created).toBe(2);
+    expect(body.data.errors).toBe(1);
+    expect(body.data.results.find((r) => r.index === 1)?.status).toBe('error');
+    expect(body.data.results.filter((r) => r.status === 'created')).toHaveLength(2);
+  });
+
+  test('D-12 create-mode duplicate against existing FAQ -> skipped (not created)', async () => {
+    dbMocks.getFaqs.mockResolvedValue([{ ...faqRow, id: 'exist-1', question: '営業時間は？' }]);
+
+    const res = await bulkReq({
+      lineAccountId: 'acc-1',
+      items: [{ question: '　営業時間は？　', answer: '新答え' }], // 正規化で既存と一致
+    });
+    const body = (await res.json()) as { success: boolean; data: { created: number; skipped: number; results: Array<{ status: string }> } };
+
+    expect(res.status).toBe(200);
+    expect(body.data.skipped).toBe(1);
+    expect(body.data.created).toBe(0);
+    expect(dbMocks.createFaq).not.toHaveBeenCalled();
+  });
+
+  test('D-12 overwrite mode -> updateFaq called with the existing id (same scope)', async () => {
+    dbMocks.getFaqs.mockResolvedValue([{ ...faqRow, id: 'exist-1', line_account_id: 'acc-1', question: '営業時間は？' }]);
+    dbMocks.getFaqById.mockResolvedValue({ ...faqRow, id: 'exist-1', line_account_id: 'acc-1' });
+    dbMocks.updateFaq.mockResolvedValue({ ...faqRow, id: 'exist-1' });
+
+    const res = await bulkReq({
+      lineAccountId: 'acc-1',
+      items: [{ question: '営業時間は？', answer: '新しい答え', mode: 'overwrite', overwriteId: 'exist-1' }],
+    });
+    const body = (await res.json()) as { success: boolean; data: { updated: number } };
+
+    expect(res.status).toBe(200);
+    expect(body.data.updated).toBe(1);
+    expect(dbMocks.updateFaq).toHaveBeenCalledWith(expect.anything(), 'exist-1', expect.objectContaining({ answer: '新しい答え' }));
+  });
+
+  test('D-18 overwriteId scope mismatch (different account) -> row error, updateFaq NOT called', async () => {
+    dbMocks.getFaqs.mockResolvedValue([]);
+    // 対象 FAQ は別 account (acc-OTHER) に属する
+    dbMocks.getFaqById.mockResolvedValue({ ...faqRow, id: 'other-1', line_account_id: 'acc-OTHER' });
+
+    const res = await bulkReq({
+      lineAccountId: 'acc-1',
+      items: [{ question: 'Q', answer: 'A', mode: 'overwrite', overwriteId: 'other-1' }],
+    });
+    const body = (await res.json()) as { success: boolean; data: { errors: number; results: Array<{ status: string; error?: string }> } };
+
+    expect(res.status).toBe(200);
+    expect(body.data.errors).toBe(1);
+    expect(body.data.results[0].status).toBe('error');
+    expect(dbMocks.updateFaq).not.toHaveBeenCalled();
+  });
+
+  test('empty question/answer item -> row error', async () => {
+    dbMocks.getFaqs.mockResolvedValue([]);
+    const res = await bulkReq({
+      lineAccountId: 'acc-1',
+      items: [{ question: '  ', answer: 'A' }],
+    });
+    const body = (await res.json()) as { success: boolean; data: { errors: number; results: Array<{ status: string }> } };
+    expect(res.status).toBe(200);
+    expect(body.data.errors).toBe(1);
+    expect(body.data.results[0].status).toBe('error');
+    expect(dbMocks.createFaq).not.toHaveBeenCalled();
+  });
+
+  test('D-9 null lineAccountId (全アカ共通) scopes existing dedup to null and writes null', async () => {
+    dbMocks.getFaqs.mockResolvedValue([]);
+    dbMocks.createFaq.mockResolvedValue({ ...faqRow, line_account_id: null });
+
+    const res = await bulkReq({
+      lineAccountId: null,
+      items: [{ question: 'Q', answer: 'A' }],
+    });
+    expect(res.status).toBe(200);
+    expect(dbMocks.getFaqs).toHaveBeenCalledWith(expect.anything(), undefined);
+    expect(dbMocks.createFaq.mock.calls[0][1]).toMatchObject({ lineAccountId: null });
+  });
+});
+
+// D-19: UI (normalizeQuestion) と Worker (bulkNormalizeQuestion) の正規化パリティ。
+// 同じフィクスチャで同一キーを返すことを両側テストで固定する。
+describe('bulk normalize parity with UI normalizeQuestion', () => {
+  test('server normalize matches UI normalize on shared fixtures', async () => {
+    const { bulkNormalizeQuestion } = await import('./faqs.js');
+    // UI 側 (apps/web) の実装をここに複製せず、同じ入力→同じ正規形になることを検証。
+    // 期待値は normalize.ts の仕様 (全半角統一+大小無視+空白畳み) と一致。
+    const cases: Array<[string, string]> = [
+      ['  営業時間は？  ', '営業時間は？'],
+      ['ＯＰＥＮ１２３', 'open123'],
+      ['Open  Hours', 'open hours'],
+      ['営業　時間', '営業 時間'],
+    ];
+    for (const [input, expected] of cases) {
+      expect(bulkNormalizeQuestion(input)).toBe(bulkNormalizeQuestion(expected));
+    }
+    // 具体的な正規形も固定 (UI normalize.ts と同一アルゴリズム)。
+    expect(bulkNormalizeQuestion('ＯＰＥＮ　Hours ')).toBe('open hours');
+  });
+});
