@@ -10,6 +10,7 @@
  */
 import type { BuilderModel, BuilderCard, BuilderPart, LinkSpec, ImageAspect } from './types';
 import { nextId } from './templates';
+import { MAX_CAROUSEL_BUBBLES } from './constants';
 
 interface RawNode {
   type?: string;
@@ -99,12 +100,17 @@ function bubbleToCard(bubble: RawNode): BuilderCard | null {
   if (body) {
     // body は vertical box のみ対応 (横並びはビルダー範囲外)。
     if (body.layout && body.layout !== 'vertical') return null;
-    for (const child of body.contents ?? []) {
-      // ネストした box はビルダー範囲外。
-      if (child.type === 'box') return null;
-      const part = nodeToPart(child);
-      if (!part) return null;
-      parts.push(part);
+    // body.contents が配列でない (壊れた/手貼り JSON) 場合は逆変換不能扱い。
+    // 従来 for-of で非配列を回すと TypeError → UI クラッシュしていた (H2)。
+    if (body.contents !== undefined) {
+      if (!Array.isArray(body.contents)) return null;
+      for (const child of body.contents) {
+        // 非オブジェクトの child (文字列/数値等) やネストした box はビルダー範囲外。
+        if (!child || typeof child !== 'object' || child.type === 'box') return null;
+        const part = nodeToPart(child);
+        if (!part) return null;
+        parts.push(part);
+      }
     }
   }
 
@@ -136,9 +142,11 @@ export function flexToModel(jsonString: string): BuilderModel | null {
   }
 
   if (parsed.type === 'carousel' && Array.isArray(parsed.contents)) {
+    // bubble 数が LINE 上限を超える carousel はビルダー範囲外 (上級者 JSON 誘導)。
+    if (parsed.contents.length > MAX_CAROUSEL_BUBBLES) return null;
     const cards: BuilderCard[] = [];
     for (const b of parsed.contents) {
-      if ((b as RawNode).type !== 'bubble') return null;
+      if (!b || typeof b !== 'object' || (b as RawNode).type !== 'bubble') return null;
       const card = bubbleToCard(b as RawNode);
       if (!card) return null;
       cards.push(card);
