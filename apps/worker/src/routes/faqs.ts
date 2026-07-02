@@ -173,6 +173,7 @@ faqs.post('/api/faqs/from-unmatched/:id', async (c) => {
       variants?: string[];
       question?: string;
       lineAccountId?: string | null;
+      isActive?: boolean;
     }>();
     if (!body.answer?.trim()) return c.json({ success: false, error: 'answer is required' }, 400);
     if (body.variants !== undefined && !Array.isArray(body.variants)) {
@@ -186,7 +187,9 @@ faqs.post('/api/faqs/from-unmatched/:id', async (c) => {
       variants: body.variants ?? [],
       answer: body.answer,
       lineAccountId: 'lineAccountId' in body ? (body.lineAccountId ?? null) : unmatched.line_account_id,
-      isActive: true,
+      // reviewer R1-I1: EditDialog が送る isActive を尊重する。無効で昇格したら無効 FAQ を作る
+      // (flag ON アカウントで意図せぬ自動返信の入口にしない)。省略時のみ既定 true。
+      isActive: body.isActive ?? true,
     });
     await markUnmatchedResolved(c.env.DB, id, item.id);
     return c.json({ success: true, data: serializeFaq(item) }, 201);

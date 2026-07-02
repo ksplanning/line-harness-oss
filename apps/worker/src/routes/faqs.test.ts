@@ -143,6 +143,42 @@ describe('FAQ routes', () => {
     });
     expect(dbMocks.markUnmatchedResolved).toHaveBeenCalledWith(expect.anything(), 'unmatched-1', 'faq-1');
   });
+
+  test('POST /api/faqs/from-unmatched/:id honors isActive:false (promotes as disabled FAQ)', async () => {
+    // reviewer R1-I1: 未マッチ質問を「無効」で昇格したのに有効 FAQ が作られると
+    // flag ON アカウントで意図せぬ自動返信の入口になる (spec F1 違反)。
+    dbMocks.getUnmatchedById.mockResolvedValue(unmatchedRow);
+    dbMocks.createFaq.mockResolvedValue({ ...faqRow, is_active: 0 });
+
+    const res = await setupApp().request('/api/faqs/from-unmatched/unmatched-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answer: '近くに提携駐車場があります', isActive: false }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createFaq).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ isActive: false }),
+    );
+  });
+
+  test('POST /api/faqs/from-unmatched/:id defaults isActive to true when omitted', async () => {
+    dbMocks.getUnmatchedById.mockResolvedValue(unmatchedRow);
+    dbMocks.createFaq.mockResolvedValue(faqRow);
+
+    const res = await setupApp().request('/api/faqs/from-unmatched/unmatched-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answer: '近くに提携駐車場があります' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createFaq).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ isActive: true }),
+    );
+  });
 });
 
 describe('FAQ bot account settings routes', () => {
