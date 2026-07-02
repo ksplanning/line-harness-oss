@@ -10,6 +10,8 @@ import MultiAccountDedupSection from './multi-account-dedup-section'
 import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
 import { flexToModel } from '@/lib/flex-builder/from-flex'
 import { imageLinkToFlexJson } from '@/lib/flex-builder/image-link'
+import { validateFlex } from '@/lib/flex-builder/validate'
+import type { FlexContents } from '@/lib/flex-builder/types'
 import type { BuilderModel, LinkSpec } from '@/lib/flex-builder/types'
 
 interface BroadcastFormProps {
@@ -112,7 +114,12 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     if (!form.title.trim()) { setError('配信タイトルを入力してください'); return }
     if (!form.messageContent.trim()) { setError('メッセージ内容を入力してください'); return }
     if (form.messageType === 'flex') {
-      try { JSON.parse(form.messageContent) } catch { setError('FlexメッセージのJSONが無効です'); return }
+      // 画像リンク化/上級者直貼り/ビルダー保存の**全 flex 経路**を保存前に validateFlex に通す (M1)。
+      // これで LINE 制約違反 (不正 uri / http 画像 / 空 等) が送信時に初めて失敗する経路を潰す。
+      let parsed: FlexContents
+      try { parsed = JSON.parse(form.messageContent) as FlexContents } catch { setError('Flexメッセージの形式が正しくありません'); return }
+      const v = validateFlex(parsed)
+      if (!v.ok) { setError(v.errors[0].messageJa); return }
     }
     if (!form.sendNow && !form.scheduledAt) {
       setError('予約配信の場合は配信日時を指定してください')
