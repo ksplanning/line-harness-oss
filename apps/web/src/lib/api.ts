@@ -837,6 +837,18 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/reminders/${reminderId}/steps/${stepId}`, {
         method: 'DELETE',
       }),
+    // 友だち手動登録 (G57) — worker reminders.ts の enroll/friend-reminders route を叩く。
+    // 登録一覧は worker が「友だち別」(GET /api/friends/:friendId/reminders) しか持たないため
+    // listEnrollments(friendId) として実装 (リマインダ別一覧は worker 未対応 = batch1 スコープ外)。
+    enroll: (reminderId: string, friendId: string, body: { targetDate: string }) =>
+      fetchApi<ApiResponse<FriendReminderEnrollment>>(
+        `/api/reminders/${reminderId}/enroll/${friendId}`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    unenroll: (enrollmentId: string) =>
+      fetchApi<ApiResponse<null>>(`/api/friend-reminders/${enrollmentId}`, { method: 'DELETE' }),
+    listEnrollments: (friendId: string) =>
+      fetchApi<ApiResponse<FriendReminderEnrollment[]>>(`/api/friends/${friendId}/reminders`),
   },
   scoring: {
     rules: () =>
@@ -1355,11 +1367,46 @@ export const api = {
     },
   },
 
-  // 計測リンク (tracked link) 一覧 — Flex ビルダーのボタン/画像タップで trackingUrl を選ぶために使う。
-  // worker GET /api/tracked-links が serializeTrackedLink で {id,name,originalUrl,trackingUrl,...} を返す。
+  // 計測リンク (tracked link) — worker `serializeTrackedLink` の 13 field を返す (tracked-links.ts)。
+  // list は既存 (Flex ビルダーが最小形 TrackedLinkListItem で参照)。/tracked-links 画面用に
+  // get/create/patch/delete を追加 (F1 batch1 / worker 無変更で既存 CRUD route を叩くだけ)。
   trackedLinks: {
     list: () =>
-      fetchApi<ApiResponse<TrackedLinkListItem[]>>('/api/tracked-links'),
+      fetchApi<ApiResponse<TrackedLinkItem[]>>('/api/tracked-links'),
+    get: (id: string) =>
+      fetchApi<ApiResponse<TrackedLinkItem>>(`/api/tracked-links/${id}`),
+    create: (body: { name: string; originalUrl: string; tagId?: string | null }) =>
+      fetchApi<ApiResponse<TrackedLinkItem>>('/api/tracked-links', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    patch: (id: string, body: { name?: string; originalUrl?: string; tagId?: string | null }) =>
+      fetchApi<ApiResponse<TrackedLinkItem>>(`/api/tracked-links/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/tracked-links/${id}`, { method: 'DELETE' }),
+  },
+
+  // Google カレンダー連携 — worker `/api/integrations/google-calendar/*` (calendar.ts)。
+  // F1 batch1 で新設 (画面 /booking/calendar 用)。
+  calendar: {
+    list: () =>
+      fetchApi<ApiResponse<CalendarConnection[]>>('/api/integrations/google-calendar'),
+    connect: (body: {
+      calendarId: string
+      authType: string
+      accessToken?: string
+      refreshToken?: string
+      apiKey?: string
+    }) =>
+      fetchApi<ApiResponse<CalendarConnection>>('/api/integrations/google-calendar/connect', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    disconnect: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/integrations/google-calendar/${id}`, { method: 'DELETE' }),
   },
 }
 
@@ -1369,6 +1416,49 @@ export interface TrackedLinkListItem {
   name: string
   originalUrl: string
   trackingUrl: string
+}
+
+/**
+ * 計測リンクの完全形 (worker serializeTrackedLink 全 13 field / tracked-links.ts)。
+ * `/tracked-links` 管理画面が使う。TrackedLinkListItem は Flex ビルダーが import
+ * している最小形なので互換のため残置し、こちらを新規 export として追加する。
+ */
+export interface TrackedLinkItem {
+  id: string
+  name: string
+  originalUrl: string
+  trackingUrl: string
+  tagId: string | null
+  scenarioId: string | null
+  introTemplateId: string | null
+  rewardTemplateId: string | null
+  isActive: boolean
+  clickCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** Google カレンダー連携先 (worker calendar.ts GET serialize)。connect 直後は updatedAt 省略あり。 */
+export interface CalendarConnection {
+  id: string
+  calendarId: string
+  authType: string
+  isActive: boolean
+  createdAt: string
+  updatedAt?: string
+}
+
+/**
+ * リマインダへの友だち手動登録 (worker reminders.ts / friend_reminders テーブル serialize)。
+ * enroll route は createdAt を返さず、GET /api/friends/:id/reminders は返すため optional。
+ */
+export interface FriendReminderEnrollment {
+  id: string
+  friendId: string
+  reminderId: string
+  targetDate: string
+  status: string
+  createdAt?: string
 }
 
 // ----------------------------------------------------------------
