@@ -1,0 +1,55 @@
+# wrangler.ks.toml — line-harness-ks (TRINA) 本番デプロイ用の実 config を永続化。
+#
+# WHY (findings MEDIUM/reusability): 本番デプロイは /tmp の ephemeral clone で
+# hand-patch した config で実行され、その config はどの repo にも残らず消失していた。
+# 実際に使う値をここに固定し、二度と考古学的発掘をしないための正本。
+#
+# 秘密は含まない。ADMIN_API_KEY / API_KEY / LINE_* / WORKER_URL は `wrangler secret put`
+# で Cloudflare 側に保存済み (このファイルには絶対に書かない)。
+#
+# デプロイ (cron は空 = 自動送信なし・owner gate 済むまで物理除外):
+#   cd apps/worker && pnpm build
+#   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... \
+#     npx wrangler deploy dist/line_harness/index.js --config wrangler.ks.toml
+#
+# ⚠️ [triggers] crons は意図的に空。cron 有効化は owner 承認後の別ステップ
+#    (Phase1 立会テスト時)。ここに crons を書き戻すと自動送信が復活するので触らない。
+
+name = "line-harness-ks"
+main = "dist/line_harness/index.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+account_id = "8afbae04688d10af42d2d4ab5a323019"
+
+[assets]
+directory = "dist/client"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "line-harness-ks"
+database_id = "8367d856-4aa6-4a5a-9d76-6d8cf4997284"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "line-harness-images-ks"
+
+# cron は空 (excluded_scope / owner gate)。自動送信トリガーなし。
+[triggers]
+crons = []
+
+[vars]
+WORKER_NAME = "line-harness-ks"
+WORKER_PUBLIC_URL = "https://line-harness-ks.web-8af.workers.dev"
+ADMIN_PAGES_PROJECT = "line-harness-ks-admin"
+ADMIN_PUBLIC_URL = "https://line-harness-ks-admin.pages.dev"
+# ADMIN_ORIGIN + ADMIN_ALLOW_CROSS_SITE=true が無いと *.pages.dev↔*.workers.dev の
+# クロスサイト httpOnly Cookie 認証が壊れ、管理画面にログインできなくなる (0.15.0)。
+ADMIN_ORIGIN = "https://line-harness-ks-admin.pages.dev"
+ADMIN_ALLOW_CROSS_SITE = "true"
+LIFF_PAGES_PROJECT = "line-harness-ks-liff"
+LIFF_PUBLIC_URL = "https://line-harness-ks-liff.pages.dev"
+D1_DATABASE_ID = "8367d856-4aa6-4a5a-9d76-6d8cf4997284"
+CF_ACCOUNT_ID = "8afbae04688d10af42d2d4ab5a323019"
+MANIFEST_URL = "https://github.com/Shudesu/line-harness-oss/releases/latest/download/release-manifest.json"
