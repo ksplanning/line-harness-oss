@@ -8,6 +8,9 @@ import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import FlexPreviewComponent from '@/components/flex-preview'
 import ImageUploader from '@/components/shared/image-uploader'
+import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
+import { flexToModel } from '@/lib/flex-builder/from-flex'
+import type { BuilderModel } from '@/lib/flex-builder/types'
 import ScheduleInput, {
   emptySchedule,
   buildSchedulePayload,
@@ -151,6 +154,24 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   const [editingStepId, setEditingStepId] = useState<string | null>(null)
   const [stepForm, setStepForm] = useState<StepFormState>(() => emptyStepForm(1))
   const [stepSaving, setStepSaving] = useState(false)
+  // Flex ビジュアルビルダー: step の flex 生 JSON textarea をビルダー起動に置換 (broadcast/templates と同一流儀)
+  const [stepBuilderOpen, setStepBuilderOpen] = useState(false)
+  const [stepBuilderInitial, setStepBuilderInitial] = useState<BuilderModel | undefined>(undefined)
+  const [stepAdvancedJsonOpen, setStepAdvancedJsonOpen] = useState(false)
+
+  const openStepBuilder = () => {
+    if (stepForm.messageContent.trim()) {
+      const model = flexToModel(stepForm.messageContent)
+      if (!model) {
+        setStepAdvancedJsonOpen(true)
+        return
+      }
+      setStepBuilderInitial(model)
+    } else {
+      setStepBuilderInitial(undefined)
+    }
+    setStepBuilderOpen(true)
+  }
   const [stepError, setStepError] = useState('')
 
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -657,7 +678,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">
                       メッセージ内容 <span className="text-red-500">*</span>
-                      {(stepForm.messageType === 'flex' || stepForm.messageType === 'image') && (
+                      {stepForm.messageType === 'image' && (
                         <span className="ml-1 text-gray-400">(JSON形式)</span>
                       )}
                     </label>
@@ -688,9 +709,9 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                       </div>
                     )}
 
-                    {/* 生 JSON テキストエリア: text/flex は主要入力なので常時表示。
-                        image は ImageUploader が主でありデフォルトで生 JSON を露出しない (reviewer G2 /
-                        findings A3「生 JSON 露出解消」) → <details> で「上級者向け」に格下げ。 */}
+                    {/* image: 生 JSON は <details> で上級者に格下げ (findings A3)。
+                        flex: ビジュアルビルダー起動 + プレビュー、生 JSON textarea は上級者折りたたみへ (T-A5)。
+                        text: 従来どおり textarea。 */}
                     {stepForm.messageType === 'image' ? (
                       <details className="mt-1">
                         <summary className="text-xs text-gray-400 cursor-pointer select-none">上級者向け: 画像 JSON を直接編集</summary>
@@ -703,46 +724,80 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                           style={{ fontFamily: 'monospace' }}
                         />
                       </details>
+                    ) : stepForm.messageType === 'flex' ? (
+                      <div className="space-y-3">
+                        {stepForm.messageContent && (() => { try { JSON.parse(stepForm.messageContent); return true } catch { return false } })() ? (
+                          <div className="border border-gray-200 rounded-lg p-3">
+                            <FlexPreviewComponent content={stepForm.messageContent} maxWidth={300} />
+                            <div className="mt-2 flex gap-2">
+                              <button
+                                type="button"
+                                onClick={openStepBuilder}
+                                className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100"
+                              >
+                                ✎ カードを編集
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setStepForm({ ...stepForm, messageContent: '' })}
+                                className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-gray-500 border border-gray-300 rounded-md hover:text-red-600"
+                              >
+                                🗑 削除
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={openStepBuilder}
+                            className="w-full min-h-[44px] px-4 py-3 text-sm font-medium text-white rounded-md"
+                            style={{ backgroundColor: '#06C755' }}
+                          >
+                            🎨 ビジュアルでカードを作る
+                          </button>
+                        )}
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => setStepAdvancedJsonOpen((v) => !v)}
+                            className="text-xs text-gray-500 hover:text-gray-700"
+                          >
+                            {stepAdvancedJsonOpen ? '▾' : '▸'} 上級者向け: JSONを直接貼り付ける
+                          </button>
+                          {stepAdvancedJsonOpen && (
+                            <div className="mt-2">
+                              <textarea
+                                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+                                rows={8}
+                                placeholder='{"type":"bubble","body":{...}}'
+                                value={stepForm.messageContent}
+                                onChange={(e) => {
+                                  let next = e.target.value
+                                  try {
+                                    const parsed = JSON.parse(next)
+                                    if (parsed && typeof parsed === 'object' && parsed.type === 'flex' && parsed.contents) {
+                                      next = JSON.stringify(parsed.contents, null, 2)
+                                    }
+                                  } catch { /* 入力途中は無視 */ }
+                                  setStepForm({ ...stepForm, messageContent: next })
+                                }}
+                                style={{ fontFamily: 'monospace' }}
+                              />
+                              <p className="text-xs text-gray-400 mt-1">
+                                ⓘ contents(bubble/carousel)だけを貼ってください。message object を貼ると contents だけ自動で取り出します。
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     ) : (
                       <textarea
                         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-                        rows={stepForm.messageType === 'flex' ? 8 : 4}
-                        placeholder={
-                          stepForm.messageType === 'text'
-                            ? 'メッセージ内容を入力...'
-                            : '{"type":"bubble","body":{...}}  ← contents(bubble/carousel)だけを貼ってください'
-                        }
+                        rows={4}
+                        placeholder="メッセージ内容を入力..."
                         value={stepForm.messageContent}
-                        onChange={(e) => {
-                          let next = e.target.value
-                          // Flex: message object 丸ごと貼付 ({type:'flex',altText,contents}) を自動アンラップ (W5 T-E3(c))
-                          if (stepForm.messageType === 'flex') {
-                            try {
-                              const parsed = JSON.parse(next)
-                              if (parsed && typeof parsed === 'object' && parsed.type === 'flex' && parsed.contents) {
-                                next = JSON.stringify(parsed.contents, null, 2)
-                              }
-                            } catch { /* 入力途中は無視 */ }
-                          }
-                          setStepForm({ ...stepForm, messageContent: next })
-                        }}
-                        style={{ fontFamily: stepForm.messageType !== 'text' ? 'monospace' : 'inherit' }}
+                        onChange={(e) => setStepForm({ ...stepForm, messageContent: e.target.value })}
                       />
-                    )}
-                    {stepForm.messageType === 'flex' && (
-                      <p className="text-xs text-gray-400 mt-1">
-                        ⓘ Flex は contents(bubble/carousel)だけを貼ってください。
-                        {'{"type":"flex","altText":...,"contents":{...}}'} を貼ると contents だけ自動で取り出します。
-                      </p>
-                    )}
-                    {/* Flex ライブプレビュー (W5 T-E4) */}
-                    {stepForm.messageType === 'flex' && stepForm.messageContent && (() => {
-                      try { JSON.parse(stepForm.messageContent); return true } catch { return false }
-                    })() && (
-                      <div className="mt-3">
-                        <p className="text-xs font-medium text-gray-500 mb-2">プレビュー</p>
-                        <FlexPreviewComponent content={stepForm.messageContent} maxWidth={300} />
-                      </div>
                     )}
                   </div>
                 </>
@@ -904,6 +959,17 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         scenarioId={id}
         onClose={() => setPreviewOpen(false)}
       />
+
+      {stepBuilderOpen && (
+        <FlexBuilderModal
+          initialModel={stepBuilderInitial}
+          onSave={(jsonString) => {
+            setStepForm((prev) => ({ ...prev, messageContent: jsonString, messageType: 'flex' }))
+            setStepBuilderOpen(false)
+          }}
+          onClose={() => setStepBuilderOpen(false)}
+        />
+      )}
     </div>
   )
 }
