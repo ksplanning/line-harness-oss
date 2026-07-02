@@ -37,9 +37,10 @@ export class MessageBuildError extends Error {
  *
  * Returns { contents: object, altText? }. For already-bare contents, returns it unchanged.
  *
- * Throws MessageBuildError if the resolved contents is not a non-null object
- * (e.g. {"type":"flex","contents":"x"} or a bare string/number) — this keeps a
- * malformed flex payload from reaching the LINE API as an invalid Message.
+ * Throws MessageBuildError if the resolved contents is not a non-null PLAIN object
+ * (e.g. {"type":"flex","contents":"x"}, a bare string/number/null, or an array —
+ * typeof [] === 'object' would otherwise slip through) — this keeps a malformed
+ * flex payload from reaching the LINE API as an invalid Message.
  */
 export function unwrapFlexMessageObject(parsed: unknown): {
   contents: object;
@@ -51,16 +52,21 @@ export function unwrapFlexMessageObject(parsed: unknown): {
   if (
     parsed &&
     typeof parsed === 'object' &&
-    (parsed as Record<string, unknown>).type === 'flex' &&
-    (parsed as Record<string, unknown>).contents
+    !Array.isArray(parsed) &&
+    (parsed as Record<string, unknown>).type === 'flex'
   ) {
+    // This is a full flex message-object: always take its `contents` field (even
+    // if it is null/missing/invalid) so the narrow below rejects a malformed
+    // wrapper like {"type":"flex","contents":null} instead of shipping it whole.
     const obj = parsed as Record<string, unknown>;
     contents = obj.contents;
     altText = typeof obj.altText === 'string' ? obj.altText : undefined;
   }
 
-  // contents must be a non-null object (bubble/carousel). Reject strings/numbers/null/arrays-of-primitives.
-  if (!contents || typeof contents !== 'object') {
+  // contents must be a non-null PLAIN object (bubble/carousel).
+  // Reject strings/numbers/null AND arrays (typeof [] === 'object' would otherwise
+  // fail-OPEN and let a bare array reach the LINE API as an invalid Message).
+  if (!contents || typeof contents !== 'object' || Array.isArray(contents)) {
     throw new MessageBuildError('flex');
   }
 

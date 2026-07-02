@@ -71,6 +71,22 @@ for (const [name, buildMessage] of impls) {
       expect(() => buildMessage('flex', '"just a string"')).toThrow(MessageBuildError);
     });
 
+    test('FAIL-CLOSED: flex that parses to a bare array [] throws (typeof array === object leak)', () => {
+      expect(() => buildMessage('flex', '[]')).toThrow(MessageBuildError);
+    });
+
+    test('FAIL-CLOSED: flex that parses to a bare number throws', () => {
+      expect(() => buildMessage('flex', '5')).toThrow(MessageBuildError);
+    });
+
+    test('FAIL-CLOSED: flex wrapper with null contents throws ({"type":"flex","contents":null})', () => {
+      expect(() => buildMessage('flex', '{"type":"flex","contents":null}')).toThrow(MessageBuildError);
+    });
+
+    test('FAIL-CLOSED: flex wrapper with array contents throws ({"type":"flex","contents":[]})', () => {
+      expect(() => buildMessage('flex', '{"type":"flex","altText":"a","contents":[]}')).toThrow(MessageBuildError);
+    });
+
     test('FAIL-CLOSED: the raw JSON string is never returned as a text message', () => {
       let sent: unknown;
       try {
