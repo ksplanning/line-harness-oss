@@ -17,6 +17,9 @@ import type { MappedRow, ValidatedRow } from './types'
 
 export const QUESTION_MAX = 400
 export const ANSWER_MAX = 2000
+// reviewer R1-H2 (client mirror): variants の件数/要素長上限 (Worker routes/faqs.ts と同値)。
+export const VARIANTS_MAX = 10
+export const VARIANT_LEN_MAX = 200
 
 export interface ExistingFaqRef {
   id: string
@@ -42,6 +45,8 @@ export function validateRows(
     if (a === '') return mark(r, 'error', '答えが空です')
     if (q.length > QUESTION_MAX) return mark(r, 'error', `質問が長すぎます（${QUESTION_MAX}文字まで）`)
     if (a.length > ANSWER_MAX) return mark(r, 'error', `答えが長すぎます（${ANSWER_MAX}文字まで）`)
+    if (r.variants.length > VARIANTS_MAX) return mark(r, 'error', `言い換えは${VARIANTS_MAX}個までです`)
+    if (r.variants.some((v) => v.length > VARIANT_LEN_MAX)) return mark(r, 'error', `言い換えが長すぎます（${VARIANT_LEN_MAX}文字まで）`)
     return mark(r, 'ok', '')
   })
 

@@ -131,6 +131,10 @@ export function bulkNormalizeQuestion(input: string): string {
 const BULK_MAX_ITEMS = 500;
 const BULK_QUESTION_MAX = 400;
 const BULK_ANSWER_MAX = 2000;
+// reviewer R1-H2 (DoS): variants の件数/要素長に上限を設ける (無制限だと巨大 variants で
+// D1 書き込み肥大・メモリ膨張)。要素長は question(400) と整合する 200 字。UI validate.ts と同値。
+const BULK_VARIANTS_MAX = 10;
+const BULK_VARIANT_LEN_MAX = 200;
 
 interface BulkItem {
   question?: string;
@@ -173,7 +177,26 @@ faqs.post('/api/faqs/bulk', async (c) => {
       return c.json({ success: false, error: `一度に登録できるのは${BULK_MAX_ITEMS}件までです` }, 400);
     }
 
-    const lineAccountId = body.lineAccountId ?? null;
+    // reviewer R1-H1 (情報漏洩): lineAccountId は「null (全アカ共通)」か「非空文字列 (個別 account)」
+    // のいずれかでなければならない。空文字/空白/欠落/非文字列を通すと getFaqs(db,'') の
+    // if(lineAccountId) が falsy になり全アカ FAQ を SELECT → 他アカの question が dedup 索引へ
+    // 漏れる。ここで明示的に 400 拒否し、以降の getFaqs は必ず null か有効 account だけになる。
+    const rawScope = (body as { lineAccountId?: unknown }).lineAccountId;
+    let lineAccountId: string | null;
+    if (rawScope === null || rawScope === undefined) {
+      // 欠落は誤って全アカ共通登録されないよう拒否 (明示的に null を送る必要がある)。
+      if (rawScope === undefined) {
+        return c.json({ success: false, error: 'lineAccountId is required (send null for all-account)' }, 400);
+      }
+      lineAccountId = null;
+    } else if (typeof rawScope === 'string') {
+      if (rawScope.trim() === '') {
+        return c.json({ success: false, error: 'lineAccountId must not be empty' }, 400);
+      }
+      lineAccountId = rawScope;
+    } else {
+      return c.json({ success: false, error: 'lineAccountId must be a string or null' }, 400);
+    }
 
     // 既存 FAQ を account スコープで取得し、正規化 question → id を索引化 (最終ガード)。
     const existing = await getFaqs(c.env.DB, lineAccountId ?? undefined);
@@ -219,6 +242,17 @@ faqs.post('/api/faqs/bulk', async (c) => {
         }
         if (answer.length > BULK_ANSWER_MAX) {
           results.push({ index, status: 'error', error: `答えが長すぎます（${BULK_ANSWER_MAX}文字まで）` });
+          errors++;
+          continue;
+        }
+        // reviewer R1-H2: variants の件数上限・要素長上限を server で enforce (DoS 防御)。
+        if (variants.length > BULK_VARIANTS_MAX) {
+          results.push({ index, status: 'error', error: `言い換えは${BULK_VARIANTS_MAX}個までです` });
+          errors++;
+          continue;
+        }
+        if (variants.some((v) => v.length > BULK_VARIANT_LEN_MAX)) {
+          results.push({ index, status: 'error', error: `言い換えが長すぎます（${BULK_VARIANT_LEN_MAX}文字まで）` });
           errors++;
           continue;
         }

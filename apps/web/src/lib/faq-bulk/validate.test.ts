@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { validateRows, QUESTION_MAX, ANSWER_MAX } from './validate'
+import { validateRows, QUESTION_MAX, ANSWER_MAX, VARIANTS_MAX, VARIANT_LEN_MAX } from './validate'
 import type { MappedRow } from './types'
 
 function row(partial: Partial<MappedRow>, line = 1): MappedRow {
@@ -43,6 +43,25 @@ describe('validateRows — per-row classification', () => {
     const r = validateRows([row({ question: 'q', answer: 'あ'.repeat(ANSWER_MAX + 1) })], [])
     expect(r[0].status).toBe('error')
     expect(r[0].reason).toContain('答え')
+  })
+
+  // reviewer R1-H2 (client mirror): variants の件数/要素長を client 側でも弾く (server と同値)。
+  test('too many variants is an error (count cap)', () => {
+    const many = Array.from({ length: VARIANTS_MAX + 1 }, (_, i) => `v${i}`)
+    const r = validateRows([row({ question: 'q', answer: 'a', variants: many })], [])
+    expect(r[0].status).toBe('error')
+    expect(r[0].reason).toContain('言い換え')
+  })
+
+  test('variant element too long is an error (length cap)', () => {
+    const r = validateRows([row({ question: 'q', answer: 'a', variants: ['あ'.repeat(VARIANT_LEN_MAX + 1)] })], [])
+    expect(r[0].status).toBe('error')
+    expect(r[0].reason).toContain('言い換え')
+  })
+
+  test('within-limit variants stay ok', () => {
+    const r = validateRows([row({ question: 'q', answer: 'a', variants: ['何時から', '開店'] })], [])
+    expect(r[0].status).toBe('ok')
   })
 })
 

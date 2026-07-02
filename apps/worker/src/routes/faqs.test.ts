@@ -377,6 +377,73 @@ describe('POST /api/faqs/bulk', () => {
     expect(dbMocks.getFaqs).toHaveBeenCalledWith(expect.anything(), undefined);
     expect(dbMocks.createFaq.mock.calls[0][1]).toMatchObject({ lineAccountId: null });
   });
+
+  // reviewer R1-H1 (情報漏洩): 空文字/空白 lineAccountId が ?? null を通過し
+  // getFaqs(db,'') の if(lineAccountId) falsy → 全アカ FAQ SELECT → 他アカ question が
+  // dedup 索引に漏れる。空文字/空白/非文字列は 400 で拒否 (null は全アカ共通で許可)。
+  test('R1-H1 empty-string lineAccountId -> 400 (no all-account SELECT leak)', async () => {
+    const res = await bulkReq({ lineAccountId: '', items: [{ question: 'Q', answer: 'A' }] });
+    expect(res.status).toBe(400);
+    // getFaqs は呼ばれない (全アカ SELECT へ落ちない)。
+    expect(dbMocks.getFaqs).not.toHaveBeenCalled();
+  });
+
+  test('R1-H1 whitespace-only lineAccountId -> 400', async () => {
+    const res = await bulkReq({ lineAccountId: '   ', items: [{ question: 'Q', answer: 'A' }] });
+    expect(res.status).toBe(400);
+    expect(dbMocks.getFaqs).not.toHaveBeenCalled();
+  });
+
+  test('R1-H1 non-string lineAccountId -> 400', async () => {
+    const res = await bulkReq({ lineAccountId: 123 as unknown as string, items: [{ question: 'Q', answer: 'A' }] });
+    expect(res.status).toBe(400);
+    expect(dbMocks.getFaqs).not.toHaveBeenCalled();
+  });
+
+  test('R1-H1 missing lineAccountId (undefined) -> 400 (must be explicit account or null)', async () => {
+    const res = await bulkReq({ items: [{ question: 'Q', answer: 'A' }] });
+    expect(res.status).toBe(400);
+    expect(dbMocks.getFaqs).not.toHaveBeenCalled();
+  });
+
+  test('R1-H1 null lineAccountId is still accepted (全アカ共通)', async () => {
+    dbMocks.getFaqs.mockResolvedValue([]);
+    dbMocks.createFaq.mockResolvedValue({ ...faqRow, line_account_id: null });
+    const res = await bulkReq({ lineAccountId: null, items: [{ question: 'Q', answer: 'A' }] });
+    expect(res.status).toBe(200);
+  });
+
+  // reviewer R1-H2 (DoS): variants に件数/長さ上限なし。件数上限 + 要素長上限を server で enforce。
+  test('R1-H2 too many variants -> row error (count cap)', async () => {
+    dbMocks.getFaqs.mockResolvedValue([]);
+    const manyVariants = Array.from({ length: 11 }, (_, i) => `v${i}`); // 上限 10 超
+    const res = await bulkReq({ lineAccountId: 'acc-1', items: [{ question: 'Q', answer: 'A', variants: manyVariants }] });
+    const body = (await res.json()) as { data: { errors: number; results: Array<{ status: string; error?: string }> } };
+    expect(res.status).toBe(200);
+    expect(body.data.errors).toBe(1);
+    expect(body.data.results[0].status).toBe('error');
+    expect(dbMocks.createFaq).not.toHaveBeenCalled();
+  });
+
+  test('R1-H2 variant element too long -> row error (length cap)', async () => {
+    dbMocks.getFaqs.mockResolvedValue([]);
+    const res = await bulkReq({ lineAccountId: 'acc-1', items: [{ question: 'Q', answer: 'A', variants: ['あ'.repeat(201)] }] });
+    const body = (await res.json()) as { data: { errors: number; results: Array<{ status: string }> } };
+    expect(res.status).toBe(200);
+    expect(body.data.errors).toBe(1);
+    expect(body.data.results[0].status).toBe('error');
+    expect(dbMocks.createFaq).not.toHaveBeenCalled();
+  });
+
+  test('R1-H2 within-limit variants are accepted', async () => {
+    dbMocks.getFaqs.mockResolvedValue([]);
+    dbMocks.createFaq.mockResolvedValue(faqRow);
+    const res = await bulkReq({ lineAccountId: 'acc-1', items: [{ question: 'Q', answer: 'A', variants: ['何時から', '開店時間'] }] });
+    const body = (await res.json()) as { data: { created: number } };
+    expect(res.status).toBe(200);
+    expect(body.data.created).toBe(1);
+    expect(dbMocks.createFaq).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ variants: ['何時から', '開店時間'] }));
+  });
 });
 
 // D-19: UI (normalizeQuestion) と Worker (bulkNormalizeQuestion) の正規化パリティ。
