@@ -50,8 +50,50 @@ function walkNodes(node: FlexNode | undefined, depth: number, errors: Validation
       });
     }
   }
+  // button の action、または image のタップ action (action.type==='uri') の飛び先 uri を検証。
+  // 送信時に初めて失敗する経路 (空/スキーム無し/javascript:/data:/http:) を保存前に潰す (H1)。
+  if (node.action && node.action.type === 'uri') {
+    validateLinkUri(node.action.uri, errors);
+  }
   if (Array.isArray(node.contents)) {
     for (const child of node.contents) walkNodes(child, depth + 1, errors);
+  }
+}
+
+/** uri に空白・改行・制御文字が混入していないか (正常な uri に空白は入らない)。 */
+function hasWhitespaceOrControl(s: string): boolean {
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    // 制御文字 (0x00-0x1F, 0x7F) または空白類 (space/tab/CR/LF 等)
+    if (code <= 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * リンク先 uri を検証。https:// または tel: のみ許可 (LINE で安全に開ける飛び先)。
+ * 空 / スキーム無し / javascript: / data: / http: / 制御文字・空白混入 は保存ブロック (H1)。
+ */
+function validateLinkUri(uri: string | undefined, errors: ValidationError[]): void {
+  const raw = uri ?? '';
+  if (raw.trim().length === 0) {
+    errors.push({ code: 'link_empty', messageJa: 'リンク先が空です。押したときの飛び先を入れてください。' });
+    return;
+  }
+  if (hasWhitespaceOrControl(raw)) {
+    errors.push({
+      code: 'link_bad_scheme',
+      messageJa: 'リンク先の形が正しくありません。もう一度入れ直してください。',
+    });
+    return;
+  }
+  const isHttps = raw.startsWith('https://');
+  const isTel = raw.startsWith('tel:');
+  if (!isHttps && !isTel) {
+    errors.push({
+      code: 'link_bad_scheme',
+      messageJa: 'リンク先は「https://」で始まるアドレス、または電話番号にしてください。',
+    });
   }
 }
 
