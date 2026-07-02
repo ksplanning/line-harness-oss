@@ -156,4 +156,12 @@ describe('T-A1: reminders namespace 拡張 (enroll)', () => {
     expect(captured[0].url).toBe(`${BASE}/api/reminders`)
     expect(captured[0].method).toBe('GET')
   })
+
+  test('G57 差し戻し: create は body に lineAccountId を含めて POST できる', async () => {
+    const api = await loadApi()
+    await api.reminders.create({ name: '来店前日', lineAccountId: 'acc_1' })
+    expect(captured[0].url).toBe(`${BASE}/api/reminders`)
+    expect(captured[0].method).toBe('POST')
+    expect(captured[0].body).toEqual({ name: '来店前日', lineAccountId: 'acc_1' })
+  })
 })

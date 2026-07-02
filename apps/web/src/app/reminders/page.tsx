@@ -6,6 +6,7 @@ import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
 import EnrollDialog, { type EnrolledFriendRow } from '@/components/reminders/enroll-dialog'
+import { buildReminderCreateBody } from '@/lib/reminders/create-body'
 
 interface Reminder {
   id: string
@@ -195,10 +196,15 @@ export default function RemindersPage() {
     setSaving(true)
     setFormError('')
     try {
-      const res = await api.reminders.create({
-        name: form.name,
-        description: form.description || undefined,
-      })
+      // 選択中アカウントを lineAccountId として載せる (G57 差し戻し修正)。
+      // これを送らないと line_account_id=NULL になり、アカウント絞り込み一覧から消える。
+      const res = await api.reminders.create(
+        buildReminderCreateBody({
+          name: form.name,
+          description: form.description || undefined,
+          accountId: selectedAccountId,
+        }),
+      )
       if (res.success) {
         setShowCreate(false)
         setForm({ name: '', description: '' })

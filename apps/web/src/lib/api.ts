@@ -816,7 +816,7 @@ export const api = {
     },
     get: (id: string) =>
       fetchApi<ApiResponse<Reminder & { steps: ReminderStep[] }>>(`/api/reminders/${id}`),
-    create: (data: { name: string; description?: string | null }) =>
+    create: (data: { name: string; description?: string | null; lineAccountId?: string | null }) =>
       fetchApi<ApiResponse<Reminder>>('/api/reminders', {
         method: 'POST',
         body: JSON.stringify(data),
