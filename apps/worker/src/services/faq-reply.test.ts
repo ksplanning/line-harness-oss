@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('@line-crm/db', () => ({
+  countRecentFaqReplies: vi.fn(),
   getActiveFaqsForMatch: vi.fn(),
   incrementFaqHitCount: vi.fn(),
   jstNow: vi.fn(() => '2026-07-02T12:00:00+09:00'),
@@ -12,6 +13,7 @@ vi.mock('./step-delivery.js', () => ({
 }));
 
 import {
+  countRecentFaqReplies,
   getActiveFaqsForMatch,
   incrementFaqHitCount,
   recordUnmatchedQuestion,
@@ -49,6 +51,8 @@ const lineClient = { replyMessage: vi.fn() };
 describe('tryFaqReply', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // 24h 上限カウントは db helper に移設 (R1-I2)。既定 0 回。
+    vi.mocked(countRecentFaqReplies).mockResolvedValue(0);
     vi.mocked(getActiveFaqsForMatch).mockResolvedValue([
       {
         id: 'faq-1',
@@ -90,9 +94,8 @@ describe('tryFaqReply', () => {
         }),
       }),
     });
-    const count = stmt({ first: vi.fn().mockResolvedValue({ count: 0 }) });
     const log = stmt();
-    const db = dbWithStatements(settings, count, log);
+    const db = dbWithStatements(settings, log);
 
     await expect(tryFaqReply(db, lineClient, {
       friend,
@@ -111,7 +114,8 @@ describe('tryFaqReply', () => {
       '10時からです\n※自動返信です',
       '2026-07-02T12:00:00+09:00',
     );
-    expect(String((db.prepare as ReturnType<typeof vi.fn>).mock.calls[2][0])).toContain("'faq_bot'");
+    // 24h カウントは db helper 経由 (db.prepare は経由しない)。log は 2 本目の prepare。
+    expect(String((db.prepare as ReturnType<typeof vi.fn>).mock.calls[1][0])).toContain("'faq_bot'");
   });
 
   test('miss records unmatched with top_score and sends handoff when configured', async () => {
@@ -120,9 +124,8 @@ describe('tryFaqReply', () => {
         value: JSON.stringify({ enabled: true, threshold: 0.95, handoffMessage: '担当者に確認します', maxRepliesPerDay: 5 }),
       }),
     });
-    const count = stmt({ first: vi.fn().mockResolvedValue({ count: 0 }) });
     const log = stmt();
-    const db = dbWithStatements(settings, count, log);
+    const db = dbWithStatements(settings, log);
 
     await expect(tryFaqReply(db, lineClient, {
       friend,
@@ -138,7 +141,8 @@ describe('tryFaqReply', () => {
       topScore: expect.any(Number),
     });
     expect(lineClient.replyMessage).toHaveBeenCalledWith('reply-token', [{ type: 'text', text: '担当者に確認します' }]);
-    expect(String((db.prepare as ReturnType<typeof vi.fn>).mock.calls[2][0])).toContain("'faq_handoff'");
+    // handoff log は 2 本目の prepare (count は db helper 経由)。
+    expect(String((db.prepare as ReturnType<typeof vi.fn>).mock.calls[1][0])).toContain("'faq_handoff'");
   });
 
   test('maxRepliesPerDay forces handoff even when FAQ would hit', async () => {
@@ -147,9 +151,10 @@ describe('tryFaqReply', () => {
         value: JSON.stringify({ enabled: true, threshold: 0.6, handoffMessage: '担当者に引き継ぎます', maxRepliesPerDay: 1 }),
       }),
     });
-    const count = stmt({ first: vi.fn().mockResolvedValue({ count: 1 }) });
+    // R1-I2: 上限到達を db helper の返り値で表現 (24h に既に 1 回返信済み・上限 1)。
+    vi.mocked(countRecentFaqReplies).mockResolvedValue(1);
     const log = stmt();
-    const db = dbWithStatements(settings, count, log);
+    const db = dbWithStatements(settings, log);
 
     await expect(tryFaqReply(db, lineClient, {
       friend,
@@ -171,8 +176,7 @@ describe('tryFaqReply', () => {
         value: JSON.stringify({ enabled: true, threshold: 0.95, handoffMessage: '', maxRepliesPerDay: 5 }),
       }),
     });
-    const count = stmt({ first: vi.fn().mockResolvedValue({ count: 0 }) });
-    const db = dbWithStatements(settings, count);
+    const db = dbWithStatements(settings);
 
     await expect(tryFaqReply(db, lineClient, {
       friend,

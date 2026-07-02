@@ -130,6 +130,27 @@ export async function incrementFaqHitCount(db: D1Database, id: string): Promise<
     .run();
 }
 
+// reviewer R1-I2: created_at は jstNow() 由来の JST 文字列 (例 '2026-07-02T19:00:00.000+09:00' /
+// T 区切り・+09:00 付き)。これを datetime('now','-24 hours') (UTC・空白区切り・TZ なし) と
+// 辞書比較すると窓判定が歪む (フォーマット差で大小が逆転し、24h より古い行まで数えて上限に
+// 早く達する)。julianday() で数値化して比較すれば TZ/区切りに依らず正しく「直近 24h」を数える。
+export const RECENT_FAQ_REPLY_COUNT_SQL = `SELECT COUNT(*) AS count
+       FROM messages_log
+       WHERE friend_id = ?
+         AND direction = 'outgoing'
+         AND source = 'faq_bot'
+         AND delivery_type = 'reply'
+         AND julianday(created_at) >= julianday('now', '-24 hours')`;
+
+/** 直近 24h に friend へ送った faq_bot 自動返信 (delivery_type='reply') の件数。 */
+export async function countRecentFaqReplies(db: D1Database, friendId: string): Promise<number> {
+  const row = await db
+    .prepare(RECENT_FAQ_REPLY_COUNT_SQL)
+    .bind(friendId)
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
 export async function getUnmatchedQuestions(db: D1Database, lineAccountId?: string): Promise<UnmatchedQuestion[]> {
   if (lineAccountId) {
     const result = await db

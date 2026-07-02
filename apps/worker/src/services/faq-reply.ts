@@ -1,4 +1,5 @@
 import {
+  countRecentFaqReplies,
   getActiveFaqsForMatch,
   incrementFaqHitCount,
   jstNow,
@@ -64,21 +65,9 @@ async function getFaqBotSettings(db: D1Database, lineAccountId: string | null): 
   return parseSettings(row?.value);
 }
 
-async function countRecentFaqReplies(db: D1Database, friendId: string): Promise<number> {
-  const row = await db
-    .prepare(
-      `SELECT COUNT(*) AS count
-       FROM messages_log
-       WHERE friend_id = ?
-         AND direction = 'outgoing'
-         AND source = 'faq_bot'
-         AND delivery_type = 'reply'
-         AND created_at >= datetime('now', '-24 hours')`,
-    )
-    .bind(friendId)
-    .first<{ count: number }>();
-  return Number(row?.count ?? 0);
-}
+// reviewer R1-I2: 24h 上限カウントは packages/db の countRecentFaqReplies に移設。
+// SQL は julianday() 比較 (JST 文字列 created_at と 'now' の TZ 差で窓判定が歪むのを回避)。
+// 実 SQLite 境界テストは packages/db/src/faqs.test.ts。
 
 async function logFaqOutgoing(
   db: D1Database,

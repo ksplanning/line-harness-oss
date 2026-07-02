@@ -1,5 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
+import Database from 'better-sqlite3';
 import {
+  countRecentFaqReplies,
   createFaq,
   getActiveFaqsForMatch,
   getFaqs,
@@ -105,5 +107,74 @@ describe('FAQ DB helpers', () => {
       0.42,
     );
     expect(update.bind).toHaveBeenCalledWith('faq-1', 'unmatched-1');
+  });
+});
+
+// reviewer R1-I2: 24h 上限カウントの窓判定を実 SQLite で検証する。
+// created_at は jstNow() の JST 文字列 (T 区切り・+09:00)。旧 `created_at >= datetime('now','-24 hours')`
+// は UTC 文字列との辞書比較で 24h より古い行まで数える (窓が壊れる)。julianday() 比較は正しい。
+describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
+  // better-sqlite3 の同期 API を D1 の async prepare().bind().first() 形に薄くラップ。
+  function d1(db: Database.Database): D1Database {
+    return {
+      prepare(sql: string) {
+        const s = db.prepare(sql);
+        let params: unknown[] = [];
+        const api = {
+          bind(...args: unknown[]) { params = args; return api; },
+          async first<T>() { return (s.get(...params) as T) ?? null; },
+          async all<T>() { return { results: s.all(...params) as T[] }; },
+          async run() { s.run(...params); return {}; },
+        };
+        return api;
+      },
+    } as unknown as D1Database;
+  }
+
+  function jst(d: Date): string {
+    // jstNow() と同じ形: JST の ISO 文字列 (末尾 Z を +09:00 に置換)
+    return new Date(d.getTime() + 9 * 3_600_000).toISOString().replace('Z', '+09:00');
+  }
+
+  function seedDb(): Database.Database {
+    const raw = new Database(':memory:');
+    raw.exec(`CREATE TABLE messages_log (
+      id TEXT, friend_id TEXT, direction TEXT, source TEXT, delivery_type TEXT, content TEXT, created_at TEXT
+    )`);
+    return raw;
+  }
+
+  function insertReply(raw: Database.Database, friendId: string, createdAt: string, source = 'faq_bot', delivery = 'reply') {
+    raw.prepare(`INSERT INTO messages_log (id, friend_id, direction, source, delivery_type, content, created_at)
+                 VALUES (?, ?, 'outgoing', ?, ?, 'x', ?)`)
+      .run(crypto.randomUUID(), friendId, source, delivery, createdAt);
+  }
+
+  test('counts a reply from 23h ago (within window) and excludes one from 25h ago (JST-stored)', async () => {
+    const raw = seedDb();
+    const now = Date.now();
+    insertReply(raw, 'f1', jst(new Date(now - 23 * 3_600_000))); // 内 (数える)
+    insertReply(raw, 'f1', jst(new Date(now - 25 * 3_600_000))); // 外 (数えない)
+
+    // 旧実装 (辞書比較) なら 2 を返して境界が壊れる。julianday 版は 1。
+    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
+  });
+
+  test('excludes non-faq_bot and non-reply rows even inside the window', async () => {
+    const raw = seedDb();
+    const recent = jst(new Date(Date.now() - 1 * 3_600_000));
+    insertReply(raw, 'f1', recent, 'faq_bot', 'reply');    // 数える
+    insertReply(raw, 'f1', recent, 'faq_handoff', 'reply'); // handoff は数えない
+    insertReply(raw, 'f1', recent, 'auto_reply', 'reply');  // 別 source
+    insertReply(raw, 'f1', recent, 'faq_bot', 'push');      // push は数えない
+    insertReply(raw, 'f2', recent, 'faq_bot', 'reply');     // 別 friend
+
+    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
+  });
+
+  test('returns 0 when no recent faq_bot replies', async () => {
+    const raw = seedDb();
+    insertReply(raw, 'f1', jst(new Date(Date.now() - 30 * 3_600_000))); // 30h ago
+    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(0);
   });
 });
