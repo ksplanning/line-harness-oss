@@ -1,4 +1,5 @@
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
+import { MessageBuildError, unwrapFlexMessageObject } from '../utils/message-build.js';
 import {
   getBroadcastById,
   getBroadcasts,
@@ -56,7 +57,17 @@ export async function processBroadcastSend(
     }
   }
   const altText = (broadcast as unknown as Record<string, unknown>).alt_text as string | undefined;
-  const message = buildMessage(finalType, finalContent, altText || undefined);
+  let message: Message;
+  try {
+    message = buildMessage(finalType, finalContent, altText || undefined);
+  } catch (err) {
+    // fail-closed: 不正な image/flex JSON は送信スキップ + broadcast を失敗マーク (W5 T-E2)
+    if (err instanceof MessageBuildError) {
+      console.error(`Broadcast ${broadcastId} 送信スキップ: ${err.message}`);
+      await updateBroadcastStatus(db, broadcastId, 'failed');
+    }
+    throw err;
+  }
   let totalCount = 0;
   let successCount = 0;
 
@@ -273,7 +284,17 @@ async function processQueuedBroadcastBatches(
     finalContent = renderMessageContent(finalContent, liffId);
   }
   const altText = raw.alt_text as string | undefined;
-  const message = buildMessage(finalType, finalContent, altText || undefined);
+  let message: Message;
+  try {
+    message = buildMessage(finalType, finalContent, altText || undefined);
+  } catch (err) {
+    // fail-closed: 不正な image/flex JSON は送信スキップ + ロック解除 + 失敗マーク (W5 T-E2)
+    if (err instanceof MessageBuildError) {
+      console.error(`Queued broadcast ${broadcast.id} 送信スキップ: ${err.message}`);
+      await updateBroadcastStatus(db, broadcast.id, 'failed');
+    }
+    throw err;
+  }
 
   // multi-account-dedup: delegate to processMultiAccountDedupBroadcast.
   // dedup ループは内部で per-account に {{liff_id}} 置換 + buildMessage する。
@@ -404,17 +425,21 @@ export function buildMessage(messageType: string, messageContent: string, altTex
         originalContentUrl: parsed.originalContentUrl,
         previewImageUrl: parsed.previewImageUrl,
       };
-    } catch {
-      return { type: 'text', text: messageContent };
+    } catch (err) {
+      // fail-closed: 生 JSON を text 送信せず送信スキップ (findings HIGH/flex-image, W5 T-E2)
+      throw new MessageBuildError('image', err);
     }
   }
 
   if (messageType === 'flex') {
     try {
-      const contents = JSON.parse(messageContent);
-      return { type: 'flex', altText: altText || extractFlexAltText(contents), contents };
-    } catch {
-      return { type: 'text', text: messageContent };
+      const parsed = JSON.parse(messageContent);
+      // top-level が message object ({type:'flex',altText,contents}) の丸ごと貼付を自動アンラップ (W5 T-E3)
+      const { contents, altText: unwrappedAlt } = unwrapFlexMessageObject(parsed);
+      return { type: 'flex', altText: altText || unwrappedAlt || extractFlexAltText(contents), contents };
+    } catch (err) {
+      if (err instanceof MessageBuildError) throw err;
+      throw new MessageBuildError('flex', err);
     }
   }
 

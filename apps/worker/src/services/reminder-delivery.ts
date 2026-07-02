@@ -1,4 +1,5 @@
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
+import { MessageBuildError, unwrapFlexMessageObject } from '../utils/message-build.js';
 
 /**
  * リマインダ配信処理 — cronトリガーで定期実行
@@ -80,7 +81,7 @@ export async function processReminderDeliveries(
   }
 }
 
-function buildMessage(messageType: string, messageContent: string, altText?: string): Message {
+export function buildMessage(messageType: string, messageContent: string, altText?: string): Message {
   if (messageType === 'text') {
     return { type: 'text', text: messageContent };
   }
@@ -88,16 +89,19 @@ function buildMessage(messageType: string, messageContent: string, altText?: str
     try {
       const parsed = JSON.parse(messageContent) as { originalContentUrl: string; previewImageUrl: string };
       return { type: 'image', originalContentUrl: parsed.originalContentUrl, previewImageUrl: parsed.previewImageUrl };
-    } catch {
-      return { type: 'text', text: messageContent };
+    } catch (err) {
+      // fail-closed: 生 JSON を text 送信せず送信スキップ (findings HIGH/flex-image, W5 T-E2)
+      throw new MessageBuildError('image', err);
     }
   }
   if (messageType === 'flex') {
     try {
-      const contents = JSON.parse(messageContent);
-      return { type: 'flex', altText: altText || extractFlexAltText(contents), contents };
-    } catch {
-      return { type: 'text', text: messageContent };
+      const parsed = JSON.parse(messageContent);
+      const { contents, altText: unwrappedAlt } = unwrapFlexMessageObject(parsed);
+      return { type: 'flex', altText: altText || unwrappedAlt || extractFlexAltText(contents), contents };
+    } catch (err) {
+      if (err instanceof MessageBuildError) throw err;
+      throw new MessageBuildError('flex', err);
     }
   }
   return { type: 'text', text: messageContent };

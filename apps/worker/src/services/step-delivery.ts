@@ -1,4 +1,5 @@
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
+import { MessageBuildError, unwrapFlexMessageObject } from '../utils/message-build.js';
 import {
   getFriendScenariosDueForDelivery,
   getScenarioSteps,
@@ -238,8 +239,9 @@ async function processSingleDelivery(
   await deliveryClient.pushMessage(friend.line_user_id, [message]);
 
   // Log what we actually pushed: variables expanded, URLs auto-tracked, AND
-  // any cleanEmptyNodes() mutation or parse-failure text fallback applied by
-  // buildMessage(). Use scenario_step_id to recover the original template.
+  // any cleanEmptyNodes() mutation applied by buildMessage(). Parse failures no
+  // longer fall back to text — buildMessage() now throws (fail-closed, W5 T-E2)
+  // and the caller loop skips + logs. Use scenario_step_id to recover the template.
   const logId = crypto.randomUUID();
   const logPayload = messageToLogPayload(message);
   await db
@@ -415,21 +417,24 @@ export function buildMessage(messageType: string, messageContent: string, altTex
         originalContentUrl: parsed.originalContentUrl,
         previewImageUrl: parsed.previewImageUrl,
       };
-    } catch {
-      // Fallback: treat as text if parsing fails
-      return { type: 'text', text: messageContent };
+    } catch (err) {
+      // fail-closed: 生 JSON を text 送信せず送信スキップ (findings HIGH/flex-image, W5 T-E2)
+      throw new MessageBuildError('image', err);
     }
   }
 
   if (messageType === 'flex') {
     try {
-      const contents = JSON.parse(messageContent);
+      const parsed = JSON.parse(messageContent);
+      // top-level が message object ({type:'flex',altText,contents}) の丸ごと貼付を自動アンラップ (W5 T-E3)
+      const { contents, altText: unwrappedAlt } = unwrapFlexMessageObject(parsed);
       // Remove empty text nodes (from {{#if_ref}} conditional blocks)
       cleanEmptyNodes(contents);
       // Extract first text element for altText (shown in notifications)
-      return { type: 'flex', altText: altText || extractFlexAltText(contents), contents };
-    } catch {
-      return { type: 'text', text: messageContent };
+      return { type: 'flex', altText: altText || unwrappedAlt || extractFlexAltText(contents), contents };
+    } catch (err) {
+      if (err instanceof MessageBuildError) throw err;
+      throw new MessageBuildError('flex', err);
     }
   }
 
