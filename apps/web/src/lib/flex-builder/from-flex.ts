@@ -1,0 +1,150 @@
+/**
+ * Flex JSON (bare contents) → BuilderModel 逆変換 (ui-design §11)。
+ *
+ * WHY: 保存済み Flex (bubble/carousel) を「編集」で開いたとき BuilderModel に戻す。
+ *   画像リンク化で作られた hero-only bubble (plan 判断A) も image 部品 1 個 + tapLink に復元する。
+ *
+ * 逆変換不能なケース (ビルダー範囲外: 横並び box / header・footer 使用 / 未知 node 等) は
+ *   **null を返す**。呼び元は「この Flex は高度な形式のためビジュアル編集できません」と案内し、
+ *   上級者 JSON 折りたたみにフォールバックする (ビルダーで壊す事故を防ぐ V1 安全策)。
+ */
+import type { BuilderModel, BuilderCard, BuilderPart, LinkSpec, ImageAspect } from './types';
+import { nextId } from './templates';
+
+interface RawNode {
+  type?: string;
+  text?: string;
+  weight?: string;
+  url?: string;
+  size?: string;
+  aspectRatio?: string;
+  cornerRadius?: string;
+  style?: string;
+  action?: { type?: string; label?: string; uri?: string };
+  layout?: string;
+  contents?: RawNode[];
+  [key: string]: unknown;
+}
+
+function actionToLink(action: RawNode['action']): LinkSpec | null {
+  if (!action || action.type !== 'uri' || typeof action.uri !== 'string') return null;
+  const uri = action.uri;
+  if (uri.startsWith('tel:')) {
+    return { type: 'tel', phone: uri.slice(4), uri };
+  }
+  // tracked link かどうかは復元時に判別できない (URL としてしか残らない) ので url 扱いに丸める。
+  // これは意図的: 逆変換後の再保存でも uri は保持され計測 URL は壊れない。
+  return { type: 'url', uri };
+}
+
+function aspectFromRatio(ratio?: string): ImageAspect {
+  // 明示 aspectRatio が無ければ original 扱い。
+  if (ratio === '1:1') return 'square';
+  if (ratio === '20:13') return 'landscape';
+  return 'original';
+}
+
+/** 1 つの Flex node → BuilderPart。対応外なら null (= bubble 全体を逆変換不能扱いにする)。 */
+function nodeToPart(node: RawNode): BuilderPart | null {
+  const id = nextId('part');
+  switch (node.type) {
+    case 'text':
+      if (typeof node.text !== 'string') return null;
+      return node.weight === 'bold'
+        ? { kind: 'heading', id, text: node.text, size: node.size }
+        : { kind: 'body', id, text: node.text, size: node.size };
+    case 'image': {
+      if (typeof node.url !== 'string') return null;
+      const part: BuilderPart = {
+        kind: 'image',
+        id,
+        url: node.url,
+        aspect: aspectFromRatio(node.aspectRatio),
+        rounded: Boolean(node.cornerRadius),
+      };
+      const tap = actionToLink(node.action);
+      if (tap) (part as { tapLink?: LinkSpec }).tapLink = tap;
+      return part;
+    }
+    case 'button': {
+      const link = actionToLink(node.action);
+      if (!link) return null;
+      const style = node.style === 'secondary' || node.style === 'link' ? node.style : 'primary';
+      return { kind: 'button', id, label: node.action?.label ?? 'ボタン', style, link };
+    }
+    case 'separator':
+      return { kind: 'separator', id };
+    case 'spacer':
+      return { kind: 'spacer', id, size: node.size };
+    default:
+      return null; // 未知 node → 逆変換不能
+  }
+}
+
+/** 1 bubble → BuilderCard。逆変換不能なら null。 */
+function bubbleToCard(bubble: RawNode): BuilderCard | null {
+  // header/footer を使う bubble はビルダー範囲外 (V1)。
+  if (bubble.header || bubble.footer) return null;
+
+  const parts: BuilderPart[] = [];
+
+  // hero (画像リンク化で作られる hero-only bubble を復元)
+  if (bubble.hero) {
+    const heroPart = nodeToPart(bubble.hero as RawNode);
+    if (!heroPart) return null;
+    parts.push(heroPart);
+  }
+
+  const body = bubble.body as RawNode | undefined;
+  if (body) {
+    // body は vertical box のみ対応 (横並びはビルダー範囲外)。
+    if (body.layout && body.layout !== 'vertical') return null;
+    for (const child of body.contents ?? []) {
+      // ネストした box はビルダー範囲外。
+      if (child.type === 'box') return null;
+      const part = nodeToPart(child);
+      if (!part) return null;
+      parts.push(part);
+    }
+  }
+
+  if (parts.length === 0) return null;
+  return { id: nextId('card'), parts };
+}
+
+/**
+ * bare contents (bubble | carousel) の JSON 文字列 → BuilderModel。
+ * @returns 逆変換できたら BuilderModel、範囲外なら null。
+ */
+export function flexToModel(jsonString: string): BuilderModel | null {
+  let parsed: RawNode;
+  try {
+    parsed = JSON.parse(jsonString) as RawNode;
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  // message object を貼られた場合は contents を見る (防御)。
+  if (parsed.type === 'flex' && parsed.contents && !Array.isArray(parsed.contents)) {
+    parsed = parsed.contents as unknown as RawNode;
+  }
+
+  if (parsed.type === 'bubble') {
+    const card = bubbleToCard(parsed);
+    return card ? { cards: [card] } : null;
+  }
+
+  if (parsed.type === 'carousel' && Array.isArray(parsed.contents)) {
+    const cards: BuilderCard[] = [];
+    for (const b of parsed.contents) {
+      if ((b as RawNode).type !== 'bubble') return null;
+      const card = bubbleToCard(b as RawNode);
+      if (!card) return null;
+      cards.push(card);
+    }
+    return cards.length > 0 ? { cards } : null;
+  }
+
+  return null;
+}
