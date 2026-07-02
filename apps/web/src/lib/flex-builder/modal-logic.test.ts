@@ -12,7 +12,11 @@ import {
   movePart,
   removePart,
   updatePart,
+  duplicateCard,
+  moveCard,
+  removeCard,
 } from './modal-logic';
+import { buildModelToFlex } from './to-flex';
 import type { BuilderModel } from './types';
 
 function base(): BuilderModel {
@@ -98,5 +102,62 @@ describe('操作の即時反映 (D-9/D-10): previewJson が操作前後で変化
     const { partId } = addPart(base(), 0, 'image');
     expect(typeof partId).toBe('string');
     expect(partId.length).toBeGreaterThan(0);
+  });
+});
+
+describe('カード操作 (カルーセル / D-13)', () => {
+  test('D-13: 複製で cards が 1→2 になり、出力が carousel かつ contents.length===2', () => {
+    const before = base();
+    expect(buildModelToFlex(before).type).toBe('bubble');
+    const { model: after, newIndex } = duplicateCard(before, 0);
+    expect(after.cards.length).toBe(2);
+    expect(newIndex).toBe(1);
+    const out = buildModelToFlex(after);
+    expect(out.type).toBe('carousel');
+    if (out.type !== 'carousel') throw new Error();
+    expect(out.contents.length).toBe(2);
+  });
+
+  test('複製カードは新 id を持ち中身は同じ (id 衝突なし)', () => {
+    const { model: after } = duplicateCard(base(), 0);
+    expect(after.cards[0].id).not.toBe(after.cards[1].id);
+    expect(after.cards[0].parts[0].id).not.toBe(after.cards[1].parts[0].id);
+    // 中身 (text) は複製されている
+    const p0 = after.cards[0].parts[0];
+    const p1 = after.cards[1].parts[0];
+    if (p0.kind === 'heading' && p1.kind === 'heading') {
+      expect(p1.text).toBe(p0.text);
+    }
+  });
+
+  test('moveCard 左右で順序が入れ替わる', () => {
+    const m: BuilderModel = {
+      cards: [
+        { id: 'a', parts: [{ kind: 'body', id: 'p1', text: 'A' }] },
+        { id: 'b', parts: [{ kind: 'body', id: 'p2', text: 'B' }] },
+      ],
+    };
+    const moved = moveCard(m, 1, 'left');
+    expect(moved.cards[0].id).toBe('b');
+    expect(moved.cards[1].id).toBe('a');
+  });
+
+  test('先頭で left / 末尾で right は no-op', () => {
+    const m: BuilderModel = {
+      cards: [{ id: 'a', parts: [] }, { id: 'b', parts: [] }],
+    };
+    expect(moveCard(m, 0, 'left').cards.map((c) => c.id)).toEqual(['a', 'b']);
+    expect(moveCard(m, 1, 'right').cards.map((c) => c.id)).toEqual(['a', 'b']);
+  });
+
+  test('removeCard は 2 枚→1 枚にできるが、最後の 1 枚は消せない', () => {
+    const m: BuilderModel = {
+      cards: [{ id: 'a', parts: [] }, { id: 'b', parts: [] }],
+    };
+    const oneLeft = removeCard(m, 0);
+    expect(oneLeft.cards.length).toBe(1);
+    expect(oneLeft.cards[0].id).toBe('b');
+    // 最後の 1 枚は消せない (no-op)
+    expect(removeCard(oneLeft, 0).cards.length).toBe(1);
   });
 });

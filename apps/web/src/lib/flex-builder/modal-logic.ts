@@ -104,3 +104,39 @@ export function updatePart(
     parts: card.parts.map((p) => (p.id === partId ? ({ ...p, ...patch } as BuilderPart) : p)),
   });
 }
+
+// ---- カード操作 (カルーセル / D-13) ----
+
+/** parts を deep-clone し新 id を振る (カード複製で id 衝突を防ぐ)。 */
+function cloneParts(parts: BuilderPart[]): BuilderPart[] {
+  return parts.map((p) => ({ ...p, id: nextId('part') }));
+}
+
+/**
+ * 指定カードを複製して末尾に足す (bubble→carousel 化 = D-13)。
+ * 複製元をコピーする (白紙より運用者に優しい / すぐ中身が見える)。
+ * @returns 新モデルと、追加した新カードの index。
+ */
+export function duplicateCard(
+  model: BuilderModel,
+  cardIndex: number,
+): { model: BuilderModel; newIndex: number } {
+  const src = model.cards[cardIndex];
+  const copy: BuilderCard = { id: nextId('card'), parts: cloneParts(src.parts) };
+  return { model: { cards: [...model.cards, copy] }, newIndex: model.cards.length };
+}
+
+/** カードを左右に移動 (carousel 内の順序入替 / 先頭で left / 末尾で right は no-op)。 */
+export function moveCard(model: BuilderModel, cardIndex: number, dir: 'left' | 'right'): BuilderModel {
+  const target = dir === 'left' ? cardIndex - 1 : cardIndex + 1;
+  if (target < 0 || target >= model.cards.length) return model;
+  const cards = [...model.cards];
+  [cards[cardIndex], cards[target]] = [cards[target], cards[cardIndex]];
+  return { cards };
+}
+
+/** カードを削除 (最後の 1 枚は消せない = カード 0 枚を作らせない)。 */
+export function removeCard(model: BuilderModel, cardIndex: number): BuilderModel {
+  if (model.cards.length <= 1) return model;
+  return { cards: model.cards.filter((_, i) => i !== cardIndex) };
+}

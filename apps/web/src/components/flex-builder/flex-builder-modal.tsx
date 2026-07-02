@@ -16,8 +16,10 @@ import { useEffect, useMemo, useState } from 'react'
 import FlexPreview from '@/components/flex-preview'
 import PartPalette from './part-palette'
 import PartEditor from './part-editor'
+import CardTabs from './card-tabs'
 import { NAIL_TEMPLATES, blankModel, cloneTemplate, type FlexTemplate } from '@/lib/flex-builder/templates'
 import { buildModelToFlex } from '@/lib/flex-builder/to-flex'
+import { validateFlex } from '@/lib/flex-builder/validate'
 import {
   isModelDirty,
   shouldConfirmClose,
@@ -26,8 +28,11 @@ import {
   movePart,
   removePart,
   updatePart,
+  duplicateCard,
+  moveCard,
+  removeCard,
 } from '@/lib/flex-builder/modal-logic'
-import type { BuilderModel, BuilderPart, PartKind } from '@/lib/flex-builder/types'
+import type { BuilderModel, BuilderPart, PartKind, ValidationError } from '@/lib/flex-builder/types'
 
 interface Props {
   /** 既存 Flex を編集する場合の初期モデル。新規なら undefined (テンプレ選択から)。 */
@@ -63,8 +68,9 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
   const [step, setStep] = useState<'template' | 'edit'>(initialModel ? 'edit' : 'template')
   const [model, setModel] = useState<BuilderModel>(initialModel ?? blankModel())
   const [snapshot, setSnapshot] = useState<BuilderModel>(initialModel ?? blankModel())
-  const [activeCard] = useState(0) // C4 でカードタブ導入。C2 は 0 固定。
+  const [activeCard, setActiveCard] = useState(0)
   const [selectedPartId, setSelectedPartId] = useState<string | null>(null)
+  const [saveErrors, setSaveErrors] = useState<ValidationError[]>([])
 
   const dirty = step === 'edit' && isModelDirty(snapshot, model)
 
@@ -111,9 +117,44 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
     setModel(updatePart(model, activeCard, selectedPartId, patch))
   }
 
+  // カード操作 (カルーセル / F7)
+  const handleDuplicateCard = () => {
+    const { model: next, newIndex } = duplicateCard(model, activeCard)
+    setModel(next)
+    setActiveCard(newIndex)
+    setSelectedPartId(null)
+  }
+  const handleMoveCard = (dir: 'left' | 'right') => {
+    setModel(moveCard(model, activeCard, dir))
+    setActiveCard((i) => {
+      const t = dir === 'left' ? i - 1 : i + 1
+      return t < 0 || t >= model.cards.length ? i : t
+    })
+  }
+  const handleRemoveCard = () => {
+    if (model.cards.length <= 1) return
+    if (!window.confirm('このカードを消しますか？')) return
+    setModel(removeCard(model, activeCard))
+    setActiveCard((i) => Math.max(0, i - (i > 0 ? 1 : 0)))
+    setSelectedPartId(null)
+  }
+  const handleSelectCard = (i: number) => {
+    setActiveCard(i)
+    setSelectedPartId(null)
+  }
+
+  // 保存: validateFlex 結線 (D-14)。ok:false なら保存せずエラー列挙。
+  const contents = buildModelToFlex(model)
+  const validation = validateFlex(contents)
+  const canSave = validation.ok
+
   const handleSave = () => {
-    // C4 で validateFlex 結線。C2 は出力をそのまま返す (乖離ゼロ = buildModelToFlex 単一経路)。
-    onSave(JSON.stringify(buildModelToFlex(model)))
+    if (!validation.ok) {
+      setSaveErrors(validation.errors)
+      return
+    }
+    setSaveErrors([])
+    onSave(JSON.stringify(contents))
   }
 
   return (
@@ -144,6 +185,14 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
           <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
             {/* 左ペイン: 編集 */}
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 border-b lg:border-b-0 lg:border-r">
+              <CardTabs
+                cardCount={model.cards.length}
+                activeIndex={activeCard}
+                onSelect={handleSelectCard}
+                onDuplicate={handleDuplicateCard}
+                onMove={handleMoveCard}
+                onRemove={handleRemoveCard}
+              />
               <PartPalette onAdd={handleAdd} />
               <ul className="space-y-1.5">
                 {card?.parts.map((part, i) => {
@@ -215,16 +264,26 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
 
         {/* sticky footer */}
         {step === 'edit' && (
-          <div className="sticky bottom-0 px-5 py-3 border-t bg-white flex items-center gap-2 justify-end shrink-0">
+          <div className="sticky bottom-0 px-5 py-3 border-t bg-white flex items-center gap-3 shrink-0">
+            <div className="flex-1 min-w-0">
+              {saveErrors.length > 0 && (
+                <ul className="text-xs text-red-600 space-y-0.5">
+                  {saveErrors.map((e, i) => (
+                    <li key={`${e.code}-${i}`}>{e.messageJa}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
             <button
               onClick={requestClose}
-              className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-md min-h-[36px]"
+              className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-md min-h-[36px] shrink-0"
             >
               キャンセル
             </button>
             <button
               onClick={handleSave}
-              className="px-4 py-1.5 text-xs font-medium text-white rounded-md min-h-[36px]"
+              disabled={!canSave}
+              className="px-4 py-1.5 text-xs font-medium text-white rounded-md min-h-[36px] shrink-0 disabled:opacity-50"
               style={{ backgroundColor: '#06C755' }}
             >
               保存
