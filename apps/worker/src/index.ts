@@ -80,6 +80,7 @@ import { csvExports } from './routes/exports.js';
 import { responseSchedules } from './routes/response-schedules.js';
 import { savedSearches } from './routes/saved-searches.js';
 import { cannedResponses } from './routes/canned-responses.js';
+import { campaigns } from './routes/campaigns.js';
 
 export type Env = {
   Bindings: {
@@ -199,6 +200,7 @@ app.route('/', csvExports);
 app.route('/', responseSchedules);
 app.route('/', savedSearches);
 app.route('/', cannedResponses);
+app.route('/', campaigns);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version
