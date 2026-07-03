@@ -13,6 +13,7 @@ import { computeDedupBroadcastPreview } from '../services/dedup-broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
 import { getLineAccountById } from '@line-crm/db';
+import { guardFlexContent } from '../utils/flex-persist-guard.js';
 import type { Env } from '../index.js';
 
 const broadcasts = new Hono<Env>();
@@ -279,6 +280,15 @@ broadcasts.post('/api/broadcasts', async (c) => {
       );
     }
 
+    // server 側 Flex 検証 (BACKLOG-flex / セキュリティ): client を迂回した API 直叩きでの
+    // 不正 Flex 保存を保存前に 400 でブロック。client と同一の validateFlex (@line-crm/shared)。
+    if (body.messageType === 'flex') {
+      const guard = guardFlexContent(body.messageContent, body.altText);
+      if (!guard.ok) {
+        return c.json({ success: false, error: guard.messageJa }, 400);
+      }
+    }
+
     if (body.targetType === 'tag' && !body.targetTagId) {
       return c.json(
         { success: false, error: 'targetTagId is required when targetType is "tag"' },
@@ -349,6 +359,18 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       targetTagId?: string | null;
       scheduledAt?: string | null;
     }>();
+
+    // server 側 Flex 検証 (BACKLOG-flex): 更新後の実効 messageType が flex で、かつ
+    // messageContent が body に present のときだけ検証する。messageType 未指定なら既存 type を採用。
+    // → title だけの更新 (messageContent 未指定) は検証しない = 保存済み Flex が後方非互換で落ちない。
+    // → text→flex に messageType だけ変える更新でも content を検証する (実効 type 判定)。
+    const effectiveMessageType = body.messageType ?? existing.message_type;
+    if (effectiveMessageType === 'flex' && body.messageContent !== undefined) {
+      const guard = guardFlexContent(body.messageContent);
+      if (!guard.ok) {
+        return c.json({ success: false, error: guard.messageJa }, 400);
+      }
+    }
 
     // Keep status in sync with scheduledAt changes
     let statusUpdate: 'draft' | 'scheduled' | undefined;
