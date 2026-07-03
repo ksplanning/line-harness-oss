@@ -543,8 +543,18 @@ async function handleEvent(
       .bind(logId, friend.id, incomingText, now)
       .run();
 
+    // 応答時間帯 (G28): 営業時間内かを先に判定 (schedule は 1 度だけ読む)。営業時間内
+    // (is_enabled=1 かつ 時間内) は以降の text 自動送信を全て抑止する — auto-reply/FAQ
+    // だけでなく下の cross-account 体験トリガーも含む (reviewer R1: 営業時間内の text
+    // 自動送信を全停止する G28 意図)。is_enabled=0 / schedule 無しは false = 従来 byte-identical。
+    const responseSchedule = await getEffectiveResponseSchedule(db, lineAccountId);
+    const businessHoursSuppressed = !!(
+      responseSchedule?.isEnabled && isWithinBusinessHours(responseSchedule, Date.now())
+    );
+
     // Cross-account trigger: send message from another account via UUID
-    if (incomingText === '体験を完了する' && lineAccountId) {
+    // 営業時間内 (businessHoursSuppressed) は自動送信せず未読へ落とす (下の gate 経由)。
+    if (incomingText === '体験を完了する' && lineAccountId && !businessHoursSuppressed) {
       try {
         const friendRecord = await db.prepare('SELECT user_id FROM friends WHERE id = ?').bind(friend.id).first<{ user_id: string | null }>();
         if (friendRecord?.user_id) {
@@ -602,17 +612,15 @@ async function handleEvent(
     // 既存パスへ素通り (byte-identical・非回帰)。ゲートは「auto-reply ループ / FAQ を
     // 回すか否か」の判定分岐 + 営業時間外 away_message の 1 回返信のみで、送信ロジック
     // 本体 (replyMessage/buildMessage/step-delivery) は不変。postback ハンドラは対象外。
+    // responseSchedule / businessHoursSuppressed は上 (cross-account トリガー前) で算出済。
+    // 営業時間内にオペレーターへ回した message は event-bus の message_received automation
+    // の send_message も抑止する (HIGH-1: auto-reply ループだけ止めると automation 経由の
+    // 自動返信が営業時間内に裏口から発火する穴を塞ぐ)。
     let skipAutoReply = false;
-    // 営業時間内にオペレーターへ回した message は event-bus の message_received
-    // automation の send_message も抑止する (HIGH-1: auto-reply ループだけ止めると
-    // automation 経由の自動返信が営業時間内に裏口から発火する穴を塞ぐ)。
-    let businessHoursSuppressed = false;
-    const responseSchedule = await getEffectiveResponseSchedule(db, lineAccountId);
     if (responseSchedule && responseSchedule.isEnabled) {
-      if (isWithinBusinessHours(responseSchedule, Date.now())) {
+      if (businessHoursSuppressed) {
         // 営業時間内 → 自動応答せずオペレーター対応 (未読) に回す。
         skipAutoReply = true;
-        businessHoursSuppressed = true;
       } else if (responseSchedule.outsideHoursMode === 'away_message') {
         // 営業時間外 (不在メッセージ) → 設定文面を 1 回だけ返す (既存 replyMessage 経路)。
         skipAutoReply = true;

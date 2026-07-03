@@ -591,3 +591,131 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(isWithinBusinessHours).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /webhook — G28 gate on the cross-account 体験 trigger (reviewer R1)', () => {
+  // user_id + otherFriends を返す db (cross-account トリガーが実際に送信できる状態)。
+  function crossAccountDb(): D1Database {
+    return {
+      prepare(sql: string) {
+        const api = {
+          bind() {
+            return api;
+          },
+          async first() {
+            if (/SELECT user_id FROM friends WHERE id/.test(sql)) return { user_id: 'U1' };
+            return null;
+          },
+          async all() {
+            if (/la\.channel_access_token/.test(sql)) {
+              return { results: [{ line_user_id: 'U2', channel_access_token: 'tok2' }] };
+            }
+            return { results: [] };
+          },
+          async run() {
+            return {};
+          },
+        };
+        return api;
+      },
+    } as unknown as D1Database;
+  }
+
+  async function postExperience(scheduleOverride: unknown, within: boolean) {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    // fast path で matchedAccountId='acc-1' を bind させ lineAccountId を truthy にする
+    // (baseEnv.LINE_CHANNEL_SECRET='env-default-secret' と channel_secret を一致させる)。
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        is_active: 1,
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'tok-main',
+      },
+    ] as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U-existing',
+      display_name: 'Existing Friend',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: 'U1',
+      line_account_id: 'acc-1',
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-07-02T00:00:00+09:00',
+      updated_at: '2026-07-02T00:00:00+09:00',
+    });
+    vi.mocked(upsertChatOnMessage).mockResolvedValue({
+      id: 'chat-1',
+      friend_id: 'friend-1',
+      operator_id: null,
+      status: 'unread',
+      notes: null,
+      last_message_at: '2026-07-02T00:00:00+09:00',
+      created_at: '2026-07-02T00:00:00+09:00',
+      updated_at: '2026-07-02T00:00:00+09:00',
+    });
+    vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(scheduleOverride as never);
+    vi.mocked(isWithinBusinessHours).mockReturnValue(within);
+
+    const db = crossAccountDb();
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+    const res = await setupApp().request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Line-Signature': 'A'.repeat(43) + '=' },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [
+            {
+              type: 'message',
+              replyToken: 'reply-token',
+              message: { type: 'text', id: 'message-1', text: '体験を完了する' },
+              timestamp: Date.now(),
+              source: { type: 'user', userId: 'U-existing' },
+              webhookEventId: 'event-1',
+              deliveryContext: { isRedelivery: false },
+              mode: 'active',
+            },
+          ],
+        }),
+      },
+      { ...baseEnv, DB: db },
+      executionCtx,
+    );
+    expect(res.status).toBe(200);
+    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
+    await processing;
+    return db;
+  }
+
+  const enabled = {
+    id: 's1',
+    lineAccountId: 'acc-1',
+    isEnabled: true,
+    timezone: 'Asia/Tokyo',
+    outsideHoursMode: 'auto_reply',
+    awayMessage: null,
+    weeklyHours: [],
+  };
+
+  test('within business hours → cross-account trigger is suppressed and chat goes to unread', async () => {
+    const db = await postExperience(enabled, true);
+    expect(lineClientMocks.pushMessage).not.toHaveBeenCalled(); // 別アカウントへ送らない
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled(); // 確認返信もしない
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1'); // オペレーター対応 (未読)
+  });
+
+  test('gate disabled → cross-account trigger fires as before (non-regression)', async () => {
+    await postExperience({ ...enabled, isEnabled: false }, false);
+    expect(lineClientMocks.pushMessage).toHaveBeenCalledTimes(1); // 別アカウントへ push
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1); // 確認返信
+    expect(upsertChatOnMessage).not.toHaveBeenCalled(); // trigger 内で return
+  });
+});
