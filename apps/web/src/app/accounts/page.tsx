@@ -14,6 +14,7 @@ import {
 } from '@/components/accounts/account-form-fields'
 import AccountSetupUrls from '@/components/accounts/account-setup-urls'
 import AccountEditModal from '@/components/accounts/account-edit-modal'
+import ResponseScheduleModal from '@/components/accounts/response-schedule-modal'
 
 interface LineAccountListItem {
   id: string
@@ -60,6 +61,7 @@ export default function AccountsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [showReorder, setShowReorder] = useState(false)
   const [editing, setEditing] = useState<LineAccountListItem | null>(null)
+  const [scheduleFor, setScheduleFor] = useState<LineAccountListItem | null>(null)
   const [form, setForm] = useState<AccountFormState>(emptyAccountFormState)
   const [createError, setCreateError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -319,6 +321,12 @@ export default function AccountsPage() {
                 </p>
                 <div className="flex gap-2">
                   <button
+                    onClick={() => setScheduleFor(account)}
+                    className="text-xs text-gray-600 hover:bg-gray-50 rounded px-1"
+                  >
+                    応答時間帯
+                  </button>
+                  <button
                     onClick={() => setEditing(account)}
                     className="text-xs text-blue-600 hover:text-blue-800"
                   >
@@ -358,6 +366,12 @@ export default function AccountsPage() {
           initialLiffId={editing.liffId}
           onClose={() => setEditing(null)}
           onSaved={load}
+        />
+      )}
+      {scheduleFor && (
+        <ResponseScheduleModal
+          accountId={scheduleFor.id}
+          onClose={() => setScheduleFor(null)}
         />
       )}
     </div>
