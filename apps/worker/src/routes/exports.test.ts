@@ -183,6 +183,20 @@ describe('GET /api/exports/friends.csv (T-C3)', () => {
     expect(res.status).toBe(400);
   });
 
+  test('handled=unhandled で未対応フィルタ (chats.status=unread) を SQL に適用する (I-2)', async () => {
+    const { db, calls } = makeExportDb({ friends });
+    await setupApp(db).request('/api/exports/friends.csv?lineAccountId=acc-1&handled=unhandled', AUTH);
+    const q = calls.find((c) => /FROM friends f/i.test(c.sql));
+    expect(q?.sql).toMatch(/'unread'/); // list endpoint と同じ未対応判定
+  });
+
+  test('handled 未指定なら未対応フィルタを付けない (全件)', async () => {
+    const { db, calls } = makeExportDb({ friends });
+    await setupApp(db).request('/api/exports/friends.csv?lineAccountId=acc-1', AUTH);
+    const q = calls.find((c) => /FROM friends f/i.test(c.sql));
+    expect(q?.sql).not.toMatch(/'unread'/);
+  });
+
   test('出力行が上限 (50,000) を超えると 400', async () => {
     const many: FriendRow[] = Array.from({ length: 50_001 }, (_, i) => ({
       display_name: '友', line_user_id: `UB${i}`, is_following: 1, score: 0,
@@ -268,6 +282,12 @@ describe('GET /api/exports/bookings.csv (T-C4)', () => {
     expect(lines[1]).toContain('担当田中');
     expect(lines[1]).toContain('山本');
     expect(lines[1]).toContain('承認待ち'); // requested → 日本語
+    // I-1: 予約日時は JST 変換 (UTC 10:00Z → JST 19:00・+09:00)。画面 (Asia/Tokyo) と一致。
+    expect(lines[1]).toContain('2026-03-01T19:00:00');
+    expect(lines[1]).toContain('+09:00');
+    expect(lines[1]).not.toContain('2026-03-01T10:00:00Z'); // 生 UTC を出さない
+    // 作成日時も JST 揃え (2026-02-28T00:00:00Z → 09:00+09:00)
+    expect(lines[1]).toContain('2026-02-28T09:00:00');
   });
 
   test('account_id 未指定は 400', async () => {

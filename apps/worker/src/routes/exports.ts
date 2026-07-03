@@ -43,6 +43,24 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|\r\n]/g, '_').slice(0, 80);
 }
 
+/**
+ * タイムスタンプを画面と同じ JST 表示 (…+09:00) に揃える (reviewer I-1)。
+ * - `Z` 終端 (UTC・bookings.starts_at) は +9h して JST に変換。
+ * - offset/Z の無い naive 値 (JST 既定の created_at 等) はクロックを動かさず +09:00 を明示。
+ * - 既に +hh:mm offset 付きはそのまま。不正値はそのまま返す。
+ * booking 画面は starts_at を `timeZone: 'Asia/Tokyo'` で表示するため、CSV も JST に揃えないと
+ * 予約時刻がスタッフに 9h ズレて見える。
+ */
+function toJstDisplay(iso: string): string {
+  if (!iso) return '';
+  if (!iso.endsWith('Z')) {
+    return /[+-]\d{2}:\d{2}$/.test(iso) ? iso : iso + '+09:00';
+  }
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return new Date(d.getTime() + 9 * 60 * 60_000).toISOString().slice(0, -1) + '+09:00';
+}
+
 /** CSV テキストを attachment レスポンスにして返す (BOM/上限チェック込み)。 */
 function csvResponse(
   c: Context<Env>,
@@ -74,6 +92,9 @@ csvExports.get('/api/exports/friends.csv', async (c) => {
     }
     const tagId = c.req.query('tagId');
     const search = c.req.query('search');
+    // 画面の「未対応のみ」絞込 (handled=unhandled) を CSV にも反映する (reviewer I-2)。
+    // 未指定なら全件。list endpoint (friends.ts) と同じ chats.status='unread' 判定に揃える。
+    const handledFilter = c.req.query('handled') === 'unhandled' ? 'unhandled' : null;
 
     const conditions = ['f.line_account_id = ?'];
     const binds: unknown[] = [lineAccountId];
@@ -84,6 +105,16 @@ csvExports.get('/api/exports/friends.csv', async (c) => {
     if (search) {
       conditions.push('f.display_name LIKE ?');
       binds.push(`%${search}%`);
+    }
+    if (handledFilter === 'unhandled') {
+      conditions.push(
+        `COALESCE(
+           (SELECT status FROM chats c
+            WHERE c.friend_id = f.id
+            ORDER BY c.created_at DESC LIMIT 1),
+           'resolved'
+         ) = 'unread'`,
+      );
     }
     const where = `WHERE ${conditions.join(' AND ')}`;
 
@@ -244,12 +275,13 @@ csvExports.get('/api/exports/bookings.csv', async (c) => {
 
     const headers = ['予約日時', 'メニュー名', 'スタッフ名', '友だち名', 'ステータス', '作成日時'];
     const rows = result.results.map((r) => [
-      r.starts_at,
+      // 予約日時は DB が UTC(Z) 保持・画面は Asia/Tokyo 表示。CSV も JST に揃える (I-1)。
+      toJstDisplay(r.starts_at),
       r.menu_name,
       r.staff_name ?? '',
       r.friend_name ?? '',
       BOOKING_STATUS_LABEL[r.status] ?? r.status,
-      r.created_at,
+      toJstDisplay(r.created_at),
     ]);
 
     return csvResponse(c, headers, rows, `予約一覧_${jstDateStamp()}.csv`);

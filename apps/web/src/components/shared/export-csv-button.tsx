@@ -69,7 +69,7 @@ export default function ExportCsvButton({
   return (
     <span className="inline-flex flex-col items-start gap-0.5">
       {button}
-      <span className="text-xs text-gray-400">ⓘ Excel でそのまま開けます（文字化けしません）</span>
+      <span className="text-xs text-gray-500">ⓘ Excel でそのまま開けます（文字化けしません）</span>
     </span>
   )
 }

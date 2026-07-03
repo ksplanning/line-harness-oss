@@ -126,12 +126,14 @@ export default function FriendsPage() {
       updateAndResetPage(() => setSearchSubmitted(''))
     }
   }
-  // CSV 出力: 画面の絞り込み条件 (account/タグ/検索) をそのまま worker export に渡す。
+  // CSV 出力: 画面の絞り込み条件 (account/タグ/検索/対応マーク) をそのまま worker export に渡す。
+  // 「未対応のみ」表示中は handled=unhandled も渡し、絞込ビューと CSV を食い違わせない (I-2)。
   const handleExportCsv = async () => {
     const params = new URLSearchParams()
     if (selectedAccountId) params.set('lineAccountId', selectedAccountId)
     if (selectedTagId) params.set('tagId', selectedTagId)
     if (searchSubmitted) params.set('search', searchSubmitted)
+    if (responseFilter === 'unhandled') params.set('handled', 'unhandled')
     await downloadCsv(`/api/exports/friends.csv?${params}`, `友だち一覧_${csvDateStamp()}.csv`)
   }
 
