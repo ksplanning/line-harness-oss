@@ -31,6 +31,7 @@ export * from './message-templates';
 export * from './rich-menus';
 export * from './response-schedules';
 export * from './saved-searches';
+export * from './canned-responses';
 
 /**
  * Thin wrapper around D1Database.
