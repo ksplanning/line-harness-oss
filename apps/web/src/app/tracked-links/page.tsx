@@ -181,9 +181,9 @@ export default function TrackedLinksPage() {
                 placeholder="https://example.com"
               />
               {editing !== 'new' && (
-                <p className="text-xs text-amber-600 mt-1">
+                <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-xs">
                   配信済みのリンクの飛び先も、このURLに変わります。
-                </p>
+                </div>
               )}
             </div>
             <div>

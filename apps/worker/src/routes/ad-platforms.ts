@@ -143,13 +143,13 @@ adPlatforms.post('/api/ad-platforms/test', async (c) => {
 
     if (body.friendId) {
       await sendAdConversions(c.env.DB, body.friendId, body.eventName);
-      return c.json({ success: true, data: { message: 'Test conversion sent via full pipeline' } });
+      return c.json({ success: true, data: { message: 'テスト送信しました（実際の送信パイプラインを通しました）。' } });
     }
 
     return c.json({
       success: true,
       data: {
-        message: `Platform "${body.platform}" is configured and active. Provide friendId to send a test conversion.`,
+        message: '接続は有効です。友だちIDを入れると、実際のテスト送信ができます。',
       },
     });
   } catch (err) {

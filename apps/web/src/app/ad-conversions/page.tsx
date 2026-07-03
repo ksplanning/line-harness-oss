@@ -219,53 +219,93 @@ export default function AdConversionsPage() {
           </button>
         </div>
       ) : (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px]">
-              <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">広告プラットフォーム</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">表示名</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">状態</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">最終更新</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider sticky right-0 z-10 bg-gray-50 border-l border-gray-200">操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {platforms.map((p) => (
-                  <tr key={p.id} className="group hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{platformDisplay(p.name)}</td>
-                    <td className="px-4 py-3 text-sm text-gray-600">{p.displayName || <span className="text-gray-400">—</span>}</td>
-                    <td className="px-4 py-3 text-sm">
-                      {p.isActive ? (
-                        <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-green-50 text-green-700">有効</span>
-                      ) : (
-                        <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500">無効</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-500 tabular-nums">{formatDate(p.updatedAt)}</td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap sticky right-0 z-10 bg-white group-hover:bg-gray-50 border-l border-gray-100">
-                      {pendingRemoveId === p.id ? (
-                        <span className="inline-flex items-center gap-1 justify-end">
-                          <span className="text-xs text-gray-600">「{platformDisplay(p.name, p.displayName)}」の連携を消しますか？</span>
-                          <button onClick={() => handleDelete(p.id)} className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700">はい</button>
-                          <button onClick={() => setPendingRemoveId(null)} className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200">いいえ</button>
-                        </span>
-                      ) : (
-                        <>
-                          <button onClick={() => openLogs(p)} className="px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-md">ログ</button>
-                          <button onClick={() => openTest(p)} className="ml-1 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-md">テスト送信</button>
-                          <button onClick={() => openEdit(p)} className="ml-1 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-md">編集</button>
-                          <button onClick={() => setPendingRemoveId(p.id)} className="ml-1 px-2.5 py-1 text-xs font-medium text-red-500 hover:bg-red-50 rounded-md">削除</button>
-                        </>
-                      )}
-                    </td>
+        <>
+          {/* デスクトップ/タブレット: table (sm 以上)。mobile375 では下の card を使う (横溢れ回避 / S-1)。 */}
+          <div className="hidden sm:block bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px]">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">広告プラットフォーム</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">表示名</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">状態</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">最終更新</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider sticky right-0 z-10 bg-gray-50 border-l border-gray-200">操作</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {platforms.map((p) => (
+                    <tr key={p.id} className="group hover:bg-gray-50">
+                      <td className="px-4 py-3 text-sm font-medium text-gray-900">{platformDisplay(p.name)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600">{p.displayName || <span className="text-gray-400">—</span>}</td>
+                      <td className="px-4 py-3 text-sm">
+                        {p.isActive ? (
+                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-green-50 text-green-700">有効</span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500">無効</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-500 tabular-nums">{formatDate(p.updatedAt)}</td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap sticky right-0 z-10 bg-white group-hover:bg-gray-50 border-l border-gray-100">
+                        {pendingRemoveId === p.id ? (
+                          <span className="inline-flex items-center gap-1 justify-end">
+                            <span className="text-xs text-gray-600">「{platformDisplay(p.name, p.displayName)}」の連携を消しますか？</span>
+                            <button onClick={() => handleDelete(p.id)} className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700">はい</button>
+                            <button onClick={() => setPendingRemoveId(null)} className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200">いいえ</button>
+                          </span>
+                        ) : (
+                          <>
+                            <button onClick={() => openLogs(p)} className="px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-md">ログ</button>
+                            <button onClick={() => openTest(p)} className="ml-1 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-md">テスト送信</button>
+                            <button onClick={() => openEdit(p)} className="ml-1 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-md">編集</button>
+                            <button onClick={() => setPendingRemoveId(p.id)} className="ml-1 px-2.5 py-1 text-xs font-medium text-red-500 hover:bg-red-50 rounded-md">削除</button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+
+          {/* mobile375: 縦積みカード (sm 未満)。table の横溢れを構造的に回避 (S-1 / /media と同じ card 方針)。 */}
+          <div className="sm:hidden space-y-3">
+            {platforms.map((p) => (
+              <div key={p.id} className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-900 break-words">{platformDisplay(p.name)}</p>
+                    {p.displayName && <p className="text-xs text-gray-500 mt-0.5 break-words">{p.displayName}</p>}
+                  </div>
+                  {p.isActive ? (
+                    <span className="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-green-50 text-green-700">有効</span>
+                  ) : (
+                    <span className="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500">無効</span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-400 mt-2">最終更新 {formatDate(p.updatedAt)}</p>
+
+                {pendingRemoveId === p.id ? (
+                  <div className="mt-3 pt-3 border-t border-gray-100">
+                    <p className="text-xs text-gray-600 mb-2">「{platformDisplay(p.name, p.displayName)}」の連携を消しますか？</p>
+                    <div className="flex gap-2">
+                      <button onClick={() => handleDelete(p.id)} className="flex-1 min-h-[36px] rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700">はい</button>
+                      <button onClick={() => setPendingRemoveId(null)} className="flex-1 min-h-[36px] rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200">いいえ</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2">
+                    <button onClick={() => openLogs(p)} className="min-h-[36px] rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200">ログ</button>
+                    <button onClick={() => openTest(p)} className="min-h-[36px] rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200">テスト送信</button>
+                    <button onClick={() => openEdit(p)} className="min-h-[36px] rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200">編集</button>
+                    <button onClick={() => setPendingRemoveId(p.id)} className="min-h-[36px] rounded-md text-xs font-medium text-red-500 bg-red-50 hover:bg-red-100">削除</button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       {/* 登録/編集モーダル */}
