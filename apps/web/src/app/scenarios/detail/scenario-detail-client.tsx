@@ -19,6 +19,7 @@ import ScheduleInput, {
   type ScheduleValue,
 } from '@/components/scenarios/schedule-input'
 import BulkPreviewModal from '@/components/scenarios/bulk-preview-modal'
+import EnrollFriendDialog from '@/components/scenarios/enroll-friend-dialog'
 
 type ScenarioWithSteps = Scenario & { steps: ScenarioStep[] }
 
@@ -180,6 +181,8 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   const [stepError, setStepError] = useState('')
 
   const [previewOpen, setPreviewOpen] = useState(false)
+  // G7 手動シナリオ登録モーダルの開閉。
+  const [enrollOpen, setEnrollOpen] = useState(false)
 
   const [stats, setStats] = useState<ScenarioStats | null>(null)
   const [templates, setTemplates] = useState<TemplateOpt[]>([])
@@ -400,6 +403,8 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   }
 
   const handleDeleteStep = async (stepId: string) => {
+    // TODO(F2 batch1 スコープ外): window.confirm は headless E2E 非互換。
+    //   複製 (confirmDup) と同じ行内確認 UI へ置換すべき既知課題 (別 batch)。
     if (!confirm('このステップを削除してもよいですか？')) return
     try {
       await api.scenarios.deleteStep(id, stepId)
@@ -626,6 +631,38 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
               <span>作成日: {new Date(scenario.createdAt).toLocaleDateString('ja-JP')}</span>
             </div>
           </div>
+        )}
+      </div>
+
+      {/* このシナリオに登録した友だち (G7 手動シナリオ登録 / 指名移動) */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+        <h3 className="text-sm font-semibold text-gray-800 mb-2">このシナリオに登録した友だち</h3>
+
+        {/* 誤解防止の説明文 (friend_add トリガーは自動追加が主目的のため省略)。
+            DeliveryMode は relative/elapsed/absolute_time のいずれも「決まったタイミングで
+            自動送信」= 同一文面 (spec に無い 'manual' モードは存在しない)。 */}
+        {scenario.triggerType !== 'friend_add' && (
+          <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+            登録すると、このシナリオのステップが決まったタイミングで自動で送られます。登録しただけでは何も送信されません。
+          </p>
+        )}
+
+        <button
+          onClick={() => setEnrollOpen(true)}
+          className="px-4 py-2 min-h-[44px] text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+        >
+          友だちを登録する
+        </button>
+
+        {stats && stats.enrolledTotal > 0 ? (
+          <p className="text-sm text-gray-700 mt-3">
+            登録済み <span className="font-semibold">{stats.enrolledTotal}</span> 人
+            <span className="text-xs text-gray-400 ml-1">（詳細リストは今後実装予定）</span>
+          </p>
+        ) : (
+          <p className="text-sm text-gray-500 mt-3">
+            まだ誰も登録されていません。「友だちを登録する」ボタンから追加できます。
+          </p>
         )}
       </div>
 
@@ -1023,6 +1060,14 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
             setStepBuilderOpen(false)
           }}
           onClose={() => setStepBuilderOpen(false)}
+        />
+      )}
+
+      {enrollOpen && (
+        <EnrollFriendDialog
+          scenarioId={id}
+          onClose={() => setEnrollOpen(false)}
+          onEnrolled={() => reloadStats()}
         />
       )}
     </div>
