@@ -1367,6 +1367,20 @@ export const api = {
     },
   },
 
+  // メディアライブラリ (G15) — worker `GET /api/images` (R2 .list({prefix:'media/'})) と
+  // `DELETE /api/images/:key`。アップロードは既存 `api.uploads.image` を再利用する (新 upload client を
+  // 作らない = fetchApi の Content-Type: application/json 強制と衝突しないため)。
+  images: {
+    // media/ 配下の素材一覧。cursor があれば次ページ (R2 の 1000 件 cutoff 対応 = もっと見る)。
+    list: (cursor?: string) =>
+      fetchApi<ApiResponse<{ items: { key: string; url: string; size: number; uploaded: string }[]; cursor?: string }>>(
+        cursor ? `/api/images?cursor=${encodeURIComponent(cursor)}` : '/api/images',
+      ),
+    // key は 'media/xxx.png' = slash 含み → encodeURIComponent。worker は wildcard param (:key{.+}) で受ける。
+    remove: (key: string) =>
+      fetchApi<ApiResponse<null>>(`/api/images/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  },
+
   // 計測リンク (tracked link) — worker `serializeTrackedLink` の 13 field を返す (tracked-links.ts)。
   // list は既存 (Flex ビルダーが最小形 TrackedLinkListItem で参照)。/tracked-links 画面用に
   // get/create/patch/delete を追加 (F1 batch1 / worker 無変更で既存 CRUD route を叩くだけ)。

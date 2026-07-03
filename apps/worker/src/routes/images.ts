@@ -52,7 +52,9 @@ images.post('/api/images', async (c) => {
 
     const ext = mimeType.split('/')[1] === 'jpeg' ? 'jpg' : mimeType.split('/')[1];
     const id = crypto.randomUUID();
-    const key = `${id}.${ext}`;
+    // media/ prefix でスコープ化 (G15): メディアライブラリの list が受信画像 (incoming-*) や
+    // リッチメニュー素材 (rich-menus/*) を混入させないため、broadcast 用アップロードは media/ 配下に置く。
+    const key = `media/${id}.${ext}`;
 
     await c.env.IMAGES.put(key, data, {
       httpMetadata: { contentType: mimeType },
@@ -72,8 +74,41 @@ images.post('/api/images', async (c) => {
   }
 });
 
+// GET /api/images — list uploaded media library images (media/ prefix scope)
+//
+// R2 IMAGES バケットには broadcast 用アップロード (media/) 以外に受信画像 (incoming-*) や
+// リッチメニュー素材 (rich-menus/*) も同居する。media/ prefix でスコープし混入を防ぐ (G15/T-M2)。
+// R2 .list() は既定 1000 件 cutoff のため truncated 時は cursor を返し、UI が「もっと見る」で追う。
+images.get('/api/images', async (c) => {
+  try {
+    const cursor = c.req.query('cursor') || undefined;
+    const listed = await c.env.IMAGES.list({ prefix: 'media/', cursor });
+
+    const workerUrl = c.env.WORKER_URL || new URL(c.req.url).origin;
+    const items = listed.objects.map((obj) => ({
+      key: obj.key,
+      url: `${workerUrl}/images/${obj.key}`,
+      size: obj.size,
+      uploaded: obj.uploaded instanceof Date ? obj.uploaded.toISOString() : String(obj.uploaded),
+    }));
+
+    return c.json({
+      success: true,
+      data: {
+        items,
+        cursor: listed.truncated ? listed.cursor : undefined,
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/images error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // GET /images/:key — serve image (public, no auth)
-images.get('/images/:key', async (c) => {
+// key は slash を含みうる (media/xxx.png) ため wildcard param (`:key{.+}`) で受ける (T-M3)。
+// 既存 flat key (legacy-uuid.png) も引き続き serve できる。
+images.get('/images/:key{.+}', async (c) => {
   const key = c.req.param('key');
   const object = await c.env.IMAGES.get(key);
 
@@ -90,7 +125,8 @@ images.get('/images/:key', async (c) => {
 });
 
 // DELETE /api/images/:key — delete image
-images.delete('/api/images/:key', async (c) => {
+// key は slash を含みうる (media/xxx.png) ため wildcard param 化 (T-M3)。既存 flat key も削除可。
+images.delete('/api/images/:key{.+}', async (c) => {
   try {
     const key = c.req.param('key');
     await c.env.IMAGES.delete(key);
