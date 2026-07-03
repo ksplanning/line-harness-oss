@@ -172,7 +172,11 @@ friends.get('/api/friends', async (c) => {
       if (!saved) {
         return c.json({ success: false, error: 'saved search not found' }, 400);
       }
-      if (saved.lineAccountId !== null && lineAccountId && saved.lineAccountId !== lineAccountId) {
+      // account-scoped (lineAccountId 非 null) の保存条件は request の lineAccountId と
+      // 厳密一致でなければ 400。request に lineAccountId が無い場合も (undefined ≠ 'acc-1')
+      // 拒否し、無スコープ適用 (別アカウント混入) を防ぐ (reviewer R1 HIGH)。global(null)
+      // は常に許可。
+      if (saved.lineAccountId !== null && saved.lineAccountId !== lineAccountId) {
         return c.json({ success: false, error: 'saved search account mismatch' }, 400);
       }
       try {

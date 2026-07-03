@@ -94,6 +94,23 @@ describe('GET /api/friends ?savedSearchId=', () => {
     expect(res.status).toBe(400);
   });
 
+  test('an account-scoped saved search WITHOUT a matching request account is rejected with 400', async () => {
+    // reviewer R1 HIGH: no-account リクエストで account-scoped saved search を無スコープ適用させない。
+    const savedRow = { id: 'ss-1', line_account_id: 'acc-1', name: 'x', conditions: OR_TWO, created_at: 'now', updated_at: 'now' };
+    const res = await setupApp(mockDb(savedRow)).request('/api/friends?savedSearchId=ss-1');
+    expect(res.status).toBe(400);
+  });
+
+  test('a global (null-account) saved search is applied even without a request account', async () => {
+    const savedRow = { id: 'ss-g', line_account_id: null, name: 'global', conditions: OR_TWO, created_at: 'now', updated_at: 'now' };
+    await setupApp(mockDb(savedRow)).request('/api/friends?savedSearchId=ss-g');
+    expect(countSql()).toBe(
+      'SELECT COUNT(*) as count FROM friends f WHERE ' +
+        '(EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?) OR ' +
+        'EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?))',
+    );
+  });
+
   test('an unknown savedSearchId is rejected with 400', async () => {
     const res = await setupApp(mockDb(null)).request('/api/friends?savedSearchId=nope');
     expect(res.status).toBe(400);
