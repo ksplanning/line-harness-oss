@@ -3,6 +3,7 @@ import type {
   Tag,
   Scenario,
   ScenarioStep,
+  FriendScenario,
   ApiResponse,
   PaginatedResponse,
   User,
@@ -239,6 +240,16 @@ export const api = {
       fetchApi<ApiResponse<{ id: string | null; name: string | null; isDefault: boolean }>>(
         `/api/friends/${id}/rich-menu`,
       ),
+    // G9 カスタム項目 (friend metadata) の手動編集。
+    // worker PUT /api/friends/:id/metadata は {...existing, ...patch} の pure merge。
+    // → patch には「追加/変更したキーのみ」を渡すこと (全 metadata を上書き送信すると
+    //   worker には残るが将来 UI 側で消しかねないので、変更キーのみ送る規約で統一)。
+    //   これにより UI 非表示の他キーは worker 側に残る (merge 保証 / T-A4)。
+    updateMetadata: (id: string, patch: Record<string, string>) =>
+      fetchApi<ApiResponse<FriendWithTags>>(`/api/friends/${encodeURIComponent(id)}/metadata`, {
+        method: 'PUT',
+        body: JSON.stringify(patch),
+      }),
   },
   tags: {
     list: () =>
@@ -267,6 +278,15 @@ export const api = {
         { method: 'POST' },
       )
     },
+    // G7 手動シナリオ登録 (指名移動)。worker POST /api/scenarios/:id/enroll/:friendId は
+    // 「シナリオへの紐付け (friend_scenarios 行追加)」のみで送信は発火しない (挿入と送信の分離)。
+    // 既登録は 409 を返す → 呼び側は success:false を見て「すでに登録されています」表示に切替える
+    //   (fetchApi は res.ok=false 時 success:false を返すため握り潰されない / T-A1)。
+    enroll: (scenarioId: string, friendId: string) =>
+      fetchApi<ApiResponse<FriendScenario>>(
+        `/api/scenarios/${encodeURIComponent(scenarioId)}/enroll/${encodeURIComponent(friendId)}`,
+        { method: 'POST' },
+      ),
     create: (data: Omit<Scenario, 'id' | 'createdAt' | 'updatedAt'>) =>
       fetchApi<ApiResponse<Scenario>>('/api/scenarios', {
         method: 'POST',
