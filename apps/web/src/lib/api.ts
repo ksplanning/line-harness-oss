@@ -1623,6 +1623,165 @@ export const api = {
     logs: (id: string, limit = 50) =>
       fetchApi<ApiResponse<AdConversionLogItem[]>>(`/api/ad-platforms/${id}/logs?limit=${limit}`),
   },
+
+  // F2 G3 キャンペーン集計 (account-scoped・送信ゼロ・集計/紐付けのみ)。
+  campaigns: {
+    list: (accountId: string) =>
+      fetchApi<ApiResponse<CampaignSummary[]>>(
+        `/api/campaigns?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    get: (id: string, accountId: string) =>
+      fetchApi<ApiResponse<CampaignDetail>>(
+        `/api/campaigns/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    create: (accountId: string, name: string) =>
+      fetchApi<ApiResponse<CampaignSummary>>(
+        `/api/campaigns?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'POST', body: JSON.stringify({ name }) },
+      ),
+    rename: (id: string, name: string, accountId: string) =>
+      fetchApi<ApiResponse<CampaignSummary>>(
+        `/api/campaigns/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'PATCH', body: JSON.stringify({ name }) },
+      ),
+    remove: (id: string, accountId: string) =>
+      fetchApi<ApiResponse<null>>(
+        `/api/campaigns/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'DELETE' },
+      ),
+    // 配信の紐付け/解除 (linked=false で解除)。集計のグルーピングのみ・送信しない。
+    linkBroadcast: (id: string, broadcastId: string, linked: boolean, accountId: string) =>
+      fetchApi<ApiResponse<null>>(
+        `/api/campaigns/${encodeURIComponent(id)}/broadcasts?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'POST', body: JSON.stringify({ broadcastId, linked }) },
+      ),
+  },
+
+  // F2 G16 テンプレパック (account-scoped・挿入用 CRUD・送信ゼロ)。
+  templatePacks: {
+    list: (accountId: string) =>
+      fetchApi<ApiResponse<TemplatePackListItem[]>>(
+        `/api/template-packs?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    get: (id: string, accountId: string) =>
+      fetchApi<ApiResponse<TemplatePackDetail>>(
+        `/api/template-packs/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    create: (accountId: string, input: { name: string; items: TemplatePackItemInput[] }) =>
+      fetchApi<ApiResponse<TemplatePackDetail>>(
+        `/api/template-packs?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    update: (id: string, input: { name?: string; items?: TemplatePackItemInput[] }, accountId: string) =>
+      fetchApi<ApiResponse<TemplatePackDetail>>(
+        `/api/template-packs/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'PATCH', body: JSON.stringify(input) },
+      ),
+    remove: (id: string, accountId: string) =>
+      fetchApi<ApiResponse<null>>(
+        `/api/template-packs/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'DELETE' },
+      ),
+  },
+
+  // F2 G58 リッチメニュータップ数分析 (read-only 集計・postback系のみ・送信ゼロ)。
+  richMenuTapAnalytics: {
+    taps: (params: { accountId: string; groupId: string; startDate: string; endDate: string }) =>
+      fetchApi<ApiResponse<RichMenuTapAnalyticsData>>(
+        `/api/rich-menu-analytics/taps?` +
+          new URLSearchParams({
+            accountId: params.accountId,
+            groupId: params.groupId,
+            startDate: params.startDate,
+            endDate: params.endDate,
+          }).toString(),
+      ),
+  },
+}
+
+// ---- F2 batch2 response 型 (api client namespace 用) ----
+
+export interface CampaignSummary {
+  id: string
+  accountId: string
+  name: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CampaignBroadcastSummary {
+  broadcastId: string
+  title: string | null
+  sentAt: string | null
+  targetCount: number
+  opened: number | null
+  clicked: number | null
+}
+
+export interface CampaignAggregate {
+  broadcastCount: number
+  totalTarget: number
+  totalOpened: number | null
+  totalClicked: number | null
+  broadcasts: CampaignBroadcastSummary[]
+}
+
+export interface CampaignDetail extends CampaignSummary {
+  aggregate: CampaignAggregate
+}
+
+export interface TemplatePackItemInput {
+  messageType: 'text' | 'flex'
+  messageContent: string
+}
+
+export interface TemplatePackListItem {
+  id: string
+  account_id: string
+  name: string
+  created_at: string
+  updated_at: string
+  itemCount: number
+}
+
+export interface TemplatePackItem {
+  id: string
+  pack_id: string
+  order_index: number
+  message_type: 'text' | 'flex'
+  message_content: string
+  created_at: string
+  updated_at: string
+}
+
+export interface TemplatePackDetail {
+  id: string
+  account_id: string
+  name: string
+  created_at: string
+  updated_at: string
+  items: TemplatePackItem[]
+}
+
+export interface AreaTapResult {
+  areaId: string
+  pageId: string
+  boundsX: number
+  boundsY: number
+  boundsWidth: number
+  boundsHeight: number
+  actionType: 'uri' | 'message' | 'postback' | 'richmenuswitch'
+  postbackData: string | null
+  count: number | null
+  measurable: boolean
+  unmeasurableReason: 'non-postback' | 'ambiguous' | null
+}
+
+export interface RichMenuTapAnalyticsData {
+  areas: AreaTapResult[]
+  byPostbackData: { data: string; count: number }[]
+  unattributedCount: number
+  totalTaps: number
 }
 
 /** Flex ビルダーの link-picker が使う計測リンクの最小形 (worker serializeTrackedLink の一部)。 */
