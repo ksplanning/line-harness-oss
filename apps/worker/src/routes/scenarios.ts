@@ -769,6 +769,21 @@ scenarios.post('/api/scenarios/:id/enroll/:friendId', async (c) => {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
 
+    // Cross-account guard (batch4 R1 教訓 / F2 batch1): 別 account の友だちを、別 account に
+    // 束縛されたシナリオへ enroll させない。scenario.line_account_id が NULL (global) の場合は
+    // どの友だちも登録可 (webhook/liff の trigger と同じ挙動)。両者が別々の非 NULL account を
+    // 持つときだけ 404 で伏せる (duplicate route:254-260 と同じ境界ポリシー)。
+    const scenarioAccountId =
+      (scenario as { line_account_id?: string | null }).line_account_id ?? null;
+    const friendAccountId = (friend as { line_account_id?: string | null }).line_account_id ?? null;
+    if (
+      scenarioAccountId != null &&
+      friendAccountId != null &&
+      scenarioAccountId !== friendAccountId
+    ) {
+      return c.json({ success: false, error: 'Scenario not found' }, 404);
+    }
+
     const enrollment = await enrollFriendInScenario(db, friendId, scenarioId);
     if (!enrollment) {
       return c.json({ success: false, error: 'Already enrolled in this scenario' }, 409);

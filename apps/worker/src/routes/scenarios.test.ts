@@ -216,3 +216,64 @@ describe('POST /api/scenarios/:id/duplicate (T-W1 / HIGH-3)', () => {
     expect(dbMocks.duplicateScenario).toHaveBeenCalledWith(expect.anything(), 's-g');
   });
 });
+
+describe('POST /api/scenarios/:id/enroll/:friendId — cross-account guard (F2 batch1 / batch4 R1 教訓)', () => {
+  const enrollRow = {
+    id: 'fs-1', friend_id: 'fr-1', scenario_id: 's-1', current_step_order: 0,
+    status: 'active' as const, started_at: '2026-07-04T00:00:00.000+09:00',
+    next_delivery_at: null, updated_at: '2026-07-04T00:00:00.000+09:00',
+  };
+
+  test('201 when scenario and friend belong to the same account', async () => {
+    dbMocks.getScenarioById.mockResolvedValue({ id: 's-1', name: 'x', line_account_id: 'acc-1', steps: [] });
+    dbMocks.getFriendById.mockResolvedValue({ id: 'fr-1', line_account_id: 'acc-1', metadata: '{}' });
+    dbMocks.enrollFriendInScenario.mockResolvedValue(enrollRow);
+    const { db } = makeScenarioDb([]);
+
+    const res = await setupApp(db).request('/api/scenarios/s-1/enroll/fr-1', { method: 'POST' });
+    expect(res.status).toBe(201);
+    expect(dbMocks.enrollFriendInScenario).toHaveBeenCalledWith(expect.anything(), 'fr-1', 's-1');
+  });
+
+  test('201 when enrolling into a global (NULL account) scenario regardless of friend account', async () => {
+    dbMocks.getScenarioById.mockResolvedValue({ id: 's-g', name: 'global', line_account_id: null, steps: [] });
+    dbMocks.getFriendById.mockResolvedValue({ id: 'fr-2', line_account_id: 'acc-9', metadata: '{}' });
+    dbMocks.enrollFriendInScenario.mockResolvedValue({ ...enrollRow, scenario_id: 's-g', friend_id: 'fr-2' });
+    const { db } = makeScenarioDb([]);
+
+    const res = await setupApp(db).request('/api/scenarios/s-g/enroll/fr-2', { method: 'POST' });
+    expect(res.status).toBe(201);
+    expect(dbMocks.enrollFriendInScenario).toHaveBeenCalledWith(expect.anything(), 'fr-2', 's-g');
+  });
+
+  test('404 (masked) and NO enroll when scenario and friend belong to different accounts (cross-account leak guard)', async () => {
+    dbMocks.getScenarioById.mockResolvedValue({ id: 's-1', name: 'x', line_account_id: 'acc-A', steps: [] });
+    dbMocks.getFriendById.mockResolvedValue({ id: 'fr-B', line_account_id: 'acc-B', metadata: '{}' });
+    const { db } = makeScenarioDb([]);
+
+    const res = await setupApp(db).request('/api/scenarios/s-1/enroll/fr-B', { method: 'POST' });
+    expect(res.status).toBe(404);
+    // guard は enroll を実行しない (紐付け行を作らない = クロスアカウント漏洩ゼロ)。
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+  });
+
+  test('404 when scenario does not exist (unchanged)', async () => {
+    dbMocks.getScenarioById.mockResolvedValue(null);
+    dbMocks.getFriendById.mockResolvedValue({ id: 'fr-1', line_account_id: 'acc-1', metadata: '{}' });
+    const { db } = makeScenarioDb([]);
+
+    const res = await setupApp(db).request('/api/scenarios/nope/enroll/fr-1', { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+  });
+
+  test('409 (already enrolled) is preserved when accounts match', async () => {
+    dbMocks.getScenarioById.mockResolvedValue({ id: 's-1', name: 'x', line_account_id: 'acc-1', steps: [] });
+    dbMocks.getFriendById.mockResolvedValue({ id: 'fr-1', line_account_id: 'acc-1', metadata: '{}' });
+    dbMocks.enrollFriendInScenario.mockResolvedValue(null); // 既登録
+    const { db } = makeScenarioDb([]);
+
+    const res = await setupApp(db).request('/api/scenarios/s-1/enroll/fr-1', { method: 'POST' });
+    expect(res.status).toBe(409);
+  });
+});
