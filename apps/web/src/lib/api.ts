@@ -154,6 +154,24 @@ export type FriendListParams = {
   handled?: 'unhandled'
 }
 
+/** G28 応答時間帯: 曜日別営業時間の 1 行 (day は 0=日..6=土 / getUTCDay 準拠)。 */
+export interface DayHours {
+  day: number
+  closed: boolean
+  open: string // 'HH:MM'
+  close: string // 'HH:MM'
+}
+export type OutsideHoursMode = 'auto_reply' | 'away_message' | 'none'
+export interface ResponseScheduleData {
+  id: string | null
+  lineAccountId: string | null
+  isEnabled: boolean
+  timezone: string
+  outsideHoursMode: OutsideHoursMode
+  awayMessage: string | null
+  weeklyHours: DayHours[]
+}
+
 export type FriendWithTags = Friend & { tags: Tag[] }
 /** Friend list items, optionally hydrated with chat status (when ?includeChatStatus=true) */
 export type FriendListItem = FriendWithTags & Partial<{
@@ -422,6 +440,25 @@ export const api = {
       fetchApi<{ success: boolean }>('/api/account-settings/test-recipients', {
         method: 'PUT',
         body: JSON.stringify({ accountId, friendIds }),
+      }),
+  },
+
+  // G28 応答時間帯スケジュール
+  responseSchedules: {
+    get: (accountId: string) =>
+      fetchApi<{ success: boolean; data: ResponseScheduleData }>(
+        `/api/response-schedules?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    save: (data: {
+      accountId: string
+      isEnabled: boolean
+      outsideHoursMode: OutsideHoursMode
+      awayMessage: string | null
+      weeklyHours: DayHours[]
+    }) =>
+      fetchApi<{ success: boolean; data?: ResponseScheduleData; error?: string }>('/api/response-schedules', {
+        method: 'PUT',
+        body: JSON.stringify(data),
       }),
   },
 
