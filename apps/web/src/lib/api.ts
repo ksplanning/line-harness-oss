@@ -1425,6 +1425,35 @@ export const api = {
     disconnect: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/integrations/google-calendar/${id}`, { method: 'DELETE' }),
   },
+
+  // 広告CV連携 (G34) — worker `ad-platforms.ts` の既存フル CRUD に対応 (worker 無変更)。
+  // 画面 /ad-conversions が接続先の登録/編集/テスト送信/ログ閲覧/削除に使う。
+  // 注意: GET list の config は worker が maskConfig() で secret をマスクして返す (先頭4****末尾4)。
+  //   編集時にマスク値をそのまま送り返すと本物のトークンが壊れるため、画面は「空欄=今のまま維持」で
+  //   入力があった欄だけ config に載せて PUT する (ad-conversions/page.tsx 側の責務)。
+  adPlatforms: {
+    list: () =>
+      fetchApi<ApiResponse<AdPlatformItem[]>>('/api/ad-platforms'),
+    create: (body: { name: string; displayName?: string; config: Record<string, unknown> }) =>
+      fetchApi<ApiResponse<AdPlatformItem>>('/api/ad-platforms', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    update: (id: string, body: { displayName?: string | null; config?: Record<string, unknown>; isActive?: boolean }) =>
+      fetchApi<ApiResponse<AdPlatformItem>>(`/api/ad-platforms/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    remove: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/ad-platforms/${id}`, { method: 'DELETE' }),
+    test: (body: { platform: string; eventName: string; friendId?: string }) =>
+      fetchApi<ApiResponse<{ message: string }>>('/api/ad-platforms/test', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    logs: (id: string, limit = 50) =>
+      fetchApi<ApiResponse<AdConversionLogItem[]>>(`/api/ad-platforms/${id}/logs?limit=${limit}`),
+  },
 }
 
 /** Flex ビルダーの link-picker が使う計測リンクの最小形 (worker serializeTrackedLink の一部)。 */
@@ -1463,6 +1492,34 @@ export interface CalendarConnection {
   isActive: boolean
   createdAt: string
   updatedAt?: string
+}
+
+/**
+ * 広告プラットフォーム接続先 (worker ad-platforms.ts GET/POST/PUT serialize)。
+ * config は GET list では maskConfig() でマスク済み (secret は 先頭4****末尾4)。
+ * name は 'meta' | 'x' | 'google' | 'tiktok' のいずれか (worker validNames)。
+ */
+export interface AdPlatformItem {
+  id: string
+  name: string
+  displayName: string | null
+  config: Record<string, unknown>
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+/** 広告CV送信ログ (worker ad-platforms.ts GET /:id/logs serialize)。 */
+export interface AdConversionLogItem {
+  id: string
+  adPlatformId: string
+  friendId: string | null
+  eventName: string
+  clickId: string | null
+  clickIdType: string | null
+  status: string
+  errorMessage: string | null
+  createdAt: string
 }
 
 /**
