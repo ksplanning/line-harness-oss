@@ -6,6 +6,7 @@ import type { FriendListItem } from '@/lib/api'
 import { api } from '@/lib/api'
 import FriendListRow from './friend-list-row'
 import TagBadge from './tag-badge'
+import CustomMetadataEditor from './custom-metadata-editor'
 
 interface Props {
   friends: FriendListItem[]
@@ -161,6 +162,12 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
                         </button>
                       )
                     )}
+
+                    {/* G9 カスタム項目 (friend metadata) 編集 — タグ管理の直下。
+                        expander が開いたときだけ mount され、その時点で metadata を fetch する。 */}
+                    <div className="pt-2 border-t border-gray-100">
+                      <CustomMetadataEditor friendId={friend.id} />
+                    </div>
                   </div>
                 )}
               </div>
