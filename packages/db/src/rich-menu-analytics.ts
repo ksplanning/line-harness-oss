@@ -67,7 +67,43 @@ export interface RichMenuTapAnalytics {
   totalTaps: number;
 }
 
-/** action_data から postback の照合キー (data フィールド) を取り出す。string でなければ null。 */
+/** postback 行として届き、messages_log と照合できるアクション種別 (postback + richmenuswitch)。 */
+const POSTBACK_LOGGED_TYPES = new Set<TapAnalyticsArea['actionType']>(['postback', 'richmenuswitch']);
+
+/**
+ * area の action から messages_log.content と照合する postback data キーを導出する。
+ *
+ * - actionType='postback': action_data.data (admin 設定値) をそのまま照合キーにする。
+ * - actionType='richmenuswitch': DB の action_data は `{ targetPageId }` を持つ (rich-menus.ts:12)。
+ *   publish 時に publisher が `data: "switch-to-<targetPageId>"` を注入し (rich-menu-publisher.ts:88)、
+ *   LINE はタブ切替タップを event.type='postback' / postback.data="switch-to-<targetPageId>" で届け、
+ *   webhook.ts が全 postback を source='postback' / content=postback.data で記録する (webhook.ts:381-416)。
+ *   よって照合キーは publisher と同一式 `switch-to-<targetPageId>` で決定論的に再構成できる
+ *   (=richmenuswitch タブ切替タップも計測可能・reviewer MF-1 fix a)。
+ * - uri/message: postback 行として届かないため null (計測対象外)。
+ */
+export function extractPostbackKey(
+  actionType: TapAnalyticsArea['actionType'],
+  actionData: Record<string, unknown>,
+): string | null {
+  if (actionType === 'postback') {
+    const d = actionData['data'];
+    return typeof d === 'string' ? d : null;
+  }
+  if (actionType === 'richmenuswitch') {
+    const target = actionData['targetPageId'];
+    if (typeof target === 'string' && target.length > 0) return `switch-to-${target}`;
+    // LINE インポート等で既に data 文字列を持つ area はそれを使う (import 経路は richmenuswitch 拒否だが防御的)。
+    const d = actionData['data'];
+    return typeof d === 'string' ? d : null;
+  }
+  return null;
+}
+
+/**
+ * (後方互換) action_data から postback の data フィールドを取り出す。string でなければ null。
+ * postback area 専用の薄いヘルパ。richmenuswitch を含む場合は extractPostbackKey を使う。
+ */
 export function extractPostbackData(actionData: Record<string, unknown>): string | null {
   const d = actionData['data'];
   return typeof d === 'string' ? d : null;
@@ -75,6 +111,7 @@ export function extractPostbackData(actionData: Record<string, unknown>): string
 
 /**
  * group の area 群と、期間内の postback タップ (data → 件数) を突き合わせて集計する。
+ * postback + richmenuswitch の両方を「postback 行として届く」計測対象とする (webhook.ts:381)。
  *
  * @param areas       選択 group の全 area (page_id 込み・action_data は parse 済)。
  * @param tapCounts   期間内 postback タップの data → DISTINCT ml.id 件数 (別 account は既に除外済)。
@@ -83,11 +120,11 @@ export function attributeTaps(
   areas: TapAnalyticsArea[],
   tapCounts: Map<string, number>,
 ): RichMenuTapAnalytics {
-  // 選択 group 内で postback data が一意かどうかを判定するためのカウント。
+  // 選択 group 内で照合キーが一意かどうかを判定するためのカウント (postback + richmenuswitch)。
   const dataOccurrences = new Map<string, number>();
   for (const a of areas) {
-    if (a.actionType !== 'postback') continue;
-    const key = extractPostbackData(a.actionData);
+    if (!POSTBACK_LOGGED_TYPES.has(a.actionType)) continue;
+    const key = extractPostbackKey(a.actionType, a.actionData);
     if (key === null) continue;
     dataOccurrences.set(key, (dataOccurrences.get(key) ?? 0) + 1);
   }
@@ -102,12 +139,13 @@ export function attributeTaps(
       boundsHeight: a.boundsHeight,
       actionType: a.actionType,
     };
-    if (a.actionType !== 'postback') {
+    if (!POSTBACK_LOGGED_TYPES.has(a.actionType)) {
+      // uri/message は postback 行として届かない = 計測不能。
       return { ...base, postbackData: null, count: null, measurable: false, unmeasurableReason: 'non-postback' as const };
     }
-    const key = extractPostbackData(a.actionData);
+    const key = extractPostbackKey(a.actionType, a.actionData);
     if (key === null || (dataOccurrences.get(key) ?? 0) > 1) {
-      // data 欠落 or group 内で複数 area に衝突 = 一意帰属不能。
+      // キー欠落 or group 内で複数 area に衝突 = 一意帰属不能。
       return { ...base, postbackData: key, count: null, measurable: false, unmeasurableReason: 'ambiguous' as const };
     }
     return {
@@ -119,9 +157,11 @@ export function attributeTaps(
     };
   });
 
-  // byPostbackData = group の area が持つ data のうち、実際にタップされた分を data 単位で集計。
-  // (group の area に存在しない data のタップは「リッチメニュー由来でない postback」なので除外済 —
-  //  tapCounts は既に group の data 集合で絞られている前提。)
+  // byPostbackData = group の area が持つ照合キーのうち、実際にタップされた分を data 単位で集計。
+  // tapCounts は group の照合キー集合 (postback+richmenuswitch) で既に絞られている前提。
+  // 注: 「group の照合キーに一致する = リッチメニュー由来」とは断定できない (別 group/Flex ボタン/
+  //     クイックリプライが同一文字列の postback を送ると同じ data で混入し得る)。この固有限界は
+  //     UI の amber 注記「リッチメニュー由来かどうかを完全に断定できない場合があります」で開示済 (案A/L-1)。
   const byPostbackData = [...tapCounts.entries()]
     .map(([data, count]) => ({ data, count }))
     .sort((a, b) => b.count - a.count);
@@ -190,11 +230,13 @@ export async function getRichMenuTapAnalytics(
     };
   });
 
-  // group の postback area の data 集合 (照合対象を「リッチメニュー由来」に閉じる)。
+  // group の postback + richmenuswitch area の照合キー集合 (照合対象を「リッチメニュー由来」に閉じる)。
+  // richmenuswitch も event.type='postback' / content="switch-to-<targetPageId>" で届くため含める
+  // (webhook.ts:381-416 / rich-menu-publisher.ts:88 / reviewer MF-1 fix a)。
   const groupPostbackData = new Set<string>();
   for (const a of areas) {
-    if (a.actionType !== 'postback') continue;
-    const key = extractPostbackData(a.actionData);
+    if (!POSTBACK_LOGGED_TYPES.has(a.actionType)) continue;
+    const key = extractPostbackKey(a.actionType, a.actionData);
     if (key !== null) groupPostbackData.add(key);
   }
 

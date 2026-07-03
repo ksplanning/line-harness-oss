@@ -67,9 +67,9 @@ export default function TapAnalyticsPanel({ accountId }: { accountId: string }) 
     <div>
       {/* 計測範囲注記 (必須・常時表示) */}
       <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-xs p-3 rounded">
-        タップ数は postback アクション（ボタン応答）のみ計測できます。URL アクション・メッセージ
-        アクションのタップは LINE の仕様上カウントできません。また、リッチメニュー由来かどうかを
-        完全に断定できない場合があります。
+        タップ数は「ボタン応答（postback）」と「タブ切替（richmenuswitch）」のアクションのみ計測
+        できます。URL アクション・メッセージ アクションのタップは LINE の仕様上カウントできません。
+        また、リッチメニュー由来かどうかを完全に断定できない場合があります。
       </div>
 
       {/* フィルタ帯 */}

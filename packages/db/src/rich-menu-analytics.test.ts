@@ -18,6 +18,7 @@ import {
   attributeTaps,
   addOneDayJst,
   extractPostbackData,
+  extractPostbackKey,
   getRichMenuTapAnalytics,
   type TapAnalyticsArea,
 } from './rich-menu-analytics.js';
@@ -65,6 +66,25 @@ describe('extractPostbackData', () => {
     expect(extractPostbackData({ data: 'action=buy' })).toBe('action=buy');
     expect(extractPostbackData({ uri: 'https://x.com' })).toBeNull();
     expect(extractPostbackData({ data: 123 })).toBeNull();
+  });
+});
+
+describe('extractPostbackKey (postback + richmenuswitch)', () => {
+  test('postback uses action_data.data', () => {
+    expect(extractPostbackKey('postback', { data: 'buy' })).toBe('buy');
+    expect(extractPostbackKey('postback', { uri: 'x' })).toBeNull();
+  });
+  test('richmenuswitch derives switch-to-<targetPageId> (publisher と同一式)', () => {
+    // DB の richmenuswitch area は { targetPageId } を持つ (rich-menus.ts:12)。
+    // publish で data="switch-to-<targetPageId>" が注入され postback として届く。
+    expect(extractPostbackKey('richmenuswitch', { targetPageId: 'pg-2' })).toBe('switch-to-pg-2');
+  });
+  test('richmenuswitch falls back to explicit data string if present', () => {
+    expect(extractPostbackKey('richmenuswitch', { data: 'switch-to-x' })).toBe('switch-to-x');
+  });
+  test('uri/message are not countable (null)', () => {
+    expect(extractPostbackKey('uri', { uri: 'https://x.com' })).toBeNull();
+    expect(extractPostbackKey('message', { text: 'hi' })).toBeNull();
   });
 });
 
@@ -122,6 +142,21 @@ describe('attributeTaps (pure attribution logic)', () => {
     expect(res.areas.find((a) => a.areaId === 'u1')!.unmeasurableReason).toBe('non-postback');
     expect(res.areas.find((a) => a.areaId === 'm1')!.count).toBeNull();
     expect(res.areas.find((a) => a.areaId === 'p1')!.count).toBe(4);
+  });
+
+  test('richmenuswitch (tab切替) taps ARE counted via switch-to-<targetPageId> key (MF-1)', () => {
+    const areas = [
+      area({ areaId: 'sw', actionType: 'richmenuswitch', actionData: { targetPageId: 'pg-2' } }),
+      area({ areaId: 'pb', actionType: 'postback', actionData: { data: 'buy' } }),
+    ];
+    // messages_log には content='switch-to-pg-2' で届く (publisher が注入した data)。
+    const res = attributeTaps(areas, new Map([['switch-to-pg-2', 7], ['buy', 3]]));
+    const sw = res.areas.find((a) => a.areaId === 'sw')!;
+    expect(sw.count).toBe(7);
+    expect(sw.measurable).toBe(true);
+    expect(sw.postbackData).toBe('switch-to-pg-2');
+    expect(res.totalTaps).toBe(10);
+    expect(res.unattributedCount).toBe(0);
   });
 });
 
@@ -218,5 +253,22 @@ describe('getRichMenuTapAnalytics (SQL: period / DISTINCT / account / group)', (
     expect(res.areas.find((a) => a.areaId === 'ar-2')!.count).toBeNull();
     expect(res.totalTaps).toBe(2);
     expect(res.unattributedCount).toBe(2); // どちらの area か復元不能 → 領域不明
+  });
+
+  test('richmenuswitch tab-switch taps are counted from messages_log content=switch-to-<targetPageId> (MF-1)', async () => {
+    seedAccountFriend('acc-1', 'f-1', 'U1');
+    // richmenuswitch area は DB では { targetPageId } を持つ。LINE は switch-to-<targetPageId> で届く。
+    seedGroupWithAreas('acc-1', 'g-1', [
+      { id: 'ar-sw', type: 'richmenuswitch', data: { targetPageId: 'pg-2' } },
+      { id: 'ar-pb', type: 'postback', data: { data: 'buy' } },
+    ]);
+    seedPostbackTap('m-1', 'f-1', 'acc-1', 'switch-to-pg-2', '2026-03-01T10:00:00.000');
+    seedPostbackTap('m-2', 'f-1', 'acc-1', 'switch-to-pg-2', '2026-03-01T11:00:00.000');
+    seedPostbackTap('m-3', 'f-1', 'acc-1', 'buy', '2026-03-01T12:00:00.000');
+    const res = await getRichMenuTapAnalytics(db, { groupId: 'g-1', accountId: 'acc-1', startDate: '2026-03-01', endDate: '2026-03-01' });
+    expect(res.areas.find((a) => a.areaId === 'ar-sw')!.count).toBe(2); // タブ切替タップが計上される
+    expect(res.areas.find((a) => a.areaId === 'ar-pb')!.count).toBe(1);
+    expect(res.totalTaps).toBe(3);
+    expect(res.unattributedCount).toBe(0);
   });
 });
