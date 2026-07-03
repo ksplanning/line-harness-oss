@@ -9,6 +9,10 @@
 // CSV エスケープ / BOM / CRLF は packages/shared の単一正典を使う (batch3 C1・drift 排除)。
 // web 独自の csvEscape 実装は撤去済 (「同じ処理を2箇所」= drift 罠 / batch2 validateFlex の教訓)。
 import { toCsv } from '@line-crm/shared'
+// downloadBlob は lib/download.ts に昇格 (batch3 C6)。CSV エクスポートと共用。
+import { downloadBlob } from '../download'
+
+export { downloadBlob }
 
 export const CSV_TEMPLATE_HEADERS = ['質問', '言い換え', '答え', '有効'] as const
 
@@ -38,21 +42,6 @@ export function buildCsvTemplate(options?: CsvTemplateOptions): Blob | { blob: B
   const blob = new Blob([text], { type: 'text/csv;charset=utf-8' })
   if (options?.returnText) return { blob, text }
   return blob
-}
-
-/**
- * Blob をファイル名付きでダウンロード (クライアント only)。
- */
-export function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  // メモリ解放 (次のイベントループで revoke)。
-  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 /** CSV テンプレを「質問の見本.csv」でダウンロード。 */

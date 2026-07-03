@@ -33,6 +33,7 @@ import type {
   TrafficPool,
   PoolAccount,
 } from '@line-crm/shared'
+import { downloadBlob } from './download'
 
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
@@ -104,6 +105,31 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
   if (!res.ok) throw new Error(`API error: ${res.status}`)
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
+}
+
+/**
+ * CSV エクスポート専用のダウンロード経路 (batch3 C6 / G39)。
+ *
+ * fetchApi は常に res.json() を呼ぶため CSV blob を受け取れない (JSON parse で落ちる)。
+ * ここでは fetch を直接使い、admin(pages.dev)⇄worker(workers.dev) の cross-site でも
+ * HttpOnly セッション cookie を送るため `credentials: 'include'` を付ける。
+ * res.ok を確認し、400 (上限超過) 等は body の日本語エラーを Error として投げる
+ * (呼び出し側 UI が error banner に出す)。成功時は blob を downloadBlob で保存する。
+ */
+export async function downloadCsv(path: string, filename: string): Promise<void> {
+  const res = await fetch(`${API_URL}${path}`, { credentials: 'include' })
+  if (!res.ok) {
+    let message = 'CSV の出力に失敗しました。もう一度お試しください。'
+    try {
+      const body = (await res.json()) as { error?: string }
+      if (body?.error) message = body.error
+    } catch {
+      // non-JSON レスポンスはそのまま既定メッセージ
+    }
+    throw new Error(message)
+  }
+  const blob = await res.blob()
+  downloadBlob(blob, filename)
 }
 
 export type FriendListParams = {
@@ -192,6 +218,15 @@ export const api = {
     },
     get: (id: string) =>
       fetchApi<ApiResponse<Scenario & { steps: ScenarioStep[] }>>(`/api/scenarios/${id}`),
+    // シナリオ複製 (steps 含む深いコピー・is_active=false で作られる)。
+    // accountId 指定時は worker 側 account 境界 guard に渡す (別 account の複製を防ぐ)。
+    duplicate: (id: string, accountId?: string) => {
+      const query = accountId ? `?lineAccountId=${encodeURIComponent(accountId)}` : ''
+      return fetchApi<ApiResponse<Scenario & { steps: ScenarioStep[] }>>(
+        `/api/scenarios/${id}/duplicate${query}`,
+        { method: 'POST' },
+      )
+    },
     create: (data: Omit<Scenario, 'id' | 'createdAt' | 'updatedAt'>) =>
       fetchApi<ApiResponse<Scenario>>('/api/scenarios', {
         method: 'POST',
