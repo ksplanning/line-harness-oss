@@ -486,15 +486,21 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    rename: (id: string, name: string) =>
-      fetchApi<{ success: boolean; data?: SavedSearchData; error?: string }>(`/api/saved-searches/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ name }),
-      }),
-    remove: (id: string) =>
-      fetchApi<{ success: boolean }>(`/api/saved-searches/${id}`, {
-        method: 'DELETE',
-      }),
+    rename: (id: string, name: string, accountId?: string | null) =>
+      fetchApi<{ success: boolean; data?: SavedSearchData; error?: string }>(
+        `/api/saved-searches/${id}` + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ name }),
+        },
+      ),
+    remove: (id: string, accountId?: string | null) =>
+      fetchApi<{ success: boolean }>(
+        `/api/saved-searches/${id}` + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
+        {
+          method: 'DELETE',
+        },
+      ),
   },
 
   // ── Round 2 APIs ─────────────────────────────────────────────────────────

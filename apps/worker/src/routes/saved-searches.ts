@@ -56,11 +56,29 @@ savedSearches.post('/api/saved-searches', async (c) => {
   return c.json({ success: true, data: created }, 201);
 });
 
+/**
+ * account-scoped (lineAccountId 非 null) の行は request の accountId と厳密一致でなければ
+ * 拒否する (reviewer R1 MED: GET /api/friends の guard と整合)。global(null) は常に許可。
+ * 一致しなければ 403 を返し、一致すれば null を返す。
+ */
+function accountScopeReject(
+  existing: { lineAccountId: string | null },
+  accountId: string | null,
+): Response | null {
+  if (existing.lineAccountId !== null && existing.lineAccountId !== accountId) {
+    return Response.json({ success: false, error: 'saved search account mismatch' }, { status: 403 });
+  }
+  return null;
+}
+
 // PATCH /api/saved-searches/:id — rename and/or update conditions
 savedSearches.patch('/api/saved-searches/:id', async (c) => {
   const id = c.req.param('id');
   const existing = await getSavedSearchById(c.env.DB, id);
   if (!existing) return c.json({ success: false, error: 'Not found' }, 404);
+
+  const rejected = accountScopeReject(existing, c.req.query('accountId') ?? null);
+  if (rejected) return rejected;
 
   const body = await c.req.json<{ name?: string; conditions?: unknown }>();
 
@@ -85,6 +103,11 @@ savedSearches.patch('/api/saved-searches/:id', async (c) => {
 // DELETE /api/saved-searches/:id
 savedSearches.delete('/api/saved-searches/:id', async (c) => {
   const id = c.req.param('id');
+  const existing = await getSavedSearchById(c.env.DB, id);
+  if (existing) {
+    const rejected = accountScopeReject(existing, c.req.query('accountId') ?? null);
+    if (rejected) return rejected;
+  }
   await deleteSavedSearch(c.env.DB, id);
   return c.json({ success: true, data: null });
 });

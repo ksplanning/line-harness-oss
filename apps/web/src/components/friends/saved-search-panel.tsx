@@ -80,7 +80,7 @@ export default function SavedSearchPanel({ accountId, tags, activeId, onApply }:
 
   const handleRename = async (id: string) => {
     if (renameValue.trim() === '') return
-    await api.savedSearches.rename(id, renameValue.trim())
+    await api.savedSearches.rename(id, renameValue.trim(), accountId || undefined)
     setRenamingId(null)
     setRenameValue('')
     if (activeId === id) onApply(id) // keep active
@@ -88,7 +88,7 @@ export default function SavedSearchPanel({ accountId, tags, activeId, onApply }:
   }
 
   const handleDelete = async (id: string) => {
-    await api.savedSearches.remove(id)
+    await api.savedSearches.remove(id, accountId || undefined)
     setPendingRemoveId(null)
     if (activeId === id) onApply(null) // 適用中を削除したら解除
     await load()

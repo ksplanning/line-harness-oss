@@ -88,19 +88,27 @@ describe('G10: api.savedSearches', () => {
     expect(captured[0].body).toEqual({ name: 'VIP', conditions, accountId: 'acc-1' })
   })
 
-  test('rename(id, name) は PATCH /api/saved-searches/:id', async () => {
+  test('rename(id, name, accountId) は PATCH /api/saved-searches/:id?accountId= (account scope)', async () => {
     const { api } = await loadMod()
-    await api.savedSearches.rename('ss-1', 'new')
-    expect(captured[0].url).toBe(`${BASE}/api/saved-searches/ss-1`)
+    await api.savedSearches.rename('ss-1', 'new', 'acc-1')
+    expect(captured[0].url).toBe(`${BASE}/api/saved-searches/ss-1?accountId=acc-1`)
     expect(captured[0].method).toBe('PATCH')
     expect(captured[0].body).toEqual({ name: 'new' })
   })
 
-  test('remove(id) は DELETE /api/saved-searches/:id', async () => {
+  test('remove(id, accountId) は DELETE /api/saved-searches/:id?accountId= (account scope)', async () => {
     const { api } = await loadMod()
-    await api.savedSearches.remove('ss-1')
-    expect(captured[0].url).toBe(`${BASE}/api/saved-searches/ss-1`)
+    await api.savedSearches.remove('ss-1', 'acc-1')
+    expect(captured[0].url).toBe(`${BASE}/api/saved-searches/ss-1?accountId=acc-1`)
     expect(captured[0].method).toBe('DELETE')
+  })
+
+  test('rename/remove without accountId omit the query (global saved search)', async () => {
+    const { api } = await loadMod()
+    await api.savedSearches.rename('ss-1', 'new')
+    expect(captured[0].url).toBe(`${BASE}/api/saved-searches/ss-1`)
+    await api.savedSearches.remove('ss-1')
+    expect(captured[1].url).toBe(`${BASE}/api/saved-searches/ss-1`)
   })
 })
 

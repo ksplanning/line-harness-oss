@@ -139,7 +139,7 @@ describe('saved-searches CRUD', () => {
     expect(res.status).toBe(400);
   });
 
-  test('PATCH renames and DELETE removes', async () => {
+  test('PATCH renames and DELETE removes (matching account context)', async () => {
     const app = setupApp();
     const post = await app.request('/api/saved-searches', {
       method: 'POST',
@@ -148,7 +148,7 @@ describe('saved-searches CRUD', () => {
     });
     const { data } = await post.json<{ data: { id: string } }>();
 
-    const patch = await app.request(`/api/saved-searches/${data.id}`, {
+    const patch = await app.request(`/api/saved-searches/${data.id}?accountId=acc-1`, {
       method: 'PATCH',
       ...AUTH,
       body: JSON.stringify({ name: 'new' }),
@@ -156,9 +156,54 @@ describe('saved-searches CRUD', () => {
     const patched = await patch.json<{ data: { name: string } }>();
     expect(patched.data.name).toBe('new');
 
-    const del = await app.request(`/api/saved-searches/${data.id}`, { method: 'DELETE', ...AUTH });
+    const del = await app.request(`/api/saved-searches/${data.id}?accountId=acc-1`, { method: 'DELETE', ...AUTH });
     expect(del.status).toBe(200);
     expect(hoisted.store.size).toBe(0);
+  });
+
+  test('PATCH/DELETE of an account-scoped saved search from another account is rejected 403 (reviewer R1 MED)', async () => {
+    const app = setupApp();
+    const post = await app.request('/api/saved-searches', {
+      method: 'POST',
+      ...AUTH,
+      body: JSON.stringify({ accountId: 'acc-1', name: 'x', conditions: VALID_CONDS }),
+    });
+    const { data } = await post.json<{ data: { id: string } }>();
+
+    const patch = await app.request(`/api/saved-searches/${data.id}?accountId=acc-2`, {
+      method: 'PATCH',
+      ...AUTH,
+      body: JSON.stringify({ name: 'hijack' }),
+    });
+    expect(patch.status).toBe(403);
+
+    // request に accountId が無い場合も account-scoped 行は拒否。
+    const patchNoAcc = await app.request(`/api/saved-searches/${data.id}`, {
+      method: 'PATCH',
+      ...AUTH,
+      body: JSON.stringify({ name: 'hijack' }),
+    });
+    expect(patchNoAcc.status).toBe(403);
+
+    const del = await app.request(`/api/saved-searches/${data.id}?accountId=acc-2`, { method: 'DELETE', ...AUTH });
+    expect(del.status).toBe(403);
+    expect(hoisted.store.size).toBe(1); // 拒否されたので残る
+  });
+
+  test('global (null-account) saved search is editable from any account context', async () => {
+    const app = setupApp();
+    const post = await app.request('/api/saved-searches', {
+      method: 'POST',
+      ...AUTH,
+      body: JSON.stringify({ accountId: null, name: 'g', conditions: VALID_CONDS }),
+    });
+    const { data } = await post.json<{ data: { id: string } }>();
+    const patch = await app.request(`/api/saved-searches/${data.id}?accountId=acc-9`, {
+      method: 'PATCH',
+      ...AUTH,
+      body: JSON.stringify({ name: 'g2' }),
+    });
+    expect(patch.status).toBe(200);
   });
 
   test('unauthenticated request is 401', async () => {
