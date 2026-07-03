@@ -189,6 +189,86 @@ export async function deleteScenario(db: D1Database, id: string): Promise<void> 
   await db.prepare(`DELETE FROM scenarios WHERE id = ?`).bind(id).run();
 }
 
+/**
+ * シナリオを steps ごと深くコピーして新規シナリオを返す (batch3 G6)。
+ *
+ * - scenario 全定義列 (name→`(コピー) ` 前置 / description / trigger_type /
+ *   trigger_tag_id / line_account_id / delivery_mode) を引き継ぐ。
+ * - **is_active は必ず 0 (false) 固定** = 複製直後の意図しない自動配信を防ぐ。
+ * - id は新 UUID・created_at/updated_at は複製時刻。
+ * - scenario_steps は全列を深いコピー (id/scenario_id/created_at のみ新規)。
+ *   INSERT 列は createScenarioStep の受理列と 1:1 で突き合わせる。
+ * - friend_scenarios (enroll 進捗) と統計は複製しない (「型」の複製であり実行状態は
+ *   引き継がない)。外部導線 (entry_routes/tracked_links/forms.on_submit_scenario_id)
+ *   も一切触らない (誤って新 id に付け替えると複製が公開導線から起動される)。
+ *
+ * 元シナリオが存在しないときは null を返す。account 境界チェックは呼び出し側 (route) の責務。
+ */
+export async function duplicateScenario(
+  db: D1Database,
+  id: string,
+): Promise<ScenarioWithSteps | null> {
+  const source = await getScenarioById(db, id);
+  if (!source) return null;
+
+  const newId = crypto.randomUUID();
+  const now = jstNow();
+
+  // scenario 全列を明示 INSERT (drift 防止: bootstrap.sql の scenarios 列と 1:1)。
+  await db
+    .prepare(
+      `INSERT INTO scenarios
+        (id, name, description, trigger_type, trigger_tag_id, is_active, delivery_mode, line_account_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+    )
+    .bind(
+      newId,
+      `(コピー) ${source.name}`,
+      source.description ?? null,
+      source.trigger_type,
+      source.trigger_tag_id ?? null,
+      source.delivery_mode ?? 'relative',
+      source.line_account_id ?? null,
+      now,
+      now,
+    )
+    .run();
+
+  // steps を全列深いコピー (createScenarioStep の INSERT 列と 1:1)。
+  for (const step of source.steps) {
+    await db
+      .prepare(
+        `INSERT INTO scenario_steps
+          (id, scenario_id, step_order, delay_minutes, message_type, message_content,
+           condition_type, condition_value, next_step_on_false,
+           offset_days, offset_minutes, delivery_time,
+           template_id, on_reach_tag_id,
+           created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        newId,
+        step.step_order,
+        step.delay_minutes,
+        step.message_type,
+        step.message_content,
+        step.condition_type ?? null,
+        step.condition_value ?? null,
+        step.next_step_on_false ?? null,
+        step.offset_days ?? null,
+        step.offset_minutes ?? null,
+        step.delivery_time ?? null,
+        step.template_id ?? null,
+        step.on_reach_tag_id ?? null,
+        now,
+      )
+      .run();
+  }
+
+  return getScenarioById(db, newId);
+}
+
 // ============================================================
 // Scenario Steps
 // ============================================================
