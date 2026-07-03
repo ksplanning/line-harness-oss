@@ -151,13 +151,13 @@ export default function CannedResponsesPage() {
                           <span className="sm:hidden text-xs text-gray-600">削除しますか？</span>
                           <button
                             onClick={() => handleDelete(item.id)}
-                            className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700"
+                            className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white bg-red-600 hover:bg-red-700 whitespace-nowrap"
                           >
                             はい
                           </button>
                           <button
                             onClick={() => setPendingRemoveId(null)}
-                            className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
+                            className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 whitespace-nowrap"
                           >
                             いいえ
                           </button>

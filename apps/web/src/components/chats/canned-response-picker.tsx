@@ -54,7 +54,7 @@ export default function CannedResponsePicker({ accountId, onSelect }: Props) {
           type="button"
           onClick={toggle}
           disabled={!accountId}
-          className="text-xs text-gray-600 border border-gray-300 rounded-md px-2.5 py-1 min-h-[36px] hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="text-xs text-gray-600 border border-gray-300 rounded-md px-2.5 py-1 min-h-[36px] whitespace-nowrap hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           📋 定型文
         </button>
