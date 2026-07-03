@@ -159,6 +159,33 @@ friends.get('/api/friends', async (c) => {
         binds.push(metaKey, value);
       }
     }
+
+    // 保存済み検索 (G10): ?savedSearchId= が有る時だけ保存条件を AND する。無い時は
+    // 既存クエリと byte-identical (非回帰・T-B4)。buildSegmentWhere の clause は複数
+    // ルールを括弧で包むので、上の line_account_id 条件と AND しても別アカウントの
+    // 友だちが漏れない (HIGH-2)。account 一致検証: NULL(global) or 要求 accountId 一致
+    // でなければ 400 (別アカウントの保存条件を誤適用させない)。
+    const savedSearchId = c.req.query('savedSearchId');
+    if (savedSearchId) {
+      const { getSavedSearchById } = await import('@line-crm/db');
+      const saved = await getSavedSearchById(db, savedSearchId);
+      if (!saved) {
+        return c.json({ success: false, error: 'saved search not found' }, 400);
+      }
+      if (saved.lineAccountId !== null && lineAccountId && saved.lineAccountId !== lineAccountId) {
+        return c.json({ success: false, error: 'saved search account mismatch' }, 400);
+      }
+      try {
+        const { buildSegmentWhere } = await import('../services/segment-query.js');
+        const condition = JSON.parse(saved.conditions);
+        const { clause, bindings } = buildSegmentWhere(condition);
+        conditions.push(clause);
+        binds.push(...bindings);
+      } catch {
+        return c.json({ success: false, error: 'invalid saved search conditions' }, 400);
+      }
+    }
+
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const countStmt = db.prepare(`SELECT COUNT(*) as count FROM friends f ${where}`);

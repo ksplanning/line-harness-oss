@@ -914,18 +914,22 @@ broadcasts.get('/api/broadcasts/:id/progress', async (c) => {
 broadcasts.post('/api/segments/count', async (c) => {
   const body = await c.req.json<{ conditions: unknown; accountId?: string }>();
   try {
-    const { buildSegmentQuery } = await import('../services/segment-query.js');
-    const { sql, bindings } = buildSegmentQuery(body.conditions as SegmentCondition);
+    const { buildSegmentWhere } = await import('../services/segment-query.js');
+    const { clause, bindings } = buildSegmentWhere(body.conditions as SegmentCondition);
 
-    let accountSql = sql;
-    const accountBindings = [...bindings];
+    // account 条件を構造的に AND (文字列 replace をやめる)。clause は複数ルールを括弧で
+    // 包むので `f.line_account_id = ? AND (A OR B)` となり別アカウントが漏れない (HIGH-2)。
+    const wheres: string[] = [];
+    const binds: unknown[] = [];
     if (body.accountId) {
-      accountSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
-      accountBindings.unshift(body.accountId);
+      wheres.push('f.line_account_id = ?');
+      binds.push(body.accountId);
     }
+    wheres.push(clause);
+    binds.push(...bindings);
 
-    const countSql = accountSql.replace(/^SELECT .+ FROM/, 'SELECT COUNT(*) as count FROM');
-    const result = await c.env.DB.prepare(countSql).bind(...accountBindings).first<{ count: number }>();
+    const countSql = `SELECT COUNT(*) as count FROM friends f WHERE ${wheres.join(' AND ')}`;
+    const result = await c.env.DB.prepare(countSql).bind(...binds).first<{ count: number }>();
 
     return c.json({ success: true, count: result?.count ?? 0 });
   } catch (err) {

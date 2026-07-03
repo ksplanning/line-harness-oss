@@ -325,16 +325,20 @@ async function processQueuedBroadcastBatches(
   const accountId = raw.line_account_id as string | null;
   let friends: Array<{ id: string; line_user_id: string }>;
   if (segmentConditionsStr) {
-    const { buildSegmentQuery } = await import('./segment-query.js');
+    const { buildSegmentWhere } = await import('./segment-query.js');
     const condition = JSON.parse(segmentConditionsStr);
-    const { sql, bindings } = buildSegmentQuery(condition);
-    // アカウントフィルタを追加（line_account_idで絞り込み）
-    let accountSql = sql;
-    const accountBindings = [...bindings];
+    const { clause, bindings } = buildSegmentWhere(condition);
+    // アカウントフィルタを構造的に AND (line_account_idで絞り込み)。clause は複数ルールを
+    // 括弧で包むので `acc AND (A OR B)` となり別アカウントへ誤送信しない (HIGH-2)。
+    const wheres: string[] = [];
+    const accountBindings: unknown[] = [];
     if (accountId) {
-      accountSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
-      accountBindings.unshift(accountId);
+      wheres.push('f.line_account_id = ?');
+      accountBindings.push(accountId);
     }
+    wheres.push(clause);
+    accountBindings.push(...bindings);
+    const accountSql = `SELECT f.id, f.line_user_id FROM friends f WHERE ${wheres.join(' AND ')}`;
     const result = await db.prepare(accountSql).bind(...accountBindings).all<{ id: string; line_user_id: string }>();
     friends = result.results ?? [];
   } else if (broadcast.target_tag_id) {

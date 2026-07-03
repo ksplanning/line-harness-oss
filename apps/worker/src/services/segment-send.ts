@@ -8,7 +8,7 @@ import {
 import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
-import { buildSegmentQuery } from './segment-query.js';
+import { buildSegmentWhere } from './segment-query.js';
 import type { SegmentCondition } from './segment-query.js';
 import { buildMessage } from './broadcast.js';
 
@@ -39,15 +39,20 @@ export async function processSegmentSend(
   let successCount = 0;
 
   try {
-    // Build and execute segment query to get matching friends (アカウントで絞り込み)
-    const { sql, bindings } = buildSegmentQuery(condition);
+    // Build and execute segment query to get matching friends (アカウントで絞り込み)。
+    // clause は複数ルールを括弧で包むので account 条件と AND しても別アカウントの
+    // 友だちへ誤送信しない (HIGH-2: 従来の文字列 replace は `acc AND A OR B` で漏れた)。
+    const { clause, bindings } = buildSegmentWhere(condition);
     const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
-    let finalSql = sql;
-    const finalBindings = [...bindings];
+    const wheres: string[] = [];
+    const finalBindings: unknown[] = [];
     if (broadcastAccountId) {
-      finalSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
-      finalBindings.unshift(broadcastAccountId);
+      wheres.push('f.line_account_id = ?');
+      finalBindings.push(broadcastAccountId);
     }
+    wheres.push(clause);
+    finalBindings.push(...bindings);
+    const finalSql = `SELECT f.id, f.line_user_id FROM friends f WHERE ${wheres.join(' AND ')}`;
     const queryResult = await db
       .prepare(finalSql)
       .bind(...finalBindings)
