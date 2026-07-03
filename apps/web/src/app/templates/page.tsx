@@ -258,6 +258,7 @@ export default function TemplatesPage() {
     <div>
       <Header
         title="テンプレート管理"
+        description="一斉配信・シナリオ・自動返信で呼び出す単発メッセージのテンプレートです。1テンプレート = 1吹き出し。複数吹き出しをまとめたい場合は「配信セット（テンプレパック）」をお使いください。"
         action={
           <button
             onClick={() => setShowCreate(true)}

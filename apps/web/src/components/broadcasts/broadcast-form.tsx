@@ -7,6 +7,7 @@ import { useAccount } from '@/contexts/account-context'
 import FlexPreviewComponent from '@/components/flex-preview'
 import ImageUploader from '@/components/shared/image-uploader'
 import MultiAccountDedupSection from './multi-account-dedup-section'
+import PackInsertSelector from './pack-insert-selector'
 import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
 import { flexToModel } from '@/lib/flex-builder/from-flex'
 import { imageLinkToFlexJson } from '@/lib/flex-builder/image-link'
@@ -185,6 +186,12 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             onChange={(e) => setForm({ ...form, title: e.target.value })}
           />
         </div>
+
+        {/* テンプレパックから入れる (G16・挿入のみ・送信しない) */}
+        <PackInsertSelector
+          accountId={selectedAccountId || null}
+          onInsert={(patch) => setForm((prev) => ({ ...prev, messageType: patch.messageType, messageContent: patch.messageContent }))}
+        />
 
         {/* Message type */}
         <div>
