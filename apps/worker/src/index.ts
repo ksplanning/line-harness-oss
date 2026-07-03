@@ -79,6 +79,7 @@ import adminUpdate from './routes/admin-update.js';
 import { csvExports } from './routes/exports.js';
 import { responseSchedules } from './routes/response-schedules.js';
 import { savedSearches } from './routes/saved-searches.js';
+import { cannedResponses } from './routes/canned-responses.js';
 
 export type Env = {
   Bindings: {
@@ -197,6 +198,7 @@ app.route('/', richMenuGroups);
 app.route('/', csvExports);
 app.route('/', responseSchedules);
 app.route('/', savedSearches);
+app.route('/', cannedResponses);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version
