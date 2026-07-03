@@ -184,6 +184,15 @@ export interface SavedSearchData {
   updatedAt: string
 }
 
+export interface CannedResponseData {
+  id: string
+  lineAccountId: string | null
+  title: string
+  content: string
+  createdAt: string
+  updatedAt: string
+}
+
 export type FriendWithTags = Friend & { tags: Tag[] }
 /** Friend list items, optionally hydrated with chat status (when ?includeChatStatus=true) */
 export type FriendListItem = FriendWithTags & Partial<{
@@ -497,6 +506,34 @@ export const api = {
     remove: (id: string, accountId?: string | null) =>
       fetchApi<{ success: boolean }>(
         `/api/saved-searches/${id}` + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
+        {
+          method: 'DELETE',
+        },
+      ),
+  },
+
+  // G23 チャット定型文 (canned responses) — 個別チャットに差し込む定型文の CRUD
+  cannedResponses: {
+    list: (accountId?: string | null) =>
+      fetchApi<{ success: boolean; data: CannedResponseData[] }>(
+        '/api/canned-responses' + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
+      ),
+    create: (data: { title: string; content: string; accountId?: string | null }) =>
+      fetchApi<{ success: boolean; data?: CannedResponseData; error?: string }>('/api/canned-responses', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: { title?: string; content?: string }, accountId?: string | null) =>
+      fetchApi<{ success: boolean; data?: CannedResponseData; error?: string }>(
+        `/api/canned-responses/${id}` + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
+        {
+          method: 'PATCH',
+          body: JSON.stringify(data),
+        },
+      ),
+    remove: (id: string, accountId?: string | null) =>
+      fetchApi<{ success: boolean }>(
+        `/api/canned-responses/${id}` + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
         {
           method: 'DELETE',
         },
