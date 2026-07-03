@@ -125,3 +125,13 @@ describe('T-A1: adPlatforms namespace 新設 (広告CV連携)', () => {
     expect(captured[0].method).toBe('GET')
   })
 })
+
+describe('T-U1: trackedLinks.patch が originalUrl を送れる (C7 / silent-success 根治)', () => {
+  test('patch は PATCH /api/tracked-links/:id に originalUrl を含めて送れる', async () => {
+    const api = await loadApi()
+    await api.trackedLinks.patch('lk_1', { name: '改名', originalUrl: 'https://new.example.com', tagId: null })
+    expect(captured[0].url).toBe(`${BASE}/api/tracked-links/lk_1`)
+    expect(captured[0].method).toBe('PATCH')
+    expect(captured[0].body).toEqual({ name: '改名', originalUrl: 'https://new.example.com', tagId: null })
+  })
+})

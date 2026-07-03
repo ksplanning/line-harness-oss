@@ -82,6 +82,9 @@ export async function createTrackedLink(
 
 export interface UpdateTrackedLinkInput {
   name?: string;
+  // 遷移先 URL の編集 (batch2 C7 / BACKLOG-tracked-link-url-edit)。
+  // 未指定なら既存値を維持。SET 句にも original_url = ? を必ず揃える (silent-success 罠回避)。
+  originalUrl?: string;
   tagId?: string | null;
   scenarioId?: string | null;
   introTemplateId?: string | null;
@@ -99,6 +102,7 @@ export async function updateTrackedLink(
 
   const now = jstNow();
   const name = input.name ?? existing.name;
+  const originalUrl = input.originalUrl === undefined ? existing.original_url : input.originalUrl;
   const tagId = input.tagId === undefined ? existing.tag_id : input.tagId;
   const scenarioId = input.scenarioId === undefined ? existing.scenario_id : input.scenarioId;
   const introTemplateId =
@@ -110,10 +114,10 @@ export async function updateTrackedLink(
   await db
     .prepare(
       `UPDATE tracked_links
-         SET name = ?, tag_id = ?, scenario_id = ?, intro_template_id = ?, reward_template_id = ?, is_active = ?, updated_at = ?
+         SET name = ?, original_url = ?, tag_id = ?, scenario_id = ?, intro_template_id = ?, reward_template_id = ?, is_active = ?, updated_at = ?
        WHERE id = ?`,
     )
-    .bind(name, tagId, scenarioId, introTemplateId, rewardTemplateId, isActive, now, id)
+    .bind(name, originalUrl, tagId, scenarioId, introTemplateId, rewardTemplateId, isActive, now, id)
     .run();
 
   return getTrackedLinkById(db, id);

@@ -62,13 +62,11 @@ export default function TrackedLinksPage() {
       setFormError(nameError)
       return
     }
-    // 遷移先 URL 検証は作成時のみ (編集では readOnly で変更不可 = R1-I1)。
-    if (editing === 'new') {
-      const urlError = validateOriginalUrl(form.originalUrl)
-      if (urlError) {
-        setFormError(urlError)
-        return
-      }
+    // 遷移先 URL 検証は作成・編集どちらも通す (batch2 C7 で編集も URL 変更可能に)。
+    const urlError = validateOriginalUrl(form.originalUrl)
+    if (urlError) {
+      setFormError(urlError)
+      return
     }
     setFormError('')
     setSaving(true)
@@ -81,9 +79,10 @@ export default function TrackedLinksPage() {
               tagId: form.tagId || null,
             })
           : editing
-            ? // worker PATCH は original_url 非対応。originalUrl は送らない (silent-success 罠回避)。
+            ? // batch2 C7: worker PATCH + db SET 句 + server URL 検証が揃い originalUrl を送れる (silent-success 根治)。
               await api.trackedLinks.patch(editing.id, {
                 name: form.name.trim(),
+                originalUrl: form.originalUrl.trim(),
                 tagId: form.tagId || null,
               })
             : null
@@ -172,21 +171,18 @@ export default function TrackedLinksPage() {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">
-                遷移先 URL {editing === 'new' && <span className="text-red-500">*</span>}
+                遷移先 URL <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
                 value={form.originalUrl}
                 onChange={(e) => setForm((f) => ({ ...f, originalUrl: e.target.value }))}
-                readOnly={editing !== 'new'}
-                className={`w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 ${
-                  editing !== 'new' ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
-                }`}
+                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                 placeholder="https://example.com"
               />
               {editing !== 'new' && (
-                <p className="text-xs text-gray-400 mt-1">
-                  遷移先URLは作成後に変更できません。変える場合は新しいリンクを作成してください。
+                <p className="text-xs text-amber-600 mt-1">
+                  配信済みのリンクの飛び先も、このURLに変わります。
                 </p>
               )}
             </div>

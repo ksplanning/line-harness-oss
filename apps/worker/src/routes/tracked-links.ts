@@ -111,18 +111,39 @@ trackedLinks.post('/api/tracked-links', async (c) => {
   }
 });
 
+/** 遷移先 URL の server 側検証 (http/https スキーム + parse 可否)。canonical は web の validateOriginalUrl。 */
+function isValidOriginalUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 // PATCH /api/tracked-links/:id — update mutable fields
 trackedLinks.patch('/api/tracked-links/:id', async (c) => {
   try {
     const id = c.req.param('id');
     const body = await c.req.json<{
       name?: string;
+      // 遷移先 URL の編集 (batch2 C7 / BACKLOG-tracked-link-url-edit)。
+      originalUrl?: string;
       tagId?: string | null;
       scenarioId?: string | null;
       introTemplateId?: string | null;
       rewardTemplateId?: string | null;
       isActive?: boolean;
     }>();
+
+    // originalUrl が present なら保存前に server 側 URL 検証 (http/https + parse 可否)。
+    // client を迂回した不正 URL 保存を 400 でブロック (create 側の後付けは NEW-BACKLOG)。
+    if (body.originalUrl !== undefined && !isValidOriginalUrl(body.originalUrl)) {
+      return c.json(
+        { success: false, error: '正しい URL を入力してください（例: https://example.com）' },
+        400,
+      );
+    }
 
     const link = await updateTrackedLink(c.env.DB, id, body);
     if (!link) {
