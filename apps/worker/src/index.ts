@@ -82,6 +82,7 @@ import { savedSearches } from './routes/saved-searches.js';
 import { cannedResponses } from './routes/canned-responses.js';
 import { campaigns } from './routes/campaigns.js';
 import { templatePacks } from './routes/template-packs.js';
+import { richMenuAnalytics } from './routes/rich-menu-analytics.js';
 
 export type Env = {
   Bindings: {
@@ -203,6 +204,7 @@ app.route('/', savedSearches);
 app.route('/', cannedResponses);
 app.route('/', campaigns);
 app.route('/', templatePacks);
+app.route('/', richMenuAnalytics);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version
