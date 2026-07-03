@@ -54,7 +54,8 @@
     "046_faqs.sql",
     "047_faq_unmatched.sql",
     "048_response_schedules.sql",
-    "049_saved_searches.sql"
+    "049_saved_searches.sql",
+    "050_canned_responses.sql"
   ],
-  "migrationCount": 55
+  "migrationCount": 56
 }

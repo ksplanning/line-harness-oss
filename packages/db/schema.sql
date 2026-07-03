@@ -907,3 +907,20 @@ CREATE TABLE IF NOT EXISTS saved_searches (
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_saved_searches_account ON saved_searches(line_account_id);
+
+
+-- =============================================================================
+-- Canned Responses (migration 050 / G23) — チャット定型文
+-- 個別 1:1 チャットの返信に差し込む定型文 (title + content)。message_templates
+-- (配信テンプレ) とは別責務。挿入 UI は本文を入力欄に貼るだけで送信経路には
+-- 触れない。line_account_id が NULL なら全アカ共通、それ以外は account スコープ。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS canned_responses (
+  id               TEXT PRIMARY KEY,
+  line_account_id  TEXT DEFAULT NULL,
+  title            TEXT NOT NULL,
+  content          TEXT NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_canned_responses_account ON canned_responses(line_account_id);

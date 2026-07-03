@@ -217,6 +217,15 @@ CREATE TABLE calendar_bookings (
   updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE canned_responses (
+  id               TEXT PRIMARY KEY,
+  line_account_id  TEXT DEFAULT NULL,
+  title            TEXT NOT NULL,
+  content          TEXT NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE chats (
   id            TEXT PRIMARY KEY,
   friend_id     TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
@@ -882,6 +891,8 @@ CREATE INDEX idx_broadcasts_status ON broadcasts (status);
 CREATE INDEX idx_calendar_bookings_friend ON calendar_bookings (friend_id);
 
 CREATE INDEX idx_calendar_bookings_start ON calendar_bookings (start_at);
+
+CREATE INDEX idx_canned_responses_account ON canned_responses(line_account_id);
 
 CREATE INDEX idx_chats_friend ON chats (friend_id);
 
