@@ -94,6 +94,15 @@ trackedLinks.post('/api/tracked-links', async (c) => {
       return c.json({ success: false, error: 'name and originalUrl are required' }, 400);
     }
 
+    // 保存前に server 側 URL 検証 (http/https + parse 可否)。client 迂回 (MCP 経由等) で
+    // javascript: 等の不正 URL が保存されるのを 400 でブロック。PATCH 側 (6562e11) と同一関数。
+    if (!isValidOriginalUrl(body.originalUrl)) {
+      return c.json(
+        { success: false, error: '正しい URL を入力してください（例: https://example.com）' },
+        400,
+      );
+    }
+
     const link = await createTrackedLink(c.env.DB, {
       name: body.name,
       originalUrl: body.originalUrl,
