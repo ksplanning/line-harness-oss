@@ -7,6 +7,7 @@ import type { FriendListItem } from '@/lib/api'
 import { csvDateStamp } from '@/lib/download'
 import Header from '@/components/layout/header'
 import FriendListTable from '@/components/friends/friend-list-table'
+import SavedSearchPanel from '@/components/friends/saved-search-panel'
 import ExportCsvButton from '@/components/shared/export-csv-button'
 import CcPromptButton from '@/components/cc-prompt-button'
 import { useAccount } from '@/contexts/account-context'
@@ -47,6 +48,7 @@ export default function FriendsPage() {
   const [searchSubmitted, setSearchSubmitted] = useState('')
   const [sortMode, setSortMode] = useState<SortMode>('recent')
   const [responseFilter, setResponseFilter] = useState<ResponseFilter>('all')
+  const [savedSearchId, setSavedSearchId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -72,6 +74,7 @@ export default function FriendsPage() {
         includeChatStatus: true,
         sort: sortMode,
         handled: responseFilter === 'unhandled' ? 'unhandled' : undefined,
+        savedSearchId: savedSearchId || undefined,
       })
       if (res.success) {
         setFriends(res.data.items)
@@ -85,7 +88,7 @@ export default function FriendsPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, selectedTagId, selectedAccountId, searchSubmitted, sortMode, responseFilter])
+  }, [page, selectedTagId, selectedAccountId, searchSubmitted, sortMode, responseFilter, savedSearchId])
 
   useEffect(() => {
     loadTags()
@@ -212,6 +215,14 @@ export default function FriendsPage() {
             </span>
           </div>
         </div>
+
+        {/* 保存済み検索 (G10) — 既存フィルタの上に AND で重なる絞込 */}
+        <SavedSearchPanel
+          accountId={selectedAccountId || null}
+          tags={allTags}
+          activeId={savedSearchId}
+          onApply={(id) => updateAndResetPage(() => setSavedSearchId(id))}
+        />
       </div>
 
       {error && (

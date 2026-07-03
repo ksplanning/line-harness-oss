@@ -152,6 +152,8 @@ export type FriendListParams = {
   sort?: 'recent' | 'oldest'
   /** `unhandled` で「最新が未返信の incoming」だけに絞る (サーバ側 SQL filter). */
   handled?: 'unhandled'
+  /** G10 保存済み検索: 指定時のみ保存条件を AND する。未指定は byte-identical. */
+  savedSearchId?: string
 }
 
 /** G28 応答時間帯: 曜日別営業時間の 1 行 (day は 0=日..6=土 / getUTCDay 準拠)。 */
@@ -170,6 +172,16 @@ export interface ResponseScheduleData {
   outsideHoursMode: OutsideHoursMode
   awayMessage: string | null
   weeklyHours: DayHours[]
+}
+
+/** G10 保存済み検索: conditions は broadcast と同一の SegmentCondition JSON 文字列。 */
+export interface SavedSearchData {
+  id: string
+  lineAccountId: string | null
+  name: string
+  conditions: string
+  createdAt: string
+  updatedAt: string
 }
 
 export type FriendWithTags = Friend & { tags: Tag[] }
@@ -194,6 +206,7 @@ export const api = {
       if (params?.includeChatStatus) query.includeChatStatus = 'true'
       if (params?.sort) query.sort = params.sort
       if (params?.handled) query.handled = params.handled
+      if (params?.savedSearchId) query.savedSearchId = params.savedSearchId
       return fetchApi<ApiResponse<PaginatedResponse<FriendListItem>>>(
         '/api/friends?' + new URLSearchParams(query)
       )
@@ -459,6 +472,28 @@ export const api = {
       fetchApi<{ success: boolean; data?: ResponseScheduleData; error?: string }>('/api/response-schedules', {
         method: 'PUT',
         body: JSON.stringify(data),
+      }),
+  },
+
+  // G10 保存済み検索 (セグメント)
+  savedSearches: {
+    list: (accountId?: string) =>
+      fetchApi<{ success: boolean; data: SavedSearchData[] }>(
+        '/api/saved-searches' + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
+      ),
+    create: (data: { name: string; conditions: unknown; accountId?: string | null }) =>
+      fetchApi<{ success: boolean; data?: SavedSearchData; error?: string }>('/api/saved-searches', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    rename: (id: string, name: string) =>
+      fetchApi<{ success: boolean; data?: SavedSearchData; error?: string }>(`/api/saved-searches/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      }),
+    remove: (id: string) =>
+      fetchApi<{ success: boolean }>(`/api/saved-searches/${id}`, {
+        method: 'DELETE',
       }),
   },
 
