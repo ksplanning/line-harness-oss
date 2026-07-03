@@ -53,7 +53,8 @@
     "045_menus_auto_tag.sql",
     "046_faqs.sql",
     "047_faq_unmatched.sql",
-    "048_response_schedules.sql"
+    "048_response_schedules.sql",
+    "049_saved_searches.sql"
   ],
-  "migrationCount": 54
+  "migrationCount": 55
 }

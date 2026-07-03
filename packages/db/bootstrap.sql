@@ -667,6 +667,15 @@ CREATE TABLE rich_menu_pages (
   UNIQUE (group_id, order_index)
 );
 
+CREATE TABLE saved_searches (
+  id               TEXT PRIMARY KEY,
+  line_account_id  TEXT DEFAULT NULL,
+  name             TEXT NOT NULL,
+  conditions       TEXT NOT NULL DEFAULT '{"operator":"AND","rules":[]}',
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE scenario_steps (
   id              TEXT PRIMARY KEY,
   scenario_id     TEXT NOT NULL REFERENCES scenarios (id) ON DELETE CASCADE,
@@ -981,6 +990,8 @@ CREATE INDEX idx_rich_menu_areas_page     ON rich_menu_areas(page_id);
 CREATE INDEX idx_rich_menu_groups_account ON rich_menu_groups(account_id, status);
 
 CREATE INDEX idx_rich_menu_pages_group    ON rich_menu_pages(group_id, order_index);
+
+CREATE INDEX idx_saved_searches_account ON saved_searches(line_account_id);
 
 CREATE INDEX idx_scenario_steps_scenario_id ON scenario_steps (scenario_id);
 
