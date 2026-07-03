@@ -612,6 +612,20 @@ CREATE TABLE reminders (
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , line_account_id TEXT);
 
+CREATE TABLE response_schedules (
+  id                 TEXT PRIMARY KEY,
+  line_account_id    TEXT DEFAULT NULL,
+  is_enabled         INTEGER NOT NULL DEFAULT 0,
+  timezone           TEXT NOT NULL DEFAULT 'Asia/Tokyo'
+                     CHECK (timezone = 'Asia/Tokyo'),
+  outside_hours_mode TEXT NOT NULL DEFAULT 'auto_reply'
+                     CHECK (outside_hours_mode IN ('auto_reply','away_message','none')),
+  away_message       TEXT DEFAULT NULL,
+  weekly_hours       TEXT NOT NULL DEFAULT '[]',
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE rich_menu_areas (
   id              TEXT PRIMARY KEY,
   page_id         TEXT NOT NULL REFERENCES rich_menu_pages(id) ON DELETE CASCADE,
@@ -959,6 +973,8 @@ CREATE INDEX idx_ref_tracking_ref    ON ref_tracking (ref_code);
 CREATE INDEX idx_reminder_steps_reminder ON reminder_steps (reminder_id);
 
 CREATE INDEX idx_reminders_status_scheduled ON booking_reminders (status, scheduled_at);
+
+CREATE INDEX idx_response_schedules_account ON response_schedules(line_account_id);
 
 CREATE INDEX idx_rich_menu_areas_page     ON rich_menu_areas(page_id);
 

@@ -52,7 +52,8 @@
     "044_forms_og.sql",
     "045_menus_auto_tag.sql",
     "046_faqs.sql",
-    "047_faq_unmatched.sql"
+    "047_faq_unmatched.sql",
+    "048_response_schedules.sql"
   ],
-  "migrationCount": 53
+  "migrationCount": 54
 }

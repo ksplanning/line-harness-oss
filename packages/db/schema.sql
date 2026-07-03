@@ -869,3 +869,25 @@ CREATE TABLE IF NOT EXISTS rich_menu_areas (
 CREATE INDEX IF NOT EXISTS idx_rich_menu_pages_group    ON rich_menu_pages(group_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_rich_menu_areas_page     ON rich_menu_areas(page_id);
 CREATE INDEX IF NOT EXISTS idx_rich_menu_groups_account ON rich_menu_groups(account_id, status);
+
+
+-- =============================================================================
+-- Response Schedules (migration 048 / G28) — 応答時間帯スケジュール
+-- 営業時間内=オペレーター対応 / 時間外=自動応答 or 不在メッセージ。
+-- is_enabled 既定 0 (OFF) = 既存 auto-reply 挙動の非回帰。
+-- weekly_hours JSON: [{day:0..6 (0=日曜/getUTCDay準拠), closed:bool, open:'HH:MM', close:'HH:MM'}]
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS response_schedules (
+  id                 TEXT PRIMARY KEY,
+  line_account_id    TEXT DEFAULT NULL,
+  is_enabled         INTEGER NOT NULL DEFAULT 0,
+  timezone           TEXT NOT NULL DEFAULT 'Asia/Tokyo'
+                     CHECK (timezone = 'Asia/Tokyo'),
+  outside_hours_mode TEXT NOT NULL DEFAULT 'auto_reply'
+                     CHECK (outside_hours_mode IN ('auto_reply','away_message','none')),
+  away_message       TEXT DEFAULT NULL,
+  weekly_hours       TEXT NOT NULL DEFAULT '[]',
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_response_schedules_account ON response_schedules(line_account_id);
