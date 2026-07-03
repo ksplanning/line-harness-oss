@@ -9,6 +9,8 @@ import CcPromptButton from '@/components/cc-prompt-button'
 import FlexPreviewComponent from '@/components/flex-preview'
 import FriendInfoSidebar from '@/components/chats/friend-info-sidebar'
 import ImageUploader, { type ImageUploaderValue } from '@/components/shared/image-uploader'
+import CannedResponsePicker from '@/components/chats/canned-response-picker'
+import { applyCannedSelection } from '@/lib/canned-responses/insert-canned-text'
 
 interface Chat {
   id: string
@@ -1069,6 +1071,22 @@ export default function ChatsPage() {
                     value={pendingImage}
                     onChange={setPendingImage}
                     label="画像を送る (任意)"
+                  />
+                </div>
+                {/* 定型文ピッカー — 選択で messageContent に挿入するだけ (送信経路には触れない) */}
+                <div className="mb-2">
+                  <CannedResponsePicker
+                    accountId={selectedAccountId}
+                    onSelect={(text) => {
+                      applyCannedSelection(text, setMessageContent)
+                      requestAnimationFrame(() => {
+                        const el = textareaRef.current
+                        if (!el) return
+                        el.focus()
+                        const n = el.value.length
+                        el.setSelectionRange(n, n)
+                      })
+                    }}
                   />
                 </div>
                 <div className="flex items-end gap-2">
