@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { api, type CannedResponseData } from '@/lib/api'
 import { previewContent } from '@/lib/canned-responses/canned-form'
+import { loadPickerItems } from '@/lib/canned-responses/picker-load'
 
 interface Props {
   accountId: string | null
@@ -37,10 +38,9 @@ export default function CannedResponsePicker({ accountId, onSelect }: Props) {
     if (accountId) {
       setLoading(true)
       try {
-        const res = await api.cannedResponses.list(accountId)
-        if (res.success) setItems(res.data)
-      } catch {
-        // サイレント失敗 (ピッカーは空表示のまま)
+        // loadPickerItems が取得前に必ず setItems([]) でクリアするため、
+        // reload 失敗時に旧 (別 account の) 定型文が残らない (Codex P2)。
+        await loadPickerItems(accountId, setItems, (id) => api.cannedResponses.list(id))
       } finally {
         setLoading(false)
       }
