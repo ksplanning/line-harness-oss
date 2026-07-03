@@ -30,6 +30,7 @@ export * from './traffic-pools';
 export * from './message-templates';
 export * from './rich-menus';
 export * from './response-schedules';
+export * from './saved-searches';
 
 /**
  * Thin wrapper around D1Database.

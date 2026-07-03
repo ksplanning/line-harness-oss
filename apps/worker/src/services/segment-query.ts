@@ -8,7 +8,18 @@ export interface SegmentCondition {
   rules: SegmentRule[]
 }
 
-export function buildSegmentQuery(condition: SegmentCondition): { sql: string; bindings: unknown[] } {
+/**
+ * Build the WHERE fragment (clause + bindings) for a segment condition, aliased
+ * to `f` (matches `FROM friends f` in every caller). Extracted so /api/friends,
+ * /api/segments/count, and segment-send can AND it structurally against an
+ * account scope without string surgery.
+ *
+ * HIGH-2: when there is more than one rule the joined clause is wrapped in
+ * parentheses. Without this, `f.line_account_id = ? AND tagA OR tagB` parses as
+ * `(account AND tagA) OR tagB` and leaks friends from other accounts. Callers
+ * that AND this fragment with an account condition rely on the grouping.
+ */
+export function buildSegmentWhere(condition: SegmentCondition): { clause: string; bindings: unknown[] } {
   const bindings: unknown[] = []
   const clauses: string[] = []
 
@@ -91,9 +102,21 @@ export function buildSegmentQuery(condition: SegmentCondition): { sql: string; b
     }
   }
 
+  if (clauses.length === 0) {
+    return { clause: '1=1', bindings }
+  }
   const separator = condition.operator === 'AND' ? ' AND ' : ' OR '
-  const where = clauses.length > 0 ? clauses.join(separator) : '1=1'
-  const sql = `SELECT f.id, f.line_user_id FROM friends f WHERE ${where}`
+  const joined = clauses.join(separator)
+  const clause = clauses.length > 1 ? `(${joined})` : joined
+  return { clause, bindings }
+}
 
+/**
+ * Full SELECT for a segment condition. Kept as the equivalence anchor for
+ * buildSegmentWhere; internally delegates so the WHERE fragment is identical.
+ */
+export function buildSegmentQuery(condition: SegmentCondition): { sql: string; bindings: unknown[] } {
+  const { clause, bindings } = buildSegmentWhere(condition)
+  const sql = `SELECT f.id, f.line_user_id FROM friends f WHERE ${clause}`
   return { sql, bindings }
 }
