@@ -22,10 +22,12 @@ export default function PackInsertSelector({ accountId, onInsert }: Props) {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!accountId) {
-      setPacks([])
-      return
-    }
+    // account 切替時は前 account の選択/展開を完全リセット (stale-state で別 account の
+    // pack items がフォームに挿入されるのを防ぐ・batch5 loadPickerItems の取得前クリア方式)。
+    setPacks([])
+    setSelectedPackId('')
+    setItems(null)
+    if (!accountId) return
     let cancelled = false
     api.templatePacks
       .list(accountId)
