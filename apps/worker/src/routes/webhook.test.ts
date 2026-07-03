@@ -26,7 +26,14 @@ vi.mock('@line-crm/db', () => ({
   addTagToFriend: vi.fn(),
   getEntryRouteByRefCode: vi.fn(),
   getMessageTemplateById: vi.fn(),
+  // G28 応答時間帯: 既定は null (schedule 無し) → ゲート no-op で既存パス byte-identical。
+  getEffectiveResponseSchedule: vi.fn().mockResolvedValue(null),
 }));
+
+vi.mock('@line-crm/shared', async () => {
+  const actual = await vi.importActual<typeof import('@line-crm/shared')>('@line-crm/shared');
+  return { ...actual, isWithinBusinessHours: vi.fn() };
+});
 
 vi.mock('@line-crm/line-sdk', async () => {
   const actual = await vi.importActual<typeof import('@line-crm/line-sdk')>('@line-crm/line-sdk');
@@ -68,7 +75,9 @@ import {
   updateFriendFollowStatus,
   upsertChatOnMessage,
   upsertFriend,
+  getEffectiveResponseSchedule,
 } from '@line-crm/db';
+import { isWithinBusinessHours } from '@line-crm/shared';
 import { fireEvent } from '../services/event-bus.js';
 import { tryFaqReply } from '../services/faq-reply.js';
 import { webhook } from './webhook.js';
@@ -476,5 +485,109 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       'env-default-token',
       null,
     );
+  });
+
+  const SILENT_RULE = [{
+    id: 'auto-1',
+    keyword: '営業時間',
+    match_type: 'exact' as const,
+    response_type: 'silent',
+    response_content: '',
+    template_id: null,
+    is_active: 1,
+    created_at: '2026-07-02T00:00:00+09:00',
+  }];
+
+  function schedule(overrides: Record<string, unknown>) {
+    return {
+      id: 's1',
+      lineAccountId: 'acc-1',
+      isEnabled: true,
+      timezone: 'Asia/Tokyo',
+      outsideHoursMode: 'auto_reply',
+      awayMessage: null,
+      weeklyHours: [],
+      ...overrides,
+    };
+  }
+
+  test('gate ON + within business hours → auto-reply/FAQ suppressed, chat unread, businessHoursSuppressed flag set', async () => {
+    vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(schedule({}) as never);
+    vi.mocked(isWithinBusinessHours).mockReturnValue(true);
+
+    // 営業時間内: たとえマッチする auto-reply があってもオペレーター対応に回す。
+    const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' }, '営業時間', SILENT_RULE as never);
+
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+    expect(tryFaqReply).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(fireEvent).toHaveBeenCalledWith(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: '営業時間', matched: false, businessHoursSuppressed: true },
+        replyToken: 'reply-token',
+      },
+      'env-default-token',
+      null,
+    );
+  });
+
+  test('gate ON + outside hours + away_message → sends the away text once (replyMessage 1), FAQ not run', async () => {
+    vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(
+      schedule({ outsideHoursMode: 'away_message', awayMessage: 'ただいま営業時間外です' }) as never,
+    );
+    vi.mocked(isWithinBusinessHours).mockReturnValue(false);
+
+    const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' });
+
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(tryFaqReply).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(fireEvent).toHaveBeenCalledWith(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: '営業時間は？', matched: true },
+        replyToken: undefined,
+      },
+      'env-default-token',
+      null,
+    );
+  });
+
+  test('gate ON + outside hours + auto_reply → the legacy auto-reply loop still fires (matched)', async () => {
+    vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(schedule({ outsideHoursMode: 'auto_reply' }) as never);
+    vi.mocked(isWithinBusinessHours).mockReturnValue(false);
+
+    await postTextWebhook({}, '営業時間', SILENT_RULE as never);
+
+    // silent ルールが matched → matched=true → 未読化されない = 従来ループが回った証跡。
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('gate ON + outside hours + none → chat unread and nothing sent', async () => {
+    vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(schedule({ outsideHoursMode: 'none' }) as never);
+    vi.mocked(isWithinBusinessHours).mockReturnValue(false);
+
+    const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' }, '営業時間', SILENT_RULE as never);
+
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+    expect(tryFaqReply).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+  });
+
+  test('gate is_enabled=0 → time-independent legacy behavior (non-regression); business-hours not consulted', async () => {
+    vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(
+      schedule({ isEnabled: false, outsideHoursMode: 'none' }) as never,
+    );
+
+    await postTextWebhook({}, '営業時間', SILENT_RULE as never);
+
+    // schedule 無効 → 従来ループが時刻に関係なく発火 (silent matched → 未読化なし)。
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(isWithinBusinessHours).not.toHaveBeenCalled();
   });
 });

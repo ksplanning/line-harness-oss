@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { verifySignature, LineClient } from '@line-crm/line-sdk';
 import type { WebhookRequestBody, WebhookEvent, TextEventMessage } from '@line-crm/line-sdk';
-import { createStickerMessageContent } from '@line-crm/shared';
+import { createStickerMessageContent, isWithinBusinessHours } from '@line-crm/shared';
 import {
   upsertFriend,
   updateFriendFollowStatus,
@@ -13,6 +13,7 @@ import {
   completeFriendScenario,
   upsertChatOnMessage,
   getLineAccounts,
+  getEffectiveResponseSchedule,
   jstNow,
   computeNextDeliveryAt,
   resolveStepContent,
@@ -594,9 +595,57 @@ async function handleEvent(
       }
     }
 
+    let matched = false;
+    let replyTokenConsumed = false;
+
+    // 応答時間帯ゲート (G28) — is_enabled の時だけ介入。既定 OFF / schedule 無しは
+    // 既存パスへ素通り (byte-identical・非回帰)。ゲートは「auto-reply ループ / FAQ を
+    // 回すか否か」の判定分岐 + 営業時間外 away_message の 1 回返信のみで、送信ロジック
+    // 本体 (replyMessage/buildMessage/step-delivery) は不変。postback ハンドラは対象外。
+    let skipAutoReply = false;
+    // 営業時間内にオペレーターへ回した message は event-bus の message_received
+    // automation の send_message も抑止する (HIGH-1: auto-reply ループだけ止めると
+    // automation 経由の自動返信が営業時間内に裏口から発火する穴を塞ぐ)。
+    let businessHoursSuppressed = false;
+    const responseSchedule = await getEffectiveResponseSchedule(db, lineAccountId);
+    if (responseSchedule && responseSchedule.isEnabled) {
+      if (isWithinBusinessHours(responseSchedule, Date.now())) {
+        // 営業時間内 → 自動応答せずオペレーター対応 (未読) に回す。
+        skipAutoReply = true;
+        businessHoursSuppressed = true;
+      } else if (responseSchedule.outsideHoursMode === 'away_message') {
+        // 営業時間外 (不在メッセージ) → 設定文面を 1 回だけ返す (既存 replyMessage 経路)。
+        skipAutoReply = true;
+        const awayText = (responseSchedule.awayMessage ?? '').trim();
+        if (awayText) {
+          try {
+            const awayMsg = buildMessage('text', awayText);
+            await lineClient.replyMessage(event.replyToken, [awayMsg]);
+            replyTokenConsumed = true;
+            matched = true;
+            const awayLogId = crypto.randomUUID();
+            await db
+              .prepare(
+                `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
+                 VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'reply', 'auto_reply', ?)`,
+              )
+              .bind(awayLogId, friend.id, awayText, jstNow())
+              .run();
+          } catch (err) {
+            console.error('Failed to send away message', err);
+          }
+        }
+      } else if (responseSchedule.outsideHoursMode === 'none') {
+        // 営業時間外 (なにもしない) → 未読にしてスタッフ対応。
+        skipAutoReply = true;
+      }
+      // outsideHoursMode === 'auto_reply' → skipAutoReply=false → 従来ループ発火。
+    }
+
     // 自動返信チェック（このアカウントのルール + グローバルルールのみ）
     // NOTE: Auto-replies use replyMessage (free, no quota) instead of pushMessage
     // The replyToken is only valid for ~1 minute after the message event
+    if (!skipAutoReply) {
     const autoReplyQuery = lineAccountId
       ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
       : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
@@ -613,8 +662,6 @@ async function handleEvent(
         created_at: string;
       }>();
 
-    let matched = false;
-    let replyTokenConsumed = false;
     for (const rule of autoReplies.results) {
       const isMatch =
         rule.match_type === 'exact'
@@ -679,6 +726,7 @@ async function handleEvent(
         replyTokenConsumed = true;
       }
     }
+    } // end if (!skipAutoReply)
 
     // auto_replies にマッチしなかった = 自発メッセージ → unread にする
     if (!matched) {
@@ -686,10 +734,14 @@ async function handleEvent(
     }
 
     // イベントバス発火: message_received
-    // Pass replyToken only when auto_reply didn't actually consume it
+    // Pass replyToken only when auto_reply didn't actually consume it.
+    // businessHoursSuppressed は営業時間内にオペレーターへ回した合図 → event-bus 側で
+    // message_received automation の send_message を抑止する (HIGH-1)。
     await fireEvent(db, 'message_received', {
       friendId: friend.id,
-      eventData: { text: incomingText, matched },
+      eventData: businessHoursSuppressed
+        ? { text: incomingText, matched, businessHoursSuppressed: true }
+        : { text: incomingText, matched },
       replyToken: replyTokenConsumed ? undefined : event.replyToken,
     }, lineAccessToken, lineAccountId);
 

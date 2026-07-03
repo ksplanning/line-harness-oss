@@ -225,3 +225,61 @@ describe('fireEvent — send_message action logging', () => {
     expect(String(captured[0].binds[3])).toContain('from-template');
   });
 });
+
+describe('fireEvent — G28 businessHoursSuppressed gate (HIGH-1)', () => {
+  let captured: CapturedInsert[];
+
+  beforeEach(async () => {
+    captured = [];
+    const db = await import('@line-crm/db');
+    // add_tag (非送信) + send_message (送信) の混在 automation。
+    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      {
+        id: 'auto-mixed',
+        line_account_id: 'acc-1',
+        conditions: JSON.stringify({}),
+        actions: JSON.stringify([
+          { type: 'add_tag', params: { tagId: 'tag-x' } },
+          { type: 'send_message', params: { messageType: 'text', content: 'auto reply body' } },
+        ]),
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('suppresses send_message but still runs non-send actions when businessHoursSuppressed', async () => {
+    const db = await import('@line-crm/db');
+    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: captured });
+
+    await fireEvent(
+      dbFake,
+      'message_received',
+      { friendId: 'friend-1', eventData: { text: 'hi', matched: false, businessHoursSuppressed: true }, replyToken: 'reply-token' },
+      'channel-token',
+      'acc-1',
+    );
+
+    // 送信抑止 = messages_log への outgoing INSERT なし。
+    expect(captured).toHaveLength(0);
+    // 非送信 action (add_tag) は通す。
+    expect(db.addTagToFriend).toHaveBeenCalledWith(dbFake, 'friend-1', 'tag-x');
+  });
+
+  it('runs send_message normally when businessHoursSuppressed is absent (non-regression)', async () => {
+    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: captured });
+
+    await fireEvent(
+      dbFake,
+      'message_received',
+      { friendId: 'friend-1', eventData: { text: 'hi', matched: false }, replyToken: 'reply-token' },
+      'channel-token',
+      'acc-1',
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].binds[5]).toBe('automation');
+  });
+});
