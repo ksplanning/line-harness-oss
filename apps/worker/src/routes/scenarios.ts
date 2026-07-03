@@ -5,6 +5,7 @@ import {
   createScenario,
   updateScenario,
   deleteScenario,
+  duplicateScenario,
   createScenarioStep,
   updateScenarioStep,
   deleteScenarioStep,
@@ -232,6 +233,49 @@ scenarios.post('/api/scenarios', async (c) => {
     return c.json({ success: true, data: serializeScenario(scenario) }, 201);
   } catch (err) {
     console.error('POST /api/scenarios error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/scenarios/:id/duplicate - deep-copy a scenario (steps included, is_active=0)
+scenarios.post('/api/scenarios/:id/duplicate', async (c) => {
+  try {
+    const id = c.req.param('id');
+    // Account boundary (codex gap-check HIGH-3): when the caller scopes to an
+    // account, only allow duplicating a global (NULL) scenario or one bound to
+    // that same account. Otherwise a known id could clone another account's
+    // scenario. Absent lineAccountId keeps the existing id-only behavior that
+    // GET/PUT/DELETE already use (single-operator realm).
+    const lineAccountId = c.req.query('lineAccountId');
+    const source = await getScenarioById(c.env.DB, id);
+    if (!source) {
+      return c.json({ success: false, error: 'Scenario not found' }, 404);
+    }
+    if (
+      lineAccountId &&
+      source.line_account_id != null &&
+      source.line_account_id !== lineAccountId
+    ) {
+      return c.json({ success: false, error: 'Scenario not found' }, 404);
+    }
+
+    const dup = await duplicateScenario(c.env.DB, id);
+    if (!dup) {
+      return c.json({ success: false, error: 'Scenario not found' }, 404);
+    }
+
+    return c.json(
+      {
+        success: true,
+        data: {
+          ...serializeScenario(dup),
+          steps: dup.steps.map(serializeStep),
+        },
+      },
+      201,
+    );
+  } catch (err) {
+    console.error('POST /api/scenarios/:id/duplicate error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

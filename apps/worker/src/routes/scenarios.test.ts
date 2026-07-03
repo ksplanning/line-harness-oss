@@ -7,6 +7,7 @@ const dbMocks = {
   createScenario: vi.fn(),
   updateScenario: vi.fn(),
   deleteScenario: vi.fn(),
+  duplicateScenario: vi.fn(),
   createScenarioStep: vi.fn(),
   updateScenarioStep: vi.fn(),
   deleteScenarioStep: vi.fn(),
@@ -141,5 +142,77 @@ describe('GET /api/scenarios?lineAccountId=X', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { success: boolean; data: unknown[] };
     expect(body.data).toEqual([]);
+  });
+});
+
+describe('POST /api/scenarios/:id/duplicate (T-W1 / HIGH-3)', () => {
+  const dupResult = {
+    id: 'new-1',
+    name: '(コピー) ようこそ',
+    description: null,
+    trigger_type: 'friend_add' as const,
+    trigger_tag_id: null,
+    line_account_id: 'acc-1',
+    is_active: 0,
+    delivery_mode: 'relative' as const,
+    created_at: '2026-07-03T00:00:00.000+09:00',
+    updated_at: '2026-07-03T00:00:00.000+09:00',
+    steps: [
+      {
+        id: 'ns-1', scenario_id: 'new-1', step_order: 0, delay_minutes: 0,
+        message_type: 'text' as const, message_content: 'こんにちは',
+        condition_type: null, condition_value: null, next_step_on_false: null,
+        offset_days: null, offset_minutes: null, delivery_time: null,
+        template_id: null, on_reach_tag_id: null, created_at: '2026-07-03T00:00:00.000+09:00',
+      },
+    ],
+  };
+
+  test('201 with the duplicated scenario (is_active=false) + copied steps', async () => {
+    dbMocks.getScenarioById.mockResolvedValue({ id: 's-1', name: 'ようこそ', line_account_id: 'acc-1', steps: dupResult.steps });
+    dbMocks.duplicateScenario.mockResolvedValue(dupResult);
+    const { db } = makeScenarioDb([]);
+
+    const res = await setupApp(db).request('/api/scenarios/s-1/duplicate', { method: 'POST' });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { id: string; name: string; isActive: boolean; steps: { messageContent: string }[] };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.id).toBe('new-1');
+    expect(body.data.name).toBe('(コピー) ようこそ');
+    expect(body.data.isActive).toBe(false); // 配信 OFF で複製
+    expect(body.data.steps).toHaveLength(1);
+    expect(body.data.steps[0].messageContent).toBe('こんにちは'); // 複製後 steps 一致
+    expect(dbMocks.duplicateScenario).toHaveBeenCalledWith(expect.anything(), 's-1');
+  });
+
+  test('404 when the source scenario does not exist', async () => {
+    dbMocks.getScenarioById.mockResolvedValue(null);
+    const { db } = makeScenarioDb([]);
+
+    const res = await setupApp(db).request('/api/scenarios/nope/duplicate', { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(dbMocks.duplicateScenario).not.toHaveBeenCalled();
+  });
+
+  test('404 when scoping to an account that does not own the source (HIGH-3 guard)', async () => {
+    dbMocks.getScenarioById.mockResolvedValue({ id: 's-1', name: 'x', line_account_id: 'acc-A', steps: [] });
+    const { db } = makeScenarioDb([]);
+
+    const res = await setupApp(db).request('/api/scenarios/s-1/duplicate?lineAccountId=acc-B', { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(dbMocks.duplicateScenario).not.toHaveBeenCalled();
+  });
+
+  test('allows duplicating a global (NULL account) scenario even when scoped', async () => {
+    dbMocks.getScenarioById.mockResolvedValue({ id: 's-g', name: 'global', line_account_id: null, steps: [] });
+    dbMocks.duplicateScenario.mockResolvedValue({ ...dupResult, id: 'new-g', line_account_id: null });
+    const { db } = makeScenarioDb([]);
+
+    const res = await setupApp(db).request('/api/scenarios/s-g/duplicate?lineAccountId=acc-B', { method: 'POST' });
+    expect(res.status).toBe(201);
+    expect(dbMocks.duplicateScenario).toHaveBeenCalledWith(expect.anything(), 's-g');
   });
 });
