@@ -6,6 +6,10 @@
  * DL はクライアントで Blob + URL.createObjectURL (サーバ不要 = static export 互換)。
  */
 
+// CSV エスケープ / BOM / CRLF は packages/shared の単一正典を使う (batch3 C1・drift 排除)。
+// web 独自の csvEscape 実装は撤去済 (「同じ処理を2箇所」= drift 罠 / batch2 validateFlex の教訓)。
+import { toCsv } from '@line-crm/shared'
+
 export const CSV_TEMPLATE_HEADERS = ['質問', '言い換え', '答え', '有効'] as const
 
 const CSV_SAMPLE_ROWS: string[][] = [
@@ -13,21 +17,10 @@ const CSV_SAMPLE_ROWS: string[][] = [
   ['駐車場はありますか？', '駐車場,車', '店舗の裏に3台分ございます。', '有効'],
 ]
 
-// RFC4180 に沿った CSV フィールドのエスケープ (カンマ・改行・引用符を含むセルは "" 囲み)。
-function csvEscape(value: string): string {
-  if (/[",\r\n]/.test(value)) {
-    return '"' + value.replace(/"/g, '""') + '"'
-  }
-  return value
-}
-
 function toCsvText(): string {
-  const lines = [
-    CSV_TEMPLATE_HEADERS.map(csvEscape).join(','),
-    ...CSV_SAMPLE_ROWS.map((row) => row.map(csvEscape).join(',')),
-  ]
-  // 先頭に UTF-8 BOM (U+FEFF)。CRLF 改行 (Excel 互換)。
-  return '﻿' + lines.join('\r\n') + '\r\n'
+  // 先頭に UTF-8 BOM・CRLF 改行 (Excel 互換)。見本セルは固定文字列で injection の
+  // 心配が無いため sanitize=false で従来出力 (byte-identical) を維持する。
+  return toCsv(CSV_TEMPLATE_HEADERS, CSV_SAMPLE_ROWS, { sanitize: false })
 }
 
 export interface CsvTemplateOptions {
