@@ -201,7 +201,7 @@ CREATE TABLE "broadcasts" (
   account_ids        TEXT CHECK (account_ids IS NULL OR json_valid(account_ids)),
   dedup_priority     TEXT CHECK (dedup_priority IS NULL OR json_valid(dedup_priority)),
   failed_account_ids TEXT CHECK (failed_account_ids IS NULL OR json_valid(failed_account_ids))
-, dedup_progress TEXT, batch_lock_at TEXT);
+, dedup_progress TEXT, batch_lock_at TEXT, campaign_id TEXT REFERENCES campaigns (id) ON DELETE SET NULL);
 
 CREATE TABLE calendar_bookings (
   id             TEXT PRIMARY KEY,
@@ -215,6 +215,14 @@ CREATE TABLE calendar_bookings (
   metadata       TEXT,
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE campaigns (
+  id               TEXT PRIMARY KEY,
+  account_id       TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  name             TEXT NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE TABLE canned_responses (
@@ -792,6 +800,24 @@ CREATE TABLE tags (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE template_pack_items (
+  id               TEXT PRIMARY KEY,
+  pack_id          TEXT NOT NULL REFERENCES template_packs(id) ON DELETE CASCADE,
+  order_index      INTEGER NOT NULL,
+  message_type     TEXT NOT NULL CHECK (message_type IN ('text', 'flex')),
+  message_content  TEXT NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE template_packs (
+  id               TEXT PRIMARY KEY,
+  account_id       TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  name             TEXT NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE templates (
   id              TEXT PRIMARY KEY,
   name            TEXT NOT NULL,
@@ -886,11 +912,15 @@ CREATE INDEX idx_broadcast_insights_broadcast_id ON broadcast_insights(broadcast
 
 CREATE INDEX idx_broadcast_insights_status ON broadcast_insights(status);
 
+CREATE INDEX idx_broadcasts_campaign ON broadcasts(campaign_id);
+
 CREATE INDEX idx_broadcasts_status ON broadcasts (status);
 
 CREATE INDEX idx_calendar_bookings_friend ON calendar_bookings (friend_id);
 
 CREATE INDEX idx_calendar_bookings_start ON calendar_bookings (start_at);
+
+CREATE INDEX idx_campaigns_account ON campaigns(account_id);
 
 CREATE INDEX idx_canned_responses_account ON canned_responses(line_account_id);
 
@@ -1017,6 +1047,10 @@ CREATE INDEX idx_staff_members_role ON staff_members(role);
 CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
 
 CREATE INDEX idx_stripe_events_type ON stripe_events (event_type);
+
+CREATE INDEX idx_template_pack_items_pack ON template_pack_items(pack_id, order_index);
+
+CREATE INDEX idx_template_packs_account ON template_packs(account_id);
 
 CREATE INDEX idx_templates_category ON templates (category);
 

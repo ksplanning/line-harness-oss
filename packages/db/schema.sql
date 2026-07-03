@@ -924,3 +924,47 @@ CREATE TABLE IF NOT EXISTS canned_responses (
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_canned_responses_account ON canned_responses(line_account_id);
+
+
+-- =============================================================================
+-- Campaigns (migration 051 / F2 G3) — キャンペーン集計
+-- 複数の配信 (broadcasts.campaign_id で紐付け) を1キャンペーンとして束ね、まとめて
+-- 成果を見る。account_id NOT NULL = account-scoped (別アカウントの成果は見えない)。
+-- 送信には関与しない (集計・紐付けのみ)。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS campaigns (
+  id               TEXT PRIMARY KEY,
+  account_id       TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  name             TEXT NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_campaigns_account ON campaigns(account_id);
+
+
+-- =============================================================================
+-- Template Packs (migration 053 / F2 G16) — テンプレパック (複数吹き出しセット)
+-- 「あいさつ→案内→CTA」のような複数吹き出しを1パックとして保存し、配信作成時に
+-- まとめて挿入する。account_id NOT NULL = account-scoped (別アカウントのパック文面は
+-- list/選択に出ない)。既存 message_templates (単発テンプレ) とは別責務・別表。
+-- 挿入 UI は broadcast-form の state に載せるだけで送信経路には触れない。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS template_packs (
+  id               TEXT PRIMARY KEY,
+  account_id       TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  name             TEXT NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_template_packs_account ON template_packs(account_id);
+
+CREATE TABLE IF NOT EXISTS template_pack_items (
+  id               TEXT PRIMARY KEY,
+  pack_id          TEXT NOT NULL REFERENCES template_packs(id) ON DELETE CASCADE,
+  order_index      INTEGER NOT NULL,
+  message_type     TEXT NOT NULL CHECK (message_type IN ('text', 'flex')),
+  message_content  TEXT NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_template_pack_items_pack ON template_pack_items(pack_id, order_index);
