@@ -6,6 +6,7 @@ import Header from '@/components/layout/header'
 import { useAccount } from '@/contexts/account-context'
 import { api } from '@/lib/api'
 import { ApplyToTagModal } from '@/components/rich-menus/apply-to-tag-modal'
+import TapAnalyticsPanel from '@/components/rich-menus/tap-analytics-panel'
 
 type RichMenuGroupListItem = {
   id: string
@@ -57,6 +58,7 @@ export default function RichMenusListPage() {
   const [externalError, setExternalError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [applyTo, setApplyTo] = useState<RichMenuGroupListItem | null>(null)
+  const [activeTab, setActiveTab] = useState<'list' | 'analytics'>('list')
 
   const reload = useCallback(async () => {
     if (!selectedAccount?.id) return
@@ -205,14 +207,37 @@ export default function RichMenusListPage() {
         </div>
       )}
 
-      {/* Admin 管理メニュー見出し */}
+      {/* タブ切替: メニュー管理 / タップ数分析 (G58) */}
       {selectedAccount && !loading && !error && (
+        <div className="flex gap-1 border-b border-gray-200 mb-4">
+          <button
+            onClick={() => setActiveTab('list')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'list' ? 'border-green-500 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+          >
+            メニュー管理
+          </button>
+          <button
+            onClick={() => setActiveTab('analytics')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'analytics' ? 'border-green-500 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+          >
+            タップ数分析
+          </button>
+        </div>
+      )}
+
+      {/* タップ数分析タブ (G58) */}
+      {selectedAccount && !loading && !error && activeTab === 'analytics' && (
+        <TapAnalyticsPanel accountId={selectedAccount.id} />
+      )}
+
+      {/* Admin 管理メニュー見出し */}
+      {selectedAccount && !loading && !error && activeTab === 'list' && (
         <h2 className="text-sm font-semibold text-gray-700 mb-3">
           管理画面で作成・編集するメニュー
         </h2>
       )}
 
-      {selectedAccount && !loading && !error && groups.length === 0 && (
+      {selectedAccount && !loading && !error && activeTab === 'list' && groups.length === 0 && (
         <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-12 text-center">
           <p className="text-gray-500 mb-4">
             まだリッチメニューが作成されていません。
@@ -227,7 +252,7 @@ export default function RichMenusListPage() {
         </div>
       )}
 
-      {selectedAccount && !loading && !error && groups.length > 0 && (
+      {selectedAccount && !loading && !error && activeTab === 'list' && groups.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {groups.map((g) => (
             <div
