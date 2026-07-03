@@ -48,64 +48,19 @@ export interface BuilderModel {
   cards: BuilderCard[];
 }
 
-// ---- Flex JSON 出力型 (bare contents = bubble | carousel) ----
-
-export interface FlexBubble {
-  type: 'bubble';
-  size?: string;
-  hero?: FlexNode;
-  header?: FlexBox;
-  body?: FlexBox;
-  footer?: FlexBox;
-}
-
-export interface FlexCarousel {
-  type: 'carousel';
-  contents: FlexBubble[];
-}
-
-/** 保存/プレビューに渡す bare contents。message object でラップしない (buildMessage 契約)。 */
-export type FlexContents = FlexBubble | FlexCarousel;
-
-export interface FlexBox {
-  type: 'box';
-  layout: 'vertical' | 'horizontal' | 'baseline';
-  spacing?: string;
-  contents: FlexNode[];
-}
-
-export interface FlexAction {
-  type: 'uri';
-  label?: string;
-  uri: string;
-}
-
-export interface FlexNode {
-  type: string;
-  text?: string;
-  wrap?: boolean;
-  weight?: string;
-  size?: string;
-  url?: string;
-  aspectMode?: string;
-  aspectRatio?: string;
-  cornerRadius?: string;
-  style?: string;
-  action?: FlexAction;
-  layout?: string;
-  spacing?: string;
-  contents?: FlexNode[];
-}
-
-/** validateFlex の返り値。ok:false のとき日本語 errors を UI が表示。 */
-export type ValidationResult =
-  | { ok: true }
-  | { ok: false; errors: ValidationError[] };
-
-export interface ValidationError {
-  code: string;
-  messageJa: string;
-  /** どのカード/部品でエラーが起きたか (行内エラー所在明示用)。任意。 */
-  cardIndex?: number;
-  partId?: string;
-}
+// ---- Flex JSON 出力型 + 検証結果型 ----
+//
+// batch2 で packages/shared (flex-types.ts) に移設し単一正典化。web/worker が同一型を共有し
+// drift しない。既存 import (`@/lib/flex-builder/types` から FlexContents 等) は本 re-export で
+// 不変に解決される。ビルダー内部モデル (上記 BuilderModel / BuilderPart / LinkSpec 等) は
+// web-UI 専用のためこのファイルに残す (worker は import しない)。
+export type {
+  FlexBubble,
+  FlexCarousel,
+  FlexContents,
+  FlexBox,
+  FlexAction,
+  FlexNode,
+  ValidationResult,
+  ValidationError,
+} from '@line-crm/shared';
