@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import type { Scenario, ScenarioStep, ScenarioTriggerType, MessageType, DeliveryMode } from '@line-crm/shared'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
@@ -141,6 +142,7 @@ function ImagePreview({ content }: { content: string }) {
 
 export default function ScenarioDetailClient({ scenarioId }: { scenarioId: string }) {
   const id = scenarioId
+  const router = useRouter()
 
   const [scenario, setScenario] = useState<ScenarioWithSteps | null>(null)
   const [loading, setLoading] = useState(true)
@@ -149,6 +151,9 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   const [editing, setEditing] = useState(false)
   const [editForm, setEditForm] = useState({ name: '', description: '', triggerType: 'friend_add' as ScenarioTriggerType, isActive: true })
   const [saving, setSaving] = useState(false)
+  // 複製: 詳細では軽い行内確認を挟む (window.confirm 禁止 = headless E2E 非互換)。
+  const [confirmDup, setConfirmDup] = useState(false)
+  const [duplicating, setDuplicating] = useState(false)
 
   const [showStepForm, setShowStepForm] = useState(false)
   const [editingStepId, setEditingStepId] = useState<string | null>(null)
@@ -208,6 +213,29 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   useEffect(() => {
     loadScenario()
   }, [loadScenario])
+
+  const handleDuplicate = async () => {
+    if (!scenario) return
+    setDuplicating(true)
+    setError('')
+    try {
+      // scenario 自身の account を guard に渡す (元と同 account の複製・別 account 混入なし)。
+      const accountId = (scenario as { lineAccountId?: string | null }).lineAccountId ?? undefined
+      const res = await api.scenarios.duplicate(id, accountId)
+      if (res.success) {
+        // 複製先の詳細へ遷移 → 「(コピー) 元名」「無効」バッジで複製を即目視 (ui-design §1.4)。
+        router.push(`/scenarios/detail?id=${res.data.id}`)
+      } else {
+        setError(res.error)
+        setConfirmDup(false)
+      }
+    } catch {
+      setError('複製に失敗しました。もう一度お試しください。')
+      setConfirmDup(false)
+    } finally {
+      setDuplicating(false)
+    }
+  }
 
   // 並列で stats / templates / tags を取得（リグレッションを起こさないよう失敗は無視）
   useEffect(() => {
@@ -560,6 +588,33 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                 >
                   編集
                 </button>
+                {confirmDup ? (
+                  <span className="flex items-center gap-1">
+                    <span className="text-xs text-gray-600">このシナリオを複製しますか？（複製は「無効」で作られます）</span>
+                    <button
+                      onClick={handleDuplicate}
+                      disabled={duplicating}
+                      className="min-h-[36px] px-3 rounded-md text-xs font-medium text-white disabled:opacity-50"
+                      style={{ backgroundColor: '#06C755' }}
+                    >
+                      {duplicating ? '複製中…' : 'はい'}
+                    </button>
+                    <button
+                      onClick={() => setConfirmDup(false)}
+                      disabled={duplicating}
+                      className="min-h-[36px] px-3 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 disabled:opacity-50"
+                    >
+                      いいえ
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => setConfirmDup(true)}
+                    className="text-xs font-medium text-green-600 hover:text-green-700 px-3 py-1.5 rounded-md hover:bg-green-50 transition-colors"
+                  >
+                    複製
+                  </button>
+                )}
               </div>
             </div>
             {scenario.description && (

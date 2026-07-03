@@ -27,11 +27,12 @@ function ModeBadge({ mode }: { mode?: DeliveryMode }) {
 interface ScenarioListProps {
   scenarios: ScenarioWithCount[]
   onToggleActive: (id: string, current: boolean) => void
+  onDuplicate: (id: string) => void
   onDelete: (id: string) => void
   loading?: boolean
 }
 
-export default function ScenarioList({ scenarios, onToggleActive, onDelete, loading }: ScenarioListProps) {
+export default function ScenarioList({ scenarios, onToggleActive, onDuplicate, onDelete, loading }: ScenarioListProps) {
   if (scenarios.length === 0) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
@@ -89,18 +90,25 @@ export default function ScenarioList({ scenarios, onToggleActive, onDelete, load
             </span>
           </div>
 
-          {/* Actions */}
-          <div className="flex items-center gap-2 pt-1 border-t border-gray-100">
+          {/* Actions — 4 ボタン化。mobile375 で折返し可 (flex-wrap + min-w) */}
+          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-100">
             <Link
               href={`/scenarios/detail?id=${scenario.id}`}
-              className="flex-1 text-center text-xs font-medium text-green-600 hover:text-green-700 py-1 min-h-[44px] flex items-center justify-center rounded-md hover:bg-green-50 transition-colors"
+              className="flex-1 min-w-[64px] text-center text-xs font-medium text-green-600 hover:text-green-700 py-1 min-h-[44px] flex items-center justify-center rounded-md hover:bg-green-50 transition-colors"
             >
               編集
             </Link>
             <button
+              onClick={() => onDuplicate(scenario.id)}
+              disabled={loading}
+              className="flex-1 min-w-[64px] text-xs font-medium text-gray-600 hover:text-gray-900 py-1 min-h-[44px] flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors disabled:opacity-40"
+            >
+              複製
+            </button>
+            <button
               onClick={() => onToggleActive(scenario.id, scenario.isActive)}
               disabled={loading}
-              className="flex-1 text-xs font-medium text-gray-600 hover:text-gray-900 py-1 min-h-[44px] flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors disabled:opacity-40"
+              className="flex-1 min-w-[64px] text-xs font-medium text-gray-600 hover:text-gray-900 py-1 min-h-[44px] flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors disabled:opacity-40"
             >
               {scenario.isActive ? '無効にする' : '有効にする'}
             </button>
@@ -111,7 +119,7 @@ export default function ScenarioList({ scenarios, onToggleActive, onDelete, load
                 }
               }}
               disabled={loading}
-              className="flex-1 text-xs font-medium text-red-500 hover:text-red-700 py-1 min-h-[44px] flex items-center justify-center rounded-md hover:bg-red-50 transition-colors disabled:opacity-40"
+              className="flex-1 min-w-[64px] text-xs font-medium text-red-500 hover:text-red-700 py-1 min-h-[44px] flex items-center justify-center rounded-md hover:bg-red-50 transition-colors disabled:opacity-40"
             >
               削除
             </button>

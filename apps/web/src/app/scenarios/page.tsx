@@ -38,6 +38,7 @@ export default function ScenariosPage() {
   const [scenarios, setScenarios] = useState<ScenarioWithCount[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
 
   const loadScenarios = useCallback(async () => {
@@ -115,6 +116,24 @@ export default function ScenariosPage() {
     }
   }
 
+  const handleDuplicate = async (id: string) => {
+    setError('')
+    setNotice('')
+    try {
+      const res = await api.scenarios.duplicate(id, selectedAccountId || undefined)
+      if (res.success) {
+        // 複製は必ず「無効」で作られる (worker が is_active=0 固定)。運用者が知らずに
+        // 配信開始する事故を防ぐため、成功通知に一文添える (ui-design §1.5)。
+        setNotice('複製しました。配信は止まった状態（無効）で作られています。中身を確認して、よければ「有効にする」を押してください。')
+        loadScenarios()
+      } else {
+        setError(res.error)
+      }
+    } catch {
+      setError('複製に失敗しました。もう一度お試しください。')
+    }
+  }
+
   const handleDelete = async (id: string) => {
     try {
       await api.scenarios.delete(id)
@@ -145,6 +164,19 @@ export default function ScenariosPage() {
         </div>
       )}
 
+      {notice && (
+        <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm flex items-start justify-between gap-3">
+          <span>{notice}</span>
+          <button
+            onClick={() => setNotice('')}
+            className="shrink-0 text-green-600 hover:text-green-800 min-h-[36px] px-2"
+            aria-label="閉じる"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <ScenarioModePicker
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
@@ -168,6 +200,7 @@ export default function ScenariosPage() {
         <ScenarioList
           scenarios={scenarios}
           onToggleActive={handleToggleActive}
+          onDuplicate={handleDuplicate}
           onDelete={handleDelete}
           loading={loading}
         />
