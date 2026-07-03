@@ -2,10 +2,12 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import type { Tag } from '@line-crm/shared'
-import { api } from '@/lib/api'
+import { api, downloadCsv } from '@/lib/api'
 import type { FriendListItem } from '@/lib/api'
+import { csvDateStamp } from '@/lib/download'
 import Header from '@/components/layout/header'
 import FriendListTable from '@/components/friends/friend-list-table'
+import ExportCsvButton from '@/components/shared/export-csv-button'
 import CcPromptButton from '@/components/cc-prompt-button'
 import { useAccount } from '@/contexts/account-context'
 
@@ -124,6 +126,15 @@ export default function FriendsPage() {
       updateAndResetPage(() => setSearchSubmitted(''))
     }
   }
+  // CSV 出力: 画面の絞り込み条件 (account/タグ/検索) をそのまま worker export に渡す。
+  const handleExportCsv = async () => {
+    const params = new URLSearchParams()
+    if (selectedAccountId) params.set('lineAccountId', selectedAccountId)
+    if (selectedTagId) params.set('tagId', selectedTagId)
+    if (searchSubmitted) params.set('search', searchSubmitted)
+    await downloadCsv(`/api/exports/friends.csv?${params}`, `友だち一覧_${csvDateStamp()}.csv`)
+  }
+
   const handleSortChange = (v: SortMode) => updateAndResetPage(() => setSortMode(v))
   const handleResponseFilterChange = (v: ResponseFilter) => updateAndResetPage(() => setResponseFilter(v))
   const handleTagFilterChange = (v: string) => updateAndResetPage(() => setSelectedTagId(v))
@@ -188,9 +199,16 @@ export default function FriendsPage() {
               <option value="unhandled">未対応のみ</option>
             </select>
           </div>
-          <span className="text-xs text-gray-500 ml-auto">
-            {loading ? '読み込み中...' : `${total.toLocaleString('ja-JP')} 件`}
-          </span>
+          <div className="flex items-center gap-2 ml-auto">
+            <ExportCsvButton
+              onExport={handleExportCsv}
+              onError={setError}
+              disabled={!selectedAccountId || total === 0}
+            />
+            <span className="text-xs text-gray-500">
+              {loading ? '読み込み中...' : `${total.toLocaleString('ja-JP')} 件`}
+            </span>
+          </div>
         </div>
       </div>
 

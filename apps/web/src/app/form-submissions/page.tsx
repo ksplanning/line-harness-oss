@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
-import { fetchApi } from '@/lib/api'
+import { fetchApi, downloadCsv } from '@/lib/api'
+import { csvDateStamp, safeFilenamePart } from '@/lib/download'
 import { countryFlag } from '@/lib/country-flag'
 import Header from '@/components/layout/header'
+import ExportCsvButton from '@/components/shared/export-csv-button'
 
 interface UsedByAccount {
   id: string
@@ -77,6 +79,7 @@ export default function FormSubmissionsPage() {
   const [subLoading, setSubLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [detailSubmission, setDetailSubmission] = useState<Submission | null>(null)
+  const [exportError, setExportError] = useState('')
 
   const loadForms = useCallback(async () => {
     setLoading(true)
@@ -136,6 +139,16 @@ export default function FormSubmissionsPage() {
     () => forms.find((f) => f.id === selectedFormId) ?? null,
     [forms, selectedFormId],
   )
+
+  // CSV 出力: 選択中フォーム 1 件が対象 (フォーム未選択時は section 自体が非表示)。
+  const handleExportCsv = async () => {
+    if (!selectedFormId) return
+    const name = safeFilenamePart(selectedForm?.name ?? 'フォーム')
+    await downloadCsv(
+      `/api/exports/form-submissions.csv?formId=${encodeURIComponent(selectedFormId)}`,
+      `フォーム回答_${name}_${csvDateStamp()}.csv`,
+    )
+  }
 
   const totalPages = Math.max(1, Math.ceil(submissions.length / PAGE_SIZE))
   const paged = submissions.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
@@ -227,17 +240,31 @@ export default function FormSubmissionsPage() {
                 {subLoading ? '読み込み中...' : `${submissions.length}件`}
               </span>
             </div>
-            <button
-              onClick={() => {
-                setSelectedFormId(null)
-                setSubmissions([])
-                setDetailSubmission(null)
-              }}
-              className="text-xs text-gray-400 hover:text-gray-600"
-            >
-              閉じる ✕
-            </button>
+            <div className="flex items-center gap-2">
+              <ExportCsvButton
+                onExport={handleExportCsv}
+                onError={setExportError}
+                disabled={submissions.length === 0}
+                noteMode="tooltip"
+              />
+              <button
+                onClick={() => {
+                  setSelectedFormId(null)
+                  setSubmissions([])
+                  setDetailSubmission(null)
+                }}
+                className="text-xs text-gray-400 hover:text-gray-600"
+              >
+                閉じる ✕
+              </button>
+            </div>
           </div>
+
+          {exportError && (
+            <div className="mb-3 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+              {exportError}
+            </div>
+          )}
 
           {subLoading ? (
             <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">読み込み中...</div>

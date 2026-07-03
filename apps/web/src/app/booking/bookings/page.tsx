@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Header from '@/components/layout/header'
-import { bookingApi, type BookingRequest } from '@/lib/api'
+import { bookingApi, downloadCsv, type BookingRequest } from '@/lib/api'
+import { csvDateStamp } from '@/lib/download'
+import ExportCsvButton from '@/components/shared/export-csv-button'
 import { useAccount } from '@/contexts/account-context'
 
 const STATUS_TABS: Array<{ key: string; label: string }> = [
@@ -81,6 +83,14 @@ export default function BookingsPage() {
     load()
   }, [load])
 
+  // CSV 出力: 現在の status タブ + 選択アカウントを worker export に渡す。
+  const handleExportCsv = async () => {
+    if (!selectedAccountId) return
+    const params = new URLSearchParams({ account_id: selectedAccountId })
+    if (tab && tab !== 'all') params.set('status', tab)
+    await downloadCsv(`/api/exports/bookings.csv?${params}`, `予約一覧_${csvDateStamp()}.csv`)
+  }
+
   async function handleDecide(id: string, action: 'approve' | 'reject' | 'cancel' | 'no_show' | 'complete') {
     if (!selectedAccountId) return
     if (!confirm(`この予約を「${actionLabel[action]}」しますか？`)) return
@@ -97,6 +107,13 @@ export default function BookingsPage() {
       <Header
         title="予約管理"
         description="顧客からの予約リクエストを承認・拒否します"
+        action={
+          <ExportCsvButton
+            onExport={handleExportCsv}
+            onError={(m) => setError(m || null)}
+            disabled={!selectedAccountId || items.length === 0}
+          />
+        }
       />
 
       {error && (
