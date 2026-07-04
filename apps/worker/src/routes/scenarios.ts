@@ -14,6 +14,7 @@ import {
   computeNextDeliveryAt,
 } from '@line-crm/db';
 import { computeScenarioStats } from '../services/scenario-stats.js';
+import { guardFlexContent } from '../utils/flex-persist-guard.js';
 import { resolveStepContent } from '@line-crm/db';
 import type {
   Scenario as DbScenario,
@@ -365,6 +366,13 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
     const v = validateStepSchedule(scenarioRow.delivery_mode, body);
     if (!v.ok) return c.json({ success: false, error: v.error }, 400);
 
+    // 直接入力の flex は broadcasts と同一 guardFlexContent で保存前検証 (横展開 T-C7)。
+    // templateId 参照時は本文が templates 側で管理・検証されるため二重検証しない (検証タイミング = 各保存時)。
+    if (body.messageType === 'flex' && body.templateId == null) {
+      const guard = guardFlexContent(body.messageContent);
+      if (!guard.ok) return c.json({ success: false, error: guard.messageJa }, 400);
+    }
+
     // templateId / onReachTagId 参照整合性チェック
     if (body.templateId != null) {
       const tpl = await c.env.DB
@@ -523,6 +531,13 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
     const effectiveMessageContent = templateSnapshot
       ? templateSnapshot.message_content
       : body.messageContent;
+
+    // 直接入力 (非 templateId) の flex を content 更新時のみ検証する (横展開 T-C7・後方互換 partial-update)。
+    // templateSnapshot 経由は templates 側の保存時検証に委ね二重検証しない。content 未指定は再検証しない。
+    if (!templateSnapshot && effectiveMessageType === 'flex' && body.messageContent !== undefined) {
+      const guard = guardFlexContent(body.messageContent);
+      if (!guard.ok) return c.json({ success: false, error: guard.messageJa }, 400);
+    }
 
     const updated = await updateScenarioStep(c.env.DB, stepId, {
       step_order: body.stepOrder,

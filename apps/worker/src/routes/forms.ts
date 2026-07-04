@@ -17,6 +17,7 @@ import type {
   FormSubmission as DbFormSubmission,
   FormUsedByAccount,
 } from '@line-crm/db';
+import { guardFlexContent } from '../utils/flex-persist-guard.js';
 import type { Env } from '../index.js';
 
 const forms = new Hono<Env>();
@@ -113,6 +114,12 @@ forms.post('/api/forms', async (c) => {
       return c.json({ success: false, error: 'name is required' }, 400);
     }
 
+    // 送信後アクションが flex のとき、本文を broadcasts と同一 guardFlexContent で保存前検証 (横展開 T-C7)。
+    if (body.onSubmitMessageType === 'flex' && body.onSubmitMessageContent) {
+      const guard = guardFlexContent(body.onSubmitMessageContent);
+      if (!guard.ok) return c.json({ success: false, error: guard.messageJa }, 400);
+    }
+
     const form = await createForm(c.env.DB, {
       name: body.name,
       description: body.description ?? null,
@@ -152,6 +159,18 @@ forms.put('/api/forms/:id', async (c) => {
       saveToMetadata?: boolean;
       isActive?: boolean;
     }>();
+
+    // 送信後アクション flex の content 更新時のみ検証 (後方互換 partial-update・横展開 T-C7)。
+    // 実効 type = body.onSubmitMessageType ?? 既存。content 未指定は再検証しない (誤爆防止)。
+    if (body.onSubmitMessageContent !== undefined && body.onSubmitMessageContent) {
+      const existingForm = await getFormById(c.env.DB, id);
+      if (!existingForm) return c.json({ success: false, error: 'Form not found' }, 404);
+      const effType = body.onSubmitMessageType !== undefined ? body.onSubmitMessageType : existingForm.on_submit_message_type;
+      if (effType === 'flex') {
+        const guard = guardFlexContent(body.onSubmitMessageContent);
+        if (!guard.ok) return c.json({ success: false, error: guard.messageJa }, 400);
+      }
+    }
 
     // Only include fields that were explicitly sent (avoid undefined → null conversion)
     const updates: Record<string, unknown> = {};

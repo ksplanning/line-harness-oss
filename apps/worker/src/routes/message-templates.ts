@@ -7,6 +7,7 @@ import {
   deleteMessageTemplate,
 } from '@line-crm/db';
 import type { MessageTemplate } from '@line-crm/db';
+import { guardFlexContent } from '../utils/flex-persist-guard.js';
 import type { Env } from '../index.js';
 
 const messageTemplates = new Hono<Env>();
@@ -62,12 +63,12 @@ messageTemplates.post('/api/message-templates', async (c) => {
       return c.json({ success: false, error: 'messageType must be text or flex' }, 400);
     }
 
-    // Validate flex JSON
+    // Flex は broadcasts と同一の guardFlexContent (validateFlex 経由) で保存前検証する
+    // (JSON.parse だけ → 構造検証。client を迂回した不正 Flex 保存を 400 でブロック・横展開 T-C7)。
     if (body.messageType === 'flex') {
-      try {
-        JSON.parse(body.messageContent);
-      } catch {
-        return c.json({ success: false, error: 'messageContent must be valid JSON for flex type' }, 400);
+      const guard = guardFlexContent(body.messageContent);
+      if (!guard.ok) {
+        return c.json({ success: false, error: guard.messageJa }, 400);
       }
     }
 
@@ -100,13 +101,14 @@ messageTemplates.put('/api/message-templates/:id', async (c) => {
     const existing = await getMessageTemplateById(c.env.DB, c.req.param('id'));
     if (!existing) return c.json({ success: false, error: 'Not found' }, 404);
     const effectiveType = body.messageType ?? existing.message_type;
-    const effectiveContent = body.messageContent ?? existing.message_content;
 
-    if (effectiveType === 'flex') {
-      try {
-        JSON.parse(effectiveContent);
-      } catch {
-        return c.json({ success: false, error: 'messageContent must be valid JSON for flex type' }, 400);
+    // 後方互換 (Codex MEDIUM[8]): content 未変更の更新 (name だけ等) は再検証しない。
+    // 旧 JSON.parse 時代に保存された既存 Flex が新 guardFlexContent で 400 になる誤爆を防ぐ
+    // (broadcast PUT の partial-update パターン踏襲)。content が body に present のときだけ検証。
+    if (effectiveType === 'flex' && body.messageContent !== undefined) {
+      const guard = guardFlexContent(body.messageContent);
+      if (!guard.ok) {
+        return c.json({ success: false, error: guard.messageJa }, 400);
       }
     }
 
