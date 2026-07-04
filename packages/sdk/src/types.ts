@@ -324,9 +324,32 @@ export interface CreateRichMenuInput {
 }
 
 // ─── Segment ─────────────────────────────────────────────
+/** 行動 rule (G11 遡及オーディエンス) の期間指定 (worker segment-query.ts と同期)。 */
+export interface BehavioralPeriod {
+  sinceDays?: number
+  since?: string
+  until?: string
+}
+
 export interface SegmentRule {
-  type: 'tag_exists' | 'tag_not_exists' | 'metadata_equals' | 'metadata_not_equals' | 'ref_code' | 'is_following'
-  value: string | boolean | { key: string; value: string }
+  type:
+    | 'tag_exists'
+    | 'tag_not_exists'
+    | 'metadata_equals'
+    | 'metadata_not_equals'
+    | 'ref_code'
+    | 'is_following'
+    // G11 行動 rule (F2 batch4): クリック / メニュータップ / フォーム開封を遡及で絞り込む。
+    | 'clicked_link'
+    | 'tapped_menu'
+    | 'opened_form'
+  value:
+    | string
+    | boolean
+    | { key: string; value: string }
+    | (BehavioralPeriod & { trackedLinkId?: string | null })
+    | (BehavioralPeriod & { groupId: string })
+    | (BehavioralPeriod & { formId?: string | null })
 }
 
 export interface SegmentCondition {
