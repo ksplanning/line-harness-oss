@@ -40,6 +40,9 @@ interface FormState {
   accountIds: string[]
   dedupPriority: string[]
   senderPresetId: string | null
+  // G1 A/B 紐付け (この配信を A/B テストの案 A/B として作る)。null = 非 A/B。
+  abTestId: string | null
+  abVariant: 'A' | 'B' | null
 }
 
 export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFormProps) {
@@ -66,10 +69,20 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     accountIds: [],
     dedupPriority: [],
     senderPresetId: null,
+    abTestId: null,
+    abVariant: null,
   })
+  // account の A/B テスト一覧 (この配信を案 A/B として紐付ける選択肢)。
+  const [abTests, setAbTests] = useState<Array<{ id: string; name: string }>>([])
+  useEffect(() => {
+    if (!selectedAccountId) { setAbTests([]); return }
+    api.abTests.list(selectedAccountId)
+      .then((r) => { if (r.success && r.data) setAbTests(r.data.map((t) => ({ id: t.id, name: t.name }))) })
+      .catch(() => { /* silent */ })
+  }, [selectedAccountId])
   // account 切替でプリセット選択をリセット (別 account の preset id を残さない・batch2 L-2 教訓)。
   useEffect(() => {
-    setForm((prev) => ({ ...prev, senderPresetId: null }))
+    setForm((prev) => ({ ...prev, senderPresetId: null, abTestId: null, abVariant: null }))
   }, [selectedAccountId])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -163,6 +176,9 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         accountIds: form.targetType === 'multi-account-dedup' ? form.accountIds : undefined,
         dedupPriority: form.targetType === 'multi-account-dedup' ? form.dedupPriority : undefined,
         senderPresetId: form.senderPresetId,
+        // A/B 紐付け: test + 案 (A/B) が両方揃った時だけ送る (片方だけは server が 400)。
+        abTestId: form.abTestId && form.abVariant ? form.abTestId : null,
+        abVariant: form.abTestId && form.abVariant ? form.abVariant : null,
         // datetime-local returns YYYY-MM-DDTHH:mm in JST wall-clock time
         // Append +09:00 so new Date() parses correctly for epoch comparisons
         scheduledAt: form.sendNow || !form.scheduledAt
@@ -418,6 +434,38 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
           value={form.senderPresetId}
           onChange={(id) => setForm((prev) => ({ ...prev, senderPresetId: id }))}
         />
+
+        {/* A/B テスト紐付け (G1・この配信を案 A/B として作る)。実 A/B 送信は owner 立会後。 */}
+        {abTests.length > 0 && (
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-2">A/B テスト（任意）</label>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={form.abTestId ?? ''}
+                onChange={(e) => setForm((prev) => ({ ...prev, abTestId: e.target.value || null, abVariant: e.target.value ? (prev.abVariant ?? 'A') : null }))}
+                aria-label="A/Bテストを選ぶ"
+                className="text-xs border border-gray-300 rounded px-2 py-1 bg-white"
+              >
+                <option value="">紐付けない</option>
+                {abTests.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+              {form.abTestId && (
+                <div className="flex items-center gap-3 text-xs text-gray-600">
+                  <span>この配信は</span>
+                  <label className="flex items-center gap-1">
+                    <input type="radio" name="abVariant" checked={form.abVariant === 'A'} onChange={() => setForm((prev) => ({ ...prev, abVariant: 'A' }))} />案A
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input type="radio" name="abVariant" checked={form.abVariant === 'B'} onChange={() => setForm((prev) => ({ ...prev, abVariant: 'B' }))} />案B
+                  </label>
+                </div>
+              )}
+            </div>
+            {form.abTestId && (
+              <p className="text-xs text-gray-400 mt-1">案A・案Bの2本を作って比べます。実際の A/B 送信は owner 確認後です。</p>
+            )}
+          </div>
+        )}
 
         {/* Target */}
         <div>

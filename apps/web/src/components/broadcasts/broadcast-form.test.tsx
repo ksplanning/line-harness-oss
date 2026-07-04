@@ -22,6 +22,7 @@ vi.mock('@/lib/api', () => ({
   api: {
     broadcasts: { create: (...a: unknown[]) => createMock(...a) },
     senderPresets: { list: (...a: unknown[]) => listPresetsMock(...a) },
+    abTests: { list: vi.fn(async () => ({ success: true, data: [] })) },
   },
   eventsApi: { listEvents: vi.fn(async () => ({ items: [] })) },
 }))

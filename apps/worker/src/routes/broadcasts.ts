@@ -13,7 +13,7 @@ import { checkMonthlyCap } from '../services/monthly-cap.js';
 import { computeDedupBroadcastPreview } from '../services/dedup-broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
-import { getLineAccountById, getSenderPresetById, resolveSenderForBroadcast } from '@line-crm/db';
+import { getLineAccountById, getSenderPresetById, resolveSenderForBroadcast, getAbTestById } from '@line-crm/db';
 import { guardFlexContent } from '../utils/flex-persist-guard.js';
 import type { Env } from '../index.js';
 
@@ -67,6 +67,34 @@ function serializeBroadcast(row: DbBroadcast) {
 
 function isHttpsUrl(v: unknown): boolean {
   return typeof v === 'string' && /^https:\/\/\S+/.test(v);
+}
+
+/**
+ * A/B 紐付け (abTestId/abVariant) の保存前検証 (G1・E2E CRITICAL fix)。
+ *  - 紐付けなし (両方空) → OK
+ *  - variant だけ (test 無し) → 孤児 variant 禁止 (400)
+ *  - test だけ (variant 無し) → どの案か不明ゆえ 400
+ *  - variant は 'A'|'B' のみ (migration は将来拡張で CHECK 無しだが標準 API は現行 2 案に限定)
+ *  - test は account-scoped: account 未指定 or 別 account/不存在の ab_test は拒否 (既存 authz マスキング踏襲)
+ * OK なら null、不正なら日本語エラー文字列。winner-draft は db 層 createBroadcast を直呼びするため本検証は通らない
+ * (variant='winner' を許容する内部経路)。本検証は汎用 POST/PUT の入口のみ。
+ */
+async function validateAbBinding(
+  db: D1Database,
+  abTestId: string | null | undefined,
+  abVariant: string | null | undefined,
+  accountId: string | null | undefined,
+): Promise<string | null> {
+  const hasTest = typeof abTestId === 'string' && abTestId !== '';
+  const hasVariant = typeof abVariant === 'string' && abVariant !== '';
+  if (!hasTest && !hasVariant) return null;
+  if (hasVariant && !hasTest) return 'A/B の案を指定するには A/B テストの指定が必要です';
+  if (hasTest && !hasVariant) return 'A/B テストに紐付けるには案（A または B）を指定してください';
+  if (abVariant !== 'A' && abVariant !== 'B') return 'A/B の案は A か B を指定してください';
+  if (!accountId) return 'A/B テストに紐付けるにはアカウントの指定が必要です';
+  const test = await getAbTestById(db, abTestId as string, accountId);
+  if (!test) return '指定された A/B テストが見つかりません';
+  return null;
 }
 
 /**
@@ -329,6 +357,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
       accountIds?: string[];
       dedupPriority?: string[];
       senderPresetId?: string | null;
+      abTestId?: string | null;
+      abVariant?: string | null;
     }>();
 
     if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
@@ -370,6 +400,10 @@ broadcasts.post('/api/broadcasts', async (c) => {
       );
     }
 
+    // A/B 紐付け検証 (case account = body.lineAccountId・別 account/不正 variant は 400)。
+    const abErr = await validateAbBinding(c.env.DB, body.abTestId, body.abVariant, body.lineAccountId);
+    if (abErr) return c.json({ success: false, error: abErr }, 400);
+
     if (body.targetType === 'multi-account-dedup') {
       if (!Array.isArray(body.accountIds) || body.accountIds.length < 1) {
         return c.json({ success: false, error: 'accountIds (length >= 1) required for multi-account-dedup' }, 400);
@@ -392,6 +426,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
       accountIds: body.accountIds,
       dedupPriority: body.dedupPriority,
       senderPresetId: body.senderPresetId ?? null,
+      abTestId: body.abTestId ?? null,
+      abVariant: body.abVariant ?? null,
     });
 
     // Save line_account_id and alt_text if provided
@@ -434,6 +470,8 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       targetTagId?: string | null;
       scheduledAt?: string | null;
       senderPresetId?: string | null;
+      abTestId?: string | null;
+      abVariant?: string | null;
     }>();
 
     // server 側 Flex 検証 (BACKLOG-flex): 更新後の実効 messageType が flex で、かつ
@@ -466,6 +504,15 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       }
     }
 
+    // A/B 紐付け更新の検証: body に abTestId/abVariant があれば実効値 (未指定は既存継承) で検証する。
+    const existingRaw = existing as unknown as Record<string, unknown>;
+    if (body.abTestId !== undefined || body.abVariant !== undefined) {
+      const effTestId = body.abTestId !== undefined ? body.abTestId : (existingRaw.ab_test_id as string | null);
+      const effVariant = body.abVariant !== undefined ? body.abVariant : (existingRaw.ab_variant as string | null);
+      const abErr = await validateAbBinding(c.env.DB, effTestId, effVariant, existingRaw.line_account_id as string | null);
+      if (abErr) return c.json({ success: false, error: abErr }, 400);
+    }
+
     // Keep status in sync with scheduledAt changes
     let statusUpdate: 'draft' | 'scheduled' | undefined;
     if (body.scheduledAt !== undefined) {
@@ -480,6 +527,8 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       target_tag_id: body.targetTagId,
       scheduled_at: body.scheduledAt,
       sender_preset_id: body.senderPresetId,
+      ...(body.abTestId !== undefined ? { ab_test_id: body.abTestId } : {}),
+      ...(body.abVariant !== undefined ? { ab_variant: body.abVariant } : {}),
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
     });
 

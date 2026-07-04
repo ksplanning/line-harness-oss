@@ -386,6 +386,8 @@ export const api = {
       accountIds?: string[]
       dedupPriority?: string[]
       senderPresetId?: string | null
+      abTestId?: string | null
+      abVariant?: string | null
     }) =>
       fetchApi<ApiResponse<ApiBroadcast>>('/api/broadcasts', {
         method: 'POST',
@@ -401,6 +403,8 @@ export const api = {
         targetTagId?: string | null
         scheduledAt?: string | null
         senderPresetId?: string | null
+        abTestId?: string | null
+        abVariant?: string | null
       }
     ) =>
       fetchApi<ApiResponse<ApiBroadcast>>(`/api/broadcasts/${id}`, {
