@@ -52,3 +52,49 @@ export async function resolveSenderForBroadcast(
   if (!preset) return undefined;
   return { name: preset.name, iconUrl: preset.icon_url ?? undefined };
 }
+
+// ─── write model (T-C6・値検証は route が正典) ────────────────────────────────
+
+export async function createSenderPreset(
+  db: D1Database,
+  input: { accountId: string; name: string; iconUrl?: string | null },
+): Promise<SenderPreset> {
+  const id = crypto.randomUUID();
+  await db
+    .prepare(`INSERT INTO sender_presets (id, line_account_id, name, icon_url) VALUES (?, ?, ?, ?)`)
+    .bind(id, input.accountId, input.name, input.iconUrl ?? null)
+    .run();
+  return (await getSenderPresetById(db, id, input.accountId))!;
+}
+
+/** account-scoped update (別 account の行は WHERE で除外され更新されない)。 */
+export async function updateSenderPreset(
+  db: D1Database,
+  id: string,
+  accountId: string,
+  updates: { name?: string; iconUrl?: string | null },
+): Promise<SenderPreset | null> {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  if (updates.name !== undefined) {
+    fields.push('name = ?');
+    values.push(updates.name);
+  }
+  if (updates.iconUrl !== undefined) {
+    fields.push('icon_url = ?');
+    values.push(updates.iconUrl);
+  }
+  if (fields.length > 0) {
+    values.push(id, accountId);
+    await db
+      .prepare(`UPDATE sender_presets SET ${fields.join(', ')} WHERE id = ? AND line_account_id = ?`)
+      .bind(...values)
+      .run();
+  }
+  return getSenderPresetById(db, id, accountId);
+}
+
+/** account-scoped delete (別 account の行は消えない)。 */
+export async function deleteSenderPreset(db: D1Database, id: string, accountId: string): Promise<void> {
+  await db.prepare(`DELETE FROM sender_presets WHERE id = ? AND line_account_id = ?`).bind(id, accountId).run();
+}
