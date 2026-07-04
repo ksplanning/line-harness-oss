@@ -6,6 +6,7 @@ export * from './scenario-schedule';
 export * from './scenario-resolve';
 export * from './broadcasts';
 export * from './sender-presets';
+export * from './ab-tests';
 export * from './users';
 export * from './line-accounts';
 export * from './conversions';

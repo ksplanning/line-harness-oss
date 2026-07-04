@@ -82,6 +82,7 @@ import { savedSearches } from './routes/saved-searches.js';
 import { cannedResponses } from './routes/canned-responses.js';
 import { campaigns } from './routes/campaigns.js';
 import { senderPresets } from './routes/sender-presets.js';
+import { abTests } from './routes/ab-tests.js';
 import { templatePacks } from './routes/template-packs.js';
 import { richMenuAnalytics } from './routes/rich-menu-analytics.js';
 
@@ -205,6 +206,7 @@ app.route('/', savedSearches);
 app.route('/', cannedResponses);
 app.route('/', campaigns);
 app.route('/', senderPresets);
+app.route('/', abTests);
 app.route('/', templatePacks);
 app.route('/', richMenuAnalytics);
 
