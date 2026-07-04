@@ -283,7 +283,9 @@ CREATE TABLE IF NOT EXISTS line_accounts (
   role                 TEXT,
   display_order        INTEGER NOT NULL DEFAULT 0,
   created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  -- monthly_cap (migration 057 / F2 batch4 G2): 月次送信上限 (NULL = 無制限 = 既定挙動不変)。
+  monthly_cap          INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_line_accounts_display_order

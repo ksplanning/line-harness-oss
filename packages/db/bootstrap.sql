@@ -512,7 +512,9 @@ CREATE TABLE line_accounts (
   role                 TEXT,
   display_order        INTEGER NOT NULL DEFAULT 0,
   created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  -- monthly_cap (migration 057 / F2 batch4 G2): 月次送信上限 (NULL = 無制限 = 既定挙動不変)。
+  monthly_cap          INTEGER
 , login_channel_id TEXT, login_channel_secret TEXT, liff_id TEXT, token_expires_at TEXT, og_site_name TEXT, og_default_image_url TEXT, og_default_description TEXT);
 
 CREATE TABLE link_clicks (

@@ -17,6 +17,8 @@ export interface LineAccount {
   role: string | null;
   display_order: number;
   token_expires_at: string | null;
+  /** 月次送信上限 (migration 057 / G2)。null = 無制限 (既定挙動不変)。 */
+  monthly_cap: number | null;
   created_at: string;
   updated_at: string;
 }
