@@ -9,6 +9,7 @@ import Header from '@/components/layout/header'
 import BroadcastForm from '@/components/broadcasts/broadcast-form'
 import SenderPresetManager from '@/components/broadcasts/sender-preset-manager'
 import BroadcastDetail from '@/components/broadcasts/broadcast-detail'
+import { messageTypeLabels } from '@/lib/broadcast-labels'
 import CcPromptButton from '@/components/cc-prompt-button'
 
 const ccPrompts = [
@@ -294,7 +295,7 @@ function BroadcastList() {
                           )}
                         </div>
                         <p className="text-xs text-gray-400 mt-0.5">
-                          {broadcast.messageType === 'text' ? 'テキスト' : broadcast.messageType === 'image' ? '画像' : 'Flex'}
+                          {messageTypeLabels[broadcast.messageType]}
                         </p>
                       </div>
                     </td>

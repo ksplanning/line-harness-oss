@@ -11,6 +11,7 @@ import PackInsertSelector from './pack-insert-selector'
 import BroadcastMediaInputs from './broadcast-media-inputs'
 import SenderSelect from './sender-select'
 import { validateMediaClient, type MediaMessageType } from '@/lib/broadcast-media'
+import { messageTypeLabels, messageTypeHints } from '@/lib/broadcast-labels'
 import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
 import { flexToModel } from '@/lib/flex-builder/from-flex'
 import { imageLinkToFlexJson } from '@/lib/flex-builder/image-link'
@@ -22,24 +23,6 @@ interface BroadcastFormProps {
   tags: Tag[]
   onSuccess: () => void
   onCancel: () => void
-}
-
-const messageTypeLabels: Record<ApiBroadcast['messageType'], string> = {
-  text: 'テキスト',
-  image: '画像',
-  flex: 'Flexメッセージ',
-  video: '動画',
-  audio: '音声',
-  imagemap: 'リッチメッセージ (画像分割)',
-  richvideo: 'リッチビデオ',
-}
-
-// 種別ごとの1行説明 (運用者が迷わないよう)。
-const messageTypeHints: Partial<Record<ApiBroadcast['messageType'], string>> = {
-  video: '動画ファイルのURLを送ります',
-  audio: '音声ファイルのURLを送ります',
-  imagemap: '1枚の画像を複数の領域に分けてリンクを付けられます',
-  richvideo: '動画の再生後にボタンを出せます',
 }
 
 const NEW_MEDIA_TYPES: MediaMessageType[] = ['video', 'audio', 'imagemap', 'richvideo']

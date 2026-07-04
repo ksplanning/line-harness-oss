@@ -6,6 +6,7 @@ import { api, type ApiBroadcast, type BroadcastInsight } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import FlexPreviewComponent from '@/components/flex-preview'
+import { messageTypeLabels, mediaPreviewSummary } from '@/lib/broadcast-labels'
 import TestSendSection from '@/components/broadcasts/test-send-section'
 import ProgressBar from '@/components/broadcasts/progress-bar'
 import SendConfirmDialog from '@/components/broadcasts/send-confirm-dialog'
@@ -186,6 +187,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
 
   const raw = broadcast as unknown as Record<string, unknown>
   const accountId = raw.lineAccountId as string | null
+  const mediaSummary = mediaPreviewSummary(broadcast.messageType, broadcast.messageContent)
 
   return (
     <div>
@@ -218,6 +220,11 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
                 return <img src={img.originalContentUrl} alt="" className="max-w-[300px] rounded-lg" />
               } catch { return <p className="text-gray-400 text-sm">画像プレビュー不可</p> }
             })()
+          ) : mediaSummary ? (
+            // 新 type (動画/音声/リッチメッセージ/リッチビデオ): 生 JSON を吹き出しに出さず簡潔サマリ。
+            <div className="border border-gray-200 rounded-lg px-4 py-3 max-w-[300px] text-sm text-gray-700 break-all">
+              {mediaSummary}
+            </div>
           ) : (
             <div className="bg-green-500 text-white rounded-2xl rounded-tl-sm px-4 py-3 max-w-[300px] text-sm whitespace-pre-wrap">
               {broadcast.messageContent}
@@ -231,7 +238,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-gray-500">種別</dt>
-              <dd className="text-gray-900">{broadcast.messageType === 'text' ? 'テキスト' : broadcast.messageType === 'image' ? '画像' : 'Flex'}</dd>
+              <dd className="text-gray-900">{messageTypeLabels[broadcast.messageType]}</dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-gray-500">対象</dt>
