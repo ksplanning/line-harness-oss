@@ -7,6 +7,7 @@ import { api, type ApiBroadcast, type BroadcastInsight } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import BroadcastForm from '@/components/broadcasts/broadcast-form'
+import SenderPresetManager from '@/components/broadcasts/sender-preset-manager'
 import BroadcastDetail from '@/components/broadcasts/broadcast-detail'
 import CcPromptButton from '@/components/cc-prompt-button'
 
@@ -74,6 +75,7 @@ function BroadcastList() {
   const [insights, setInsights] = useState<Record<string, BroadcastInsight>>({})
   const [fetchingInsight, setFetchingInsight] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<BroadcastTab>('all')
+  const [showSenderMgr, setShowSenderMgr] = useState(false)
 
   const loadInsight = async (id: string) => {
     try {
@@ -153,13 +155,21 @@ function BroadcastList() {
       <Header
         title="一斉配信"
         action={
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
-            style={{ backgroundColor: '#06C755' }}
-          >
-            + 新規配信
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowSenderMgr((v) => !v)}
+              className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+            >
+              送信者の管理
+            </button>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              + 新規配信
+            </button>
+          </div>
         }
       />
 
@@ -168,6 +178,11 @@ function BroadcastList() {
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           {error}
         </div>
+      )}
+
+      {/* 送信者の管理 (G25・プリセット CRUD) */}
+      {showSenderMgr && (
+        <SenderPresetManager accountId={selectedAccountId || null} onClose={() => setShowSenderMgr(false)} />
       )}
 
       {/* Create form */}
