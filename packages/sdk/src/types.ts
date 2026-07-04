@@ -238,6 +238,10 @@ export interface Broadcast {
   aggregationUnit?: string | null
   /** account-scoped 送信者プリセット id (null = 既定送信者) */
   senderPresetId?: string | null
+  /** A/B テスト id (G1・null = 非 A/B) */
+  abTestId?: string | null
+  /** A/B の案識別子 ('A'/'B' 等・null = 非 A/B) */
+  abVariant?: string | null
   createdAt: string
 }
 

@@ -1,5 +1,16 @@
 -- Generated from schema.sql + migrations by scripts/generate-bootstrap.mjs.
 -- Do not edit manually. Run `pnpm --dir packages/db generate:bootstrap`.
+CREATE TABLE ab_tests (
+  id                  TEXT PRIMARY KEY,
+  account_id          TEXT NOT NULL REFERENCES line_accounts (id) ON DELETE CASCADE,
+  name                TEXT NOT NULL,
+  metric              TEXT NOT NULL CHECK (metric IN ('open_rate', 'click_rate')),
+  status              TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'running', 'decided')),
+  winner_broadcast_id TEXT REFERENCES broadcasts (id) ON DELETE SET NULL,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE account_health_logs (
   id              TEXT PRIMARY KEY,
   line_account_id TEXT NOT NULL,
@@ -204,7 +215,7 @@ CREATE TABLE "broadcasts" (
   dedup_progress     TEXT,
   batch_lock_at      TEXT,
   campaign_id        TEXT REFERENCES campaigns (id) ON DELETE SET NULL
-, sender_preset_id TEXT REFERENCES sender_presets (id) ON DELETE SET NULL);
+, sender_preset_id TEXT REFERENCES sender_presets (id) ON DELETE SET NULL, ab_test_id TEXT REFERENCES ab_tests (id) ON DELETE SET NULL, ab_variant TEXT);
 
 CREATE TABLE calendar_bookings (
   id             TEXT PRIMARY KEY,
@@ -897,6 +908,8 @@ CREATE TABLE users (
   updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE INDEX idx_ab_tests_account ON ab_tests (account_id);
+
 CREATE INDEX idx_ad_conversion_logs_friend ON ad_conversion_logs (friend_id);
 
 CREATE INDEX idx_ad_conversion_logs_platform ON ad_conversion_logs (ad_platform_id);
@@ -922,6 +935,8 @@ CREATE INDEX idx_bookings_staff_overlap ON bookings (staff_id, status, starts_at
 CREATE INDEX idx_broadcast_insights_broadcast_id ON broadcast_insights(broadcast_id);
 
 CREATE INDEX idx_broadcast_insights_status ON broadcast_insights(status);
+
+CREATE INDEX idx_broadcasts_ab_test_id ON broadcasts (ab_test_id);
 
 CREATE INDEX idx_broadcasts_campaign ON broadcasts (campaign_id);
 

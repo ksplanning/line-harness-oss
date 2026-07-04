@@ -30,6 +30,10 @@ export interface Broadcast {
   batch_lock_at: string | null;
   /** account-scoped 送信者プリセット参照 (null = 既定送信者)。生 name/iconUrl は保持しない (G25 なりすまし防止)。 */
   sender_preset_id: string | null;
+  /** A/B テスト参照 (null = 非 A/B・G1)。ON DELETE SET NULL。 */
+  ab_test_id: string | null;
+  /** A/B の案識別子 ('A'/'B' 等・null = 非 A/B)。CHECK なし (将来多変種拡張)。 */
+  ab_variant: string | null;
 }
 
 export async function getBroadcasts(db: D1Database, accountId?: string): Promise<Broadcast[]> {
@@ -94,6 +98,10 @@ export interface CreateBroadcastInput {
   dedupPriority?: string[];
   /** account-scoped 送信者プリセット id (自 account の実在 preset のみ・server で照合)。null/未指定 = 既定送信者。 */
   senderPresetId?: string | null;
+  /** A/B テスト id (G1・null/未指定 = 非 A/B)。 */
+  abTestId?: string | null;
+  /** A/B の案識別子 ('A'/'B' 等・null/未指定 = 非 A/B)。 */
+  abVariant?: string | null;
 }
 
 export async function createBroadcast(
@@ -108,8 +116,8 @@ export async function createBroadcast(
   await db
     .prepare(
       `INSERT INTO broadcasts
-         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, sender_preset_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?, ?)`,
+         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, sender_preset_id, ab_test_id, ab_variant, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -123,6 +131,8 @@ export async function createBroadcast(
       input.accountIds ? JSON.stringify(input.accountIds) : null,
       input.dedupPriority ? JSON.stringify(input.dedupPriority) : null,
       input.senderPresetId ?? null,
+      input.abTestId ?? null,
+      input.abVariant ?? null,
       now,
     )
     .run();
@@ -141,6 +151,8 @@ export type UpdateBroadcastInput = Partial<
     | 'status'
     | 'scheduled_at'
     | 'sender_preset_id'
+    | 'ab_test_id'
+    | 'ab_variant'
   >
 >;
 
@@ -183,6 +195,14 @@ export async function updateBroadcast(
   if (updates.sender_preset_id !== undefined) {
     fields.push('sender_preset_id = ?');
     values.push(updates.sender_preset_id);
+  }
+  if (updates.ab_test_id !== undefined) {
+    fields.push('ab_test_id = ?');
+    values.push(updates.ab_test_id);
+  }
+  if (updates.ab_variant !== undefined) {
+    fields.push('ab_variant = ?');
+    values.push(updates.ab_variant);
   }
 
   if (fields.length > 0) {

@@ -124,10 +124,13 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   failed_account_ids TEXT CHECK (failed_account_ids IS NULL OR json_valid(failed_account_ids)),
   dedup_progress     TEXT CHECK (dedup_progress IS NULL OR json_valid(dedup_progress)),
   batch_lock_at      TEXT,
-  sender_preset_id   TEXT REFERENCES sender_presets (id) ON DELETE SET NULL
+  sender_preset_id   TEXT REFERENCES sender_presets (id) ON DELETE SET NULL,
+  ab_test_id         TEXT REFERENCES ab_tests (id) ON DELETE SET NULL,
+  ab_variant         TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
+CREATE INDEX IF NOT EXISTS idx_broadcasts_ab_test_id ON broadcasts (ab_test_id);
 
 -- ============================================================
 --- Account Settings
@@ -982,3 +985,20 @@ CREATE TABLE IF NOT EXISTS sender_presets (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_sender_presets_account ON sender_presets (line_account_id);
+
+-- =============================================================================
+-- A/B tests (migration 056 / F2 batch4 G1 A/B テスト配信)
+-- account-scoped。broadcasts.ab_test_id / ab_variant で案 A/B の配信を紐付ける。
+-- 分割・比較・勝ち選定は application 層 (services/ab-split.ts)。実 A/B 送信は owner 立会 gated。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS ab_tests (
+  id                  TEXT PRIMARY KEY,
+  account_id          TEXT NOT NULL REFERENCES line_accounts (id) ON DELETE CASCADE,
+  name                TEXT NOT NULL,
+  metric              TEXT NOT NULL CHECK (metric IN ('open_rate', 'click_rate')),
+  status              TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'running', 'decided')),
+  winner_broadcast_id TEXT REFERENCES broadcasts (id) ON DELETE SET NULL,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_ab_tests_account ON ab_tests (account_id);

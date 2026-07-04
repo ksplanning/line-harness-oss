@@ -58,6 +58,8 @@ function serializeBroadcast(row: DbBroadcast) {
     dedupPriority: parseJsonArray(r.dedup_priority),
     failedAccountIds: parseJsonArray(r.failed_account_ids),
     senderPresetId: (r.sender_preset_id as string | null) ?? null,
+    abTestId: (r.ab_test_id as string | null) ?? null,
+    abVariant: (r.ab_variant as string | null) ?? null,
     createdAt: row.created_at,
   };
 }
