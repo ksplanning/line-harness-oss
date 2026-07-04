@@ -2,7 +2,7 @@
 // Rich Message Builders — LINE Messaging API message type builders
 // =============================================================================
 
-import type { Message, FlexContainer } from './types.js';
+import type { Message, FlexContainer, AudioMessage, ImageMapVideo, MessageSender } from './types.js';
 
 // ── Text Message ────────────────────────────────────────────────────────────
 
@@ -42,6 +42,15 @@ export function videoMessage(
   previewImageUrl: string,
 ): VideoMessage {
   return { type: 'video', originalContentUrl, previewImageUrl };
+}
+
+// ── Audio Message ───────────────────────────────────────────────────────────
+
+export function audioMessage(
+  originalContentUrl: string,
+  duration: number,
+): AudioMessage {
+  return { type: 'audio', originalContentUrl, duration };
 }
 
 // ── Template Messages ───────────────────────────────────────────────────────
@@ -158,6 +167,8 @@ export interface ImageMapMessage {
   altText: string;
   baseSize: { width: number; height: number };
   actions: ImageMapAction[];
+  video?: ImageMapVideo;
+  sender?: MessageSender;
 }
 
 export function imageMapMessage(opts: {
@@ -165,14 +176,19 @@ export function imageMapMessage(opts: {
   altText: string;
   baseSize: { width: number; height: number };
   actions: ImageMapAction[];
+  video?: ImageMapVideo;
+  sender?: MessageSender;
 }): ImageMapMessage {
-  return {
+  const msg: ImageMapMessage = {
     type: 'imagemap',
     baseUrl: opts.baseUrl,
     altText: opts.altText,
     baseSize: opts.baseSize,
     actions: opts.actions,
   };
+  if (opts.video) msg.video = opts.video;
+  if (opts.sender) msg.sender = opts.sender;
+  return msg;
 }
 
 // ── Quick Reply ─────────────────────────────────────────────────────────────

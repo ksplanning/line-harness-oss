@@ -153,33 +153,63 @@ export interface UserProfile {
 
 export type FlexContainer = object;
 
+/**
+ * Per-message sender override (LINE `sender`). Each outbound message object may
+ * carry its own display name / icon (e.g. campaign persona). Resolved server-side
+ * from an account-scoped preset — clients never inject raw name/iconUrl (G25).
+ */
+export interface MessageSender {
+  name: string;
+  iconUrl?: string;
+}
+
 export interface TextMessage {
   type: 'text';
   text: string;
+  sender?: MessageSender;
 }
 
 export interface ImageMessage {
   type: 'image';
   originalContentUrl: string;
   previewImageUrl: string;
+  sender?: MessageSender;
 }
 
 export interface FlexMessage {
   type: 'flex';
   altText: string;
   contents: FlexContainer;
+  sender?: MessageSender;
 }
 
 export interface VideoMessage {
   type: 'video';
   originalContentUrl: string;
   previewImageUrl: string;
+  sender?: MessageSender;
+}
+
+export interface AudioMessage {
+  type: 'audio';
+  originalContentUrl: string;
+  duration: number;
+  sender?: MessageSender;
 }
 
 export interface TemplateMessage {
   type: 'template';
   altText: string;
   template: Record<string, unknown>;
+  sender?: MessageSender;
+}
+
+/** Optional video block for a rich-video imagemap (G14): plays inside the imagemap area. */
+export interface ImageMapVideo {
+  originalContentUrl: string;
+  previewImageUrl: string;
+  area: { x: number; y: number; width: number; height: number };
+  externalLink?: { linkUri: string; label: string };
 }
 
 export interface ImageMapMessageType {
@@ -188,6 +218,8 @@ export interface ImageMapMessageType {
   altText: string;
   baseSize: { width: number; height: number };
   actions: Record<string, unknown>[];
+  video?: ImageMapVideo;
+  sender?: MessageSender;
 }
 
 export type Message =
@@ -195,6 +227,7 @@ export type Message =
   | ImageMessage
   | FlexMessage
   | VideoMessage
+  | AudioMessage
   | TemplateMessage
   | ImageMapMessageType;
 
