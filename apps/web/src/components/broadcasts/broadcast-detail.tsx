@@ -30,6 +30,8 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
   const [broadcast, setBroadcast] = useState<ApiBroadcast | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // G2: 通数上限で 429 ブロックされた時の行内表示 (理由 + 対処を送信ボタン付近に出す)。
+  const [capBlock, setCapBlock] = useState<{ count: number; cap: number } | null>(null)
   const [showConfirm, setShowConfirm] = useState(false)
   const [sending, setSending] = useState(false)
   const [insight, setInsight] = useState<BroadcastInsight | null>(null)
@@ -154,11 +156,19 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
   const handleSend = async () => {
     setShowConfirm(false)
     setSending(true)
+    setError('')
+    setCapBlock(null)
     try {
       await api.broadcasts.send(id)
       load()
-    } catch {
-      setError('送信に失敗しました')
+    } catch (e) {
+      // 429 通数上限ブロックは理由 + 対処を行内表示する (G2・非エンジニアに伝わる文言)。
+      const body = (e as { body?: { capBlocked?: boolean; cap?: { count: number; cap: number } } }).body
+      if (body?.capBlocked && body.cap && typeof body.cap.cap === 'number') {
+        setCapBlock({ count: body.cap.count, cap: body.cap.cap })
+      } else {
+        setError('送信に失敗しました')
+      }
     } finally {
       setSending(false)
     }
@@ -453,14 +463,22 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
 
       {/* Send Button */}
       {broadcast.status === 'draft' && (
-        <button
-          onClick={() => setShowConfirm(true)}
-          disabled={sending}
-          className="w-full px-4 py-3 min-h-[44px] text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity"
-          style={{ backgroundColor: '#06C755' }}
-        >
-          {sending ? '送信中...' : `この配信を送信する${targetCount != null ? ` (${targetCount.toLocaleString('ja-JP')}人)` : ''}`}
-        </button>
+        <>
+          {/* G2: 通数上限ブロックの行内表示 (送信ボタン付近・理由 + 対処)。 */}
+          {capBlock && (
+            <div className="mb-2 p-3 rounded-lg text-sm" style={{ backgroundColor: '#FEE2E2', color: '#991B1B' }}>
+              今月の上限に達しています（今月{capBlock.count.toLocaleString('ja-JP')}通 / 上限{capBlock.cap.toLocaleString('ja-JP')}通）。上限を変えるか来月までお待ちください。テスト送信は上限の対象外です。
+            </div>
+          )}
+          <button
+            onClick={() => setShowConfirm(true)}
+            disabled={sending}
+            className="w-full px-4 py-3 min-h-[44px] text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity"
+            style={{ backgroundColor: '#06C755' }}
+          >
+            {sending ? '送信中...' : `この配信を送信する${targetCount != null ? ` (${targetCount.toLocaleString('ja-JP')}人)` : ''}`}
+          </button>
+        </>
       )}
 
       {/* Confirm Dialog */}

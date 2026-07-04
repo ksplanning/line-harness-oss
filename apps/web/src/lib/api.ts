@@ -103,7 +103,17 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
       ...options?.headers,
     },
   })
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  if (!res.ok) {
+    // 4xx/5xx の JSON body を Error に添付する (caller が理由を出し分けられるように)。
+    // 例: 429 通数上限ブロックは body.capBlocked / body.cap を UI が読む (G2)。
+    // 既存の catch は body/status を無視するので後方互換。
+    let body: unknown = undefined
+    try { body = await res.json() } catch { /* 非 JSON エラー body は無視 */ }
+    const err = new Error(`API error: ${res.status}`) as Error & { status?: number; body?: unknown }
+    err.status = res.status
+    err.body = body
+    throw err
+  }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
 }

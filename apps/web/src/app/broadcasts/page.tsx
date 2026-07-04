@@ -158,7 +158,7 @@ function BroadcastList() {
       <Header
         title="一斉配信"
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setShowSenderMgr((v) => !v)}
               className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"

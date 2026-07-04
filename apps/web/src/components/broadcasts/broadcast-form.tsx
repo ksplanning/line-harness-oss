@@ -453,10 +453,10 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
                 <div className="flex items-center gap-3 text-xs text-gray-600">
                   <span>この配信は</span>
                   <label className="flex items-center gap-1">
-                    <input type="radio" name="abVariant" checked={form.abVariant === 'A'} onChange={() => setForm((prev) => ({ ...prev, abVariant: 'A' }))} />案A
+                    <input type="radio" name="abVariant" style={{ accentColor: '#06C755' }} checked={form.abVariant === 'A'} onChange={() => setForm((prev) => ({ ...prev, abVariant: 'A' }))} />案A
                   </label>
                   <label className="flex items-center gap-1">
-                    <input type="radio" name="abVariant" checked={form.abVariant === 'B'} onChange={() => setForm((prev) => ({ ...prev, abVariant: 'B' }))} />案B
+                    <input type="radio" name="abVariant" style={{ accentColor: '#06C755' }} checked={form.abVariant === 'B'} onChange={() => setForm((prev) => ({ ...prev, abVariant: 'B' }))} />案B
                   </label>
                 </div>
               )}

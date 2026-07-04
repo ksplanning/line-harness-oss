@@ -77,6 +77,9 @@ describe('/send entry pre-check', () => {
     expect(res.status).toBe(429);
     const body = await res.json() as { capBlocked: boolean; cap: { count: number; cap: number } };
     expect(body.capBlocked).toBe(true);
+    // web が行内表示に使う現在通数/上限が 429 body に入っている (blocker2 の契約)。
+    expect(body.cap.count).toBe(0);
+    expect(body.cap.cap).toBe(1);
     expect(sends.length).toBe(0); // 実送信ゼロ
   });
 
