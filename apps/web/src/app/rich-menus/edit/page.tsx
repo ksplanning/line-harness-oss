@@ -7,6 +7,7 @@ import Header from '@/components/layout/header'
 import { api } from '@/lib/api'
 import { CanvasEditor, type Area } from '@/components/rich-menus/canvas-editor'
 import { AreaProperties } from '@/components/rich-menus/area-properties'
+import ScheduleSettings from '@/components/rich-menus/schedule-settings'
 
 type Page = {
   id: string
@@ -29,6 +30,8 @@ type Group = {
   isDefaultForAll: boolean
   status: 'draft' | 'published'
   publishingAt: string | null
+  scheduleStart?: string | null
+  scheduleEnd?: string | null
   pages: Page[]
 }
 
@@ -588,6 +591,23 @@ function Editor({
           )}
         </aside>
       </div>
+
+      {/* ─────────── 期間限定メニュー (G17・自動切替は dark-ship) ─────────── */}
+      <section className="mt-8">
+        <h2 className="text-sm font-semibold text-gray-700 mb-2">
+          期間限定メニュー
+          {(group.scheduleStart || group.scheduleEnd) && (
+            <span className="ml-2 text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEF3C7', color: '#92400E' }}>期間限定</span>
+          )}
+        </h2>
+        <ScheduleSettings
+          groupId={group.id}
+          accountId={group.accountId}
+          scheduleStart={group.scheduleStart ?? null}
+          scheduleEnd={group.scheduleEnd ?? null}
+          onSaved={reload}
+        />
+      </section>
 
       {/* ─────────── 危険な操作 (画面最下部に分離) ─────────── */}
       <section className="mt-10 bg-red-50 border border-red-200 rounded-lg shadow-sm p-5">

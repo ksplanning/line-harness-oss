@@ -469,6 +469,24 @@ export const api = {
       }),
   },
 
+  // G1 A/B テスト配信 (worker routes/ab-tests.ts)。実 A/B 送信・勝ち全配信は owner 立会 gated。
+  abTests: {
+    list: (accountId: string) =>
+      fetchApi<ApiResponse<Array<{ id: string; accountId: string; name: string; metric: 'open_rate' | 'click_rate'; status: 'draft' | 'running' | 'decided'; winnerBroadcastId: string | null; createdAt: string; updatedAt: string }>>>(`/api/ab-tests?accountId=${encodeURIComponent(accountId)}`),
+    create: (accountId: string, body: { name: string; metric: 'open_rate' | 'click_rate' }) =>
+      fetchApi<ApiResponse<{ id: string; name: string; metric: string; status: string }>>(`/api/ab-tests?accountId=${encodeURIComponent(accountId)}`, { method: 'POST', body: JSON.stringify(body) }),
+    update: (id: string, accountId: string, body: { name?: string; metric?: 'open_rate' | 'click_rate'; status?: 'draft' | 'running' | 'decided' }) =>
+      fetchApi<ApiResponse<unknown>>(`/api/ab-tests/${id}?accountId=${encodeURIComponent(accountId)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (id: string, accountId: string) =>
+      fetchApi<ApiResponse<null>>(`/api/ab-tests/${id}?accountId=${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
+    splitPreview: (id: string, accountId: string, conditions: unknown) =>
+      fetchApi<{ success: boolean; data?: { total: number; counts: Record<string, number> }; note?: string; error?: string }>(`/api/ab-tests/${id}/split-preview?accountId=${encodeURIComponent(accountId)}`, { method: 'POST', body: JSON.stringify({ conditions }) }),
+    compare: (id: string, accountId: string) =>
+      fetchApi<{ success: boolean; data?: { metric: string; variants: Array<{ variant: string; broadcastId: string; openRate: number | null; clickRate: number | null }>; winner: string | null; tie: boolean; dataPending: boolean } }>(`/api/ab-tests/${id}/compare?accountId=${encodeURIComponent(accountId)}`),
+    winnerDraft: (id: string, accountId: string, winnerVariant: string) =>
+      fetchApi<{ success: boolean; data?: { draftBroadcastId: string }; note?: string; error?: string }>(`/api/ab-tests/${id}/winner-draft?accountId=${encodeURIComponent(accountId)}`, { method: 'POST', body: JSON.stringify({ winnerVariant }) }),
+  },
+
   segments: {
     count: (conditions: unknown, accountId?: string) =>
       fetchApi<{ success: boolean; count?: number; error?: string }>('/api/segments/count', {
@@ -595,6 +613,11 @@ export const api = {
       fetchApi<ApiResponse<LineAccount[]>>('/api/line-accounts'),
     get: (id: string) =>
       fetchApi<ApiResponse<LineAccount>>(`/api/line-accounts/${id}`),
+    // G2 配信通数の月次上限。表示 (messagesThisMonth) と gate は同一計測。cap=null=無制限。
+    getMonthlyCap: (id: string) =>
+      fetchApi<ApiResponse<{ monthlyCap: number | null; messagesThisMonth: number; remaining: number | null }>>(`/api/line-accounts/${id}/monthly-cap`),
+    updateMonthlyCap: (id: string, monthlyCap: number | null) =>
+      fetchApi<ApiResponse<{ monthlyCap: number | null }>>(`/api/line-accounts/${id}/monthly-cap`, { method: 'PATCH', body: JSON.stringify({ monthlyCap }) }),
     create: (data: {
       channelId: string;
       name: string;
@@ -1329,6 +1352,10 @@ export const api = {
         `/api/rich-menu-groups/${groupId}${opts?.force ? '?force=true' : ''}`,
         { method: 'DELETE' },
       ),
+
+    // G17 期間限定リッチメニュー。日時を保存するだけ (自動切替は dark-ship・owner 立会後に有効化)。
+    updateSchedule: (groupId: string, accountId: string, body: { scheduleStart: string | null; scheduleEnd: string | null }) =>
+      fetchApi<ApiResponse<unknown>>(`/api/rich-menu-groups/${groupId}/schedule?accountId=${encodeURIComponent(accountId)}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
     publish: (groupId: string) =>
       fetchApi<ApiResponse<{ pages: Array<{ pageId: string; newRichMenuId: string }> }>>(

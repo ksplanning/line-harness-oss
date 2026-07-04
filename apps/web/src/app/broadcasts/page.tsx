@@ -8,6 +8,7 @@ import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import BroadcastForm from '@/components/broadcasts/broadcast-form'
 import SenderPresetManager from '@/components/broadcasts/sender-preset-manager'
+import AbTestPanel from '@/components/broadcasts/ab-test-panel'
 import BroadcastDetail from '@/components/broadcasts/broadcast-detail'
 import { messageTypeLabels } from '@/lib/broadcast-labels'
 import CcPromptButton from '@/components/cc-prompt-button'
@@ -77,6 +78,7 @@ function BroadcastList() {
   const [fetchingInsight, setFetchingInsight] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<BroadcastTab>('all')
   const [showSenderMgr, setShowSenderMgr] = useState(false)
+  const [showAbTest, setShowAbTest] = useState(false)
 
   const loadInsight = async (id: string) => {
     try {
@@ -164,6 +166,12 @@ function BroadcastList() {
               送信者の管理
             </button>
             <button
+              onClick={() => setShowAbTest((v) => !v)}
+              className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+            >
+              A/B テスト
+            </button>
+            <button
               onClick={() => setShowCreate(true)}
               className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
               style={{ backgroundColor: '#06C755' }}
@@ -184,6 +192,16 @@ function BroadcastList() {
       {/* 送信者の管理 (G25・プリセット CRUD) */}
       {showSenderMgr && (
         <SenderPresetManager accountId={selectedAccountId || null} onClose={() => setShowSenderMgr(false)} />
+      )}
+
+      {/* A/B テスト (G1・作成/分割プレビュー/比較/勝ち下書き・送信は owner 立会 gated) */}
+      {showAbTest && selectedAccountId && (
+        <div className="mb-4">
+          <AbTestPanel accountId={selectedAccountId} />
+        </div>
+      )}
+      {showAbTest && !selectedAccountId && (
+        <p className="mb-4 text-sm text-gray-500">A/B テストを使うにはアカウントを選択してください。</p>
       )}
 
       {/* Create form */}

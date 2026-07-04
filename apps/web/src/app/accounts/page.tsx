@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
 import TestRecipientsSetting from '@/components/accounts/test-recipients-setting'
+import MonthlyCapSettings from '@/components/accounts/monthly-cap-settings'
 import AccountSettingsSection from '@/components/accounts/account-settings-section'
 import ReorderMode from '@/components/accounts/reorder-mode'
 import {
@@ -314,6 +315,10 @@ export default function AccountsPage() {
                 onUpdated={load}
               />
               <TestRecipientsSetting accountId={account.id} />
+
+              <div className="mt-3">
+                <MonthlyCapSettings accountId={account.id} />
+              </div>
 
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
                 <p className="text-xs text-gray-400">
