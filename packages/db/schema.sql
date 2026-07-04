@@ -841,6 +841,11 @@ CREATE TABLE IF NOT EXISTS rich_menu_groups (
   is_default_for_all INTEGER NOT NULL DEFAULT 0,
   status             TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published')),
   publishing_at      TEXT,
+  -- schedule_start / schedule_end (migration 058 / F2 batch4 G17): 期間限定メニューの開始/終了
+  -- (ISO8601 JST・NULL = スケジュールなし)。自動切替は RICH_MENU_SCHEDULE_ENABLED flag OFF + crons=[]
+  -- で dark-ship (発火しない)。
+  schedule_start     TEXT,
+  schedule_end       TEXT,
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );

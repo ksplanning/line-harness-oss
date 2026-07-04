@@ -22,6 +22,10 @@ export interface RichMenuGroup {
   is_default_for_all: number;
   status: 'draft' | 'published';
   publishing_at: string | null;
+  /** 期間限定メニューの開始日時 (migration 058 / G17・ISO8601 JST・null = なし)。 */
+  schedule_start: string | null;
+  /** 期間限定メニューの終了日時 (migration 058 / G17・ISO8601 JST・null = なし)。 */
+  schedule_end: string | null;
   created_at: string;
   updated_at: string;
 }
