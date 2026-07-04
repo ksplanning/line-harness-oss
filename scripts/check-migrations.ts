@@ -38,11 +38,38 @@
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { argv, exit, stderr, stdout } from 'node:process';
 
 export type CheckResult = { ok: true } | { ok: false; violation: string };
+
+/**
+ * Documented single-file exceptions to the additive-only policy.
+ *
+ * A column CHECK constraint cannot be widened in place in SQLite — the only way
+ * is the table-recreate pattern (CREATE _new + INSERT SELECT + DROP TABLE +
+ * RENAME TO). Migrations 027/029 already did this (grandfathered below the cutoff).
+ * When a NEW migration must widen a CHECK, it is registered here after review,
+ * having satisfied the load-bearing safety bar:
+ *   - column template = bootstrap.sql runtime set (no data loss / exact column parity)
+ *   - FK child rows preserved (D1 suspends FK during migration; proven by 029)
+ *   - idempotent on re-replay + `_migrations` ledger skip + backup-first apply
+ *
+ * Only the two rebuild-specific rules (DROP TABLE / RENAME TABLE) are waived for
+ * these files — all other destructive rules (DROP/RENAME COLUMN, ALTER COLUMN
+ * TYPE, ADD COLUMN NOT NULL w/o default, ADD UNIQUE) still apply. This is a
+ * per-file exception, NOT a blanket loosening of the policy.
+ */
+export const DOCUMENTED_REBUILD_EXCEPTIONS = new Set<string>([
+  '054_broadcasts_message_type_expand.sql',
+]);
+
+// Labels of the rebuild-specific rules waived for documented exceptions.
+const REBUILD_RULE_LABELS = new Set<string>([
+  'DROP TABLE is forbidden (additive-only migrations)',
+  'RENAME TABLE is forbidden (additive-only migrations)',
+]);
 
 interface Rule {
   // Human-readable violation prefix; the matched text is appended for context.
@@ -111,9 +138,15 @@ function stripLineComments(sql: string): string {
     .join('\n');
 }
 
-export function checkMigration(sql: string): CheckResult {
+export function checkMigration(sql: string, filename?: string): CheckResult {
   const stripped = stripLineComments(sql);
+  const exempt = filename
+    ? DOCUMENTED_REBUILD_EXCEPTIONS.has(basename(filename))
+    : false;
   for (const rule of RULES) {
+    // Documented CHECK-widen rebuilds waive only the DROP TABLE / RENAME TABLE
+    // rules; every other destructive rule is still enforced.
+    if (exempt && REBUILD_RULE_LABELS.has(rule.label)) continue;
     const m = stripped.match(rule.pattern);
     if (m) {
       return { ok: false, violation: `${rule.label} (matched: "${m[0].trim()}")` };
@@ -186,7 +219,7 @@ function main(rawArgs: string[]): void {
   const failures: { file: string; violation: string }[] = [];
   for (const file of files) {
     const sql = readFileSync(file, 'utf8');
-    const result = checkMigration(sql);
+    const result = checkMigration(sql, file);
     if (!result.ok) {
       failures.push({ file, violation: result.violation });
       stdout.write(`[FAIL] ${file}: ${result.violation}\n`);

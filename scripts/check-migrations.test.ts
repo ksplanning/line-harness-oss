@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DOCUMENTED_REBUILD_EXCEPTIONS,
   POLICY_CUTOFF_PREFIX,
   checkMigration,
   filterMigrationsByPolicy,
@@ -117,6 +118,40 @@ describe('checkMigration', () => {
     const sql = `drop table foo;`;
     const result = checkMigration(sql);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('documented rebuild exceptions (CHECK-widen table-recreate)', () => {
+  const rebuildSql = `CREATE TABLE broadcasts_new (id TEXT PRIMARY KEY);
+INSERT INTO broadcasts_new (id) SELECT id FROM broadcasts;
+DROP TABLE broadcasts;
+ALTER TABLE broadcasts_new RENAME TO broadcasts;`;
+
+  it('054 is registered as a documented exception', () => {
+    expect(DOCUMENTED_REBUILD_EXCEPTIONS.has('054_broadcasts_message_type_expand.sql')).toBe(true);
+  });
+
+  it('waives DROP TABLE / RENAME TABLE only when the exempt filename is passed', () => {
+    expect(checkMigration(rebuildSql, '054_broadcasts_message_type_expand.sql')).toEqual({ ok: true });
+    // full path も basename で判定される。
+    expect(checkMigration(rebuildSql, '/repo/packages/db/migrations/054_broadcasts_message_type_expand.sql')).toEqual({ ok: true });
+  });
+
+  it('still blocks the same rebuild SQL for a non-exempt file (no blanket loosening)', () => {
+    const r1 = checkMigration(rebuildSql, '099_some_other.sql');
+    expect(r1.ok).toBe(false);
+    const r2 = checkMigration(rebuildSql); // filename 無し
+    expect(r2.ok).toBe(false);
+  });
+
+  it('still enforces other destructive rules even for an exempt file (only DROP/RENAME TABLE waived)', () => {
+    const badExempt = `CREATE TABLE broadcasts_new (id TEXT);
+DROP TABLE broadcasts;
+ALTER TABLE broadcasts_new RENAME TO broadcasts;
+ALTER TABLE broadcasts ADD COLUMN x TEXT NOT NULL;`;
+    const r = checkMigration(badExempt, '054_broadcasts_message_type_expand.sql');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.violation).toMatch(/NOT NULL/i);
   });
 });
 

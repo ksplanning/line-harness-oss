@@ -105,7 +105,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_friend_scenarios_unique ON friend_scenario
 CREATE TABLE IF NOT EXISTS broadcasts (
   id              TEXT PRIMARY KEY,
   title           TEXT NOT NULL,
-  message_type    TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex')),
+  message_type    TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex', 'video', 'audio', 'imagemap', 'richvideo')),
   message_content TEXT NOT NULL,
   target_type     TEXT NOT NULL CHECK (target_type IN ('all', 'tag', 'segment', 'multi-account-dedup')) DEFAULT 'all',
   target_tag_id   TEXT REFERENCES tags (id) ON DELETE SET NULL,

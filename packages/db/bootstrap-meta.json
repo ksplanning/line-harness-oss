@@ -58,7 +58,8 @@
     "050_canned_responses.sql",
     "051_campaigns.sql",
     "052_broadcasts_campaign_id.sql",
-    "053_template_packs.sql"
+    "053_template_packs.sql",
+    "054_broadcasts_message_type_expand.sql"
   ],
-  "migrationCount": 59
+  "migrationCount": 60
 }

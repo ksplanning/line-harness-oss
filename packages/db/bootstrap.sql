@@ -182,7 +182,7 @@ CREATE TABLE broadcast_insights (
 CREATE TABLE "broadcasts" (
   id                 TEXT PRIMARY KEY,
   title              TEXT NOT NULL,
-  message_type       TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex')),
+  message_type       TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex', 'video', 'audio', 'imagemap', 'richvideo')),
   message_content    TEXT NOT NULL,
   target_type        TEXT NOT NULL CHECK (target_type IN ('all', 'tag', 'segment', 'multi-account-dedup')) DEFAULT 'all',
   target_tag_id      TEXT REFERENCES tags (id) ON DELETE SET NULL,
@@ -200,8 +200,11 @@ CREATE TABLE "broadcasts" (
   segment_conditions TEXT,
   account_ids        TEXT CHECK (account_ids IS NULL OR json_valid(account_ids)),
   dedup_priority     TEXT CHECK (dedup_priority IS NULL OR json_valid(dedup_priority)),
-  failed_account_ids TEXT CHECK (failed_account_ids IS NULL OR json_valid(failed_account_ids))
-, dedup_progress TEXT, batch_lock_at TEXT, campaign_id TEXT REFERENCES campaigns (id) ON DELETE SET NULL);
+  failed_account_ids TEXT CHECK (failed_account_ids IS NULL OR json_valid(failed_account_ids)),
+  dedup_progress     TEXT,
+  batch_lock_at      TEXT,
+  campaign_id        TEXT REFERENCES campaigns (id) ON DELETE SET NULL
+);
 
 CREATE TABLE calendar_bookings (
   id             TEXT PRIMARY KEY,
@@ -912,7 +915,7 @@ CREATE INDEX idx_broadcast_insights_broadcast_id ON broadcast_insights(broadcast
 
 CREATE INDEX idx_broadcast_insights_status ON broadcast_insights(status);
 
-CREATE INDEX idx_broadcasts_campaign ON broadcasts(campaign_id);
+CREATE INDEX idx_broadcasts_campaign ON broadcasts (campaign_id);
 
 CREATE INDEX idx_broadcasts_status ON broadcasts (status);
 
