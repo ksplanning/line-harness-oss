@@ -59,7 +59,8 @@
     "051_campaigns.sql",
     "052_broadcasts_campaign_id.sql",
     "053_template_packs.sql",
-    "054_broadcasts_message_type_expand.sql"
+    "054_broadcasts_message_type_expand.sql",
+    "055_sender_presets.sql"
   ],
-  "migrationCount": 60
+  "migrationCount": 61
 }

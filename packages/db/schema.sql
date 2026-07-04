@@ -123,7 +123,8 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   dedup_priority     TEXT CHECK (dedup_priority IS NULL OR json_valid(dedup_priority)),
   failed_account_ids TEXT CHECK (failed_account_ids IS NULL OR json_valid(failed_account_ids)),
   dedup_progress     TEXT CHECK (dedup_progress IS NULL OR json_valid(dedup_progress)),
-  batch_lock_at      TEXT
+  batch_lock_at      TEXT,
+  sender_preset_id   TEXT REFERENCES sender_presets (id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
@@ -968,3 +969,16 @@ CREATE TABLE IF NOT EXISTS template_pack_items (
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_template_pack_items_pack ON template_pack_items(pack_id, order_index);
+
+-- =============================================================================
+-- Sender presets (migration 055 / F2 G25 送信者名・アイコン切替)
+-- account-scoped。broadcasts は sender_preset_id で id 参照するのみ (生 name/iconUrl は持たない)。
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS sender_presets (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL REFERENCES line_accounts (id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  icon_url        TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_sender_presets_account ON sender_presets (line_account_id);

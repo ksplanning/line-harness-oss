@@ -204,7 +204,7 @@ CREATE TABLE "broadcasts" (
   dedup_progress     TEXT,
   batch_lock_at      TEXT,
   campaign_id        TEXT REFERENCES campaigns (id) ON DELETE SET NULL
-);
+, sender_preset_id TEXT REFERENCES sender_presets (id) ON DELETE SET NULL);
 
 CREATE TABLE calendar_bookings (
   id             TEXT PRIMARY KEY,
@@ -734,6 +734,14 @@ CREATE TABLE scoring_rules (
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE sender_presets (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL REFERENCES line_accounts (id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  icon_url        TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE staff (
   id                       TEXT PRIMARY KEY,
   line_account_id          TEXT NOT NULL,
@@ -1038,6 +1046,8 @@ CREATE INDEX idx_rich_menu_pages_group    ON rich_menu_pages(group_id, order_ind
 CREATE INDEX idx_saved_searches_account ON saved_searches(line_account_id);
 
 CREATE INDEX idx_scenario_steps_scenario_id ON scenario_steps (scenario_id);
+
+CREATE INDEX idx_sender_presets_account ON sender_presets (line_account_id);
 
 CREATE INDEX idx_shifts_staff_date ON staff_shifts (staff_id, work_date);
 

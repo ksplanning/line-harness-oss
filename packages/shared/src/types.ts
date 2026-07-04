@@ -146,6 +146,17 @@ export interface Scenario {
 /** メッセージ種別 */
 export type MessageType = "text" | "image" | "flex";
 
+/** broadcasts 専用の拡張種別 (動画/音声/リッチメッセージ/リッチビデオ)。
+ *  scenario_steps 等の MessageType とは分離 (broadcasts のみ CHECK 拡張 = migration 054)。 */
+export type BroadcastMessageType =
+  | "text"
+  | "image"
+  | "flex"
+  | "video"
+  | "audio"
+  | "imagemap"
+  | "richvideo";
+
 export interface ScenarioStep {
   /** 主キー (UUIDv4) */
   id: string;
@@ -243,8 +254,8 @@ export interface Broadcast {
   id: string;
   /** 配信タイトル (管理用ラベル) */
   title: string;
-  /** メッセージ種別 */
-  messageType: MessageType;
+  /** メッセージ種別 (broadcasts 拡張種別) */
+  messageType: BroadcastMessageType;
   /** メッセージ内容 */
   messageContent: string;
   /** 配信対象種別 */
@@ -261,6 +272,8 @@ export interface Broadcast {
   totalCount: number;
   /** 配信成功人数 */
   successCount: number;
+  /** account-scoped 送信者プリセット id (null = 既定送信者・G25 なりすまし防止) */
+  senderPresetId?: string | null;
   /** 作成日時 (ISO 8601) */
   createdAt: string;
 }

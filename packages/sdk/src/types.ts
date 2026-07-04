@@ -25,6 +25,16 @@ export interface PaginatedData<T> {
 // ─── Common ─────────────────────────────────────────────
 export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual'
 export type MessageType = 'text' | 'image' | 'flex'
+/** broadcasts 専用の拡張種別 (動画/音声/リッチメッセージ/リッチビデオ)。
+ *  scenario_steps 等の MessageType とは分離する (broadcasts のみ CHECK 拡張 = migration 054)。 */
+export type BroadcastMessageType =
+  | 'text'
+  | 'image'
+  | 'flex'
+  | 'video'
+  | 'audio'
+  | 'imagemap'
+  | 'richvideo'
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent'
 
 // ─── Friend ─────────────────────────────────────────────
@@ -215,7 +225,7 @@ export interface FriendScenarioEnrollment {
 export interface Broadcast {
   id: string
   title: string
-  messageType: MessageType
+  messageType: BroadcastMessageType
   messageContent: string
   targetType: 'all' | 'tag'
   targetTagId: string | null
@@ -226,6 +236,8 @@ export interface Broadcast {
   successCount: number
   lineRequestId?: string | null
   aggregationUnit?: string | null
+  /** account-scoped 送信者プリセット id (null = 既定送信者) */
+  senderPresetId?: string | null
   createdAt: string
 }
 
@@ -250,21 +262,24 @@ export interface BroadcastWithInsight extends Broadcast {
 
 export interface CreateBroadcastInput {
   title: string
-  messageType: MessageType
+  messageType: BroadcastMessageType
   messageContent: string
   targetType: 'all' | 'tag'
   targetTagId?: string
   scheduledAt?: string
   altText?: string
+  /** account 登録済みプリセット id のみ (任意 name/URL の自由入力は不可・server で照合) */
+  senderPresetId?: string | null
 }
 
 export interface UpdateBroadcastInput {
   title?: string
-  messageType?: MessageType
+  messageType?: BroadcastMessageType
   messageContent?: string
   targetType?: 'all' | 'tag'
   targetTagId?: string | null
   scheduledAt?: string | null
+  senderPresetId?: string | null
 }
 
 // ─── Rich Menu ──────────────────────────────────────────

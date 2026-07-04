@@ -1,7 +1,14 @@
 import { jstNow } from './utils.js';
 export type BroadcastTargetType = 'all' | 'tag' | 'multi-account-dedup';
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent';
-export type BroadcastMessageType = 'text' | 'image' | 'flex';
+export type BroadcastMessageType =
+  | 'text'
+  | 'image'
+  | 'flex'
+  | 'video'
+  | 'audio'
+  | 'imagemap'
+  | 'richvideo';
 
 export interface Broadcast {
   id: string;
@@ -21,6 +28,8 @@ export interface Broadcast {
   failed_account_ids: string | null;
   dedup_progress: string | null;
   batch_lock_at: string | null;
+  /** account-scoped 送信者プリセット参照 (null = 既定送信者)。生 name/iconUrl は保持しない (G25 なりすまし防止)。 */
+  sender_preset_id: string | null;
 }
 
 export async function getBroadcasts(db: D1Database, accountId?: string): Promise<Broadcast[]> {
@@ -83,6 +92,8 @@ export interface CreateBroadcastInput {
   scheduledAt?: string | null;
   accountIds?: string[];
   dedupPriority?: string[];
+  /** account-scoped 送信者プリセット id (自 account の実在 preset のみ・server で照合)。null/未指定 = 既定送信者。 */
+  senderPresetId?: string | null;
 }
 
 export async function createBroadcast(
@@ -97,8 +108,8 @@ export async function createBroadcast(
   await db
     .prepare(
       `INSERT INTO broadcasts
-         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?)`,
+         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, sender_preset_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -111,6 +122,7 @@ export async function createBroadcast(
       input.scheduledAt ?? null,
       input.accountIds ? JSON.stringify(input.accountIds) : null,
       input.dedupPriority ? JSON.stringify(input.dedupPriority) : null,
+      input.senderPresetId ?? null,
       now,
     )
     .run();
@@ -128,6 +140,7 @@ export type UpdateBroadcastInput = Partial<
     | 'target_tag_id'
     | 'status'
     | 'scheduled_at'
+    | 'sender_preset_id'
   >
 >;
 
@@ -166,6 +179,10 @@ export async function updateBroadcast(
   if (updates.scheduled_at !== undefined) {
     fields.push('scheduled_at = ?');
     values.push(updates.scheduled_at);
+  }
+  if (updates.sender_preset_id !== undefined) {
+    fields.push('sender_preset_id = ?');
+    values.push(updates.sender_preset_id);
   }
 
   if (fields.length > 0) {
