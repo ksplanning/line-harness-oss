@@ -11,6 +11,7 @@ import {
 } from '@line-crm/db';
 import type { LineAccount as DbLineAccount } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
+import { getMessagesThisMonth, getMonthlyCap } from '../services/monthly-cap.js';
 import type { Env } from '../index.js';
 
 const lineAccounts = new Hono<Env>();
@@ -77,15 +78,11 @@ lineAccounts.get('/api/line-accounts', async (c) => {
              INNER JOIN friends f ON f.id = fs.friend_id
              WHERE fs.status = 'active' AND f.line_account_id = ?`,
           ).bind(item.id).first<{ count: number }>(),
-          db.prepare(
-            // 「今月送信」(messagesThisMonth) は LINE 公式ダッシュボードの「配信済みの無料メッセージ数」と
-            // 揃える設計: push 系のみ + 当月 1 日 00:00 以降。reply API 経由 (1-on-1 chat) は LINE quota 外なので
-            // delivery_type='push' で除外。以前は date('now', '-30 days') の rolling window で月初に bias 残って
-            // 公式 dashboard と数桁ズレてた (例: 公式 10 通 vs UI 10,609 通) → start of month に揃えた。
-            `SELECT COUNT(*) as count FROM messages_log ml
-             INNER JOIN friends f ON f.id = ml.friend_id
-             WHERE ml.direction = 'outgoing' AND (ml.delivery_type IS NULL OR ml.delivery_type = 'push') AND ml.created_at >= date('now', 'start of month') AND f.line_account_id = ?`,
-          ).bind(item.id).first<{ count: number }>(),
+          // 「今月送信」(messagesThisMonth) は LINE 公式ダッシュボードの「配信済みの無料メッセージ数」と
+          // 揃える設計: push 系のみ + 当月 1 日 00:00 以降。reply API 経由 (1-on-1 chat) は LINE quota 外なので
+          // delivery_type='push' で除外。式は monthly-cap.ts の共有 helper に単一化 (表示 == 上限 gate の
+          // byte-identical 保証・G2)。以前は date('now','-30 days') rolling で月初 bias があり start of month に揃えた。
+          getMessagesThisMonth(db, item.id).then((count) => ({ count })),
         ]);
 
         return {
@@ -122,6 +119,48 @@ lineAccounts.get('/api/line-accounts/:id', async (c) => {
     return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/line-accounts/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/line-accounts/:id/monthly-cap — 月次上限 + 今月送信数 (表示と gate 同一計測)。
+lineAccounts.get('/api/line-accounts/:id/monthly-cap', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const account = await getLineAccountById(c.env.DB, id);
+    if (!account) return c.json({ success: false, error: 'LINE account not found' }, 404);
+    const [messagesThisMonth, monthlyCap] = await Promise.all([
+      getMessagesThisMonth(c.env.DB, id),
+      getMonthlyCap(c.env.DB, id),
+    ]);
+    const remaining = monthlyCap === null ? null : monthlyCap - messagesThisMonth;
+    return c.json({ success: true, data: { monthlyCap, messagesThisMonth, remaining } });
+  } catch (err) {
+    console.error('GET /api/line-accounts/:id/monthly-cap error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PATCH /api/line-accounts/:id/monthly-cap — { monthlyCap: number | null } (null = 無制限)。
+// owner/admin のみ。正整数か null 以外は 400 (誤設定で正常送信を止めない)。
+lineAccounts.patch('/api/line-accounts/:id/monthly-cap', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const account = await getLineAccountById(c.env.DB, id);
+    if (!account) return c.json({ success: false, error: 'LINE account not found' }, 404);
+    const body = await c.req.json<{ monthlyCap?: unknown }>();
+    const cap = body.monthlyCap;
+    if (cap !== null && cap !== undefined) {
+      if (typeof cap !== 'number' || !Number.isInteger(cap) || cap < 1) {
+        return c.json({ success: false, error: '上限は 1 以上の整数、または未設定 (無制限) にしてください' }, 400);
+      }
+    }
+    const value = cap === null || cap === undefined ? null : cap;
+    await c.env.DB.prepare(`UPDATE line_accounts SET monthly_cap = ?, updated_at = (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')) WHERE id = ?`)
+      .bind(value, id).run();
+    return c.json({ success: true, data: { monthlyCap: value } });
+  } catch (err) {
+    console.error('PATCH /api/line-accounts/:id/monthly-cap error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -15,8 +15,46 @@ import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message, MessageSender, ImageMapVideo } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
+import { checkMonthlyCap } from './monthly-cap.js';
 
 const MULTICAST_BATCH_SIZE = 500;
+
+/**
+ * この broadcast の送信予定人数を数える (G2 上限 gate の「今回予定数」)。
+ *  - multi-account-dedup: per-account 別計算のため単一 account の cap 対象外 (null = cap skip)。
+ *  - segment: segment_conditions を account scope と AND して count。
+ *  - tag: フォロー中 × タグ。
+ *  - all: フォロー中の友だち数。
+ * null は「cap 判定対象外 (skip)」を意味する (誤爆ゼロ側に倒す)。
+ */
+export async function countBroadcastRecipients(
+  db: D1Database,
+  broadcast: Broadcast,
+): Promise<number | null> {
+  const raw = broadcast as unknown as Record<string, unknown>;
+  const accountId = raw.line_account_id as string | null;
+  if (broadcast.target_type === 'multi-account-dedup') return null;
+  const segStr = raw.segment_conditions as string | null;
+  if (segStr) {
+    const { buildSegmentWhere } = await import('./segment-query.js');
+    const { clause, bindings } = buildSegmentWhere(JSON.parse(segStr));
+    const wheres: string[] = [];
+    const binds: unknown[] = [];
+    if (accountId) { wheres.push('f.line_account_id = ?'); binds.push(accountId); }
+    wheres.push(clause);
+    binds.push(...bindings);
+    const r = await db.prepare(`SELECT COUNT(*) as c FROM friends f WHERE ${wheres.join(' AND ')}`).bind(...binds).first<{ c: number }>();
+    return r?.c ?? 0;
+  }
+  if (broadcast.target_type === 'tag' && broadcast.target_tag_id) {
+    const tagFriends = await getFriendsByTag(db, broadcast.target_tag_id);
+    return tagFriends.filter((f) => f.is_following).length;
+  }
+  // target_type === 'all'
+  if (!accountId) return null;
+  const r = await db.prepare(`SELECT COUNT(*) as c FROM friends WHERE is_following = 1 AND line_account_id = ?`).bind(accountId).first<{ c: number }>();
+  return r?.c ?? 0;
+}
 
 export async function processBroadcastSend(
   db: D1Database,
@@ -192,6 +230,16 @@ export async function processScheduledBroadcasts(
         }
       }
 
+      // G2 authoritative gate: 真の送信点 (executor) でも月次上限を確認する。enqueue/予約時点で
+      // 通っても、実行時点で cap 到達していれば止める (Codex HIGH)。cap=null は常に通す (誤爆ゼロ)。
+      const scheduledPending = await countBroadcastRecipients(db, broadcast);
+      const scheduledCap = await checkMonthlyCap(db, accountId, scheduledPending ?? 0);
+      if (scheduledPending !== null && !scheduledCap.allowed) {
+        console.warn(`[monthly-cap] scheduled broadcast ${broadcast.id} blocked: ${scheduledCap.count}+${scheduledPending} > ${scheduledCap.cap}. 上限まで送らずスキップ (status→draft)。`);
+        await db.prepare(`UPDATE broadcasts SET status = 'draft' WHERE id = ? AND status = 'sending'`).bind(broadcast.id).run();
+        continue;
+      }
+
       await processBroadcastSend(db, deliveryClient, broadcast.id, workerUrl);
     } catch (err) {
       console.error(`Failed to send scheduled broadcast ${broadcast.id}:`, err);
@@ -352,6 +400,21 @@ async function processQueuedBroadcastBatches(
     await createBroadcastInsight(db, broadcast.id);
     await updateBroadcastStatus(db, broadcast.id, 'sent', { totalCount: 0, successCount: 0 });
     return;
+  }
+
+  // G2 authoritative gate: 実 multicast 直前に月次上限を確認する (真の送信点・Codex HIGH)。
+  // friends.length = 今回予定数 (exact)。cap=null は常に通す (誤爆ゼロ)。上限超過なら送らずに
+  // status→draft + ロック解除して owner が上限を上げるか翌月まで待つ運用にする (batch_offset の
+  // 途中でも残りを送らない = 上限を超えさせない)。
+  {
+    const remaining = friends.length - batchOffset;
+    const capCheck = await checkMonthlyCap(db, accountId, remaining);
+    if (accountId && !capCheck.allowed) {
+      console.warn(`[monthly-cap] queued broadcast ${broadcast.id} blocked: ${capCheck.count}+${remaining} > ${capCheck.cap}. 上限まで送らずスキップ (status→draft)。`);
+      await db.prepare('UPDATE broadcasts SET batch_offset = 0, batch_lock_at = NULL WHERE id = ?').bind(broadcast.id).run();
+      await updateBroadcastStatus(db, broadcast.id, 'draft');
+      return;
+    }
   }
 
   // 初回: total_count を設定

@@ -8,7 +8,8 @@ import {
 } from '@line-crm/db';
 import type { Broadcast as DbBroadcast, BroadcastMessageType, BroadcastTargetType } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
-import { processBroadcastSend, buildMessage, processQueuedBroadcasts } from '../services/broadcast.js';
+import { processBroadcastSend, buildMessage, processQueuedBroadcasts, countBroadcastRecipients } from '../services/broadcast.js';
+import { checkMonthlyCap } from '../services/monthly-cap.js';
 import { computeDedupBroadcastPreview } from '../services/dedup-broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
@@ -547,6 +548,25 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
 
+    // G2 entry pre-check: 送信入口で月次上限を即時確認 (UX 拒否)。真の送信点 (executor) にも
+    // authoritative gate があるが、ここで早く弾いて owner に伝える。cap=null は常に通す (誤爆ゼロ)。
+    // test-send はこの route を通らないため免除。実 multicast は一切叩かずに 429 で止める。
+    {
+      const entryAccountId = (existing as unknown as Record<string, unknown>).line_account_id as string | null;
+      const pending = await countBroadcastRecipients(c.env.DB, existing);
+      if (entryAccountId && pending !== null) {
+        const cap = await checkMonthlyCap(c.env.DB, entryAccountId, pending);
+        if (!cap.allowed) {
+          return c.json({
+            success: false,
+            error: `今月の配信上限に達しています (今月${cap.count} / 上限${cap.cap} 通)。上限を変えるか来月までお待ちください。テスト送信は上限の対象外です。`,
+            capBlocked: true,
+            cap: { count: cap.count, cap: cap.cap, pending },
+          }, 429);
+        }
+      }
+    }
+
     // multi-account-dedup は常にキュー方式 — Worker の30秒制限を超えるため
     if (existing.target_type === 'multi-account-dedup') {
       // Always queue — never run inline. The executor walks per-account multicast
@@ -700,6 +720,29 @@ broadcasts.post('/api/broadcasts/:id/send-segment', async (c) => {
         { success: false, error: 'conditions with operator and rules array is required' },
         400,
       );
+    }
+
+    // G2 entry pre-check: segment 送信の予定数 (conditions を account scope と AND した件数) で上限確認。
+    // cap=null は常に通す (誤爆ゼロ)。上限超過なら 429 で止め multicast を叩かない。
+    {
+      const segAccountId = (existing as unknown as Record<string, unknown>).line_account_id as string | null;
+      if (segAccountId) {
+        const { buildSegmentWhere } = await import('../services/segment-query.js');
+        const { clause, bindings } = buildSegmentWhere(body.conditions);
+        const cnt = await c.env.DB.prepare(
+          `SELECT COUNT(*) as c FROM friends f WHERE f.line_account_id = ? AND ${clause}`,
+        ).bind(segAccountId, ...bindings).first<{ c: number }>();
+        const pending = cnt?.c ?? 0;
+        const cap = await checkMonthlyCap(c.env.DB, segAccountId, pending);
+        if (!cap.allowed) {
+          return c.json({
+            success: false,
+            error: `今月の配信上限に達しています (今月${cap.count} / 上限${cap.cap} 通)。上限を変えるか来月までお待ちください。テスト送信は上限の対象外です。`,
+            capBlocked: true,
+            cap: { count: cap.count, cap: cap.cap, pending },
+          }, 429);
+        }
+      }
     }
 
     // Atomic lock: status='draft'|'scheduled' のときだけ status='sending' に遷移
