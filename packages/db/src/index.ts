@@ -5,6 +5,7 @@ export * from './scenarios';
 export * from './scenario-schedule';
 export * from './scenario-resolve';
 export * from './broadcasts';
+export * from './sender-presets';
 export * from './users';
 export * from './line-accounts';
 export * from './conversions';

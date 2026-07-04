@@ -12,7 +12,7 @@ import { processBroadcastSend, buildMessage, processQueuedBroadcasts } from '../
 import { computeDedupBroadcastPreview } from '../services/dedup-broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
-import { getLineAccountById } from '@line-crm/db';
+import { getLineAccountById, getSenderPresetById, resolveSenderForBroadcast } from '@line-crm/db';
 import { guardFlexContent } from '../utils/flex-persist-guard.js';
 import type { Env } from '../index.js';
 
@@ -57,8 +57,62 @@ function serializeBroadcast(row: DbBroadcast) {
     accountIds: parseJsonArray(r.account_ids),
     dedupPriority: parseJsonArray(r.dedup_priority),
     failedAccountIds: parseJsonArray(r.failed_account_ids),
+    senderPresetId: (r.sender_preset_id as string | null) ?? null,
     createdAt: row.created_at,
   };
+}
+
+function isHttpsUrl(v: unknown): boolean {
+  return typeof v === 'string' && /^https:\/\/\S+/.test(v);
+}
+
+/**
+ * 新 type (video/audio/imagemap/richvideo) の保存前検証 (T-C5 / A1-A3)。
+ * 不正なら日本語エラー文字列、OK (または対象外 type) なら null を返す。
+ * text/image/flex は既存の検証 (flex は guardFlexContent) に委ねるため対象外。
+ */
+function validateBroadcastContent(messageType: string, messageContent: string): string | null {
+  if (messageType !== 'video' && messageType !== 'audio' && messageType !== 'imagemap' && messageType !== 'richvideo') {
+    return null;
+  }
+  let p: Record<string, unknown>;
+  try {
+    p = JSON.parse(messageContent) as Record<string, unknown>;
+  } catch {
+    return 'メッセージ内容の形式が正しくありません';
+  }
+  if (messageType === 'video') {
+    if (!isHttpsUrl(p.originalContentUrl) || !isHttpsUrl(p.previewImageUrl)) {
+      return '動画URLとプレビュー画像URLは https で指定してください';
+    }
+    return null;
+  }
+  if (messageType === 'audio') {
+    if (!isHttpsUrl(p.originalContentUrl)) return '音声URLは https で指定してください';
+    if (typeof p.duration !== 'number' || !(p.duration > 0)) return '再生時間は正の数で指定してください';
+    return null;
+  }
+  // imagemap / richvideo 共通
+  if (!isHttpsUrl(p.baseUrl)) return '画像URLは https で指定してください';
+  const bs = p.baseSize as { width?: unknown; height?: unknown } | undefined;
+  if (!bs || typeof bs.width !== 'number' || typeof bs.height !== 'number' || bs.width <= 0 || bs.height <= 0) {
+    return '画像サイズ(幅・高さ)を正しく指定してください';
+  }
+  if (!Array.isArray(p.actions)) return '領域リストの形式が正しくありません';
+  for (const a of p.actions as Array<Record<string, unknown>>) {
+    const area = a.area as Record<string, unknown> | undefined;
+    if (!area || (['x', 'y', 'width', 'height'] as const).some((k) => typeof area[k] !== 'number')) {
+      return '領域の座標・サイズを正しく指定してください';
+    }
+    if (a.type === 'uri' && !isHttpsUrl(a.linkUri)) return '領域のリンクURLは https で指定してください';
+  }
+  if (messageType === 'richvideo') {
+    const v = p.video as Record<string, unknown> | undefined;
+    if (!v || !isHttpsUrl(v.originalContentUrl) || !isHttpsUrl(v.previewImageUrl)) {
+      return '動画URLとプレビュー画像URLは https で指定してください';
+    }
+  }
+  return null;
 }
 
 // GET /api/broadcasts - list all
@@ -271,6 +325,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
       altText?: string | null;
       accountIds?: string[];
       dedupPriority?: string[];
+      senderPresetId?: string | null;
     }>();
 
     if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
@@ -286,6 +341,22 @@ broadcasts.post('/api/broadcasts', async (c) => {
       const guard = guardFlexContent(body.messageContent, body.altText);
       if (!guard.ok) {
         return c.json({ success: false, error: guard.messageJa }, 400);
+      }
+    }
+
+    // 新 type (video/audio/imagemap/richvideo) の保存前検証 (不正 URL/欠損は 400)。
+    const contentErr = validateBroadcastContent(body.messageType, body.messageContent);
+    if (contentErr) return c.json({ success: false, error: contentErr }, 400);
+
+    // sender は preset id 参照のみ受理 (生 name/iconUrl は body から読まない = なりすまし防止)。
+    // 渡された senderPresetId が request account の実在 preset か server で照合し、別 account/不存在は 400。
+    if (body.senderPresetId) {
+      if (!body.lineAccountId) {
+        return c.json({ success: false, error: '送信者プリセットを使うにはアカウントの指定が必要です' }, 400);
+      }
+      const preset = await getSenderPresetById(c.env.DB, body.senderPresetId, body.lineAccountId);
+      if (!preset) {
+        return c.json({ success: false, error: '指定された送信者プリセットが見つかりません' }, 400);
       }
     }
 
@@ -317,6 +388,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
       scheduledAt: body.scheduledAt ?? null,
       accountIds: body.accountIds,
       dedupPriority: body.dedupPriority,
+      senderPresetId: body.senderPresetId ?? null,
     });
 
     // Save line_account_id and alt_text if provided
@@ -358,6 +430,7 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       targetType?: BroadcastTargetType;
       targetTagId?: string | null;
       scheduledAt?: string | null;
+      senderPresetId?: string | null;
     }>();
 
     // server 側 Flex 検証 (BACKLOG-flex): 更新後の実効 messageType が flex で、かつ
@@ -369,6 +442,24 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       const guard = guardFlexContent(body.messageContent);
       if (!guard.ok) {
         return c.json({ success: false, error: guard.messageJa }, 400);
+      }
+    }
+
+    // 新 type の保存前検証 (content 未指定の title-only 更新は検証しない = 後方互換)。
+    if (body.messageContent !== undefined) {
+      const contentErr = validateBroadcastContent(effectiveMessageType, body.messageContent);
+      if (contentErr) return c.json({ success: false, error: contentErr }, 400);
+    }
+
+    // sender は preset id 参照のみ受理。既存配信の account に属する実在 preset か照合し、別 account/不存在は 400。
+    if (body.senderPresetId) {
+      const acc = (existing as unknown as Record<string, unknown>).line_account_id as string | null;
+      if (!acc) {
+        return c.json({ success: false, error: '送信者プリセットを使うにはアカウントの指定が必要です' }, 400);
+      }
+      const preset = await getSenderPresetById(c.env.DB, body.senderPresetId, acc);
+      if (!preset) {
+        return c.json({ success: false, error: '指定された送信者プリセットが見つかりません' }, 400);
       }
     }
 
@@ -385,6 +476,7 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       target_type: body.targetType,
       target_tag_id: body.targetTagId,
       scheduled_at: body.scheduledAt,
+      sender_preset_id: body.senderPresetId,
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
     });
 
@@ -865,7 +957,10 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
 
     const { extractFlexAltText } = await import('../utils/flex-alt-text.js');
     const altText = raw.alt_text as string || (tracked.messageType === 'flex' ? extractFlexAltText(tracked.content) : undefined);
-    const message = buildMessage(tracked.messageType, tracked.content, altText);
+    // 送信時に sender_preset_id → sender_presets (account-scoped) から name/iconUrl を解決して付与。
+    // client の生 sender は一切信用しない (なりすまし防止・G25)。
+    const sender = await resolveSenderForBroadcast(c.env.DB, raw.sender_preset_id as string | null, accountId);
+    const message = buildMessage(tracked.messageType, tracked.content, altText, sender);
 
     let sent = 0;
     let failed = 0;

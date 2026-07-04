@@ -163,7 +163,17 @@ export async function autoTrackContent(
   content: string,
   workerUrl: string,
 ): Promise<AutoTrackResult> {
-  if (messageType === 'image') return { messageType, content };
+  // メディア系 (image/video/audio/imagemap/richvideo) は content 内の URL が LINE の直リンク
+  // (originalContentUrl 等) のため tracking redirect に書き換えると再生できなくなる → passthrough。
+  if (
+    messageType === 'image' ||
+    messageType === 'video' ||
+    messageType === 'audio' ||
+    messageType === 'imagemap' ||
+    messageType === 'richvideo'
+  ) {
+    return { messageType, content };
+  }
 
   const urls = extractUrls(content);
   if (urls.size === 0) return { messageType, content };
