@@ -8,6 +8,9 @@ import FlexPreviewComponent from '@/components/flex-preview'
 import ImageUploader from '@/components/shared/image-uploader'
 import MultiAccountDedupSection from './multi-account-dedup-section'
 import PackInsertSelector from './pack-insert-selector'
+import BroadcastMediaInputs from './broadcast-media-inputs'
+import SenderSelect from './sender-select'
+import { validateMediaClient, type MediaMessageType } from '@/lib/broadcast-media'
 import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
 import { flexToModel } from '@/lib/flex-builder/from-flex'
 import { imageLinkToFlexJson } from '@/lib/flex-builder/image-link'
@@ -25,7 +28,23 @@ const messageTypeLabels: Record<ApiBroadcast['messageType'], string> = {
   text: 'テキスト',
   image: '画像',
   flex: 'Flexメッセージ',
+  video: '動画',
+  audio: '音声',
+  imagemap: 'リッチメッセージ (画像分割)',
+  richvideo: 'リッチビデオ',
 }
+
+// 種別ごとの1行説明 (運用者が迷わないよう)。
+const messageTypeHints: Partial<Record<ApiBroadcast['messageType'], string>> = {
+  video: '動画ファイルのURLを送ります',
+  audio: '音声ファイルのURLを送ります',
+  imagemap: '1枚の画像を複数の領域に分けてリンクを付けられます',
+  richvideo: '動画の再生後にボタンを出せます',
+}
+
+const NEW_MEDIA_TYPES: MediaMessageType[] = ['video', 'audio', 'imagemap', 'richvideo']
+const isMediaType = (t: ApiBroadcast['messageType']): t is MediaMessageType =>
+  (NEW_MEDIA_TYPES as string[]).includes(t)
 
 interface FormState {
   title: string
@@ -37,6 +56,7 @@ interface FormState {
   sendNow: boolean
   accountIds: string[]
   dedupPriority: string[]
+  senderPresetId: string | null
 }
 
 export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFormProps) {
@@ -62,7 +82,12 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     sendNow: true,
     accountIds: [],
     dedupPriority: [],
+    senderPresetId: null,
   })
+  // account 切替でプリセット選択をリセット (別 account の preset id を残さない・batch2 L-2 教訓)。
+  useEffect(() => {
+    setForm((prev) => ({ ...prev, senderPresetId: null }))
+  }, [selectedAccountId])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   // Flex ビジュアルビルダー: flex 作成/編集をビルダー起動に置換 (raw textarea は上級者折りたたみへ)
@@ -122,6 +147,10 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
       const v = validateFlex(parsed)
       if (!v.ok) { setError(v.errors[0].messageJa); return }
     }
+    if (isMediaType(form.messageType)) {
+      const mediaErr = validateMediaClient(form.messageType, form.messageContent)
+      if (mediaErr) { setError(mediaErr); return }
+    }
     if (!form.sendNow && !form.scheduledAt) {
       setError('予約配信の場合は配信日時を指定してください')
       return
@@ -150,6 +179,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         lineAccountId: form.targetType === 'multi-account-dedup' ? null : (selectedAccountId || null),
         accountIds: form.targetType === 'multi-account-dedup' ? form.accountIds : undefined,
         dedupPriority: form.targetType === 'multi-account-dedup' ? form.dedupPriority : undefined,
+        senderPresetId: form.senderPresetId,
         // datetime-local returns YYYY-MM-DDTHH:mm in JST wall-clock time
         // Append +09:00 so new Date() parses correctly for epoch comparisons
         scheduledAt: form.sendNow || !form.scheduledAt
@@ -196,12 +226,16 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         {/* Message type */}
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-2">メッセージ種別</label>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {(Object.keys(messageTypeLabels) as ApiBroadcast['messageType'][]).map((type) => (
               <button
                 key={type}
                 type="button"
-                onClick={() => setForm({ ...form, messageType: type })}
+                onClick={() => {
+                  // メディア種別に出入りする切替は内容の形式が変わるため messageContent をリセットする。
+                  const switchingMedia = isMediaType(type) || isMediaType(form.messageType)
+                  setForm({ ...form, messageType: type, ...(switchingMedia ? { messageContent: '' } : {}) })
+                }}
                 className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
                   form.messageType === type
                     ? 'border-green-500 text-green-700 bg-green-50'
@@ -212,6 +246,9 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
               </button>
             ))}
           </div>
+          {messageTypeHints[form.messageType] && (
+            <p className="text-xs text-gray-500 mt-2">{messageTypeHints[form.messageType]}</p>
+          )}
         </div>
 
         {/* Message content */}
@@ -382,7 +419,22 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
               </div>
             </div>
           )}
+
+          {/* video / audio / imagemap / richvideo: 種別ごとの入力 (JSON に直列化して保存) */}
+          {isMediaType(form.messageType) && (
+            <BroadcastMediaInputs
+              messageType={form.messageType}
+              onChange={(content) => setForm((prev) => ({ ...prev, messageContent: content }))}
+            />
+          )}
         </div>
+
+        {/* 送信者 (G25・account プリセットから選ぶ・任意入力不可) */}
+        <SenderSelect
+          accountId={selectedAccountId || null}
+          value={form.senderPresetId}
+          onChange={(id) => setForm((prev) => ({ ...prev, senderPresetId: id }))}
+        />
 
         {/* Target */}
         <div>

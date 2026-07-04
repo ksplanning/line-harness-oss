@@ -385,6 +385,7 @@ export const api = {
       lineAccountId?: string | null
       accountIds?: string[]
       dedupPriority?: string[]
+      senderPresetId?: string | null
     }) =>
       fetchApi<ApiResponse<ApiBroadcast>>('/api/broadcasts', {
         method: 'POST',
@@ -399,6 +400,7 @@ export const api = {
         targetType?: ApiBroadcast['targetType']
         targetTagId?: string | null
         scheduledAt?: string | null
+        senderPresetId?: string | null
       }
     ) =>
       fetchApi<ApiResponse<ApiBroadcast>>(`/api/broadcasts/${id}`, {
@@ -1657,6 +1659,29 @@ export const api = {
       ),
   },
 
+  // F2 G25 送信者プリセット (account-scoped・送信ゼロ・なりすまし防止の値検証は server が正典)。
+  senderPresets: {
+    list: (accountId: string) =>
+      fetchApi<ApiResponse<SenderPresetItem[]>>(
+        `/api/sender-presets?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    create: (accountId: string, data: { name: string; iconUrl?: string | null }) =>
+      fetchApi<ApiResponse<SenderPresetItem>>(
+        `/api/sender-presets?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'POST', body: JSON.stringify(data) },
+      ),
+    update: (id: string, accountId: string, data: { name?: string; iconUrl?: string | null }) =>
+      fetchApi<ApiResponse<SenderPresetItem>>(
+        `/api/sender-presets/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'PATCH', body: JSON.stringify(data) },
+      ),
+    remove: (id: string, accountId: string) =>
+      fetchApi<ApiResponse<null>>(
+        `/api/sender-presets/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'DELETE' },
+      ),
+  },
+
   // F2 G16 テンプレパック (account-scoped・挿入用 CRUD・送信ゼロ)。
   templatePacks: {
     list: (accountId: string) =>
@@ -1707,6 +1732,14 @@ export interface CampaignSummary {
   name: string
   createdAt: string
   updatedAt: string
+}
+
+export interface SenderPresetItem {
+  id: string
+  accountId: string
+  name: string
+  iconUrl: string | null
+  createdAt: string
 }
 
 export interface CampaignBroadcastSummary {
