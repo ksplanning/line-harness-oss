@@ -21,7 +21,7 @@ interface SegmentRule {
   value: string | boolean | { key: string; value: string } | BehavioralValue
 }
 
-interface SegmentCondition {
+export interface SegmentCondition {
   operator: 'AND' | 'OR'
   rules: SegmentRule[]
 }
@@ -52,12 +52,14 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
   const [rules, setRules] = useState<SegmentRule[]>(initialConditions?.rules ?? [{ type: 'tag_exists', value: '' }])
   const [count, setCount] = useState<number | null>(null)
   const [counting, setCounting] = useState(false)
-  // 行動 rule の対象選択用リスト (トラッキングリンク / リッチメニュー)。
+  // 行動 rule の対象選択用リスト (トラッキングリンク / リッチメニュー / フォーム)。
   const [trackedLinks, setTrackedLinks] = useState<Array<{ id: string; name: string }>>([])
   const [menuGroups, setMenuGroups] = useState<Array<{ id: string; name: string }>>([])
+  const [forms, setForms] = useState<Array<{ id: string; name: string }>>([])
 
   useEffect(() => {
     api.trackedLinks.list().then(r => { if (r.success && r.data) setTrackedLinks(r.data.map(l => ({ id: l.id, name: l.name }))) }).catch(() => {})
+    api.forms.list().then(r => { if (r.success && r.data) setForms(r.data.map(f => ({ id: f.id, name: f.name }))) }).catch(() => {})
   }, [])
   useEffect(() => {
     if (!accountId) { setMenuGroups([]); return }
@@ -192,7 +194,14 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
                   </select>
                 )}
                 {rule.type === 'opened_form' && (
-                  <span className="text-xs text-gray-500 flex-1">すべてのフォーム</span>
+                  <select
+                    value={(rule.value as BehavioralValue).formId ?? ''}
+                    onChange={(e) => updateRule(i, { value: { ...(rule.value as BehavioralValue), formId: e.target.value || null } })}
+                    className="text-xs border border-gray-300 rounded px-2 py-1 bg-white flex-1"
+                  >
+                    <option value="">すべてのフォーム</option>
+                    {forms.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                  </select>
                 )}
                 <label className="text-xs text-gray-500 whitespace-nowrap">過去
                   <input

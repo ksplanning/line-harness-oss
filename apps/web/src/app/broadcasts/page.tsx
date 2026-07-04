@@ -9,6 +9,7 @@ import Header from '@/components/layout/header'
 import BroadcastForm from '@/components/broadcasts/broadcast-form'
 import SenderPresetManager from '@/components/broadcasts/sender-preset-manager'
 import AbTestPanel from '@/components/broadcasts/ab-test-panel'
+import SegmentBuilder, { type SegmentCondition } from '@/components/broadcasts/segment-builder'
 import BroadcastDetail from '@/components/broadcasts/broadcast-detail'
 import { messageTypeLabels } from '@/lib/broadcast-labels'
 import CcPromptButton from '@/components/cc-prompt-button'
@@ -79,6 +80,8 @@ function BroadcastList() {
   const [activeTab, setActiveTab] = useState<BroadcastTab>('all')
   const [showSenderMgr, setShowSenderMgr] = useState(false)
   const [showAbTest, setShowAbTest] = useState(false)
+  // A/B の対象 audience (segment-builder で選び、分割プレビュー/作成に引き渡す)。null = 全員。
+  const [abConditions, setAbConditions] = useState<SegmentCondition | null>(null)
 
   const loadInsight = async (id: string) => {
     try {
@@ -196,8 +199,19 @@ function BroadcastList() {
 
       {/* A/B テスト (G1・作成/分割プレビュー/比較/勝ち下書き・送信は owner 立会 gated) */}
       {showAbTest && selectedAccountId && (
-        <div className="mb-4">
-          <AbTestPanel accountId={selectedAccountId} />
+        <div className="mb-4 space-y-3">
+          {/* 対象 audience を segment-builder で選び、A/B 分割プレビュー/作成に引き渡す。 */}
+          <div>
+            <p className="text-xs text-gray-500 mb-1">A/B の配信対象（省略時は全員）</p>
+            <SegmentBuilder
+              tags={tags}
+              accountId={selectedAccountId}
+              initialConditions={abConditions}
+              onApply={(c) => setAbConditions(c)}
+              onCancel={() => setAbConditions(null)}
+            />
+          </div>
+          <AbTestPanel accountId={selectedAccountId} conditions={abConditions ?? undefined} />
         </div>
       )}
       {showAbTest && !selectedAccountId && (

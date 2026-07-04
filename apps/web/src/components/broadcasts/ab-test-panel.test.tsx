@@ -36,13 +36,16 @@ describe('AbTestPanel (G1)', () => {
     await waitFor(() => expect(m.create).toHaveBeenCalledWith('acc-1', { name: '夏A/B', metric: 'click_rate' }))
   })
 
-  it('split preview shows 案A/案B counts + "does not send" note', async () => {
-    render(<AbTestPanel accountId="acc-1" conditions={{ operator: 'AND', rules: [] }} />)
+  it('split preview shows 案A/案B counts + "does not send" note + forwards audience conditions (T-C9)', async () => {
+    const cond = { operator: 'AND' as const, rules: [{ type: 'tag_exists', value: 'tag-x' }] }
+    render(<AbTestPanel accountId="acc-1" conditions={cond} />)
     await waitFor(() => screen.getByText(/春A\/B/))
     fireEvent.click(screen.getByText('分割プレビュー'))
     await waitFor(() => expect(screen.getByText(/案A：3人/)).toBeTruthy())
     expect(screen.getByText(/案B：2人/)).toBeTruthy()
     expect(screen.getByText(/実際に送るのは owner 確認後/)).toBeTruthy()
+    // audience 条件が splitPreview に渡る (broadcasts/page → AbTestPanel の conditions 配線の受け口)。
+    expect(m.split).toHaveBeenCalledWith('t1', 'acc-1', cond)
   })
 
   it('compare highlights the winner and offers a winner-draft button (draft only)', async () => {

@@ -68,6 +68,9 @@ describe('broadcast-detail G2 cap-block inline message', () => {
     expect(screen.getByText(/上限を変えるか来月まで/)).toBeTruthy()
     expect(screen.getByText(/テスト送信は上限の対象外/)).toBeTruthy()
     expect(screen.queryByText('送信に失敗しました')).toBeNull()
+    // T-C10: 上限到達中は送信ボタンを抑止する (disabled)。
+    const sendBtn = screen.getByText(/この配信を送信する/).closest('button') as HTMLButtonElement
+    expect(sendBtn.disabled).toBe(true)
   })
 
   it('falls back to generic error for non-cap failures', async () => {

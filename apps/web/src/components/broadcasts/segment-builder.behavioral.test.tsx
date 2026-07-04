@@ -8,10 +8,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 
-const { countMock, linksMock, menusMock } = vi.hoisted(() => ({
+const { countMock, linksMock, menusMock, formsMock } = vi.hoisted(() => ({
   countMock: vi.fn(),
   linksMock: vi.fn(),
   menusMock: vi.fn(),
+  formsMock: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -19,6 +20,7 @@ vi.mock('@/lib/api', () => ({
     segments: { count: (...a: unknown[]) => countMock(...a) },
     trackedLinks: { list: (...a: unknown[]) => linksMock(...a) },
     richMenuGroups: { list: (...a: unknown[]) => menusMock(...a) },
+    forms: { list: (...a: unknown[]) => formsMock(...a) },
   },
 }))
 
@@ -28,6 +30,7 @@ beforeEach(() => {
   countMock.mockResolvedValue({ success: true, count: 3 })
   linksMock.mockResolvedValue({ success: true, data: [{ id: 'tl-1', name: '春リンク' }] })
   menusMock.mockResolvedValue({ success: true, data: [{ id: 'g-1', name: '春メニュー' }] })
+  formsMock.mockResolvedValue({ success: true, data: [{ id: 'form-1', name: '来店予約フォーム' }] })
 })
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
@@ -57,6 +60,22 @@ describe('segment-builder behavioral rules (G11)', () => {
     await waitFor(() => expect(screen.getByText('春メニュー')).toBeTruthy())
     // 期間入力 (過去◯日)
     expect(screen.getByText(/過去/)).toBeTruthy()
+  })
+
+  it('opened_form offers a form selector (すべて + specific forms) and applies formId', async () => {
+    const onApply = setup()
+    const typeSelect = screen.getAllByRole('combobox')[1]
+    fireEvent.change(typeSelect, { target: { value: 'opened_form' } })
+    // 対象フォーム select が出る: すべてのフォーム + fetch 済みフォーム。
+    const formSelect = screen.getAllByRole('combobox').find(el => Array.from(el.querySelectorAll('option')).some(o => o.textContent === 'すべてのフォーム'))!
+    expect(formSelect).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('来店予約フォーム')).toBeTruthy())
+    fireEvent.change(formSelect, { target: { value: 'form-1' } })
+    fireEvent.click(screen.getByText('適用'))
+    const arg = onApply.mock.calls[0][0] as { rules: Array<{ type: string; value: { formId?: string; sinceDays: number } }> }
+    const rule = arg.rules.find(r => r.type === 'opened_form')!
+    expect(rule.value.formId).toBe('form-1')
+    expect(rule.value.sinceDays).toBe(30)
   })
 
   it('applies clicked_link with sinceDays in the payload (does not send)', () => {

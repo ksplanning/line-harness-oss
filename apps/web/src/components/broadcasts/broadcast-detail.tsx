@@ -472,7 +472,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
           )}
           <button
             onClick={() => setShowConfirm(true)}
-            disabled={sending}
+            disabled={sending || !!capBlock}
             className="w-full px-4 py-3 min-h-[44px] text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity"
             style={{ backgroundColor: '#06C755' }}
           >

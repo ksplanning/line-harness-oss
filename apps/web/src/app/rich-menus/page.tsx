@@ -15,6 +15,8 @@ type RichMenuGroupListItem = {
   size: 'large' | 'compact'
   status: 'draft' | 'published'
   isDefaultForAll: boolean
+  scheduleStart: string | null
+  scheduleEnd: string | null
   thumbnailR2Key: string | null
   updatedAt: string
 }
@@ -286,7 +288,12 @@ export default function RichMenusListPage() {
                 <div className="p-5">
                   <div className="flex items-start justify-between mb-2 gap-2">
                     <h2 className="font-semibold text-gray-900 truncate">{g.name}</h2>
-                    <StatusBadge status={g.status} />
+                    <div className="flex items-center gap-1 shrink-0">
+                      {(g.scheduleStart || g.scheduleEnd) && (
+                        <span className="text-xs px-2 py-0.5 rounded-full whitespace-nowrap" style={{ backgroundColor: '#FEF3C7', color: '#92400E' }}>期間限定</span>
+                      )}
+                      <StatusBadge status={g.status} />
+                    </div>
                   </div>
                   <p className="text-sm text-gray-500 truncate">
                     トーク表示: <span className="text-gray-700">{g.chatBarText}</span>

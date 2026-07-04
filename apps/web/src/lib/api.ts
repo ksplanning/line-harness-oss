@@ -509,6 +509,12 @@ export const api = {
       }),
   },
 
+  // フォーム一覧 (G11 opened_form の対象フォーム選択用)。
+  forms: {
+    list: () =>
+      fetchApi<ApiResponse<Array<{ id: string; name: string }>>>('/api/forms'),
+  },
+
   accountSettings: {
     getTestRecipients: (accountId: string) =>
       fetchApi<{ success: boolean; data: Array<{ id: string; displayName: string; pictureUrl: string | null }> }>(`/api/account-settings/test-recipients?accountId=${accountId}`),
@@ -1276,6 +1282,8 @@ export const api = {
         isDefaultForAll: boolean;
         status: 'draft' | 'published';
         publishingAt: string | null;
+        scheduleStart: string | null;
+        scheduleEnd: string | null;
         thumbnailR2Key: string | null;
         createdAt: string;
         updatedAt: string;
