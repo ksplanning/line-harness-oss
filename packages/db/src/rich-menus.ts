@@ -273,6 +273,31 @@ export async function updateRichMenuGroupMeta(
     .run();
 }
 
+/**
+ * 期間限定メニュー (G17) の開始/終了日時を account-scoped で設定する。別 account の group は WHERE で
+ * 除外され更新されない。null を渡すとスケジュール解除。自動切替は RICH_MENU_SCHEDULE_ENABLED flag OFF +
+ * crons=[] で dark-ship (本関数は列を書くだけで切替はしない)。
+ */
+export async function updateRichMenuGroupSchedule(
+  db: D1Database,
+  id: string,
+  accountId: string,
+  patch: { scheduleStart?: string | null; scheduleEnd?: string | null },
+): Promise<void> {
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (patch.scheduleStart !== undefined) { sets.push('schedule_start = ?'); vals.push(patch.scheduleStart); }
+  if (patch.scheduleEnd !== undefined) { sets.push('schedule_end = ?'); vals.push(patch.scheduleEnd); }
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  vals.push(jstNow());
+  vals.push(id, accountId);
+  await db
+    .prepare(`UPDATE rich_menu_groups SET ${sets.join(', ')} WHERE id = ? AND account_id = ?`)
+    .bind(...vals)
+    .run();
+}
+
 // pages 配列を「id 維持型」全置換する。
 // - 入力 page.id が既存 rich_menu_pages.id にマッチした場合、そのページの
 //   image_r2_key / image_content_type / line_richmenu_id / created_at は引き継ぐ。

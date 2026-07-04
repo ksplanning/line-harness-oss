@@ -11,6 +11,7 @@ import {
 } from '@line-crm/db';
 import { processStepDeliveries } from './services/step-delivery.js';
 import { processScheduledBroadcasts, processQueuedBroadcasts } from './services/broadcast.js';
+import { isRichMenuScheduleEnabled, processRichMenuSchedule } from './services/rich-menu-schedule.js';
 import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
@@ -120,6 +121,9 @@ export type Env = {
     LIFF_PAGES_PROJECT?: string;
     D1_DATABASE_ID?: string;
     FAQ_BOT_ENABLED?: string;
+    // G17 期間限定リッチメニューの自動切替 flag。既定 OFF (未設定) = dark-ship。
+    // KS 本番は crons=[] でもあり二重に dark (owner 立会後に 'true' + cron 設定で有効化)。
+    RICH_MENU_SCHEDULE_ENABLED?: string;
     MANIFEST_URL?: string;
     WORKER_PUBLIC_URL?: string;
     ADMIN_PUBLIC_URL?: string;
@@ -612,6 +616,13 @@ async function scheduled(
   jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));
   jobs.push(checkAccountHealth(env.DB));
   jobs.push(refreshLineAccessTokens(env.DB));
+  // G17 期間限定リッチメニュー: RICH_MENU_SCHEDULE_ENABLED='true' の時だけ切替計画 job を push。
+  // 既定 OFF = job 自体が追加されず dark。onActivate/onExpire を注入しないため、たとえ flag ON でも
+  // LINE menu 切替 API は叩かず計画をログするだけ (実切替の配線は owner 立会後)。KS 本番 crons=[] で
+  // scheduled 自体が発火しないため二重 dark-ship。
+  if (isRichMenuScheduleEnabled(env)) {
+    jobs.push(processRichMenuSchedule(env.DB).catch((e) => console.error('[rich-menu-schedule] error:', e)));
+  }
 
   await Promise.allSettled(jobs);
 

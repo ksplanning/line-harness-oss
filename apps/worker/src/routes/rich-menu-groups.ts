@@ -5,6 +5,7 @@ import {
   getRichMenuGroupWithPages,
   createRichMenuGroup,
   updateRichMenuGroupMeta,
+  updateRichMenuGroupSchedule,
   replaceRichMenuPages,
   deleteRichMenuGroup,
   setRichMenuPageImage,
@@ -49,6 +50,8 @@ function serializeGroup(row: RichMenuGroup) {
     isDefaultForAll: row.is_default_for_all === 1,
     status: row.status,
     publishingAt: row.publishing_at,
+    scheduleStart: row.schedule_start,
+    scheduleEnd: row.schedule_end,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -665,6 +668,50 @@ richMenuGroups.patch('/api/rich-menu-groups/:groupId', async (c) => {
   const refreshed = await getRichMenuGroupWithPages(c.env.DB, groupId);
   if (!refreshed) return c.json({ success: false, error: 'group disappeared after update' }, 500);
   return c.json({ success: true, data: serializeGroupWithPages(refreshed) });
+});
+
+// PATCH /api/rich-menu-groups/:groupId/schedule?accountId= — 期間限定メニュー (G17) の開始/終了設定。
+// account-scoped (別 account の group は 403)。自動切替は RICH_MENU_SCHEDULE_ENABLED flag OFF + crons=[]
+// で dark-ship (本 route は日時を保存するだけで切替はしない)。
+richMenuGroups.patch('/api/rich-menu-groups/:groupId/schedule', async (c) => {
+  const groupId = c.req.param('groupId');
+  const accountId = c.req.query('accountId');
+  if (!accountId) return c.json({ success: false, error: 'accountId query param required' }, 400);
+  const existing = await getRichMenuGroupById(c.env.DB, groupId);
+  if (!existing) return c.json({ success: false, error: 'not found' }, 404);
+  // account-scope guard: 別 account の group は操作させない (cross-account 漏洩ゼロ)。
+  if (existing.account_id !== accountId) return c.json({ success: false, error: 'account mismatch' }, 403);
+
+  let body: { scheduleStart?: string | null; scheduleEnd?: string | null };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: 'invalid JSON body' }, 400);
+  }
+  // 日時検証: undefined=未変更 / null|''=解除 / string=ISO8601 として解釈可能なこと。両方指定なら start < end。
+  const INVALID = Symbol('invalid');
+  const normalize = (v: unknown): string | null | undefined | typeof INVALID => {
+    if (v === undefined) return undefined;
+    if (v === null || v === '') return null;
+    if (typeof v !== 'string' || Number.isNaN(new Date(v).getTime())) return INVALID;
+    return v;
+  };
+  const start = normalize(body.scheduleStart);
+  const end = normalize(body.scheduleEnd);
+  if (start === INVALID || end === INVALID) {
+    return c.json({ success: false, error: '日時の形式が正しくありません' }, 400);
+  }
+  const effStart = start === undefined ? existing.schedule_start : start;
+  const effEnd = end === undefined ? existing.schedule_end : end;
+  if (effStart && effEnd && new Date(effStart).getTime() >= new Date(effEnd).getTime()) {
+    return c.json({ success: false, error: '終了日時は開始日時より後にしてください' }, 400);
+  }
+  await updateRichMenuGroupSchedule(c.env.DB, groupId, accountId, {
+    scheduleStart: start,
+    scheduleEnd: end,
+  });
+  const refreshed = await getRichMenuGroupWithPages(c.env.DB, groupId);
+  return c.json({ success: true, data: refreshed ? serializeGroupWithPages(refreshed) : null });
 });
 
 richMenuGroups.delete('/api/rich-menu-groups/:groupId', async (c) => {
