@@ -17,7 +17,7 @@ import FlexPreview from '@/components/flex-preview'
 import PartPalette from './part-palette'
 import PartEditor from './part-editor'
 import CardTabs from './card-tabs'
-import { NAIL_TEMPLATES, blankModel, cloneTemplate, type FlexTemplate } from '@/lib/flex-builder/templates'
+import { NAIL_TEMPLATES, GALLERY_TEMPLATES, blankModel, cloneTemplate, type FlexTemplate } from '@/lib/flex-builder/templates'
 import { buildModelToFlex } from '@/lib/flex-builder/to-flex'
 import { validateFlex } from '@/lib/flex-builder/validate'
 import {
@@ -33,6 +33,18 @@ import {
   removeCard,
 } from '@/lib/flex-builder/modal-logic'
 import type { BuilderModel, BuilderPart, PartKind, ValidationError } from '@/lib/flex-builder/types'
+import type { ComponentType, SVGProps } from 'react'
+import {
+  HeadingIcon,
+  BodyTextIcon,
+  ImageIcon,
+  ButtonIcon,
+  SeparatorIcon,
+  SpacerIcon,
+  TrashIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
+} from '@/components/shared/icons'
 
 interface Props {
   /** 既存 Flex を編集する場合の初期モデル。新規なら undefined (テンプレ選択から)。 */
@@ -41,13 +53,14 @@ interface Props {
   onClose: () => void
 }
 
-const PART_META: Record<PartKind, { icon: string; label: string }> = {
-  heading: { icon: '🅰', label: '見出し' },
-  body: { icon: '📝', label: '本文' },
-  image: { icon: '🖼', label: '画像' },
-  button: { icon: '🔘', label: 'ボタン' },
-  separator: { icon: '➖', label: '区切り線' },
-  spacer: { icon: '⬜', label: '余白' },
+// 装飾は絵文字文字でなく inline SVG (M-19: VS16 無し絵文字の豆腐を根絶)。
+const PART_META: Record<PartKind, { Icon: ComponentType<SVGProps<SVGSVGElement>>; label: string }> = {
+  heading: { Icon: HeadingIcon, label: '見出し' },
+  body: { Icon: BodyTextIcon, label: '本文' },
+  image: { Icon: ImageIcon, label: '画像' },
+  button: { Icon: ButtonIcon, label: 'ボタン' },
+  separator: { Icon: SeparatorIcon, label: '区切り線' },
+  spacer: { Icon: SpacerIcon, label: '余白' },
 }
 
 function partSummary(part: BuilderPart): string {
@@ -230,8 +243,8 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
                         selected ? 'border-green-500 bg-green-50 ring-1 ring-green-500' : 'border-gray-200'
                       }`}
                     >
-                      <span className="text-base leading-none" aria-hidden>
-                        {meta.icon}
+                      <span className="text-base leading-none text-gray-600" aria-hidden>
+                        <meta.Icon />
                       </span>
                       <span className="flex-1 min-w-0">
                         <span className="block text-xs font-medium text-gray-800">{meta.label}</span>
@@ -241,16 +254,16 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
                         type="button"
                         onClick={(e) => { e.stopPropagation(); handleMove(part.id, 'up') }}
                         disabled={i === 0}
-                        className="w-8 h-8 rounded text-gray-500 disabled:opacity-30 hover:bg-gray-100"
+                        className="w-8 h-8 rounded text-gray-500 disabled:opacity-30 hover:bg-gray-100 inline-flex items-center justify-center"
                         aria-label="上へ移動"
-                      >↑</button>
+                      ><ChevronUpIcon /></button>
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); handleMove(part.id, 'down') }}
                         disabled={i === card.parts.length - 1}
-                        className="w-8 h-8 rounded text-gray-500 disabled:opacity-30 hover:bg-gray-100"
+                        className="w-8 h-8 rounded text-gray-500 disabled:opacity-30 hover:bg-gray-100 inline-flex items-center justify-center"
                         aria-label="下へ移動"
-                      >↓</button>
+                      ><ChevronDownIcon /></button>
                       {confirmingRemoveId === part.id ? (
                         <span className="flex items-center gap-1">
                           <span className="text-[11px] text-gray-600">消す?</span>
@@ -271,9 +284,9 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); setConfirmingRemoveId(part.id) }}
-                          className="w-8 h-8 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
+                          className="w-8 h-8 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 inline-flex items-center justify-center"
                           aria-label="この部品を消す"
-                        >🗑</button>
+                        ><TrashIcon /></button>
                       )}
                     </li>
                   )
@@ -337,33 +350,57 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
   )
 }
 
-/** step='template': どれから作るかの選択画面 (まっさら + 3 テンプレ)。サムネは FlexPreview 実物。 */
+/** step='template': どれから作るかの選択画面 (まっさら + テンプレ + 完成見本ギャラリー)。サムネは FlexPreview 実物。 */
 function TemplateStep({ onPick }: { onPick: (tpl: FlexTemplate | null) => void }) {
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto p-6">
-      <p className="text-sm font-medium text-gray-800 mb-4">どれから作りますか？</p>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <button
-          type="button"
-          onClick={() => onPick(null)}
-          className="flex flex-col items-center justify-center gap-2 min-h-[160px] border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-500"
-        >
-          <span className="text-3xl text-gray-400" aria-hidden>＋</span>
-          <span className="text-sm font-medium text-gray-700">まっさら</span>
-        </button>
-        {NAIL_TEMPLATES.map((tpl) => (
+    <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-6">
+      <div>
+        <p className="text-sm font-medium text-gray-800 mb-4">どれから作りますか？</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <button
-            key={tpl.key}
             type="button"
-            onClick={() => onPick(tpl)}
-            className="flex flex-col items-center gap-2 p-2 border border-gray-200 rounded-lg hover:border-green-500 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-500"
+            onClick={() => onPick(null)}
+            className="flex flex-col items-center justify-center gap-2 min-h-[160px] border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-500"
           >
-            <div className="w-full bg-slate-100 rounded p-1 flex justify-center overflow-hidden" style={{ maxHeight: 130 }}>
-              <FlexPreview content={JSON.stringify(buildModelToFlex(tpl.model))} maxWidth={140} />
-            </div>
-            <span className="text-sm font-medium text-gray-700">{tpl.label}</span>
+            <span className="text-3xl text-gray-400" aria-hidden>＋</span>
+            <span className="text-sm font-medium text-gray-700">まっさら</span>
           </button>
-        ))}
+          {NAIL_TEMPLATES.map((tpl) => (
+            <button
+              key={tpl.key}
+              type="button"
+              onClick={() => onPick(tpl)}
+              className="flex flex-col items-center gap-2 p-2 border border-gray-200 rounded-lg hover:border-green-500 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              <div className="w-full bg-slate-100 rounded p-1 flex justify-center overflow-hidden" style={{ maxHeight: 130 }}>
+                <FlexPreview content={JSON.stringify(buildModelToFlex(tpl.model))} maxWidth={140} />
+              </div>
+              <span className="text-sm font-medium text-gray-700">{tpl.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 完成見本ギャラリー (A4)。owner が「作りたい形」を実描画サムネで選べる。選ぶとその形から編集開始。 */}
+      <div>
+        <p className="text-sm font-medium text-gray-800 mb-1">完成見本ギャラリー</p>
+        <p className="text-xs text-gray-500 mb-4">選ぶとこの形から作れます。あとから自由に編集できます。</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {GALLERY_TEMPLATES.map((tpl) => (
+            <button
+              key={tpl.key}
+              type="button"
+              onClick={() => onPick(tpl)}
+              className="flex flex-col items-center gap-2 p-2 border border-gray-200 rounded-lg text-center hover:border-green-500 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              <div className="w-full bg-slate-100 rounded p-1 flex justify-center overflow-hidden" style={{ maxHeight: 150 }}>
+                <FlexPreview content={JSON.stringify(buildModelToFlex(tpl.model))} maxWidth={140} />
+              </div>
+              <span className="text-sm font-medium text-gray-700">{tpl.label}</span>
+              {tpl.description && <span className="text-[11px] text-gray-500 leading-snug">{tpl.description}</span>}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )

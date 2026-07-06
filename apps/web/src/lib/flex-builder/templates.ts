@@ -28,6 +28,8 @@ export interface FlexTemplate {
   key: string;
   label: string; // 運用者向けの日本語ラベル (専門語ゼロ)
   model: BuilderModel;
+  /** 完成見本ギャラリー用の「ひとこと説明」(A4 / ui-design §A-3)。省略可。 */
+  description?: string;
 }
 
 /** 「まっさら」= 空 1 枚。パレットから足していく。 */
@@ -133,6 +135,129 @@ export const NAIL_TEMPLATES: FlexTemplate[] = [
               label: '詳しく見る',
               style: 'primary',
               link: { type: 'url', uri: 'https://example.com/menu/care' },
+            },
+          ],
+        },
+      ],
+    },
+  },
+];
+
+/**
+ * 完成見本ギャラリー (A4 / ui-design §A-3)。
+ *
+ * owner の「参考画像があれば完成形が想像つく」に応える代表 Flex パターン集。サムネは画像ファイルでなく
+ * FlexPreview の実描画 = 中身と常に一致 (templates.ts の原則継承)。選ぶとその形から編集開始できる。
+ *
+ * 現行 6 部品(見出し/本文/画像/ボタン/区切り/余白)+カルーセルで作れる形のみ収録。
+ *   「2カラム(横並びボックス)」は batch C、「動画カード」は batch E で本ギャラリーに追加される
+ *   (未対応の形を今見せて「作れるが編集で開けない」体験を生まないため、あえて今は載せない)。
+ */
+export const GALLERY_TEMPLATES: FlexTemplate[] = [
+  {
+    key: 'g_announce',
+    label: 'シンプル告知',
+    description: '見出し・説明・ボタンだけの、いちばん簡単な1枚。',
+    model: {
+      cards: [
+        {
+          id: 'g-announce-card',
+          parts: [
+            { kind: 'heading', id: 'g-announce-h', text: '春の新色ネイル 入荷しました' },
+            { kind: 'body', id: 'g-announce-b', text: '人気の春カラーが揃いました。気になる方はお気軽にご相談ください。' },
+            {
+              kind: 'button',
+              id: 'g-announce-btn',
+              label: '詳しく見る',
+              style: 'primary',
+              link: { type: 'url', uri: 'https://example.com/news' },
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    key: 'g_image_cta',
+    label: '画像で予約に誘導',
+    description: '1枚の画像とボタンで予約ページへ案内。',
+    model: {
+      cards: [
+        {
+          id: 'g-imgcta-card',
+          parts: [
+            { kind: 'image', id: 'g-imgcta-img', url: PH.booking, aspect: 'landscape', rounded: true },
+            { kind: 'heading', id: 'g-imgcta-h', text: 'ご予約はこちらから' },
+            {
+              kind: 'button',
+              id: 'g-imgcta-btn',
+              label: 'ネットで予約する',
+              style: 'primary',
+              link: { type: 'booking', uri: 'https://example.com/booking' },
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    key: 'g_coupon',
+    label: 'クーポン',
+    description: '画像・説明・区切り線つきのクーポン風カード。',
+    model: {
+      cards: [
+        {
+          id: 'g-coupon-card',
+          parts: [
+            { kind: 'image', id: 'g-coupon-img', url: PH.campaign, aspect: 'landscape', rounded: true },
+            { kind: 'heading', id: 'g-coupon-h', text: '初回20%OFFクーポン' },
+            { kind: 'body', id: 'g-coupon-b', text: 'このメッセージをご提示ください。1回のご来店で1度ご利用いただけます。', size: 'sm' },
+            { kind: 'separator', id: 'g-coupon-sep' },
+            {
+              kind: 'button',
+              id: 'g-coupon-btn',
+              label: 'クーポンを使って予約',
+              style: 'primary',
+              link: { type: 'booking', uri: 'https://example.com/booking' },
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    key: 'g_carousel',
+    label: '複数を横に並べる',
+    description: 'メニューや商品を左右スワイプで見せるカルーセル。',
+    model: {
+      cards: [
+        {
+          id: 'g-carousel-card1',
+          parts: [
+            { kind: 'image', id: 'g-carousel-img1', url: PH.product1, aspect: 'square', rounded: true },
+            { kind: 'heading', id: 'g-carousel-h1', text: '定番コース' },
+            { kind: 'body', id: 'g-carousel-b1', text: '長持ちで人気の定番。', size: 'sm' },
+            {
+              kind: 'button',
+              id: 'g-carousel-btn1',
+              label: '詳しく見る',
+              style: 'primary',
+              link: { type: 'url', uri: 'https://example.com/menu/1' },
+            },
+          ],
+        },
+        {
+          id: 'g-carousel-card2',
+          parts: [
+            { kind: 'image', id: 'g-carousel-img2', url: PH.product2, aspect: 'square', rounded: true },
+            { kind: 'heading', id: 'g-carousel-h2', text: 'ケアコース' },
+            { kind: 'body', id: 'g-carousel-b2', text: '爪のケアとマッサージ付き。', size: 'sm' },
+            {
+              kind: 'button',
+              id: 'g-carousel-btn2',
+              label: '詳しく見る',
+              style: 'primary',
+              link: { type: 'url', uri: 'https://example.com/menu/2' },
             },
           ],
         },

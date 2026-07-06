@@ -5,21 +5,23 @@
  * 「押したときどこに行きますか？」を日本語ラジオで選び、種類ごとに入力欄が切り替わる。
  * tracked (計測リンク) は api.trackedLinks.list() から選び trackingUrl を uri 化 (A6/D-12)。
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ComponentType, type SVGProps } from 'react'
 import { api, type TrackedLinkListItem } from '@/lib/api'
 import { urlLink, trackedLink, telLink, bookingLink } from '@/lib/flex-builder/link'
 import type { LinkSpec } from '@/lib/flex-builder/types'
+import { GlobeIcon, ChartIcon, PhoneIcon, CalendarIcon } from '@/components/shared/icons'
 
 interface Props {
   value: LinkSpec
   onChange: (link: LinkSpec) => void
 }
 
-const KINDS: { type: LinkSpec['type']; icon: string; label: string }[] = [
-  { type: 'url', icon: '🌐', label: 'ウェブページ' },
-  { type: 'tracked', icon: '📊', label: '計測リンクから選ぶ' },
-  { type: 'tel', icon: '📞', label: '電話をかける' },
-  { type: 'booking', icon: '📅', label: '予約ページ' },
+// 装飾は絵文字文字でなく inline SVG (M-19)。
+const KINDS: { type: LinkSpec['type']; Icon: ComponentType<SVGProps<SVGSVGElement>>; label: string }[] = [
+  { type: 'url', Icon: GlobeIcon, label: 'ウェブページ' },
+  { type: 'tracked', Icon: ChartIcon, label: '計測リンクから選ぶ' },
+  { type: 'tel', Icon: PhoneIcon, label: '電話をかける' },
+  { type: 'booking', Icon: CalendarIcon, label: '予約ページ' },
 ]
 
 const inputCls =
@@ -78,7 +80,7 @@ export default function LinkPicker({ value, onChange }: Props) {
                 : 'border-gray-300 text-gray-600'
             }`}
           >
-            <span aria-hidden>{k.icon}</span>
+            <span aria-hidden><k.Icon /></span>
             {k.label}
           </button>
         ))}

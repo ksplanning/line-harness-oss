@@ -10,6 +10,7 @@
  *   確認表示中にタブ切替/移動/複製したら確認をリセット (別カードを誤削除しないため)。
  */
 import { useState, useEffect } from 'react'
+import { TrashIcon } from '@/components/shared/icons'
 
 interface Props {
   cardCount: number
@@ -114,9 +115,9 @@ export default function CardTabs({
               <button
                 type="button"
                 onClick={() => setPendingRemoveIndex(activeIndex)}
-                className="min-h-[36px] px-3 rounded-md border border-gray-300 text-gray-500 text-sm hover:text-red-600 hover:border-red-300"
+                className="min-h-[36px] px-3 rounded-md border border-gray-300 text-gray-500 text-sm hover:text-red-600 hover:border-red-300 inline-flex items-center gap-1.5"
               >
-                🗑 このカードを消す
+                <TrashIcon /> このカードを消す
               </button>
             )}
           </>

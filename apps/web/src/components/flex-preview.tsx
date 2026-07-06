@@ -46,6 +46,12 @@ interface FlexNode {
   [key: string]: any
 }
 
+// LINE シミュレータ相当の明示フォントスタック (T-A3)。body 継承任せにせず bubble に明示することで、
+// owner の Windows / 一般フォント環境でも CJK 本文が安定して描かれ、ユーザーが入れた絵文字は
+// カラー絵文字フォント (Apple/Segoe/Noto) にフォールバックして豆腐化しない。
+const LINE_FONT_STACK =
+  "'Hiragino Sans','Hiragino Kaku Gothic ProN','Noto Sans JP','Yu Gothic','Meiryo',system-ui,-apple-system,sans-serif,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji'"
+
 const sizeMap: Record<string, string> = {
   xxs: '10px', xs: '12px', sm: '13px', md: '14px', lg: '16px', xl: '18px', xxl: '22px',
   '3xl': '26px', '4xl': '30px', '5xl': '36px',
@@ -191,8 +197,10 @@ function FlexBubble({ bubble, maxWidth }: { bubble: FlexNode; maxWidth?: number 
       backgroundColor: '#fff',
       borderRadius: '12px',
       overflow: 'hidden',
-      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08)',
       fontSize: '14px',
+      fontFamily: LINE_FONT_STACK,
+      color: '#111',
       position: 'relative',
     }}>
       {bubble.hero && <FlexNodeRenderer node={bubble.hero} />}

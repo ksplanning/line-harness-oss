@@ -17,6 +17,7 @@ import { flexToModel } from '@/lib/flex-builder/from-flex'
 import { imageLinkToFlexJson } from '@/lib/flex-builder/image-link'
 import { validateFlex } from '@/lib/flex-builder/validate'
 import type { FlexContents } from '@/lib/flex-builder/types'
+import { PencilIcon, TrashIcon, PaletteIcon } from '@/components/shared/icons'
 import type { BuilderModel, LinkSpec } from '@/lib/flex-builder/types'
 
 interface BroadcastFormProps {
@@ -357,16 +358,16 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
                     <button
                       type="button"
                       onClick={openBuilder}
-                      className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100"
+                      className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100 inline-flex items-center gap-1.5"
                     >
-                      ✎ カードを編集
+                      <PencilIcon /> カードを編集
                     </button>
                     <button
                       type="button"
                       onClick={() => setForm((prev) => ({ ...prev, messageContent: '' }))}
-                      className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-gray-500 border border-gray-300 rounded-md hover:text-red-600"
+                      className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-gray-500 border border-gray-300 rounded-md hover:text-red-600 inline-flex items-center gap-1.5"
                     >
-                      🗑 削除
+                      <TrashIcon /> 削除
                     </button>
                   </div>
                 </div>
@@ -374,10 +375,10 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
                 <button
                   type="button"
                   onClick={openBuilder}
-                  className="w-full min-h-[44px] px-4 py-3 text-sm font-medium text-white rounded-md"
+                  className="w-full min-h-[44px] px-4 py-3 text-sm font-medium text-white rounded-md inline-flex items-center justify-center gap-2"
                   style={{ backgroundColor: '#06C755' }}
                 >
-                  🎨 ビジュアルでカードを作る
+                  <PaletteIcon /> ビジュアルでカードを作る
                 </button>
               )}
 
