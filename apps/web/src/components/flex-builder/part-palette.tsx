@@ -14,6 +14,7 @@ import {
   ButtonIcon,
   SeparatorIcon,
   SpacerIcon,
+  BoxIcon,
 } from '@/components/shared/icons'
 
 interface PaletteItem {
@@ -31,6 +32,7 @@ const ITEMS: PaletteItem[] = [
   { kind: 'button', Icon: ButtonIcon, label: 'ボタン', hint: '押すとリンク先へ飛ぶ' },
   { kind: 'separator', Icon: SeparatorIcon, label: '区切り線', hint: '上下を仕切る細い線' },
   { kind: 'spacer', Icon: SpacerIcon, label: '余白', hint: 'すき間をあける' },
+  { kind: 'box', Icon: BoxIcon, label: '箱（横に並べる）', hint: '中に部品を入れて左右に並べる' },
 ]
 
 export default function PartPalette({ onAdd }: { onAdd: (kind: PartKind) => void }) {

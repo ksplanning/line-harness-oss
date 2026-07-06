@@ -67,6 +67,21 @@ export interface FlexNode {
   maxLines?: number; // text の最大行数
   margin?: string; // 部品の上マージン (none/xs..xxl or px)
   height?: string; // button の高さ (sm/md)
+  // batch C-core (box レイアウト) — すべて additive・任意。box ノードのレイアウト/装飾。
+  // (cornerRadius は上で宣言済み = image 角丸と共用。)
+  backgroundColor?: string; // box の背景色 (#RRGGBB[AA])
+  borderWidth?: string; // box の枠線太さ (keyword/px)
+  borderColor?: string; // box の枠線色 (#RRGGBB[AA])
+  paddingAll?: string; // box の内側余白 (keyword/px/%)
+  paddingTop?: string;
+  paddingBottom?: string;
+  paddingStart?: string;
+  paddingEnd?: string;
+  width?: string; // box/image の幅 (px/%)
+  justifyContent?: string; // box 主軸そろえ
+  alignItems?: string; // box 交差軸そろえ
+  gravity?: string; // 横並び親の中での縦位置 (top/bottom/center)
+  flex?: number; // 伸縮比 (>=0)
 }
 
 /** validateFlex の返り値。ok:false のとき日本語 errors を UI が表示。 */

@@ -34,6 +34,31 @@ export interface TextDeco {
   maxLines?: number;
 }
 
+/**
+ * box (レイアウト箱) の装飾・レイアウト (batch C-core)。すべて任意・additive・未指定は出力に現れない
+ * (M-20 後方互換: box を使わない既存 model の出力は不変)。値の enforce は validateFlex (GC-1) が行う。
+ * 型は string/number: from-flex が保存済み値を lossless に保持でき round-trip が安定する。
+ */
+export interface BoxDeco {
+  spacing?: string; // 子部品どうしの間隔 (none/xs..xxl or px)
+  margin?: string; // 上マージン
+  backgroundColor?: string; // 背景色 (#RRGGBB[AA])
+  cornerRadius?: string; // 角丸 (none/xs..xxl or px)
+  borderWidth?: string; // 枠線の太さ (none/light/normal/medium/semi-bold/bold or px)
+  borderColor?: string; // 枠線の色 (#RRGGBB[AA])
+  paddingAll?: string; // 内側の余白 (keyword/px/%)
+  paddingTop?: string;
+  paddingBottom?: string;
+  paddingStart?: string;
+  paddingEnd?: string;
+  width?: string; // 幅 (px/%)
+  height?: string; // 高さ (px/%)
+  justifyContent?: string; // 主軸そろえ (flex-start/center/flex-end/space-between/space-around/space-evenly)
+  alignItems?: string; // 交差軸そろえ (flex-start/center/flex-end)
+  gravity?: string; // 横並び親の中での縦位置 (top/bottom/center)
+  flex?: number; // 伸縮比 (>=0)
+}
+
 /** 1 部品 (ブロック)。kind で判別する discriminated union。margin は上マージン (batch B)。 */
 export type BuilderPart =
   | ({ kind: 'heading'; id: string; text: string; size?: string; margin?: string } & TextDeco)
@@ -60,7 +85,14 @@ export type BuilderPart =
       margin?: string;
     }
   | { kind: 'separator'; id: string; color?: string; margin?: string } // batch B: 色/上マージン
-  | { kind: 'spacer'; id: string; size?: string };
+  | { kind: 'spacer'; id: string; size?: string }
+  // batch C-core: ネスト可能な box (横並び/縦/baseline)。子部品を再帰的に持つ。
+  | ({
+      kind: 'box';
+      id: string;
+      layout: 'vertical' | 'horizontal' | 'baseline';
+      contents: BuilderPart[];
+    } & BoxDeco);
 
 export type PartKind = BuilderPart['kind'];
 

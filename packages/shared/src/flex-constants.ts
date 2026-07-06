@@ -50,6 +50,21 @@ export const FLEX_BUTTON_HEIGHT = ['sm', 'md'] as const;
 /** bubble の大きさ (batch C)。 */
 export const FLEX_BUBBLE_SIZE = ['nano', 'micro', 'kilo', 'mega', 'giga'] as const;
 
+// ---- batch C-core (box レイアウト) の許容値 (GC-1 fail-closed / LINE 公式 layout doc 準拠) ----
+
+/** box の並べ方。 */
+export const FLEX_BOX_LAYOUT = ['vertical', 'horizontal', 'baseline'] as const;
+/** box の主軸そろえ (justifyContent)。 */
+export const FLEX_JUSTIFY_CONTENT = ['flex-start', 'center', 'flex-end', 'space-between', 'space-around', 'space-evenly'] as const;
+/** box の交差軸そろえ (alignItems)。 */
+export const FLEX_ALIGN_ITEMS = ['flex-start', 'center', 'flex-end'] as const;
+/** 横並び親の中での縦位置 (gravity)。 */
+export const FLEX_GRAVITY = ['top', 'bottom', 'center'] as const;
+/** cornerRadius のキーワード。px も別途許容。 */
+export const FLEX_CORNER_RADIUS_KEYWORDS = ['none', 'xs', 'sm', 'md', 'lg', 'xl', 'xxl'] as const;
+/** borderWidth のキーワード。px も別途許容。 */
+export const FLEX_BORDER_WIDTH_KEYWORDS = ['none', 'light', 'normal', 'medium', 'semi-bold', 'bold'] as const;
+
 /** #RRGGBB または #RRGGBBAA。 */
 export const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
 /** '10px' 等の px 値。 */

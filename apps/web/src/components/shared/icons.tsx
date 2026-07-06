@@ -48,6 +48,16 @@ export function HeadingIcon(props: IconProps) {
   )
 }
 
+/** 箱 (よこに並べる箱) = 2 カラムの枠 (中を左右に仕切った箱)。batch C-core。 */
+export function BoxIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <path d="M12 5 V19" />
+    </Svg>
+  )
+}
+
 /** 本文 = 文書 (複数行の文章)。 */
 export function BodyTextIcon(props: IconProps) {
   return (

@@ -159,6 +159,55 @@ export default function PartEditor({ part, onChange }: Props) {
     )
   }
 
+  if (part.kind === 'box') {
+    const LAYOUT_OPTS: Opt[] = [{ v: 'vertical', label: 'たて' }, { v: 'horizontal', label: 'よこ' }]
+    const CORNER_OPTS: Opt[] = [{ v: 'none', label: 'なし' }, { v: 'sm', label: '小' }, { v: 'md', label: '中' }, { v: 'lg', label: '大' }]
+    const PAD_OPTS: Opt[] = [{ v: 'none', label: 'なし' }, { v: 'sm', label: '小' }, { v: 'md', label: '中' }, { v: 'lg', label: '大' }]
+    const SPACING_OPTS: Opt[] = [{ v: 'none', label: 'なし' }, { v: 'sm', label: '小' }, { v: 'md', label: '中' }, { v: 'lg', label: '大' }]
+    const JUSTIFY_OPTS: Opt[] = [{ v: 'flex-start', label: '左/上寄せ' }, { v: 'center', label: '中央' }, { v: 'flex-end', label: '右/下寄せ' }, { v: 'space-between', label: '両端に離す' }]
+    const ALIGNITEMS_OPTS: Opt[] = [{ v: 'flex-start', label: '手前' }, { v: 'center', label: '中央' }, { v: 'flex-end', label: '奥' }]
+    return (
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">中に部品を入れて、たて/よこに並べる箱です。下の「＋ この箱に部品を足す」から中身を追加します。</p>
+        <ToggleGroup label="並べる向き" options={LAYOUT_OPTS} value={part.layout} fallback="horizontal"
+          onPick={(v) => onChange({ layout: (v ?? 'horizontal') as 'vertical' | 'horizontal' } as Partial<BuilderPart>)} />
+        <ColorPicker label="背景の色" value={part.backgroundColor} onPick={(v) => onChange({ backgroundColor: v } as Partial<BuilderPart>)} />
+        <ToggleGroup label="角の丸み" options={CORNER_OPTS} value={part.cornerRadius} fallback="none"
+          onPick={(v) => onChange({ cornerRadius: v } as Partial<BuilderPart>)} />
+        <ToggleGroup label="内側の余白" options={PAD_OPTS} value={part.paddingAll} fallback="none"
+          onPick={(v) => onChange({ paddingAll: v } as Partial<BuilderPart>)} />
+        <ToggleGroup label="中身のすき間" options={SPACING_OPTS} value={part.spacing} fallback="none"
+          onPick={(v) => onChange({ spacing: v } as Partial<BuilderPart>)} />
+        <details className="text-xs">
+          <summary className="cursor-pointer text-gray-500">くわしい設定 (そろえ・枠線・幅/高さ)</summary>
+          <div className="mt-2 space-y-3">
+            <ToggleGroup label="横のそろえ方" options={JUSTIFY_OPTS} value={part.justifyContent} fallback="flex-start"
+              onPick={(v) => onChange({ justifyContent: v } as Partial<BuilderPart>)} />
+            <ToggleGroup label="縦のそろえ方" options={ALIGNITEMS_OPTS} value={part.alignItems} fallback="flex-start"
+              onPick={(v) => onChange({ alignItems: v } as Partial<BuilderPart>)} />
+            <ColorPicker label="枠線の色" value={part.borderColor}
+              onPick={(v) => onChange({ borderColor: v, borderWidth: v ? (part.borderWidth ?? '1px') : undefined } as Partial<BuilderPart>)} />
+            <div className="flex gap-3">
+              <div>
+                <label className="block text-gray-600 mb-1">幅 (例 100px / 50%)</label>
+                <input type="text" value={part.width ?? ''} placeholder="自動"
+                  onChange={(e) => onChange({ width: e.target.value || undefined } as Partial<BuilderPart>)}
+                  className="w-28 border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-green-500" />
+              </div>
+              <div>
+                <label className="block text-gray-600 mb-1">高さ (例 60px)</label>
+                <input type="text" value={part.height ?? ''} placeholder="自動"
+                  onChange={(e) => onChange({ height: e.target.value || undefined } as Partial<BuilderPart>)}
+                  className="w-28 border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-green-500" />
+              </div>
+            </div>
+          </div>
+        </details>
+        <MarginControl part={part} onChange={onChange} />
+      </div>
+    )
+  }
+
   if (part.kind === 'separator') {
     return (
       <div className="space-y-3">

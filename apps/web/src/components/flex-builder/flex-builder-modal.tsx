@@ -31,6 +31,7 @@ import {
   duplicateCard,
   moveCard,
   removeCard,
+  findPart,
 } from '@/lib/flex-builder/modal-logic'
 import type { BuilderModel, BuilderPart, PartKind, ValidationError } from '@/lib/flex-builder/types'
 import type { ComponentType, SVGProps } from 'react'
@@ -41,6 +42,7 @@ import {
   ButtonIcon,
   SeparatorIcon,
   SpacerIcon,
+  BoxIcon,
   TrashIcon,
   ChevronUpIcon,
   ChevronDownIcon,
@@ -61,6 +63,7 @@ const PART_META: Record<PartKind, { Icon: ComponentType<SVGProps<SVGSVGElement>>
   button: { Icon: ButtonIcon, label: 'ボタン' },
   separator: { Icon: SeparatorIcon, label: '区切り線' },
   spacer: { Icon: SpacerIcon, label: '余白' },
+  box: { Icon: BoxIcon, label: '箱' },
 }
 
 function partSummary(part: BuilderPart): string {
@@ -72,9 +75,102 @@ function partSummary(part: BuilderPart): string {
       return part.label || '(ボタン)'
     case 'image':
       return part.url ? '画像あり' : '画像未設定'
+    case 'box':
+      return `${part.layout === 'horizontal' ? 'よこ並び' : 'たて並び'}・中身 ${part.contents.length} 個`
     default:
       return ''
   }
+}
+
+// ネスト対応の部品ツリー描画 (batch C-core)。box の子部品を indent して再帰表示し、box には
+// 「＋ この箱に部品を足す」を出す。並べ替え(上/下)は各階層の兄弟内で動く = D&D 相当。
+interface PartTreeProps {
+  parts: BuilderPart[]
+  depth: number
+  selectedPartId: string | null
+  confirmingRemoveId: string | null
+  onSelect: (id: string) => void
+  onMove: (id: string, dir: 'up' | 'down') => void
+  onRequestRemove: (id: string) => void
+  onConfirmRemove: (id: string) => void
+  onCancelRemove: () => void
+  onAddChild: (boxId: string, kind: PartKind) => void
+}
+
+function PartTree(props: PartTreeProps) {
+  const { parts, depth } = props
+  return (
+    <ul className="space-y-1.5">
+      {parts.map((part, i) => {
+        const meta = PART_META[part.kind]
+        const selected = part.id === props.selectedPartId
+        return (
+          <li key={part.id}>
+            <div
+              onClick={() => props.onSelect(part.id)}
+              className={`flex items-center gap-2 rounded-md border px-2 py-2 cursor-pointer ${
+                selected ? 'border-green-500 bg-green-50 ring-1 ring-green-500' : 'border-gray-200'
+              }`}
+            >
+              <span className="text-base leading-none text-gray-600" aria-hidden>
+                <meta.Icon />
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="block text-xs font-medium text-gray-800">{meta.label}</span>
+                <span className="block text-[11px] text-gray-500 truncate">{partSummary(part)}</span>
+              </span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); props.onMove(part.id, 'up') }}
+                disabled={i === 0}
+                className="w-8 h-8 rounded text-gray-500 disabled:opacity-30 hover:bg-gray-100 inline-flex items-center justify-center"
+                aria-label="上へ移動"
+              ><ChevronUpIcon /></button>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); props.onMove(part.id, 'down') }}
+                disabled={i === parts.length - 1}
+                className="w-8 h-8 rounded text-gray-500 disabled:opacity-30 hover:bg-gray-100 inline-flex items-center justify-center"
+                aria-label="下へ移動"
+              ><ChevronDownIcon /></button>
+              {props.confirmingRemoveId === part.id ? (
+                <span className="flex items-center gap-1">
+                  <span className="text-[11px] text-gray-600">消す?</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); props.onConfirmRemove(part.id) }}
+                    className="px-2 h-8 rounded text-xs font-medium text-white bg-red-600 hover:bg-red-700"
+                    aria-label="はい、この部品を消す"
+                  >はい</button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); props.onCancelRemove() }}
+                    className="px-2 h-8 rounded text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
+                    aria-label="いいえ、消さない"
+                  >いいえ</button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); props.onRequestRemove(part.id) }}
+                  className="w-8 h-8 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 inline-flex items-center justify-center"
+                  aria-label="この部品を消す"
+                ><TrashIcon /></button>
+              )}
+            </div>
+            {part.kind === 'box' && (
+              <div className="mt-1.5 ml-3 pl-2 border-l-2 border-green-200 space-y-1.5">
+                {part.contents.length > 0 && (
+                  <PartTree {...props} parts={part.contents} depth={depth + 1} />
+                )}
+                <PartPalette onAdd={(kind) => props.onAddChild(part.id, kind)} />
+              </div>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
 }
 
 export default function FlexBuilderModal({ initialModel, onSave, onClose }: Props) {
@@ -115,14 +211,16 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
 
   const flexJson = useMemo(() => previewJson(model), [model])
   const card = model.cards[activeCard]
-  const selectedPart = card?.parts.find((p) => p.id === selectedPartId) ?? null
+  // ネスト対応: 選択部品は box の子も含めツリー全体から探す (batch C-core)。
+  const selectedPart = card && selectedPartId ? findPart(card, selectedPartId) : null
 
   // 全操作は setState の updater 形式 (prev => ...) で最新 model から派生させる
   // (イベントハンドラのクロージャが古い model を掴む参照劣化を排除 = 削除だけ反映されない不具合の再発防止)。
-  const handleAdd = (kind: PartKind) => {
+  // parentBoxId を渡すとその box の子として足す (batch C-core / ネスト追加)。
+  const handleAdd = (kind: PartKind, parentBoxId?: string) => {
     let newPartId = ''
     setModel((prev) => {
-      const { model: next, partId } = addPart(prev, activeCard, kind)
+      const { model: next, partId } = addPart(prev, activeCard, kind, parentBoxId)
       newPartId = partId
       return next
     })
@@ -135,7 +233,7 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
   const handleRemove = (partId: string) => {
     setModel((prev) => {
       const c = prev.cards[activeCard]
-      if (!c || !c.parts.some((p) => p.id === partId)) return prev
+      if (!c || !findPart(c, partId)) return prev // ネスト対応: ツリー全体で存在確認
       return removePart(prev, activeCard, partId)
     })
     if (selectedPartId === partId) setSelectedPartId(null)
@@ -264,72 +362,24 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
                 </div>
               </div>
               <PartPalette onAdd={handleAdd} />
-              <ul className="space-y-1.5">
-                {card?.parts.map((part, i) => {
-                  const meta = PART_META[part.kind]
-                  const selected = part.id === selectedPartId
-                  return (
-                    <li
-                      key={part.id}
-                      onClick={() => setSelectedPartId(part.id)}
-                      className={`flex items-center gap-2 rounded-md border px-2 py-2 cursor-pointer ${
-                        selected ? 'border-green-500 bg-green-50 ring-1 ring-green-500' : 'border-gray-200'
-                      }`}
-                    >
-                      <span className="text-base leading-none text-gray-600" aria-hidden>
-                        <meta.Icon />
-                      </span>
-                      <span className="flex-1 min-w-0">
-                        <span className="block text-xs font-medium text-gray-800">{meta.label}</span>
-                        <span className="block text-[11px] text-gray-500 truncate">{partSummary(part)}</span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); handleMove(part.id, 'up') }}
-                        disabled={i === 0}
-                        className="w-8 h-8 rounded text-gray-500 disabled:opacity-30 hover:bg-gray-100 inline-flex items-center justify-center"
-                        aria-label="上へ移動"
-                      ><ChevronUpIcon /></button>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); handleMove(part.id, 'down') }}
-                        disabled={i === card.parts.length - 1}
-                        className="w-8 h-8 rounded text-gray-500 disabled:opacity-30 hover:bg-gray-100 inline-flex items-center justify-center"
-                        aria-label="下へ移動"
-                      ><ChevronDownIcon /></button>
-                      {confirmingRemoveId === part.id ? (
-                        <span className="flex items-center gap-1">
-                          <span className="text-[11px] text-gray-600">消す?</span>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); handleRemove(part.id) }}
-                            className="px-2 h-8 rounded text-xs font-medium text-white bg-red-600 hover:bg-red-700"
-                            aria-label="はい、この部品を消す"
-                          >はい</button>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); setConfirmingRemoveId(null) }}
-                            className="px-2 h-8 rounded text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200"
-                            aria-label="いいえ、消さない"
-                          >いいえ</button>
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); setConfirmingRemoveId(part.id) }}
-                          className="w-8 h-8 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 inline-flex items-center justify-center"
-                          aria-label="この部品を消す"
-                        ><TrashIcon /></button>
-                      )}
-                    </li>
-                  )
-                })}
-                {card?.parts.length === 0 && (
-                  <li className="text-xs text-gray-400 py-4 text-center">
-                    まだ部品がありません。「＋ 部品を足す」から始めましょう。
-                  </li>
-                )}
-              </ul>
+              {card && card.parts.length > 0 ? (
+                <PartTree
+                  parts={card.parts}
+                  depth={0}
+                  selectedPartId={selectedPartId}
+                  confirmingRemoveId={confirmingRemoveId}
+                  onSelect={setSelectedPartId}
+                  onMove={handleMove}
+                  onRequestRemove={setConfirmingRemoveId}
+                  onConfirmRemove={handleRemove}
+                  onCancelRemove={() => setConfirmingRemoveId(null)}
+                  onAddChild={(boxId, kind) => handleAdd(kind, boxId)}
+                />
+              ) : (
+                <p className="text-xs text-gray-400 py-4 text-center">
+                  まだ部品がありません。「＋ 部品を足す」から始めましょう。
+                </p>
+              )}
               {selectedPart && (
                 <div className="rounded-md border border-gray-200 p-3 bg-gray-50">
                   <PartEditor part={selectedPart} onChange={handlePartChange} />

@@ -12,6 +12,7 @@ import type {
   BuilderModel,
   BuilderCard,
   BuilderPart,
+  BoxDeco,
   FlexBubble,
   FlexContents,
   FlexNode,
@@ -19,6 +20,13 @@ import type {
   ImageAspect,
   LinkSpec,
 } from './types';
+
+/** box の装飾/レイアウトキー (条件付き emission = 未指定は出力に現れない / M-20)。 */
+const BOX_DECO_KEYS: (keyof BoxDeco)[] = [
+  'spacing', 'margin', 'backgroundColor', 'cornerRadius', 'borderWidth', 'borderColor',
+  'paddingAll', 'paddingTop', 'paddingBottom', 'paddingStart', 'paddingEnd',
+  'width', 'height', 'justifyContent', 'alignItems', 'gravity', 'flex',
+];
 
 const ASPECT_RATIO: Record<ImageAspect, string | undefined> = {
   original: undefined,
@@ -97,6 +105,19 @@ function partToNode(part: BuilderPart): FlexNode {
     }
     case 'spacer':
       return { type: 'spacer', size: part.size ?? 'md' };
+    case 'box': {
+      // ネスト可能な box。子部品を再帰変換し、装飾は条件付き emission (未指定は出さない = M-20)。
+      const node: FlexNode = {
+        type: 'box',
+        layout: part.layout,
+        contents: part.contents.map(partToNode),
+      };
+      for (const k of BOX_DECO_KEYS) {
+        const v = part[k];
+        if (v !== undefined) (node as unknown as Record<string, unknown>)[k] = v;
+      }
+      return node;
+    }
   }
 }
 

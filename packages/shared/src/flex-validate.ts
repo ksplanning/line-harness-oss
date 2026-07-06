@@ -26,6 +26,12 @@ import {
   FLEX_MARGIN_KEYWORDS,
   FLEX_BUTTON_HEIGHT,
   FLEX_BUBBLE_SIZE,
+  FLEX_BOX_LAYOUT,
+  FLEX_JUSTIFY_CONTENT,
+  FLEX_ALIGN_ITEMS,
+  FLEX_GRAVITY,
+  FLEX_CORNER_RADIUS_KEYWORDS,
+  FLEX_BORDER_WIDTH_KEYWORDS,
   HEX_COLOR_RE,
   PX_VALUE_RE,
   PCT_VALUE_RE,
@@ -46,6 +52,35 @@ const isMargin = (v: unknown): boolean =>
   inSet(v, FLEX_MARGIN_KEYWORDS) || (typeof v === 'string' && PX_VALUE_RE.test(v));
 const isImageSize = (v: unknown): boolean =>
   inSet(v, FLEX_IMAGE_SIZE_KEYWORDS) || (typeof v === 'string' && (PX_VALUE_RE.test(v) || PCT_VALUE_RE.test(v)));
+// batch C-core (box): padding は keyword/px/%、width/height は px/%、cornerRadius/borderWidth は keyword/px。
+const isPadding = (v: unknown): boolean =>
+  inSet(v, FLEX_MARGIN_KEYWORDS) || (typeof v === 'string' && (PX_VALUE_RE.test(v) || PCT_VALUE_RE.test(v)));
+const isDimension = (v: unknown): boolean =>
+  typeof v === 'string' && (PX_VALUE_RE.test(v) || PCT_VALUE_RE.test(v));
+const isCornerRadius = (v: unknown): boolean =>
+  inSet(v, FLEX_CORNER_RADIUS_KEYWORDS) || (typeof v === 'string' && PX_VALUE_RE.test(v));
+const isBorderWidth = (v: unknown): boolean =>
+  inSet(v, FLEX_BORDER_WIDTH_KEYWORDS) || (typeof v === 'string' && PX_VALUE_RE.test(v));
+
+/** box の layout/装飾/レイアウト値を fail-closed で検査 (GC-1)。 */
+function validateBoxDeco(node: FlexNode, errors: ValidationError[]): void {
+  if (node.layout !== undefined && !inSet(node.layout, FLEX_BOX_LAYOUT)) errors.push(decoErr());
+  if (node.spacing !== undefined && !isMargin(node.spacing)) errors.push(decoErr());
+  if (node.margin !== undefined && !isMargin(node.margin)) errors.push(decoErr());
+  if (node.backgroundColor !== undefined && !isColor(node.backgroundColor)) errors.push(decoErr());
+  if (node.borderColor !== undefined && !isColor(node.borderColor)) errors.push(decoErr());
+  if (node.cornerRadius !== undefined && !isCornerRadius(node.cornerRadius)) errors.push(decoErr());
+  if (node.borderWidth !== undefined && !isBorderWidth(node.borderWidth)) errors.push(decoErr());
+  for (const p of ['paddingAll', 'paddingTop', 'paddingBottom', 'paddingStart', 'paddingEnd'] as const) {
+    if (node[p] !== undefined && !isPadding(node[p])) errors.push(decoErr());
+  }
+  if (node.width !== undefined && !isDimension(node.width)) errors.push(decoErr());
+  if (node.height !== undefined && !isDimension(node.height)) errors.push(decoErr());
+  if (node.justifyContent !== undefined && !inSet(node.justifyContent, FLEX_JUSTIFY_CONTENT)) errors.push(decoErr());
+  if (node.alignItems !== undefined && !inSet(node.alignItems, FLEX_ALIGN_ITEMS)) errors.push(decoErr());
+  if (node.gravity !== undefined && !inSet(node.gravity, FLEX_GRAVITY)) errors.push(decoErr());
+  if (node.flex !== undefined && !(typeof node.flex === 'number' && Number.isInteger(node.flex) && node.flex >= 0)) errors.push(decoErr());
+}
 
 function validateTextDeco(node: FlexNode, errors: ValidationError[]): void {
   if (node.color !== undefined && !isColor(node.color)) errors.push(decoErr());
@@ -108,6 +143,10 @@ function walkNodes(node: FlexNode | undefined, depth: number, errors: Validation
     // GC-1: separator の color/margin。
     if (node.color !== undefined && !isColor(node.color)) errors.push(decoErr());
     if (node.margin !== undefined && !isMargin(node.margin)) errors.push(decoErr());
+  }
+  if (node.type === 'box') {
+    // GC-1 (batch C-core): box の layout/背景/角丸/枠/padding/幅高さ/そろえ/gravity/spacing/flex。
+    validateBoxDeco(node, errors);
   }
   // button の action、または image のタップ action の飛び先を検証。
   // uri: 送信時に初めて失敗する経路 (空/スキーム無し/javascript:/data:/http:) を保存前に潰す (H1)。

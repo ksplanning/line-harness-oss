@@ -49,26 +49,118 @@ export function makePart(kind: PartKind): BuilderPart {
       return { kind: 'separator', id };
     case 'spacer':
       return { kind: 'spacer', id, size: 'md' };
+    case 'box':
+      // 既定は「よこに並べる箱」= 空の横並び。子部品は後から足す (batch C-core)。
+      return { kind: 'box', id, layout: 'horizontal', contents: [] };
   }
+}
+
+// ---- ネスト対応のツリー走査 (batch C-core: box の子も辿る純関数群) ----
+
+/** parts ツリーから partId を探す (box.contents も再帰)。見つからなければ null。 */
+export function findPart(card: BuilderCard, partId: string): BuilderPart | null {
+  return findPartDeep(card.parts, partId);
+}
+function findPartDeep(parts: BuilderPart[], partId: string): BuilderPart | null {
+  for (const p of parts) {
+    if (p.id === partId) return p;
+    if (p.kind === 'box') {
+      const found = findPartDeep(p.contents, partId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/** partId を patch で更新 (ツリー全体を再帰)。 */
+function updatePartDeep(parts: BuilderPart[], partId: string, patch: Partial<BuilderPart>): BuilderPart[] {
+  return parts.map((p) => {
+    if (p.id === partId) return { ...p, ...patch } as BuilderPart;
+    if (p.kind === 'box') return { ...p, contents: updatePartDeep(p.contents, partId, patch) };
+    return p;
+  });
+}
+
+/** partId を削除 (ツリー全体を再帰)。 */
+function removePartDeep(parts: BuilderPart[], partId: string): BuilderPart[] {
+  return parts
+    .filter((p) => p.id !== partId)
+    .map((p) => (p.kind === 'box' ? { ...p, contents: removePartDeep(p.contents, partId) } : p));
+}
+
+/**
+ * partId を持つ兄弟配列内で up/down にずらす (ツリー全体を再帰)。
+ * partId が見つかった階層だけで入れ替え、親の外へは飛び出さない。
+ * @returns changed=partId を含む階層に到達したか (端で no-op でも true)。
+ */
+function movePartDeep(parts: BuilderPart[], partId: string, dir: 'up' | 'down'): { changed: boolean; parts: BuilderPart[] } {
+  const idx = parts.findIndex((p) => p.id === partId);
+  if (idx >= 0) {
+    const target = dir === 'up' ? idx - 1 : idx + 1;
+    if (target < 0 || target >= parts.length) return { changed: true, parts };
+    const next = [...parts];
+    [next[idx], next[target]] = [next[target], next[idx]];
+    return { changed: true, parts: next };
+  }
+  let changed = false;
+  const next = parts.map((p) => {
+    if (changed || p.kind !== 'box') return p;
+    const r = movePartDeep(p.contents, partId, dir);
+    if (r.changed) {
+      changed = true;
+      return { ...p, contents: r.parts };
+    }
+    return p;
+  });
+  return { changed, parts: next };
+}
+
+/** box (id=boxId) の contents 末尾に part を足す (ツリー全体を再帰)。 */
+function addToBoxDeep(parts: BuilderPart[], boxId: string, part: BuilderPart): { added: boolean; parts: BuilderPart[] } {
+  let added = false;
+  const next = parts.map((p) => {
+    if (added || p.kind !== 'box') return p;
+    if (p.id === boxId) {
+      added = true;
+      return { ...p, contents: [...p.contents, part] };
+    }
+    const r = addToBoxDeep(p.contents, boxId, part);
+    if (r.added) {
+      added = true;
+      return { ...p, contents: r.parts };
+    }
+    return p;
+  });
+  return { added, parts: next };
 }
 
 function replaceCard(model: BuilderModel, cardIndex: number, card: BuilderCard): BuilderModel {
   return { cards: model.cards.map((c, i) => (i === cardIndex ? card : c)) };
 }
 
-/** 指定カードの末尾に部品を追加し、新モデルと追加した部品 id を返す。 */
+/**
+ * 部品を追加し、新モデルと追加した部品 id を返す。
+ * parentBoxId を渡すとその box の子として末尾に足す (batch C-core / ネスト)。未指定は card 直下の末尾。
+ */
 export function addPart(
   model: BuilderModel,
   cardIndex: number,
   kind: PartKind,
+  parentBoxId?: string,
 ): { model: BuilderModel; partId: string } {
   const part = makePart(kind);
   const card = model.cards[cardIndex];
+  if (parentBoxId) {
+    const r = addToBoxDeep(card.parts, parentBoxId, part);
+    // 目的の box が見つからなければ安全側で root 末尾に足す (UI 不整合でも部品が消えない)。
+    const parts = r.added ? r.parts : [...card.parts, part];
+    return { model: replaceCard(model, cardIndex, { ...card, parts }), partId: part.id };
+  }
   const next = replaceCard(model, cardIndex, { ...card, parts: [...card.parts, part] });
   return { model: next, partId: part.id };
 }
 
-/** 部品を上/下に 1 つ移動 (先頭で up / 末尾で down は no-op)。 */
+/** 部品を上/下に 1 つ移動 (ネスト内でも動く / 先頭で up・末尾で down は no-op)。 */
 export function movePart(
   model: BuilderModel,
   cardIndex: number,
@@ -76,22 +168,18 @@ export function movePart(
   dir: 'up' | 'down',
 ): BuilderModel {
   const card = model.cards[cardIndex];
-  const idx = card.parts.findIndex((p) => p.id === partId);
-  if (idx < 0) return model;
-  const target = dir === 'up' ? idx - 1 : idx + 1;
-  if (target < 0 || target >= card.parts.length) return model;
-  const parts = [...card.parts];
-  [parts[idx], parts[target]] = [parts[target], parts[idx]];
-  return replaceCard(model, cardIndex, { ...card, parts });
+  const r = movePartDeep(card.parts, partId, dir);
+  if (!r.changed) return model;
+  return replaceCard(model, cardIndex, { ...card, parts: r.parts });
 }
 
-/** 部品を削除。 */
+/** 部品を削除 (ネスト対応)。 */
 export function removePart(model: BuilderModel, cardIndex: number, partId: string): BuilderModel {
   const card = model.cards[cardIndex];
-  return replaceCard(model, cardIndex, { ...card, parts: card.parts.filter((p) => p.id !== partId) });
+  return replaceCard(model, cardIndex, { ...card, parts: removePartDeep(card.parts, partId) });
 }
 
-/** 部品を編集 (id 一致を patch で更新)。 */
+/** 部品を編集 (id 一致を patch で更新 / ネスト対応)。 */
 export function updatePart(
   model: BuilderModel,
   cardIndex: number,
@@ -99,17 +187,18 @@ export function updatePart(
   patch: Partial<BuilderPart>,
 ): BuilderModel {
   const card = model.cards[cardIndex];
-  return replaceCard(model, cardIndex, {
-    ...card,
-    parts: card.parts.map((p) => (p.id === partId ? ({ ...p, ...patch } as BuilderPart) : p)),
-  });
+  return replaceCard(model, cardIndex, { ...card, parts: updatePartDeep(card.parts, partId, patch) });
 }
 
 // ---- カード操作 (カルーセル / D-13) ----
 
-/** parts を deep-clone し新 id を振る (カード複製で id 衝突を防ぐ)。 */
+/** parts を deep-clone し新 id を振る (カード複製で id 衝突を防ぐ / box 子も再帰的に再 id)。 */
 function cloneParts(parts: BuilderPart[]): BuilderPart[] {
-  return parts.map((p) => ({ ...p, id: nextId('part') }));
+  return parts.map((p) =>
+    p.kind === 'box'
+      ? { ...p, id: nextId('part'), contents: cloneParts(p.contents) }
+      : { ...p, id: nextId('part') },
+  );
 }
 
 /**

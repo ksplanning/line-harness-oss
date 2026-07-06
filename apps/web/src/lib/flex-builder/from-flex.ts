@@ -32,8 +32,30 @@ interface RawNode {
   margin?: string;
   height?: string;
   contents?: RawNode[];
+  // batch C-core: box レイアウト/装飾 (lossless 読取用 / cornerRadius は上で宣言済み)。
+  spacing?: string;
+  backgroundColor?: string;
+  borderWidth?: string;
+  borderColor?: string;
+  paddingAll?: string;
+  paddingTop?: string;
+  paddingBottom?: string;
+  paddingStart?: string;
+  paddingEnd?: string;
+  width?: string;
+  justifyContent?: string;
+  alignItems?: string;
+  gravity?: string;
+  flex?: number;
   [key: string]: unknown;
 }
+
+/** box が lossless に保持できる装飾/レイアウトキー (string 値)。flex(number) は別扱い。 */
+const BOX_DECO_STRING_KEYS = [
+  'spacing', 'margin', 'backgroundColor', 'cornerRadius', 'borderWidth', 'borderColor',
+  'paddingAll', 'paddingTop', 'paddingBottom', 'paddingStart', 'paddingEnd',
+  'width', 'height', 'justifyContent', 'alignItems', 'gravity',
+] as const;
 
 // GC-2 lossless-only: ビルダーが表現できる node の許容キー集合。ここに無いキーが 1 つでもあれば
 // 逆変換不能 (null → 上級者 JSON へフォールバック) = 未知プロパティを黙って落として再保存する事故を禁止。
@@ -43,6 +65,13 @@ const ALLOWED_KEYS: Record<string, Set<string>> = {
   button: new Set(['type', 'style', 'action', 'height', 'align', 'margin']),
   separator: new Set(['type', 'color', 'margin']),
   spacer: new Set(['type', 'size']),
+  // batch C-core: box (ネスト/横並び/装飾)。ここに無いキー(action/background gradient/position/offset 等)を
+  // 持つ box は lossless に保持できない → null (上級者 JSON へ)。background/position/offset は batch D で追加。
+  box: new Set([
+    'type', 'layout', 'contents', 'spacing', 'margin', 'backgroundColor', 'cornerRadius',
+    'borderWidth', 'borderColor', 'paddingAll', 'paddingTop', 'paddingBottom', 'paddingStart',
+    'paddingEnd', 'width', 'height', 'justifyContent', 'alignItems', 'gravity', 'flex',
+  ]),
 };
 
 const ALLOWED_ACTION_KEYS = new Set(['type', 'label', 'uri', 'text']);
@@ -145,6 +174,25 @@ function nodeToPart(node: RawNode): BuilderPart | null {
     }
     case 'spacer':
       return { kind: 'spacer', id, size: node.size };
+    case 'box': {
+      // ネスト可能な box。layout は3値のみ。子部品を再帰変換 (1つでも不能なら box 全体が null = lossless)。
+      if (node.layout !== 'vertical' && node.layout !== 'horizontal' && node.layout !== 'baseline') return null;
+      if (node.contents !== undefined && !Array.isArray(node.contents)) return null;
+      const children: BuilderPart[] = [];
+      for (const child of node.contents ?? []) {
+        if (!child || typeof child !== 'object') return null;
+        const cp = nodeToPart(child as RawNode);
+        if (!cp) return null;
+        children.push(cp);
+      }
+      const part: Record<string, unknown> = { kind: 'box', id, layout: node.layout, contents: children };
+      for (const k of BOX_DECO_STRING_KEYS) {
+        const v = node[k];
+        if (typeof v === 'string') part[k] = v;
+      }
+      if (typeof node.flex === 'number') part.flex = node.flex;
+      return part as BuilderPart;
+    }
     default:
       return null; // 未知 node → 逆変換不能
   }
@@ -181,8 +229,9 @@ function bubbleToCard(bubble: RawNode): BuilderCard | null {
     if (body.contents !== undefined) {
       if (!Array.isArray(body.contents)) return null;
       for (const child of body.contents) {
-        // 非オブジェクトの child (文字列/数値等) やネストした box はビルダー範囲外。
-        if (!child || typeof child !== 'object' || child.type === 'box') return null;
+        // 非オブジェクトの child (文字列/数値等) はビルダー範囲外。
+        // batch C-core: ネストした box は nodeToPart('box') が再帰対応するため弾かない。
+        if (!child || typeof child !== 'object') return null;
         const part = nodeToPart(child);
         if (!part) return null;
         parts.push(part);

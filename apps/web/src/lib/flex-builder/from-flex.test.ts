@@ -123,7 +123,8 @@ describe('flexToModel 逆変換 (再編集)', () => {
     expect(flexToModel(JSON.stringify(flex))).toBeNull();
   });
 
-  test('範囲外 (ネストした box) は null', () => {
+  // batch C-core: ネストした box は対応集合に緩和 (T-C1)。子 box が復元でき round-trip する。
+  test('ネストした box は復元でき、box 部品として round-trip する', () => {
     const flex = {
       type: 'bubble',
       body: {
@@ -132,7 +133,9 @@ describe('flexToModel 逆変換 (再編集)', () => {
         contents: [{ type: 'box', layout: 'horizontal', contents: [{ type: 'text', text: 'x' }] }],
       },
     };
-    expect(flexToModel(JSON.stringify(flex))).toBeNull();
+    const back = flexToModel(JSON.stringify(flex));
+    expect(back).not.toBeNull();
+    expect(back!.cards[0].parts[0].kind).toBe('box');
   });
 
   test('範囲外 (横並び body) は null', () => {
