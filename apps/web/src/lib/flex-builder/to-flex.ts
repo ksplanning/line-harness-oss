@@ -101,7 +101,7 @@ function partToNode(part: BuilderPart): FlexNode {
 }
 
 function cardToBubble(card: BuilderCard): FlexBubble {
-  return {
+  const bubble: FlexBubble = {
     type: 'bubble',
     body: {
       type: 'box',
@@ -110,6 +110,11 @@ function cardToBubble(card: BuilderCard): FlexBubble {
       contents: card.parts.map(partToNode),
     },
   };
+  // bubble.size は type の直後・body の前に置く (LINE 慣習の並び)。未指定なら出力しない (M-20)。
+  if (card.size !== undefined) {
+    return { type: 'bubble', size: card.size, body: bubble.body };
+  }
+  return bubble;
 }
 
 /**

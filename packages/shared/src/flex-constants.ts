@@ -47,6 +47,8 @@ export const FLEX_MARGIN_KEYWORDS = ['none', 'xs', 'sm', 'md', 'lg', 'xl', 'xxl'
 export const FLEX_IMAGE_SIZE_KEYWORDS = [...FLEX_SIZE_KEYWORDS, 'full'] as const;
 /** button の高さ。 */
 export const FLEX_BUTTON_HEIGHT = ['sm', 'md'] as const;
+/** bubble の大きさ (batch C)。 */
+export const FLEX_BUBBLE_SIZE = ['nano', 'micro', 'kilo', 'mega', 'giga'] as const;
 
 /** #RRGGBB または #RRGGBBAA。 */
 export const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;

@@ -179,6 +179,13 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
     setSelectedPartId(null)
     setConfirmingRemoveId(null) // カード切替で部品削除の行内確認をリセット (H3 同種の予防)
   }
+  // カードの大きさ (bubble.size / batch C)。fallback を押すと未指定に戻す。
+  const handleCardSize = (size: string | undefined) => {
+    setModel((prev) => ({
+      ...prev,
+      cards: prev.cards.map((c, i) => (i === activeCard ? { ...c, size } : c)),
+    }))
+  }
 
   // 保存: validateFlex 結線 (D-14)。ok:false なら保存せずエラー列挙。
   const contents = buildModelToFlex(model)
@@ -230,6 +237,32 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
                 onMove={handleMoveCard}
                 onRemove={handleRemoveCard}
               />
+              {/* カードの大きさ (bubble.size / batch C)。専門語を出さず日本語トグル。 */}
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">カードの大きさ</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { v: undefined, label: '標準' },
+                    { v: 'nano', label: '極小' },
+                    { v: 'micro', label: '小' },
+                    { v: 'kilo', label: '中' },
+                    { v: 'mega', label: '大' },
+                    { v: 'giga', label: '特大' },
+                  ].map((o) => {
+                    const active = (card?.size ?? undefined) === o.v
+                    return (
+                      <button
+                        key={o.label}
+                        type="button"
+                        onClick={() => handleCardSize(o.v)}
+                        className={`min-h-[36px] px-3 rounded-md border text-xs ${active ? 'border-green-500 text-green-700 bg-green-50' : 'border-gray-300 text-gray-600'}`}
+                      >
+                        {o.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
               <PartPalette onAdd={handleAdd} />
               <ul className="space-y-1.5">
                 {card?.parts.map((part, i) => {

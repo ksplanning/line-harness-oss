@@ -64,10 +64,11 @@ export type BuilderPart =
 
 export type PartKind = BuilderPart['kind'];
 
-/** 1 カード = 1 bubble の body。parts を縦に並べる。 */
+/** 1 カード = 1 bubble の body。parts を縦に並べる。size は bubble の大きさ (batch C: nano..giga)。 */
 export interface BuilderCard {
   id: string;
   parts: BuilderPart[];
+  size?: string; // nano / micro / kilo / mega / giga (未指定 = LINE 既定)
 }
 
 /** ビルダー全体の状態。cards.length===1 → bubble / >=2 → carousel。 */

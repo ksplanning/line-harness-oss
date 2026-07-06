@@ -25,6 +25,7 @@ import {
   FLEX_IMAGE_SIZE_KEYWORDS,
   FLEX_MARGIN_KEYWORDS,
   FLEX_BUTTON_HEIGHT,
+  FLEX_BUBBLE_SIZE,
   HEX_COLOR_RE,
   PX_VALUE_RE,
   PCT_VALUE_RE,
@@ -166,6 +167,10 @@ function validateLinkUri(uri: string | undefined, errors: ValidationError[]): vo
 }
 
 function validateBubble(bubble: FlexBubble, cardIndex: number, errors: ValidationError[]): void {
+  // GC-1: bubble.size (batch C) の許容値検査。
+  if (bubble.size !== undefined && !inSet(bubble.size, FLEX_BUBBLE_SIZE)) {
+    errors.push({ code: 'bubble_bad_size', messageJa: 'カードの大きさの指定が正しくありません。選び直してください。', cardIndex });
+  }
   const bodyContents = bubble.body?.contents ?? [];
   const heroPresent = Boolean(bubble.hero);
   if (bodyContents.length === 0 && !heroPresent) {

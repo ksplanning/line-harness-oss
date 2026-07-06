@@ -150,10 +150,18 @@ function nodeToPart(node: RawNode): BuilderPart | null {
   }
 }
 
+// bubble 直下の許容キー (GC-2)。ここに無いキー (header/footer/styles/direction/action 等) を持つ bubble は
+// ビルダー範囲外 → null (上級者 JSON へ)。size は batch C で追加。
+const ALLOWED_BUBBLE_KEYS = new Set(['type', 'size', 'hero', 'body']);
+
 /** 1 bubble → BuilderCard。逆変換不能なら null。 */
 function bubbleToCard(bubble: RawNode): BuilderCard | null {
-  // header/footer を使う bubble はビルダー範囲外 (V1)。
-  if (bubble.header || bubble.footer) return null;
+  // header/footer/styles 等ビルダー範囲外のキーを 1 つでも持てば逆変換不能 (GC-2 lossless)。
+  for (const k of Object.keys(bubble)) {
+    if (!ALLOWED_BUBBLE_KEYS.has(k)) return null;
+  }
+  // size は文字列のみ許容 (nano..giga)。数値等の異常値は範囲外。
+  if (bubble.size !== undefined && typeof bubble.size !== 'string') return null;
 
   const parts: BuilderPart[] = [];
 
@@ -183,7 +191,9 @@ function bubbleToCard(bubble: RawNode): BuilderCard | null {
   }
 
   if (parts.length === 0) return null;
-  return { id: nextId('card'), parts };
+  const card: BuilderCard = { id: nextId('card'), parts };
+  if (typeof bubble.size === 'string') card.size = bubble.size;
+  return card;
 }
 
 /**
