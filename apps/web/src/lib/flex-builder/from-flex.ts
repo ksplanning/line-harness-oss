@@ -47,15 +47,25 @@ interface RawNode {
   alignItems?: string;
   gravity?: string;
   flex?: number;
+  position?: string;
+  offsetTop?: string;
+  offsetBottom?: string;
+  offsetStart?: string;
+  offsetEnd?: string;
+  background?: unknown;
   [key: string]: unknown;
 }
 
-/** box が lossless に保持できる装飾/レイアウトキー (string 値)。flex(number) は別扱い。 */
+/** box が lossless に保持できる装飾/レイアウトキー (string 値)。flex(number)/background(object) は別扱い。 */
 const BOX_DECO_STRING_KEYS = [
   'spacing', 'margin', 'backgroundColor', 'cornerRadius', 'borderWidth', 'borderColor',
   'paddingAll', 'paddingTop', 'paddingBottom', 'paddingStart', 'paddingEnd',
   'width', 'height', 'justifyContent', 'alignItems', 'gravity',
+  'position', 'offsetTop', 'offsetBottom', 'offsetStart', 'offsetEnd',
 ] as const;
+
+/** gradient (background) が lossless に保持できるキー。ここに無いキーがあれば box 全体を null。 */
+const ALLOWED_GRADIENT_KEYS = new Set(['type', 'angle', 'startColor', 'endColor', 'centerColor', 'centerPosition']);
 
 // GC-2 lossless-only: ビルダーが表現できる node の許容キー集合。ここに無いキーが 1 つでもあれば
 // 逆変換不能 (null → 上級者 JSON へフォールバック) = 未知プロパティを黙って落として再保存する事故を禁止。
@@ -73,6 +83,8 @@ const ALLOWED_KEYS: Record<string, Set<string>> = {
     'type', 'layout', 'contents', 'spacing', 'margin', 'backgroundColor', 'cornerRadius',
     'borderWidth', 'borderColor', 'paddingAll', 'paddingTop', 'paddingBottom', 'paddingStart',
     'paddingEnd', 'width', 'height', 'justifyContent', 'alignItems', 'gravity', 'flex',
+    // batch D: 絶対配置 + グラデーション背景。
+    'position', 'offsetTop', 'offsetBottom', 'offsetStart', 'offsetEnd', 'background',
   ]),
 };
 
@@ -206,6 +218,15 @@ function nodeToPart(node: RawNode): BuilderPart | null {
         if (typeof v === 'string') part[k] = v;
       }
       if (typeof node.flex === 'number') part.flex = node.flex;
+      // background (gradient) は object を lossless に保持。未知キーがあれば box 全体を null (GC-2)。
+      if (node.background !== undefined) {
+        const bg = node.background;
+        if (!bg || typeof bg !== 'object') return null;
+        for (const k of Object.keys(bg as Record<string, unknown>)) {
+          if (!ALLOWED_GRADIENT_KEYS.has(k)) return null;
+        }
+        part.background = bg;
+      }
       return part as BuilderPart;
     }
     default:

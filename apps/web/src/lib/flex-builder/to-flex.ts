@@ -27,6 +27,8 @@ const BOX_DECO_KEYS: (keyof BoxDeco)[] = [
   'spacing', 'margin', 'backgroundColor', 'cornerRadius', 'borderWidth', 'borderColor',
   'paddingAll', 'paddingTop', 'paddingBottom', 'paddingStart', 'paddingEnd',
   'width', 'height', 'justifyContent', 'alignItems', 'gravity', 'flex',
+  // batch D: 絶対配置 + グラデーション背景。
+  'position', 'offsetTop', 'offsetBottom', 'offsetStart', 'offsetEnd', 'background',
 ];
 
 const ASPECT_RATIO: Record<ImageAspect, string | undefined> = {

@@ -43,6 +43,7 @@ interface FlexNode {
   position?: string
   borderWidth?: string
   borderColor?: string
+  background?: { type?: string; angle?: string; startColor?: string; endColor?: string; centerColor?: string; centerPosition?: string }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any
 }
@@ -187,15 +188,26 @@ function FlexSpacer({ node }: { node: FlexNode }) {
   return <div style={{ height: h }} />
 }
 
+// 線形グラデーション背景 (batch D) を CSS の linear-gradient に変換する。
+function gradientCss(bg: NonNullable<FlexNode['background']>): string | undefined {
+  if (bg.type !== 'linearGradient' || !bg.startColor || !bg.endColor) return undefined
+  const stops = [`${bg.startColor} 0%`]
+  if (bg.centerColor) stops.push(`${bg.centerColor} ${bg.centerPosition || '50%'}`)
+  stops.push(`${bg.endColor} 100%`)
+  return `linear-gradient(${bg.angle || '0deg'}, ${stops.join(', ')})`
+}
+
 function FlexBox({ node }: { node: FlexNode }) {
   const isHorizontal = node.layout === 'horizontal' || node.layout === 'baseline'
   const gap = getSpacing(node.spacing) || '0'
+  const gradient = node.background ? gradientCss(node.background) : undefined
 
   const style: React.CSSProperties = {
     display: 'flex',
     flexDirection: isHorizontal ? 'row' : 'column',
     gap,
     backgroundColor: node.backgroundColor || 'transparent',
+    ...(gradient ? { backgroundImage: gradient } : {}),
     borderRadius: node.cornerRadius || '0',
     ...(node.paddingAll ? { padding: node.paddingAll } : {}),
     ...(node.paddingTop ? { paddingTop: node.paddingTop } : {}),

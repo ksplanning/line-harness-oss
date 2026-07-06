@@ -64,6 +64,10 @@ export const FLEX_GRAVITY = ['top', 'bottom', 'center'] as const;
 export const FLEX_CORNER_RADIUS_KEYWORDS = ['none', 'xs', 'sm', 'md', 'lg', 'xl', 'xxl'] as const;
 /** borderWidth のキーワード。px も別途許容。 */
 export const FLEX_BORDER_WIDTH_KEYWORDS = ['none', 'light', 'normal', 'medium', 'semi-bold', 'bold'] as const;
+/** box の配置 (batch D)。 */
+export const FLEX_POSITION = ['relative', 'absolute'] as const;
+/** グラデーション角度 '90deg' 等 (batch D)。 */
+export const DEG_VALUE_RE = /^\d+(\.\d+)?deg$/;
 
 /** #RRGGBB または #RRGGBBAA。 */
 export const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;

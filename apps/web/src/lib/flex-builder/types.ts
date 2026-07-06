@@ -35,8 +35,18 @@ export interface TextDeco {
   maxLines?: number;
 }
 
+/** box 背景の線形グラデーション (batch D)。angle='90deg' 等・色は #RRGGBB[AA]。 */
+export interface FlexLinearGradient {
+  type: 'linearGradient';
+  angle: string;
+  startColor: string;
+  endColor: string;
+  centerColor?: string;
+  centerPosition?: string; // '50%' 等
+}
+
 /**
- * box (レイアウト箱) の装飾・レイアウト (batch C-core)。すべて任意・additive・未指定は出力に現れない
+ * box (レイアウト箱) の装飾・レイアウト (batch C-core / D)。すべて任意・additive・未指定は出力に現れない
  * (M-20 後方互換: box を使わない既存 model の出力は不変)。値の enforce は validateFlex (GC-1) が行う。
  * 型は string/number: from-flex が保存済み値を lossless に保持でき round-trip が安定する。
  */
@@ -58,6 +68,13 @@ export interface BoxDeco {
   alignItems?: string; // 交差軸そろえ (flex-start/center/flex-end)
   gravity?: string; // 横並び親の中での縦位置 (top/bottom/center)
   flex?: number; // 伸縮比 (>=0)
+  // batch D: 絶対配置 + グラデーション背景。
+  position?: string; // relative / absolute
+  offsetTop?: string;
+  offsetBottom?: string;
+  offsetStart?: string;
+  offsetEnd?: string;
+  background?: FlexLinearGradient; // 線形グラデーション背景
 }
 
 /** 1 部品 (ブロック)。kind で判別する discriminated union。margin は上マージン (batch B)。 */

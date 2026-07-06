@@ -84,6 +84,23 @@ export interface FlexNode {
   alignItems?: string; // box 交差軸そろえ
   gravity?: string; // 横並び親の中での縦位置 (top/bottom/center)
   flex?: number; // 伸縮比 (>=0)
+  // batch D: box の絶対配置 + グラデーション背景。
+  position?: string; // relative / absolute
+  offsetTop?: string;
+  offsetBottom?: string;
+  offsetStart?: string;
+  offsetEnd?: string;
+  background?: FlexBackground; // 線形グラデーション背景
+}
+
+/** box の背景 (現状は線形グラデーションのみ / batch D)。 */
+export interface FlexBackground {
+  type?: string; // 'linearGradient'
+  angle?: string;
+  startColor?: string;
+  endColor?: string;
+  centerColor?: string;
+  centerPosition?: string;
 }
 
 /** validateFlex の返り値。ok:false のとき日本語 errors を UI が表示。 */

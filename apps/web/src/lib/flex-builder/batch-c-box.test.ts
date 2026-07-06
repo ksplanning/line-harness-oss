@@ -126,8 +126,9 @@ describe('batch C-core box — GC-2 lossless-only (表現不能な box は from-
     const json = JSON.stringify({ type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'box', layout: 'horizontal', action: { type: 'uri', uri: 'https://x' }, contents: [{ type: 'text', text: 'x', wrap: true }] }] } });
     expect(flexToModel(json)).toBeNull();
   });
-  it('box に gradient 背景 (batch D) → null', () => {
-    const json = JSON.stringify({ type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'box', layout: 'vertical', background: { type: 'linearGradient' }, contents: [{ type: 'text', text: 'x', wrap: true }] }] } });
+  it('box の gradient 背景に未知キーがあれば null (batch D で gradient 自体は対応)', () => {
+    // batch D で linearGradient は対応集合に入った。gradient object の未知キーは lossless 不可 → null。
+    const json = JSON.stringify({ type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'box', layout: 'vertical', background: { type: 'linearGradient', angle: '90deg', startColor: '#fff', endColor: '#000', unknownKey: 1 }, contents: [{ type: 'text', text: 'x', wrap: true }] }] } });
     expect(flexToModel(json)).toBeNull();
   });
   it('正常な box を含む Flex は round-trip 可 (null にならない)', () => {

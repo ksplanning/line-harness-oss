@@ -223,6 +223,49 @@ export default function PartEditor({ part, onChange }: Props) {
             </div>
           </div>
         </details>
+        <details className="text-xs">
+          <summary className="cursor-pointer text-gray-500">重ね・グラデーション（上級）</summary>
+          <div className="mt-2 space-y-3">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={Boolean(part.background)}
+                onChange={(e) => onChange({ background: e.target.checked ? { type: 'linearGradient', angle: '90deg', startColor: '#06C755', endColor: '#03793C' } : undefined } as Partial<BuilderPart>)}
+                className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500" />
+              <span className="text-gray-600">グラデーション背景を使う</span>
+            </label>
+            {part.background && (
+              <div className="space-y-2 pl-1">
+                <ColorPicker label="開始の色" value={part.background.startColor}
+                  onPick={(v) => onChange({ background: { ...part.background!, startColor: v ?? '#06C755' } } as Partial<BuilderPart>)} />
+                <ColorPicker label="終わりの色" value={part.background.endColor}
+                  onPick={(v) => onChange({ background: { ...part.background!, endColor: v ?? '#03793C' } } as Partial<BuilderPart>)} />
+                <div>
+                  <label className="block text-gray-600 mb-1">向き（角度）</label>
+                  <input type="text" value={part.background.angle} placeholder="例: 90deg"
+                    onChange={(e) => onChange({ background: { ...part.background!, angle: e.target.value } } as Partial<BuilderPart>)}
+                    className="w-28 border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-green-500" />
+                </div>
+              </div>
+            )}
+            <ToggleGroup label="重ね方" options={[{ v: 'relative', label: '通常' }, { v: 'absolute', label: '重ねる' }]} value={part.position} fallback="relative"
+              onPick={(v) => onChange({ position: v } as Partial<BuilderPart>)} />
+            {part.position === 'absolute' && (
+              <div className="flex gap-3 pl-1">
+                <div>
+                  <label className="block text-gray-600 mb-1">上から (例 10px)</label>
+                  <input type="text" value={part.offsetTop ?? ''} placeholder="0"
+                    onChange={(e) => onChange({ offsetTop: e.target.value || undefined } as Partial<BuilderPart>)}
+                    className="w-24 border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-green-500" />
+                </div>
+                <div>
+                  <label className="block text-gray-600 mb-1">左から (例 10px)</label>
+                  <input type="text" value={part.offsetStart ?? ''} placeholder="0"
+                    onChange={(e) => onChange({ offsetStart: e.target.value || undefined } as Partial<BuilderPart>)}
+                    className="w-24 border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-green-500" />
+                </div>
+              </div>
+            )}
+          </div>
+        </details>
         <MarginControl part={part} onChange={onChange} />
       </div>
     )

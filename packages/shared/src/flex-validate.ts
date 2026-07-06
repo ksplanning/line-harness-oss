@@ -33,10 +33,13 @@ import {
   FLEX_GRAVITY,
   FLEX_CORNER_RADIUS_KEYWORDS,
   FLEX_BORDER_WIDTH_KEYWORDS,
+  FLEX_POSITION,
+  DEG_VALUE_RE,
   HEX_COLOR_RE,
   PX_VALUE_RE,
   PCT_VALUE_RE,
 } from './flex-constants';
+import type { FlexBackground } from './flex-types';
 
 // ---- batch B (装飾拡張) の fail-closed 検査 (GC-1: 不正値は保存ブロック) ----
 
@@ -81,6 +84,23 @@ function validateBoxDeco(node: FlexNode, errors: ValidationError[]): void {
   if (node.alignItems !== undefined && !inSet(node.alignItems, FLEX_ALIGN_ITEMS)) errors.push(decoErr());
   if (node.gravity !== undefined && !inSet(node.gravity, FLEX_GRAVITY)) errors.push(decoErr());
   if (node.flex !== undefined && !(typeof node.flex === 'number' && Number.isInteger(node.flex) && node.flex >= 0)) errors.push(decoErr());
+  // batch D: 絶対配置 + グラデーション背景。
+  if (node.position !== undefined && !inSet(node.position, FLEX_POSITION)) errors.push(decoErr());
+  for (const o of ['offsetTop', 'offsetBottom', 'offsetStart', 'offsetEnd'] as const) {
+    if (node[o] !== undefined && !isPadding(node[o])) errors.push(decoErr());
+  }
+  if (node.background !== undefined) validateGradient(node.background, errors);
+}
+
+/** box の線形グラデーション背景を fail-closed で検査 (GC-1 / batch D)。 */
+function validateGradient(bg: FlexBackground | undefined, errors: ValidationError[]): void {
+  if (!bg || typeof bg !== 'object') { errors.push(decoErr()); return; }
+  if (bg.type !== 'linearGradient') errors.push(decoErr());
+  if (!(typeof bg.angle === 'string' && DEG_VALUE_RE.test(bg.angle))) errors.push(decoErr());
+  if (!isColor(bg.startColor)) errors.push(decoErr());
+  if (!isColor(bg.endColor)) errors.push(decoErr());
+  if (bg.centerColor !== undefined && !isColor(bg.centerColor)) errors.push(decoErr());
+  if (bg.centerPosition !== undefined && !(typeof bg.centerPosition === 'string' && PCT_VALUE_RE.test(bg.centerPosition))) errors.push(decoErr());
 }
 
 function validateTextDeco(node: FlexNode, errors: ValidationError[]): void {

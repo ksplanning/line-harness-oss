@@ -45,6 +45,23 @@ describe('batch C-core FlexPreview: box 描画', () => {
     expect(bg).toBe(true)
   })
 
+  it('gradient 背景 (batch D) が linear-gradient として描画される', () => {
+    const m: BuilderModel = {
+      cards: [{
+        id: 'c', parts: [{
+          kind: 'box', id: 'g', layout: 'vertical',
+          background: { type: 'linearGradient', angle: '90deg', startColor: '#06C755', endColor: '#03793C' },
+          contents: [{ kind: 'body', id: 'b', text: 'グラデ' }],
+        }],
+      }],
+    }
+    const { container } = render(<FlexPreview content={content(m)} />)
+    const hasGradient = Array.from(container.querySelectorAll('div')).some(
+      (d) => (d as HTMLElement).style.backgroundImage.includes('linear-gradient'),
+    )
+    expect(hasGradient).toBe(true)
+  })
+
   it('ネストした box (box in box) の子テキストまで描画される', () => {
     const m: BuilderModel = {
       cards: [{
