@@ -37,9 +37,11 @@ export interface FlexBox {
 }
 
 export interface FlexAction {
-  type: 'uri';
+  // 'uri' (飛び先 URL) / 'message' (テキスト応答 / batch B) / 将来 'postback' 等 (batch D)。
+  type: string;
   label?: string;
-  uri: string;
+  uri?: string; // uri action
+  text?: string; // message action
 }
 
 export interface FlexNode {
@@ -57,6 +59,14 @@ export interface FlexNode {
   layout?: string;
   spacing?: string;
   contents?: FlexNode[];
+  // batch B (装飾拡張) — すべて additive・任意。未指定時は出力に現れない (既存 JSON バイト等価 / M-20)。
+  color?: string; // text/separator の色 (#RRGGBB[AA])
+  align?: string; // text/image の水平整列 (start/center/end)
+  decoration?: string; // text の装飾 (none/underline/line-through)
+  lineSpacing?: string; // text の行間 (例 '10px')
+  maxLines?: number; // text の最大行数
+  margin?: string; // 部品の上マージン (none/xs..xxl or px)
+  height?: string; // button の高さ (sm/md)
 }
 
 /** validateFlex の返り値。ok:false のとき日本語 errors を UI が表示。 */

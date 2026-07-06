@@ -64,19 +64,33 @@ const marginMap: Record<string, string> = {
 
 const spacingMap = marginMap
 
+// 画像サイズのプレビュー近似 (text の sizeMap とは別。LINE image size keyword ≒ 幅)。
+const imageSizeMap: Record<string, string> = {
+  xxs: '20%', xs: '30%', sm: '40%', md: '60%', lg: '80%', xl: '90%', xxl: '95%', '3xl': '100%', full: '100%',
+}
+function getImageWidth(s?: string): string {
+  if (!s) return '100%'
+  if (s === 'full') return '100%'
+  return imageSizeMap[s] || (/(px|%)$/.test(s) ? s : '100%')
+}
+
 function getSize(s?: string) { return s ? sizeMap[s] || s : undefined }
 function getMargin(m?: string) { return m ? marginMap[m] || m : undefined }
 function getSpacing(s?: string) { return s ? spacingMap[s] || s : undefined }
 
 function FlexText({ node }: { node: FlexNode }) {
+  const deco = node.decoration === 'underline' ? 'underline' : node.decoration === 'line-through' ? 'line-through' : undefined
+  const clamp = typeof node.maxLines === 'number' && node.maxLines > 0
   const style: React.CSSProperties = {
     fontSize: getSize(node.size) || '14px',
     fontWeight: node.weight === 'bold' ? 700 : 400,
     color: node.color || '#111',
     margin: 0,
-    lineHeight: 1.4,
+    lineHeight: node.lineSpacing || 1.4,
+    ...(deco ? { textDecoration: deco } : {}),
     ...(node.wrap === false ? { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } : { wordBreak: 'break-word' }),
     ...(node.align === 'center' ? { textAlign: 'center' } : node.align === 'end' ? { textAlign: 'right' } : {}),
+    ...(clamp ? { display: '-webkit-box', WebkitLineClamp: node.maxLines, WebkitBoxOrient: 'vertical', overflow: 'hidden' } as React.CSSProperties : {}),
     ...(node.flex !== undefined ? { flex: node.flex } : {}),
   }
   return <p style={style}>{node.text || ''}</p>
@@ -86,10 +100,11 @@ function FlexButton({ node }: { node: FlexNode }) {
   const isPrimary = node.style === 'primary'
   const isLink = node.style === 'link'
   const btnColor = node.color || (isPrimary ? '#06C755' : undefined)
+  const pad = node.height === 'sm' ? '6px 16px' : '10px 16px'
   const style: React.CSSProperties = {
     display: 'block',
     width: '100%',
-    padding: '10px 16px',
+    padding: pad,
     borderRadius: '8px',
     fontSize: '14px',
     fontWeight: 600,
@@ -115,11 +130,18 @@ function FlexSeparator({ node }: { node: FlexNode }) {
 
 function FlexImage({ node }: { node: FlexNode }) {
   if (!node.url) return null
+  // 水平整列 (batch B): center → 中央, end → 右, start/未指定 → 左。
+  const alignMargin: React.CSSProperties =
+    node.align === 'center' ? { marginLeft: 'auto', marginRight: 'auto' }
+      : node.align === 'end' ? { marginLeft: 'auto' }
+        : {}
   const style: React.CSSProperties = {
-    width: node.size === 'full' ? '100%' : (getSize(node.size) || '100%'),
+    display: 'block',
+    width: getImageWidth(node.size),
     maxWidth: '100%',
     borderRadius: node.cornerRadius || '0',
     objectFit: (node.aspectMode === 'cover' ? 'cover' : 'contain') as React.CSSProperties['objectFit'],
+    ...alignMargin,
     ...(node.aspectRatio ? { aspectRatio: node.aspectRatio.replace(':', '/') } : {}),
   }
   // 見本テンプレの sentinel プレースホルダは外部画像を取りに行かず、ローカルの inline プレースホルダで

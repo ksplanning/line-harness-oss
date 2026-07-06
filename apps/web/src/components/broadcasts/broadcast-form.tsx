@@ -329,7 +329,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
               {imageLinkOn && (
                 <input
                   type="text"
-                  value={imageLink.uri}
+                  value={'uri' in imageLink ? imageLink.uri : ''}
                   onChange={(e) => {
                     const link: LinkSpec = { type: 'url', uri: e.target.value }
                     setImageLink(link)

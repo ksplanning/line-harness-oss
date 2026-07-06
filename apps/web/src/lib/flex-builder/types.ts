@@ -11,7 +11,8 @@ export type LinkSpec =
   | { type: 'url'; uri: string }
   | { type: 'tracked'; trackedLinkId: string; uri: string } // uri = 選択時に trackingUrl を解決して保持
   | { type: 'tel'; phone: string; uri: string } // uri = 'tel:' + 数字
-  | { type: 'booking'; uri: string }; // 予約ページ URL
+  | { type: 'booking'; uri: string } // 予約ページ URL
+  | { type: 'message'; text: string }; // 押すとこのテキストをユーザーが送信 (batch B)
 
 /** 画像のアスペクト比 (UI は最大 3 択: そのまま/横長/正方形)。 */
 export type ImageAspect = 'original' | 'landscape' | 'square';
@@ -19,10 +20,24 @@ export type ImageAspect = 'original' | 'landscape' | 'square';
 /** ボタンの見た目 (新色禁止。primary=#06C755 固定)。 */
 export type ButtonStyle = 'primary' | 'secondary' | 'link';
 
-/** 1 部品 (ブロック)。kind で判別する discriminated union。 */
+/**
+ * テキスト装飾 (batch B)。すべて任意・未指定時は既定 (既存 draft の見た目を変えない / M-20)。
+ * 型は string: from-flex が保存済み Flex の値をそのまま lossless に保持でき、round-trip が安定する
+ * (許容値の enforce は validateFlex = GC-1 が保存時に行う)。UI トグルは有効値のみを設定する。
+ * weight(太さ) は含めない: 太字=見出し / 普通=本文 の既存 identity を保ち heading↔body ゆらぎを避ける。
+ */
+export interface TextDeco {
+  color?: string; // プリセット or 任意 hex (#RRGGBB[AA])
+  align?: string; // start / center / end
+  decoration?: string; // none / underline / line-through
+  lineSpacing?: string; // 例 '10px'
+  maxLines?: number;
+}
+
+/** 1 部品 (ブロック)。kind で判別する discriminated union。margin は上マージン (batch B)。 */
 export type BuilderPart =
-  | { kind: 'heading'; id: string; text: string; size?: string }
-  | { kind: 'body'; id: string; text: string; size?: string }
+  | ({ kind: 'heading'; id: string; text: string; size?: string; margin?: string } & TextDeco)
+  | ({ kind: 'body'; id: string; text: string; size?: string; margin?: string } & TextDeco)
   | {
       kind: 'image';
       id: string;
@@ -30,9 +45,21 @@ export type BuilderPart =
       aspect?: ImageAspect;
       rounded?: boolean;
       tapLink?: LinkSpec;
+      size?: string; // batch B: sm..full (未指定=full)
+      align?: string; // batch B: start / center / end
+      margin?: string;
     }
-  | { kind: 'button'; id: string; label: string; style: ButtonStyle; link: LinkSpec }
-  | { kind: 'separator'; id: string }
+  | {
+      kind: 'button';
+      id: string;
+      label: string;
+      style: ButtonStyle;
+      link: LinkSpec;
+      height?: string; // batch B: sm / md
+      align?: string; // batch B: start / center / end
+      margin?: string;
+    }
+  | { kind: 'separator'; id: string; color?: string; margin?: string } // batch B: 色/上マージン
   | { kind: 'spacer'; id: string; size?: string };
 
 export type PartKind = BuilderPart['kind'];

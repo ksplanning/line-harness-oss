@@ -7,9 +7,9 @@
  */
 import { useEffect, useState, type ComponentType, type SVGProps } from 'react'
 import { api, type TrackedLinkListItem } from '@/lib/api'
-import { urlLink, trackedLink, telLink, bookingLink } from '@/lib/flex-builder/link'
+import { urlLink, trackedLink, telLink, bookingLink, messageLink } from '@/lib/flex-builder/link'
 import type { LinkSpec } from '@/lib/flex-builder/types'
-import { GlobeIcon, ChartIcon, PhoneIcon, CalendarIcon } from '@/components/shared/icons'
+import { GlobeIcon, ChartIcon, PhoneIcon, CalendarIcon, MessageIcon } from '@/components/shared/icons'
 
 interface Props {
   value: LinkSpec
@@ -22,6 +22,7 @@ const KINDS: { type: LinkSpec['type']; Icon: ComponentType<SVGProps<SVGSVGElemen
   { type: 'tracked', Icon: ChartIcon, label: '計測リンクから選ぶ' },
   { type: 'tel', Icon: PhoneIcon, label: '電話をかける' },
   { type: 'booking', Icon: CalendarIcon, label: '予約ページ' },
+  { type: 'message', Icon: MessageIcon, label: 'メッセージを送る' },
 ]
 
 const inputCls =
@@ -61,6 +62,9 @@ export default function LinkPicker({ value, onChange }: Props) {
         break
       case 'booking':
         onChange(bookingLink(value.type === 'booking' ? value.uri : ''))
+        break
+      case 'message':
+        onChange(messageLink(value.type === 'message' ? value.text : ''))
         break
     }
   }
@@ -141,6 +145,16 @@ export default function LinkPicker({ value, onChange }: Props) {
           onChange={(e) => onChange(bookingLink(e.target.value))}
           className={inputCls}
           placeholder="予約ページのリンク (https://...)"
+        />
+      )}
+
+      {value.type === 'message' && (
+        <input
+          type="text"
+          value={value.text}
+          onChange={(e) => onChange(messageLink(e.target.value))}
+          className={inputCls}
+          placeholder="押すと送られる文字 (例: 参加します)"
         />
       )}
     </div>

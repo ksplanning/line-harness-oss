@@ -19,16 +19,55 @@ interface RawNode {
   url?: string;
   size?: string;
   aspectRatio?: string;
+  aspectMode?: string;
   cornerRadius?: string;
   style?: string;
-  action?: { type?: string; label?: string; uri?: string };
+  action?: { type?: string; label?: string; uri?: string; text?: string; [k: string]: unknown };
   layout?: string;
+  color?: string;
+  align?: string;
+  decoration?: string;
+  lineSpacing?: string;
+  maxLines?: number;
+  margin?: string;
+  height?: string;
   contents?: RawNode[];
   [key: string]: unknown;
 }
 
+// GC-2 lossless-only: ビルダーが表現できる node の許容キー集合。ここに無いキーが 1 つでもあれば
+// 逆変換不能 (null → 上級者 JSON へフォールバック) = 未知プロパティを黙って落として再保存する事故を禁止。
+const ALLOWED_KEYS: Record<string, Set<string>> = {
+  text: new Set(['type', 'text', 'wrap', 'weight', 'size', 'color', 'align', 'decoration', 'lineSpacing', 'maxLines', 'margin']),
+  image: new Set(['type', 'url', 'size', 'aspectMode', 'aspectRatio', 'cornerRadius', 'align', 'margin', 'action']),
+  button: new Set(['type', 'style', 'action', 'height', 'align', 'margin']),
+  separator: new Set(['type', 'color', 'margin']),
+  spacer: new Set(['type', 'size']),
+};
+
+const ALLOWED_ACTION_KEYS = new Set(['type', 'label', 'uri', 'text']);
+
+/** node の全キーが許容集合内か (GC-2)。1 つでも外れたら false = 逆変換不能。 */
+function hasOnlyAllowedKeys(node: RawNode, type: string): boolean {
+  const allowed = ALLOWED_KEYS[type];
+  if (!allowed) return false;
+  for (const k of Object.keys(node)) {
+    if (!allowed.has(k)) return false;
+  }
+  return true;
+}
+
 function actionToLink(action: RawNode['action']): LinkSpec | null {
-  if (!action || action.type !== 'uri' || typeof action.uri !== 'string') return null;
+  if (!action || typeof action !== 'object') return null;
+  // action 側も未知キーがあれば lossless に保持できない → null。
+  for (const k of Object.keys(action)) {
+    if (!ALLOWED_ACTION_KEYS.has(k)) return null;
+  }
+  if (action.type === 'message') {
+    if (typeof action.text !== 'string') return null;
+    return { type: 'message', text: action.text };
+  }
+  if (action.type !== 'uri' || typeof action.uri !== 'string') return null;
   const uri = action.uri;
   if (uri.startsWith('tel:')) {
     return { type: 'tel', phone: uri.slice(4), uri };
@@ -45,36 +84,65 @@ function aspectFromRatio(ratio?: string): ImageAspect {
   return 'original';
 }
 
+/** text 装飾 (batch B) を node から part に lossless に写す。 */
+function readTextDeco(node: RawNode): Partial<BuilderPart> {
+  const deco: Record<string, unknown> = {};
+  if (typeof node.color === 'string') deco.color = node.color;
+  if (typeof node.align === 'string') deco.align = node.align;
+  if (typeof node.decoration === 'string') deco.decoration = node.decoration;
+  if (typeof node.lineSpacing === 'string') deco.lineSpacing = node.lineSpacing;
+  if (typeof node.maxLines === 'number') deco.maxLines = node.maxLines;
+  if (typeof node.margin === 'string') deco.margin = node.margin;
+  return deco as Partial<BuilderPart>;
+}
+
 /** 1 つの Flex node → BuilderPart。対応外なら null (= bubble 全体を逆変換不能扱いにする)。 */
 function nodeToPart(node: RawNode): BuilderPart | null {
   const id = nextId('part');
+  if (typeof node.type !== 'string' || !hasOnlyAllowedKeys(node, node.type)) return null; // GC-2
   switch (node.type) {
-    case 'text':
+    case 'text': {
       if (typeof node.text !== 'string') return null;
-      return node.weight === 'bold'
-        ? { kind: 'heading', id, text: node.text, size: node.size }
-        : { kind: 'body', id, text: node.text, size: node.size };
+      const base = node.weight === 'bold'
+        ? { kind: 'heading' as const, id, text: node.text, size: node.size }
+        : { kind: 'body' as const, id, text: node.text, size: node.size };
+      return { ...base, ...readTextDeco(node) } as BuilderPart;
+    }
     case 'image': {
       if (typeof node.url !== 'string') return null;
-      const part: BuilderPart = {
+      // 画像は aspectMode='cover' 前提 (model は cover 固定出力)。異なる mode は表現不能 → null。
+      if (node.aspectMode !== undefined && node.aspectMode !== 'cover') return null;
+      const part: Record<string, unknown> = {
         kind: 'image',
         id,
         url: node.url,
         aspect: aspectFromRatio(node.aspectRatio),
         rounded: Boolean(node.cornerRadius),
       };
+      if (typeof node.size === 'string') part.size = node.size;
+      if (typeof node.align === 'string') part.align = node.align;
+      if (typeof node.margin === 'string') part.margin = node.margin;
       const tap = actionToLink(node.action);
-      if (tap) (part as { tapLink?: LinkSpec }).tapLink = tap;
-      return part;
+      if (node.action && !tap) return null; // action があるのに解釈不能 → lossless 不可
+      if (tap) part.tapLink = tap;
+      return part as BuilderPart;
     }
     case 'button': {
       const link = actionToLink(node.action);
       if (!link) return null;
       const style = node.style === 'secondary' || node.style === 'link' ? node.style : 'primary';
-      return { kind: 'button', id, label: node.action?.label ?? 'ボタン', style, link };
+      const part: Record<string, unknown> = { kind: 'button', id, label: node.action?.label ?? 'ボタン', style, link };
+      if (typeof node.height === 'string') part.height = node.height;
+      if (typeof node.align === 'string') part.align = node.align;
+      if (typeof node.margin === 'string') part.margin = node.margin;
+      return part as BuilderPart;
     }
-    case 'separator':
-      return { kind: 'separator', id };
+    case 'separator': {
+      const part: Record<string, unknown> = { kind: 'separator', id };
+      if (typeof node.color === 'string') part.color = node.color;
+      if (typeof node.margin === 'string') part.margin = node.margin;
+      return part as BuilderPart;
+    }
     case 'spacer':
       return { kind: 'spacer', id, size: node.size };
     default:

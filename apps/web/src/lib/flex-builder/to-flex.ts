@@ -15,7 +15,9 @@ import type {
   FlexBubble,
   FlexContents,
   FlexNode,
+  FlexAction,
   ImageAspect,
+  LinkSpec,
 } from './types';
 
 const ASPECT_RATIO: Record<ImageAspect, string | undefined> = {
@@ -24,33 +26,75 @@ const ASPECT_RATIO: Record<ImageAspect, string | undefined> = {
   square: '1:1',
 };
 
+/** LinkSpec → Flex action。message は {type:'message',text}、それ以外は {type:'uri',uri}。 */
+function linkToAction(link: LinkSpec, label?: string): FlexAction {
+  if (link.type === 'message') {
+    return label !== undefined ? { type: 'message', label, text: link.text } : { type: 'message', text: link.text };
+  }
+  return label !== undefined ? { type: 'uri', label, uri: link.uri } : { type: 'uri', uri: link.uri };
+}
+
+/** text 部品の装飾を additive に付与 (未指定は出力に現れない = 既存 draft バイト等価 / M-20)。 */
+function applyTextDeco(node: FlexNode, part: Extract<BuilderPart, { kind: 'heading' | 'body' }>): void {
+  if (part.color !== undefined) node.color = part.color;
+  if (part.align !== undefined) node.align = part.align;
+  if (part.decoration !== undefined) node.decoration = part.decoration;
+  if (part.lineSpacing !== undefined) node.lineSpacing = part.lineSpacing;
+  if (part.maxLines !== undefined) node.maxLines = part.maxLines;
+  if (part.margin !== undefined) node.margin = part.margin;
+}
+
 function partToNode(part: BuilderPart): FlexNode {
   switch (part.kind) {
-    case 'heading':
-      return { type: 'text', text: part.text, wrap: true, weight: 'bold', size: part.size ?? 'lg' };
-    case 'body':
-      return { type: 'text', text: part.text, wrap: true, size: part.size };
+    case 'heading': {
+      // heading は常に太字 lg 既定 (identity)。装飾は色/整列/装飾/行間/最大行/マージン。
+      const node: FlexNode = {
+        type: 'text',
+        text: part.text,
+        wrap: true,
+        weight: 'bold',
+        size: part.size ?? 'lg',
+      };
+      applyTextDeco(node, part);
+      return node;
+    }
+    case 'body': {
+      const node: FlexNode = { type: 'text', text: part.text, wrap: true, size: part.size };
+      applyTextDeco(node, part);
+      return node;
+    }
     case 'image': {
       const node: FlexNode = {
         type: 'image',
         url: part.url,
-        size: 'full',
+        size: part.size ?? 'full',
         aspectMode: 'cover',
       };
       const ratio = part.aspect ? ASPECT_RATIO[part.aspect] : undefined;
       if (ratio) node.aspectRatio = ratio;
       if (part.rounded) node.cornerRadius = '8px';
-      if (part.tapLink) node.action = { type: 'uri', uri: part.tapLink.uri };
+      if (part.align !== undefined) node.align = part.align;
+      if (part.margin !== undefined) node.margin = part.margin;
+      if (part.tapLink) node.action = linkToAction(part.tapLink);
       return node;
     }
-    case 'button':
-      return {
+    case 'button': {
+      const node: FlexNode = {
         type: 'button',
         style: part.style,
-        action: { type: 'uri', label: part.label, uri: part.link.uri },
+        action: linkToAction(part.link, part.label),
       };
-    case 'separator':
-      return { type: 'separator' };
+      if (part.height !== undefined) node.height = part.height;
+      if (part.align !== undefined) node.align = part.align;
+      if (part.margin !== undefined) node.margin = part.margin;
+      return node;
+    }
+    case 'separator': {
+      const node: FlexNode = { type: 'separator' };
+      if (part.color !== undefined) node.color = part.color;
+      if (part.margin !== undefined) node.margin = part.margin;
+      return node;
+    }
     case 'spacer':
       return { type: 'spacer', size: part.size ?? 'md' };
   }

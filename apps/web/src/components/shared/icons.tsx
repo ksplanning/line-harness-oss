@@ -218,6 +218,17 @@ export function EyeOffIcon(props: IconProps) {
   )
 }
 
+/** メッセージ送信 = 吹き出し。 */
+export function MessageIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 5 h16 a1 1 0 0 1 1 1 v9 a1 1 0 0 1 -1 1 H9 l-4 4 V6 a1 1 0 0 1 1 -1 Z" />
+      <path d="M8 9 H16" />
+      <path d="M8 12 H13" />
+    </Svg>
+  )
+}
+
 /** ログイン = 錠前。 */
 export function LockIcon(props: IconProps) {
   return (

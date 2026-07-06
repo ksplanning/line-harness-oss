@@ -32,3 +32,28 @@ export const MAX_ALT_TEXT_LENGTH = 400;
 
 /** box のネスト最大深さ。 */
 export const MAX_BOX_NEST_DEPTH = 10;
+
+// ---- batch B (装飾拡張) の許容値 (GC-1 fail-closed / LINE 公式 reference 準拠) ----
+
+/** text/image の水平整列。 */
+export const FLEX_ALIGN = ['start', 'center', 'end'] as const;
+/** text の装飾。 */
+export const FLEX_TEXT_DECORATION = ['none', 'underline', 'line-through'] as const;
+/** サイズのキーワード (text)。 */
+export const FLEX_SIZE_KEYWORDS = ['xxs', 'xs', 'sm', 'md', 'lg', 'xl', 'xxl', '3xl', '4xl', '5xl'] as const;
+/** margin / spacing のキーワード。 */
+export const FLEX_MARGIN_KEYWORDS = ['none', 'xs', 'sm', 'md', 'lg', 'xl', 'xxl'] as const;
+/** image size のキーワード (text 用 + full)。px/% も別途許容。 */
+export const FLEX_IMAGE_SIZE_KEYWORDS = [...FLEX_SIZE_KEYWORDS, 'full'] as const;
+/** button の高さ。 */
+export const FLEX_BUTTON_HEIGHT = ['sm', 'md'] as const;
+
+/** #RRGGBB または #RRGGBBAA。 */
+export const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
+/** '10px' 等の px 値。 */
+export const PX_VALUE_RE = /^\d+(\.\d+)?px$/;
+/** '50%' 等の % 値。 */
+export const PCT_VALUE_RE = /^\d+(\.\d+)?%$/;
+
+/** LINE 絵文字メッセージ(message action)の text 上限は通常メッセージと同じ扱いで pin。 */
+export const MAX_MESSAGE_ACTION_TEXT = 300;

@@ -18,7 +18,43 @@ import {
   MAX_TEXT_LENGTH,
   MAX_ALT_TEXT_LENGTH,
   MAX_BOX_NEST_DEPTH,
+  MAX_MESSAGE_ACTION_TEXT,
+  FLEX_ALIGN,
+  FLEX_TEXT_DECORATION,
+  FLEX_SIZE_KEYWORDS,
+  FLEX_IMAGE_SIZE_KEYWORDS,
+  FLEX_MARGIN_KEYWORDS,
+  FLEX_BUTTON_HEIGHT,
+  HEX_COLOR_RE,
+  PX_VALUE_RE,
+  PCT_VALUE_RE,
 } from './flex-constants';
+
+// ---- batch B (装飾拡張) の fail-closed 検査 (GC-1: 不正値は保存ブロック) ----
+
+const BAD_DECO = 'flex_bad_decoration';
+const decoErr = (): ValidationError => ({
+  code: BAD_DECO,
+  messageJa: '装飾の指定に正しくない値があります。選び直してください。',
+});
+
+const inSet = (v: unknown, set: readonly string[]): boolean => typeof v === 'string' && set.includes(v);
+const isColor = (v: unknown): boolean => typeof v === 'string' && HEX_COLOR_RE.test(v);
+const isSizeKeyword = (v: unknown): boolean => inSet(v, FLEX_SIZE_KEYWORDS);
+const isMargin = (v: unknown): boolean =>
+  inSet(v, FLEX_MARGIN_KEYWORDS) || (typeof v === 'string' && PX_VALUE_RE.test(v));
+const isImageSize = (v: unknown): boolean =>
+  inSet(v, FLEX_IMAGE_SIZE_KEYWORDS) || (typeof v === 'string' && (PX_VALUE_RE.test(v) || PCT_VALUE_RE.test(v)));
+
+function validateTextDeco(node: FlexNode, errors: ValidationError[]): void {
+  if (node.color !== undefined && !isColor(node.color)) errors.push(decoErr());
+  if (node.align !== undefined && !inSet(node.align, FLEX_ALIGN)) errors.push(decoErr());
+  if (node.decoration !== undefined && !inSet(node.decoration, FLEX_TEXT_DECORATION)) errors.push(decoErr());
+  if (node.size !== undefined && !isSizeKeyword(node.size)) errors.push(decoErr());
+  if (node.lineSpacing !== undefined && !(typeof node.lineSpacing === 'string' && PX_VALUE_RE.test(node.lineSpacing))) errors.push(decoErr());
+  if (node.maxLines !== undefined && !(typeof node.maxLines === 'number' && Number.isInteger(node.maxLines) && node.maxLines >= 0)) errors.push(decoErr());
+  if (node.margin !== undefined && !isMargin(node.margin)) errors.push(decoErr());
+}
 
 interface ValidateOptions {
   /** 明示 altText を持たせる設計のとき渡す。未指定なら buildMessage が自動生成するので検証しない。 */
@@ -46,6 +82,7 @@ function walkNodes(node: FlexNode | undefined, depth: number, errors: Validation
         messageJa: `文字が長すぎます。${MAX_TEXT_LENGTH}文字までにしてください。`,
       });
     }
+    validateTextDeco(node, errors); // GC-1: color/align/decoration/size/lineSpacing/maxLines/margin
   }
   if (node.type === 'image') {
     const url = node.url ?? '';
@@ -55,11 +92,36 @@ function walkNodes(node: FlexNode | undefined, depth: number, errors: Validation
         messageJa: '画像のリンクが安全な形式ではありません。もう一度アップロードしてください。',
       });
     }
+    // GC-1: image の size(keyword/px/%)/align/margin。
+    if (node.size !== undefined && !isImageSize(node.size)) errors.push(decoErr());
+    if (node.align !== undefined && !inSet(node.align, FLEX_ALIGN)) errors.push(decoErr());
+    if (node.margin !== undefined && !isMargin(node.margin)) errors.push(decoErr());
   }
-  // button の action、または image のタップ action (action.type==='uri') の飛び先 uri を検証。
-  // 送信時に初めて失敗する経路 (空/スキーム無し/javascript:/data:/http:) を保存前に潰す (H1)。
-  if (node.action && node.action.type === 'uri') {
-    validateLinkUri(node.action.uri, errors);
+  if (node.type === 'button') {
+    // GC-1: button の height/align/margin。
+    if (node.height !== undefined && !inSet(node.height, FLEX_BUTTON_HEIGHT)) errors.push(decoErr());
+    if (node.align !== undefined && !inSet(node.align, FLEX_ALIGN)) errors.push(decoErr());
+    if (node.margin !== undefined && !isMargin(node.margin)) errors.push(decoErr());
+  }
+  if (node.type === 'separator') {
+    // GC-1: separator の color/margin。
+    if (node.color !== undefined && !isColor(node.color)) errors.push(decoErr());
+    if (node.margin !== undefined && !isMargin(node.margin)) errors.push(decoErr());
+  }
+  // button の action、または image のタップ action の飛び先を検証。
+  // uri: 送信時に初めて失敗する経路 (空/スキーム無し/javascript:/data:/http:) を保存前に潰す (H1)。
+  // message (batch B): テキスト応答。空/長すぎを保存前にブロック (GC-1)。
+  if (node.action) {
+    if (node.action.type === 'uri') {
+      validateLinkUri(node.action.uri, errors);
+    } else if (node.action.type === 'message') {
+      const t = node.action.text ?? '';
+      if (t.trim().length === 0) {
+        errors.push({ code: 'message_action_empty', messageJa: '押したときに送る文字が空です。文字を入れてください。' });
+      } else if (t.length > MAX_MESSAGE_ACTION_TEXT) {
+        errors.push({ code: 'message_action_too_long', messageJa: `押したときに送る文字が長すぎます。${MAX_MESSAGE_ACTION_TEXT}文字までにしてください。` });
+      }
+    }
   }
   if (Array.isArray(node.contents)) {
     for (const child of node.contents) walkNodes(child, depth + 1, errors);

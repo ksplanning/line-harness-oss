@@ -25,7 +25,8 @@ export function imageLinkToFlexJson(url: string, link: LinkSpec): string {
             url,
             aspect: 'original',
             rounded: false,
-            ...(link.uri ? { tapLink: link } : {}),
+            // link にターゲットがあるときだけ tapLink を付ける (uri 系は uri、message は text)。
+            ...((link.type === 'message' ? link.text.trim() : link.uri.trim()) ? { tapLink: link } : {}),
           },
         ],
       },

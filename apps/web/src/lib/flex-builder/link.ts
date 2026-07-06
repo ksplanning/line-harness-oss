@@ -35,6 +35,11 @@ export function bookingLink(uri: string): LinkSpec {
   return { type: 'booking', uri: uri.trim() }
 }
 
+/** message 種別 (押すとこのテキストをユーザーが送信) の LinkSpec (batch B)。 */
+export function messageLink(text: string): LinkSpec {
+  return { type: 'message', text }
+}
+
 /** ボタンの見た目 3 択の日本語ラベル。 */
 export const BUTTON_STYLE_OPTIONS: { value: ButtonStyle; label: string }[] = [
   { value: 'primary', label: '緑 (目立つ)' },
