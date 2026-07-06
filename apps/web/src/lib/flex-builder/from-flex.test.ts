@@ -81,7 +81,7 @@ describe('flexToModel 逆変換 (再編集)', () => {
     expect(part.tapLink).toEqual({ type: 'url', uri: 'https://ex.com/lp' })
   });
 
-  test('真の hero フィールドを持つ bubble も復元できる (worker が hero を使う形)', () => {
+  test('真の hero フィールドを持つ bubble は card.hero に復元される (batch C-core)', () => {
     const flex = {
       type: 'bubble',
       hero: {
@@ -94,7 +94,9 @@ describe('flexToModel 逆変換 (再編集)', () => {
     };
     const back = flexToModel(JSON.stringify(flex));
     expect(back).not.toBeNull();
-    expect(back!.cards[0].parts[0].kind).toBe('image');
+    // batch C-core: hero は body に混ぜず card.hero として lossless 復元する。
+    expect(back!.cards[0].hero?.kind).toBe('image');
+    expect(back!.cards[0].parts.length).toBe(0);
   });
 
   test('tel action は tel 種別に復元', () => {
@@ -114,11 +116,24 @@ describe('flexToModel 逆変換 (再編集)', () => {
     expect(part.link.type).toBe('tel');
   });
 
-  test('範囲外 (header 使用) は null → 上級者経路フォールバック', () => {
+  // batch C-core: header は対応集合に緩和 (T-C2)。縦 box の header は card.header に復元。
+  test('header つき bubble は card.header に復元される', () => {
     const flex = {
       type: 'bubble',
-      header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'H' }] },
-      body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'B' }] },
+      header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'H', wrap: true }] },
+      body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'B', wrap: true }] },
+    };
+    const back = flexToModel(JSON.stringify(flex));
+    expect(back).not.toBeNull();
+    expect(back!.cards[0].header?.length).toBe(1);
+    expect(back!.cards[0].parts.length).toBe(1);
+  });
+  // 背景色つき header (簡易ブロックの範囲外) は null (上級者 JSON へ / GC-2)。
+  test('範囲外 (背景色つき header) は null → 上級者経路フォールバック', () => {
+    const flex = {
+      type: 'bubble',
+      header: { type: 'box', layout: 'vertical', backgroundColor: '#fff', contents: [{ type: 'text', text: 'H', wrap: true }] },
+      body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'B', wrap: true }] },
     };
     expect(flexToModel(JSON.stringify(flex))).toBeNull();
   });

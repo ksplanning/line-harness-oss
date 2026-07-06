@@ -38,10 +38,11 @@ describe('batch C — bubble.size', () => {
     expect(validateFlex(buildModelToFlex(mk('mega'))).ok).toBe(true);
   });
 
-  it('GC-2 lossless: header/footer/未知キー付き bubble は from-flex が null', () => {
-    const withHeader = JSON.stringify({ type: 'bubble', header: { type: 'box', layout: 'vertical', contents: [] }, body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'x', wrap: true }] } });
-    expect(flexToModel(withHeader)).toBeNull();
+  it('GC-2 lossless: styles/未知キー付き bubble は from-flex が null', () => {
+    // batch C-core: header/footer は対応集合に入った (別 test で round-trip 確認)。styles は batch D 範囲で null 継続。
     const withStyles = JSON.stringify({ type: 'bubble', styles: { body: { backgroundColor: '#fff' } }, body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'x', wrap: true }] } });
     expect(flexToModel(withStyles)).toBeNull();
+    const withDirection = JSON.stringify({ type: 'bubble', direction: 'rtl', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'x', wrap: true }] } });
+    expect(flexToModel(withDirection)).toBeNull();
   });
 });

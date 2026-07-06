@@ -96,11 +96,19 @@ export type BuilderPart =
 
 export type PartKind = BuilderPart['kind'];
 
-/** 1 カード = 1 bubble の body。parts を縦に並べる。size は bubble の大きさ (batch C: nano..giga)。 */
+/**
+ * 1 カード = 1 bubble。parts は body (縦に並べる本体)。size は bubble の大きさ (batch C: nano..giga)。
+ * batch C-core: hero(一番上の大きな画像/box) / header(上の帯) / footer(下のボタン帯) を追加。
+ *   hero = 単一部品 (画像 or box)。header/footer = 縦に並ぶ部品列 (vertical box として出力)。
+ *   すべて任意・未指定は出力に現れない (M-20 後方互換: 既存 body-only bubble は不変)。
+ */
 export interface BuilderCard {
   id: string;
   parts: BuilderPart[];
   size?: string; // nano / micro / kilo / mega / giga (未指定 = LINE 既定)
+  hero?: BuilderPart; // 一番上の大きな画像/box (bubble.hero)
+  header?: BuilderPart[]; // 上の帯 (bubble.header = vertical box)
+  footer?: BuilderPart[]; // 下のボタン帯 (bubble.footer = vertical box)
 }
 
 /** ビルダー全体の状態。cards.length===1 → bubble / >=2 → carousel。 */

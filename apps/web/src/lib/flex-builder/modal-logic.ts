@@ -55,11 +55,32 @@ export function makePart(kind: PartKind): BuilderPart {
   }
 }
 
+// ---- ブロック region (batch C-core: body / header / footer) ----
+
+/** 部品列ブロック。body=本体 / header=上の帯 / footer=下のボタン帯 (hero は単一のため別扱い)。 */
+export type Region = 'body' | 'header' | 'footer';
+
+/** card の指定 region の部品列を取り出す (未設定は空配列)。 */
+function cardRegion(card: BuilderCard, region: Region): BuilderPart[] {
+  if (region === 'header') return card.header ?? [];
+  if (region === 'footer') return card.footer ?? [];
+  return card.parts;
+}
+
+/** card の指定 region に部品列を書き戻す (header/footer は空なら undefined = 空配列を残さない)。 */
+function withRegion(card: BuilderCard, region: Region, parts: BuilderPart[]): BuilderCard {
+  if (region === 'header') return { ...card, header: parts.length ? parts : undefined };
+  if (region === 'footer') return { ...card, footer: parts.length ? parts : undefined };
+  return { ...card, parts };
+}
+
 // ---- ネスト対応のツリー走査 (batch C-core: box の子も辿る純関数群) ----
 
-/** parts ツリーから partId を探す (box.contents も再帰)。見つからなければ null。 */
+/** card の全ブロック (body/header/footer/hero) から partId を探す (box.contents も再帰)。 */
 export function findPart(card: BuilderCard, partId: string): BuilderPart | null {
-  return findPartDeep(card.parts, partId);
+  const roots: BuilderPart[] = [...card.parts, ...(card.header ?? []), ...(card.footer ?? [])];
+  if (card.hero) roots.push(card.hero);
+  return findPartDeep(roots, partId);
 }
 function findPartDeep(parts: BuilderPart[], partId: string): BuilderPart | null {
   for (const p of parts) {
@@ -140,23 +161,26 @@ function replaceCard(model: BuilderModel, cardIndex: number, card: BuilderCard):
 
 /**
  * 部品を追加し、新モデルと追加した部品 id を返す。
- * parentBoxId を渡すとその box の子として末尾に足す (batch C-core / ネスト)。未指定は card 直下の末尾。
+ * parentBoxId を渡すとその box の子として末尾に足す (batch C-core / ネスト)。
+ * region で body/header/footer を選ぶ (未指定は body)。
  */
 export function addPart(
   model: BuilderModel,
   cardIndex: number,
   kind: PartKind,
   parentBoxId?: string,
+  region: Region = 'body',
 ): { model: BuilderModel; partId: string } {
   const part = makePart(kind);
   const card = model.cards[cardIndex];
+  const parts = cardRegion(card, region);
   if (parentBoxId) {
-    const r = addToBoxDeep(card.parts, parentBoxId, part);
-    // 目的の box が見つからなければ安全側で root 末尾に足す (UI 不整合でも部品が消えない)。
-    const parts = r.added ? r.parts : [...card.parts, part];
-    return { model: replaceCard(model, cardIndex, { ...card, parts }), partId: part.id };
+    const r = addToBoxDeep(parts, parentBoxId, part);
+    // 目的の box が見つからなければ安全側で末尾に足す (UI 不整合でも部品が消えない)。
+    const next = r.added ? r.parts : [...parts, part];
+    return { model: replaceCard(model, cardIndex, withRegion(card, region, next)), partId: part.id };
   }
-  const next = replaceCard(model, cardIndex, { ...card, parts: [...card.parts, part] });
+  const next = replaceCard(model, cardIndex, withRegion(card, region, [...parts, part]));
   return { model: next, partId: part.id };
 }
 
@@ -166,17 +190,23 @@ export function movePart(
   cardIndex: number,
   partId: string,
   dir: 'up' | 'down',
+  region: Region = 'body',
 ): BuilderModel {
   const card = model.cards[cardIndex];
-  const r = movePartDeep(card.parts, partId, dir);
+  const r = movePartDeep(cardRegion(card, region), partId, dir);
   if (!r.changed) return model;
-  return replaceCard(model, cardIndex, { ...card, parts: r.parts });
+  return replaceCard(model, cardIndex, withRegion(card, region, r.parts));
 }
 
 /** 部品を削除 (ネスト対応)。 */
-export function removePart(model: BuilderModel, cardIndex: number, partId: string): BuilderModel {
+export function removePart(
+  model: BuilderModel,
+  cardIndex: number,
+  partId: string,
+  region: Region = 'body',
+): BuilderModel {
   const card = model.cards[cardIndex];
-  return replaceCard(model, cardIndex, { ...card, parts: removePartDeep(card.parts, partId) });
+  return replaceCard(model, cardIndex, withRegion(card, region, removePartDeep(cardRegion(card, region), partId)));
 }
 
 /** 部品を編集 (id 一致を patch で更新 / ネスト対応)。 */
@@ -185,9 +215,16 @@ export function updatePart(
   cardIndex: number,
   partId: string,
   patch: Partial<BuilderPart>,
+  region: Region = 'body',
 ): BuilderModel {
   const card = model.cards[cardIndex];
-  return replaceCard(model, cardIndex, { ...card, parts: updatePartDeep(card.parts, partId, patch) });
+  return replaceCard(model, cardIndex, withRegion(card, region, updatePartDeep(cardRegion(card, region), partId, patch)));
+}
+
+/** hero (一番上の大きな画像/box) を設定/解除する (単一部品 / batch C-core)。 */
+export function setHero(model: BuilderModel, cardIndex: number, hero: BuilderPart | undefined): BuilderModel {
+  const card = model.cards[cardIndex];
+  return replaceCard(model, cardIndex, { ...card, hero });
 }
 
 // ---- カード操作 (カルーセル / D-13) ----

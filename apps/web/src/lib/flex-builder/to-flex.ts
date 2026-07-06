@@ -14,6 +14,7 @@ import type {
   BuilderPart,
   BoxDeco,
   FlexBubble,
+  FlexBox,
   FlexContents,
   FlexNode,
   FlexAction,
@@ -122,18 +123,22 @@ function partToNode(part: BuilderPart): FlexNode {
 }
 
 function cardToBubble(card: BuilderCard): FlexBubble {
-  const bubble: FlexBubble = {
-    type: 'bubble',
-    body: {
-      type: 'box',
-      layout: 'vertical',
-      spacing: 'md',
-      contents: card.parts.map(partToNode),
-    },
+  const body: FlexBox = {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'md',
+    contents: card.parts.map(partToNode),
   };
-  // bubble.size は type の直後・body の前に置く (LINE 慣習の並び)。未指定なら出力しない (M-20)。
-  if (card.size !== undefined) {
-    return { type: 'bubble', size: card.size, body: bubble.body };
+  // LINE 慣習の並び: type, size, header, hero, body, footer。未指定は出力しない (M-20 バイト等価)。
+  const bubble: FlexBubble = { type: 'bubble' };
+  if (card.size !== undefined) bubble.size = card.size;
+  if (card.header !== undefined) {
+    bubble.header = { type: 'box', layout: 'vertical', contents: card.header.map(partToNode) };
+  }
+  if (card.hero !== undefined) bubble.hero = partToNode(card.hero);
+  bubble.body = body;
+  if (card.footer !== undefined) {
+    bubble.footer = { type: 'box', layout: 'vertical', contents: card.footer.map(partToNode) };
   }
   return bubble;
 }

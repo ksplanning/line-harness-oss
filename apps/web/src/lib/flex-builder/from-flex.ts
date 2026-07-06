@@ -198,38 +198,72 @@ function nodeToPart(node: RawNode): BuilderPart | null {
   }
 }
 
-// bubble 直下の許容キー (GC-2)。ここに無いキー (header/footer/styles/direction/action 等) を持つ bubble は
-// ビルダー範囲外 → null (上級者 JSON へ)。size は batch C で追加。
-const ALLOWED_BUBBLE_KEYS = new Set(['type', 'size', 'hero', 'body']);
+// bubble 直下の許容キー (GC-2)。ここに無いキー (styles/direction/action 等) を持つ bubble は
+// ビルダー範囲外 → null (上級者 JSON へ)。size/header/footer は batch C-core で追加。
+const ALLOWED_BUBBLE_KEYS = new Set(['type', 'size', 'header', 'hero', 'body', 'footer']);
+
+// header/footer は「縦の box」= { type:'box', layout:'vertical', contents:[...] } のみ許容 (簡易ブロック)。
+// 背景色/spacing 等を持つ header は表現不能 → null (上級者 JSON へ / GC-2 lossless)。
+const ALLOWED_BLOCK_KEYS = new Set(['type', 'layout', 'contents']);
+
+/** header/footer の box を部品列に復元。縦 box 以外・余分なキー・不能な子があれば null。 */
+function boxToParts(box: RawNode): BuilderPart[] | null {
+  if (box.type !== 'box') return null;
+  for (const k of Object.keys(box)) {
+    if (!ALLOWED_BLOCK_KEYS.has(k)) return null;
+  }
+  if (box.layout !== undefined && box.layout !== 'vertical') return null;
+  if (box.contents !== undefined && !Array.isArray(box.contents)) return null;
+  const parts: BuilderPart[] = [];
+  for (const child of box.contents ?? []) {
+    if (!child || typeof child !== 'object') return null;
+    const p = nodeToPart(child as RawNode);
+    if (!p) return null;
+    parts.push(p);
+  }
+  return parts;
+}
 
 /** 1 bubble → BuilderCard。逆変換不能なら null。 */
 function bubbleToCard(bubble: RawNode): BuilderCard | null {
-  // header/footer/styles 等ビルダー範囲外のキーを 1 つでも持てば逆変換不能 (GC-2 lossless)。
+  // styles 等ビルダー範囲外のキーを 1 つでも持てば逆変換不能 (GC-2 lossless)。
   for (const k of Object.keys(bubble)) {
     if (!ALLOWED_BUBBLE_KEYS.has(k)) return null;
   }
   // size は文字列のみ許容 (nano..giga)。数値等の異常値は範囲外。
   if (bubble.size !== undefined && typeof bubble.size !== 'string') return null;
 
-  const parts: BuilderPart[] = [];
+  const card: BuilderCard = { id: nextId('card'), parts: [] };
 
-  // hero (画像リンク化で作られる hero-only bubble を復元)
-  if (bubble.hero) {
+  // hero (一番上の大きな画像/box)。表現不能なら bubble 全体を null。
+  if (bubble.hero !== undefined) {
     const heroPart = nodeToPart(bubble.hero as RawNode);
     if (!heroPart) return null;
-    parts.push(heroPart);
+    card.hero = heroPart;
   }
 
+  // header (上の帯) / footer (下のボタン帯) = 縦 box → 部品列。
+  if (bubble.header !== undefined) {
+    const hp = boxToParts(bubble.header as RawNode);
+    if (!hp) return null;
+    card.header = hp;
+  }
+  if (bubble.footer !== undefined) {
+    const fp = boxToParts(bubble.footer as RawNode);
+    if (!fp) return null;
+    card.footer = fp;
+  }
+
+  // body (本体) = 縦 box → parts。
+  const parts: BuilderPart[] = [];
   const body = bubble.body as RawNode | undefined;
   if (body) {
-    // body は vertical box のみ対応 (横並びはビルダー範囲外)。
+    // body は vertical box のみ対応 (横並び body 自体はビルダー範囲外 = 横並びは box 部品で作る)。
     if (body.layout && body.layout !== 'vertical') return null;
-    // body.contents が配列でない (壊れた/手貼り JSON) 場合は逆変換不能扱い。
-    // 従来 for-of で非配列を回すと TypeError → UI クラッシュしていた (H2)。
+    // body.contents が配列でない (壊れた/手貼り JSON) 場合は逆変換不能扱い (H2)。
     if (body.contents !== undefined) {
       if (!Array.isArray(body.contents)) return null;
       for (const child of body.contents) {
-        // 非オブジェクトの child (文字列/数値等) はビルダー範囲外。
         // batch C-core: ネストした box は nodeToPart('box') が再帰対応するため弾かない。
         if (!child || typeof child !== 'object') return null;
         const part = nodeToPart(child);
@@ -238,9 +272,12 @@ function bubbleToCard(bubble: RawNode): BuilderCard | null {
       }
     }
   }
+  card.parts = parts;
 
-  if (parts.length === 0) return null;
-  const card: BuilderCard = { id: nextId('card'), parts };
+  // 何も無い bubble (body 空 かつ hero/header/footer も無い) はビルダー範囲外 = 空カードを作らない。
+  if (parts.length === 0 && card.hero === undefined && card.header === undefined && card.footer === undefined) {
+    return null;
+  }
   if (typeof bubble.size === 'string') card.size = bubble.size;
   return card;
 }
