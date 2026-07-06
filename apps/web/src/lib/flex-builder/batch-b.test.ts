@@ -120,8 +120,9 @@ describe('batch B — GC-2 lossless-only (未知 prop を持つ node は from-fl
     const json = JSON.stringify({ type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'image', url: 'https://x/a.png', aspectMode: 'fit' }] } });
     expect(flexToModel(json)).toBeNull();
   });
-  it('span を含む text (contents) → null', () => {
-    const json = JSON.stringify({ type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', wrap: true, contents: [{ type: 'span', text: 'x' }] }] } });
+  it('span に未知キーを含む text (contents) → null (batch D で span 自体は対応)', () => {
+    // batch D: 正常な span は richtext として復元 (別 test)。span の未知キーは lossless 不可 → null。
+    const json = JSON.stringify({ type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', wrap: true, contents: [{ type: 'span', text: 'x', foo: 1 }] }] } });
     expect(flexToModel(json)).toBeNull();
   });
   it('action に未知 prop → null', () => {

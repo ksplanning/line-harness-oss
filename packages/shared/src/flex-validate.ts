@@ -22,6 +22,7 @@ import {
   MAX_POSTBACK_DATA,
   FLEX_ALIGN,
   FLEX_TEXT_DECORATION,
+  FLEX_TEXT_WEIGHT,
   FLEX_SIZE_KEYWORDS,
   FLEX_IMAGE_SIZE_KEYWORDS,
   FLEX_MARGIN_KEYWORDS,
@@ -103,6 +104,24 @@ function validateGradient(bg: FlexBackground | undefined, errors: ValidationErro
   if (bg.centerPosition !== undefined && !(typeof bg.centerPosition === 'string' && PCT_VALUE_RE.test(bg.centerPosition))) errors.push(decoErr());
 }
 
+/** richtext の span 群を fail-closed で検査 (GC-1 / batch D)。空・不正色/サイズ/太さ/装飾をブロック。 */
+function validateSpans(contents: FlexNode[], errors: ValidationError[]): void {
+  if (contents.length === 0) {
+    errors.push({ code: 'text_empty', messageJa: '空の文字があります。文字を入れるか、その部品を消してください。' });
+    return;
+  }
+  for (const sp of contents) {
+    if (sp.type !== 'span') { errors.push(decoErr()); continue; }
+    if ((sp.text ?? '').length === 0) {
+      errors.push({ code: 'text_empty', messageJa: '空の文字があります。文字を入れるか、その部品を消してください。' });
+    }
+    if (sp.color !== undefined && !isColor(sp.color)) errors.push(decoErr());
+    if (sp.size !== undefined && !isSizeKeyword(sp.size)) errors.push(decoErr());
+    if (sp.weight !== undefined && !inSet(sp.weight, FLEX_TEXT_WEIGHT)) errors.push(decoErr());
+    if (sp.decoration !== undefined && !inSet(sp.decoration, FLEX_TEXT_DECORATION)) errors.push(decoErr());
+  }
+}
+
 function validateTextDeco(node: FlexNode, errors: ValidationError[]): void {
   if (node.color !== undefined && !isColor(node.color)) errors.push(decoErr());
   if (node.align !== undefined && !inSet(node.align, FLEX_ALIGN)) errors.push(decoErr());
@@ -130,14 +149,19 @@ function walkNodes(node: FlexNode | undefined, depth: number, errors: Validation
     return;
   }
   if (node.type === 'text') {
-    const text = node.text ?? '';
-    if (text.length === 0) {
-      errors.push({ code: 'text_empty', messageJa: '空の文字があります。文字を入れるか、その部品を消してください。' });
-    } else if (text.length > MAX_TEXT_LENGTH) {
-      errors.push({
-        code: 'text_too_long',
-        messageJa: `文字が長すぎます。${MAX_TEXT_LENGTH}文字までにしてください。`,
-      });
+    if (Array.isArray(node.contents)) {
+      // batch D richtext: span 群を検査 (top-level text は無い)。size/align/margin は下の validateTextDeco で。
+      validateSpans(node.contents, errors);
+    } else {
+      const text = node.text ?? '';
+      if (text.length === 0) {
+        errors.push({ code: 'text_empty', messageJa: '空の文字があります。文字を入れるか、その部品を消してください。' });
+      } else if (text.length > MAX_TEXT_LENGTH) {
+        errors.push({
+          code: 'text_too_long',
+          messageJa: `文字が長すぎます。${MAX_TEXT_LENGTH}文字までにしてください。`,
+        });
+      }
     }
     validateTextDeco(node, errors); // GC-1: color/align/decoration/size/lineSpacing/maxLines/margin
   }

@@ -10,6 +10,28 @@ import type { BuilderModel } from '@/lib/flex-builder/types'
 
 afterEach(() => cleanup())
 
+describe('batch D FlexPreview: richtext (span) 描画', () => {
+  it('span 群が語ごとに色つきで描画される', () => {
+    const m: BuilderModel = {
+      cards: [{
+        id: 'c', parts: [{
+          kind: 'richtext', id: 'rt', runs: [
+            { text: '通常 ' },
+            { text: '強調', color: '#E53935', weight: 'bold' },
+          ],
+        }],
+      }],
+    }
+    const { container } = render(<FlexPreview content={JSON.stringify(buildModelToFlex(m))} />)
+    expect(container.textContent).toContain('通常')
+    expect(container.textContent).toContain('強調')
+    const colored = Array.from(container.querySelectorAll('span')).some(
+      (s) => (s as HTMLElement).style.color.replace(/\s/g, '') === 'rgb(229,57,53)',
+    )
+    expect(colored).toBe(true)
+  })
+})
+
 describe('batch C-core FlexPreview: hero/header/footer 描画', () => {
   it('hero 画像・header・body・footer の中身がすべて描画される', () => {
     const m: BuilderModel = {

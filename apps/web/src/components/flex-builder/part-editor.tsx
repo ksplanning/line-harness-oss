@@ -179,6 +179,43 @@ export default function PartEditor({ part, onChange }: Props) {
     )
   }
 
+  if (part.kind === 'richtext') {
+    const WEIGHT_OPTS: Opt[] = [{ v: 'regular', label: '標準' }, { v: 'bold', label: '太字' }]
+    const SPAN_SIZE_OPTS: Opt[] = [{ v: 'sm', label: '小' }, { v: 'md', label: '中' }, { v: 'lg', label: '大' }, { v: 'xl', label: '特大' }]
+    const updateRun = (i: number, patch: Record<string, unknown>) =>
+      onChange({ runs: part.runs.map((r, j) => (j === i ? { ...r, ...patch } : r)) } as Partial<BuilderPart>)
+    return (
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">語ごとに色・大きさ・太さを変えられる文です。「区間」を足して部分的に飾ります。</p>
+        {part.runs.map((run, i) => (
+          <div key={i} className="rounded-md border border-gray-200 p-2 space-y-2 bg-white">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-gray-600">区間 {i + 1}</span>
+              {part.runs.length > 1 && (
+                <button type="button" onClick={() => onChange({ runs: part.runs.filter((_, j) => j !== i) } as Partial<BuilderPart>)}
+                  className="text-xs text-red-600 px-2 py-1 hover:bg-red-50 rounded" aria-label={`区間 ${i + 1} を消す`}>消す</button>
+              )}
+            </div>
+            <input type="text" value={run.text} onChange={(e) => updateRun(i, { text: e.target.value })}
+              className={inputCls} placeholder="この区間の文字" />
+            <ColorPicker label="色" value={run.color} onPick={(v) => updateRun(i, { color: v })} />
+            <div className="flex gap-3">
+              <ToggleGroup label="太さ" options={WEIGHT_OPTS} value={run.weight} fallback="regular" onPick={(v) => updateRun(i, { weight: v })} />
+              <ToggleGroup label="大きさ" options={SPAN_SIZE_OPTS} value={run.size} fallback="md" onPick={(v) => updateRun(i, { size: v })} />
+            </div>
+          </div>
+        ))}
+        <button type="button" onClick={() => onChange({ runs: [...part.runs, { text: '' }] } as Partial<BuilderPart>)}
+          className="w-full min-h-[40px] border border-dashed border-green-400 text-green-700 rounded-md px-3 py-2 text-xs hover:bg-green-50">
+          ＋ 区間を足す
+        </button>
+        <ToggleGroup label="文全体の位置" options={ALIGN_OPTS} value={part.align} fallback="start"
+          onPick={(v) => onChange({ align: v } as Partial<BuilderPart>)} />
+        <MarginControl part={part} onChange={onChange} />
+      </div>
+    )
+  }
+
   if (part.kind === 'box') {
     const LAYOUT_OPTS: Opt[] = [{ v: 'vertical', label: 'たて' }, { v: 'horizontal', label: 'よこ' }]
     const CORNER_OPTS: Opt[] = [{ v: 'none', label: 'なし' }, { v: 'sm', label: '小' }, { v: 'md', label: '中' }, { v: 'lg', label: '大' }]

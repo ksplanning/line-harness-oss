@@ -8,7 +8,7 @@
  *   **null を返す**。呼び元は「この Flex は高度な形式のためビジュアル編集できません」と案内し、
  *   上級者 JSON 折りたたみにフォールバックする (ビルダーで壊す事故を防ぐ V1 安全策)。
  */
-import type { BuilderModel, BuilderCard, BuilderPart, LinkSpec, ImageAspect } from './types';
+import type { BuilderModel, BuilderCard, BuilderPart, LinkSpec, ImageAspect, SpanRun } from './types';
 import { nextId } from './templates';
 import { MAX_CAROUSEL_BUBBLES } from './constants';
 
@@ -70,7 +70,8 @@ const ALLOWED_GRADIENT_KEYS = new Set(['type', 'angle', 'startColor', 'endColor'
 // GC-2 lossless-only: ビルダーが表現できる node の許容キー集合。ここに無いキーが 1 つでもあれば
 // 逆変換不能 (null → 上級者 JSON へフォールバック) = 未知プロパティを黙って落として再保存する事故を禁止。
 const ALLOWED_KEYS: Record<string, Set<string>> = {
-  text: new Set(['type', 'text', 'wrap', 'weight', 'size', 'color', 'align', 'decoration', 'lineSpacing', 'maxLines', 'margin']),
+  // batch D: contents (span 配列) を許容キーに追加 (richtext)。plain text は contents を持たない。
+  text: new Set(['type', 'text', 'wrap', 'weight', 'size', 'color', 'align', 'decoration', 'lineSpacing', 'maxLines', 'margin', 'contents']),
   image: new Set(['type', 'url', 'size', 'aspectMode', 'aspectRatio', 'cornerRadius', 'align', 'margin', 'action']),
   button: new Set(['type', 'style', 'action', 'height', 'align', 'margin']),
   separator: new Set(['type', 'color', 'margin']),
@@ -89,6 +90,10 @@ const ALLOWED_KEYS: Record<string, Set<string>> = {
 };
 
 const ALLOWED_ACTION_KEYS = new Set(['type', 'label', 'uri', 'text', 'data', 'displayText']);
+
+// batch D richtext: span node の許容キー / richtext の text レベル許容キー (lossless-only)。
+const ALLOWED_SPAN_KEYS = new Set(['type', 'text', 'color', 'size', 'weight', 'decoration']);
+const RICHTEXT_TEXT_KEYS = new Set(['type', 'contents', 'wrap', 'size', 'align', 'margin']);
 
 /** node の全キーが許容集合内か (GC-2)。1 つでも外れたら false = 逆変換不能。 */
 function hasOnlyAllowedKeys(node: RawNode, type: string): boolean {
@@ -151,6 +156,32 @@ function nodeToPart(node: RawNode): BuilderPart | null {
   if (typeof node.type !== 'string' || !hasOnlyAllowedKeys(node, node.type)) return null; // GC-2
   switch (node.type) {
     case 'text': {
+      // batch D: contents(span 配列) を持つ text は richtext。text レベルは限定キーのみ (lossless)。
+      if (Array.isArray(node.contents)) {
+        for (const k of Object.keys(node)) {
+          if (!RICHTEXT_TEXT_KEYS.has(k)) return null;
+        }
+        const runs: SpanRun[] = [];
+        for (const sp of node.contents) {
+          if (!sp || typeof sp !== 'object') return null;
+          const spn = sp as RawNode;
+          if (spn.type !== 'span' || typeof spn.text !== 'string') return null;
+          for (const k of Object.keys(spn)) {
+            if (!ALLOWED_SPAN_KEYS.has(k)) return null;
+          }
+          const run: SpanRun = { text: spn.text };
+          if (typeof spn.color === 'string') run.color = spn.color;
+          if (typeof spn.size === 'string') run.size = spn.size;
+          if (typeof spn.weight === 'string') run.weight = spn.weight;
+          if (typeof spn.decoration === 'string') run.decoration = spn.decoration;
+          runs.push(run);
+        }
+        const part: Record<string, unknown> = { kind: 'richtext', id, runs };
+        if (typeof node.size === 'string') part.size = node.size;
+        if (typeof node.align === 'string') part.align = node.align;
+        if (typeof node.margin === 'string') part.margin = node.margin;
+        return part as BuilderPart;
+      }
       if (typeof node.text !== 'string') return null;
       const base = node.weight === 'bold'
         ? { kind: 'heading' as const, id, text: node.text, size: node.size }

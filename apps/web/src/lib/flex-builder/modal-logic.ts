@@ -55,6 +55,9 @@ export function makePart(kind: PartKind): BuilderPart {
     case 'icon':
       // baseline box 用の小さな装飾画像 (batch D)。
       return { kind: 'icon', id, url: '', size: 'md' };
+    case 'richtext':
+      // 語ごとに装飾できる文 (batch D)。最初は 1 区間。
+      return { kind: 'richtext', id, runs: [{ text: '文字を入力' }] };
   }
 }
 

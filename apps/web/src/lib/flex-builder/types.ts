@@ -35,6 +35,15 @@ export interface TextDeco {
   maxLines?: number;
 }
 
+/** リッチ文の 1 区間 (span / batch D)。1 つの text の中で語ごとに色/大きさ/太さ/装飾を変える。 */
+export interface SpanRun {
+  text: string;
+  color?: string; // #RRGGBB[AA]
+  size?: string; // xxs..5xl
+  weight?: string; // regular / bold
+  decoration?: string; // none / underline / line-through
+}
+
 /** box 背景の線形グラデーション (batch D)。angle='90deg' 等・色は #RRGGBB[AA]。 */
 export interface FlexLinearGradient {
   type: 'linearGradient';
@@ -106,6 +115,8 @@ export type BuilderPart =
   | { kind: 'spacer'; id: string; size?: string }
   // batch D: icon (baseline box 用の小さな装飾画像)。
   | { kind: 'icon'; id: string; url: string; size?: string; margin?: string }
+  // batch D: richtext (span で語ごとに装飾する text)。text + contents[span] として出力。
+  | { kind: 'richtext'; id: string; runs: SpanRun[]; align?: string; size?: string; margin?: string }
   // batch C-core: ネスト可能な box (横並び/縦/baseline)。子部品を再帰的に持つ。
   | ({
       kind: 'box';

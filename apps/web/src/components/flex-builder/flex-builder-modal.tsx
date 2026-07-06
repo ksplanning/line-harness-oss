@@ -68,6 +68,7 @@ const PART_META: Record<PartKind, { Icon: ComponentType<SVGProps<SVGSVGElement>>
   spacer: { Icon: SpacerIcon, label: '余白' },
   box: { Icon: BoxIcon, label: '箱' },
   icon: { Icon: ImageIcon, label: 'アイコン' },
+  richtext: { Icon: BodyTextIcon, label: '飾り文字' },
 }
 
 function partSummary(part: BuilderPart): string {
@@ -81,6 +82,8 @@ function partSummary(part: BuilderPart): string {
       return part.url ? '画像あり' : '画像未設定'
     case 'icon':
       return part.url ? 'アイコンあり' : 'アイコン未設定'
+    case 'richtext':
+      return part.runs.map((r) => r.text).join('').slice(0, 18) || '(空)'
     case 'box':
       return `${part.layout === 'horizontal' ? 'よこ並び' : 'たて並び'}・中身 ${part.contents.length} 個`
     default:

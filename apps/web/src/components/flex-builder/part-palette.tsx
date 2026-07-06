@@ -34,6 +34,7 @@ const ITEMS: PaletteItem[] = [
   { kind: 'spacer', Icon: SpacerIcon, label: '余白', hint: 'すき間をあける' },
   { kind: 'box', Icon: BoxIcon, label: '箱（横に並べる）', hint: '中に部品を入れて左右に並べる' },
   { kind: 'icon', Icon: ImageIcon, label: 'アイコン', hint: '文字の横に置く小さな画像' },
+  { kind: 'richtext', Icon: BodyTextIcon, label: '飾り文字', hint: '語ごとに色や大きさを変える文' },
 ]
 
 export default function PartPalette({ onAdd }: { onAdd: (kind: PartKind) => void }) {

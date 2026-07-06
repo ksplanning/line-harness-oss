@@ -94,6 +94,21 @@ function FlexText({ node }: { node: FlexNode }) {
     ...(clamp ? { display: '-webkit-box', WebkitLineClamp: node.maxLines, WebkitBoxOrient: 'vertical', overflow: 'hidden' } as React.CSSProperties : {}),
     ...(node.flex !== undefined ? { flex: node.flex } : {}),
   }
+  // batch D richtext: contents(span 群)があれば語ごとに装飾して描画する。
+  if (Array.isArray(node.contents)) {
+    return (
+      <p style={style}>
+        {node.contents.map((s, i) => (
+          <span key={i} style={{
+            fontSize: getSize(s.size),
+            color: s.color,
+            fontWeight: s.weight === 'bold' ? 700 : undefined,
+            textDecoration: s.decoration === 'underline' ? 'underline' : s.decoration === 'line-through' ? 'line-through' : undefined,
+          }}>{s.text}</span>
+        ))}
+      </p>
+    )
+  }
   return <p style={style}>{node.text || ''}</p>
 }
 

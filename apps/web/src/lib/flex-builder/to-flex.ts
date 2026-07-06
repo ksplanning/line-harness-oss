@@ -13,6 +13,7 @@ import type {
   BuilderCard,
   BuilderPart,
   BoxDeco,
+  SpanRun,
   FlexBubble,
   FlexBox,
   FlexContents,
@@ -61,6 +62,16 @@ function applyTextDeco(node: FlexNode, part: Extract<BuilderPart, { kind: 'headi
   if (part.lineSpacing !== undefined) node.lineSpacing = part.lineSpacing;
   if (part.maxLines !== undefined) node.maxLines = part.maxLines;
   if (part.margin !== undefined) node.margin = part.margin;
+}
+
+/** SpanRun → span node。text + 装飾を条件付き emission (未指定は出さない)。並び: type,text,color,size,weight,decoration。 */
+function spanToNode(run: SpanRun): FlexNode {
+  const node: FlexNode = { type: 'span', text: run.text };
+  if (run.color !== undefined) node.color = run.color;
+  if (run.size !== undefined) node.size = run.size;
+  if (run.weight !== undefined) node.weight = run.weight;
+  if (run.decoration !== undefined) node.decoration = run.decoration;
+  return node;
 }
 
 function partToNode(part: BuilderPart): FlexNode {
@@ -121,6 +132,15 @@ function partToNode(part: BuilderPart): FlexNode {
       const node: FlexNode = { type: 'icon', url: part.url };
       if (part.size !== undefined) node.size = part.size;
       if (part.margin !== undefined) node.margin = part.margin;
+      return node;
+    }
+    case 'richtext': {
+      // text + contents[span]。top-level text は出さない (LINE は contents があると text を無視)。並び: type,wrap,size?,align?,margin?,contents。
+      const node: FlexNode = { type: 'text', wrap: true };
+      if (part.size !== undefined) node.size = part.size;
+      if (part.align !== undefined) node.align = part.align;
+      if (part.margin !== undefined) node.margin = part.margin;
+      node.contents = part.runs.map(spanToNode);
       return node;
     }
     case 'box': {

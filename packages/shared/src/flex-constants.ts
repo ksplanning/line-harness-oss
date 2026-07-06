@@ -39,6 +39,8 @@ export const MAX_BOX_NEST_DEPTH = 10;
 export const FLEX_ALIGN = ['start', 'center', 'end'] as const;
 /** text の装飾。 */
 export const FLEX_TEXT_DECORATION = ['none', 'underline', 'line-through'] as const;
+/** span の太さ (batch D)。 */
+export const FLEX_TEXT_WEIGHT = ['regular', 'bold'] as const;
 /** サイズのキーワード (text)。 */
 export const FLEX_SIZE_KEYWORDS = ['xxs', 'xs', 'sm', 'md', 'lg', 'xl', 'xxl', '3xl', '4xl', '5xl'] as const;
 /** margin / spacing のキーワード。 */
