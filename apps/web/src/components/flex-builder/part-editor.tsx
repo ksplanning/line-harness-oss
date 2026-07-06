@@ -159,6 +159,26 @@ export default function PartEditor({ part, onChange }: Props) {
     )
   }
 
+  if (part.kind === 'icon') {
+    const ICON_SIZE_OPTS: Opt[] = [{ v: 'xs', label: '極小' }, { v: 'sm', label: '小' }, { v: 'md', label: '中' }, { v: 'lg', label: '大' }, { v: 'xl', label: '特大' }]
+    return (
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">文字の横に置く小さな画像です（「箱」を「よこ」にして文字と並べると効果的）。</p>
+        <div>
+          <label className="block text-xs text-gray-600 mb-1">アイコン画像</label>
+          <ImageUploader
+            mode="url"
+            value={part.url ? { mode: 'url', url: part.url } : null}
+            onChange={(next) => onChange({ url: next && next.mode === 'url' ? next.url : '' } as Partial<BuilderPart>)}
+          />
+        </div>
+        <ToggleGroup label="大きさ" options={ICON_SIZE_OPTS} value={part.size} fallback="md"
+          onPick={(v) => onChange({ size: v ?? 'md' } as Partial<BuilderPart>)} />
+        <MarginControl part={part} onChange={onChange} />
+      </div>
+    )
+  }
+
   if (part.kind === 'box') {
     const LAYOUT_OPTS: Opt[] = [{ v: 'vertical', label: 'たて' }, { v: 'horizontal', label: 'よこ' }]
     const CORNER_OPTS: Opt[] = [{ v: 'none', label: 'なし' }, { v: 'sm', label: '小' }, { v: 'md', label: '中' }, { v: 'lg', label: '大' }]

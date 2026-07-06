@@ -37,11 +37,13 @@ export interface FlexBox {
 }
 
 export interface FlexAction {
-  // 'uri' (飛び先 URL) / 'message' (テキスト応答 / batch B) / 将来 'postback' 等 (batch D)。
+  // 'uri' (飛び先 URL) / 'message' (テキスト応答 / batch B) / 'postback' (data 送信 / batch D)。
   type: string;
   label?: string;
   uri?: string; // uri action
   text?: string; // message action
+  data?: string; // postback action の data (batch D)
+  displayText?: string; // postback action の表示文言 (batch D)
 }
 
 export interface FlexNode {

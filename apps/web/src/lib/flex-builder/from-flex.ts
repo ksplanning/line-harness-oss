@@ -22,7 +22,7 @@ interface RawNode {
   aspectMode?: string;
   cornerRadius?: string;
   style?: string;
-  action?: { type?: string; label?: string; uri?: string; text?: string; [k: string]: unknown };
+  action?: { type?: string; label?: string; uri?: string; text?: string; data?: string; displayText?: string; [k: string]: unknown };
   layout?: string;
   color?: string;
   align?: string;
@@ -65,6 +65,8 @@ const ALLOWED_KEYS: Record<string, Set<string>> = {
   button: new Set(['type', 'style', 'action', 'height', 'align', 'margin']),
   separator: new Set(['type', 'color', 'margin']),
   spacer: new Set(['type', 'size']),
+  icon: new Set(['type', 'url', 'size', 'margin']), // batch D: baseline 装飾
+
   // batch C-core: box (ネスト/横並び/装飾)。ここに無いキー(action/background gradient/position/offset 等)を
   // 持つ box は lossless に保持できない → null (上級者 JSON へ)。background/position/offset は batch D で追加。
   box: new Set([
@@ -74,7 +76,7 @@ const ALLOWED_KEYS: Record<string, Set<string>> = {
   ]),
 };
 
-const ALLOWED_ACTION_KEYS = new Set(['type', 'label', 'uri', 'text']);
+const ALLOWED_ACTION_KEYS = new Set(['type', 'label', 'uri', 'text', 'data', 'displayText']);
 
 /** node の全キーが許容集合内か (GC-2)。1 つでも外れたら false = 逆変換不能。 */
 function hasOnlyAllowedKeys(node: RawNode, type: string): boolean {
@@ -95,6 +97,12 @@ function actionToLink(action: RawNode['action']): LinkSpec | null {
   if (action.type === 'message') {
     if (typeof action.text !== 'string') return null;
     return { type: 'message', text: action.text };
+  }
+  if (action.type === 'postback') {
+    if (typeof action.data !== 'string') return null;
+    return typeof action.displayText === 'string'
+      ? { type: 'postback', data: action.data, displayText: action.displayText }
+      : { type: 'postback', data: action.data };
   }
   if (action.type !== 'uri' || typeof action.uri !== 'string') return null;
   const uri = action.uri;
@@ -174,6 +182,13 @@ function nodeToPart(node: RawNode): BuilderPart | null {
     }
     case 'spacer':
       return { kind: 'spacer', id, size: node.size };
+    case 'icon': {
+      if (typeof node.url !== 'string') return null;
+      const part: Record<string, unknown> = { kind: 'icon', id, url: node.url };
+      if (typeof node.size === 'string') part.size = node.size;
+      if (typeof node.margin === 'string') part.margin = node.margin;
+      return part as BuilderPart;
+    }
     case 'box': {
       // ネスト可能な box。layout は3値のみ。子部品を再帰変換 (1つでも不能なら box 全体が null = lossless)。
       if (node.layout !== 'vertical' && node.layout !== 'horizontal' && node.layout !== 'baseline') return null;

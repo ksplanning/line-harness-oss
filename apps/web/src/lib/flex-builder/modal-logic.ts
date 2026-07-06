@@ -52,6 +52,9 @@ export function makePart(kind: PartKind): BuilderPart {
     case 'box':
       // 既定は「よこに並べる箱」= 空の横並び。子部品は後から足す (batch C-core)。
       return { kind: 'box', id, layout: 'horizontal', contents: [] };
+    case 'icon':
+      // baseline box 用の小さな装飾画像 (batch D)。
+      return { kind: 'icon', id, url: '', size: 'md' };
   }
 }
 

@@ -12,7 +12,8 @@ export type LinkSpec =
   | { type: 'tracked'; trackedLinkId: string; uri: string } // uri = 選択時に trackingUrl を解決して保持
   | { type: 'tel'; phone: string; uri: string } // uri = 'tel:' + 数字
   | { type: 'booking'; uri: string } // 予約ページ URL
-  | { type: 'message'; text: string }; // 押すとこのテキストをユーザーが送信 (batch B)
+  | { type: 'message'; text: string } // 押すとこのテキストをユーザーが送信 (batch B)
+  | { type: 'postback'; data: string; displayText?: string }; // 押すと data を送信 (受信側は scope 外 / batch D)
 
 /** 画像のアスペクト比 (UI は最大 3 択: そのまま/横長/正方形)。 */
 export type ImageAspect = 'original' | 'landscape' | 'square';
@@ -86,6 +87,8 @@ export type BuilderPart =
     }
   | { kind: 'separator'; id: string; color?: string; margin?: string } // batch B: 色/上マージン
   | { kind: 'spacer'; id: string; size?: string }
+  // batch D: icon (baseline box 用の小さな装飾画像)。
+  | { kind: 'icon'; id: string; url: string; size?: string; margin?: string }
   // batch C-core: ネスト可能な box (横並び/縦/baseline)。子部品を再帰的に持つ。
   | ({
       kind: 'box';

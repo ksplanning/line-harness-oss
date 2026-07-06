@@ -40,6 +40,11 @@ export function messageLink(text: string): LinkSpec {
   return { type: 'message', text }
 }
 
+/** postback 種別 (押すと data を送信 / batch D)。displayText は任意 (トーク画面の表示文言)。 */
+export function postbackLink(data: string, displayText?: string): LinkSpec {
+  return displayText ? { type: 'postback', data, displayText } : { type: 'postback', data }
+}
+
 /** ボタンの見た目 3 択の日本語ラベル。 */
 export const BUTTON_STYLE_OPTIONS: { value: ButtonStyle; label: string }[] = [
   { value: 'primary', label: '緑 (目立つ)' },

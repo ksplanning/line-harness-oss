@@ -35,10 +35,18 @@ const ASPECT_RATIO: Record<ImageAspect, string | undefined> = {
   square: '1:1',
 };
 
-/** LinkSpec → Flex action。message は {type:'message',text}、それ以外は {type:'uri',uri}。 */
+/** LinkSpec → Flex action。message/postback は専用形、それ以外は {type:'uri',uri}。 */
 function linkToAction(link: LinkSpec, label?: string): FlexAction {
   if (link.type === 'message') {
     return label !== undefined ? { type: 'message', label, text: link.text } : { type: 'message', text: link.text };
+  }
+  if (link.type === 'postback') {
+    // 並び: type, label?, data, displayText? (from-flex の lossless 復元と一致させる)。
+    const node: FlexAction = { type: 'postback' };
+    if (label !== undefined) node.label = label;
+    node.data = link.data;
+    if (link.displayText !== undefined) node.displayText = link.displayText;
+    return node;
   }
   return label !== undefined ? { type: 'uri', label, uri: link.uri } : { type: 'uri', uri: link.uri };
 }
@@ -106,6 +114,13 @@ function partToNode(part: BuilderPart): FlexNode {
     }
     case 'spacer':
       return { type: 'spacer', size: part.size ?? 'md' };
+    case 'icon': {
+      // baseline box 用の小さな装飾画像。size/margin は条件付き emission。
+      const node: FlexNode = { type: 'icon', url: part.url };
+      if (part.size !== undefined) node.size = part.size;
+      if (part.margin !== undefined) node.margin = part.margin;
+      return node;
+    }
     case 'box': {
       // ネスト可能な box。子部品を再帰変換し、装飾は条件付き emission (未指定は出さない = M-20)。
       const node: FlexNode = {

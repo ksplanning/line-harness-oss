@@ -67,6 +67,7 @@ const PART_META: Record<PartKind, { Icon: ComponentType<SVGProps<SVGSVGElement>>
   separator: { Icon: SeparatorIcon, label: '区切り線' },
   spacer: { Icon: SpacerIcon, label: '余白' },
   box: { Icon: BoxIcon, label: '箱' },
+  icon: { Icon: ImageIcon, label: 'アイコン' },
 }
 
 function partSummary(part: BuilderPart): string {
@@ -78,6 +79,8 @@ function partSummary(part: BuilderPart): string {
       return part.label || '(ボタン)'
     case 'image':
       return part.url ? '画像あり' : '画像未設定'
+    case 'icon':
+      return part.url ? 'アイコンあり' : 'アイコン未設定'
     case 'box':
       return `${part.layout === 'horizontal' ? 'よこ並び' : 'たて並び'}・中身 ${part.contents.length} 個`
     default:

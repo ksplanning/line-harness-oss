@@ -7,7 +7,7 @@
  */
 import { useEffect, useState, type ComponentType, type SVGProps } from 'react'
 import { api, type TrackedLinkListItem } from '@/lib/api'
-import { urlLink, trackedLink, telLink, bookingLink, messageLink } from '@/lib/flex-builder/link'
+import { urlLink, trackedLink, telLink, bookingLink, messageLink, postbackLink } from '@/lib/flex-builder/link'
 import type { LinkSpec } from '@/lib/flex-builder/types'
 import { GlobeIcon, ChartIcon, PhoneIcon, CalendarIcon, MessageIcon } from '@/components/shared/icons'
 
@@ -23,6 +23,7 @@ const KINDS: { type: LinkSpec['type']; Icon: ComponentType<SVGProps<SVGSVGElemen
   { type: 'tel', Icon: PhoneIcon, label: '電話をかける' },
   { type: 'booking', Icon: CalendarIcon, label: '予約ページ' },
   { type: 'message', Icon: MessageIcon, label: 'メッセージを送る' },
+  { type: 'postback', Icon: ChartIcon, label: 'ボタン操作を送る' },
 ]
 
 const inputCls =
@@ -65,6 +66,9 @@ export default function LinkPicker({ value, onChange }: Props) {
         break
       case 'message':
         onChange(messageLink(value.type === 'message' ? value.text : ''))
+        break
+      case 'postback':
+        onChange(postbackLink(value.type === 'postback' ? value.data : '', value.type === 'postback' ? value.displayText : undefined))
         break
     }
   }
@@ -156,6 +160,32 @@ export default function LinkPicker({ value, onChange }: Props) {
           className={inputCls}
           placeholder="押すと送られる文字 (例: 参加します)"
         />
+      )}
+
+      {value.type === 'postback' && (
+        <div className="space-y-2">
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">送るデータ（合図）</label>
+            <input
+              type="text"
+              value={value.data}
+              onChange={(e) => onChange(postbackLink(e.target.value, value.displayText))}
+              className={inputCls}
+              placeholder="例: action=join&id=1"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">トーク画面に出す文字（任意）</label>
+            <input
+              type="text"
+              value={value.displayText ?? ''}
+              onChange={(e) => onChange(postbackLink(value.data, e.target.value || undefined))}
+              className={inputCls}
+              placeholder="例: 参加します"
+            />
+          </div>
+          <p className="text-[11px] text-gray-500">押すと決めた「合図」がシステムに送られます（受け取り側の設定は別画面）。</p>
+        </div>
       )}
     </div>
   )

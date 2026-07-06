@@ -74,3 +74,6 @@ export const PCT_VALUE_RE = /^\d+(\.\d+)?%$/;
 
 /** LINE 絵文字メッセージ(message action)の text 上限は通常メッセージと同じ扱いで pin。 */
 export const MAX_MESSAGE_ACTION_TEXT = 300;
+
+/** postback action の data 上限 (LINE reference: postback.data "Max character limit: 300")。 */
+export const MAX_POSTBACK_DATA = 300;

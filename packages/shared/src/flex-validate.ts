@@ -19,6 +19,7 @@ import {
   MAX_ALT_TEXT_LENGTH,
   MAX_BOX_NEST_DEPTH,
   MAX_MESSAGE_ACTION_TEXT,
+  MAX_POSTBACK_DATA,
   FLEX_ALIGN,
   FLEX_TEXT_DECORATION,
   FLEX_SIZE_KEYWORDS,
@@ -148,6 +149,15 @@ function walkNodes(node: FlexNode | undefined, depth: number, errors: Validation
     // GC-1 (batch C-core): box の layout/背景/角丸/枠/padding/幅高さ/そろえ/gravity/spacing/flex。
     validateBoxDeco(node, errors);
   }
+  if (node.type === 'icon') {
+    // GC-1 (batch D): icon の url(https) / size(keyword or px)。
+    const url = node.url ?? '';
+    if (!url.startsWith('https://')) {
+      errors.push({ code: 'image_not_https', messageJa: 'アイコンのリンクが安全な形式ではありません。もう一度アップロードしてください。' });
+    }
+    if (node.size !== undefined && !(isSizeKeyword(node.size) || (typeof node.size === 'string' && PX_VALUE_RE.test(node.size)))) errors.push(decoErr());
+    if (node.margin !== undefined && !isMargin(node.margin)) errors.push(decoErr());
+  }
   // button の action、または image のタップ action の飛び先を検証。
   // uri: 送信時に初めて失敗する経路 (空/スキーム無し/javascript:/data:/http:) を保存前に潰す (H1)。
   // message (batch B): テキスト応答。空/長すぎを保存前にブロック (GC-1)。
@@ -161,11 +171,30 @@ function walkNodes(node: FlexNode | undefined, depth: number, errors: Validation
       } else if (t.length > MAX_MESSAGE_ACTION_TEXT) {
         errors.push({ code: 'message_action_too_long', messageJa: `押したときに送る文字が長すぎます。${MAX_MESSAGE_ACTION_TEXT}文字までにしてください。` });
       }
+    } else if (node.action.type === 'postback') {
+      // GC-1 (batch D): postback data は空/長すぎ/制御文字を保存前にブロック (space は許容)。
+      const d = node.action.data ?? '';
+      if (d.trim().length === 0) {
+        errors.push({ code: 'postback_data_empty', messageJa: '押したときに送るデータが空です。設定し直してください。' });
+      } else if (d.length > MAX_POSTBACK_DATA) {
+        errors.push({ code: 'postback_data_too_long', messageJa: `押したときに送るデータが長すぎます。${MAX_POSTBACK_DATA}文字までにしてください。` });
+      } else if (hasControlChar(d)) {
+        errors.push({ code: 'postback_data_bad', messageJa: 'データに使えない文字（改行など）が含まれています。入れ直してください。' });
+      }
     }
   }
   if (Array.isArray(node.contents)) {
     for (const child of node.contents) walkNodes(child, depth + 1, errors);
   }
+}
+
+/** 制御文字 (改行/タブ含む 0x00-0x1F, 0x7F) が含まれるか (space 0x20 は許容 / postback data 用)。 */
+function hasControlChar(s: string): boolean {
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
 }
 
 /** uri に空白・改行・制御文字が混入していないか (正常な uri に空白は入らない)。 */
