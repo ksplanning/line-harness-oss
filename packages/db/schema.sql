@@ -659,11 +659,22 @@ CREATE TABLE IF NOT EXISTS staff_members (
   api_key    TEXT UNIQUE NOT NULL,
   is_active  INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  -- ID/PASS ログイン (migration 076 / batch F)。既存行は NULL のまま = api_key ログイン維持。
+  login_id            TEXT,
+  password_hash       TEXT,
+  password_salt       TEXT,
+  password_algo       TEXT DEFAULT 'pbkdf2-sha256',
+  password_iterations INTEGER,
+  password_updated_at TEXT,
+  failed_login_count  INTEGER DEFAULT 0,
+  locked_until        TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_members_api_key ON staff_members(api_key);
 CREATE INDEX IF NOT EXISTS idx_staff_members_role ON staff_members(role);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_members_login_id
+  ON staff_members(login_id) WHERE login_id IS NOT NULL;
 
 -- Reusable message templates (text or Flex) for reward messages in campaigns
 CREATE TABLE IF NOT EXISTS message_templates (

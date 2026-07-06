@@ -785,7 +785,16 @@ CREATE TABLE staff_members (
   api_key    TEXT UNIQUE NOT NULL,
   is_active  INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  -- ID/PASS ログイン (migration 076 / batch F)。既存行は NULL のまま = api_key ログイン維持。
+  login_id            TEXT,
+  password_hash       TEXT,
+  password_salt       TEXT,
+  password_algo       TEXT DEFAULT 'pbkdf2-sha256',
+  password_iterations INTEGER,
+  password_updated_at TEXT,
+  failed_login_count  INTEGER DEFAULT 0,
+  locked_until        TEXT
 );
 
 CREATE TABLE staff_menus (
@@ -1076,6 +1085,9 @@ CREATE INDEX idx_shifts_staff_date ON staff_shifts (staff_id, work_date);
 CREATE INDEX idx_staff_account_sort ON staff (line_account_id, sort_order);
 
 CREATE UNIQUE INDEX idx_staff_members_api_key ON staff_members(api_key);
+
+CREATE UNIQUE INDEX idx_staff_members_login_id
+  ON staff_members(login_id) WHERE login_id IS NOT NULL;
 
 CREATE INDEX idx_staff_members_role ON staff_members(role);
 

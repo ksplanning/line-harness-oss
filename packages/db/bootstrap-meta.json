@@ -63,7 +63,8 @@
     "055_sender_presets.sql",
     "056_ab_tests.sql",
     "057_line_accounts_monthly_cap.sql",
-    "058_rich_menu_groups_schedule.sql"
+    "058_rich_menu_groups_schedule.sql",
+    "076_staff_password_auth.sql"
   ],
-  "migrationCount": 64
+  "migrationCount": 65
 }
