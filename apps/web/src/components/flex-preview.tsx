@@ -5,6 +5,7 @@
  * Supports bubble (single) and carousel (multiple bubbles).
  * Covers: text, button, separator, image, box, icon, spacer, span.
  */
+import { parsePlaceholderImageUrl } from '@/lib/flex-builder/placeholder-image'
 
 interface FlexNode {
   type: string
@@ -120,6 +121,35 @@ function FlexImage({ node }: { node: FlexNode }) {
     borderRadius: node.cornerRadius || '0',
     objectFit: (node.aspectMode === 'cover' ? 'cover' : 'contain') as React.CSSProperties['objectFit'],
     ...(node.aspectRatio ? { aspectRatio: node.aspectRatio.replace(':', '/') } : {}),
+  }
+  // 見本テンプレの sentinel プレースホルダは外部画像を取りに行かず、ローカルの inline プレースホルダで
+  // 描く (CJK 豆腐が構造的に不可能・外部依存ゼロ / Bug1)。実配信前に運用者が差し替える見本。
+  const ph = parsePlaceholderImageUrl(node.url)
+  if (ph) {
+    return (
+      <div
+        style={{
+          ...style,
+          backgroundColor: ph.bg,
+          color: ph.fg,
+          aspectRatio: style.aspectRatio ?? '16 / 10',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '2px',
+          textAlign: 'center',
+          fontSize: '12px',
+          fontWeight: 600,
+          padding: '8px',
+          boxSizing: 'border-box',
+        }}
+        aria-label={`${ph.label}（見本）`}
+      >
+        <span>{ph.label}</span>
+        <span style={{ fontSize: '10px', fontWeight: 400, opacity: 0.85 }}>（見本 / 配信前に差し替え）</span>
+      </div>
+    )
   }
   return <img src={node.url} alt="" style={style} />
 }

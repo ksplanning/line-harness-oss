@@ -2,19 +2,24 @@
  * ビルダーの開始テンプレ (F8 / D-4)。ネイルサロン文脈の実用サンプル文言入り。
  *
  * 制約 (Codex HIGH / tasks C2):
- *   - プレースホルダ画像 URL は必ず https の実在 URL。http/相対だと validateFlex.fail になる。
- *     → https://placehold.co (公開 https placeholder サービス) を使用。運用者は画像部品で差し替える。
+ *   - プレースホルダ画像 URL は必ず https。http/相対だと validateFlex.fail になる。
  *   - tracked link 部分はテンプレでは URL 直接 (https) を既定。tracked 選択は C3 で運用者が設定。
  *   - サムネは FlexPreview の縮小描画で出すため、別途画像ファイルは用意しない (常に実物と一致)。
+ *
+ * Bug1 対応: 旧 placehold.co?text=<日本語> は同サービスの CJK 非対応フォントで画像内に豆腐を焼き込んで
+ *   いた。sentinel https URL (placeholder-image.ts) に置換し、FlexPreview がローカル inline SVG で
+ *   描く (CJK 豆腐が構造的に不可能・外部依存ゼロ)。sentinel は LINE では読めない見本なので、運用者が
+ *   画像部品で差し替える前提 (プレビューが「（見本）」表示 + 注記で明示)。
  */
 import type { BuilderModel } from './types';
+import { placeholderImageUrl } from './placeholder-image';
 
-/** テンプレ用プレースホルダ画像 (https 必須)。運用者がアップローダで差し替える。 */
+/** テンプレ用プレースホルダ画像 (https sentinel)。運用者がアップローダで差し替える。 */
 const PH = {
-  campaign: 'https://placehold.co/1040x676/06C755/ffffff?text=%E3%82%AD%E3%83%A3%E3%83%B3%E3%83%9A%E3%83%BC%E3%83%B3%E7%94%BB%E5%83%8F',
-  booking: 'https://placehold.co/1040x676/eeeeee/333333?text=%E3%82%B5%E3%83%AD%E3%83%B3%E3%81%AE%E5%86%99%E7%9C%9F',
-  product1: 'https://placehold.co/800x800/f4c2c2/333333?text=%E5%95%86%E5%93%811',
-  product2: 'https://placehold.co/800x800/c2d4f4/333333?text=%E5%95%86%E5%93%812',
+  campaign: placeholderImageUrl({ label: 'キャンペーン画像', bg: '06C755', fg: 'FFFFFF' }),
+  booking: placeholderImageUrl({ label: 'サロンの写真', bg: 'EEEEEE', fg: '555555' }),
+  product1: placeholderImageUrl({ label: '商品1', bg: 'F4C2C2', fg: '5B3B3B' }),
+  product2: placeholderImageUrl({ label: '商品2', bg: 'C2D4F4', fg: '35507A' }),
 } as const;
 
 let counter = 0;
