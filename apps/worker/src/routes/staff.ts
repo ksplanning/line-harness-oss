@@ -7,9 +7,13 @@ import {
   deleteStaffMember,
   regenerateStaffApiKey,
   countActiveStaffByRole,
+  setStaffLoginId,
+  setStaffPassword,
+  clearStaffLoginSecurity,
 } from '@line-crm/db';
 import type { StaffMember } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
+import { hashPassword } from '../utils/password.js';
 import type { Env } from '../index.js';
 
 const staff = new Hono<Env>();
@@ -18,6 +22,18 @@ function maskApiKey(key: string): string {
   return `lh_****${key.slice(-4)}`;
 }
 
+/** locked_until (JST 文字列) から lock 中かを算出。julianday と同義の ISO 辞書比較 (TZ 非依存)。 */
+function isLockedFromRow(row: StaffMember): boolean {
+  if (!row.locked_until) return false;
+  const nowJst = new Date(Date.now() + 9 * 3600_000).toISOString().replace('Z', '');
+  return row.locked_until > nowJst;
+}
+
+/**
+ * API に出す staff の shape。**password_hash/salt/algo/iterations/failed_login_count/locked_until は
+ * 一切含めない (GC-4 / M-8)** = この whitelist が唯一の防壁。login_id(ユーザー名) と hasPassword(設定済み
+ * か) と locked(現在ロック中か) の派生値だけを出す。
+ */
 function serializeStaff(row: StaffMember, masked = true) {
   return {
     id: row.id,
@@ -28,6 +44,10 @@ function serializeStaff(row: StaffMember, masked = true) {
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // ID/PASS (batch F)。ハッシュ等の秘匿列は出さない。
+    loginId: row.login_id,
+    hasPassword: Boolean(row.password_hash),
+    locked: isLockedFromRow(row),
   };
 }
 
@@ -200,6 +220,72 @@ staff.delete('/api/staff/:id', requireRole('owner'), async (c) => {
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/staff/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PUT /api/staff/:id/login-id — owner only. Set/normalize the login ID (ID/PASS ログイン)。
+staff.put('/api/staff/:id/login-id', requireRole('owner'), async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const body = await c.req.json<{ loginId?: string }>().catch(() => ({}) as { loginId?: string });
+    const loginId = body.loginId?.trim() ?? '';
+    if (!loginId) return c.json({ success: false, error: 'ログインIDを入力してください' }, 400);
+    if (!/^[A-Za-z0-9._-]{3,64}$/.test(loginId)) {
+      return c.json({ success: false, error: 'ログインIDは半角英数字と . _ - で3〜64文字にしてください' }, 400);
+    }
+    const exists = await getStaffById(c.env.DB, id);
+    if (!exists) return c.json({ success: false, error: 'Staff member not found' }, 404);
+
+    const result = await setStaffLoginId(c.env.DB, id, loginId);
+    if (!result.ok) {
+      return c.json({ success: false, error: 'このログインIDは既に使われています' }, 409);
+    }
+    const updated = await getStaffById(c.env.DB, id);
+    return c.json({ success: true, data: updated ? serializeStaff(updated, true) : null });
+  } catch (err) {
+    console.error('PUT /api/staff/:id/login-id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PUT /api/staff/:id/password — owner only. Set/reset the password (PBKDF2 hashed server-side)。
+// 平文はここで受け取り即ハッシュ化。DB にもレスポンスにもログにも平文/ハッシュを残さない (GC-4)。
+staff.put('/api/staff/:id/password', requireRole('owner'), async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const body = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
+    const password = body.password ?? '';
+    if (password.length < 8) {
+      return c.json({ success: false, error: 'パスワードは8文字以上にしてください' }, 400);
+    }
+    if (password.length > 200) {
+      return c.json({ success: false, error: 'パスワードが長すぎます' }, 400);
+    }
+    const exists = await getStaffById(c.env.DB, id);
+    if (!exists) return c.json({ success: false, error: 'Staff member not found' }, 404);
+
+    const rec = await hashPassword(password);
+    await setStaffPassword(c.env.DB, id, rec);
+    // 成功のみ返す (ハッシュ/平文は返さない)。
+    return c.json({ success: true, data: { id, hasPassword: true } });
+  } catch (err) {
+    console.error('PUT /api/staff/:id/password error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/staff/:id/unlock — owner only. Clear lockout / failed-login counter (締め出し復旧)。
+staff.post('/api/staff/:id/unlock', requireRole('owner'), async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const exists = await getStaffById(c.env.DB, id);
+    if (!exists) return c.json({ success: false, error: 'Staff member not found' }, 404);
+    await clearStaffLoginSecurity(c.env.DB, id);
+    const updated = await getStaffById(c.env.DB, id);
+    return c.json({ success: true, data: updated ? serializeStaff(updated, true) : null });
+  } catch (err) {
+    console.error('POST /api/staff/:id/unlock error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

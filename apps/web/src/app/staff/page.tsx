@@ -4,6 +4,7 @@ import Header from '@/components/layout/header'
 import { fetchApi } from '@/lib/api'
 import type { ApiResponse } from '@line-crm/shared'
 import type { StaffMember } from '@line-crm/shared'
+import { LockIcon, EyeIcon, EyeOffIcon } from '@/components/shared/icons'
 
 type NewApiKey = { apiKey: string; staffId: string }
 
@@ -44,6 +45,15 @@ export default function StaffPage() {
   const [formRole, setFormRole] = useState<'admin' | 'staff'>('staff')
   const [formLoading, setFormLoading] = useState(false)
   const [formError, setFormError] = useState('')
+
+  // ID/PASS 設定モーダル (batch F)
+  const [credStaff, setCredStaff] = useState<StaffMember | null>(null)
+  const [credLoginId, setCredLoginId] = useState('')
+  const [credPassword, setCredPassword] = useState('')
+  const [credPassword2, setCredPassword2] = useState('')
+  const [credShowPw, setCredShowPw] = useState(false)
+  const [credLoading, setCredLoading] = useState(false)
+  const [credError, setCredError] = useState('')
 
   const loadMembers = async () => {
     setLoading(true)
@@ -143,6 +153,62 @@ export default function StaffPage() {
     await navigator.clipboard.writeText(newKey.apiKey)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  // ── ID/PASS 設定 (batch F) ──
+  const openCred = (member: StaffMember) => {
+    setCredStaff(member)
+    setCredLoginId(member.loginId ?? '')
+    setCredPassword('')
+    setCredPassword2('')
+    setCredShowPw(false)
+    setCredError('')
+  }
+
+  const handleSaveCred = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!credStaff) return
+    setCredError('')
+    // パスワードを入れる場合は確認一致 + 8文字以上。
+    if (credPassword || credPassword2) {
+      if (credPassword.length < 8) { setCredError('パスワードは8文字以上にしてください'); return }
+      if (credPassword !== credPassword2) { setCredError('パスワード（確認）が一致しません'); return }
+    }
+    setCredLoading(true)
+    try {
+      // ログインID を変更したときだけ更新。
+      const nextId = credLoginId.trim()
+      if (nextId && nextId !== (credStaff.loginId ?? '')) {
+        const r = await fetchApi<ApiResponse<StaffMember>>(`/api/staff/${credStaff.id}/login-id`, {
+          method: 'PUT',
+          body: JSON.stringify({ loginId: nextId }),
+        })
+        if (!r.success) { setCredError(r.error ?? 'ログインIDの設定に失敗しました'); setCredLoading(false); return }
+      }
+      // パスワードを入れたときだけ更新。
+      if (credPassword) {
+        const r = await fetchApi<ApiResponse<{ id: string }>>(`/api/staff/${credStaff.id}/password`, {
+          method: 'PUT',
+          body: JSON.stringify({ password: credPassword }),
+        })
+        if (!r.success) { setCredError(r.error ?? 'パスワードの設定に失敗しました'); setCredLoading(false); return }
+      }
+      setCredStaff(null)
+      await loadMembers()
+    } catch {
+      setCredError('設定に失敗しました')
+    } finally {
+      setCredLoading(false)
+    }
+  }
+
+  const handleUnlock = async (member: StaffMember) => {
+    try {
+      await fetchApi<ApiResponse<StaffMember>>(`/api/staff/${member.id}/unlock`, { method: 'POST' })
+      await loadMembers()
+    } catch {
+      setError('ロック解除に失敗しました')
+    }
   }
 
   return (
@@ -291,7 +357,13 @@ export default function StaffPage() {
             <tbody className="divide-y divide-gray-100">
               {members.map((member) => (
                 <tr key={member.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-4 py-3 font-medium text-gray-900">{member.name}</td>
+                  <td className="px-4 py-3 font-medium text-gray-900">
+                    {member.name}
+                    <span className="block text-xs font-normal text-gray-400">
+                      {member.loginId ? `ID: ${member.loginId}` : 'ログインID未設定'}
+                      {member.hasPassword ? '・パスワード設定済み' : '・パスワード未設定'}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{member.email ?? '—'}</td>
                   <td className="px-4 py-3">
                     <RoleBadge role={member.role} />
@@ -304,9 +376,28 @@ export default function StaffPage() {
                       <span className={`w-1.5 h-1.5 rounded-full ${member.isActive ? 'bg-green-500' : 'bg-gray-300'}`} />
                       {member.isActive ? '有効' : '無効'}
                     </span>
+                    {member.locked && (
+                      <span className="mt-1 inline-flex items-center gap-1 text-xs text-red-600">
+                        <LockIcon /> ログインロック中
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-2">
+                    <div className="flex items-center justify-end gap-2 flex-wrap">
+                      <button
+                        onClick={() => openCred(member)}
+                        className="px-2.5 py-1 text-xs font-medium text-green-700 bg-white border border-green-300 rounded hover:bg-green-50 transition-colors"
+                      >
+                        ログイン設定
+                      </button>
+                      {member.locked && (
+                        <button
+                          onClick={() => handleUnlock(member)}
+                          className="px-2.5 py-1 text-xs font-medium text-orange-600 bg-white border border-orange-200 rounded hover:bg-orange-50 transition-colors"
+                        >
+                          ロック解除
+                        </button>
+                      )}
                       {member.role !== 'owner' && (
                         <>
                           <button
@@ -335,6 +426,84 @@ export default function StaffPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* ID/PASS 設定モーダル (batch F)。ログインID + パスワードを設定/再設定する。平文は保存も表示もしない。 */}
+      {credStaff && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setCredStaff(null) }}
+        >
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-6">
+            <h2 className="text-base font-semibold text-gray-900 mb-1">ログイン設定</h2>
+            <p className="text-xs text-gray-500 mb-4">{credStaff.name} さんのログインIDとパスワード</p>
+            <form onSubmit={handleSaveCred} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">ログインID</label>
+                <input
+                  type="text"
+                  value={credLoginId}
+                  onChange={(e) => setCredLoginId(e.target.value)}
+                  placeholder="半角英数字と . _ -（3文字以上）"
+                  autoComplete="off"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  新しいパスワード{credStaff.hasPassword ? '（変えるときだけ入力）' : ''}
+                </label>
+                <div className="relative">
+                  <input
+                    type={credShowPw ? 'text' : 'password'}
+                    value={credPassword}
+                    onChange={(e) => setCredPassword(e.target.value)}
+                    placeholder="8文字以上を推奨"
+                    autoComplete="new-password"
+                    className="w-full px-3 py-2 pr-10 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setCredShowPw((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 inline-flex items-center justify-center text-gray-400 hover:text-gray-600"
+                    aria-label={credShowPw ? 'パスワードを隠す' : 'パスワードを表示'}
+                  >
+                    {credShowPw ? <EyeOffIcon /> : <EyeIcon />}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">パスワード（確認）</label>
+                <input
+                  type={credShowPw ? 'text' : 'password'}
+                  value={credPassword2}
+                  onChange={(e) => setCredPassword2(e.target.value)}
+                  placeholder="もう一度入力"
+                  autoComplete="new-password"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+              </div>
+              {credError && <p className="text-sm text-red-600">{credError}</p>}
+              <div className="flex items-center gap-3 pt-1">
+                <button
+                  type="submit"
+                  disabled={credLoading}
+                  className="px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity hover:opacity-90"
+                  style={{ backgroundColor: '#06C755' }}
+                >
+                  {credLoading ? '保存中...' : '保存'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCredStaff(null)}
+                  className="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  キャンセル
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

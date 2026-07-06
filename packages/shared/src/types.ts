@@ -862,6 +862,10 @@ export interface StaffMember {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  // ID/PASS ログイン (batch F)。派生値のみ (ハッシュ等の秘匿列は含めない / GC-4)。
+  loginId?: string | null;
+  hasPassword?: boolean;
+  locked?: boolean;
 }
 
 export interface StaffProfile {
