@@ -65,6 +65,10 @@ function check(key: string, max: number, windowMs: number): { ok: boolean; remai
 const UNAUTHENTICATED_PATTERNS: Array<string | RegExp> = [
   '/webhook',
   /^\/api\/forms\/[^/]+\/submit$/,
+  // Admin login: per-IP burst throttle (D1 per-account lockout is authoritative; this
+  // is the IP dimension of the IP+account complex — GC-6 / batch F). Slows credential
+  // stuffing from one IP regardless of which login_id is targeted.
+  '/api/auth/login',
 ];
 
 function isUnauthenticatedPath(path: string): boolean {

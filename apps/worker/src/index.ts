@@ -105,6 +105,10 @@ export type Env = {
     ADMIN_ORIGIN?: string;          // Comma-separated admin web origin allowlist for credentialed CORS
     ADMIN_COOKIE_SAMESITE?: string; // Optional override: 'Strict' | 'Lax' | 'None'
     ADMIN_ALLOW_CROSS_SITE?: string; // 'true' opts into SameSite=None cross-site cookies
+    // ID/PASS 認証の切替 flag (batch F / GC-7)。'true' で login フォームの {apiKey} 経路を server-side
+    // 拒否 (Bearer=SDK/MCP は不変)。未設定/false は並行期間 (apiKey login も通る)。wrangler.ks.toml の
+    // 不可侵設定 (FAQ_BOT_ENABLED 等) とは別 env = 混同・不可侵違反を防ぐ。off で即 rollback。
+    PASSWORD_AUTH_REQUIRED?: string;
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
     IG_HARNESS_URL?: string;  // Optional: IG Harness API URL for cross-platform linking
     IG_HARNESS_LINK_SECRET?: string;  // Shared secret for IG Harness link-line webhook
