@@ -69,6 +69,7 @@ const PART_META: Record<PartKind, { Icon: ComponentType<SVGProps<SVGSVGElement>>
   box: { Icon: BoxIcon, label: '箱' },
   icon: { Icon: ImageIcon, label: 'アイコン' },
   richtext: { Icon: BodyTextIcon, label: '飾り文字' },
+  video: { Icon: ImageIcon, label: '動画' }, // hero 専用 (パレット非表示・PART_META 網羅用)
 }
 
 function partSummary(part: BuilderPart): string {
@@ -303,6 +304,24 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
       return setHero(prev, activeCard, { ...c.hero, ...patch })
     })
 
+  // hero video (batch E)。動画は bubble.size=kilo/mega/giga 必須なので追加時に mega に補正。
+  const heroVideo = card && card.hero && card.hero.kind === 'video' ? card.hero : null
+  const handleHeroVideoAdd = () =>
+    setModel((prev) => {
+      let next = setHero(prev, activeCard, { kind: 'video', id: 'hero_' + Math.random().toString(36).slice(2, 8), url: '', previewUrl: '', altUrl: '', aspectRatio: '20:13' })
+      const c = next.cards[activeCard]
+      if (!['kilo', 'mega', 'giga'].includes(c.size ?? '')) {
+        next = { ...next, cards: next.cards.map((cc, i) => (i === activeCard ? { ...cc, size: 'mega' } : cc)) }
+      }
+      return next
+    })
+  const handleHeroVideoChange = (patch: Partial<Extract<BuilderPart, { kind: 'video' }>>) =>
+    setModel((prev) => {
+      const c = prev.cards[activeCard]
+      if (!c || !c.hero || c.hero.kind !== 'video') return prev
+      return setHero(prev, activeCard, { ...c.hero, ...patch })
+    })
+
   // カード操作 (カルーセル / F7)
   const handleDuplicateCard = () => {
     setModel((prev) => {
@@ -436,11 +455,34 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
                 </button>
               )}
 
-              {/* 一番上の大きな画像 (hero / batch C-core)。UI は画像限定。 */}
-              {card?.hero && card.hero.kind !== 'image' ? (
-                <div className="rounded-md border border-gray-200 p-2 bg-white flex items-center justify-between">
-                  <span className="text-[11px] text-gray-500">高度な形式の大きな画像があります（保存時に保持されます）。</span>
-                  <button type="button" onClick={handleHeroRemove} className="text-xs text-red-600 px-2 py-1 hover:bg-red-50 rounded">外す</button>
+              {/* 一番上の大きな画像/動画 (hero / batch C-core + E)。 */}
+              {heroVideo ? (
+                <div className="rounded-md border border-gray-200 p-2 bg-white space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-gray-700">一番上の動画（ヒーロー）</span>
+                    <button type="button" onClick={handleHeroRemove} className="text-xs text-red-600 px-2 py-1 hover:bg-red-50 rounded" aria-label="動画を外す">外す</button>
+                  </div>
+                  <p className="text-[11px] text-gray-500">動画カードは1枚で使います（ほかのカードと横に並べられません）。</p>
+                  <div>
+                    <label className="block text-[11px] text-gray-600 mb-1">動画のリンク（https の .mp4 等）</label>
+                    <input type="text" value={heroVideo.url} onChange={(e) => handleHeroVideoChange({ url: e.target.value })}
+                      className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" placeholder="https://.../movie.mp4" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-gray-600 mb-1">プレビュー画像（再生前に見える絵）</label>
+                    <ImageUploader mode="url" value={heroVideo.previewUrl ? { mode: 'url', url: heroVideo.previewUrl } : null}
+                      onChange={(next) => handleHeroVideoChange({ previewUrl: next && next.mode === 'url' ? next.url : '' })} />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-gray-600 mb-1">代わりの画像（再生できない端末用・必須）</label>
+                    <ImageUploader mode="url" value={heroVideo.altUrl ? { mode: 'url', url: heroVideo.altUrl } : null}
+                      onChange={(next) => handleHeroVideoChange({ altUrl: next && next.mode === 'url' ? next.url : '' })} />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-gray-600 mb-1">縦横比（例: 20:13）</label>
+                    <input type="text" value={heroVideo.aspectRatio ?? ''} onChange={(e) => handleHeroVideoChange({ aspectRatio: e.target.value || undefined })}
+                      className="w-28 border border-gray-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-green-500" placeholder="20:13" />
+                  </div>
                 </div>
               ) : heroImage ? (
                 <div className="rounded-md border border-gray-200 p-2 bg-white space-y-2">
@@ -462,11 +504,22 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
                     ))}
                   </div>
                 </div>
+              ) : card?.hero ? (
+                <div className="rounded-md border border-gray-200 p-2 bg-white flex items-center justify-between">
+                  <span className="text-[11px] text-gray-500">高度な形式の大きな画像があります（保存時に保持されます）。</span>
+                  <button type="button" onClick={handleHeroRemove} className="text-xs text-red-600 px-2 py-1 hover:bg-red-50 rounded">外す</button>
+                </div>
               ) : (
-                <button type="button" onClick={handleHeroAdd}
-                  className="w-full min-h-[40px] border border-dashed border-gray-300 text-gray-600 rounded-md px-3 py-2 text-xs hover:border-green-500 hover:bg-green-50">
-                  ＋ 一番上に大きな画像（ヒーロー）を足す
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={handleHeroAdd}
+                    className="min-h-[40px] border border-dashed border-gray-300 text-gray-600 rounded-md px-3 py-2 text-xs hover:border-green-500 hover:bg-green-50">
+                    ＋ 大きな画像
+                  </button>
+                  <button type="button" onClick={handleHeroVideoAdd}
+                    className="min-h-[40px] border border-dashed border-gray-300 text-gray-600 rounded-md px-3 py-2 text-xs hover:border-green-500 hover:bg-green-50">
+                    ＋ 動画
+                  </button>
+                </div>
               )}
 
               {/* 本体 (body) */}

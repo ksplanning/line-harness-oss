@@ -58,6 +58,9 @@ export function makePart(kind: PartKind): BuilderPart {
     case 'richtext':
       // 語ごとに装飾できる文 (batch D)。最初は 1 区間。
       return { kind: 'richtext', id, runs: [{ text: '文字を入力' }] };
+    case 'video':
+      // hero 動画 (batch E)。パレットからは足さず hero として setHero で使う (exhaustive 用)。
+      return { kind: 'video', id, url: '', previewUrl: '', altUrl: '', aspectRatio: '20:13' };
   }
 }
 

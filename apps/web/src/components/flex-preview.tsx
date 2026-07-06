@@ -34,6 +34,7 @@ interface FlexNode {
   height?: string
   width?: string
   url?: string
+  previewUrl?: string
   aspectRatio?: string
   aspectMode?: string
   offsetTop?: string
@@ -198,6 +199,24 @@ function FlexIcon({ node }: { node: FlexNode }) {
   return <img src={node.url} alt="" style={{ width: s, height: s, objectFit: 'contain' }} />
 }
 
+// batch E: hero 動画。poster にプレビュー画像、再生できないときは altContent 画像を代替表示 (375px 幅は bubble 側)。
+function FlexVideo({ node }: { node: FlexNode }) {
+  const ratio = node.aspectRatio ? node.aspectRatio.replace(':', '/') : '20 / 13'
+  const style: React.CSSProperties = { display: 'block', width: '100%', aspectRatio: ratio, objectFit: 'cover', backgroundColor: '#000' }
+  if (node.url) {
+    return (
+      <video poster={node.previewUrl} controls playsInline style={style}>
+        <source src={node.url} />
+      </video>
+    )
+  }
+  // url 未設定はプレビュー画像 (poster) or altContent を代替表示。
+  const fallbackUrl = node.previewUrl || (node.altContent && node.altContent.url)
+  return fallbackUrl
+    ? <img src={fallbackUrl} alt="" style={style} />
+    : <div style={{ ...style, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '12px' }}>動画（未設定）</div>
+}
+
 function FlexSpacer({ node }: { node: FlexNode }) {
   const h = node.size === 'xs' ? '4px' : node.size === 'sm' ? '8px' : node.size === 'md' ? '16px' : node.size === 'lg' ? '24px' : node.size === 'xl' ? '32px' : '16px'
   return <div style={{ height: h }} />
@@ -261,6 +280,7 @@ function FlexNodeRenderer({ node }: { node: FlexNode }) {
       {node.type === 'image' && <FlexImage node={node} />}
       {node.type === 'icon' && <FlexIcon node={node} />}
       {node.type === 'box' && <FlexBox node={node} />}
+      {node.type === 'video' && <FlexVideo node={node} />}
       {node.type === 'spacer' && <FlexSpacer node={node} />}
       {node.type === 'span' && <span style={{ fontSize: getSize(node.size), color: node.color, fontWeight: node.weight === 'bold' ? 700 : undefined }}>{node.text}</span>}
     </div>

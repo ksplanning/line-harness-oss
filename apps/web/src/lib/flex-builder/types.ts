@@ -123,7 +123,9 @@ export type BuilderPart =
       id: string;
       layout: 'vertical' | 'horizontal' | 'baseline';
       contents: BuilderPart[];
-    } & BoxDeco);
+    } & BoxDeco)
+  // batch E: video (hero 動画)。altUrl = 再生できない環境の代替画像 (altContent)。bubble.size は kilo/mega/giga 必須。
+  | { kind: 'video'; id: string; url: string; previewUrl: string; altUrl: string; aspectRatio?: string };
 
 export type PartKind = BuilderPart['kind'];
 

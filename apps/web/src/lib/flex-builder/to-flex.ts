@@ -143,6 +143,17 @@ function partToNode(part: BuilderPart): FlexNode {
       node.contents = part.runs.map(spanToNode);
       return node;
     }
+    case 'video': {
+      // hero 動画。altContent は再生できない環境の代替画像 (LINE 必須)。並び固定で round-trip 安定。
+      const node: FlexNode = {
+        type: 'video',
+        url: part.url,
+        previewUrl: part.previewUrl,
+        altContent: { type: 'image', url: part.altUrl, size: 'full', aspectMode: 'cover' },
+      };
+      if (part.aspectRatio !== undefined) node.aspectRatio = part.aspectRatio;
+      return node;
+    }
     case 'box': {
       // ネスト可能な box。子部品を再帰変換し、装飾は条件付き emission (未指定は出さない = M-20)。
       const node: FlexNode = {

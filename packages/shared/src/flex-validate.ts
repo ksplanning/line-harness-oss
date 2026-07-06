@@ -36,6 +36,8 @@ import {
   FLEX_BORDER_WIDTH_KEYWORDS,
   FLEX_POSITION,
   DEG_VALUE_RE,
+  FLEX_VIDEO_BUBBLE_SIZE,
+  ASPECT_RATIO_RE,
   HEX_COLOR_RE,
   PX_VALUE_RE,
   PCT_VALUE_RE,
@@ -193,6 +195,23 @@ function walkNodes(node: FlexNode | undefined, depth: number, errors: Validation
     // GC-1 (batch C-core): box の layout/背景/角丸/枠/padding/幅高さ/そろえ/gravity/spacing/flex。
     validateBoxDeco(node, errors);
   }
+  if (node.type === 'video') {
+    // GC-1 (batch E): 動画 url/previewUrl の https、altContent(代替画像) 必須、aspectRatio 形式。
+    if (!(node.url ?? '').startsWith('https://')) {
+      errors.push({ code: 'video_url_not_https', messageJa: '動画のリンクが安全な形式ではありません。もう一度アップロードしてください。' });
+    }
+    if (!(node.previewUrl ?? '').startsWith('https://')) {
+      errors.push({ code: 'video_preview_not_https', messageJa: '動画のプレビュー画像が安全な形式ではありません。もう一度設定してください。' });
+    }
+    const alt = node.altContent;
+    const altUrl = alt && typeof alt === 'object' ? (alt.url ?? '') : '';
+    if (!alt || typeof alt !== 'object' || alt.type !== 'image' || !altUrl.startsWith('https://')) {
+      errors.push({ code: 'video_alt_required', messageJa: '動画が再生できないときの代わりの画像が必要です。設定してください。' });
+    }
+    if (node.aspectRatio !== undefined && !ASPECT_RATIO_RE.test(node.aspectRatio)) {
+      errors.push({ code: 'video_bad_aspect', messageJa: '動画の縦横比の指定が正しくありません（例: 20:13）。' });
+    }
+  }
   if (node.type === 'icon') {
     // GC-1 (batch D): icon の url(https) / size(keyword or px)。
     const url = node.url ?? '';
@@ -283,6 +302,10 @@ function validateBubble(bubble: FlexBubble, cardIndex: number, errors: Validatio
   if (bubble.size !== undefined && !inSet(bubble.size, FLEX_BUBBLE_SIZE)) {
     errors.push({ code: 'bubble_bad_size', messageJa: 'カードの大きさの指定が正しくありません。選び直してください。', cardIndex });
   }
+  // GC-1 (batch E): video hero を持つ bubble は size が kilo/mega/giga 必須 (公式要件)。
+  if (bubble.hero?.type === 'video' && !inSet(bubble.size, FLEX_VIDEO_BUBBLE_SIZE)) {
+    errors.push({ code: 'video_bubble_size', messageJa: '動画カードは大きさを「中・大・特大」から選んでください。', cardIndex });
+  }
   const bodyContents = bubble.body?.contents ?? [];
   const heroPresent = Boolean(bubble.hero);
   if (bodyContents.length === 0 && !heroPresent) {
@@ -314,6 +337,10 @@ export function validateFlex(contents: FlexContents, opts: ValidateOptions = {})
         code: 'carousel_too_many',
         messageJa: `カードは${MAX_CAROUSEL_BUBBLES}枚までです。多いカードを減らしてください。`,
       });
+    }
+    // GC-1 (batch E): 動画カードは 1 枚で使う (carousel に video hero を入れられない / 公式要件)。
+    if (contents.contents.some((b) => b.hero?.type === 'video')) {
+      errors.push({ code: 'video_in_carousel', messageJa: '動画カードは1枚だけで使います。ほかのカードと横に並べられません。' });
     }
   }
 

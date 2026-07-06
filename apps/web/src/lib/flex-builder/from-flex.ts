@@ -53,6 +53,8 @@ interface RawNode {
   offsetStart?: string;
   offsetEnd?: string;
   background?: unknown;
+  previewUrl?: string;
+  altContent?: unknown;
   [key: string]: unknown;
 }
 
@@ -77,6 +79,7 @@ const ALLOWED_KEYS: Record<string, Set<string>> = {
   separator: new Set(['type', 'color', 'margin']),
   spacer: new Set(['type', 'size']),
   icon: new Set(['type', 'url', 'size', 'margin']), // batch D: baseline 装飾
+  video: new Set(['type', 'url', 'previewUrl', 'altContent', 'aspectRatio']), // batch E: hero 動画
 
   // batch C-core: box (ネスト/横並び/装飾)。ここに無いキー(action/background gradient/position/offset 等)を
   // 持つ box は lossless に保持できない → null (上級者 JSON へ)。background/position/offset は batch D で追加。
@@ -94,6 +97,9 @@ const ALLOWED_ACTION_KEYS = new Set(['type', 'label', 'uri', 'text', 'data', 'di
 // batch D richtext: span node の許容キー / richtext の text レベル許容キー (lossless-only)。
 const ALLOWED_SPAN_KEYS = new Set(['type', 'text', 'color', 'size', 'weight', 'decoration']);
 const RICHTEXT_TEXT_KEYS = new Set(['type', 'contents', 'wrap', 'size', 'align', 'margin']);
+
+// batch E video: altContent(image) の許容キー (to-flex が出す形と一致)。
+const ALLOWED_VIDEO_ALT_KEYS = new Set(['type', 'url', 'size', 'aspectMode']);
 
 /** node の全キーが許容集合内か (GC-2)。1 つでも外れたら false = 逆変換不能。 */
 function hasOnlyAllowedKeys(node: RawNode, type: string): boolean {
@@ -230,6 +236,18 @@ function nodeToPart(node: RawNode): BuilderPart | null {
       const part: Record<string, unknown> = { kind: 'icon', id, url: node.url };
       if (typeof node.size === 'string') part.size = node.size;
       if (typeof node.margin === 'string') part.margin = node.margin;
+      return part as BuilderPart;
+    }
+    case 'video': {
+      // batch E: hero 動画。altContent は image のみ対応 (box altContent は上級者 JSON へ / GC-2)。
+      if (typeof node.url !== 'string' || typeof node.previewUrl !== 'string') return null;
+      const alt = node.altContent as RawNode | undefined;
+      if (!alt || typeof alt !== 'object' || alt.type !== 'image' || typeof alt.url !== 'string') return null;
+      for (const k of Object.keys(alt)) {
+        if (!ALLOWED_VIDEO_ALT_KEYS.has(k)) return null;
+      }
+      const part: Record<string, unknown> = { kind: 'video', id, url: node.url, previewUrl: node.previewUrl, altUrl: alt.url };
+      if (typeof node.aspectRatio === 'string') part.aspectRatio = node.aspectRatio;
       return part as BuilderPart;
     }
     case 'box': {

@@ -71,6 +71,13 @@ export const FLEX_POSITION = ['relative', 'absolute'] as const;
 /** グラデーション角度 '90deg' 等 (batch D)。 */
 export const DEG_VALUE_RE = /^\d+(\.\d+)?deg$/;
 
+// ---- batch E (video hero) ----
+
+/** video hero を持つ bubble に許される size (公式要件: kilo/mega/giga のみ)。 */
+export const FLEX_VIDEO_BUBBLE_SIZE = ['kilo', 'mega', 'giga'] as const;
+/** aspectRatio の形式 '20:13' 等。 */
+export const ASPECT_RATIO_RE = /^\d+:\d+$/;
+
 /** #RRGGBB または #RRGGBBAA。 */
 export const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
 /** '10px' 等の px 値。 */

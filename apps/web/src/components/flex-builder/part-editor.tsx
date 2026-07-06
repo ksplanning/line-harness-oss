@@ -421,6 +421,9 @@ export default function PartEditor({ part, onChange }: Props) {
     )
   }
 
+  // video は hero 専用でモーダル側が編集する (PartEditor では扱わない = exhaustive 用ガード)。
+  if (part.kind !== 'button') return null
+
   // button
   return (
     <div className="space-y-3">

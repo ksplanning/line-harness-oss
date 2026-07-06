@@ -91,6 +91,9 @@ export interface FlexNode {
   offsetStart?: string;
   offsetEnd?: string;
   background?: FlexBackground; // 線形グラデーション背景
+  // batch E: video (hero 動画)。
+  previewUrl?: string; // 動画のプレビュー画像
+  altContent?: FlexNode; // 再生できない環境の代替 (image/box)
 }
 
 /** box の背景 (現状は線形グラデーションのみ / batch D)。 */

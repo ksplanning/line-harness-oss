@@ -10,6 +10,24 @@ import type { BuilderModel } from '@/lib/flex-builder/types'
 
 afterEach(() => cleanup())
 
+describe('batch E FlexPreview: hero video 描画', () => {
+  it('hero video が <video> (poster=previewUrl) で描画される', () => {
+    const m: BuilderModel = {
+      cards: [{
+        id: 'c', size: 'mega',
+        hero: { kind: 'video', id: 'v', url: 'https://x/v.mp4', previewUrl: 'https://x/p.png', altUrl: 'https://x/alt.png', aspectRatio: '20:13' },
+        parts: [{ kind: 'body', id: 'b', text: '本文' }],
+      }],
+    }
+    const { container } = render(<FlexPreview content={JSON.stringify(buildModelToFlex(m))} />)
+    const video = container.querySelector('video')
+    expect(video).not.toBeNull()
+    expect(video?.getAttribute('poster')).toBe('https://x/p.png')
+    expect(container.querySelector('source')?.getAttribute('src')).toBe('https://x/v.mp4')
+    expect(container.textContent).toContain('本文')
+  })
+})
+
 describe('batch D FlexPreview: richtext (span) 描画', () => {
   it('span 群が語ごとに色つきで描画される', () => {
     const m: BuilderModel = {
