@@ -55,6 +55,27 @@ describe('T-C4 broadcast buildMessage: new type dispatch (G4/G13/G14)', () => {
     expect(m.actions).toHaveLength(1);
   });
 
+  test('T-A2(d): imagemap area 座標は LINE payload に素通しされる (ドラッグ/数値 単一正典の送信保証)', () => {
+    // web の buildMediaJson が出力する形と byte 一致する content。ドラッグエディタも数値入力も
+    // 同一 s.regions → 同一 JSON を生むため、worker が area を無変換で送ることが round-trip の要。
+    const content = JSON.stringify({
+      baseUrl: 'https://cdn.example.com/im',
+      altText: 'リッチメッセージ',
+      baseSize: { width: 1040, height: 520 },
+      actions: [
+        { type: 'uri', linkUri: 'https://x/lp', area: { x: 0, y: 0, width: 520, height: 520 } },
+        { type: 'message', text: 'こんにちは', area: { x: 520, y: 0, width: 520, height: 520 } },
+      ],
+    });
+    const m = buildBroadcast('imagemap', content) as {
+      baseSize: { width: number; height: number };
+      actions: Array<{ type: string; area: { x: number; y: number; width: number; height: number } }>;
+    };
+    expect(m.baseSize).toEqual({ width: 1040, height: 520 });
+    expect(m.actions[0].area).toEqual({ x: 0, y: 0, width: 520, height: 520 });
+    expect(m.actions[1].area).toEqual({ x: 520, y: 0, width: 520, height: 520 });
+  });
+
   test('richvideo → imagemap Message object carrying a video block', () => {
     const m = buildBroadcast('richvideo', validRichVideo) as { type: string; video?: { originalContentUrl: string; externalLink?: { label: string } } };
     expect(m.type).toBe('imagemap');
