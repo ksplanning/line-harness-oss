@@ -25,6 +25,9 @@ import {
   countStaffByRoleId,
   getStaffByRoleId,
   reassignStaffRole,
+  updateStaffMemberOwnerSafe,
+  deleteStaffMemberOwnerSafe,
+  countActiveStaffByRole,
 } from './index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -159,5 +162,57 @@ describe('staff role_id 割当 (回帰ゼロ)', () => {
     await reassignStaffRole(DB, r2.id, null);
     expect(await countStaffByRoleId(DB, r2.id)).toBe(0);
     expect((await getStaffById(DB, s1.id))!.role_id).toBeNull();
+  });
+});
+
+describe('last-owner 原子ガード (M-5 / TOCTOU 無し)', () => {
+  test('最後の active owner の降格は applied=false (単一 UPDATE のガードで弾く)', async () => {
+    const o = await createStaffMember(DB, { name: 'only', role: 'owner' });
+    const r = await updateStaffMemberOwnerSafe(DB, o.id, { role: 'staff' });
+    expect(r.applied).toBe(false);
+    expect((await getStaffById(DB, o.id))!.role).toBe('owner'); // 変わっていない
+  });
+
+  test('最後の active owner の無効化も applied=false', async () => {
+    const o = await createStaffMember(DB, { name: 'only', role: 'owner' });
+    const r = await updateStaffMemberOwnerSafe(DB, o.id, { is_active: 0 });
+    expect(r.applied).toBe(false);
+    expect((await getStaffById(DB, o.id))!.is_active).toBe(1);
+  });
+
+  test('owner が 2 人なら片方の降格は applied=true (過剰ブロックなし)', async () => {
+    const o1 = await createStaffMember(DB, { name: 'o1', role: 'owner' });
+    await createStaffMember(DB, { name: 'o2', role: 'owner' });
+    const r = await updateStaffMemberOwnerSafe(DB, o1.id, { role: 'staff' });
+    expect(r.applied).toBe(true);
+    expect(r.row!.role).toBe('staff');
+  });
+
+  test('2 owner を「逐次」降格しても最低 1 owner を維持 (直列適用で後発が弾かれる)', async () => {
+    const o1 = await createStaffMember(DB, { name: 'o1', role: 'owner' });
+    const o2 = await createStaffMember(DB, { name: 'o2', role: 'owner' });
+    const a = await updateStaffMemberOwnerSafe(DB, o1.id, { role: 'staff' });
+    const b = await updateStaffMemberOwnerSafe(DB, o2.id, { role: 'staff' });
+    expect(a.applied).toBe(true);
+    expect(b.applied).toBe(false); // 後発は残り 1 owner を守って弾かれる
+    expect(await countActiveStaffByRole(DB, 'owner')).toBe(1);
+  });
+
+  test('非 owner の更新はガードに影響されず適用される', async () => {
+    await createStaffMember(DB, { name: 'o1', role: 'owner' });
+    const s = await createStaffMember(DB, { name: 's', role: 'staff' });
+    const r = await updateStaffMemberOwnerSafe(DB, s.id, { name: '改名' });
+    expect(r.applied).toBe(true);
+    expect(r.row!.name).toBe('改名');
+  });
+
+  test('最後の active owner の削除は applied=false / 2 人なら 1 人削除は applied=true', async () => {
+    const o1 = await createStaffMember(DB, { name: 'o1', role: 'owner' });
+    expect((await deleteStaffMemberOwnerSafe(DB, o1.id)).applied).toBe(false);
+    expect(await getStaffById(DB, o1.id)).not.toBeNull();
+
+    const o2 = await createStaffMember(DB, { name: 'o2', role: 'owner' });
+    expect((await deleteStaffMemberOwnerSafe(DB, o2.id)).applied).toBe(true);
+    expect(await countActiveStaffByRole(DB, 'owner')).toBe(1);
   });
 });

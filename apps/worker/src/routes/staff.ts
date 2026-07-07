@@ -3,10 +3,9 @@ import {
   getStaffMembers,
   getStaffById,
   createStaffMember,
-  updateStaffMember,
-  deleteStaffMember,
+  deleteStaffMemberOwnerSafe,
+  updateStaffMemberOwnerSafe,
   regenerateStaffApiKey,
-  countActiveStaffByRole,
   setStaffLoginId,
   setStaffPassword,
   clearStaffLoginSecurity,
@@ -214,19 +213,8 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       }
     }
 
-    if (target.role === 'owner' && target.is_active === 1) {
-      const willLoseOwner =
-        (body.role !== undefined && body.role !== 'owner') ||
-        body.isActive === false;
-      if (willLoseOwner) {
-        const ownerCount = await countActiveStaffByRole(c.env.DB, 'owner');
-        if (ownerCount <= 1) {
-          return c.json({ success: false, error: 'オーナーは最低1人必要です' }, 400);
-        }
-      }
-    }
-
-    const updated = await updateStaffMember(c.env.DB, id, {
+    // 最後の active owner を降格/無効化しない (M-5: count→write の TOCTOU を排し単一原子 UPDATE のガードで判定)。
+    const { applied, row: updated } = await updateStaffMemberOwnerSafe(c.env.DB, id, {
       name: body.name,
       email: body.email,
       role: body.role as 'owner' | 'admin' | 'staff' | undefined,
@@ -235,6 +223,10 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       ...('roleId' in body ? { role_id: body.roleId ?? null } : {}),
     });
 
+    if (!applied) {
+      // ガードが弾いた = 最後の active owner を守った (byte-identical: 従来と同じ 400 + 文言)。
+      return c.json({ success: false, error: 'オーナーは最低1人必要です' }, 400);
+    }
     if (!updated) {
       return c.json({ success: false, error: 'Staff member not found' }, 404);
     }
@@ -261,14 +253,11 @@ staff.delete('/api/staff/:id', requireRole('owner'), async (c) => {
       return c.json({ success: false, error: 'Staff member not found' }, 404);
     }
 
-    if (target.role === 'owner' && target.is_active === 1) {
-      const ownerCount = await countActiveStaffByRole(c.env.DB, 'owner');
-      if (ownerCount <= 1) {
-        return c.json({ success: false, error: 'オーナーは最低1人必要です' }, 400);
-      }
+    // 最後の active owner を削除しない (M-5: count→delete の TOCTOU を排し単一原子 DELETE のガードで判定)。
+    const { applied } = await deleteStaffMemberOwnerSafe(c.env.DB, id);
+    if (!applied) {
+      return c.json({ success: false, error: 'オーナーは最低1人必要です' }, 400);
     }
-
-    await deleteStaffMember(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/staff/:id error:', err);

@@ -125,6 +125,65 @@ export async function deleteStaffMember(db: D1Database, id: string): Promise<voi
   await db.prepare('DELETE FROM staff_members WHERE id = ?').bind(id).run();
 }
 
+/**
+ * owner を降格/無効化する更新を「最後の active owner を 0 にしない」ガード付きで **原子適用** する (M-5)。
+ * count→write の TOCTOU を排除するため、owner 消失条件をすべて 1 本の UPDATE の WHERE に畳み込む。
+ *   applied=false = 最後の active owner を守るためガードが変更を弾いた (= 何も変えていない)。
+ * D1 は書き込みを直列適用するので、2 owner を同時に降格しても後発は subquery が 0 を返して弾かれる。
+ */
+export async function updateStaffMemberOwnerSafe(
+  db: D1Database,
+  id: string,
+  input: UpdateStaffInput,
+): Promise<{ applied: boolean; row: StaffMember | null }> {
+  const now = jstNow();
+  const sets: string[] = ['updated_at = ?'];
+  const values: (string | number | null)[] = [now];
+  if (input.name !== undefined) { sets.push('name = ?'); values.push(input.name); }
+  if (input.email !== undefined) { sets.push('email = ?'); values.push(input.email ?? null); }
+  if (input.role !== undefined) { sets.push('role = ?'); values.push(input.role); }
+  if (input.is_active !== undefined) { sets.push('is_active = ?'); values.push(input.is_active); }
+  if ('role_id' in input) { sets.push('role_id = ?'); values.push(input.role_id ?? null); }
+
+  const deactivating = input.is_active === 0 ? 1 : 0;
+  const toNonOwner = input.role !== undefined && input.role !== 'owner' ? 1 : 0;
+
+  // この行が現在 active owner で、かつ この変更が owner 性を奪い (無効化 or 非 owner 化)、かつ
+  // 他に active owner が居ない場合のみ弾く (それ以外は適用)。すべて 1 文で原子評価。
+  const sql =
+    `UPDATE staff_members SET ${sets.join(', ')} WHERE id = ? AND NOT (
+       role = 'owner' AND is_active = 1
+       AND (? = 1 OR ? = 1)
+       AND (SELECT COUNT(*) FROM staff_members WHERE role = 'owner' AND is_active = 1 AND id != ?) = 0
+     )`;
+  const res = await db
+    .prepare(sql)
+    .bind(...values, id, deactivating, toNonOwner, id)
+    .run();
+  const row = await db.prepare('SELECT * FROM staff_members WHERE id = ?').bind(id).first<StaffMember>();
+  return { applied: res.meta.changes > 0, row };
+}
+
+/**
+ * staff を「最後の active owner を 0 にしない」ガード付きで **原子削除** する (M-5)。
+ * applied=false = 最後の active owner を守って削除を弾いた。呼び出し側は存在確認/自己削除確認を先に済ませる。
+ */
+export async function deleteStaffMemberOwnerSafe(
+  db: D1Database,
+  id: string,
+): Promise<{ applied: boolean }> {
+  const res = await db
+    .prepare(
+      `DELETE FROM staff_members WHERE id = ? AND NOT (
+         role = 'owner' AND is_active = 1
+         AND (SELECT COUNT(*) FROM staff_members WHERE role = 'owner' AND is_active = 1 AND id != ?) = 0
+       )`,
+    )
+    .bind(id, id)
+    .run();
+  return { applied: res.meta.changes > 0 };
+}
+
 export async function regenerateStaffApiKey(db: D1Database, id: string): Promise<string> {
   const newKey = generateApiKey();
   const now = jstNow();
