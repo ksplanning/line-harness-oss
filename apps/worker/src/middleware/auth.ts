@@ -88,6 +88,9 @@ export type AuthenticatedStaff = {
   id: string;
   name: string;
   role: 'owner' | 'admin' | 'staff';
+  // カスタムロール (G64)。custom role 割当時のみ入る。env-owner / built-in は null。
+  // permissionMiddleware がこの値で custom role の機能単位権限を解決する。
+  roleId?: string | null;
 };
 
 /**
@@ -103,12 +106,13 @@ export async function authenticateApiToken(
 
   const staff = await getStaffByApiKey(c.env.DB, token);
   if (staff) {
-    return { id: staff.id, name: staff.name, role: staff.role };
+    // roleId (G64): staff row の role_id をそのまま持ち回る。1 回の認証クエリで取れるので追加 DB 読みなし。
+    return { id: staff.id, name: staff.name, role: staff.role, roleId: staff.role_id ?? null };
   }
 
   // Fallback: env API_KEY acts as owner (current rotation slot)
   if (token === c.env.API_KEY) {
-    return { id: 'env-owner', name: 'Owner', role: 'owner' };
+    return { id: 'env-owner', name: 'Owner', role: 'owner', roleId: null };
   }
 
   // Legacy fallback: LEGACY_API_KEY accepted during rotation grace period.
@@ -122,7 +126,7 @@ export async function authenticateApiToken(
     token === c.env.LEGACY_API_KEY
   ) {
     console.log('[auth] accept_via=LEGACY_API_KEY');
-    return { id: 'env-owner', name: 'Owner', role: 'owner' };
+    return { id: 'env-owner', name: 'Owner', role: 'owner', roleId: null };
   }
 
   return null;

@@ -24,6 +24,7 @@ import { sendEventBookingNotification } from './services/event-booking-notifier.
 import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { authMiddleware } from './middleware/auth.js';
+import { permissionMiddleware } from './middleware/permission-middleware.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
@@ -134,11 +135,12 @@ export type Env = {
     LIFF_PUBLIC_URL?: string;
   };
   Variables: {
-    staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
+    // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
+    staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff'; roleId?: string | null };
   };
 };
 
-const app = new Hono<Env>();
+export const app = new Hono<Env>();
 
 // CORS — credentialed cookie auth cannot use a wildcard origin. Reflect only
 // same-origin requests and origins on the ADMIN_ORIGIN allowlist; everything
@@ -159,6 +161,10 @@ app.use('*', rateLimitMiddleware);
 
 // Auth middleware — skips /webhook and /docs automatically
 app.use('*', authMiddleware);
+
+// Permission middleware (G64) — runs right after auth so 全 /api route を 1 点で gate する。
+// built-in role は byte-identical (全許可) / custom role のみ機能単位 ON/OFF を enforce する。
+app.use('*', permissionMiddleware);
 
 // Mount route groups — MVP & Round 2
 app.route('/', webhook);
