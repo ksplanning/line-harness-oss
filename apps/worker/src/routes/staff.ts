@@ -199,6 +199,21 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
     if (!target) {
       return c.json({ success: false, error: 'Staff member not found' }, 404);
     }
+
+    // 自己締め出し防止 (self-lock / §5 / T-C2)。実行者 (owner) が自分自身のオーナー権限を外す変更を拒否。
+    // 「自分の管理権限は自分では外せない — 別のオーナーに外してもらう」という安全パターン。
+    const executor = c.get('staff');
+    if (id === executor.id && target.role === 'owner') {
+      const selfLosesOwner =
+        (body.role !== undefined && body.role !== 'owner') || body.isActive === false;
+      if (selfLosesOwner) {
+        return c.json(
+          { success: false, error: '自分自身のオーナー権限は外せません（別のオーナーに変更を依頼してください）' },
+          403,
+        );
+      }
+    }
+
     if (target.role === 'owner' && target.is_active === 1) {
       const willLoseOwner =
         (body.role !== undefined && body.role !== 'owner') ||

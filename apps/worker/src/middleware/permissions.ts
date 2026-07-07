@@ -34,8 +34,10 @@ interface StaffLike {
 
 /**
  * staff の実効権限を解決する。
- *   - env-owner or role_id NULL → BUILTIN_ROLE_PRESETS[role] (owner 全権 / break-glass 保全 / 回帰ゼロ)
- *   - role_id あり (custom role) → role_permissions の allowed=1 のみ許可。**行が無い feature は deny**
+ *   - env-owner / role='owner' / role_id NULL → BUILTIN_ROLE_PRESETS[role] (全権 / break-glass 保全 / 回帰ゼロ)
+ *   - **owner は role_id (custom role) があっても常に全 allow** (owner 自己締め出し防止 / §5 / T-C1)。
+ *     owner に制限 custom role を割り当てても staff_admin は剥奪されない。
+ *   - owner 以外 + role_id あり (custom role) → role_permissions の allowed=1 のみ許可。**行が無い feature は deny**
  *     (base_role へ fallback しない = 厳格 allowlist / Codex CRITICAL-1)。後から追加された新 feature も
  *     custom role には deny (fail-closed = 安全側)。
  */
@@ -43,7 +45,7 @@ export async function resolvePermissions(
   db: D1Database,
   staff: StaffLike,
 ): Promise<ResolvedPermissions> {
-  if (staff.id === 'env-owner' || !staff.roleId) {
+  if (staff.id === 'env-owner' || staff.role === 'owner' || !staff.roleId) {
     const preset = BUILTIN_ROLE_PRESETS[staff.role] ?? BUILTIN_ROLE_PRESETS.staff;
     return {
       isBuiltin: true,
