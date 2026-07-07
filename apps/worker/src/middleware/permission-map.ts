@@ -32,6 +32,18 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('liff'), feature: null },              // LIFF 公開
   { test: prefix('rich-menu-images'), feature: null },  // 公開画像 proxy
 
+  // ── 機微 sub-route は親 prefix より前に真の feature へ (reviewer Round1 H-1/H-2/H-3/M-1/M-3) ──
+  // ⚠️ specific-first: これらは prefix('friends')/prefix('accounts')/prefix('account-settings') より上に置き、
+  //    親 prefix の feature (friend/account/broadcast_settings) に飲まれないようにする。
+  // 個別友だちへの送信/会話履歴 = チャット対応 (friend 管理では実顧客に送信させない / 誤送信防止 = H-1)
+  { test: /^\/api\/friends\/[^/]+\/messages(?:\/|$)/, feature: 'chat' },
+  // 個別リッチメニュー 取得/紐付け/解除 = リッチメニュー (H-2)
+  { test: /^\/api\/friends\/[^/]+\/rich-menu(?:\/|$)/, feature: 'rich_menu' },
+  // 個別友だちスコア = 分析 (M-1)
+  { test: /^\/api\/friends\/[^/]+\/score(?:\/|$)/, feature: 'analytics' },
+  // FAQ bot 設定 (account-settings prefix だが FAQ 機能 / M-3)
+  { test: /^\/api\/account-settings\/faq-bot(?:\/|$)/, feature: 'faq' },
+
   // ── スタッフ・ロール管理 (staff_admin) ──
   { test: prefix('staff'), feature: 'staff_admin' },
   { test: prefix('roles'), feature: 'staff_admin' }, // ロール CRUD (owner requireRole でも二重 gate)
@@ -51,9 +63,10 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('rich-menu-groups'), feature: 'rich_menu' },
   { test: prefix('rich-menus'), feature: 'rich_menu' },
 
-  // ── 予約 (booking) — reminders も予約領域 ──
+  // ── 予約 (booking) — reminders / friend-reminders も予約領域 ──
   { test: prefix('booking'), feature: 'booking' },
   { test: prefix('reminders'), feature: 'booking' },
+  { test: prefix('friend-reminders'), feature: 'booking' }, // M-2: friend でなく booking
 
   // ── イベント (event) ──
   { test: prefix('events'), feature: 'event' },
@@ -92,7 +105,9 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('traffic-pools'), feature: 'account' },
   { test: prefix('ad-platforms'), feature: 'account' },
   { test: prefix('webhooks'), feature: 'account' },
-  { test: prefix('accounts'), feature: 'account' }, // /api/accounts/:id/health 等
+  // H-3: /api/accounts/* は health.ts のアカウント健全性/移行 (状態変更含む) のみ = システム更新。
+  //      アカウント設定 (LINE 連携) は /api/line-accounts (account) 側なので混同しない。
+  { test: prefix('accounts'), feature: 'system_update' },
 
   // ── 連携 (integration) / システム更新 (system_update) ──
   { test: prefix('integrations'), feature: 'integration' },
@@ -107,7 +122,7 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('canned-responses'), feature: 'chat' },
 
   // ── 友だち管理 (friend) — users-grouped を users より前に ──
-  { test: prefix('friend-reminders'), feature: 'friend' },
+  // (friend-reminders は booking / friends の messages・rich-menu・score は上の specific-first で除外済)
   { test: prefix('friends'), feature: 'friend' },
   { test: prefix('tags'), feature: 'friend' },
   { test: prefix('users-grouped'), feature: 'friend' },

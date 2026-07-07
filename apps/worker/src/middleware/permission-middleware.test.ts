@@ -67,7 +67,17 @@ function app() {
   a.get('/api/broadcasts/probe', (c) => c.json({ ok: 'broadcast' }));
   a.get('/api/staff/me', (c) => c.json({ ok: 'me' })); // null = 常に許可
   a.get('/api/totally-made-up-xyz/probe', (c) => c.json({ ok: 'unmapped' })); // 未マップ
+  // 機微 sub-route の probe (reviewer Round1 H-1/H-2/M-1 の enforcement 固定)
+  a.post('/api/friends/:id/messages', (c) => c.json({ ok: 'send' })); // 実送信路 = chat
+  a.get('/api/friends/:id', (c) => c.json({ ok: 'friend-detail' })); // = friend
+  a.post('/api/friends/:id/rich-menu', (c) => c.json({ ok: 'rmlink' })); // = rich_menu
   return a;
+}
+
+function post(path: string, apiKey?: string) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  return app().request(path, { method: 'POST', headers, body: '{}' }, env());
 }
 
 function get(path: string, apiKey?: string) {
@@ -114,6 +124,39 @@ describe('custom role の API 直叩き (failure_observable #1)', () => {
   test('custom role の未マップ path は deny (fail-closed / T-A4)', async () => {
     const key = await seedChatOnlyStaff();
     expect((await get('/api/totally-made-up-xyz/probe', key)).status).toBe(403);
+  });
+});
+
+describe('送信境界 (reviewer Round1 H-1/H-2 / friend 管理では送信・rich_menu へ到達させない)', () => {
+  /** friend のみ許可 (chat/rich_menu は false) の custom role。 */
+  async function seedFriendOnlyStaff(): Promise<string> {
+    const role = await createRole(DB, { name: '友だち管理のみ' });
+    await setRolePermissions(DB, role.id, [
+      { feature_key: 'friend', allowed: true },
+      { feature_key: 'chat', allowed: false },
+      { feature_key: 'rich_menu', allowed: false },
+    ]);
+    const staff = await createStaffMember(DB, { name: '受付', role: 'staff' });
+    await setStaffRoleId(DB, staff.id, role.id);
+    return staff.api_key;
+  }
+
+  test('H-1: friend-only role は POST /api/friends/:id/messages で 403 (実顧客送信を阻止)', async () => {
+    const key = await seedFriendOnlyStaff();
+    // friend 詳細 (GET /api/friends/:id) は friend feature なので到達できる
+    expect((await get('/api/friends/f1', key)).status).toBe(200);
+    // だが送信 (POST messages = chat feature) は 403
+    expect((await post('/api/friends/f1/messages', key)).status).toBe(403);
+  });
+
+  test('H-2: friend-only role は個別リッチメニュー紐付けで 403', async () => {
+    const key = await seedFriendOnlyStaff();
+    expect((await post('/api/friends/f1/rich-menu', key)).status).toBe(403);
+  });
+
+  test('chat 許可 role は POST /api/friends/:id/messages で送信到達 (200)', async () => {
+    const key = await seedChatOnlyStaff(); // chat=true, friend=true, broadcast=false
+    expect((await post('/api/friends/f1/messages', key)).status).toBe(200);
   });
 });
 

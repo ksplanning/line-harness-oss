@@ -51,7 +51,8 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/api/message-templates')).toBe('template');
     expect(mapPathToFeature('/api/templates')).toBe('template');
     expect(mapPathToFeature('/api/account-settings/test-recipients')).toBe('broadcast_settings');
-    expect(mapPathToFeature('/api/accounts/x/health')).toBe('account');
+    // H-3: /api/accounts/* は health.ts のシステム操作 = system_update (旧 account から是正)
+    expect(mapPathToFeature('/api/accounts/x/health')).toBe('system_update');
   });
 
   test('代表 feature の対応', () => {
@@ -76,5 +77,35 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
 
   test('本当に存在しない /api path は undefined (未マップ)', () => {
     expect(mapPathToFeature('/api/totally-made-up-xyz')).toBeUndefined();
+  });
+});
+
+describe('機微 sub-route の意味的正しさ (reviewer Round1 再発防止 / undefined=0 だけでは不十分)', () => {
+  // 親 prefix と別 feature に属する sub-route を「意図した feature」に明示 assert (今回の穴を test で固定)。
+  test.each([
+    // H-1: 実顧客へ送信 = チャット (friend 管理では送信させない)
+    ['/api/friends/abc/messages', 'chat'],
+    // H-2: 個別リッチメニュー = rich_menu
+    ['/api/friends/abc/rich-menu', 'rich_menu'],
+    // M-1: 個別スコア = analytics
+    ['/api/friends/abc/score', 'analytics'],
+    // 親 friends は friend のまま (list/tag/metadata)
+    ['/api/friends/abc', 'friend'],
+    ['/api/friends/abc/tags', 'friend'],
+    ['/api/friends/abc/metadata', 'friend'],
+    // H-3: アカウント健全性/移行 (状態変更) = system_update
+    ['/api/accounts/abc/health', 'system_update'],
+    ['/api/accounts/abc/migrate', 'system_update'],
+    ['/api/accounts/migrations', 'system_update'],
+    ['/api/accounts/migrations/xyz', 'system_update'],
+    // M-2: friend-reminders = booking
+    ['/api/friend-reminders/abc', 'booking'],
+    // M-3: FAQ bot 設定 = faq / account-settings 本体は broadcast_settings のまま
+    ['/api/account-settings/faq-bot', 'faq'],
+    ['/api/account-settings/test-recipients', 'broadcast_settings'],
+    // 送信の正規ルートは broadcast のまま (回帰確認)
+    ['/api/broadcasts/abc', 'broadcast'],
+  ])('%s は feature=%s', (path, feature) => {
+    expect(mapPathToFeature(path)).toBe(feature);
   });
 });
