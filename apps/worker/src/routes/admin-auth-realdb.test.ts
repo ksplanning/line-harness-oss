@@ -104,6 +104,22 @@ describe('Bug2 real-SQLite: ID/PASS login エンドポイント', () => {
     expect(res.status).toBe(200);
   });
 
+  test('旧 iterations(210k) で保存された既存行も検証できる (保存 iterations を使う前方互換 / P0)', async () => {
+    const now = jstNow();
+    raw.prepare(
+      `INSERT INTO staff_members (id, name, email, role, api_key, is_active, created_at, updated_at)
+       VALUES ('legacy-1','Legacy',NULL,'owner','lh_legacykey',1,?,?)`,
+    ).run(now, now);
+    await setStaffLoginId(DB, 'legacy-1', 'legacy-owner');
+    // わざと旧回数 210k で保存 (現行既定 100k とは異なる = 保存値が使われる証拠になる)。
+    await setStaffPassword(DB, 'legacy-1', await hashPassword(PW, 210_000));
+    const stored = raw.prepare(`SELECT password_iterations FROM staff_members WHERE id='legacy-1'`).get() as { password_iterations: number };
+    expect(stored.password_iterations).toBe(210_000);
+    // 保存回数で検証されるのでログイン成功 (verify が定数 100k を使っていたら失敗するはず)。
+    const res = await login({ loginId: 'legacy-owner', password: PW });
+    expect(res.status).toBe(200);
+  });
+
   test('誤パスワード → 401 + 汎用文言 (500 でなく) — real SQL 経路', async () => {
     await seedOwnerWithPassword();
     const res = await login({ loginId: 'owner-ks', password: 'WRONG' });

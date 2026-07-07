@@ -17,7 +17,7 @@ import {
   clearStaffLoginSecurity,
   isStaffLocked,
 } from '@line-crm/db';
-import { verifyPassword } from '../utils/password.js';
+import { verifyPassword, PBKDF2_ITERATIONS } from '../utils/password.js';
 import { computeLockMinutes, lockedUntilFromNow } from '../services/login-lockout.js';
 
 export const adminAuth = new Hono<Env>();
@@ -37,7 +37,8 @@ const DUMMY_PW_RECORD = {
   password_hash: '0'.repeat(64),
   password_salt: '0'.repeat(32),
   password_algo: 'pbkdf2-sha256',
-  password_iterations: 210_000,
+  // Workers 上限内 (dummy verify も deriveBits を回すので >100k だと not-found 経路が本番 500 になる)。
+  password_iterations: PBKDF2_ITERATIONS,
 };
 
 /**
@@ -86,7 +87,7 @@ adminAuth.post('/api/auth/login', async (c) => {
       password_hash: member.password_hash,
       password_salt: member.password_salt ?? '',
       password_algo: member.password_algo ?? 'pbkdf2-sha256',
-      password_iterations: member.password_iterations ?? 210_000,
+      password_iterations: member.password_iterations ?? PBKDF2_ITERATIONS,
     });
 
     if (!ok) {
