@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation'
 import { useAccount } from '@/contexts/account-context'
 import type { AccountWithStats } from '@/contexts/account-context'
 import { countryFlag } from '@/lib/country-flag'
+import { NAV_FEATURE } from '@/lib/nav-permissions'
 
 const appVersion = process.env.APP_VERSION || '0.0.0'
 const appCommitSha = process.env.APP_COMMIT_SHA || 'local'
@@ -85,47 +86,7 @@ const menuSections = [
   },
 ]
 
-// nav href → feature_key (G64)。custom role の人はここに載る feature が許可されていない項目を隠す。
-// 未掲載 (ダッシュボード等) は常に表示。built-in role は従来の role ルールで出し分け (byte-identical)。
-const NAV_FEATURE: Record<string, string> = {
-  '/friends': 'friend',
-  '/chats': 'chat',
-  '/friend-add-settings': 'broadcast',
-  '/scenarios': 'scenario',
-  '/broadcasts': 'broadcast',
-  '/campaigns': 'broadcast',
-  '/templates': 'template',
-  '/template-packs': 'template',
-  '/media': 'media',
-  '/rich-menus': 'rich_menu',
-  '/reminders': 'booking',
-  '/inflow-links': 'analytics',
-  '/tracked-links': 'analytics',
-  '/tags': 'friend',
-  '/conversions': 'analytics',
-  '/ad-conversions': 'analytics',
-  '/scoring': 'analytics',
-  '/form-submissions': 'form',
-  '/duplicates': 'friend',
-  '/automations': 'scenario',
-  '/auto-replies': 'auto_reply',
-  '/faqs': 'faq',
-  '/webhooks': 'account',
-  '/notifications': 'chat',
-  '/booking/bookings': 'booking',
-  '/booking/menus': 'booking',
-  '/booking/staff': 'booking',
-  '/booking/calendar': 'booking',
-  '/events': 'event',
-  '/canned-responses': 'chat',
-  '/staff': 'staff_admin',
-  '/accounts': 'account',
-  '/pools': 'account',
-  '/users': 'friend',
-  '/health': 'system_update',
-  '/updates': 'system_update',
-  '/emergency': 'system_update',
-}
+// nav href → feature_key は単一正典 (lib/nav-permissions) を参照 (dashboard と共有 / drift 防止 / M-7)。
 
 function AccountAvatar({ account, size = 32 }: { account: AccountWithStats; size?: number }) {
   const displayName = account.displayName || account.name

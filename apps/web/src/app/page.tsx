@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import CcPromptButton from '@/components/cc-prompt-button'
 import { useAccount } from '@/contexts/account-context'
+import { useNavPermissions } from '@/lib/nav-permissions'
 
 const ccPrompts = [
   {
@@ -41,9 +42,11 @@ interface StatCardProps {
   icon: React.ReactNode
   href: string
   accentColor?: string
+  visible?: boolean
 }
 
-function StatCard({ title, value, loading, icon, href, accentColor = '#06C755' }: StatCardProps) {
+function StatCard({ title, value, loading, icon, href, accentColor = '#06C755', visible = true }: StatCardProps) {
+  if (!visible) return null
   return (
     <Link href={href} className="block bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow group">
       <div className="flex items-start justify-between">
@@ -73,6 +76,9 @@ function StatCard({ title, value, loading, icon, href, accentColor = '#06C755' }
 
 export default function DashboardPage() {
   const { selectedAccountId, selectedAccount } = useAccount()
+  // 権限出し分け (G64): custom role の人には許可外の stat card / クイックアクションを出さない。
+  // enforcement は worker が正典 (API は 403) だが UX 上も隠す。built-in は全表示 (byte-identical)。
+  const { isVisible } = useNavPermissions()
   const [stats, setStats] = useState<DashboardStats>({
     friendCount: null,
     activeScenarioCount: null,
@@ -176,6 +182,7 @@ export default function DashboardPage() {
           value={stats.friendCount}
           loading={loading}
           href="/friends"
+          visible={isVisible('/friends')}
           icon={
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -188,6 +195,7 @@ export default function DashboardPage() {
           value={stats.activeScenarioCount}
           loading={loading}
           href="/scenarios"
+          visible={isVisible('/scenarios')}
           accentColor="#3B82F6"
           icon={
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -201,6 +209,7 @@ export default function DashboardPage() {
           value={stats.broadcastCount}
           loading={loading}
           href="/broadcasts"
+          visible={isVisible('/broadcasts')}
           accentColor="#8B5CF6"
           icon={
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -218,6 +227,7 @@ export default function DashboardPage() {
           value={stats.templateCount}
           loading={loading}
           href="/templates"
+          visible={isVisible('/templates')}
           accentColor="#F59E0B"
           icon={
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -231,6 +241,7 @@ export default function DashboardPage() {
           value={stats.automationCount}
           loading={loading}
           href="/automations"
+          visible={isVisible('/automations')}
           accentColor="#EF4444"
           icon={
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -244,6 +255,7 @@ export default function DashboardPage() {
           value={stats.scoringRuleCount}
           loading={loading}
           href="/scoring"
+          visible={isVisible('/scoring')}
           accentColor="#10B981"
           icon={
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -258,6 +270,7 @@ export default function DashboardPage() {
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
         <h2 className="text-sm font-semibold text-gray-800 mb-4">クイックアクション</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {isVisible('/friends') && (
           <Link
             href="/friends"
             className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-green-300 hover:bg-green-50 transition-colors group"
@@ -273,7 +286,9 @@ export default function DashboardPage() {
               <p className="text-xs text-gray-400">友だちの一覧・タグ管理</p>
             </div>
           </Link>
+          )}
 
+          {isVisible('/scenarios') && (
           <Link
             href="/scenarios"
             className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors group"
@@ -289,7 +304,9 @@ export default function DashboardPage() {
               <p className="text-xs text-gray-400">自動配信シナリオの作成・編集</p>
             </div>
           </Link>
+          )}
 
+          {isVisible('/broadcasts') && (
           <Link
             href="/broadcasts"
             className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-purple-300 hover:bg-purple-50 transition-colors group"
@@ -305,7 +322,9 @@ export default function DashboardPage() {
               <p className="text-xs text-gray-400">メッセージの一斉送信・予約</p>
             </div>
           </Link>
+          )}
 
+          {isVisible('/chats') && (
           <Link
             href="/chats"
             className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-green-300 hover:bg-green-50 transition-colors group"
@@ -321,7 +340,9 @@ export default function DashboardPage() {
               <p className="text-xs text-gray-400">オペレーターチャット管理</p>
             </div>
           </Link>
+          )}
 
+          {isVisible('/health') && (
           <Link
             href="/health"
             className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-red-300 hover:bg-red-50 transition-colors group"
@@ -337,6 +358,7 @@ export default function DashboardPage() {
               <p className="text-xs text-gray-400">アカウント健康度ダッシュボード</p>
             </div>
           </Link>
+          )}
         </div>
       </div>
 
