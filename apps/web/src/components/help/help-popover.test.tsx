@@ -60,4 +60,33 @@ describe('T-A3 HelpPopover', () => {
       expect(e.text, key).not.toMatch(/[a-zA-Z]{5,}/)
     }
   })
+
+  // browser-evaluator medium fold-in: 375px で文中の右寄り「？」が横にはみ出す不具合の回帰固定。
+  function mockAnchorRect(container: HTMLElement, left: number, bottom: number) {
+    const root = container.querySelector('span') as HTMLElement
+    root.getBoundingClientRect = () =>
+      ({ left, right: left + 32, top: bottom - 20, bottom, width: 32, height: 20, x: left, y: bottom - 20, toJSON: () => ({}) }) as DOMRect
+  }
+
+  it('375px で右寄りアンカーの「？」は right 基準へ反転し画面外に出ない', () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: 812, configurable: true })
+    const { container } = render(<HelpPopover helpKey="imagemap.action" />)
+    mockAnchorRect(container, 287, 110) // repro: rect.left=287
+    fireEvent.click(screen.getByRole('button', { name: /ヘルプ/ }))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.className).toContain('right-0')
+    expect(dialog.className).not.toContain('left-0')
+  })
+
+  it('375px でも左寄りアンカーは従来どおり left 基準を維持 (縦 flip は無回帰)', () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: 812, configurable: true })
+    const { container } = render(<HelpPopover helpKey="imagemap.base" />)
+    mockAnchorRect(container, 16, 700) // 左端 + 下端近く
+    fireEvent.click(screen.getByRole('button', { name: /ヘルプ/ }))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.className).toContain('left-0')
+    expect(dialog.className).toContain('bottom-9') // 下端近く=上に反転 (既存挙動)
+  })
 })

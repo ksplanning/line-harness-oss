@@ -8,11 +8,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { HelpIcon } from '@/components/shared/icons'
 import { getHelp } from '@/lib/help/help-catalog'
+import { popoverPlacement, type PopoverPlacement } from '@/lib/help/popover-placement'
 
 export default function HelpPopover({ helpKey, label }: { helpKey: string; label?: string }) {
   const entry = getHelp(helpKey)
   const [open, setOpen] = useState(false)
-  const [flipUp, setFlipUp] = useState(false)
+  const [placement, setPlacement] = useState<PopoverPlacement>({ horizontal: 'left', vertical: 'below' })
   const rootRef = useRef<HTMLSpanElement>(null)
 
   useEffect(() => {
@@ -39,9 +40,13 @@ export default function HelpPopover({ helpKey, label }: { helpKey: string; label
   function toggle() {
     if (!open && rootRef.current && typeof window !== 'undefined') {
       const rect = rootRef.current.getBoundingClientRect()
-      const vh = window.innerHeight || 0
-      // 画面下端まで 320px を切っていれば上に反転 (375px 縦でもパネルが切れない)。
-      setFlipUp(vh > 0 && rect.bottom > vh - 320)
+      // 縦=下端近くは上に反転 / 横=右にはみ出すなら right 基準へ (375px で画面外に出ない)。
+      setPlacement(
+        popoverPlacement(
+          { left: rect.left, bottom: rect.bottom },
+          { width: window.innerWidth || 0, height: window.innerHeight || 0 },
+        ),
+      )
     }
     setOpen((v) => !v)
   }
@@ -62,7 +67,7 @@ export default function HelpPopover({ helpKey, label }: { helpKey: string; label
         <div
           role="dialog"
           aria-label={title}
-          className={`absolute z-30 left-0 ${flipUp ? 'bottom-9' : 'top-9'} w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white p-3 shadow-lg`}
+          className={`absolute z-30 ${placement.horizontal === 'right' ? 'right-0' : 'left-0'} ${placement.vertical === 'above' ? 'bottom-9' : 'top-9'} w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white p-3 shadow-lg`}
         >
           <p className="text-xs font-semibold text-gray-900 mb-1.5">{entry.title}</p>
           {/* eslint-disable-next-line @next/next/no-img-element */}
