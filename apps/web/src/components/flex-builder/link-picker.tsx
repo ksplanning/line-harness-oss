@@ -10,6 +10,7 @@ import { api, type TrackedLinkListItem } from '@/lib/api'
 import { urlLink, trackedLink, telLink, bookingLink, messageLink, postbackLink } from '@/lib/flex-builder/link'
 import type { LinkSpec } from '@/lib/flex-builder/types'
 import { GlobeIcon, ChartIcon, PhoneIcon, CalendarIcon, MessageIcon } from '@/components/shared/icons'
+import HelpPopover from '@/components/help/help-popover'
 
 interface Props {
   value: LinkSpec
@@ -75,7 +76,10 @@ export default function LinkPicker({ value, onChange }: Props) {
 
   return (
     <div className="space-y-2">
-      <p className="text-xs text-gray-600">このボタンを押すとどこに行きますか？</p>
+      <p className="text-xs text-gray-600 flex items-center gap-1">
+        <span>このボタンを押すとどこに行きますか？</span>
+        <HelpPopover helpKey="flex.link" />
+      </p>
       <div className="grid grid-cols-2 gap-2">
         {KINDS.map((k) => (
           <button

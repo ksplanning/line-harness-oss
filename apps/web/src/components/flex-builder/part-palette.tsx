@@ -16,6 +16,7 @@ import {
   SpacerIcon,
   BoxIcon,
 } from '@/components/shared/icons'
+import HelpPopover from '@/components/help/help-popover'
 
 interface PaletteItem {
   kind: PartKind
@@ -42,13 +43,16 @@ export default function PartPalette({ onAdd }: { onAdd: (kind: PartKind) => void
 
   return (
     <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full min-h-[44px] border border-dashed border-green-400 text-green-700 rounded-md px-3 py-2 text-sm font-medium hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-500"
-      >
-        {open ? '▾ 部品を足す' : '＋ 部品を足す'}
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex-1 min-h-[44px] border border-dashed border-green-400 text-green-700 rounded-md px-3 py-2 text-sm font-medium hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-green-500"
+        >
+          {open ? '▾ 部品を足す' : '＋ 部品を足す'}
+        </button>
+        <HelpPopover helpKey="flex.parts" />
+      </div>
       {open && (
         <div className="mt-2 grid grid-cols-2 gap-2">
           {ITEMS.map((it) => (

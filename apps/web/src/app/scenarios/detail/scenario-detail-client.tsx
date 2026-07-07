@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation'
 import type { Scenario, ScenarioStep, ScenarioTriggerType, MessageType, DeliveryMode } from '@line-crm/shared'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
+import HelpPopover from '@/components/help/help-popover'
 import FlexPreviewComponent from '@/components/flex-preview'
 import ImageUploader from '@/components/shared/image-uploader'
 import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
@@ -526,7 +527,10 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">トリガー</label>
+              <div className="mb-1 flex items-center gap-1">
+                <label className="text-xs font-medium text-gray-600">トリガー</label>
+                <HelpPopover helpKey="scenario.condition" />
+              </div>
               <select
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
                 value={editForm.triggerType}
