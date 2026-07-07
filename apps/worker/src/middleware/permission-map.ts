@@ -116,6 +116,33 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('saved-searches'), feature: 'friend' },
 ];
 
+// =============================================================================
+// 公開 API の method 分類 (§2-5 / T-A8 / Codex CRITICAL-2)
+// -----------------------------------------------------------------------------
+// authMiddleware の forms 公開 skip は元々 method-blind で、GET だけが公開のはずの
+// /api/forms/:id を PUT/DELETE でも無認証で素通しさせていた (権限層より前に抜ける穴)。
+// ここに「公開が意図された (path, method) の組」だけを列挙し、それ以外の method は
+// 認証+権限を通す (公開 GET / 公開 POST(submit 系) は不変 / LIFF 無回帰)。
+// =============================================================================
+
+interface PublicRule {
+  test: RegExp;
+  methods: readonly string[];
+}
+
+export const PUBLIC_METHOD_RULES: PublicRule[] = [
+  { test: /^\/api\/forms\/[^/]+\/submit$/, methods: ['POST'] }, // LIFF フォーム送信
+  { test: /^\/api\/forms\/[^/]+\/opened$/, methods: ['POST'] }, // 開封計測
+  { test: /^\/api\/forms\/[^/]+\/partial$/, methods: ['POST'] }, // 途中保存
+  { test: /^\/api\/forms\/[^/]+$/, methods: ['GET'] }, // GET フォーム定義 (公開 / LIFF) — PUT/DELETE は認証必須
+];
+
+/** (path, method) が「公開が意図された」組か。true の時だけ authMiddleware を skip する。 */
+export function isPublicApiRoute(path: string, method: string): boolean {
+  const m = method.toUpperCase();
+  return PUBLIC_METHOD_RULES.some((r) => r.test.test(path) && r.methods.includes(m));
+}
+
 /**
  * パスを feature_key に解決する。
  *   - 非 /api パス → null (permissionMiddleware の対象外)
