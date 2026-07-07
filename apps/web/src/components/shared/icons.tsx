@@ -249,3 +249,14 @@ export function LockIcon(props: IconProps) {
     </Svg>
   )
 }
+
+/** ヘルプ = 丸の中に「？」(画像つき説明を開くボタン)。batch H-1 (G66)。 */
+export function HelpIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.6 9.4 a2.4 2.4 0 0 1 4.6 0.9 c0 1.5 -2.2 1.9 -2.2 3.2" />
+      <path d="M12 17.2 h0.01" />
+    </Svg>
+  )
+}
