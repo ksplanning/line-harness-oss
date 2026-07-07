@@ -19,12 +19,15 @@ export interface StaffMember {
   password_updated_at: string | null;
   failed_login_count: number | null;
   locked_until: string | null;
+  // カスタムロール (migration 088 / G64)。NULL = built-in preset (role 列) で従来通り解決。
+  role_id: string | null;
 }
 
 export interface CreateStaffInput {
   name: string;
   email?: string | null;
   role: 'owner' | 'admin' | 'staff';
+  role_id?: string | null;
 }
 
 export interface UpdateStaffInput {
@@ -32,6 +35,9 @@ export interface UpdateStaffInput {
   email?: string | null;
   role?: 'owner' | 'admin' | 'staff';
   is_active?: number;
+  // role_id は null 明示 (custom role 解除) と undefined (変更なし) を区別する必要があるため
+  // 「キー自体の有無」で判定する (setStaffRoleId 参照)。
+  role_id?: string | null;
 }
 
 function generateApiKey(): string {
@@ -78,10 +84,10 @@ export async function createStaffMember(
 
   await db
     .prepare(
-      `INSERT INTO staff_members (id, name, email, role, api_key, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      `INSERT INTO staff_members (id, name, email, role, api_key, is_active, created_at, updated_at, role_id)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`,
     )
-    .bind(id, input.name, input.email ?? null, input.role, apiKey, now, now)
+    .bind(id, input.name, input.email ?? null, input.role, apiKey, now, now, input.role_id ?? null)
     .run();
 
   return (await db
@@ -103,6 +109,8 @@ export async function updateStaffMember(
   if (input.email !== undefined) { sets.push('email = ?'); values.push(input.email ?? null); }
   if (input.role !== undefined) { sets.push('role = ?'); values.push(input.role); }
   if (input.is_active !== undefined) { sets.push('is_active = ?'); values.push(input.is_active); }
+  // role_id は null 明示 (custom role 解除) を許すため「キーの有無」で判定 (undefined=変更なし)。
+  if ('role_id' in input) { sets.push('role_id = ?'); values.push(input.role_id ?? null); }
 
   values.push(id);
   await db
@@ -144,6 +152,59 @@ export async function countActiveStaffByRole(db: D1Database, role: string): Prom
     .bind(role)
     .first<{ count: number }>();
   return result?.count ?? 0;
+}
+
+// ─── カスタムロール割当 (migration 088 / G64) ──────────────────────────────────
+
+/**
+ * staff の role_id を設定/解除。roleId=null で custom role を外し built-in preset へ復帰。
+ * built-in enum の role 列は触らない (role_id と role は独立 / 復帰先は role 列の preset)。
+ */
+export async function setStaffRoleId(
+  db: D1Database,
+  id: string,
+  roleId: string | null,
+): Promise<void> {
+  const now = jstNow();
+  await db
+    .prepare('UPDATE staff_members SET role_id = ?, updated_at = ? WHERE id = ?')
+    .bind(roleId, now, id)
+    .run();
+}
+
+/** 指定 custom role を割り当てられている staff の件数 (削除前チェック用)。 */
+export async function countStaffByRoleId(db: D1Database, roleId: string): Promise<number> {
+  const result = await db
+    .prepare('SELECT COUNT(*) as count FROM staff_members WHERE role_id = ?')
+    .bind(roleId)
+    .first<{ count: number }>();
+  return result?.count ?? 0;
+}
+
+/** 指定 custom role を割り当てられている staff 一覧 (削除時の再割当対象)。 */
+export async function getStaffByRoleId(db: D1Database, roleId: string): Promise<StaffMember[]> {
+  const result = await db
+    .prepare('SELECT * FROM staff_members WHERE role_id = ? ORDER BY created_at ASC')
+    .bind(roleId)
+    .all<StaffMember>();
+  return result.results;
+}
+
+/**
+ * ある custom role を割り当てられた全 staff を newRoleId (null=built-in 復帰 / 別 role.id) へ一括付け替え。
+ * ロール削除前に孤児 role_id を残さないための操作 (§5 / T-C3)。base_role は再割当先にしない。
+ */
+export async function reassignStaffRole(
+  db: D1Database,
+  fromRoleId: string,
+  newRoleId: string | null,
+): Promise<number> {
+  const now = jstNow();
+  const result = await db
+    .prepare('UPDATE staff_members SET role_id = ?, updated_at = ? WHERE role_id = ?')
+    .bind(newRoleId, now, fromRoleId)
+    .run();
+  return result.meta.changes;
 }
 
 // ─── ID/PASS ログイン (batch F / migration 076) ────────────────────────────────

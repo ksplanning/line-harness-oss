@@ -26,6 +26,7 @@ export * from './tracked-links';
 export * from './forms';
 export * from './ad-platforms';
 export * from './staff';
+export * from './roles';
 export * from './auto-replies';
 export * from './faqs';
 export * from './traffic-pools';

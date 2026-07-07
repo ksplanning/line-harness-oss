@@ -668,13 +668,38 @@ CREATE TABLE IF NOT EXISTS staff_members (
   password_iterations INTEGER,
   password_updated_at TEXT,
   failed_login_count  INTEGER DEFAULT 0,
-  locked_until        TEXT
+  locked_until        TEXT,
+  -- カスタムロール (migration 088 / G64)。NULL = built-in preset (role 列) で従来通り解決。
+  role_id             TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_members_api_key ON staff_members(api_key);
 CREATE INDEX IF NOT EXISTS idx_staff_members_role ON staff_members(role);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_members_login_id
   ON staff_members(login_id) WHERE login_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_staff_members_role_id ON staff_members(role_id);
+
+-- カスタムロール定義 (migration 086 / G64)。built-in owner/admin/staff はコード定数なので入らない。
+CREATE TABLE IF NOT EXISTS roles (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  base_role   TEXT NOT NULL DEFAULT 'staff',
+  is_builtin  INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- custom role の機能単位権限 (migration 087 / G64)。allowed=1 の feature のみ許可 (厳格 allowlist)。
+CREATE TABLE IF NOT EXISTS role_permissions (
+  id          TEXT PRIMARY KEY,
+  role_id     TEXT NOT NULL,
+  feature_key TEXT NOT NULL,
+  allowed     INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_role_permissions_role_feature
+  ON role_permissions(role_id, feature_key);
 
 -- Reusable message templates (text or Flex) for reward messages in campaigns
 CREATE TABLE IF NOT EXISTS message_templates (

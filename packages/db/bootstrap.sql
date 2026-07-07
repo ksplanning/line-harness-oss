@@ -705,6 +705,24 @@ CREATE TABLE rich_menu_pages (
   UNIQUE (group_id, order_index)
 );
 
+CREATE TABLE role_permissions (
+  id          TEXT PRIMARY KEY,
+  role_id     TEXT NOT NULL,
+  feature_key TEXT NOT NULL,
+  allowed     INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE roles (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  base_role   TEXT NOT NULL DEFAULT 'staff',
+  is_builtin  INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE saved_searches (
   id               TEXT PRIMARY KEY,
   line_account_id  TEXT DEFAULT NULL,
@@ -794,7 +812,9 @@ CREATE TABLE staff_members (
   password_iterations INTEGER,
   password_updated_at TEXT,
   failed_login_count  INTEGER DEFAULT 0,
-  locked_until        TEXT
+  locked_until        TEXT,
+  -- カスタムロール (migration 088 / G64)。NULL = built-in preset (role 列) で従来通り解決。
+  role_id             TEXT
 );
 
 CREATE TABLE staff_menus (
@@ -1074,6 +1094,9 @@ CREATE INDEX idx_rich_menu_groups_account ON rich_menu_groups(account_id, status
 
 CREATE INDEX idx_rich_menu_pages_group    ON rich_menu_pages(group_id, order_index);
 
+CREATE UNIQUE INDEX idx_role_permissions_role_feature
+  ON role_permissions(role_id, feature_key);
+
 CREATE INDEX idx_saved_searches_account ON saved_searches(line_account_id);
 
 CREATE INDEX idx_scenario_steps_scenario_id ON scenario_steps (scenario_id);
@@ -1090,6 +1113,8 @@ CREATE UNIQUE INDEX idx_staff_members_login_id
   ON staff_members(login_id) WHERE login_id IS NOT NULL;
 
 CREATE INDEX idx_staff_members_role ON staff_members(role);
+
+CREATE INDEX idx_staff_members_role_id ON staff_members(role_id);
 
 CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
 

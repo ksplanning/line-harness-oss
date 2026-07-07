@@ -64,7 +64,10 @@
     "056_ab_tests.sql",
     "057_line_accounts_monthly_cap.sql",
     "058_rich_menu_groups_schedule.sql",
-    "076_staff_password_auth.sql"
+    "076_staff_password_auth.sql",
+    "086_roles.sql",
+    "087_role_permissions.sql",
+    "088_staff_role_id.sql"
   ],
-  "migrationCount": 65
+  "migrationCount": 68
 }
