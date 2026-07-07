@@ -128,6 +128,24 @@ describe('roles CRUD API (T-A7)', () => {
     const res = await call('GET', '/api/roles', undefined, 'Bearer lh_staffkey');
     expect(res.status).toBe(403);
   });
+
+  test('M-4: staff_admin は custom role に付与できない (API 直で true を送っても false に固定)', async () => {
+    const created = await call('POST', '/api/roles', {
+      name: '準管理者もどき',
+      permissions: { broadcast: true, staff_admin: true }, // staff_admin=true を明示送信
+    });
+    const role = (await created.json() as { data: { id: string; features: string[] } }).data;
+    expect(role.features).toContain('broadcast');
+    expect(role.features).not.toContain('staff_admin'); // owner 専用ゆえ剥ぎ取られる
+
+    // PUT permissions でも同様に無効化
+    const saved = await call('PUT', `/api/roles/${role.id}/permissions`, {
+      permissions: { staff_admin: true, chat: true },
+    });
+    const after = (await saved.json() as { data: { features: string[] } }).data;
+    expect(after.features).not.toContain('staff_admin');
+    expect(after.features).toContain('chat');
+  });
 });
 
 describe('staff role_id 割当 + /staff/me permissions', () => {

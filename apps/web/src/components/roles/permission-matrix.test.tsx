@@ -11,14 +11,18 @@ import { PermissionMatrix, featuresToRecord } from './permission-matrix'
 afterEach(() => cleanup())
 
 describe('PermissionMatrix', () => {
-  it('19 機能の行 (switch) を描画する', () => {
+  it('19 機能の行を描画し、うち 18 が toggle・staff_admin はオーナー専用の非活性 (M-4)', () => {
     render(<PermissionMatrix value={{}} onChange={() => {}} />)
     const switches = screen.getAllByRole('switch')
-    expect(switches.length).toBe(FEATURE_KEYS.length)
+    // staff_admin は toggle でない (owner 専用) → switch は 18 個
+    expect(switches.length).toBe(FEATURE_KEYS.length - 1)
     expect(FEATURE_KEYS.length).toBe(19)
-    // 代表ラベルが出ている
+    // 代表ラベルは全 19 出る (staff_admin も行としては存在)
     expect(screen.getByText(FEATURE_LABELS.chat)).toBeTruthy()
     expect(screen.getByText(FEATURE_LABELS.staff_admin)).toBeTruthy()
+    // staff_admin はオーナー専用ラベル + toggle なし
+    expect(screen.getAllByText(/オーナー専用/).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('switch', { name: FEATURE_LABELS.staff_admin })).toBeNull()
   })
 
   it('トグルクリックで onChange(feature, !current) を呼ぶ', () => {
@@ -36,11 +40,11 @@ describe('PermissionMatrix', () => {
     expect(s.getAttribute('aria-checked')).toBe('true')
   })
 
-  it('staff_admin を ON にすると警告文を表示する (self-lockout 予防)', () => {
-    const { rerender } = render(<PermissionMatrix value={{ staff_admin: false }} onChange={() => {}} />)
-    expect(screen.queryByText(/他のスタッフや権限を変更できる/)).toBeNull()
-    rerender(<PermissionMatrix value={{ staff_admin: true }} onChange={() => {}} />)
-    expect(screen.getByText(/他のスタッフや権限を変更できる/)).toBeTruthy()
+  it('staff_admin は toggle を持たず「オーナー専用」固定 (grantable でない / M-4)', () => {
+    render(<PermissionMatrix value={{ staff_admin: true }} onChange={() => {}} />)
+    // value で true を渡しても toggle は現れない (owner 専用)
+    expect(screen.queryByRole('switch', { name: FEATURE_LABELS.staff_admin })).toBeNull()
+    expect(screen.getAllByText(/オーナー専用/).length).toBeGreaterThan(0)
   })
 
   it('disabled のときトグルは無効化される', () => {

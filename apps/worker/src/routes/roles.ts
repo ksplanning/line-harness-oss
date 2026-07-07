@@ -29,7 +29,16 @@ import type { Env } from '../index.js';
 
 export const roles = new Hono<Env>();
 
-/** 提供された permissions map から 19 feature 全てを明示した allowlist を作る (未指定=false)。 */
+// staff_admin (スタッフ・ロール管理) は owner 専用 (requireRole('owner') が正典)。custom role には
+// 決して付与しない = grantable でない (M-4)。ここで常に false に固定し、UI 誤操作や API 直叩きで
+// staff_admin=true を送られても無効化する (二重防御 / matrix でも非活性表示)。
+function stripStaffAdmin(
+  perms: Array<{ feature_key: FeatureKey; allowed: boolean }>,
+): Array<{ feature_key: FeatureKey; allowed: boolean }> {
+  return perms.map((p) => (p.feature_key === 'staff_admin' ? { ...p, allowed: false } : p));
+}
+
+/** 提供された permissions map から 19 feature 全てを明示した allowlist を作る (未指定=false / staff_admin は常に false)。 */
 function normalizePermissions(input: unknown): Array<{ feature_key: FeatureKey; allowed: boolean }> {
   const map: Record<string, boolean> = {};
   if (input && typeof input === 'object') {
@@ -37,15 +46,15 @@ function normalizePermissions(input: unknown): Array<{ feature_key: FeatureKey; 
       if (isFeatureKey(k)) map[k] = Boolean(v);
     }
   }
-  return FEATURE_KEYS.map((f) => ({ feature_key: f, allowed: map[f] ?? false }));
+  return stripStaffAdmin(FEATURE_KEYS.map((f) => ({ feature_key: f, allowed: map[f] ?? false })));
 }
 
-/** テンプレ id から 19 feature の allowlist を作る。 */
+/** テンプレ id から 19 feature の allowlist を作る (staff_admin は常に false)。 */
 function permissionsFromTemplate(templateId: string): Array<{ feature_key: FeatureKey; allowed: boolean }> | null {
   const tpl = getRoleTemplate(templateId);
   if (!tpl) return null;
   const set = new Set(tpl.features);
-  return FEATURE_KEYS.map((f) => ({ feature_key: f, allowed: set.has(f) }));
+  return stripStaffAdmin(FEATURE_KEYS.map((f) => ({ feature_key: f, allowed: set.has(f) })));
 }
 
 async function serializeRole(db: D1Database, id: string) {

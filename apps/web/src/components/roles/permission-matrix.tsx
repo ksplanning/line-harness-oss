@@ -21,42 +21,53 @@ export function PermissionMatrix({
     <div className="divide-y divide-gray-100 border border-gray-200 rounded-lg overflow-hidden bg-white">
       {FEATURE_KEYS.map((f) => {
         const on = Boolean(value[f])
-        const isDanger = f === 'staff_admin'
+        // staff_admin (スタッフ・ロール管理) は owner 専用 = カスタムロールには付与不可 (M-4)。
+        // トグルを出さず「オーナー専用」の非活性行にする (grantable と誤解させない)。
+        const ownerOnly = f === 'staff_admin'
         return (
           <div key={f} className="flex items-start justify-between gap-3 px-4 py-3">
             <div className="flex-1 min-w-0">
-              <span className={`text-sm font-medium ${isDanger ? 'text-red-700' : 'text-gray-900'}`}>
+              <span className={`text-sm font-medium ${ownerOnly ? 'text-gray-400' : 'text-gray-900'}`}>
                 {FEATURE_LABELS[f]}
               </span>
               <p className="text-xs text-gray-500 mt-0.5 leading-snug">{FEATURE_DESCRIPTIONS[f]}</p>
-              {isDanger && on && (
-                <p className="text-xs text-red-600 mt-1 font-medium">
-                  ⚠️ この役割の人が他のスタッフや権限を変更できるようになります
+              {ownerOnly && (
+                <p className="text-xs text-gray-400 mt-1">
+                  🔒 スタッフ・ロール管理はオーナー専用です（カスタムロールには付けられません）
                 </p>
               )}
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={on}
-              aria-label={FEATURE_LABELS[f]}
-              disabled={disabled}
-              onClick={() => onChange(f, !on)}
-              className={`relative shrink-0 inline-flex items-center min-w-[44px] min-h-[44px] justify-center rounded-lg ${
-                disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-              }`}
-            >
+            {ownerOnly ? (
               <span
-                className={`relative block w-12 h-7 rounded-full transition-colors ${on ? '' : 'bg-gray-300'}`}
-                style={on ? { backgroundColor: '#06C755' } : {}}
+                className="shrink-0 inline-flex items-center min-h-[44px] px-2 text-[11px] font-medium text-gray-400"
+                aria-label="スタッフ管理 オーナー専用"
+              >
+                オーナー専用
+              </span>
+            ) : (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={on}
+                aria-label={FEATURE_LABELS[f]}
+                disabled={disabled}
+                onClick={() => onChange(f, !on)}
+                className={`relative shrink-0 inline-flex items-center min-w-[44px] min-h-[44px] justify-center rounded-lg ${
+                  disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                }`}
               >
                 <span
-                  className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${
-                    on ? 'translate-x-5' : ''
-                  }`}
-                />
-              </span>
-            </button>
+                  className={`relative block w-12 h-7 rounded-full transition-colors ${on ? '' : 'bg-gray-300'}`}
+                  style={on ? { backgroundColor: '#06C755' } : {}}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${
+                      on ? 'translate-x-5' : ''
+                    }`}
+                  />
+                </span>
+              </button>
+            )}
           </div>
         )
       })}
