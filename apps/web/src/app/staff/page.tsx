@@ -1,9 +1,10 @@
 'use client'
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import Header from '@/components/layout/header'
-import { fetchApi } from '@/lib/api'
+import { fetchApi, api } from '@/lib/api'
 import type { ApiResponse } from '@line-crm/shared'
-import type { StaffMember } from '@line-crm/shared'
+import type { StaffMember, Role } from '@line-crm/shared'
 import { LockIcon, EyeIcon, EyeOffIcon } from '@/components/shared/icons'
 
 type NewApiKey = { apiKey: string; staffId: string }
@@ -34,6 +35,9 @@ export default function StaffPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
+  // Custom roles (G64) for assignment dropdowns
+  const [roles, setRoles] = useState<Role[]>([])
+
   // New API key banner
   const [newKey, setNewKey] = useState<NewApiKey | null>(null)
   const [copied, setCopied] = useState(false)
@@ -43,6 +47,7 @@ export default function StaffPage() {
   const [formName, setFormName] = useState('')
   const [formEmail, setFormEmail] = useState('')
   const [formRole, setFormRole] = useState<'admin' | 'staff'>('staff')
+  const [formRoleId, setFormRoleId] = useState<string>('') // '' = built-in preset のみ
   const [formLoading, setFormLoading] = useState(false)
   const [formError, setFormError] = useState('')
 
@@ -72,20 +77,44 @@ export default function StaffPage() {
     }
   }
 
+  const loadRoles = async () => {
+    try {
+      const res = await api.roles.list()
+      if (res.success) setRoles(res.data)
+    } catch {
+      // ロール取得失敗は致命的でない (built-in 割当は使える)
+    }
+  }
+
   useEffect(() => {
     loadMembers()
+    loadRoles()
   }, [])
+
+  const roleName = (roleId?: string | null) =>
+    roleId ? roles.find((r) => r.id === roleId)?.name ?? 'カスタムロール' : null
+
+  const handleAssignRole = async (member: StaffMember, roleId: string) => {
+    try {
+      const res = await api.staff.update(member.id, { roleId: roleId || null })
+      if (!res.success) { setError(res.error ?? 'ロールの割り当てに失敗しました'); return }
+      await loadMembers()
+    } catch {
+      setError('ロールの割り当てに失敗しました')
+    }
+  }
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     setFormLoading(true)
     setFormError('')
     try {
-      const body: { name: string; role: 'admin' | 'staff'; email?: string } = {
+      const body: { name: string; role: 'admin' | 'staff'; email?: string; roleId?: string } = {
         name: formName,
         role: formRole,
       }
       if (formEmail) body.email = formEmail
+      if (formRoleId) body.roleId = formRoleId
 
       const res = await fetchApi<ApiResponse<StaffMember & { apiKey?: string }>>('/api/staff', {
         method: 'POST',
@@ -98,6 +127,7 @@ export default function StaffPage() {
         setFormName('')
         setFormEmail('')
         setFormRole('staff')
+        setFormRoleId('')
         setShowForm(false)
         await loadMembers()
       } else {
@@ -216,13 +246,21 @@ export default function StaffPage() {
       <Header
         title="スタッフ管理"
         action={
-          <button
-            onClick={() => setShowForm(!showForm)}
-            className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
-            style={{ backgroundColor: '#06C755' }}
-          >
-            + スタッフを追加
-          </button>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/staff/roles"
+              className="px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              権限ロール管理
+            </Link>
+            <button
+              onClick={() => setShowForm(!showForm)}
+              className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              + スタッフを追加
+            </button>
+          </div>
         }
       />
 
@@ -290,6 +328,25 @@ export default function StaffPage() {
                   <option value="admin">管理者</option>
                 </select>
               </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                権限ロール（任意・機能ごとの ON/OFF）
+              </label>
+              <select
+                value={formRoleId}
+                onChange={(e) => setFormRoleId(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+              >
+                <option value="">指定なし（オーナー/管理者/スタッフの標準権限）</option>
+                {roles.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-400 mt-1">
+                ロールを選ぶと、その人が触れる機能をロールの設定に絞れます。
+                <Link href="/staff/roles" className="text-green-600 hover:underline ml-1">ロールを作る/編集</Link>
+              </p>
             </div>
             {formError && (
               <p className="text-sm text-red-600">{formError}</p>
@@ -367,6 +424,26 @@ export default function StaffPage() {
                   <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{member.email ?? '—'}</td>
                   <td className="px-4 py-3">
                     <RoleBadge role={member.role} />
+                    {member.role !== 'owner' && (
+                      <div className="mt-1.5">
+                        <select
+                          value={member.roleId ?? ''}
+                          onChange={(e) => handleAssignRole(member, e.target.value)}
+                          aria-label={`${member.name} の権限ロール`}
+                          className="w-full max-w-[11rem] px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                        >
+                          <option value="">標準権限</option>
+                          {roles.map((r) => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {member.roleId && (
+                      <span className="mt-1 block text-[11px] text-gray-400">
+                        ロール: {roleName(member.roleId)}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-gray-400 font-mono text-xs hidden md:table-cell">
                     {maskKey(member.apiKey ?? '')}

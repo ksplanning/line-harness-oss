@@ -85,6 +85,48 @@ const menuSections = [
   },
 ]
 
+// nav href → feature_key (G64)。custom role の人はここに載る feature が許可されていない項目を隠す。
+// 未掲載 (ダッシュボード等) は常に表示。built-in role は従来の role ルールで出し分け (byte-identical)。
+const NAV_FEATURE: Record<string, string> = {
+  '/friends': 'friend',
+  '/chats': 'chat',
+  '/friend-add-settings': 'broadcast',
+  '/scenarios': 'scenario',
+  '/broadcasts': 'broadcast',
+  '/campaigns': 'broadcast',
+  '/templates': 'template',
+  '/template-packs': 'template',
+  '/media': 'media',
+  '/rich-menus': 'rich_menu',
+  '/reminders': 'booking',
+  '/inflow-links': 'analytics',
+  '/tracked-links': 'analytics',
+  '/tags': 'friend',
+  '/conversions': 'analytics',
+  '/ad-conversions': 'analytics',
+  '/scoring': 'analytics',
+  '/form-submissions': 'form',
+  '/duplicates': 'friend',
+  '/automations': 'scenario',
+  '/auto-replies': 'auto_reply',
+  '/faqs': 'faq',
+  '/webhooks': 'account',
+  '/notifications': 'chat',
+  '/booking/bookings': 'booking',
+  '/booking/menus': 'booking',
+  '/booking/staff': 'booking',
+  '/booking/calendar': 'booking',
+  '/events': 'event',
+  '/canned-responses': 'chat',
+  '/staff': 'staff_admin',
+  '/accounts': 'account',
+  '/pools': 'account',
+  '/users': 'friend',
+  '/health': 'system_update',
+  '/updates': 'system_update',
+  '/emergency': 'system_update',
+}
+
 function AccountAvatar({ account, size = 32 }: { account: AccountWithStats; size?: number }) {
   const displayName = account.displayName || account.name
   if (account.pictureUrl) {
@@ -208,10 +250,31 @@ export default function Sidebar() {
   const [isOpen, setIsOpen] = useState(false)
   const [staffName, setStaffName] = useState<string | null>(null)
   const [staffRole, setStaffRole] = useState<string | null>(null)
+  // /api/staff/me の解決済み権限 (G64)。custom role の人の nav 出し分けに使う。
+  const [permissions, setPermissions] = useState<string[] | null>(null)
+  const [hasCustomRole, setHasCustomRole] = useState(false)
 
   useEffect(() => {
     setStaffName(localStorage.getItem('lh_staff_name'))
     setStaffRole(localStorage.getItem('lh_staff_role'))
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { api } = await import('@/lib/api')
+        const res = await api.staff.me()
+        if (!cancelled && res.success) {
+          setPermissions(res.data.permissions ?? null)
+          setHasCustomRole(Boolean(res.data.roleId))
+          if (res.data.role) setStaffRole(res.data.role)
+        }
+      } catch {
+        // 取得失敗時は built-in ルールにフォールバック (localStorage の role)
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
   // 未対応件数 polling — メニュー項目にバッジを出す。5 分間隔。
@@ -271,6 +334,13 @@ export default function Sidebar() {
               </div>
             )}
             {section.items.filter((item) => {
+              // custom role (G64): 許可されていない feature の項目を隠す。enforcement は worker が正典。
+              if (hasCustomRole && permissions) {
+                const feature = NAV_FEATURE[item.href]
+                if (feature && !permissions.includes(feature)) return false
+                return true
+              }
+              // built-in role: 従来の出し分け (byte-identical)。
               if (item.href === '/staff' && staffRole !== 'owner') return false
               if (item.href === '/accounts' && staffRole === 'staff') return false
               return true

@@ -866,6 +866,8 @@ export interface StaffMember {
   loginId?: string | null;
   hasPassword?: boolean;
   locked?: boolean;
+  // カスタムロール (G64)。null = built-in preset。
+  roleId?: string | null;
 }
 
 export interface StaffProfile {
@@ -873,6 +875,34 @@ export interface StaffProfile {
   name: string;
   role: 'owner' | 'admin' | 'staff';
   email: string | null;
+}
+
+// -----------------------------------------------------------------------------
+// カスタムロール (G64 / Role + StaffMe)
+// -----------------------------------------------------------------------------
+export interface Role {
+  id: string;
+  name: string;
+  description: string | null;
+  baseRole: string;
+  isBuiltin: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /** allowed=1 の feature_key 集合。 */
+  features: string[];
+  /** このロールを割り当てられている staff 数 (一覧のみ)。 */
+  assignedCount?: number;
+}
+
+/** GET /api/staff/me のレスポンス。sidebar が permissions で nav を出し分ける。 */
+export interface StaffMe {
+  id: string;
+  name: string;
+  role: 'owner' | 'admin' | 'staff';
+  email: string | null;
+  roleId: string | null;
+  /** 解決済みの許可 feature_key 集合。 */
+  permissions: string[];
 }
 
 // =============================================================================

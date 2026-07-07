@@ -26,6 +26,8 @@ import type {
   AccountHealthLog,
   AccountMigration,
   StaffMember,
+  Role,
+  StaffMe,
   Broadcast,
   BroadcastTargetType,
   EntryRoute,
@@ -1168,13 +1170,13 @@ export const api = {
     get: (id: string) =>
       fetchApi<ApiResponse<StaffMember>>(`/api/staff/${id}`),
     me: () =>
-      fetchApi<ApiResponse<{ id: string; name: string; role: string; email: string | null }>>('/api/staff/me'),
-    create: (data: { name: string; email?: string; role: 'admin' | 'staff' }) =>
+      fetchApi<ApiResponse<StaffMe>>('/api/staff/me'),
+    create: (data: { name: string; email?: string; role: 'admin' | 'staff'; roleId?: string | null }) =>
       fetchApi<ApiResponse<StaffMember>>('/api/staff', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    update: (id: string, data: { name?: string; email?: string | null; role?: string; isActive?: boolean }) =>
+    update: (id: string, data: { name?: string; email?: string | null; role?: string; isActive?: boolean; roleId?: string | null }) =>
       fetchApi<ApiResponse<StaffMember>>(`/api/staff/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(data),
@@ -1183,6 +1185,20 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/staff/${id}`, { method: 'DELETE' }),
     regenerateKey: (id: string) =>
       fetchApi<ApiResponse<{ apiKey: string }>>(`/api/staff/${id}/regenerate-key`, { method: 'POST' }),
+  },
+  roles: {
+    list: () =>
+      fetchApi<ApiResponse<Role[]>>('/api/roles'),
+    get: (id: string) =>
+      fetchApi<ApiResponse<Role>>(`/api/roles/${id}`),
+    create: (data: { name: string; description?: string | null; template?: string; permissions?: Record<string, boolean> }) =>
+      fetchApi<ApiResponse<Role>>('/api/roles', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: { name?: string; description?: string | null }) =>
+      fetchApi<ApiResponse<Role>>(`/api/roles/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    setPermissions: (id: string, permissions: Record<string, boolean>) =>
+      fetchApi<ApiResponse<Role>>(`/api/roles/${id}/permissions`, { method: 'PUT', body: JSON.stringify({ permissions }) }),
+    delete: (id: string, reassignTo: string | null) =>
+      fetchApi<ApiResponse<null>>(`/api/roles/${id}`, { method: 'DELETE', body: JSON.stringify({ reassignTo }) }),
   },
   usersGrouped: {
     list: (opts?: {
