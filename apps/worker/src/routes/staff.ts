@@ -10,9 +10,11 @@ import {
   setStaffLoginId,
   setStaffPassword,
   clearStaffLoginSecurity,
+  getRoleById,
 } from '@line-crm/db';
 import type { StaffMember } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
+import { resolvePermissions } from '../middleware/permissions.js';
 import { hashPassword } from '../utils/password.js';
 import type { Env } from '../index.js';
 
@@ -48,16 +50,25 @@ function serializeStaff(row: StaffMember, masked = true) {
     loginId: row.login_id,
     hasPassword: Boolean(row.password_hash),
     locked: isLockedFromRow(row),
+    // カスタムロール (G64)。role_id=NULL は built-in preset。
+    roleId: row.role_id,
   };
 }
 
 // GET /api/staff/me — any authenticated user (MUST be before /:id)
+// permissions (G64): 解決済み許可 feature 集合を返す。sidebar が custom role の出し分けに使う
+// (UI 非表示は UX のみ / enforcement は permissionMiddleware が正典)。
 staff.get('/api/staff/me', async (c) => {
   try {
     const currentStaff = c.get('staff');
 
-    // env-owner: return minimal info
+    // env-owner: 全権 (全 feature)。
     if (currentStaff.id === 'env-owner') {
+      const perms = await resolvePermissions(c.env.DB, {
+        id: 'env-owner',
+        role: 'owner',
+        roleId: null,
+      });
       return c.json({
         success: true,
         data: {
@@ -65,6 +76,8 @@ staff.get('/api/staff/me', async (c) => {
           name: 'Owner',
           role: 'owner',
           email: null,
+          roleId: null,
+          permissions: perms.features,
         },
       });
     }
@@ -74,6 +87,12 @@ staff.get('/api/staff/me', async (c) => {
       return c.json({ success: false, error: 'Staff member not found' }, 404);
     }
 
+    const perms = await resolvePermissions(c.env.DB, {
+      id: member.id,
+      role: member.role,
+      roleId: member.role_id,
+    });
+
     return c.json({
       success: true,
       data: {
@@ -81,6 +100,8 @@ staff.get('/api/staff/me', async (c) => {
         name: member.name,
         role: member.role,
         email: member.email,
+        roleId: member.role_id,
+        permissions: perms.features,
       },
     });
   } catch (err) {
@@ -118,7 +139,7 @@ staff.get('/api/staff/:id', requireRole('owner'), async (c) => {
 // POST /api/staff — owner only. Create staff. Returns full API key (one-time visible).
 staff.post('/api/staff', requireRole('owner'), async (c) => {
   try {
-    const body = await c.req.json<{ name: string; email?: string; role: string }>();
+    const body = await c.req.json<{ name: string; email?: string; role: string; roleId?: string | null }>();
 
     if (!body.name) {
       return c.json({ success: false, error: 'name is required' }, 400);
@@ -129,10 +150,17 @@ staff.post('/api/staff', requireRole('owner'), async (c) => {
       return c.json({ success: false, error: 'role must be owner, admin, or staff' }, 400);
     }
 
+    // roleId (G64): 指定時は存在するカスタムロールでなければ拒否 (孤児 role_id を作らない)。
+    if (body.roleId) {
+      const role = await getRoleById(c.env.DB, body.roleId);
+      if (!role) return c.json({ success: false, error: '指定されたロールが存在しません' }, 400);
+    }
+
     const member = await createStaffMember(c.env.DB, {
       name: body.name,
       email: body.email ?? null,
       role: body.role as 'owner' | 'admin' | 'staff',
+      role_id: body.roleId ?? null,
     });
 
     // Return full (unmasked) API key one-time
@@ -152,11 +180,18 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       email?: string | null;
       role?: string;
       isActive?: boolean;
+      roleId?: string | null;
     }>();
 
     const validRoles = ['owner', 'admin', 'staff'] as const;
     if (body.role !== undefined && !validRoles.includes(body.role as (typeof validRoles)[number])) {
       return c.json({ success: false, error: 'role must be owner, admin, or staff' }, 400);
+    }
+
+    // roleId (G64): 値ありなら存在検証 (null=custom role 解除で built-in 復帰は常に許可)。
+    if (body.roleId) {
+      const role = await getRoleById(c.env.DB, body.roleId);
+      if (!role) return c.json({ success: false, error: '指定されたロールが存在しません' }, 400);
     }
 
     // Prevent removing the last active owner
@@ -181,6 +216,8 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       email: body.email,
       role: body.role as 'owner' | 'admin' | 'staff' | undefined,
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
+      // 'roleId' キーがあれば role_id を更新 (null 明示で custom role 解除)。無ければ変更なし。
+      ...('roleId' in body ? { role_id: body.roleId ?? null } : {}),
     });
 
     if (!updated) {
