@@ -18,6 +18,7 @@ import { Hono } from 'hono';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formalooPublic } from './formaloo-public.js';
+import { buildSegmentWhere, type SegmentCondition } from '../services/segment-query.js';
 import type { Env } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -84,6 +85,12 @@ function seedForm(id: string, slug: string, status: string, tagId: string | null
   raw.prepare(
     `INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status, on_submit_tag_id) VALUES (?,?,?,?,?)`,
   ).run(id, slug, 'テスト', status, tagId);
+}
+/** 開封リダイレクト用に formalooAddress 入り definition_json を持つ form を seed。 */
+function seedFormWithAddress(id: string, status: string, address: string) {
+  raw.prepare(
+    `INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status, definition_json) VALUES (?,?,?,?,?)`,
+  ).run(id, `slug_${id}`, 'テスト', status, JSON.stringify({ fields: [], logic: [], formalooAddress: address }));
 }
 function seedTag(id: string) {
   raw.prepare(`INSERT INTO tags (id, name, color, created_at) VALUES (?,?,?,?)`).run(id, 't', '#000', '2026-07-10T00:00:00+09:00');
@@ -198,5 +205,65 @@ describe('T-C1/T-C3 冪等 upsert + LINE 後処理 (published のみ / N-3・N-7
     expect(s.verified).toBe(0);
     expect(s.line_processed).toBe(0);
     expect(tagCount('fr_1', 'tag1')).toBe(0);
+  });
+});
+
+// ── T-C2 開封リダイレクト (/fo/:id) ──
+const ADDR = 'https://formaloo.me/f/abc123';
+function opens(formId: string): { friend_id: string | null }[] {
+  return raw.prepare(`SELECT friend_id FROM form_opens WHERE form_id=?`).all(formId) as { friend_id: string | null }[];
+}
+/** opened_form セグメントが実際にヒットする friend id を返す (G11 round-trip 実行)。 */
+function openedFormMatches(cond: SegmentCondition): string[] {
+  const { clause, bindings } = buildSegmentWhere(cond);
+  const rows = raw.prepare(`SELECT f.id FROM friends f WHERE ${clause}`).all(...(bindings as never[])) as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
+describe('T-C2 開封リダイレクト /fo/:id (G11 / 認証除外)', () => {
+  test('published + ?f= → form_opens INSERT + 302 で Formaloo address へ (Authorization 不要)', async () => {
+    seedFriend('fr_1');
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1?f=fr_1', { method: 'GET' }, env());
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(ADDR);
+    const rows = opens('fa1');
+    expect(rows.length).toBe(1);
+    expect(rows[0].friend_id).toBe('fr_1');
+  });
+
+  test('opened_form セグメントが /fo 記録をヒット (M-8 round-trip / 既存ルール無改修)', async () => {
+    seedFriend('fr_1');
+    seedFriend('fr_2'); // 開封していない対照
+    seedFormWithAddress('fa1', 'published', ADDR);
+    await app().request('/fo/fa1?f=fr_1', { method: 'GET' }, env());
+    // form 指定なしの opened_form (任意フォームを開いた人)
+    expect(openedFormMatches({ operator: 'AND', rules: [{ type: 'opened_form', value: { sinceDays: 365 } }] })).toEqual(['fr_1']);
+    // form 指定つき (fa1 を開いた人)
+    expect(openedFormMatches({ operator: 'AND', rules: [{ type: 'opened_form', value: { formId: 'fa1', sinceDays: 365 } }] })).toEqual(['fr_1']);
+    // 別 form 指定 → ヒットなし
+    expect(openedFormMatches({ operator: 'AND', rules: [{ type: 'opened_form', value: { formId: 'other', sinceDays: 365 } }] })).toEqual([]);
+  });
+
+  test('draft form → 404 / 開封記録なし (N-7 誤配信防止)', async () => {
+    seedFriend('fr_1');
+    seedFormWithAddress('fa1', 'draft', ADDR);
+    const res = await app().request('/fo/fa1?f=fr_1', { method: 'GET' }, env());
+    expect(res.status).toBe(404);
+    expect(opens('fa1').length).toBe(0);
+  });
+
+  test('未知 form id → 404', async () => {
+    const res = await app().request('/fo/nope', { method: 'GET' }, env());
+    expect(res.status).toBe(404);
+  });
+
+  test('実在しない friend id は記録しない (opened_form 結合の無効化を防ぐ)', async () => {
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1?f=ghost', { method: 'GET' }, env());
+    expect(res.status).toBe(302);
+    const rows = opens('fa1');
+    expect(rows.length).toBe(1);
+    expect(rows[0].friend_id).toBeNull();
   });
 });

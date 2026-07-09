@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import {
+  getFormalooForm,
   getFormalooFormBySlug,
   upsertFormalooSubmission,
   claimFormalooLineProcessing,
@@ -7,11 +8,23 @@ import {
   addTagToFriend,
   enrollFriendInScenario,
   getFriendById,
+  getFriendByLineUserId,
+  jstNow,
   type FormalooForm,
 } from '@line-crm/db';
-import { isBuilderStatus } from '../services/formaloo-publish-gate.js';
+import { isBuilderStatus, buildPublicUrl } from '../services/formaloo-publish-gate.js';
 import { verifyWebhookToken, verifyHmacSignature, parseWebhookPayload } from '../services/formaloo-webhook.js';
 import type { Env } from '../index.js';
+
+/** definition_json から公開フォーム address を取り出す (表示用キャッシュ / forms-advanced と同源)。 */
+function formalooAddressOf(definitionJson: string): string | null {
+  try {
+    const d = JSON.parse(definitionJson) as { formalooAddress?: unknown };
+    return typeof d.formalooAddress === 'string' ? d.formalooAddress : null;
+  } catch {
+    return null;
+  }
+}
 
 // =============================================================================
 // Formaloo 公開 route (F-3) — 認証除外 + 自前 token 検証 (landmine#4)。
@@ -127,3 +140,45 @@ async function fireFormalooSubmitSideEffects(
     }
   }
 }
+
+// GET /fo/:id — 開封リダイレクト (T-C2)。form_opens へ記録 → 302 で Formaloo hosted form へ。
+// 既存 opened_form セグメント (segment-query.ts) が form_opens を無改修で参照し続ける (G11 / G-5 既知限界:
+//   HP 埋め込み・直接共有・hosted 直アクセスは本 route を通らず開封を取りこぼす)。
+formalooPublic.get('/fo/:id', async (c) => {
+  const id = c.req.param('id');
+  const form = await getFormalooForm(c.env.DB, id);
+  if (!form || form.deleted) return c.json({ success: false, error: 'Form not found' }, 404);
+
+  // N-7: published + address のときだけ公開先へ飛ばす (draft/未 push の公開リンクは配布されない前提)。
+  const status = isBuilderStatus(form.builder_status) ? form.builder_status : 'draft';
+  const url = buildPublicUrl(status, formalooAddressOf(form.definition_json));
+  if (!url) return c.json({ success: false, error: 'このフォームは現在ご利用いただけません' }, 404);
+
+  // friend 解決 (?lu= line user id / ?f= friend id) — tracked-links /t/:id と同源。
+  const lineUserId = c.req.query('lu') ?? null;
+  let friendId = c.req.query('f') ?? null;
+  let friendName: string | null = null;
+  try {
+    if (!friendId && lineUserId) {
+      const fr = await getFriendByLineUserId(c.env.DB, lineUserId);
+      if (fr) { friendId = fr.id; friendName = fr.display_name ?? null; }
+    } else if (friendId) {
+      const fr = await getFriendById(c.env.DB, friendId);
+      friendName = fr?.display_name ?? null;
+      if (!fr) friendId = null; // 実在しない friend id は記録しない (opened_form の EXISTS 結合が無効になるため)
+    }
+  } catch (err) {
+    console.error(`/fo/${id} friend resolve failed (non-blocking):`, err);
+  }
+
+  // 開封計測 (非ブロッキング / fail-soft): form_opens へ INSERT (既存テーブル・既存スキーマ無改変 / D-1)。
+  try {
+    await c.env.DB.prepare(
+      'INSERT INTO form_opens (id, form_id, friend_id, friend_name, opened_at) VALUES (?, ?, ?, ?, ?)',
+    ).bind(crypto.randomUUID(), id, friendId, friendName, jstNow()).run();
+  } catch (err) {
+    console.error(`/fo/${id} form_opens insert failed (non-blocking):`, err);
+  }
+
+  return c.redirect(url, 302);
+});
