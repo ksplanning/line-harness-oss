@@ -150,7 +150,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
       !path.startsWith('/t/') &&
       !path.startsWith('/r/') &&
       !path.startsWith('/pool/') &&
-      !path.startsWith('/images/')
+      !path.startsWith('/images/') &&
+      // F-3 Formaloo 公開 route (自前 token/署名 検証で公開 / N-4)。
+      !path.startsWith('/fo/') &&
+      !path.startsWith('/formaloo/')
     ) {
       return next();
     }
@@ -164,6 +167,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path.startsWith('/r/') ||
     path.startsWith('/pool/') ||
     path.startsWith('/images/') ||
+    // F-3 Formaloo 公開 route: /fo/:id 開封リダイレクト + /formaloo/webhook/:token 回答受信。
+    // 自前検証 (path token + HMAC 署名) を route 側で行う (認証除外 landmine#4)。
+    path.startsWith('/fo/') ||
+    path.startsWith('/formaloo/') ||
     // 画像 src として <img> 経由でブラウザが取得するため (Authorization ヘッダ不可)。
     // R2 key 内に group_id / page_id (UUID) が含まれるので推測困難。draft 画像も
     // 最終的に LINE 上で公開されるため機密性は低い。

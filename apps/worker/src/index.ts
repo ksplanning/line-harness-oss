@@ -59,6 +59,7 @@ import { trackedLinks } from './routes/tracked-links.js';
 import { entryRoutes } from './routes/entry-routes.js';
 import { forms } from './routes/forms.js';
 import { formsAdvanced } from './routes/forms-advanced.js';
+import { formalooPublic } from './routes/formaloo-public.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
 import { roles } from './routes/roles.js';
@@ -140,6 +141,11 @@ export type Env = {
     // null を返し fail-soft (高機能フォーム機能のみ無効・既存機能は無影響)。
     FORMALOO_API_KEY?: string;
     FORMALOO_API_SECRET?: string;
+    // F-3 回答 webhook の自前認証 (closer 工程 S-1 で wrangler secret put)。repo に生値を置かない (D-2)。
+    //   FORMALOO_WEBHOOK_TOKEN  : /formaloo/webhook/:token の推測不能 path token (N-4)。未設定 dev は fail-closed。
+    //   FORMALOO_WEBHOOK_SECRET : HMAC 署名検証の共有鍵 (N-12)。署名スキームは live 確定 (sidecar 申し送り)。
+    FORMALOO_WEBHOOK_TOKEN?: string;
+    FORMALOO_WEBHOOK_SECRET?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
@@ -205,6 +211,7 @@ app.route('/', trackedLinks);
 app.route('/', entryRoutes);
 app.route('/', forms);
 app.route('/', formsAdvanced);
+app.route('/', formalooPublic);
 app.route('/', adPlatforms);
 app.route('/', staff);
 app.route('/', roles);
