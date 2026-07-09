@@ -8,7 +8,13 @@ import {
   softDeleteFormalooForm,
   setFormalooSyncState,
   getFormalooSyncState,
+  queryFormalooSubmissions,
+  getFormalooSubmission,
+  listFormalooSavedFilters,
+  createFormalooSavedFilter,
+  deleteFormalooSavedFilter,
   type FormalooForm,
+  type FormalooSubmissionRow,
 } from '@line-crm/db';
 import {
   validateHarnessField,
@@ -248,6 +254,131 @@ formsAdvanced.delete('/api/forms-advanced/:id', async (c) => {
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/forms-advanced/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// =============================================================================
+// F-4 データコックピット (T-D1) — 回答ミラー検索 + ドリルスルー + 保存フィルタ
+//   /api/forms-advanced 配下 = permission-map で forms_advanced feature に自動 gate (landmine#4)。
+//   回答は TRINA 顧客 PII を含み得る (N-9) — 外部送信しない。CSV export / 一括削除は commit 6 (owner gated)。
+// =============================================================================
+
+const MAX_PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 25;
+
+function safeParseJson(json: string): unknown {
+  try {
+    return JSON.parse(json);
+  } catch {
+    return {};
+  }
+}
+
+function serializeSubmissionRow(row: FormalooSubmissionRow) {
+  return {
+    id: row.id,
+    friendId: row.friend_id,
+    answers: safeParseJson(row.answers_json),
+    submittedAt: row.submitted_at,
+    verified: row.verified === 1,
+  };
+}
+
+function parseIntSafe(v: string | undefined, fallback: number): number {
+  const n = parseInt(v ?? '', 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// GET /api/forms-advanced/:id/rows — D1 ミラーの検索/フィルタ/ソート/ページング
+formsAdvanced.get('/api/forms-advanced/:id/rows', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+
+    const page = Math.max(1, parseIntSafe(c.req.query('page'), 1));
+    const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, parseIntSafe(c.req.query('pageSize'), DEFAULT_PAGE_SIZE)));
+    const { rows, total } = await queryFormalooSubmissions(c.env.DB, {
+      formId: id,
+      q: c.req.query('q') ?? null,
+      from: c.req.query('from') ?? null,
+      to: c.req.query('to') ?? null,
+      sortDir: c.req.query('sort') === 'asc' ? 'asc' : 'desc',
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+    });
+    return c.json({ success: true, data: { rows: rows.map(serializeSubmissionRow), total, page, pageSize } });
+  } catch (err) {
+    console.error('GET /api/forms-advanced/:id/rows error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/forms-advanced/:id/rows/:rowId — Formaloo rows API ドリルスルー (fail-soft = mirror / N-6)
+formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const rowId = c.req.param('rowId')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    const mirror = await getFormalooSubmission(c.env.DB, rowId);
+    if (!mirror || mirror.form_id !== id) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+
+    // Formaloo 側の最新をドリルスルー。client 未配備 (dev) / 失敗は mirror を返す (fail-soft)。
+    const client = createFormalooClient(c.env);
+    if (client && form.formaloo_slug) {
+      const r = await client.get<{ data?: unknown }>(`/v3.0/forms/${form.formaloo_slug}/rows/${rowId}/`);
+      if (r.ok) {
+        return c.json({ success: true, data: { id: rowId, answers: r.data?.data ?? safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'formaloo' } });
+      }
+    }
+    return c.json({ success: true, data: { id: rowId, answers: safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'mirror' } });
+  } catch (err) {
+    console.error('GET /api/forms-advanced/:id/rows/:rowId error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/forms-advanced/:id/filters — 保存フィルタ一覧
+formsAdvanced.get('/api/forms-advanced/:id/filters', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    const list = await listFormalooSavedFilters(c.env.DB, id);
+    return c.json({ success: true, data: list.map((f) => ({ id: f.id, name: f.name, filter: safeParseJson(f.filter_json) })) });
+  } catch (err) {
+    console.error('GET /api/forms-advanced/:id/filters error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/forms-advanced/:id/filters — 保存フィルタ作成
+formsAdvanced.post('/api/forms-advanced/:id/filters', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    const body = await c.req.json<{ name?: string; filter?: unknown }>().catch(() => ({}) as { name?: string; filter?: unknown });
+    const name = (body.name ?? '').trim();
+    if (!name) return c.json({ success: false, error: '名前を入力してください' }, 400);
+    const created = await createFormalooSavedFilter(c.env.DB, { formId: id, name, filterJson: JSON.stringify(body.filter ?? {}) });
+    return c.json({ success: true, data: { id: created.id, name: created.name, filter: safeParseJson(created.filter_json) } }, 201);
+  } catch (err) {
+    console.error('POST /api/forms-advanced/:id/filters error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// DELETE /api/forms-advanced/:id/filters/:filterId — 保存フィルタ削除 (form scope に閉じる)
+formsAdvanced.delete('/api/forms-advanced/:id/filters/:filterId', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    await deleteFormalooSavedFilter(c.env.DB, id, c.req.param('filterId')!);
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('DELETE /api/forms-advanced/:id/filters/:filterId error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
