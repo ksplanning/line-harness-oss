@@ -435,6 +435,15 @@ CREATE TABLE formaloo_forms (
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE formaloo_saved_filters (
+  id          TEXT PRIMARY KEY,
+  form_id     TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  filter_json TEXT NOT NULL DEFAULT '{}',
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE formaloo_submissions (
   id            TEXT PRIMARY KEY,
   form_id       TEXT NOT NULL,
@@ -1080,6 +1089,8 @@ CREATE INDEX idx_form_submissions_friend ON form_submissions (friend_id);
 CREATE INDEX idx_formaloo_field_map_form ON formaloo_field_map (form_id, position);
 
 CREATE INDEX idx_formaloo_forms_slug ON formaloo_forms (formaloo_slug);
+
+CREATE INDEX idx_formaloo_saved_filters_form ON formaloo_saved_filters (form_id);
 
 CREATE INDEX idx_formaloo_submissions_form ON formaloo_submissions (form_id, submitted_at);
 

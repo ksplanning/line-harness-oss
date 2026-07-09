@@ -292,3 +292,117 @@ export async function incrementFormalooSubmitCount(db: D1Database, formId: strin
 export async function getFormalooSubmission(db: D1Database, id: string): Promise<FormalooSubmissionRow | null> {
   return db.prepare('SELECT * FROM formaloo_submissions WHERE id = ?').bind(id).first<FormalooSubmissionRow>();
 }
+
+// ─── F-4 データコックピット 保存フィルタ (migration 082) ──────────────────────
+
+export interface FormalooSavedFilter {
+  id: string;
+  form_id: string;
+  name: string;
+  filter_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listFormalooSavedFilters(db: D1Database, formId: string): Promise<FormalooSavedFilter[]> {
+  const r = await db
+    .prepare('SELECT * FROM formaloo_saved_filters WHERE form_id = ? ORDER BY updated_at DESC')
+    .bind(formId)
+    .all<FormalooSavedFilter>();
+  return r.results;
+}
+
+export async function createFormalooSavedFilter(
+  db: D1Database,
+  input: { formId: string; name: string; filterJson: string },
+): Promise<FormalooSavedFilter> {
+  const id = `ff_${crypto.randomUUID()}`;
+  const now = jstNow();
+  await db
+    .prepare('INSERT INTO formaloo_saved_filters (id, form_id, name, filter_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(id, input.formId, input.name, input.filterJson, now, now)
+    .run();
+  return (await db.prepare('SELECT * FROM formaloo_saved_filters WHERE id = ?').bind(id).first<FormalooSavedFilter>())!;
+}
+
+/** form scope 越えの削除を防ぐため form_id も条件に含める (他フォームの保存フィルタを消せない)。 */
+export async function deleteFormalooSavedFilter(db: D1Database, formId: string, id: string): Promise<void> {
+  await db.prepare('DELETE FROM formaloo_saved_filters WHERE id = ? AND form_id = ?').bind(id, formId).run();
+}
+
+// ─── F-4 回答ミラー検索/統計 (migration 079 + 081) ───────────────────────────
+
+export interface QueryFormalooSubmissionsParams {
+  formId: string;
+  /** answers_json / friend_id フリーワード (LIKE)。 */
+  q?: string | null;
+  /** 期間フィルタ (submitted_at / julianday 比較 M-4)。ISO8601。 */
+  from?: string | null;
+  to?: string | null;
+  /** 並び順 (submitted_at のみ許可 = whitelist / SQL injection 防止)。 */
+  sortDir?: 'asc' | 'desc';
+  limit: number;
+  offset: number;
+}
+
+/**
+ * D1 ミラーに対する検索/フィルタ/ソート/ページング (T-D1)。
+ * 期間は julianday 比較 (M-4)。sort は submitted_at のみ (列名を bind 不可のため whitelist で固定)。
+ * 戻り値 total は同一フィルタの全件数 (ページング用)。
+ */
+export async function queryFormalooSubmissions(
+  db: D1Database,
+  params: QueryFormalooSubmissionsParams,
+): Promise<{ rows: FormalooSubmissionRow[]; total: number }> {
+  const where: string[] = ['form_id = ?'];
+  const binds: unknown[] = [params.formId];
+  if (params.q) {
+    where.push('(answers_json LIKE ? OR IFNULL(friend_id, \'\') LIKE ?)');
+    const like = `%${params.q}%`;
+    binds.push(like, like);
+  }
+  if (params.from) {
+    where.push('julianday(submitted_at) >= julianday(?)');
+    binds.push(params.from);
+  }
+  if (params.to) {
+    where.push('julianday(submitted_at) <= julianday(?)');
+    binds.push(params.to);
+  }
+  const whereSql = where.join(' AND ');
+  const dir = params.sortDir === 'asc' ? 'ASC' : 'DESC';
+
+  const totalRow = await db.prepare(`SELECT COUNT(*) AS n FROM formaloo_submissions WHERE ${whereSql}`).bind(...binds).first<{ n: number }>();
+  const rowsRes = await db
+    .prepare(`SELECT * FROM formaloo_submissions WHERE ${whereSql} ORDER BY submitted_at ${dir} LIMIT ? OFFSET ?`)
+    .bind(...binds, params.limit, params.offset)
+    .all<FormalooSubmissionRow>();
+  return { rows: rowsRes.results, total: totalRow?.n ?? 0 };
+}
+
+/** 期間別の日次集計 (統計カード用 / T-D2)。JST 日付でグルーピング。 */
+export async function formalooSubmissionsDailyCounts(
+  db: D1Database,
+  formId: string,
+): Promise<{ day: string; count: number }[]> {
+  const r = await db
+    .prepare(
+      `SELECT substr(submitted_at, 1, 10) AS day, COUNT(*) AS count
+       FROM formaloo_submissions WHERE form_id = ?
+       GROUP BY day ORDER BY day ASC`,
+    )
+    .bind(formId)
+    .all<{ day: string; count: number }>();
+  return r.results;
+}
+
+/** owner-gated 一括削除 (T-D2 / N-9)。form scope に閉じ、指定 id 群のみ削除。戻り値=削除件数。 */
+export async function bulkDeleteFormalooSubmissions(db: D1Database, formId: string, ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const placeholders = ids.map(() => '?').join(',');
+  const res = await db
+    .prepare(`DELETE FROM formaloo_submissions WHERE form_id = ? AND id IN (${placeholders})`)
+    .bind(formId, ...ids)
+    .run();
+  return (res as { meta?: { changes?: number } }).meta?.changes ?? 0;
+}

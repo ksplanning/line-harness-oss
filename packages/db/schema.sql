@@ -1104,3 +1104,14 @@ CREATE TABLE IF NOT EXISTS formaloo_sync_state (
   last_error     TEXT,
   updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
+
+-- 保存フィルタ (migration 082 / F-4 / T-D1)。データコックピットの絞り込み条件を form 単位で名前付き保存。
+CREATE TABLE IF NOT EXISTS formaloo_saved_filters (
+  id          TEXT PRIMARY KEY,
+  form_id     TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  filter_json TEXT NOT NULL DEFAULT '{}',
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_formaloo_saved_filters_form ON formaloo_saved_filters (form_id);
