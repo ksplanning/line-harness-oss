@@ -69,9 +69,10 @@
     "080_formaloo_publish_gate.sql",
     "081_formaloo_answer_path.sql",
     "082_formaloo_saved_filters.sql",
+    "083_formaloo_sheets.sql",
     "086_roles.sql",
     "087_role_permissions.sql",
     "088_staff_role_id.sql"
   ],
-  "migrationCount": 72
+  "migrationCount": 73
 }

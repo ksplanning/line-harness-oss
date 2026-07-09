@@ -1063,6 +1063,8 @@ CREATE TABLE IF NOT EXISTS formaloo_forms (
   deleted               INTEGER NOT NULL DEFAULT 0,
   builder_status        TEXT NOT NULL DEFAULT 'draft',   -- migration 080: draft|in_review|published (publish gate / N-7)
   published_at          TEXT,                            -- migration 080: 初回公開時刻 (NULL=未公開)
+  gsheet_connected      INTEGER NOT NULL DEFAULT 0,      -- migration 083: Google Sheets 連携済 (T-E1)
+  gsheet_url            TEXT,                            -- migration 083: 連携先 Sheet URL (表示用 / NULL=未連携)
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );

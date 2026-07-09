@@ -5,28 +5,42 @@ import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import FormBuilder from '@/components/forms-advanced/builder'
-import { formsAdvancedApi, type AdvancedForm } from '@/lib/formaloo-advanced-api'
+import SharePanel from '@/components/forms-advanced/share-panel'
+import { formsAdvancedApi, type AdvancedForm, type ShareInfo } from '@/lib/formaloo-advanced-api'
+import { fetchApi } from '@/lib/api'
 import type { HarnessField, HarnessLogicRule } from '@line-crm/shared'
 
 export default function FormBuilderPage() {
   const params = useParams<{ id: string }>()
   const id = params.id
   const [form, setForm] = useState<AdvancedForm | null>(null)
+  const [share, setShare] = useState<ShareInfo | null>(null)
+  const [isOwner, setIsOwner] = useState(false)
+  const [connecting, setConnecting] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+
+  const loadShare = useCallback(async () => {
+    try { setShare(await formsAdvancedApi.share(id)) } catch { /* fail-soft */ }
+  }, [id])
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
       setForm(await formsAdvancedApi.get(id))
       setError(null)
+      await loadShare()
+      try {
+        const me = await fetchApi<{ data: { role: string } }>('/api/staff/me')
+        setIsOwner(me.data.role === 'owner')
+      } catch { /* 非 owner 扱い */ }
     } catch {
       setError('フォームが見つかりません')
     } finally {
       setLoading(false)
     }
-  }, [id])
+  }, [id, loadShare])
 
   useEffect(() => {
     void load()
@@ -36,6 +50,7 @@ export default function FormBuilderPage() {
     try {
       setForm(await fn())
       setNotice(null)
+      await loadShare() // publish/unpublish で埋め込みコードの有効/無効が変わる (N-7)
     } catch (e) {
       const body = (e as { body?: { error?: string } })?.body
       setNotice(body?.error ?? '操作に失敗しました')
@@ -46,10 +61,25 @@ export default function FormBuilderPage() {
     try {
       const updated = await formsAdvancedApi.saveDefinition(id, def)
       setForm(updated)
+      await loadShare()
       setNotice(updated.syncStatus === 'out_of_sync' ? '保存しました（Formaloo 未接続のためローカル保存）' : '保存しました')
     } catch (e) {
       const body = (e as { body?: { error?: string } })?.body
       setNotice(body?.error ?? '保存に失敗しました')
+    }
+  }
+
+  const handleConnectSheets = async () => {
+    setConnecting(true)
+    try {
+      const r = await formsAdvancedApi.connectGsheet(id)
+      setNotice(r.note)
+      await loadShare()
+    } catch (e) {
+      const body = (e as { body?: { error?: string } })?.body
+      setNotice(body?.error ?? 'スプレッドシート連携に失敗しました')
+    } finally {
+      setConnecting(false)
     }
   }
 
@@ -83,6 +113,9 @@ export default function FormBuilderPage() {
             onPublish={withErr(() => formsAdvancedApi.publish(id))}
             onUnpublish={withErr(() => formsAdvancedApi.unpublish(id))}
           />
+          <div className="mt-4">
+            <SharePanel share={share} isOwner={isOwner} connecting={connecting} onConnectSheets={handleConnectSheets} />
+          </div>
         </>
       ) : null}
     </div>

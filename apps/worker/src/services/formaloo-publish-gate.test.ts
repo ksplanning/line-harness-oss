@@ -12,6 +12,7 @@ import {
   isPublicUrlEnabled,
   buildPublicUrl,
   buildEmbedCode,
+  buildScriptEmbedCode,
 } from './formaloo-publish-gate';
 
 describe('publish gate — 状態定義', () => {
@@ -80,5 +81,22 @@ describe('publish gate — 公開 URL / 埋め込み (N-7)', () => {
     expect(code).not.toBeNull();
     expect(code).toContain('<iframe');
     expect(code).toContain(ADDR);
+  });
+
+  test('script 埋め込み: draft は null / published は script に公開 URL を含む (T-E1)', () => {
+    expect(buildScriptEmbedCode('draft', ADDR)).toBeNull();
+    expect(buildScriptEmbedCode('in_review', ADDR)).toBeNull();
+    const code = buildScriptEmbedCode('published', ADDR)!;
+    expect(code).toContain('<script>');
+    expect(code).toContain(ADDR);
+    expect(code).toContain('createElement("iframe")');
+  });
+
+  test('script 埋め込み: </script> 混入 URL を JS 文字列として安全にエスケープ (XSS 防止)', () => {
+    const evil = 'https://x.test/</script><img src=x onerror=alert(1)>';
+    const code = buildScriptEmbedCode('published', evil)!;
+    // 生の </script> は出力に現れない (\\u003c エスケープ済)
+    expect(code).not.toContain('</script><img');
+    expect(code).toContain('\\u003c/script');
   });
 });

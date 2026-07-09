@@ -65,6 +65,23 @@ export const formsAdvancedApi = {
   async remove(id: string): Promise<void> {
     await fetchApi<Envelope<null>>(`/api/forms-advanced/${id}`, { method: 'DELETE' })
   },
+  // F-5 T-E1: 埋め込みコード + Sheets 連携状態。
+  async share(id: string): Promise<ShareInfo> {
+    return (await fetchApi<Envelope<ShareInfo>>(`/api/forms-advanced/${id}/share`)).data
+  },
+  async connectGsheet(id: string): Promise<{ connected: boolean; gsheetUrl: string | null; note: string }> {
+    return (await fetchApi<Envelope<{ connected: boolean; gsheetUrl: string | null; note: string }>>(`/api/forms-advanced/${id}/gsheet/connect`, { method: 'POST' })).data
+  },
+}
+
+// F-5 T-E1: 共有・連携情報。
+export interface ShareInfo {
+  published: boolean
+  publicUrl: string | null
+  iframeCode: string | null
+  scriptCode: string | null
+  gsheetConnected: boolean
+  gsheetUrl: string | null
 }
 
 // =============================================================================

@@ -15,6 +15,7 @@ import {
   deleteFormalooSavedFilter,
   formalooSubmissionsDailyCounts,
   bulkDeleteFormalooSubmissions,
+  setFormalooGsheetState,
   type FormalooForm,
   type FormalooSubmissionRow,
 } from '@line-crm/db';
@@ -29,6 +30,7 @@ import {
   canTransition,
   buildPublicUrl,
   buildEmbedCode,
+  buildScriptEmbedCode,
   isBuilderStatus,
   type BuilderStatus,
 } from '../services/formaloo-publish-gate.js';
@@ -534,6 +536,71 @@ formsAdvanced.post('/api/forms-advanced/:id/rows/bulk-delete', async (c) => {
     return c.json({ success: true, data: { deleted } });
   } catch (err) {
     console.error('POST /api/forms-advanced/:id/rows/bulk-delete error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// =============================================================================
+// F-5 T-E1 — HP 埋め込みコード提示 + Google Sheets 連携 UI トリガ
+//   埋め込みコード (iframe/script) は published のみ発行 (T-B3 publish gate に接続 / N-7)。
+//   Sheets 連携は PII を外部 Sheet へ出すため owner gated (N-9)。tier 制約は live 未確定 → fail-soft (G-7)。
+// =============================================================================
+
+// GET /api/forms-advanced/:id/share — 公開 URL + 埋め込みコード (iframe/script) + Sheets 状態
+formsAdvanced.get('/api/forms-advanced/:id/share', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    const def = parseDefinition(form.definition_json);
+    const status = (isBuilderStatus(form.builder_status) ? form.builder_status : 'draft') as BuilderStatus;
+    const addr = def.formalooAddress ?? null;
+    return c.json({
+      success: true,
+      data: {
+        published: status === 'published',
+        publicUrl: buildPublicUrl(status, addr),
+        // N-7: draft/in_review は埋め込みコードを発行しない (null)
+        iframeCode: buildEmbedCode(status, addr, { title: form.title }),
+        scriptCode: buildScriptEmbedCode(status, addr),
+        gsheetConnected: form.gsheet_connected === 1,
+        gsheetUrl: form.gsheet_url,
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/forms-advanced/:id/share error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/forms-advanced/:id/gsheet/connect — Google Sheets 連携トリガ (owner gated / fail-soft)
+formsAdvanced.post('/api/forms-advanced/:id/gsheet/connect', async (c) => {
+  try {
+    const denied = ownerGate(c);
+    if (denied) return denied;
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+
+    let connected = false;
+    let gsheetUrl: string | null = null;
+    let note = 'Formaloo 認証情報が未設定のため連携できませんでした（S-1 で本番連携）';
+    const client = createFormalooClient(c.env);
+    if (client && form.formaloo_slug) {
+      const r = await client.post<{ data?: { gsheet_url?: string; url?: string } }>(`/v3.0/forms/${form.formaloo_slug}/regenerate-gsheet-data/`, {});
+      if (r.ok) {
+        connected = true;
+        gsheetUrl = r.data?.data?.gsheet_url ?? r.data?.data?.url ?? null;
+        note = 'Google スプレッドシートと連携しました（回答が同期されます）';
+      } else {
+        // tier 制約等の失敗は owner に案内 (G-7 / fail-soft)
+        note = `連携に失敗しました（HTTP ${r.status}）。プランのシート連携可否・接続設定をご確認ください。`;
+      }
+    }
+    await setFormalooGsheetState(c.env.DB, id, { connected, url: gsheetUrl });
+    return c.json({ success: true, data: { connected, gsheetUrl, note } });
+  } catch (err) {
+    console.error('POST /api/forms-advanced/:id/gsheet/connect error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

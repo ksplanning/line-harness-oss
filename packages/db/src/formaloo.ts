@@ -21,6 +21,8 @@ export interface FormalooForm {
   deleted: number;
   builder_status: string;
   published_at: string | null;
+  gsheet_connected: number;
+  gsheet_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -167,6 +169,18 @@ export async function updateFormalooBuilderStatus(
       .bind(status, now, id)
       .run();
   }
+}
+
+/** Google Sheets 連携状態を記録 (T-E1 / regenerate-gsheet-data 成功時)。 */
+export async function setFormalooGsheetState(
+  db: D1Database,
+  id: string,
+  params: { connected: boolean; url?: string | null },
+): Promise<void> {
+  await db
+    .prepare('UPDATE formaloo_forms SET gsheet_connected = ?, gsheet_url = ?, updated_at = ? WHERE id = ?')
+    .bind(params.connected ? 1 : 0, params.url ?? null, jstNow(), id)
+    .run();
 }
 
 /** 論理削除 (N-11 tombstone)。 */

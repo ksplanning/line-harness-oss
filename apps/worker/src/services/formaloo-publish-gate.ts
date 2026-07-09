@@ -57,3 +57,21 @@ export function buildEmbedCode(
   const safeUrl = url.replace(/"/g, '&quot;');
   return `<iframe src="${safeUrl}" width="${width}" height="${height}" frameborder="0" title="${title}" style="border:0;max-width:100%"></iframe>`;
 }
+
+/**
+ * HP 埋め込みコード (script 変種 / R4)。published のみ。draft/in_review は null。
+ * 外部 CDN 非依存の self-contained script (iframe をその場に注入) = どの HP にも安全に貼れる。
+ * 埋め込み先が iframe を嫌う CMS でも script 1 行で設置できる (owner の HP 事情に依存しない)。
+ */
+export function buildScriptEmbedCode(
+  status: BuilderStatus,
+  publicAddress: string | null | undefined,
+  opts: { height?: string } = {},
+): string | null {
+  const url = buildPublicUrl(status, publicAddress);
+  if (!url) return null;
+  const height = opts.height ?? '700';
+  // URL は JSON.stringify で JS 文字列リテラルとして安全にエスケープ (改行/引用符/</script> 対策込み)。
+  const jsUrl = JSON.stringify(url).replace(/</g, '\\u003c');
+  return `<script>(function(){var f=document.createElement("iframe");f.src=${jsUrl};f.width="100%";f.height="${height}";f.frameBorder="0";f.style.border="0";f.style.maxWidth="100%";var s=document.currentScript;s.parentNode.insertBefore(f,s);})();</script>`;
+}
