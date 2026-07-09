@@ -7,7 +7,7 @@
 // と web の権限マトリクス UI・sidebar 出し分けは必ずこの配列を参照する (drift ゼロ / M-7)。
 // =============================================================================
 
-/** 機能一覧 = 19 feature_key。owner が ON/OFF する権限の粒度。順序 = 権限マトリクス UI の行順。 */
+/** 機能一覧 = 20 feature_key。owner が ON/OFF する権限の粒度。順序 = 権限マトリクス UI の行順。 */
 export const FEATURE_KEYS = [
   'chat',
   'broadcast',
@@ -15,6 +15,7 @@ export const FEATURE_KEYS = [
   'scenario',
   'auto_reply',
   'form',
+  'forms_advanced',
   'friend',
   'faq',
   'analytics',
@@ -40,6 +41,7 @@ export const FEATURE_LABELS: Record<FeatureKey, string> = {
   scenario: 'シナリオ',
   auto_reply: '自動応答',
   form: 'フォーム',
+  forms_advanced: '高機能フォーム',
   friend: '友だち管理',
   faq: 'FAQ',
   analytics: '分析・計測',
@@ -63,6 +65,8 @@ export const FEATURE_DESCRIPTIONS: Record<FeatureKey, string> = {
   scenario: 'シナリオ（ステップ配信）と自動化の作成ができます',
   auto_reply: 'キーワード自動応答ルールの設定ができます',
   form: 'フォームの作成・編集・回答確認ができます',
+  forms_advanced:
+    'ドラッグ&ドロップの高機能フォーム（条件分岐・ファイル添付・埋め込み・回答の検索/集計）を作れます',
   friend: '友だちの一覧・タグ・検索・重複整理ができます',
   faq: 'よくある質問（自動応答）の登録・編集ができます',
   analytics: '分析・計測（リンク計測・CV・スコアリングなど）を見られます',
@@ -149,7 +153,7 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
     id: 'form_booking',
     name: 'フォーム・予約担当',
     description: '受付・予約管理の担当。',
-    features: ['form', 'booking', 'event'],
+    features: ['form', 'forms_advanced', 'booking', 'event'],
   },
   {
     id: 'content',

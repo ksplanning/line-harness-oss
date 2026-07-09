@@ -174,7 +174,7 @@ describe('staff role_id 割当 + /staff/me permissions', () => {
     expect((await call('PATCH', `/api/staff/${sid}`, { roleId: 'ghost' })).status).toBe(400);
   });
 
-  test('PATCH roleId=null で custom role 解除 → /staff/me が built-in 全19 に戻る', async () => {
+  test('PATCH roleId=null で custom role 解除 → /staff/me が built-in 全20 に戻る', async () => {
     const roleRes = await call('POST', '/api/roles', { name: 'r', template: 'chat_only' });
     const roleId = (await roleRes.json() as { data: { id: string } }).data.id;
     const created = await call('POST', '/api/staff', { name: 'z', role: 'staff', roleId });
@@ -184,14 +184,14 @@ describe('staff role_id 割当 + /staff/me permissions', () => {
     const me = await call('GET', '/api/staff/me', undefined, `Bearer ${staffData.apiKey}`);
     const perms = (await me.json() as { data: { permissions: string[]; roleId: string | null } }).data;
     expect(perms.roleId).toBeNull();
-    expect(perms.permissions.length).toBe(19); // built-in preset
+    expect(perms.permissions.length).toBe(20); // built-in preset
   });
 
-  test('env-owner /staff/me は全19 feature', async () => {
+  test('env-owner /staff/me は全20 feature', async () => {
     const me = await call('GET', '/api/staff/me');
     const data = (await me.json() as { data: { permissions: string[]; role: string } }).data;
     expect(data.role).toBe('owner');
-    expect(data.permissions.length).toBe(19);
+    expect(data.permissions.length).toBe(20);
   });
 });
 

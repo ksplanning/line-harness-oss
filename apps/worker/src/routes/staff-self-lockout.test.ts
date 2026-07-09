@@ -85,21 +85,21 @@ beforeEach(() => {
 });
 
 describe('T-C1: owner は custom role でも全権', () => {
-  test('制限 custom role を割り当てた owner の resolvePermissions が全19', async () => {
+  test('制限 custom role を割り当てた owner の resolvePermissions が全20', async () => {
     const r = await createRole(DB, { name: 'チャットのみ' });
     await setRolePermissions(DB, r.id, [{ feature_key: 'chat', allowed: true }]);
     const p = await workerResolve(DB, { id: 'owner-x', role: 'owner', roleId: r.id });
-    expect(p.features.length).toBe(19);
+    expect(p.features.length).toBe(20);
     expect(p.allows('staff_admin')).toBe(true); // 剥奪されない
   });
 
-  test('owner staff を custom role 付きで作成 → /staff/me が全19', async () => {
+  test('owner staff を custom role 付きで作成 → /staff/me が全20', async () => {
     const rid = (await (await call('POST', '/api/roles', { name: 'r', template: 'chat_only' })).json() as { data: { id: string } }).data.id;
     const created = await call('POST', '/api/staff', { name: '共同オーナー', role: 'owner', roleId: rid });
     const apiKey = (await created.json() as { data: { apiKey: string } }).data.apiKey;
     const me = await call('GET', '/api/staff/me', undefined, `Bearer ${apiKey}`);
     const data = (await me.json() as { data: { permissions: string[] } }).data;
-    expect(data.permissions.length).toBe(19);
+    expect(data.permissions.length).toBe(20);
   });
 });
 

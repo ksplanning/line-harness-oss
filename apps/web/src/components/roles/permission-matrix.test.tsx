@@ -11,13 +11,13 @@ import { PermissionMatrix, featuresToRecord } from './permission-matrix'
 afterEach(() => cleanup())
 
 describe('PermissionMatrix', () => {
-  it('19 機能の行を描画し、うち 18 が toggle・staff_admin はオーナー専用の非活性 (M-4)', () => {
+  it('20 機能の行を描画し、うち 19 が toggle・staff_admin はオーナー専用の非活性 (M-4)', () => {
     render(<PermissionMatrix value={{}} onChange={() => {}} />)
     const switches = screen.getAllByRole('switch')
-    // staff_admin は toggle でない (owner 専用) → switch は 18 個
+    // staff_admin は toggle でない (owner 専用) → switch は 19 個
     expect(switches.length).toBe(FEATURE_KEYS.length - 1)
-    expect(FEATURE_KEYS.length).toBe(19)
-    // 代表ラベルは全 19 出る (staff_admin も行としては存在)
+    expect(FEATURE_KEYS.length).toBe(20)
+    // 代表ラベルは全 20 出る (staff_admin も行としては存在)
     expect(screen.getByText(FEATURE_LABELS.chat)).toBeTruthy()
     expect(screen.getByText(FEATURE_LABELS.staff_admin)).toBeTruthy()
     // staff_admin はオーナー専用ラベル + toggle なし
@@ -55,9 +55,9 @@ describe('PermissionMatrix', () => {
 })
 
 describe('featuresToRecord (T-B2 テンプレ適用の素材)', () => {
-  it('テンプレ features を 19 feature の Record に正規化する (含=true / 未含=false)', () => {
+  it('テンプレ features を 20 feature の Record に正規化する (含=true / 未含=false)', () => {
     const rec = featuresToRecord(['chat', 'friend'])
-    expect(Object.keys(rec).length).toBe(19)
+    expect(Object.keys(rec).length).toBe(20)
     expect(rec.chat).toBe(true)
     expect(rec.friend).toBe(true)
     expect(rec.broadcast).toBe(false)

@@ -9,10 +9,10 @@ import {
   allFeatures,
 } from './permissions';
 
-describe('permissions — feature keys (単一正典 / 19 feature)', () => {
-  test('19 feature_key で重複なし', () => {
-    expect(FEATURE_KEYS.length).toBe(19);
-    expect(new Set(FEATURE_KEYS).size).toBe(19);
+describe('permissions — feature keys (単一正典 / 20 feature)', () => {
+  test('20 feature_key で重複なし', () => {
+    expect(FEATURE_KEYS.length).toBe(20);
+    expect(new Set(FEATURE_KEYS).size).toBe(20);
   });
 
   test('全 feature_key に日本語ラベルと説明がある (UI の穴なし)', () => {
@@ -25,17 +25,18 @@ describe('permissions — feature keys (単一正典 / 19 feature)', () => {
     expect(Object.keys(FEATURE_DESCRIPTIONS).sort()).toEqual([...FEATURE_KEYS].sort());
   });
 
-  test('isFeatureKey は 19 のみ true / それ以外 false', () => {
+  test('isFeatureKey は 20 のみ true / それ以外 false', () => {
     expect(isFeatureKey('chat')).toBe(true);
     expect(isFeatureKey('staff_admin')).toBe(true);
+    expect(isFeatureKey('forms_advanced')).toBe(true); // F-2 で追加した高機能フォーム
     expect(isFeatureKey('nope')).toBe(false);
     expect(isFeatureKey('chat:read')).toBe(false);
   });
 
-  test('allFeatures は 19 全部のコピーを返す (元配列を破壊しない)', () => {
+  test('allFeatures は 20 全部のコピーを返す (元配列を破壊しない)', () => {
     const a = allFeatures();
     a.push('x' as never);
-    expect(FEATURE_KEYS.length).toBe(19);
+    expect(FEATURE_KEYS.length).toBe(20);
   });
 });
 
@@ -78,7 +79,11 @@ describe('permissions — テンプレート (owner Q2=全部 = 7 本)', () => {
   test('準管理者は staff_admin だけを外した全 feature', () => {
     const sub = getRoleTemplate('sub_admin')!;
     expect(sub.features).not.toContain('staff_admin');
-    expect(sub.features.length).toBe(18);
+    expect(sub.features.length).toBe(19);
     expect(new Set(sub.features)).toEqual(new Set(FEATURE_KEYS.filter((k) => k !== 'staff_admin')));
+  });
+
+  test('フォーム・予約担当 (form_booking) は高機能フォームも扱える', () => {
+    expect(getRoleTemplate('form_booking')!.features).toContain('forms_advanced');
   });
 });

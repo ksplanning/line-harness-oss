@@ -4,7 +4,7 @@ import type { FeatureKey } from '@line-crm/shared';
 // route → feature マップ (G64 / 単一正典)
 // -----------------------------------------------------------------------------
 // permissionMiddleware が各 /api リクエストのパスをどの feature_key で gate するかを決める唯一の表。
-// 上から順にマッチ (specific-first)。§1-4 の 19 feature_key を全 route prefix で網羅する。
+// 上から順にマッチ (specific-first)。§1-4 の 20 feature_key を全 route prefix で網羅する。
 //   - FeatureKey  → その feature の権限で gate
 //   - null        → 権限対象外 (常に許可 / 公開 or 内部 route / staff/me・capabilities・auth 等)
 //   - undefined   → 未マップ (mapPathToFeature が返す。coverage test が 0 件を保証 / M-15)
@@ -86,8 +86,12 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   // ── 配信設定 (broadcast_settings) ──
   { test: prefix('account-settings'), feature: 'broadcast_settings' },
 
-  // ── 自動応答 (auto_reply) / フォーム (form) / FAQ (faq) ──
+  // ── 自動応答 (auto_reply) / 高機能フォーム (forms_advanced) / フォーム (form) / FAQ (faq) ──
+  // ⚠️ specific-first: forms-advanced を forms より上に置く (Formaloo-backed 高機能フォーム = 別 feature)。
+  //    正規表現上 prefix('forms') は /api/forms-advanced に bleed しないが (末尾 `-` は (?:/|$) 不一致)、
+  //    並び替え耐性のため specific-first を明示。mutating (sync/publish) は roles/permissions.test で 403 固定。
   { test: prefix('auto-replies'), feature: 'auto_reply' },
+  { test: prefix('forms-advanced'), feature: 'forms_advanced' },
   { test: prefix('forms'), feature: 'form' },
   { test: prefix('faqs'), feature: 'faq' },
 

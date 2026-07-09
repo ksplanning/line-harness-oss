@@ -51,13 +51,13 @@ beforeEach(() => {
 });
 
 describe('BUILTIN_ROLE_PRESETS (byte-identical の要)', () => {
-  test('owner / admin / staff とも 19 feature 全許可', () => {
+  test('owner / admin / staff とも 20 feature 全許可', () => {
     for (const role of ['owner', 'admin', 'staff'] as const) {
       const preset = BUILTIN_ROLE_PRESETS[role];
       for (const f of FEATURE_KEYS) {
         expect(preset.has(f), `${role} は ${f} を許可すべき (現状全 route 到達可)`).toBe(true);
       }
-      expect(preset.size).toBe(19);
+      expect(preset.size).toBe(20);
     }
   });
 });
@@ -66,7 +66,7 @@ describe('resolvePermissions', () => {
   test('env-owner → built-in 全許可', async () => {
     const p = await resolvePermissions(DB, { id: 'env-owner', role: 'owner', roleId: null });
     expect(p.isBuiltin).toBe(true);
-    expect(p.features.length).toBe(19);
+    expect(p.features.length).toBe(20);
     expect(p.allows('staff_admin')).toBe(true);
   });
 
