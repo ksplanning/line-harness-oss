@@ -134,6 +134,11 @@ export type Env = {
     WORKER_PUBLIC_URL?: string;
     ADMIN_PUBLIC_URL?: string;
     LIFF_PUBLIC_URL?: string;
+    // Formaloo 統合 (F-1 / line-formaloo-forms)。secret は `wrangler secret put` で供給 (closer 工程 S-1)。
+    // repo/wrangler.toml に生値を置かない (PUBLIC OSS / D-2)。未設定 dev では createFormalooClient() が
+    // null を返し fail-soft (高機能フォーム機能のみ無効・既存機能は無影響)。
+    FORMALOO_API_KEY?: string;
+    FORMALOO_API_SECRET?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
