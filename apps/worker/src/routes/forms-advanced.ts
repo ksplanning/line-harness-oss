@@ -13,11 +13,15 @@ import {
   listFormalooSavedFilters,
   createFormalooSavedFilter,
   deleteFormalooSavedFilter,
+  formalooSubmissionsDailyCounts,
+  bulkDeleteFormalooSubmissions,
   type FormalooForm,
   type FormalooSubmissionRow,
 } from '@line-crm/db';
 import {
   validateHarnessField,
+  toCsv,
+  parseCsv,
   type HarnessField,
   type HarnessLogicRule,
 } from '@line-crm/shared';
@@ -379,6 +383,157 @@ formsAdvanced.delete('/api/forms-advanced/:id/filters/:filterId', async (c) => {
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/forms-advanced/:id/filters/:filterId error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// =============================================================================
+// F-4 データコックピット (T-D2) — 統計 + CSV 出し入れ + 一括削除
+//   統計/検索は forms_advanced 権限で足りる。CSV export / import / 一括削除は PII 露出/破壊操作のため
+//   owner gated (N-9 / 権限なし staff→middleware 403・非 owner staff→ownerGate 403)。
+//   本番ランタイム上限を静的 cap で符号化 (Workers CPU/subrequest 保護 / 地雷#2)。
+// =============================================================================
+
+const MAX_EXPORT_ROWS = 50_000;
+const MAX_EXPORT_BYTES = 20 * 1024 * 1024;
+const MAX_IMPORT_ROWS = 5_000;
+const MAX_BULK_DELETE = 1_000;
+
+/** N-9: 個人情報の書き出し/破壊操作は owner のみ。非 owner は 403。 */
+function ownerGate(c: Context<Env>): Response | null {
+  const staff = c.get('staff');
+  if (!staff || staff.role !== 'owner') {
+    return c.json({ success: false, error: 'この操作にはオーナー権限が必要です（個人情報保護）' }, 403);
+  }
+  return null;
+}
+
+// GET /api/forms-advanced/:id/stats — 統計 (ローカル集計 + Formaloo stats drill fail-soft)
+formsAdvanced.get('/api/forms-advanced/:id/stats', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+
+    const { total } = await queryFormalooSubmissions(c.env.DB, { formId: id, limit: 1, offset: 0 });
+    const daily = await formalooSubmissionsDailyCounts(c.env.DB, id);
+    const verifiedRow = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM formaloo_submissions WHERE form_id = ? AND verified = 1').bind(id).first<{ n: number }>();
+
+    // Formaloo 側 stats を drill (fail-soft): client 未配備/失敗は null。
+    let formaloo: unknown = null;
+    const client = createFormalooClient(c.env);
+    if (client && form.formaloo_slug) {
+      const r = await client.get<{ data?: unknown }>(`/v3.0/forms/${form.formaloo_slug}/stats/`);
+      if (r.ok) formaloo = r.data?.data ?? null;
+    }
+    return c.json({ success: true, data: { total, verified: verifiedRow?.n ?? 0, daily, formaloo } });
+  } catch (err) {
+    console.error('GET /api/forms-advanced/:id/stats error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/forms-advanced/:id/export.csv — 回答 CSV 書き出し (owner gated / N-9)
+formsAdvanced.get('/api/forms-advanced/:id/export.csv', async (c) => {
+  try {
+    const denied = ownerGate(c);
+    if (denied) return denied;
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+
+    const { rows, total } = await queryFormalooSubmissions(c.env.DB, { formId: id, sortDir: 'asc', limit: MAX_EXPORT_ROWS, offset: 0 });
+    if (total > MAX_EXPORT_ROWS) {
+      return c.json({ success: false, error: `件数が多すぎます（上限 ${MAX_EXPORT_ROWS} 件）。期間で絞ってからお試しください。` }, 400);
+    }
+    // answer key の union を列にする (フォームごとに回答項目が異なるため)。
+    const parsed = rows.map((r) => (safeParseJson(r.answers_json) as Record<string, unknown>) ?? {});
+    const keys = [...new Set(parsed.flatMap((a) => Object.keys(a)))].sort();
+    const header = ['回答ID', 'friend_id', '送信日時', ...keys];
+    const csvRows = rows.map((r, i) => [
+      r.id,
+      r.friend_id ?? '',
+      r.submitted_at,
+      ...keys.map((k) => {
+        const v = parsed[i][k];
+        return Array.isArray(v) ? v.join(', ') : v ?? '';
+      }),
+    ]);
+    const csv = toCsv(header, csvRows);
+    if (new TextEncoder().encode(csv).length > MAX_EXPORT_BYTES) {
+      return c.json({ success: false, error: 'データ量が大きすぎて一度に出力できません。期間で絞ってお試しください。' }, 413);
+    }
+    return c.body(csv, 200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`formaloo_${id}.csv`)}`,
+    });
+  } catch (err) {
+    console.error('GET /api/forms-advanced/:id/export.csv error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/forms-advanced/:id/import — CSV 取り込み (owner gated)。SoT: Formaloo import-rows へ push し、
+//   webhook 経由でミラーに反映 (ミラーへ直接書き込まない)。dev/未配備は pushed=false で fail-soft。
+formsAdvanced.post('/api/forms-advanced/:id/import', async (c) => {
+  try {
+    const denied = ownerGate(c);
+    if (denied) return denied;
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+
+    const body = await c.req.json<{ csv?: string }>().catch(() => ({}) as { csv?: string });
+    const csv = typeof body.csv === 'string' ? body.csv : '';
+    const parsedRows = parseCsv(csv);
+    if (parsedRows.length === 0) return c.json({ success: false, error: 'CSV が空です' }, 400);
+    const dataRows = parsedRows.slice(1); // 先頭 header を除く
+    if (dataRows.length > MAX_IMPORT_ROWS) {
+      return c.json({ success: false, error: `一度に取り込めるのは ${MAX_IMPORT_ROWS} 行までです。分割してお試しください。` }, 400);
+    }
+
+    let pushed = false;
+    let note = 'Formaloo 認証情報が未設定のため取り込みは保留しました（CSV は検証済み・S-1 で本番反映）';
+    const client = createFormalooClient(c.env);
+    if (client && form.formaloo_slug) {
+      const r = await client.post(`/v3.0/forms/${form.formaloo_slug}/import-rows/`, { header: parsedRows[0], rows: dataRows });
+      pushed = r.ok;
+      note = r.ok ? '取り込みました（Formaloo 反映後、回答一覧に順次表示されます）' : `取り込みに失敗しました（HTTP ${r.status}）`;
+    }
+    return c.json({ success: true, data: { parsed: dataRows.length, pushed, note } });
+  } catch (err) {
+    console.error('POST /api/forms-advanced/:id/import error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/forms-advanced/:id/rows/bulk-delete — 回答一括削除 (owner gated / N-9)
+formsAdvanced.post('/api/forms-advanced/:id/rows/bulk-delete', async (c) => {
+  try {
+    const denied = ownerGate(c);
+    if (denied) return denied;
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+
+    const body = await c.req.json<{ ids?: unknown }>().catch(() => ({}) as { ids?: unknown });
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === 'string') : [];
+    if (ids.length === 0) return c.json({ success: false, error: '削除する回答を選択してください' }, 400);
+    if (ids.length > MAX_BULK_DELETE) return c.json({ success: false, error: `一度に削除できるのは ${MAX_BULK_DELETE} 件までです` }, 400);
+
+    const deleted = await bulkDeleteFormalooSubmissions(c.env.DB, id, ids);
+    // Formaloo 側でも削除 (fail-soft): 失敗してもミラー削除は確定させる。
+    const client = createFormalooClient(c.env);
+    if (client && form.formaloo_slug) {
+      try {
+        await client.post(`/v3.0/forms/${form.formaloo_slug}/rows/bulk-delete/`, { rows: ids });
+      } catch (e) {
+        console.error('formaloo bulk-delete push failed (fail-soft):', e);
+      }
+    }
+    return c.json({ success: true, data: { deleted } });
+  } catch (err) {
+    console.error('POST /api/forms-advanced/:id/rows/bulk-delete error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -10,6 +10,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, test, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { jstNow, createRole, setRolePermissions } from '@line-crm/db';
+import { parseCsv } from '@line-crm/shared';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formsAdvanced } from './forms-advanced.js';
@@ -176,5 +177,96 @@ describe('landmine#4 権限 gate', () => {
     seedStaff('guest', 'staff', 'guest-key', roleId);
     const res = await call('GET', '/api/forms-advanced/fa1/rows', undefined, 'Bearer guest-key');
     expect(res.status).toBe(403);
+  });
+});
+
+// ── T-D2 統計 / CSV 出し入れ / 一括削除 ──
+/** forms_advanced 権限 "あり" だが owner でない custom role staff を作る (owner gate の検証用)。 */
+async function seedFormsAdvancedStaff(apiKey: string) {
+  const roleId = (await createRole(DB, { name: 'フォーム担当' })).id;
+  await setRolePermissions(DB, roleId, [{ feature_key: 'forms_advanced', allowed: true }]);
+  seedStaff(`u_${apiKey}`, 'staff', apiKey, roleId);
+}
+
+describe('T-D2 統計', () => {
+  test('GET stats → total + 日次集計 + verified 件数', async () => {
+    seedForm('fa1');
+    seedSub('s1', 'fa1', { name: '田中' }, '2026-07-01T10:00:00+09:00');
+    seedSub('s2', 'fa1', { name: '鈴木' }, '2026-07-01T12:00:00+09:00');
+    seedSub('s3', 'fa1', { name: '佐藤' }, '2026-07-02T09:00:00+09:00');
+    raw.prepare(`UPDATE formaloo_submissions SET verified=1 WHERE id IN ('s1','s2')`).run();
+    const d = (await (await call('GET', '/api/forms-advanced/fa1/stats')).json() as { data: { total: number; verified: number; daily: Array<{ day: string; count: number }> } }).data;
+    expect(d.total).toBe(3);
+    expect(d.verified).toBe(2);
+    expect(d.daily).toEqual([{ day: '2026-07-01', count: 2 }, { day: '2026-07-02', count: 1 }]);
+  });
+});
+
+describe('T-D2 CSV export/import round-trip (owner gated / N-9)', () => {
+  beforeEach(() => {
+    seedForm('fa1');
+    seedSub('s1', 'fa1', { name: '田中', tel: '090' }, '2026-07-01T10:00:00+09:00', 'fr_1');
+    seedSub('s2', 'fa1', { name: '鈴木' }, '2026-07-05T10:00:00+09:00', 'fr_2');
+  });
+
+  test('owner は export.csv を取得でき、parse で回答が戻る (round-trip)', async () => {
+    const res = await call('GET', '/api/forms-advanced/fa1/export.csv');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+    const csv = await res.text();
+    const rows = parseCsv(csv);
+    // header + 2 データ行
+    expect(rows.length).toBe(3);
+    expect(rows[0]).toEqual(expect.arrayContaining(['回答ID', 'friend_id', '送信日時', 'name', 'tel']));
+    // 全 answer key が列に出る (union)
+    const nameCol = rows[0].indexOf('name');
+    const dataById = new Map(rows.slice(1).map((r) => [r[0], r]));
+    expect(dataById.get('s1')![nameCol]).toBe('田中');
+  });
+
+  test('owner でない forms_advanced staff は export.csv に 403 (owner gated / N-9)', async () => {
+    await seedFormsAdvancedStaff('fa-staff-key');
+    expect((await call('GET', '/api/forms-advanced/fa1/export.csv', undefined, 'Bearer fa-staff-key')).status).toBe(403);
+  });
+
+  test('import: owner は CSV を検証し件数を返す (dev=Formaloo 未配備で pushed=false fail-soft)', async () => {
+    const csv = (await (await call('GET', '/api/forms-advanced/fa1/export.csv')).text());
+    const res = await call('POST', '/api/forms-advanced/fa1/import', { csv });
+    expect(res.status).toBe(200);
+    const d = (await res.json() as { data: { parsed: number; pushed: boolean } }).data;
+    expect(d.parsed).toBe(2);
+    expect(d.pushed).toBe(false);
+  });
+
+  test('import: owner でない forms_advanced staff は 403', async () => {
+    await seedFormsAdvancedStaff('fa-staff-key');
+    expect((await call('POST', '/api/forms-advanced/fa1/import', { csv: '回答ID\r\n' }, 'Bearer fa-staff-key')).status).toBe(403);
+  });
+});
+
+describe('T-D2 一括削除 (owner gated)', () => {
+  beforeEach(() => {
+    seedForm('fa1');
+    seedSub('s1', 'fa1', { name: '田中' }, '2026-07-01T10:00:00+09:00');
+    seedSub('s2', 'fa1', { name: '鈴木' }, '2026-07-05T10:00:00+09:00');
+  });
+
+  test('owner は選択削除でき件数を返す', async () => {
+    const res = await call('POST', '/api/forms-advanced/fa1/rows/bulk-delete', { ids: ['s1'] });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { data: { deleted: number } }).data.deleted).toBe(1);
+    expect((await (await call('GET', '/api/forms-advanced/fa1/rows')).json() as { data: { total: number } }).data.total).toBe(1);
+  });
+
+  test('owner でない forms_advanced staff は 403 (機微 mutating)', async () => {
+    await seedFormsAdvancedStaff('fa-staff-key');
+    expect((await call('POST', '/api/forms-advanced/fa1/rows/bulk-delete', { ids: ['s1'] }, 'Bearer fa-staff-key')).status).toBe(403);
+  });
+
+  test('forms_advanced 権限なしは 403 (middleware gate)', async () => {
+    const roleId = (await createRole(DB, { name: 'ゲスト2' })).id;
+    await setRolePermissions(DB, roleId, [{ feature_key: 'forms_advanced', allowed: false }]);
+    seedStaff('guest2', 'staff', 'guest2-key', roleId);
+    expect((await call('POST', '/api/forms-advanced/fa1/rows/bulk-delete', { ids: ['s1'] }, 'Bearer guest2-key')).status).toBe(403);
   });
 });

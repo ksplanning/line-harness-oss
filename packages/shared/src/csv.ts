@@ -78,3 +78,64 @@ export function toCsv(
   const body = lines.join('\r\n') + '\r\n';
   return bom ? CSV_BOM + body : body;
 }
+
+/**
+ * RFC4180 CSV をパース (toCsv の逆 / CSV import 用)。
+ * - 先頭 BOM (U+FEFF) を除去。
+ * - ダブルクオート囲みセル内のカンマ・改行 (CR/LF)・"" エスケープを正しく解釈する。
+ * - 行区切りは CRLF / LF どちらも許容。末尾の空行は無視。
+ * 空入力 (or BOM のみ) は []。
+ */
+export function parseCsv(text: string): string[][] {
+  let src = text;
+  if (src.charCodeAt(0) === 0xfeff) src = src.slice(1); // BOM 除去
+  if (src === '') return [];
+
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  let i = 0;
+  const n = src.length;
+
+  while (i < n) {
+    const ch = src[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') {
+          field += '"';
+          i += 2;
+        } else {
+          inQuotes = false;
+          i += 1;
+        }
+      } else {
+        field += ch;
+        i += 1;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+      i += 1;
+    } else if (ch === ',') {
+      row.push(field);
+      field = '';
+      i += 1;
+    } else if (ch === '\r' || ch === '\n') {
+      // 行末: CRLF は 2 文字進める
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+      i += ch === '\r' && src[i + 1] === '\n' ? 2 : 1;
+    } else {
+      field += ch;
+      i += 1;
+    }
+  }
+  // 末尾フィールド (最終行に改行が無い場合)
+  if (field !== '' || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
