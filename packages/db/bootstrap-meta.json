@@ -65,9 +65,10 @@
     "057_line_accounts_monthly_cap.sql",
     "058_rich_menu_groups_schedule.sql",
     "076_staff_password_auth.sql",
+    "079_formaloo_forms.sql",
     "086_roles.sql",
     "087_role_permissions.sql",
     "088_staff_role_id.sql"
   ],
-  "migrationCount": 68
+  "migrationCount": 69
 }

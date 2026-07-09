@@ -406,6 +406,52 @@ CREATE TABLE form_submissions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE formaloo_field_map (
+  id                  TEXT PRIMARY KEY,
+  form_id             TEXT NOT NULL,
+  formaloo_field_slug TEXT,
+  field_type          TEXT NOT NULL,
+  label               TEXT NOT NULL DEFAULT '',
+  position            INTEGER NOT NULL DEFAULT 0,
+  config_json         TEXT NOT NULL DEFAULT '{}',
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE formaloo_forms (
+  id                    TEXT PRIMARY KEY,
+  formaloo_slug         TEXT,
+  title                 TEXT NOT NULL DEFAULT '',
+  description           TEXT,
+  definition_json       TEXT NOT NULL DEFAULT '{}',
+  on_submit_tag_id      TEXT REFERENCES tags (id) ON DELETE SET NULL,
+  on_submit_scenario_id TEXT REFERENCES scenarios (id) ON DELETE SET NULL,
+  submit_message        TEXT,
+  submit_count          INTEGER NOT NULL DEFAULT 0,
+  deleted               INTEGER NOT NULL DEFAULT 0,
+  created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE formaloo_submissions (
+  id            TEXT PRIMARY KEY,
+  form_id       TEXT NOT NULL,
+  formaloo_slug TEXT,
+  friend_id     TEXT,
+  answers_json  TEXT NOT NULL DEFAULT '{}',
+  submitted_at  TEXT NOT NULL,
+  synced_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE formaloo_sync_state (
+  form_id        TEXT PRIMARY KEY,
+  last_pushed_at TEXT,
+  last_pulled_at TEXT,
+  sync_status    TEXT NOT NULL DEFAULT 'idle',
+  last_error     TEXT,
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE forms (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -1026,6 +1072,14 @@ CREATE INDEX idx_form_opens_form ON form_opens (form_id, opened_at);
 CREATE INDEX idx_form_submissions_form ON form_submissions (form_id);
 
 CREATE INDEX idx_form_submissions_friend ON form_submissions (friend_id);
+
+CREATE INDEX idx_formaloo_field_map_form ON formaloo_field_map (form_id, position);
+
+CREATE INDEX idx_formaloo_forms_slug ON formaloo_forms (formaloo_slug);
+
+CREATE INDEX idx_formaloo_submissions_form ON formaloo_submissions (form_id, submitted_at);
+
+CREATE INDEX idx_formaloo_submissions_friend ON formaloo_submissions (friend_id);
 
 CREATE INDEX idx_friend_reminders_friend ON friend_reminders (friend_id);
 
