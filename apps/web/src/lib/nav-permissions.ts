@@ -29,6 +29,7 @@ export const NAV_FEATURE: Record<string, string> = {
   '/ad-conversions': 'analytics',
   '/scoring': 'analytics',
   '/form-submissions': 'form',
+  '/forms-advanced': 'forms_advanced',
   '/duplicates': 'friend',
   '/automations': 'scenario',
   '/auto-replies': 'auto_reply',
