@@ -1061,6 +1061,8 @@ CREATE TABLE IF NOT EXISTS formaloo_forms (
   submit_message        TEXT,
   submit_count          INTEGER NOT NULL DEFAULT 0,
   deleted               INTEGER NOT NULL DEFAULT 0,
+  builder_status        TEXT NOT NULL DEFAULT 'draft',   -- migration 080: draft|in_review|published (publish gate / N-7)
+  published_at          TEXT,                            -- migration 080: 初回公開時刻 (NULL=未公開)
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );

@@ -66,9 +66,10 @@
     "058_rich_menu_groups_schedule.sql",
     "076_staff_password_auth.sql",
     "079_formaloo_forms.sql",
+    "080_formaloo_publish_gate.sql",
     "086_roles.sql",
     "087_role_permissions.sql",
     "088_staff_role_id.sql"
   ],
-  "migrationCount": 69
+  "migrationCount": 70
 }
