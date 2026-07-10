@@ -103,6 +103,19 @@ CREATE TABLE ai_faq_drafts (
   updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
 );
 
+CREATE TABLE ai_usage_budget (
+  id                TEXT PRIMARY KEY,
+  line_account_id   TEXT NOT NULL,
+  usage_date        TEXT NOT NULL,
+  llm_neurons       INTEGER NOT NULL DEFAULT 0,
+  embed_neurons     INTEGER NOT NULL DEFAULT 0,
+  image_neurons     INTEGER NOT NULL DEFAULT 0,
+  reply_count       INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  UNIQUE(line_account_id, usage_date)
+);
+
 CREATE TABLE auto_replies (
   id               TEXT PRIMARY KEY,
   keyword          TEXT NOT NULL,
@@ -1028,6 +1041,8 @@ CREATE INDEX idx_ad_conversion_logs_status ON ad_conversion_logs (status);
 CREATE INDEX idx_affiliate_clicks_affiliate ON affiliate_clicks (affiliate_id);
 
 CREATE INDEX idx_ai_faq_drafts_account_status ON ai_faq_drafts(line_account_id, status);
+
+CREATE INDEX idx_ai_usage_budget_date ON ai_usage_budget(usage_date);
 
 CREATE INDEX idx_auto_replies_template_id ON auto_replies(template_id);
 

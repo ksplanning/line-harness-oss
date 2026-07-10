@@ -30,6 +30,7 @@ export * from './roles';
 export * from './formaloo';
 export * from './auto-replies';
 export * from './faqs';
+export * from './ai-faq';
 export * from './traffic-pools';
 export * from './message-templates';
 export * from './rich-menus';

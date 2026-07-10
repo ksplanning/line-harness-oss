@@ -246,6 +246,23 @@ CREATE TABLE IF NOT EXISTS ai_faq_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_faq_drafts_account_status ON ai_faq_drafts(line_account_id, status);
 
+-- ============================================================
+-- AI usage budget (Phase B B-1 / Workers AI 無料枠の UTC 日 neuron 積算)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ai_usage_budget (
+  id                TEXT PRIMARY KEY,
+  line_account_id   TEXT NOT NULL,
+  usage_date        TEXT NOT NULL,
+  llm_neurons       INTEGER NOT NULL DEFAULT 0,
+  embed_neurons     INTEGER NOT NULL DEFAULT 0,
+  image_neurons     INTEGER NOT NULL DEFAULT 0,
+  reply_count       INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  UNIQUE(line_account_id, usage_date)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_budget_date ON ai_usage_budget(usage_date);
+
 CREATE TABLE IF NOT EXISTS unmatched_questions (
   id               TEXT PRIMARY KEY,
   line_account_id  TEXT DEFAULT NULL,
