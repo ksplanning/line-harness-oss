@@ -1,6 +1,8 @@
 import type { KnowledgeChunk } from '@line-crm/db';
 import { normalize, ngrams } from './faq-match.js';
 import { buildQuerySearchText } from './faq-fts.js';
+import { type LlmProvider } from './llm/llm-provider.js';
+import { type VectorizeIndex, queryChunkVectors, getVectorsByIds } from './vectorize.js';
 
 /**
  * Phase B B-3 — 取込ナレッジの worker 層 (計算/検索)。
@@ -184,4 +186,141 @@ export function buildChunkEvidenceBlock(chunk: { content: string }): string {
     chunk.content,
     close,
   ].join('\n');
+}
+
+// =============================================================================
+// chunks live RAG 検索 (T-D2/T-D3) — 質問 embed → Vectorize/FTS recall → cosine 統一 floor → D1 account 再確認
+// =============================================================================
+
+/** ベクトルの生 cosine 類似度 [-1,1] (Cloudflare Vectorize cosine と同尺度)。零長/長さ不一致は 0。 */
+export function cosine(a: number[], b: number[]): number {
+  if (a.length === 0 || a.length !== b.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/** 生 cosine [-1,1] を [0,1] に正規化 (floor を [0,1] 尺度で定義する / Codex blocking#1)。 */
+export function normalizeCosine(raw: number): number {
+  return (raw + 1) / 2;
+}
+
+/**
+ * embed 入力の neuron 見積 (usage 非返却のため text 長から高め見積 = fail-safe で退避側)。
+ * 日本語 ~chars/3 tokens より多い chars/2 で見積り、embedNeuronPerMTok を掛ける。
+ */
+export function computeEmbedNeurons(text: string, embedNeuronPerMTok: number): number {
+  const inTok = Math.ceil(text.length / 2);
+  return Math.ceil((inTok * embedNeuronPerMTok) / 1_000_000);
+}
+
+/** retrieveChunkEvidence の依存 (FaqAiRuntime の部分集合を narrow 型で受ける = 循環 import 回避 + mock 容易)。 */
+export interface ChunkEvidenceConfig {
+  provider: Pick<LlmProvider, 'embed'>;
+  vectorize: VectorizeIndex | null | undefined;
+  embedModelId: string | null | undefined;
+  /** 採用下限 = 正規化 cosine [0,1] (bm25 単独採用禁止 / 地雷 B4-1)。 */
+  chunkRelevanceFloor: number;
+  embedNeuronPerMTok: number;
+  /** Vectorize semantic recall の topK (広めに取り recall を稼ぐ)。 */
+  queryTopK?: number;
+  /** FTS bm25 recall の候補上限。 */
+  ftsLimit?: number;
+  /** 最終採用 chunk 数の上限。 */
+  maxChunks?: number;
+}
+
+export interface ChunkEvidence {
+  chunk: KnowledgeChunk;
+  /** 正規化 cosine [0,1] (>= chunkRelevanceFloor の採用済値)。 */
+  cosine: number;
+}
+
+export interface RetrieveChunkEvidenceResult {
+  chunks: ChunkEvidence[];
+  /** この検索で消費した質問 embed の neuron (呼び手が embed 直後に recordAiUsage する / Codex blocking#2b)。 */
+  embedNeurons: number;
+}
+
+/**
+ * chunks live RAG 検索 (T-D2/T-D3)。順序は呼び手が budget→embed を守る前提で呼ぶ。
+ *
+ * 1. Vectorize/embedModel 未設定 → [] (faqs-only=B-3 挙動へ graceful degrade)。
+ * 2. 質問 embed (embedNeurons を戻す = embed 成功後に呼び手が計上・query 失敗でも計上漏れ 0)。
+ * 3. recall = Vectorize semantic query (account filter) ∪ FTS bm25 (account scope・retrieveChunkCandidates 再利用)。
+ * 4. **全候補の cosine を同一方法 (getByIds → local 厳密 cosine) で確定** (近似 score と厳密の混用禁止 / Codex high)。
+ *    正規化 cosine (raw+1)/2 >= chunkRelevanceFloor のみ採用 (bm25 単独採用禁止・欠損ベクトルは不採用=default-deny)。
+ * 5. content は D1 が真実源。SQL に account 条件を含め他 account 本文を fetch しない (二重 account 確認 / T-D7・D-3)。
+ * 6. dedup by chunk.id・cosine 降順。
+ */
+export async function retrieveChunkEvidence(
+  db: D1Database,
+  cfg: ChunkEvidenceConfig,
+  question: string,
+  lineAccountId: string | null,
+): Promise<RetrieveChunkEvidenceResult> {
+  // [1] graceful degrade。
+  if (!cfg.vectorize || !cfg.embedModelId) return { chunks: [], embedNeurons: 0 };
+
+  // [2] 質問 embed。失敗は degrade (未計上=消費なし扱い)。
+  const embedNeurons = computeEmbedNeurons(question, cfg.embedNeuronPerMTok);
+  let qvec: number[];
+  try {
+    qvec = await cfg.provider.embed(question);
+  } catch {
+    return { chunks: [], embedNeurons: 0 };
+  }
+  if (!qvec || qvec.length === 0) return { chunks: [], embedNeurons };
+
+  // embed 成功後は embedNeurons を必ず戻す (以降の query/D1 が失敗しても計上漏れゼロ)。
+  try {
+    // [3] recall (semantic ∪ bm25)。
+    const topK = cfg.queryTopK ?? 10;
+    const matches = await queryChunkVectors(cfg.vectorize, qvec, { topK, accountId: lineAccountId });
+    const ftsCandidates = await retrieveChunkCandidates(db, question, lineAccountId, cfg.ftsLimit ?? 5);
+    const recallIds = Array.from(new Set([...matches.map((m) => m.id), ...ftsCandidates.map((c) => c.chunk.id)]));
+    if (recallIds.length === 0) return { chunks: [], embedNeurons };
+
+    // [4] cosine 統一確定 (getByIds → local 厳密)。欠損ベクトルは不採用。
+    const stored = await getVectorsByIds(cfg.vectorize, recallIds);
+    const scored: { id: string; cosine: number }[] = [];
+    for (const v of stored) {
+      if (!v.values || v.values.length === 0) continue; // 欠損 = default-deny
+      const sim01 = normalizeCosine(cosine(qvec, v.values));
+      if (sim01 >= cfg.chunkRelevanceFloor) scored.push({ id: v.id, cosine: sim01 });
+    }
+    if (scored.length === 0) return { chunks: [], embedNeurons };
+    scored.sort((a, b) => b.cosine - a.cosine);
+    const top = scored.slice(0, cfg.maxChunks ?? 5);
+
+    // [5] content を D1 から account 条件付きで取得 (他 account 本文を SQL で弾く)。
+    const ids = top.map((s) => s.id);
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = await db
+      .prepare(
+        `SELECT * FROM knowledge_chunks
+          WHERE id IN (${placeholders})
+            AND (line_account_id IS NULL OR line_account_id = ?)`,
+      )
+      .bind(...ids, lineAccountId)
+      .all<KnowledgeChunk>();
+    const byId = new Map(rows.results.map((r) => [r.id, r]));
+
+    // [6] cosine 降順で dedup 済 chunk を返す (D1 に無い id = 他 account 等 → 不採用)。
+    const chunks: ChunkEvidence[] = [];
+    for (const s of top) {
+      const chunk = byId.get(s.id);
+      if (chunk) chunks.push({ chunk, cosine: s.cosine });
+    }
+    return { chunks, embedNeurons };
+  } catch {
+    return { chunks: [], embedNeurons };
+  }
 }

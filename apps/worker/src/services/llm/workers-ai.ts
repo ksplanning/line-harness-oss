@@ -14,6 +14,8 @@ import {
 export interface WorkersAiRunResult {
   response?: string;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
+  /** embedding モデル (`ai.run(embedModel,{text})`) の戻り: data[0] が埋め込みベクトル (B-4 T-D2)。 */
+  data?: number[][];
 }
 
 export interface WorkersAiBinding {
@@ -29,6 +31,7 @@ export class WorkersAiProvider implements LlmProvider {
   constructor(
     private readonly ai: WorkersAiBinding,
     private readonly modelId: string | undefined,
+    private readonly embedModelId?: string | undefined,
   ) {}
 
   async generate(prompt: LlmPrompt, opts?: LlmGenerateOptions): Promise<LlmGenerateResult> {
@@ -56,8 +59,18 @@ export class WorkersAiProvider implements LlmProvider {
     return { text: res.response ?? '', usage };
   }
 
-  async embed(_text: string): Promise<number[]> {
-    // B-1 では呼び手なし (暫定 Retrieval は Phase A best FAQ)。埋め込みモデル確定は B-2/B-4。
-    throw new LlmConfigError('embed() is not wired in B-1 (see B-2/B-4)');
+  async embed(text: string): Promise<number[]> {
+    // embedModelId は env.AI_EMBED_MODEL_ID を注入 (literal 焼き込みなし / 地雷 B4-2)。未設定 → 送らず
+    // LlmConfigError で fail-safe (呼び手が faqs-only=B-3 挙動へ graceful degrade)。
+    const model = (this.embedModelId ?? '').trim();
+    if (!model) {
+      throw new LlmConfigError('AI_EMBED_MODEL_ID is not configured');
+    }
+    const res = await this.ai.run(model, { text });
+    const vector = res.data?.[0];
+    if (!vector || vector.length === 0) {
+      throw new LlmConfigError('embed() returned no vector');
+    }
+    return vector;
   }
 }
