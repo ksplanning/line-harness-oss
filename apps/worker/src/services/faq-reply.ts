@@ -8,6 +8,8 @@ import {
 } from '@line-crm/db';
 import { buildMessage } from './step-delivery.js';
 import { matchFaqDetailed, type MatchableFaq } from './faq-match.js';
+import { runFaqAiAnswer, type AnswerMode } from './faq-ai.js';
+import { type FaqAiRuntime } from './llm/runtime.js';
 
 interface FaqBotSettings {
   enabled: boolean;
@@ -15,6 +17,7 @@ interface FaqBotSettings {
   handoffMessage: string;
   autoReplyNotice: string;
   maxRepliesPerDay: number;
+  answerMode: AnswerMode;
 }
 
 const DEFAULT_SETTINGS: FaqBotSettings = {
@@ -23,6 +26,7 @@ const DEFAULT_SETTINGS: FaqBotSettings = {
   handoffMessage: '',
   autoReplyNotice: '',
   maxRepliesPerDay: 5,
+  answerMode: 'auto',
 };
 
 export interface TryFaqReplyOptions {
@@ -51,6 +55,7 @@ function parseSettings(value: string | null | undefined): FaqBotSettings {
       handoffMessage: typeof parsed.handoffMessage === 'string' ? parsed.handoffMessage : DEFAULT_SETTINGS.handoffMessage,
       autoReplyNotice: typeof parsed.autoReplyNotice === 'string' ? parsed.autoReplyNotice : DEFAULT_SETTINGS.autoReplyNotice,
       maxRepliesPerDay: typeof parsed.maxRepliesPerDay === 'number' ? parsed.maxRepliesPerDay : DEFAULT_SETTINGS.maxRepliesPerDay,
+      answerMode: parsed.answerMode === 'draft' ? 'draft' : DEFAULT_SETTINGS.answerMode,
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -102,6 +107,7 @@ export async function tryFaqReply(
   db: D1Database,
   lineClient: ReplyClient,
   opts: TryFaqReplyOptions,
+  ai?: FaqAiRuntime | null,
 ): Promise<TryFaqReplyResult> {
   const settings = await getFaqBotSettings(db, opts.lineAccountId);
   if (settings.enabled !== true) {
@@ -119,6 +125,33 @@ export async function tryFaqReply(
     await incrementFaqHitCount(db, detail.match.faq.id);
     await logFaqOutgoing(db, opts.friend.id, 'faq_bot', answer);
     return { replied: true, handoff: false };
+  }
+
+  // Phase B: AI 後段 (match=null 時のみ・provider 注入時のみ)。webhook.ts:722 の
+  // FAQ_BOT_ENABLED gate が閉なら tryFaqReply 自体到達しない (dark-ship)。
+  if (ai?.provider && detail.match === null) {
+    const outcome = await runFaqAiAnswer(
+      db,
+      detail,
+      {
+        question: opts.incomingText,
+        answerMode: settings.answerMode,
+        lineAccountId: opts.lineAccountId,
+        friendId: opts.friend.id,
+        overLimit,
+      },
+      ai,
+    );
+    if (outcome.kind === 'auto_send') {
+      const answer = `${outcome.answer}${settings.autoReplyNotice ? `\n${settings.autoReplyNotice}` : ''}`;
+      await lineClient.replyMessage(opts.replyToken, [buildMessage('text', answer)]);
+      await logFaqOutgoing(db, opts.friend.id, 'faq_bot', answer);
+      return { replied: true, handoff: false };
+    }
+    if (outcome.kind === 'draft_saved') {
+      return { replied: false, handoff: false };
+    }
+    // escalate → 既存の recordUnmatchedQuestion 経路へ落ちる (単一 record 地点)。
   }
 
   await recordUnmatchedQuestion(db, {

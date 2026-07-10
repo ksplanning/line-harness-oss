@@ -9,6 +9,7 @@ import {
   getPoolAccounts,
   getEntryRouteByRefCode,
 } from '@line-crm/db';
+import { type WorkersAiBinding } from './services/llm/workers-ai.js';
 import { processStepDeliveries } from './services/step-delivery.js';
 import { processScheduledBroadcasts, processQueuedBroadcasts } from './services/broadcast.js';
 import { isRichMenuScheduleEnabled, processRichMenuSchedule } from './services/rich-menu-schedule.js';
@@ -129,6 +130,17 @@ export type Env = {
     LIFF_PAGES_PROJECT?: string;
     D1_DATABASE_ID?: string;
     FAQ_BOT_ENABLED?: string;
+    // Phase B (B-1) — Workers AI 接続層。`[ai] binding = "AI"` と AI_* [vars] は
+    // infra 工程 (closer/デプロイ) で wrangler に追記する (repo/コードに literal を置かない)。
+    // 未設定 dev では createFaqAiRuntime() が null を返し AI 後段を組まない (dark-ship default)。
+    AI?: WorkersAiBinding;
+    AI_MODEL_ID?: string;                       // 非 deprecated 8B 級 (default 値は wrangler [vars])
+    AI_RETRIEVAL_FLOOR?: string;                // 暫定 Retrieval 下限 (< threshold 0.6)
+    AI_TIMEOUT_MS?: string;                      // generate timeout
+    AI_NEURON_PER_MTOK_IN?: string;             // token→neuron 換算係数 (モデル別)
+    AI_NEURON_PER_MTOK_OUT?: string;
+    AI_DAILY_NEURON_BUDGET_GLOBAL?: string;     // 共有無料枠の合算上限 (fail-closed)
+    AI_DAILY_NEURON_BUDGET_PER_ACCOUNT?: string;
     // G17 期間限定リッチメニューの自動切替 flag。既定 OFF (未設定) = dark-ship。
     // KS 本番は crons=[] でもあり二重に dark (owner 立会後に 'true' + cron 設定で有効化)。
     RICH_MENU_SCHEDULE_ENABLED?: string;

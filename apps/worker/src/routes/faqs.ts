@@ -20,6 +20,8 @@ const DEFAULT_FAQ_BOT_SETTINGS = {
   handoffMessage: '',
   autoReplyNotice: '',
   maxRepliesPerDay: 5,
+  // Phase B B-1 (D3): AI 回答モード。'auto'=送信 / 'draft'=草案保存 (承認 UI は B-5)。default 'auto'。
+  answerMode: 'auto' as 'auto' | 'draft',
 };
 
 function parseVariants(raw: string): string[] {
@@ -64,6 +66,7 @@ function normalizeSettings(input: Partial<typeof DEFAULT_FAQ_BOT_SETTINGS>) {
     handoffMessage: typeof input.handoffMessage === 'string' ? input.handoffMessage : DEFAULT_FAQ_BOT_SETTINGS.handoffMessage,
     autoReplyNotice: typeof input.autoReplyNotice === 'string' ? input.autoReplyNotice : DEFAULT_FAQ_BOT_SETTINGS.autoReplyNotice,
     maxRepliesPerDay: typeof input.maxRepliesPerDay === 'number' ? input.maxRepliesPerDay : DEFAULT_FAQ_BOT_SETTINGS.maxRepliesPerDay,
+    answerMode: input.answerMode === 'draft' ? 'draft' : DEFAULT_FAQ_BOT_SETTINGS.answerMode,
   };
 }
 

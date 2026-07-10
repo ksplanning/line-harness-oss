@@ -24,6 +24,7 @@ import {
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
+import { createFaqAiRuntime, type FaqAiRuntime } from '../services/llm/runtime.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -160,12 +161,15 @@ webhook.post('/webhook', async (c) => {
   }
 
   const lineClient = new LineClient(channelAccessToken);
+  // Phase B (B-1): AI 後段の runtime。env.AI binding 未設定 (infra 工程前) は null =
+  // AI 後段を組まない (dark-ship default)。FAQ_BOT_ENABLED gate とは独立の二重 dark。
+  const faqAiRuntime = createFaqAiRuntime(c.env);
 
   // 非同期処理 — LINE は ~1s 以内のレスポンスを要求
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES, c.env.FAQ_BOT_ENABLED);
+        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES, c.env.FAQ_BOT_ENABLED, faqAiRuntime);
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -187,6 +191,7 @@ async function handleEvent(
   liffUrl?: string,
   r2?: R2Bucket,
   faqBotEnabled?: string,
+  faqAiRuntime?: FaqAiRuntime | null,
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -726,7 +731,7 @@ async function handleEvent(
         incomingText,
         lineAccountId,
         replyToken: event.replyToken,
-      });
+      }, faqAiRuntime);
       if (faqResult.replied) {
         matched = true;
         replyTokenConsumed = true;
