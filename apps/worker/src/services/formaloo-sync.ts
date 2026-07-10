@@ -13,8 +13,9 @@ import type { FormalooClient } from './formaloo-client';
 //   マッピング (shared formaloo-forms) して client 経由で送る。
 // fail-soft (N-6): どの段でも失敗したら { ok:false } を返す (throw しない)。呼び出し側 (route) は
 //   sync_status='out_of_sync' で D1 保存を維持し、UI に「未同期」バッジ + 再試行を出す (N-13)。
-// ⚠️ 書き込み endpoint (POST /forms/・/fields/・logic) の厳密な payload は live push (closer S-1 +
-//   browser-evaluator) で最終確定する。本実装は documented API 形に沿った fail-soft な骨格。
+// ✅ field push endpoint は live 実測で確定 (2026-07-10): POST /v3.0/fields/ に body.form=slug で
+//   201・応答 data.field.slug。form 作成 (POST /v3.0/forms/) / logic 反映 (PUT /v3.0/forms/{slug}/ の
+//   logic key) も documented API 準拠。どの段の失敗も {ok:false} で fail-soft (N-6) を維持。
 // =============================================================================
 
 export interface PushResult {
@@ -60,10 +61,13 @@ export async function pushDefinitionToFormaloo(
   }
 
   // 2) fields を作成し slug を集める (N-13: field 単位。1 つでも失敗したら out_of_sync)
+  // field は top-level POST /v3.0/fields/ へ送り、所属 form は body の `form` slug で紐づける。
+  // 旧実装の form-nested path (POST /v3.0/forms/{slug}/fields/) は本番 Formaloo API に存在せず
+  // HTTP 404 になっていた (2026-07-10 本番検証で発覚 / 正 endpoint は live 実測で確定)。
   const fieldSlugs: Record<string, string> = {};
   for (const field of params.fields) {
-    const payload = toFormalooFieldPayload(field);
-    const res = await client.post<FieldCreateResp>(`/v3.0/forms/${slug}/fields/`, payload);
+    const payload = { ...toFormalooFieldPayload(field), form: slug };
+    const res = await client.post<FieldCreateResp>('/v3.0/fields/', payload);
     if (!res.ok) return { ok: false, formalooSlug: slug, error: `field push failed (${field.id}): HTTP ${res.status}` };
     const fslug = res.data?.data?.field?.slug ?? res.data?.data?.slug;
     if (!fslug) return { ok: false, formalooSlug: slug, error: `field push: slug missing (${field.id})` };

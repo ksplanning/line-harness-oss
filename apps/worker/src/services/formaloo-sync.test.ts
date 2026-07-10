@@ -56,10 +56,12 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
 
     // form 作成呼び出し
     expect(calls[0]).toMatchObject({ method: 'POST', path: '/v3.0/forms/', body: { title: 'テスト' } });
-    // field は Formaloo 形式 (short_text/max_length)
-    expect(calls[1].path).toBe('/v3.0/forms/FORMSLUG/fields/');
-    expect(calls[1].body).toMatchObject({ type: 'short_text', title: '名前', max_length: 30, required: true });
-    expect(calls[2].body).toMatchObject({ type: 'choice', title: '性別', choices: ['男', '女'] });
+    // field 作成は top-level /v3.0/fields/ へ POST し、form slug は URL でなく body で紐づく。
+    // 旧実装 /v3.0/forms/{slug}/fields/ は本番 Formaloo API に存在せず HTTP 404 だった (本番 404 回帰ガード)。
+    expect(calls[1].path).toBe('/v3.0/fields/');
+    expect(calls[1].body).toMatchObject({ form: 'FORMSLUG', type: 'short_text', title: '名前', max_length: 30, required: true });
+    expect(calls[2].path).toBe('/v3.0/fields/');
+    expect(calls[2].body).toMatchObject({ form: 'FORMSLUG', type: 'choice', title: '性別', choices: ['男', '女'] });
     // logic は Formaloo slug ベース (harness id でなく FS1/FS2)
     const putCall = calls.find((c) => c.method === 'PUT')!;
     const body = putCall.body as { logic: { rules: Array<{ conditions: Array<{ field: string }>; actions: Array<{ field: string }> }> } };
@@ -98,6 +100,7 @@ describe('pushDefinitionToFormaloo — fail-soft (N-6)', () => {
     const r = await pushDefinitionToFormaloo(client, { formalooSlug: 'EXISTING', title: 't', fields, logic });
     expect(r.ok).toBe(true);
     expect(r.formalooSlug).toBe('EXISTING');
-    expect(calls[0].path).toBe('/v3.0/forms/EXISTING/fields/'); // form 作成なし
+    expect(calls[0].path).toBe('/v3.0/fields/'); // form 作成なし・field は top-level endpoint へ
+    expect(calls[0].body).toMatchObject({ form: 'EXISTING', type: 'short_text' }); // 既存 slug を body で紐づけ
   });
 });
