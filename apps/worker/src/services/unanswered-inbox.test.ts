@@ -63,9 +63,11 @@ function stubDB(canned: {
     created_at: ar.created_at ?? '2000-01-01T00:00:00+09:00',
   }));
 
+  // 本番 SQL は WHERE source IN ('auto_reply','faq_bot') = source は常に存在する列。SELECT ml.source を
+  // 追加した (T-E5) ため stub も source を返す。未指定 outgoing は auto_reply 既定 (D-1 前の legacy 挙動)。
   const autoReplyOutgoings = (canned.autoReplyOutgoings ?? [])
     .filter((row) => row.source !== 'faq_handoff')
-    .map(({ source: _source, ...row }) => row);
+    .map((row) => ({ ...row, source: row.source ?? 'auto_reply' }));
 
   return {
     prepare(sql: string) {
@@ -688,5 +690,57 @@ describe('auto_reply マッチ除外', () => {
     const ids = await getUnansweredFriendIds(db);
     expect(ids.has('f_hit')).toBe(false);
     expect(ids.has('f_handoff')).toBe(true);
+  });
+
+  // D-1 (5秒証拠窓 vs LLM 遅延) の救済近似 (T-E5)。faq_bot は LLM 生成 + LINE 往復 + logging で 5 秒を超え得るため
+  // source 別窓 (faq_bot=大窓 30s・auto_reply=5000ms byte-identical) にする。auto_reply 判定は不変・本番の faq_bot 行は
+  // flag ON まで 0 件 (dark-ship 安全)。既存 faq_bot 行 fixture でも既存 inbox 結果を壊さない。
+  describe('D-1 救済: faq_bot 遅延吸収 (source 別窓 / T-E5)', () => {
+  test('faq_bot 返信が incoming の 8 秒後でも証拠として消える (「答えたのに残る」の救済)', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:00:00+09:00' })],
+      recentIncomings: [
+        { friend_id: 'f1', message_type: 'text', content: '定休日はいつですか？', created_at: '2026-05-08T10:00:00+09:00' },
+      ],
+      autoReplyOutgoings: [
+        // LLM 生成が 8 秒かかった faq_bot 返信 (旧 5 秒窓では取りこぼしていた)。
+        { friend_id: 'f1', created_at: '2026-05-08T10:00:08+09:00', source: 'faq_bot' },
+      ],
+    });
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(0);
+  });
+
+  test('auto_reply は 6 秒後だと証拠扱いしない (5000ms byte-identical・大窓を適用しない)', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:00:00+09:00' })],
+      recentIncomings: [
+        { friend_id: 'f1', message_type: 'text', content: 'なんでも質問', created_at: '2026-05-08T10:00:00+09:00' },
+      ],
+      autoReplyOutgoings: [
+        // auto_reply は keyword 即応前提の 5 秒窓のまま。6 秒後は証拠にしない (退行なし)。
+        { friend_id: 'f1', created_at: '2026-05-08T10:00:06+09:00', source: 'auto_reply' },
+      ],
+    });
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+  });
+
+  test('faq_bot 大窓でも outgoing 1 件は incoming 1 件しか consume しない (古い free-form は残る)', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:00:02+09:00' })],
+      recentIncomings: [
+        { friend_id: 'f1', message_type: 'text', content: 'B (質問)', created_at: '2026-05-08T10:00:02+09:00' },
+        { friend_id: 'f1', message_type: 'text', content: 'A (free)', created_at: '2026-05-08T10:00:00+09:00' },
+      ],
+      autoReplyOutgoings: [
+        // faq_bot 返信 1 件 (B の 3 秒後)。newest-first で B に consume され A は残る。
+        { friend_id: 'f1', created_at: '2026-05-08T10:00:05+09:00', source: 'faq_bot' },
+      ],
+    });
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].lastIncomingContent).toBe('A (free)');
+  });
   });
 });

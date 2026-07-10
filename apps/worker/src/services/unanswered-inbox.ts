@@ -50,20 +50,31 @@ function matchesAnyKeyword(
 // 5 秒は webhook が auto_reply を送るまでの最大時間として保守的に取る。
 const AUTO_REPLY_EVIDENCE_WINDOW_MS = 5_000;
 
+// D-1 救済 (T-E5): faq_bot (FAQ AI) 返信は Workers AI generate (AI_TIMEOUT_MS 既定 8s / runtime.ts:54) +
+// LINE API 往復 + messages_log 書込を経るため incoming の 5 秒後を超えて log され得る。5 秒窓のままだと
+// 「AI が答えたのに未対応インボックスに残る」ため、faq_bot 証拠だけ大きめの窓 (30s = 想定 AI timeout の上限 +
+// 往復 + logging の保守値) で判定する。auto_reply (keyword 即応) の 5000ms 判定は byte-identical (退行なし)。
+// owner 立会後に定数調整可 (env スレッドは非導入 = getAllUnansweredRows は db のみ受ける最小改修)。
+const FAQ_AI_EVIDENCE_WINDOW_MS = 30_000;
+
 /**
  * outgoing 1 件は incoming 1 件にしかマッチさせない。
  * 同じ友だちが短時間に複数メッセを送って auto_reply が 1 件しか飛ばないケース、
  * 古い free-form メッセが新しいマッチメッセの outgoing で誤判定される (codex
  * round 3 P1) のを防ぐ。consume 済み outgoing は配列から取り除く。
+ *
+ * 証拠窓は source 別 (T-E5): faq_bot は LLM 遅延を吸収する大窓・auto_reply は 5000ms (byte-identical)。
  */
 function consumeAutoReplyEvidence(
   incomingAt: string,
-  remainingOutgoings: { created_at: string }[],
+  remainingOutgoings: { created_at: string; source: string }[],
 ): boolean {
   const inMs = new Date(incomingAt).getTime();
   for (let i = 0; i < remainingOutgoings.length; i++) {
-    const outMs = new Date(remainingOutgoings[i].created_at).getTime();
-    if (outMs >= inMs && outMs - inMs <= AUTO_REPLY_EVIDENCE_WINDOW_MS) {
+    const out = remainingOutgoings[i];
+    const win = out.source === 'faq_bot' ? FAQ_AI_EVIDENCE_WINDOW_MS : AUTO_REPLY_EVIDENCE_WINDOW_MS;
+    const outMs = new Date(out.created_at).getTime();
+    if (outMs >= inMs && outMs - inMs <= win) {
       remainingOutgoings.splice(i, 1);
       return true;
     }
@@ -138,7 +149,7 @@ const RECENT_AUTO_REPLY_OUTGOINGS_SQL = `
     WHERE direction='outgoing' AND source='manual'
     GROUP BY friend_id
   )
-  SELECT ml.friend_id, ml.created_at
+  SELECT ml.friend_id, ml.created_at, ml.source
   FROM messages_log ml
   LEFT JOIN last_manual lm ON lm.friend_id = ml.friend_id
   WHERE ml.direction='outgoing'
@@ -240,7 +251,7 @@ async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
 
   const [incomingsResult, autoReplyOutgoingsResult, activeRulesResult] = await Promise.all([
     db.prepare(RECENT_INCOMINGS_SQL).all<RawIncomingRow>(),
-    db.prepare(RECENT_AUTO_REPLY_OUTGOINGS_SQL).all<{ friend_id: string; created_at: string }>(),
+    db.prepare(RECENT_AUTO_REPLY_OUTGOINGS_SQL).all<{ friend_id: string; created_at: string; source: string }>(),
     db.prepare(ACTIVE_AUTO_REPLIES_SQL).all<ActiveRuleRow>(),
   ]);
 
@@ -255,12 +266,12 @@ async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
     list.push(row);
     incomingsByFriend.set(row.friend_id, list);
   }
-  // friend_id ごとに auto_reply outgoings を集める (created_at ASC ソート済み)。
-  const autoReplyOutgoingsByFriend = new Map<string, { created_at: string }[]>();
+  // friend_id ごとに auto_reply/faq_bot outgoings を集める (created_at ASC ソート済み・source 別窓判定に source を保持)。
+  const autoReplyOutgoingsByFriend = new Map<string, { created_at: string; source: string }[]>();
   for (const row of autoReplyOutgoingsResult.results ?? []) {
     if (!candidateIds.has(row.friend_id)) continue;
     const list = autoReplyOutgoingsByFriend.get(row.friend_id) ?? [];
-    list.push({ created_at: row.created_at });
+    list.push({ created_at: row.created_at, source: row.source });
     autoReplyOutgoingsByFriend.set(row.friend_id, list);
   }
 
