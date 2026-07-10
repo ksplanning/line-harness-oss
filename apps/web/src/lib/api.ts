@@ -964,6 +964,53 @@ export const api = {
         }),
     },
   },
+  // B-5 取込ナレッジ管理 (資料 upload/一覧/削除/再取込 + AI ログ/コスト)。permission=faq (knowledge prefix)。
+  knowledge: {
+    // 取込 (kind=text: 抽出済テキスト or 貼付 / kind=url: URL 取込)。accountId は必須 (POST スコープ)。
+    ingest: (body: { accountId: string; kind: 'text' | 'url'; content?: string; url?: string; title?: string }) =>
+      fetchApi<ApiResponse<{ id: string; sourceType: string; chunkCount: number }>>(
+        `/api/knowledge/ingest?accountId=${encodeURIComponent(body.accountId)}`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    documents: (params?: { accountId?: string }) => {
+      const query = params?.accountId ? '?accountId=' + encodeURIComponent(params.accountId) : ''
+      return fetchApi<ApiResponse<Array<{
+        id: string; lineAccountId: string | null; sourceType: 'url' | 'text'; sourceUrl: string | null;
+        title: string | null; createdAt: string; updatedAt: string; chunkCount: number; embeddedCount: number;
+      }>>>('/api/knowledge/documents' + query)
+    },
+    deleteDocument: (id: string, accountId?: string | null) =>
+      fetchApi<ApiResponse<null>>(
+        `/api/knowledge/documents/${encodeURIComponent(id)}` + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
+        { method: 'DELETE' },
+      ),
+    reingest: (id: string, accountId?: string | null) =>
+      fetchApi<{ success: boolean; data?: { id: string; chunkCount: number }; error?: string; reason?: string }>(
+        `/api/knowledge/documents/${encodeURIComponent(id)}/reingest` + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
+        { method: 'POST' },
+      ),
+    aiUsage: (params: { accountId?: string | null; days?: number }) => {
+      const p = new URLSearchParams()
+      if (params.accountId) p.set('accountId', params.accountId)
+      if (params.days) p.set('days', String(params.days))
+      const qs = p.toString()
+      return fetchApi<ApiResponse<{
+        account: Array<{ usageDate: string; llmNeurons: number; embedNeurons: number; imageNeurons: number; replyCount: number }>;
+        global: Array<{ usageDate: string; llmNeurons: number; embedNeurons: number; imageNeurons: number; replyCount: number }>;
+        embeddedChunks: number;
+      }>>(`/api/knowledge/ai-usage${qs ? `?${qs}` : ''}`)
+    },
+    aiDrafts: (params: { accountId?: string | null; status?: string; limit?: number }) => {
+      const p = new URLSearchParams()
+      if (params.accountId) p.set('accountId', params.accountId)
+      if (params.status) p.set('status', params.status)
+      if (params.limit) p.set('limit', String(params.limit))
+      const qs = p.toString()
+      return fetchApi<ApiResponse<Array<{ id: string; question: string; draftAnswer: string; status: string; createdAt: string }>>>(
+        `/api/knowledge/ai-drafts${qs ? `?${qs}` : ''}`,
+      )
+    },
+  },
   automations: {
     list: (params?: { accountId?: string }) => {
       const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''

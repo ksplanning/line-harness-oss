@@ -34,6 +34,7 @@ export const NAV_FEATURE: Record<string, string> = {
   '/automations': 'scenario',
   '/auto-replies': 'auto_reply',
   '/faqs': 'faq',
+  '/knowledge': 'faq',
   '/webhooks': 'account',
   '/notifications': 'chat',
   '/booking/bookings': 'booking',
