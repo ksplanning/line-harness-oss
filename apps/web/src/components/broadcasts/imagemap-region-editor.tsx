@@ -87,27 +87,40 @@ export default function ImagemapRegionEditor({
     )
   }
 
-  function handleCanvasMouseDown(e: React.MouseEvent) {
+  // タッチ/ペンで指が要素外へ出てもドラッグを継続する (window リスナと二重の安全網)。
+  // jsdom は setPointerCapture 未実装なので try/catch で握りつぶす (テストは window リスナ側で成立)。
+  function capturePointer(e: React.PointerEvent) {
+    try {
+      canvasRef.current?.setPointerCapture(e.pointerId)
+    } catch {
+      /* 未対応環境 (jsdom 等) では no-op */
+    }
+  }
+
+  function handleCanvasPointerDown(e: React.PointerEvent) {
     if (e.target !== canvasRef.current) return
+    capturePointer(e)
     const { x, y } = toImageCoord(e.clientX, e.clientY)
     setDrag({ mode: 'create', startX: x, startY: y, curX: x, curY: y })
     setSelected(null)
   }
-  function handleRegionMouseDown(e: React.MouseEvent, index: number) {
+  function handleRegionPointerDown(e: React.PointerEvent, index: number) {
     e.stopPropagation()
+    capturePointer(e)
     setSelected(index)
     const { x, y } = toImageCoord(e.clientX, e.clientY)
     setDrag({ mode: 'move', index, original: rectOf(regionsRef.current[index]), startX: x, startY: y })
   }
-  function handleHandleMouseDown(e: React.MouseEvent, index: number, handle: string) {
+  function handleHandlePointerDown(e: React.PointerEvent, index: number, handle: string) {
     e.stopPropagation()
+    capturePointer(e)
     const { x, y } = toImageCoord(e.clientX, e.clientY)
     setDrag({ mode: 'resize', index, original: rectOf(regionsRef.current[index]), handle, startX: x, startY: y })
   }
 
   useEffect(() => {
     if (!drag) return
-    function onMove(e: MouseEvent) {
+    function onMove(e: PointerEvent) {
       const { x, y } = toImageCoord(e.clientX, e.clientY)
       if (drag!.mode === 'create') {
         setDrag({ ...drag!, curX: x, curY: y })
@@ -143,7 +156,7 @@ export default function ImagemapRegionEditor({
       rh = Math.min(bh - ry, rh)
       patchRect(drag!.index, { x: rx, y: ry, width: rw, height: rh })
     }
-    function onUp(e: MouseEvent) {
+    function onUp(e: PointerEvent) {
       if (drag!.mode === 'create') {
         // 端ドラッグで画像外に出た終点を境界内へ clamp してから矩形化する。始点は canvas 内の
         // pointerdown 由来で既に境界内なので、clampX/clampY を幅0で使い「点」を [0,bw]/[0,bh] に
@@ -170,11 +183,17 @@ export default function ImagemapRegionEditor({
       }
       setDrag(null)
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    // タッチ中断 (通知割込み・多点タッチ等) はコミットせず drag を破棄する (stuck 防止)。
+    function onCancel() {
+      setDrag(null)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
     return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
     }
     // drag のみ deps: regions は regionsRef で最新参照 (ドラッグ中の再アタッチを避ける)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -201,7 +220,7 @@ export default function ImagemapRegionEditor({
         <div
           ref={canvasRef}
           data-testid="imagemap-canvas"
-          onMouseDown={handleCanvasMouseDown}
+          onPointerDown={handleCanvasPointerDown}
           className="absolute inset-0"
           style={{ cursor: 'crosshair', touchAction: 'none' }}
         >
@@ -217,7 +236,7 @@ export default function ImagemapRegionEditor({
               <div
                 key={i}
                 data-testid={`region-${i}`}
-                onMouseDown={(e) => handleRegionMouseDown(e, i)}
+                onPointerDown={(e) => handleRegionPointerDown(e, i)}
                 className="absolute"
                 style={{
                   left: `${(rect.x / bw) * 100}%`,
@@ -238,7 +257,7 @@ export default function ImagemapRegionEditor({
                     <div
                       key={h}
                       data-testid={`handle-${i}-${h}`}
-                      onMouseDown={(e) => handleHandleMouseDown(e, i, h)}
+                      onPointerDown={(e) => handleHandlePointerDown(e, i, h)}
                       className="absolute w-3 h-3 bg-green-600 rounded-sm"
                       style={handlePos(h)}
                     />

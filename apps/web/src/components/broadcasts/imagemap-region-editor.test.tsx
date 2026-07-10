@@ -34,9 +34,9 @@ describe('T-A1 ImagemapRegionEditor', () => {
       <ImagemapRegionEditor imageUrl="https://x/im" baseW={1040} baseH={1040} regions={[]} onChange={onChange} />,
     )
     const canvas = mockCanvasRect(container)
-    fireEvent.mouseDown(canvas, { clientX: 100, clientY: 100 })
-    fireEvent.mouseMove(window, { clientX: 300, clientY: 400 })
-    fireEvent.mouseUp(window, { clientX: 300, clientY: 400 })
+    fireEvent.pointerDown(canvas, { clientX: 100, clientY: 100 })
+    fireEvent.pointerMove(window, { clientX: 300, clientY: 400 })
+    fireEvent.pointerUp(window, { clientX: 300, clientY: 400 })
     expect(onChange).toHaveBeenCalled()
     const regions = lastCall(onChange)
     expect(regions).toHaveLength(1)
@@ -50,9 +50,9 @@ describe('T-A1 ImagemapRegionEditor', () => {
     )
     const canvas = mockCanvasRect(container)
     // 右下 (900,900) から画像外 (2000,2000) までドラッグ → 座標が境界を越えない (端に収まる)。
-    fireEvent.mouseDown(canvas, { clientX: 900, clientY: 900 })
-    fireEvent.mouseMove(window, { clientX: 2000, clientY: 2000 })
-    fireEvent.mouseUp(window, { clientX: 2000, clientY: 2000 })
+    fireEvent.pointerDown(canvas, { clientX: 900, clientY: 900 })
+    fireEvent.pointerMove(window, { clientX: 2000, clientY: 2000 })
+    fireEvent.pointerUp(window, { clientX: 2000, clientY: 2000 })
     const r = lastCall(onChange)[0]
     expect(Number(r.x)).toBeGreaterThanOrEqual(0)
     expect(Number(r.y)).toBeGreaterThanOrEqual(0)
@@ -61,6 +61,22 @@ describe('T-A1 ImagemapRegionEditor', () => {
     // 始点 (900) は保たれ、端 (1040) までの帯として収まる (全幅化しない)。
     expect(Number(r.x)).toBe(900)
     expect(Number(r.width)).toBe(140)
+  })
+
+  it('タッチ (pointer events) で新しい矩形を描ける (G65 backlog / スマホ領域編集)', () => {
+    const onChange = vi.fn()
+    const { container } = render(
+      <ImagemapRegionEditor imageUrl="https://x/im" baseW={1040} baseH={1040} regions={[]} onChange={onChange} />,
+    )
+    const canvas = mockCanvasRect(container)
+    // 指ドラッグ = pointerType 'touch' の pointerdown→move→up 経路で領域が作られる。
+    fireEvent.pointerDown(canvas, { clientX: 100, clientY: 100, pointerId: 1, pointerType: 'touch' })
+    fireEvent.pointerMove(window, { clientX: 300, clientY: 400, pointerId: 1, pointerType: 'touch' })
+    fireEvent.pointerUp(window, { clientX: 300, clientY: 400, pointerId: 1, pointerType: 'touch' })
+    expect(onChange).toHaveBeenCalled()
+    const regions = lastCall(onChange)
+    expect(regions).toHaveLength(1)
+    expect(regions[0]).toMatchObject({ x: '100', y: '100', width: '200', height: '300' })
   })
 
   it('既存 regions を矩形として描画する (数値入力と同じ配列を受け取る)', () => {
@@ -80,8 +96,8 @@ describe('T-A1 ImagemapRegionEditor', () => {
     )
     const canvas = mockCanvasRect(container)
     const region = container.querySelector('[data-testid="region-0"]') as HTMLElement
-    fireEvent.mouseDown(region, { clientX: 50, clientY: 50 })
-    fireEvent.mouseUp(window, { clientX: 50, clientY: 50 }) // 動かさず選択のみ
+    fireEvent.pointerDown(region, { clientX: 50, clientY: 50 })
+    fireEvent.pointerUp(window, { clientX: 50, clientY: 50 }) // 動かさず選択のみ
     const valueInput = getByLabelText('飛び先や送る言葉') as HTMLInputElement
     fireEvent.change(valueInput, { target: { value: 'https://x/lp' } })
     expect(lastCall(onChange)[0].value).toBe('https://x/lp')
@@ -96,9 +112,9 @@ describe('T-A1 ImagemapRegionEditor', () => {
     const canvas = mockCanvasRect(container)
     const region = container.querySelector('[data-testid="region-0"]') as HTMLElement
     // (150,150) を掴んで大きく右下 (2000,2000) へ → base(1040) 外に出ようとしても clamp。
-    fireEvent.mouseDown(region, { clientX: 150, clientY: 150 })
-    fireEvent.mouseMove(window, { clientX: 2000, clientY: 2000 })
-    fireEvent.mouseUp(window, { clientX: 2000, clientY: 2000 })
+    fireEvent.pointerDown(region, { clientX: 150, clientY: 150 })
+    fireEvent.pointerMove(window, { clientX: 2000, clientY: 2000 })
+    fireEvent.pointerUp(window, { clientX: 2000, clientY: 2000 })
     const r = lastCall(onChange)[0]
     expect(Number(r.x) + Number(r.width)).toBeLessThanOrEqual(1040)
     expect(Number(r.y) + Number(r.height)).toBeLessThanOrEqual(1040)
@@ -113,12 +129,12 @@ describe('T-A1 ImagemapRegionEditor', () => {
     )
     const canvas = mockCanvasRect(container)
     const region = container.querySelector('[data-testid="region-0"]') as HTMLElement
-    fireEvent.mouseDown(region, { clientX: 10, clientY: 10 })
-    fireEvent.mouseUp(window, { clientX: 10, clientY: 10 }) // 選択のみ
+    fireEvent.pointerDown(region, { clientX: 10, clientY: 10 })
+    fireEvent.pointerUp(window, { clientX: 10, clientY: 10 }) // 選択のみ
     const handle = container.querySelector('[data-testid="handle-0-se"]') as HTMLElement
-    fireEvent.mouseDown(handle, { clientX: 100, clientY: 100 })
-    fireEvent.mouseMove(window, { clientX: 250, clientY: 200 })
-    fireEvent.mouseUp(window, { clientX: 250, clientY: 200 })
+    fireEvent.pointerDown(handle, { clientX: 100, clientY: 100 })
+    fireEvent.pointerMove(window, { clientX: 250, clientY: 200 })
+    fireEvent.pointerUp(window, { clientX: 250, clientY: 200 })
     const r = lastCall(onChange)[0]
     expect(Number(r.width)).toBe(250)
     expect(Number(r.height)).toBe(200)
@@ -132,8 +148,8 @@ describe('T-A1 ImagemapRegionEditor', () => {
     )
     const canvas = mockCanvasRect(container)
     const region = container.querySelector('[data-testid="region-0"]') as HTMLElement
-    fireEvent.mouseDown(region, { clientX: 20, clientY: 20 })
-    fireEvent.mouseUp(window, { clientX: 20, clientY: 20 })
+    fireEvent.pointerDown(region, { clientX: 20, clientY: 20 })
+    fireEvent.pointerUp(window, { clientX: 20, clientY: 20 })
     fireEvent.click(getByRole('button', { name: 'この領域を削除' }))
     expect(lastCall(onChange)).toHaveLength(0)
   })
@@ -145,9 +161,9 @@ describe('T-A1 ImagemapRegionEditor', () => {
       <ImagemapRegionEditor imageUrl="https://x/im" baseW={1040} baseH={1040} regions={full} onChange={onChange} />,
     )
     const canvas = mockCanvasRect(container)
-    fireEvent.mouseDown(canvas, { clientX: 500, clientY: 500 })
-    fireEvent.mouseMove(window, { clientX: 700, clientY: 700 })
-    fireEvent.mouseUp(window, { clientX: 700, clientY: 700 })
+    fireEvent.pointerDown(canvas, { clientX: 500, clientY: 500 })
+    fireEvent.pointerMove(window, { clientX: 700, clientY: 700 })
+    fireEvent.pointerUp(window, { clientX: 700, clientY: 700 })
     // 追加 (51 個目) は emit されない
     const added = onChange.mock.calls.find((c) => (c[0] as MediaRegion[]).length > 50)
     expect(added).toBeUndefined()
