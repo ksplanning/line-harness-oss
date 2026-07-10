@@ -39,7 +39,7 @@ export default function FormsAdvancedListPage() {
     setCreating(true)
     try {
       const form = await formsAdvancedApi.create({ title: '新しいフォーム' })
-      router.push(`/forms-advanced/${form.id}`)
+      router.push(`/forms-advanced/detail?id=${form.id}`)
     } catch {
       setCreating(false)
     }
@@ -82,8 +82,8 @@ export default function FormsAdvancedListPage() {
                   <div className="text-sm font-bold mb-1 truncate">{form.title}</div>
                   <div className="text-xs text-gray-500 mb-3">回答 {form.submitCount} 件</div>
                   <div className="flex gap-2 text-xs">
-                    <Link href={`/forms-advanced/${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">編集</Link>
-                    <Link href={`/forms-advanced/${form.id}/data`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">データ</Link>
+                    <Link href={`/forms-advanced/detail?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">編集</Link>
+                    <Link href={`/forms-advanced/data?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">データ</Link>
                   </div>
                 </div>
               )

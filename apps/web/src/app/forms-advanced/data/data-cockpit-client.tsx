@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import DataCockpit from '@/components/forms-advanced/data-cockpit'
@@ -18,10 +17,8 @@ import { csvDateStamp, safeFilenamePart } from '@/lib/download'
 
 const DEFAULT_QUERY: RowsQuery = { sort: 'desc', page: 1, pageSize: 25 }
 
-// F-4 データコックピットページ (T-D1/T-D2)。fetch を担い DataCockpit (presentational) に渡す。
-export default function FormDataPage() {
-  const params = useParams<{ id: string }>()
-  const id = params.id
+// F-4 データコックピット本体。id は data/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
+export default function DataCockpitClient({ id }: { id: string }) {
   const [title, setTitle] = useState('')
   const [rowsPage, setRowsPage] = useState<RowsPage>({ rows: [], total: 0, page: 1, pageSize: 25 })
   const [stats, setStats] = useState<FormStats | null>(null)
@@ -90,7 +87,7 @@ export default function FormDataPage() {
       <Header title="回答データ" description="回答の検索・集計・CSV 出し入れができます" />
       <div className="mb-3 flex items-center gap-3">
         <Link href="/forms-advanced" className="text-xs text-gray-500 hover:text-gray-800">← 一覧に戻る</Link>
-        <Link href={`/forms-advanced/${id}`} className="text-xs text-gray-500 hover:text-gray-800">フォームを編集</Link>
+        <Link href={`/forms-advanced/detail?id=${id}`} className="text-xs text-gray-500 hover:text-gray-800">フォームを編集</Link>
         {title && <span className="text-sm font-medium text-gray-800">{title}</span>}
       </div>
 

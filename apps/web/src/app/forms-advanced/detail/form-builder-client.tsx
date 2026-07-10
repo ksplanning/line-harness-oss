@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import FormBuilder from '@/components/forms-advanced/builder'
@@ -10,9 +9,8 @@ import { formsAdvancedApi, type AdvancedForm, type ShareInfo } from '@/lib/forma
 import { fetchApi } from '@/lib/api'
 import type { HarnessField, HarnessLogicRule } from '@line-crm/shared'
 
-export default function FormBuilderPage() {
-  const params = useParams<{ id: string }>()
-  const id = params.id
+// F-2/F-5 フォームビルダー本体。id は detail/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
+export default function FormBuilderClient({ id }: { id: string }) {
   const [form, setForm] = useState<AdvancedForm | null>(null)
   const [share, setShare] = useState<ShareInfo | null>(null)
   const [isOwner, setIsOwner] = useState(false)
