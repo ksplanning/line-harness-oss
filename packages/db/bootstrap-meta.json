@@ -75,7 +75,8 @@
     "088_staff_role_id.sql",
     "089_phase_b_answer_and_drafts.sql",
     "090_phase_b_ai_usage_budget.sql",
-    "091_phase_b_faq_fts.sql"
+    "091_phase_b_faq_fts.sql",
+    "092_phase_b_knowledge_chunks.sql"
   ],
-  "migrationCount": 76
+  "migrationCount": 77
 }

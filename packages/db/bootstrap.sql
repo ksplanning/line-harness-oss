@@ -591,6 +591,29 @@ CREATE TABLE incoming_webhooks (
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE knowledge_chunks (
+  id              TEXT PRIMARY KEY,
+  source_doc_id   TEXT NOT NULL REFERENCES knowledge_documents(id),
+  line_account_id TEXT,
+  chunk_index     INTEGER NOT NULL,
+  content         TEXT NOT NULL,
+  search_text     TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  UNIQUE(source_doc_id, chunk_index)
+);
+
+CREATE VIRTUAL TABLE knowledge_chunks_fts USING fts5(search_text, tokenize='unicode61');
+
+CREATE TABLE knowledge_documents (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT,
+  source_type     TEXT NOT NULL,
+  source_url      TEXT,
+  title           TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
+);
+
 CREATE TABLE line_accounts (
   id                   TEXT PRIMARY KEY,
   channel_id           TEXT NOT NULL UNIQUE,
@@ -1161,6 +1184,10 @@ CREATE INDEX idx_health_logs_account ON account_health_logs (line_account_id);
 
 CREATE INDEX idx_idempotency_expires ON booking_idempotency_keys (expires_at);
 
+CREATE INDEX idx_knowledge_chunks_acct ON knowledge_chunks(line_account_id);
+
+CREATE INDEX idx_knowledge_chunks_doc ON knowledge_chunks(source_doc_id);
+
 CREATE INDEX idx_line_accounts_display_order
   ON line_accounts (display_order, created_at);
 
@@ -1247,3 +1274,9 @@ CREATE TRIGGER faqs_fts_ad AFTER DELETE ON faqs BEGIN DELETE FROM faqs_fts WHERE
 CREATE TRIGGER faqs_fts_ai AFTER INSERT ON faqs BEGIN INSERT INTO faqs_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
 
 CREATE TRIGGER faqs_fts_au AFTER UPDATE ON faqs BEGIN DELETE FROM faqs_fts WHERE rowid = OLD.rowid; INSERT INTO faqs_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
+
+CREATE TRIGGER knowledge_chunks_fts_ad AFTER DELETE ON knowledge_chunks BEGIN DELETE FROM knowledge_chunks_fts WHERE rowid = OLD.rowid; END;
+
+CREATE TRIGGER knowledge_chunks_fts_ai AFTER INSERT ON knowledge_chunks BEGIN INSERT INTO knowledge_chunks_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
+
+CREATE TRIGGER knowledge_chunks_fts_au AFTER UPDATE ON knowledge_chunks BEGIN DELETE FROM knowledge_chunks_fts WHERE rowid = OLD.rowid; INSERT INTO knowledge_chunks_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;

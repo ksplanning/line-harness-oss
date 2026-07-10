@@ -240,6 +240,40 @@ CREATE TRIGGER IF NOT EXISTS faqs_fts_ad AFTER DELETE ON faqs BEGIN DELETE FROM 
 CREATE TRIGGER IF NOT EXISTS faqs_fts_au AFTER UPDATE ON faqs BEGIN DELETE FROM faqs_fts WHERE rowid = OLD.rowid; INSERT INTO faqs_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
 
 -- ============================================================
+-- Knowledge ingest (Phase B B-3 / 092)
+-- ============================================================
+-- 取込ナレッジの資料 (documents) + 分割チャンク (chunks) + FTS5 索引。faqs_fts (091) とは別表
+-- knowledge_chunks_fts (二重実装なし)。source_doc_id は宣言 FK (D1 は FK off・削除はアプリ側で
+-- chunks→document 明示)。search_text はアプリ層 (worker services/knowledge.ts) が計算する索引列。
+-- トリガは NEW.search_text コピーのみ (1 行 / replay 分割器が BEGIN...END を壊さない)。
+-- shadow 表は SQLite 自動生成の派生物 (generate-bootstrap 汎用除外で bootstrap 対象外)。
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT,
+  source_type     TEXT NOT NULL,
+  source_url      TEXT,
+  title           TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
+);
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+  id              TEXT PRIMARY KEY,
+  source_doc_id   TEXT NOT NULL REFERENCES knowledge_documents(id),
+  line_account_id TEXT,
+  chunk_index     INTEGER NOT NULL,
+  content         TEXT NOT NULL,
+  search_text     TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  UNIQUE(source_doc_id, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc ON knowledge_chunks(source_doc_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_acct ON knowledge_chunks(line_account_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(search_text, tokenize='unicode61');
+CREATE TRIGGER IF NOT EXISTS knowledge_chunks_fts_ai AFTER INSERT ON knowledge_chunks BEGIN INSERT INTO knowledge_chunks_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
+CREATE TRIGGER IF NOT EXISTS knowledge_chunks_fts_ad AFTER DELETE ON knowledge_chunks BEGIN DELETE FROM knowledge_chunks_fts WHERE rowid = OLD.rowid; END;
+CREATE TRIGGER IF NOT EXISTS knowledge_chunks_fts_au AFTER UPDATE ON knowledge_chunks BEGIN DELETE FROM knowledge_chunks_fts WHERE rowid = OLD.rowid; INSERT INTO knowledge_chunks_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
+
+-- ============================================================
 -- AI FAQ drafts (Phase B B-1 / answer_mode=draft の草案保存)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ai_faq_drafts (

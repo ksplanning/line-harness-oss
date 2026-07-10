@@ -102,9 +102,10 @@ describe('migration 091 — faqs FTS5 索引 (additive / T-B1)', () => {
     expect(checkMigration(sql, MIG_091)).toEqual({ ok: true });
   });
 
-  test('番号 091 は台帳最大 090 超の最小未使用 (最高番号ファイル)', () => {
+  test('番号 091 は台帳の 090 の直後 (additive・連番・後続 092+ を許容)', () => {
     const nums = readdirSync(MIG_DIR).filter((f) => /^\d{3}_.*\.sql$/.test(f)).map((f) => f.slice(0, 3)).sort();
     expect(nums).toContain('091');
-    expect(nums[nums.length - 1]).toBe('091'); // 091 が最高 (092+ を先取りしていない)
+    // 091 は 090 の直後 (連番・番号 skip なし)。最高である必要はない (B-3 で 092 が additive 追加・092 側の test が最高を保証)。
+    expect(nums[nums.indexOf('091') - 1]).toBe('090');
   });
 });
