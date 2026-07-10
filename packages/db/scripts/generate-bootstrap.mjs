@@ -65,6 +65,17 @@ function buildBootstrapSql() {
           FROM sqlite_master
           WHERE sql IS NOT NULL
             AND name NOT LIKE 'sqlite_%'
+            -- FTS5 の shadow 表 (<vtable>_data/_idx/_docsize/_config/_content) は仮想表作成時に
+            -- SQLite が自動生成する派生物。明示 CREATE すると再適用時に "object name reserved for
+            -- internal use" で失敗するため bootstrap から除外する (仮想表 CREATE が自動再生成する)。
+            AND name NOT IN (
+              SELECT v.name || s.sfx FROM sqlite_master v
+              CROSS JOIN (
+                SELECT '_data' sfx UNION ALL SELECT '_idx' UNION ALL SELECT '_docsize'
+                UNION ALL SELECT '_config' UNION ALL SELECT '_content'
+              ) s
+              WHERE v.sql LIKE 'CREATE VIRTUAL TABLE%'
+            )
           ORDER BY
             CASE type
               WHEN 'table' THEN 0

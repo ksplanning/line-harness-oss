@@ -410,10 +410,14 @@ CREATE TABLE faqs (
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
   answer_type      TEXT DEFAULT 'text',
-  source_doc_id    TEXT
+  source_doc_id    TEXT,
+  -- Phase B B-2 (091): アプリ層 (worker faq-fts.ts) が計算する 2-gram 空白連結の全文検索索引列。
+  search_text      TEXT NOT NULL DEFAULT ''
   -- Phase B reserved (add with additive ALTER):
   --   embedding   BLOB  (B-4 / Vectorize)
 );
+
+CREATE VIRTUAL TABLE faqs_fts USING fts5(search_text, tokenize='unicode61');
 
 CREATE TABLE form_opens (
   id TEXT PRIMARY KEY,
@@ -1237,3 +1241,9 @@ CREATE INDEX idx_users_email ON users (email);
 CREATE INDEX idx_users_external_id ON users (external_id);
 
 CREATE INDEX idx_users_phone ON users (phone);
+
+CREATE TRIGGER faqs_fts_ad AFTER DELETE ON faqs BEGIN DELETE FROM faqs_fts WHERE rowid = OLD.rowid; END;
+
+CREATE TRIGGER faqs_fts_ai AFTER INSERT ON faqs BEGIN INSERT INTO faqs_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
+
+CREATE TRIGGER faqs_fts_au AFTER UPDATE ON faqs BEGIN DELETE FROM faqs_fts WHERE rowid = OLD.rowid; INSERT INTO faqs_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;

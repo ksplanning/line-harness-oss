@@ -10,6 +10,8 @@ export interface Faq {
   hit_count: number;
   created_at: string;
   updated_at: string;
+  /** Phase B B-2 (091): 全文検索索引列。worker faq-fts.ts が normalize→2-gram→空白連結で計算 (db は保存のみ)。 */
+  search_text: string;
 }
 
 export interface UnmatchedQuestion {

@@ -223,12 +223,21 @@ CREATE TABLE IF NOT EXISTS faqs (
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
   answer_type      TEXT DEFAULT 'text',
-  source_doc_id    TEXT
+  source_doc_id    TEXT,
+  -- Phase B B-2 (091): アプリ層 (worker faq-fts.ts) が計算する 2-gram 空白連結の全文検索索引列。
+  search_text      TEXT NOT NULL DEFAULT ''
   -- Phase B reserved (add with additive ALTER):
   --   embedding   BLOB  (B-4 / Vectorize)
 );
 
 CREATE INDEX IF NOT EXISTS idx_faqs_account_active ON faqs(line_account_id, is_active);
+
+-- Phase B B-2 (091): FAQ 全文検索 (FTS5)。standalone 仮想表 + NEW.search_text コピーのみの同期トリガ 3 本。
+-- トリガは 1 行 (replay 分割器が BEGIN...END を壊さないため)。shadow 表は SQLite 自動生成の派生物。
+CREATE VIRTUAL TABLE IF NOT EXISTS faqs_fts USING fts5(search_text, tokenize='unicode61');
+CREATE TRIGGER IF NOT EXISTS faqs_fts_ai AFTER INSERT ON faqs BEGIN INSERT INTO faqs_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
+CREATE TRIGGER IF NOT EXISTS faqs_fts_ad AFTER DELETE ON faqs BEGIN DELETE FROM faqs_fts WHERE rowid = OLD.rowid; END;
+CREATE TRIGGER IF NOT EXISTS faqs_fts_au AFTER UPDATE ON faqs BEGIN DELETE FROM faqs_fts WHERE rowid = OLD.rowid; INSERT INTO faqs_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
 
 -- ============================================================
 -- AI FAQ drafts (Phase B B-1 / answer_mode=draft の草案保存)
