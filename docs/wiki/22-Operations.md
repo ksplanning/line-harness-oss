@@ -151,6 +151,31 @@ FAQ 全文検索 (migration 091) で FTS5 **仮想表** `faqs_fts` と、その 
 > 再適用しても安全（既存なら no-op）。`faqs_fts` の件数は復元後 `SELECT count(*) FROM faqs_fts`
 > が `SELECT count(*) FROM faqs` と一致することで健全性を確認できる。
 
+### 取込ナレッジ (knowledge_documents / knowledge_chunks) を含む DB のバックアップ (Phase B B-3)
+
+取込ナレッジ (migration 092) で base 表 `knowledge_documents` / `knowledge_chunks` と、FTS5 **仮想表**
+`knowledge_chunks_fts`（+ その shadow 表 `_data` / `_idx` / `_docsize` / `_config` / `_content`）が追加される。
+`faqs_fts` と同じ扱い（仮想表を含むため `wrangler d1 export` は使えず、テーブル単位 `SELECT *` → JSON でバックアップ）。
+
+- **バックアップ対象は base 表 (`knowledge_documents` と `knowledge_chunks` 本体) のみ**。
+  `knowledge_chunks.search_text` 列（worker が計算する 2-gram 索引テキスト）は base 表の一部なので
+  `SELECT * FROM knowledge_chunks` に含まれる。
+- **`knowledge_chunks_fts` と FTS shadow 表は backup 対象外**。migration 092 と `knowledge_chunks.search_text`
+  から**再構築可能な派生物**であり、export/復元しない（仮想表は直接 dump できない）。
+
+**リストア手順（knowledge_* を含む場合・復元順 = base 適用 → 092 → backfill）:**
+
+1. `packages/db/schema.sql`（または migration **092**）を適用する
+   → `knowledge_documents` / `knowledge_chunks`（`search_text` 列付き）+ `knowledge_chunks_fts` 仮想表 + 同期トリガ 3 本が生成される。
+2. base backup を **`knowledge_documents` → `knowledge_chunks`（`search_text` 列を含む）の順**で INSERT 復元する
+   （FK: 親 document を先に）。AFTER INSERT トリガ (`knowledge_chunks_fts_ai`) が `knowledge_chunks_fts` を
+   rowid 同期で**自動再構築**する（別途 backfill 不要）。
+3. `search_text` を含まない旧世代 backup のみ、worker のワンショット `backfillChunkSearchText(db)` を実行する
+   （全 `knowledge_chunks` 行の `search_text` を再計算し AU トリガ経由で索引を張り直す。再実行 idempotent）。
+
+> 健全性確認: 復元後 `SELECT count(*) FROM knowledge_chunks_fts` が `SELECT count(*) FROM knowledge_chunks`
+> と一致すること。migration 092 の `CREATE ... IF NOT EXISTS` は再適用しても安全（既存なら no-op）。
+
 ---
 
 ## スケーリング考慮事項

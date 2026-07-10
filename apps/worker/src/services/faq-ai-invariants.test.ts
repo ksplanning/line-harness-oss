@@ -68,8 +68,13 @@ describe('D-3 — faq-match / webhook gate / flag byte-identical', () => {
     const toml = readRepo('apps/worker/wrangler.ks.toml');
     expect(toml).toContain('crons = []');
     expect(toml).toContain('FAQ_BOT_ENABLED = "false"');
-    // B-1 は infra 変更なし → ファイル全体も byte-identical。
-    expect(unchangedVsMain('apps/worker/wrangler.ks.toml')).toBe(true);
+    // B-3 が compatibility_flags に global_fetch_strictly_public を additive 追記するため、ファイル全体
+    // byte-identical ではなく「origin/main との差分行は compatibility_flags 行のみ」を行単位で確認する
+    // (dark-ship の crons=[] / FAQ_BOT_ENABLED 2 行は不可侵)。
+    const cur = toml.split('\n');
+    const main = execFileSync('git', ['show', 'origin/main:apps/worker/wrangler.ks.toml'], { cwd: REPO }).toString().split('\n');
+    expect(cur.length).toBe(main.length);
+    for (const l of cur.filter((l, i) => l !== main[i])) expect(l).toMatch(/compatibility_flags/);
   });
 
   test('webhook faq gate 行 (FAQ_BOT_ENABLED gate) が byte-identical で存在', () => {
