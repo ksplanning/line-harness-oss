@@ -39,6 +39,7 @@ const faqRow = {
   hit_count: 3,
   created_at: '2026-07-02T00:00:00+09:00',
   updated_at: '2026-07-02T00:00:00+09:00',
+  search_text: 'IDXMARKER_ONLY', // Phase B B-2: 内部索引列 (API 非露出であるべき / D-3・他フィールドに無い marker)
 };
 
 const unmatchedRow = {
@@ -67,6 +68,16 @@ describe('FAQ routes', () => {
     expect(body.data.map((r) => r.id)).toEqual(['faq-1', 'faq-global']);
     expect(body.data[0]).toMatchObject({ variants: ['開店時間'], lineAccountId: 'acc-1', hitCount: 3 });
     expect(body.data[1].lineAccountId).toBeNull();
+  });
+
+  test('D-3: search_text (内部索引列) は serializeFaq allowlist 外 = API に露出しない', async () => {
+    dbMocks.getFaqs.mockResolvedValue([faqRow]); // faqRow は search_text='IDXMARKER_ONLY' を持つ
+    const res = await setupApp().request('/api/faqs?accountId=acc-1');
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    expect(res.status).toBe(200);
+    expect(body.data[0]).not.toHaveProperty('searchText');
+    expect(body.data[0]).not.toHaveProperty('search_text');
+    expect(JSON.stringify(body.data[0])).not.toContain('IDXMARKER'); // 値も漏れない
   });
 
   test('POST /api/faqs validates required fields and creates FAQ', async () => {

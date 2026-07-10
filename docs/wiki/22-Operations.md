@@ -124,6 +124,33 @@ wrangler d1 execute line-crm --file=packages/db/schema.sql
 # JSON からデータ復元（手動 INSERT が必要）
 ```
 
+### FTS5 全文検索 (faqs_fts) を含む DB のバックアップ (Phase B B-2)
+
+FAQ 全文検索 (migration 091) で FTS5 **仮想表** `faqs_fts` と、その shadow 表
+(`faqs_fts_data` / `faqs_fts_idx` / `faqs_fts_docsize` / `faqs_fts_config` / `faqs_fts_content`)
+が追加される。バックアップ/リストアで以下に注意する。
+
+- **`wrangler d1 export` は仮想表を含む DB では使えない**（FTS5 仮想表を含むと export が失敗する）。
+  上記の「テーブル単位 `SELECT *` → JSON」方式でバックアップする。
+- **バックアップ対象は base 表 (`faqs` 本体) のみ**。`faqs` の `search_text` 列
+  (アプリ層が計算する 2-gram 索引テキスト) は base 表の一部なので **`SELECT * FROM faqs` に含まれる**。
+- **`faqs_fts` と FTS shadow 表は backup 対象外**。これらは migration 091 と `faqs.search_text` から
+  **再構築可能な派生物**であり、export/復元しない（そもそも仮想表は直接 dump できない）。
+
+**リストア手順（faqs を含む場合）:**
+
+1. `packages/db/schema.sql`（または migrations）を適用する
+   → `faqs`（`search_text` 列付き）+ `faqs_fts` 仮想表 + 同期トリガ 3 本が生成される。
+2. base backup の `faqs` 行（`search_text` 列を含む）を **INSERT で復元**する
+   → AFTER INSERT トリガ (`faqs_fts_ai`) が `faqs_fts` を rowid 同期で**自動再構築**する（別途 backfill 不要）。
+3. もし `search_text` 列を含まない**旧世代の backup**を復元した場合のみ、worker のワンショット
+   `backfillFaqsSearchText(db)` を実行して `faqs_fts` を構築する
+   （全 `faqs` 行の `search_text` を再計算し AU トリガ経由で索引を張り直す。再実行 idempotent）。
+
+> 補足: migration 091 の `CREATE VIRTUAL TABLE IF NOT EXISTS` / `CREATE TRIGGER IF NOT EXISTS` は
+> 再適用しても安全（既存なら no-op）。`faqs_fts` の件数は復元後 `SELECT count(*) FROM faqs_fts`
+> が `SELECT count(*) FROM faqs` と一致することで健全性を確認できる。
+
 ---
 
 ## スケーリング考慮事項
