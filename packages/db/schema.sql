@@ -264,6 +264,8 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
   content         TEXT NOT NULL,
   search_text     TEXT NOT NULL DEFAULT '',
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  embedded_at     TEXT,
+  embed_model     TEXT,
   UNIQUE(source_doc_id, chunk_index)
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc ON knowledge_chunks(source_doc_id);

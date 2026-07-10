@@ -26,6 +26,10 @@ export interface KnowledgeChunk {
   content: string;
   search_text: string;
   created_at: string;
+  /** Vectorize upsert 確認後にセットされる embed 時刻 (JST)。null = 未 embed (backfill 対象 / B-4 T-D6)。 */
+  embedded_at: string | null;
+  /** どの embedding モデルで embed したか (モデル変更→再 embed 判定 / B-4 T-D6)。 */
+  embed_model: string | null;
 }
 
 export interface CreateKnowledgeDocumentInput {
@@ -120,4 +124,55 @@ export async function deleteKnowledgeDocument(db: D1Database, id: string): Promi
     db.prepare(`DELETE FROM knowledge_chunks WHERE source_doc_id = ?`).bind(id),
     db.prepare(`DELETE FROM knowledge_documents WHERE id = ?`).bind(id),
   ]);
+}
+
+/**
+ * 1 資料の全チャンクを chunk_index 順で返す (B-4 T-D6)。取込直後の embed / 資料削除時の Vectorize cleanup が
+ * chunk.id を得るために使う (id は insertKnowledgeChunks が crypto.randomUUID で採番するため DB から読み戻す)。
+ * embedded_at/embed_model 列 (093) を含む。scope 検証は呼出 route が行う (本 helper は取得のみ)。
+ */
+export async function getChunksBySourceDoc(db: D1Database, sourceDocId: string): Promise<KnowledgeChunk[]> {
+  const result = await db
+    .prepare(`SELECT * FROM knowledge_chunks WHERE source_doc_id = ? ORDER BY chunk_index`)
+    .bind(sourceDocId)
+    .all<KnowledgeChunk>();
+  return result.results;
+}
+
+/**
+ * Vectorize upsert 成功を確認した後に呼び、指定 id の chunk へ embed 時刻 (JST) と model を書く (B-4 T-D6)。
+ * `embedded_at IS NULL` を backfill 対象にするため、upsert 確認前にセットしてはならない (spec §8)。
+ * 空配列は no-op (SQL を発行しない)。冪等: 再実行は同じ id に新しい時刻を書くだけ。
+ */
+export async function markChunksEmbedded(db: D1Database, ids: string[], embedModel: string): Promise<void> {
+  if (ids.length === 0) return;
+  const now = jstNow();
+  const placeholders = ids.map(() => '?').join(', ');
+  await db
+    .prepare(`UPDATE knowledge_chunks SET embedded_at = ?, embed_model = ? WHERE id IN (${placeholders})`)
+    .bind(now, embedModel, ...ids)
+    .run();
+}
+
+/**
+ * まだ embed していない (embedded_at IS NULL) chunk を account スコープ (global(null) + 指定 account) で返す
+ * (B-4 T-D6・冪等 backfill / 無料枠超過で defer した chunk の後追い embed 用)。listKnowledgeDocuments と同一の
+ * account 式 (cross-account 漏洩防止 / M-account-scope)。
+ */
+export async function getUnembeddedChunks(
+  db: D1Database,
+  lineAccountId: string | null,
+  limit = 200,
+): Promise<KnowledgeChunk[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM knowledge_chunks
+        WHERE embedded_at IS NULL
+          AND (line_account_id IS NULL OR line_account_id = ?)
+        ORDER BY created_at
+        LIMIT ?`,
+    )
+    .bind(lineAccountId, limit)
+    .all<KnowledgeChunk>();
+  return result.results;
 }

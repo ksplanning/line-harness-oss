@@ -103,10 +103,12 @@ describe('migration 092 — knowledge_documents/chunks + FTS5 (additive / T-C3)'
     expect(checkMigration(sql, MIG_092)).toEqual({ ok: true });
   });
 
-  test('番号 092 は台帳最大 091 超の最小未使用 (最高番号ファイル)', () => {
+  test('番号 092 は台帳最大 091 超の最小未使用 (B-4 で 093 が additive 追加済)', () => {
     const nums = readdirSync(MIG_DIR).filter((f) => /^\d{3}_.*\.sql$/.test(f)).map((f) => f.slice(0, 3)).sort();
     expect(nums).toContain('092');
-    expect(nums[nums.length - 1]).toBe('092'); // 092 が最高 (093+ を先取りしていない)
+    // B-4 (T-D6) が 093 を additive で足したため 092 は最高ではない。092 が 091 の次 (連番) であることを確認。
+    const idx = nums.indexOf('092');
+    expect(nums[idx - 1]).toBe('091');
   });
 
   test('二重実装なし: replayAll 後も faqs_fts は無改変で機能し knowledge_chunks_fts と別表', () => {
