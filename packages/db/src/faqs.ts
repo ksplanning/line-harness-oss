@@ -60,6 +60,12 @@ export interface CreateFaqInput {
   answer: string;
   lineAccountId?: string | null;
   isActive?: boolean;
+  /**
+   * Phase B B-2 (T-B5-a): 全文検索索引列 (2-gram 空白連結)。値は worker 層 (faq-fts.buildFaqSearchText)
+   * が計算して渡す (db は保存のみ・計算しない = 依存方向。packages/db は apps/worker を import しない)。
+   * 省略時は '' (additive default)。実呼出は必ず渡す。
+   */
+  searchText?: string;
 }
 
 export async function createFaq(db: D1Database, input: CreateFaqInput): Promise<Faq> {
@@ -68,8 +74,8 @@ export async function createFaq(db: D1Database, input: CreateFaqInput): Promise<
   await db
     .prepare(
       `INSERT INTO faqs
-         (id, line_account_id, question, variants, answer, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, line_account_id, question, variants, answer, is_active, created_at, updated_at, search_text)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -80,6 +86,7 @@ export async function createFaq(db: D1Database, input: CreateFaqInput): Promise<
       input.isActive === false ? 0 : 1,
       now,
       now,
+      input.searchText ?? '',
     )
     .run();
   return (await getFaqById(db, id))!;
@@ -91,6 +98,11 @@ export interface UpdateFaqInput {
   answer?: string;
   lineAccountId?: string | null;
   isActive?: boolean;
+  /**
+   * Phase B B-2 (T-B5-a): 全文検索索引列。question/variants が変わる時に worker 層が最終値から
+   * 再計算して渡す (db は保存のみ)。省略時は既存 search_text を保持 (answer/isActive のみ変更時)。
+   */
+  searchText?: string;
 }
 
 export async function updateFaq(db: D1Database, id: string, input: UpdateFaqInput): Promise<Faq | null> {
@@ -105,7 +117,8 @@ export async function updateFaq(db: D1Database, id: string, input: UpdateFaqInpu
            variants = ?,
            answer = ?,
            is_active = ?,
-           updated_at = ?
+           updated_at = ?,
+           search_text = ?
        WHERE id = ?`,
     )
     .bind(
@@ -115,6 +128,7 @@ export async function updateFaq(db: D1Database, id: string, input: UpdateFaqInpu
       input.answer ?? existing.answer,
       input.isActive !== undefined ? (input.isActive ? 1 : 0) : existing.is_active,
       now,
+      input.searchText !== undefined ? input.searchText : existing.search_text,
       id,
     )
     .run();

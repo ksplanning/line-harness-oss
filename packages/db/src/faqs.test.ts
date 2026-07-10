@@ -77,6 +77,7 @@ describe('FAQ DB helpers', () => {
       0,
       expect.any(String),
       expect.any(String),
+      '', // Phase B B-2: search_text (searchText 省略 → additive default '')
     );
   });
 

@@ -11,6 +11,9 @@ import {
 } from '@line-crm/db';
 import type { Faq as DbFaq, UnmatchedQuestion as DbUnmatchedQuestion } from '@line-crm/db';
 import type { Env } from '../index.js';
+// Phase B B-2 (T-B5-a): search_text は worker 層 (faq-fts) が計算し createFaq/updateFaq に渡す
+// (db は保存のみ・依存方向)。全書込呼出元でこの helper を通す (grep 3 段の対象)。
+import { buildFaqSearchText } from '../services/faq-fts.js';
 
 const faqs = new Hono<Env>();
 
@@ -106,6 +109,7 @@ faqs.post('/api/faqs', async (c) => {
       answer: body.answer,
       lineAccountId: body.lineAccountId ?? null,
       isActive: body.isActive ?? true,
+      searchText: buildFaqSearchText(body.question, body.variants ?? []),
     });
     return c.json({ success: true, data: serializeFaq(item) }, 201);
   } catch (err) {
@@ -285,6 +289,8 @@ faqs.post('/api/faqs/bulk', async (c) => {
             answer,
             variants,
             isActive: item.isActive,
+            // overwrite は question を変えない → 既存 target.question + 新 variants で再計算。
+            searchText: buildFaqSearchText(target.question, variants),
           });
           if (!upd) {
             results.push({ index, status: 'error', error: '上書きに失敗しました' });
@@ -311,6 +317,7 @@ faqs.post('/api/faqs/bulk', async (c) => {
           answer,
           lineAccountId,
           isActive: item.isActive ?? true,
+          searchText: buildFaqSearchText(question, variants),
         });
         // 同一リクエスト内での二重登録も防ぐため索引に足す。
         if (key !== '') existingByKey.set(key, createdFaq.id);
@@ -350,6 +357,17 @@ faqs.put('/api/faqs/:id', async (c) => {
     if (body.answer !== undefined) input.answer = body.answer;
     if ('lineAccountId' in body) input.lineAccountId = body.lineAccountId ?? null;
     if (body.isActive !== undefined) input.isActive = body.isActive;
+
+    // B-2 (T-B5-a): question/variants が変わる時のみ search_text を再計算 (最終値=body ?? 既存で算出)。
+    // answer/isActive のみの変更では既存 search_text を保持 (updateFaq が省略時保持)。
+    if (body.question !== undefined || body.variants !== undefined) {
+      const current = await getFaqById(c.env.DB, id);
+      if (current) {
+        const question = body.question ?? current.question;
+        const variants = body.variants ?? parseVariants(current.variants);
+        input.searchText = buildFaqSearchText(question, variants);
+      }
+    }
 
     const updated = await updateFaq(c.env.DB, id, input);
     if (!updated) return c.json({ success: false, error: 'FAQ not found' }, 404);
@@ -401,14 +419,17 @@ faqs.post('/api/faqs/from-unmatched/:id', async (c) => {
     const unmatched = await getUnmatchedById(c.env.DB, id);
     if (!unmatched) return c.json({ success: false, error: 'Unmatched question not found' }, 404);
 
+    const question = body.question?.trim() || unmatched.question;
+    const variants = body.variants ?? [];
     const item = await createFaq(c.env.DB, {
-      question: body.question?.trim() || unmatched.question,
-      variants: body.variants ?? [],
+      question,
+      variants,
       answer: body.answer,
       lineAccountId: 'lineAccountId' in body ? (body.lineAccountId ?? null) : unmatched.line_account_id,
       // reviewer R1-I1: EditDialog が送る isActive を尊重する。無効で昇格したら無効 FAQ を作る
       // (flag ON アカウントで意図せぬ自動返信の入口にしない)。省略時のみ既定 true。
       isActive: body.isActive ?? true,
+      searchText: buildFaqSearchText(question, variants),
     });
     await markUnmatchedResolved(c.env.DB, id, item.id);
     return c.json({ success: true, data: serializeFaq(item) }, 201);

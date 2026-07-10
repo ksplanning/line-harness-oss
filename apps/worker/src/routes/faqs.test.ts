@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
+// Phase B B-2: 各書込ルートが search_text を worker 層 helper で計算し createFaq/updateFaq に渡す
+// (grep 3 段 = 全 5 呼出元が searchText を渡すことを機械 assert / T-B5-a)。
+import { buildFaqSearchText } from '../services/faq-fts.js';
 
 const dbMocks = {
   createFaq: vi.fn(),
@@ -88,6 +91,7 @@ describe('FAQ routes', () => {
       variants: ['開店時間'],
       lineAccountId: 'acc-1',
       isActive: true,
+      searchText: buildFaqSearchText('営業時間は？', ['開店時間']), // B-2: worker 計算値を渡す
     });
   });
 
@@ -105,6 +109,8 @@ describe('FAQ routes', () => {
     expect(dbMocks.updateFaq).toHaveBeenCalledWith(expect.anything(), 'faq-1', {
       question: '営業日',
       isActive: false,
+      // B-2: question 変更 → 既存 variants(['開店時間']) と最終 question で search_text 再計算。
+      searchText: buildFaqSearchText('営業日', ['開店時間']),
     });
 
     const del = await setupApp().request('/api/faqs/faq-1', { method: 'DELETE' });
@@ -140,6 +146,7 @@ describe('FAQ routes', () => {
       variants: ['駐車場'],
       lineAccountId: 'acc-1',
       isActive: true,
+      searchText: buildFaqSearchText('駐車場ありますか', ['駐車場']), // B-2
     });
     expect(dbMocks.markUnmatchedResolved).toHaveBeenCalledWith(expect.anything(), 'unmatched-1', 'faq-1');
   });
@@ -255,9 +262,11 @@ describe('POST /api/faqs/bulk', () => {
 
     expect(res.status).toBe(200);
     expect(body.data.created).toBe(2);
-    // 全 createFaq が lineAccountId='acc-1' で呼ばれる (item ごとに別 account へ書かれない)
+    // 全 createFaq が lineAccountId='acc-1' + search_text 計算値付きで呼ばれる (B-2 T-B5-a)。
     for (const call of dbMocks.createFaq.mock.calls) {
-      expect(call[1]).toMatchObject({ lineAccountId: 'acc-1' });
+      const input = call[1] as { lineAccountId: string; question: string; searchText: string };
+      expect(input).toMatchObject({ lineAccountId: 'acc-1' });
+      expect(input.searchText).toBe(buildFaqSearchText(input.question, []));
     }
     // getFaqs も acc-1 スコープで既存を取る
     expect(dbMocks.getFaqs).toHaveBeenCalledWith(expect.anything(), 'acc-1');
@@ -332,7 +341,11 @@ describe('POST /api/faqs/bulk', () => {
 
     expect(res.status).toBe(200);
     expect(body.data.updated).toBe(1);
-    expect(dbMocks.updateFaq).toHaveBeenCalledWith(expect.anything(), 'exist-1', expect.objectContaining({ answer: '新しい答え' }));
+    // B-2: overwrite は target.question(='営業時間は？') + item.variants([]) で search_text 再計算。
+    expect(dbMocks.updateFaq).toHaveBeenCalledWith(expect.anything(), 'exist-1', expect.objectContaining({
+      answer: '新しい答え',
+      searchText: buildFaqSearchText('営業時間は？', []),
+    }));
   });
 
   test('D-18 overwriteId scope mismatch (different account) -> row error, updateFaq NOT called', async () => {
