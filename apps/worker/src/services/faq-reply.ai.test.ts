@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { describe, expect, test, beforeEach, vi } from 'vitest';
 import { tryFaqReply } from './faq-reply.js';
+import { buildFaqSearchText } from './faq-fts.js';
 import { MockLlmProvider } from './llm/mock-provider.js';
 import { type FaqAiRuntime } from './llm/runtime.js';
 import { type LlmProvider } from './llm/llm-provider.js';
@@ -60,7 +61,8 @@ function seed(raw: Database.Database, opts: { enabled?: boolean; answerMode?: st
     answerMode: opts.answerMode ?? 'auto',
   });
   raw.prepare(`INSERT INTO account_settings (id, line_account_id, key, value) VALUES ('s1','acc-1','faq_bot',?)`).run(value);
-  raw.prepare(`INSERT INTO faqs (id, line_account_id, question, variants, answer, is_active) VALUES ('fq1','acc-1','営業時間は何時ですか','[]','平日は10時から19時までです',1)`).run();
+  // Phase B B-2: AI 後段の retrieval は FTS (search_text) 経由 → 実書込と同様に search_text を埋める。
+  raw.prepare(`INSERT INTO faqs (id, line_account_id, question, variants, answer, is_active, search_text) VALUES ('fq1','acc-1','営業時間は何時ですか','[]','平日は10時から19時までです',1,?)`).run(buildFaqSearchText('営業時間は何時ですか', []));
 }
 
 function rt(provider: LlmProvider): FaqAiRuntime {

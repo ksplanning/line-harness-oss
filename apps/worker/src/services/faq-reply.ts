@@ -8,6 +8,7 @@ import {
 } from '@line-crm/db';
 import { buildMessage } from './step-delivery.js';
 import { matchFaqDetailed, type MatchableFaq } from './faq-match.js';
+import { retrieveAndRankFaq } from './faq-fts.js';
 import { runFaqAiAnswer, type AnswerMode } from './faq-ai.js';
 import { type FaqAiRuntime } from './llm/runtime.js';
 
@@ -130,9 +131,13 @@ export async function tryFaqReply(
   // Phase B: AI 後段 (match=null 時のみ・provider 注入時のみ)。webhook.ts:722 の
   // FAQ_BOT_ENABLED gate が閉なら tryFaqReply 自体到達しない (dark-ship)。
   if (ai?.provider && detail.match === null) {
+    // Phase B B-2: 暫定検索 (Dice-over-all の detail.best) の「供給元」を FTS5 recall + Dice 再ランク
+    // に差し替える (§3-3)。runFaqAiAnswer 本体・floor/grounding/escalate は byte-identical。
+    // 検索スコア下限 (ai.retrievalFloor) は撤廃せず保持 (FTS 候補ありでも Dice<floor は退避 / FATAL 修正)。
+    const aiDetail = await retrieveAndRankFaq(db, opts.incomingText, opts.lineAccountId);
     const outcome = await runFaqAiAnswer(
       db,
-      detail,
+      aiDetail,
       {
         question: opts.incomingText,
         answerMode: settings.answerMode,
