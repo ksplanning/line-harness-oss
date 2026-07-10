@@ -28,9 +28,19 @@ function readRepo(repoRelPath: string): string {
   return readFileSync(join(REPO, repoRelPath), 'utf8');
 }
 
-describe('D-1 — unanswered-inbox.ts 無変更 (既存 faq_bot 証拠経路を再利用)', () => {
-  test('origin/main と byte-identical (Phase A triage に回帰リスクを持ち込まない)', () => {
-    expect(unchangedVsMain('apps/worker/src/services/unanswered-inbox.ts')).toBe(true);
+// B-5 (T-E5 / D-1 救済) で unanswered-inbox.ts は source 別証拠窓を導入する = 「ファイル全体 byte-identical」は
+// 撤回し、dark-ship 安全の実体である「auto_reply の 5000ms 窓が byte-identical」を不変条件に置き換える。
+describe('D-1 — unanswered-inbox.ts の auto_reply 証拠窓は byte-identical (B-5 T-E5 は faq_bot のみ source 別大窓)', () => {
+  const cur = readRepo('apps/worker/src/services/unanswered-inbox.ts');
+  const main = execFileSync('git', ['show', 'origin/main:apps/worker/src/services/unanswered-inbox.ts'], { cwd: REPO }).toString();
+  test('auto_reply の 5000ms 窓定数は不変 (自動応答の既存挙動を退行させない)', () => {
+    expect(cur).toContain('const AUTO_REPLY_EVIDENCE_WINDOW_MS = 5_000;');
+    expect(main).toContain('const AUTO_REPLY_EVIDENCE_WINDOW_MS = 5_000;');
+  });
+  test('B-5 の変更は faq_bot 用 source 別大窓の追加に限る (本番 faq_bot 行は flag ON まで 0 件 = dark-ship 安全)', () => {
+    expect(cur).toContain('FAQ_AI_EVIDENCE_WINDOW_MS');
+    // origin/main には存在しない = B-5 で追加した sanctioned な変更。
+    expect(main).not.toContain('FAQ_AI_EVIDENCE_WINDOW_MS');
   });
 });
 
