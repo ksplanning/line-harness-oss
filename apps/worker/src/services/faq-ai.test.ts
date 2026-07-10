@@ -22,6 +22,7 @@ import { MockLlmProvider } from './llm/mock-provider.js';
 import { type FaqAiRuntime } from './llm/runtime.js';
 import { type LlmProvider } from './llm/llm-provider.js';
 import { type FaqMatchDetail, type MatchableFaq } from './faq-match.js';
+import { utcDay } from '@line-crm/db';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
@@ -195,5 +196,47 @@ describe('runFaqAiAnswer — answer_mode (T-A4)', () => {
     expect(row.status).toBe('pending');
     expect(row.draft_answer).toBe('平日は10時から19時までです');
     expect(JSON.parse(row.evidence_faq_ids)).toEqual(['fq-1']);
+  });
+});
+
+describe('runFaqAiAnswer — budget 配線 (T-A6)', () => {
+  const DAY = utcDay();
+  function seedUsage(account: string, neurons: number) {
+    raw.prepare(`INSERT INTO ai_usage_budget (id, line_account_id, usage_date, llm_neurons) VALUES (?, ?, ?, ?)`)
+      .run(`u-${account}`, account, DAY, neurons);
+  }
+
+  test('pre-flight: 全 account 合算がグローバル上限に到達 → generate せず escalate (別 account 消費でも)', async () => {
+    seedUsage('acc-2', 9000); // 別 account が共有枠を使い切る
+    const mock = new MockLlmProvider({ text: '答え' });
+    const out = await runFaqAiAnswer(db, detail(0.5), INPUT, rt(mock)); // global=9000
+    expect(out.kind).toBe('escalate');
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  test('pre-flight: 当該 account が per-account 上限に到達 → generate せず escalate', async () => {
+    seedUsage('acc-1', 9000);
+    const mock = new MockLlmProvider({ text: '答え' });
+    const out = await runFaqAiAnswer(db, detail(0.5), INPUT, rt(mock, { dailyNeuronBudgetGlobal: 1_000_000 }));
+    expect(out.kind).toBe('escalate');
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  test('pre-flight: 上限未満 → generate し、消費 neuron を token→neuron 換算で加算 (reply_count 1)', async () => {
+    const mock = new MockLlmProvider({ text: '平日は10時から19時までです', usage: { inputTokens: 100, outputTokens: 50 } });
+    const out = await runFaqAiAnswer(db, detail(0.5), INPUT, rt(mock));
+    expect(out.kind).toBe('auto_send');
+    const row = raw.prepare(`SELECT llm_neurons, reply_count FROM ai_usage_budget WHERE line_account_id='acc-1' AND usage_date=?`).get(DAY) as { llm_neurons: number; reply_count: number };
+    // (100*4119 + 50*34868)/1e6 = ceil(2.15...) 以上 = 正の neuron
+    expect(row.llm_neurons).toBeGreaterThan(0);
+    expect(row.reply_count).toBe(1);
+  });
+
+  test('生成した以上は退避しても neuron を計上する (usage 欠損=推定でも加算後 escalate)', async () => {
+    const noUsage: LlmProvider = { async generate() { return { text: '10時から19時までです' }; }, async embed() { return []; } };
+    const out = await runFaqAiAnswer(db, detail(0.5), INPUT, rt(noUsage));
+    expect(out.kind).toBe('escalate'); // usage 欠損 → 送らない
+    const row = raw.prepare(`SELECT llm_neurons FROM ai_usage_budget WHERE line_account_id='acc-1' AND usage_date=?`).get(DAY) as { llm_neurons: number } | undefined;
+    expect(row?.llm_neurons ?? 0).toBeGreaterThan(0); // 消費分は計上済
   });
 });

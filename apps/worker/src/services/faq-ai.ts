@@ -1,7 +1,7 @@
-import { insertAiFaqDraft } from '@line-crm/db';
+import { insertAiFaqDraft, isOverAiBudget, recordAiUsage, utcDay } from '@line-crm/db';
 import { type FaqMatchDetail } from './faq-match.js';
 import { type FaqAiRuntime } from './llm/runtime.js';
-import { type LlmPrompt } from './llm/llm-provider.js';
+import { type LlmPrompt, type LlmUsage } from './llm/llm-provider.js';
 
 export type AnswerMode = 'auto' | 'draft';
 
@@ -71,6 +71,29 @@ export interface RunFaqAiInput {
   overLimit: boolean;
 }
 
+/**
+ * token→neuron 換算 (§4-#3・env 係数)。usage 欠損時は prompt/response 長から高め見積
+ * (fail-safe: 実消費より多めに計上し退避側に倒す)。
+ */
+export function computeNeurons(
+  usage: LlmUsage | undefined,
+  prompt: LlmPrompt,
+  responseText: string,
+  ai: FaqAiRuntime,
+): number {
+  let inTok: number;
+  let outTok: number;
+  if (usage) {
+    inTok = usage.inputTokens;
+    outTok = usage.outputTokens;
+  } else {
+    // 実 Japanese ~chars/3 tokens より多い chars/2 で高め見積 (fail-safe)。
+    inTok = Math.ceil((prompt.system.length + prompt.user.length) / 2);
+    outTok = Math.ceil(responseText.length / 2);
+  }
+  return Math.ceil((inTok * ai.neuronPerMTokIn + outTok * ai.neuronPerMTokOut) / 1_000_000);
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('llm_timeout')), ms);
@@ -92,9 +115,28 @@ export async function runFaqAiAnswer(
   input: RunFaqAiInput,
   ai: FaqAiRuntime,
 ): Promise<FaqAiOutcome> {
-  // [pre-flight] friend 別上限超過 → 生成せず退避 (無駄 neuron ゼロ)。
+  // account bucket。null は 'unknown' に寄せる (global 合算には含まれ共有枠を守る)。
+  const account = input.lineAccountId ?? 'unknown';
+  const usageDate = utcDay();
+
+  // [pre-flight] friend 別上限 OR ai_usage_budget (グローバル+account) 超過 → 生成せず退避
+  // (無駄 neuron ゼロ)。budget 判定の DB 例外は「判別不能=退避」で fail-closed。
   if (input.overLimit) {
     return { kind: 'escalate', reason: 'over_reply_limit' };
+  }
+  let overBudget: boolean;
+  try {
+    overBudget = await isOverAiBudget(db, {
+      lineAccountId: account,
+      usageDate,
+      globalBudget: ai.dailyNeuronBudgetGlobal,
+      perAccountBudget: ai.dailyNeuronBudgetPerAccount,
+    });
+  } catch {
+    overBudget = true; // fail-closed
+  }
+  if (overBudget) {
+    return { kind: 'escalate', reason: 'over_budget' };
   }
 
   // [暫定 Retrieval] floor 未満 or 根拠なし → エスカレーション。
@@ -114,6 +156,19 @@ export async function runFaqAiAnswer(
     // 秘密値/friend_id を載せない。エラー名のみ。
     console.error('FAQ AI generate failed:', err instanceof Error ? err.name : 'unknown');
     return { kind: 'escalate', reason: 'generate_error' };
+  }
+
+  // [neuron 計測] 生成した時点で neuron は消費される → 送信可否に関わらず加算 (退避しても払う)。
+  // 記録失敗は accounting best-effort (送信/退避判定は止めない)。
+  try {
+    await recordAiUsage(db, {
+      lineAccountId: account,
+      usageDate,
+      llmNeurons: computeNeurons(result.usage, prompt, result.text, ai),
+      replyCount: 1,
+    });
+  } catch (err) {
+    console.error('FAQ AI usage record failed:', err instanceof Error ? err.name : 'unknown');
   }
 
   // [根拠妥当性] (ii) 分からない / (iii) usage 欠損 / (iv) 根拠外 URL・電話。
