@@ -61,7 +61,10 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
     expect(calls[1].path).toBe('/v3.0/fields/');
     expect(calls[1].body).toMatchObject({ form: 'FORMSLUG', type: 'short_text', title: '名前', max_length: 30, required: true });
     expect(calls[2].path).toBe('/v3.0/fields/');
-    expect(calls[2].body).toMatchObject({ form: 'FORMSLUG', type: 'choice', title: '性別', choices: ['男', '女'] });
+    // choice の選択肢は Formaloo writeOnly `choice_items` ([{title}]) で送る (live 実証 2026-07-10)。
+    // 旧 `choices: string[]` は実 API に無視され選択肢が落ちていた (silent data loss / latent defect 回帰ガード)。
+    expect(calls[2].body).toMatchObject({ form: 'FORMSLUG', type: 'choice', title: '性別', choice_items: [{ title: '男' }, { title: '女' }] });
+    expect((calls[2].body as Record<string, unknown>).choices).toBeUndefined();
     // logic は Formaloo slug ベース (harness id でなく FS1/FS2)
     const putCall = calls.find((c) => c.method === 'PUT')!;
     const body = putCall.body as { logic: { rules: Array<{ conditions: Array<{ field: string }>; actions: Array<{ field: string }> }> } };

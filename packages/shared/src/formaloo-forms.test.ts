@@ -10,6 +10,7 @@ import {
   HARNESS_TO_FORMALOO_TYPE,
   FORMALOO_TO_HARNESS_TYPE,
   toFormalooFieldPayload,
+  fromFormalooField,
   toFormalooLogic,
   fromFormalooLogic,
   validateHarnessField,
@@ -77,11 +78,99 @@ describe('formaloo-forms — toFormalooFieldPayload', () => {
     expect(p.allow_multiple_files).toBe(true);
     expect(p.allowed_extensions).toEqual(['pdf', 'png']);
   });
-  test('choice の選択肢を Formaloo choices へ', () => {
+  // 🚨 latent defect 回帰ガード: 実 Formaloo API は choice 系選択肢を writeOnly `choice_items`
+  // ([{title}] 形式) で受ける (live 実証 2026-07-10)。旧実装の `choices: string[]` は API に無視され
+  // 選択肢が Formaloo 側で落ちていた (silent data loss)。以後 `choices` キーを送ってはならない。
+  test('choice の選択肢は Formaloo choice_items ([{title}]) で送る (choices キーは送らない / latent defect)', () => {
     const field: HarnessField = { id: 'f3', type: 'choice', label: '性別', required: true, position: 2, config: { choices: ['男', '女', 'その他'] } };
     const p = toFormalooFieldPayload(field);
     expect(p.type).toBe('choice');
-    expect(p.choices).toEqual(['男', '女', 'その他']);
+    expect(p.choice_items).toEqual([{ title: '男' }, { title: '女' }, { title: 'その他' }]);
+    expect(p.choices).toBeUndefined(); // 旧 shape は二度と送らない
+  });
+  test('dropdown / multiple_select も choice_items で送る', () => {
+    for (const type of ['dropdown', 'multiple_select'] as const) {
+      const field: HarnessField = { id: 'f', type, label: 'x', required: false, position: 0, config: { choices: ['A', 'B'] } };
+      const p = toFormalooFieldPayload(field);
+      expect(p.type).toBe(type);
+      expect(p.choice_items).toEqual([{ title: 'A' }, { title: 'B' }]);
+      expect(p.choices).toBeUndefined();
+    }
+  });
+});
+
+describe('formaloo-forms — fromFormalooField (builder pull / N-8 選択肢読み戻し)', () => {
+  // Formaloo form detail の fields_list 要素 (read-shape) を模した最小オブジェクト。
+  // choice_items は read 時に slug/position/is_other_choice 等を持つ (live 実証 2026-07-10)。
+  const readChoiceField = {
+    slug: 'FS_CHOICE',
+    type: 'choice',
+    title: '好きな色',
+    required: true,
+    position: 3,
+    // わざと position を昇順でなく与える → position 昇順に整列されること
+    choice_items: [
+      { slug: 'c2', title: '青', position: 2, is_other_choice: false },
+      { slug: 'c1', title: '赤', position: 1, is_other_choice: false },
+      { slug: 'c3', title: '緑', position: 3, is_other_choice: false },
+      // has_other_choice の「その他」自由記述は選択肢ではない → 除外される
+      { slug: 'cOther', title: 'その他', position: 4, is_other_choice: true },
+    ],
+  };
+
+  test('choice field を harness field に再構成し選択肢を position 昇順で復元 (is_other_choice は除外)', () => {
+    const f = fromFormalooField(readChoiceField);
+    expect(f).not.toBeNull();
+    expect(f!.type).toBe('choice');
+    expect(f!.label).toBe('好きな色');
+    expect(f!.required).toBe(true);
+    expect(f!.position).toBe(3);
+    expect(f!.config.choices).toEqual(['赤', '青', '緑']); // position 昇順 / その他(is_other_choice)は落ちる
+  });
+
+  test('resolveId で Formaloo slug → harness id を解決 (無ければ slug をそのまま id に)', () => {
+    expect(fromFormalooField(readChoiceField, (slug) => (slug === 'FS_CHOICE' ? 'h9' : undefined))!.id).toBe('h9');
+    expect(fromFormalooField(readChoiceField)!.id).toBe('FS_CHOICE'); // resolver 無し = slug fallback
+  });
+
+  test('未対応 type (matrix 等) は null (MVP subset のみ / M-21)', () => {
+    expect(fromFormalooField({ slug: 'x', type: 'matrix', title: 'm' })).toBeNull();
+    expect(fromFormalooField(null)).toBeNull();
+    expect(fromFormalooField('nope' as unknown)).toBeNull();
+  });
+
+  test('text field は max_length を復元 (choices は付かない)', () => {
+    const f = fromFormalooField({ slug: 's', type: 'short_text', title: '名前', required: false, position: 0, max_length: 50 });
+    expect(f!.type).toBe('text');
+    expect(f!.config.maxLength).toBe(50);
+    expect(f!.config.choices).toBeUndefined();
+  });
+
+  test('未知プロパティは無視 (whitelist / M-8)', () => {
+    const f = fromFormalooField({ slug: 's', type: 'choice', title: 'x', evil: 'inject', choice_items: [{ title: 'A', injected: 'x' }] } as unknown);
+    expect((f as unknown as Record<string, unknown>).evil).toBeUndefined();
+    expect(f!.config.choices).toEqual(['A']);
+  });
+
+  test('round-trip: harness field → push payload → (Formaloo read 形を模す) → fromFormalooField で choices 一致 (N-8)', () => {
+    const original: HarnessField = { id: 'h1', type: 'multiple_select', label: '興味', required: false, position: 1, config: { choices: ['旅行', '料理', '音楽'] } };
+    const pushed = toFormalooFieldPayload(original);
+    // push は choice_items:[{title}]。Formaloo が read 時に slug/position/is_other_choice を付与する形を模す。
+    const asRead = {
+      slug: 'FS_H1',
+      type: pushed.type,
+      title: pushed.title,
+      required: pushed.required,
+      position: pushed.position,
+      choice_items: (pushed.choice_items as Array<{ title: string }>).map((it, i) => ({
+        slug: `s${i}`,
+        title: it.title,
+        position: i + 1,
+        is_other_choice: false,
+      })),
+    };
+    const back = fromFormalooField(asRead, () => 'h1');
+    expect(back).toEqual(original); // id/type/label/required/position/config.choices まで完全一致
   });
 });
 

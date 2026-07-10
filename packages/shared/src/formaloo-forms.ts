@@ -166,10 +166,62 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
   const c = field.config;
   if (c.maxLength !== undefined) p.max_length = c.maxLength;
   if (c.minLength !== undefined) p.min_length = c.minLength;
-  if (c.choices !== undefined) p.choices = [...c.choices];
+  // choice/dropdown/multiple_select の選択肢は Formaloo writeOnly `choice_items` ([{title}] 形式) で送る。
+  // slug 無しの item = 新規選択肢として作成される (live 実証 2026-07-10 / OpenAPI ChoiceFieldRequest.choice_items)。
+  // 🚨 旧実装の `choices: string[]` は実 API に無視され、choice field は作成されても選択肢が
+  //    Formaloo 側で落ちていた (silent data loss / latent defect)。以後 `choices` キーは送らない。
+  if (c.choices !== undefined) p.choice_items = c.choices.map((title) => ({ title }));
   if (c.allowMultipleFiles !== undefined) p.allow_multiple_files = c.allowMultipleFiles;
   if (c.allowedExtensions !== undefined) p.allowed_extensions = [...c.allowedExtensions];
   return p;
+}
+
+/**
+ * Formaloo field オブジェクト (form detail の `fields_list` 要素 / read-shape) → harness field 再構成。
+ * builder open 時に Formaloo→harness へ選択肢を読み戻す pull 経路 (N-8) の単一 field 変換。
+ *  - MVP subset 外の Formaloo type (matrix 等) は null で捨てる (M-21)。
+ *  - choice 系は read-shape の `choice_items[]` から `title` を復元 (position 昇順 / `is_other_choice` は
+ *    自由記述「その他」なので選択肢から除外)。push の [{title}] 形も position 無しで順序保持して復元できる。
+ *  - 未知プロパティは無視 (whitelist / M-8)。id は resolveId?.(slug) があればそれを、無ければ Formaloo slug。
+ */
+export function fromFormalooField(
+  input: unknown,
+  resolveId?: (formalooFieldSlug: string) => string | undefined,
+): HarnessField | null {
+  if (typeof input !== 'object' || input === null) return null;
+  const o = input as Record<string, unknown>;
+  const formalooType = typeof o.type === 'string' ? o.type : '';
+  const type = FORMALOO_TO_HARNESS_TYPE[formalooType];
+  if (!type) return null; // MVP subset 外 = 復元しない (M-21)
+
+  const slug = typeof o.slug === 'string' ? o.slug : '';
+  const id = (slug ? resolveId?.(slug) : undefined) ?? slug;
+
+  const config: HarnessFieldConfig = {};
+  if (typeof o.max_length === 'number' && Number.isFinite(o.max_length)) config.maxLength = o.max_length;
+  if (typeof o.min_length === 'number' && Number.isFinite(o.min_length)) config.minLength = o.min_length;
+  if (typeof o.allow_multiple_files === 'boolean') config.allowMultipleFiles = o.allow_multiple_files;
+  if (Array.isArray(o.allowed_extensions) && o.allowed_extensions.every((e) => typeof e === 'string')) {
+    config.allowedExtensions = [...(o.allowed_extensions as string[])];
+  }
+  if (type === 'choice' || type === 'dropdown' || type === 'multiple_select') {
+    const rawItems = Array.isArray(o.choice_items) ? (o.choice_items as unknown[]) : [];
+    config.choices = rawItems
+      .map((it) => (it && typeof it === 'object' ? (it as Record<string, unknown>) : {}))
+      .filter((it) => typeof it.title === 'string' && it.is_other_choice !== true)
+      .map((it, i) => ({ title: it.title as string, pos: typeof it.position === 'number' ? it.position : i }))
+      .sort((a, b) => a.pos - b.pos)
+      .map((it) => it.title);
+  }
+
+  return {
+    id,
+    type,
+    label: typeof o.title === 'string' ? o.title : '',
+    required: o.required === true,
+    position: typeof o.position === 'number' ? o.position : 0,
+    config,
+  };
 }
 
 /**
