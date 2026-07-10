@@ -18,7 +18,7 @@
 name = "line-harness-ks"
 main = "dist/line_harness/index.js"
 compatibility_date = "2024-12-01"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = true
 account_id = "8afbae04688d10af42d2d4ab5a323019"
 
