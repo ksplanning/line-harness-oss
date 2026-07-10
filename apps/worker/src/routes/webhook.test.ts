@@ -448,12 +448,14 @@ describe('POST /webhook — FAQ bot flag gate', () => {
 
     const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' });
 
+    // 第 4 引数 = faqAiRuntime。baseEnv に AI binding が無い → createFaqAiRuntime()=null
+    // (dark-ship default)。Phase B B-1 で additive に渡す (gate 行 L722 は byte-identical)。
     expect(tryFaqReply).toHaveBeenCalledWith(db, lineClientMocks, {
       friend: expect.objectContaining({ id: 'friend-1' }),
       incomingText: '営業時間は？',
       lineAccountId: null,
       replyToken: 'reply-token',
-    });
+    }, null);
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
     expect(fireEvent).toHaveBeenCalledWith(
       db,
