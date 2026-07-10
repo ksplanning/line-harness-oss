@@ -43,6 +43,26 @@ describe('T-A1 ImagemapRegionEditor', () => {
     expect(regions[0]).toMatchObject({ x: '100', y: '100', width: '200', height: '300', actionType: 'uri' })
   })
 
+  it('端の外へドラッグして描いた矩形は画像境界内に収まる (onUp clamp / G65 backlog)', () => {
+    const onChange = vi.fn()
+    const { container } = render(
+      <ImagemapRegionEditor imageUrl="https://x/im" baseW={1040} baseH={1040} regions={[]} onChange={onChange} />,
+    )
+    const canvas = mockCanvasRect(container)
+    // 右下 (900,900) から画像外 (2000,2000) までドラッグ → 座標が境界を越えない (端に収まる)。
+    fireEvent.mouseDown(canvas, { clientX: 900, clientY: 900 })
+    fireEvent.mouseMove(window, { clientX: 2000, clientY: 2000 })
+    fireEvent.mouseUp(window, { clientX: 2000, clientY: 2000 })
+    const r = lastCall(onChange)[0]
+    expect(Number(r.x)).toBeGreaterThanOrEqual(0)
+    expect(Number(r.y)).toBeGreaterThanOrEqual(0)
+    expect(Number(r.x) + Number(r.width)).toBeLessThanOrEqual(1040)
+    expect(Number(r.y) + Number(r.height)).toBeLessThanOrEqual(1040)
+    // 始点 (900) は保たれ、端 (1040) までの帯として収まる (全幅化しない)。
+    expect(Number(r.x)).toBe(900)
+    expect(Number(r.width)).toBe(140)
+  })
+
   it('既存 regions を矩形として描画する (数値入力と同じ配列を受け取る)', () => {
     const { container } = render(
       <ImagemapRegionEditor imageUrl="https://x/im" baseW={1040} baseH={1040}

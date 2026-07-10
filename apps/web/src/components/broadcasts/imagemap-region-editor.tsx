@@ -145,15 +145,21 @@ export default function ImagemapRegionEditor({
     }
     function onUp(e: MouseEvent) {
       if (drag!.mode === 'create') {
-        const { x, y } = toImageCoord(e.clientX, e.clientY)
-        const w = Math.abs(x - drag!.startX)
-        const h = Math.abs(y - drag!.startY)
+        // 端ドラッグで画像外に出た終点を境界内へ clamp してから矩形化する。始点は canvas 内の
+        // pointerdown 由来で既に境界内なので、clampX/clampY を幅0で使い「点」を [0,bw]/[0,bh] に
+        // 収める (座標 clamp の単一正典を再利用 = 幅を別途 clamp する二重実装を足さない)。これで
+        // nx=min(始点,終点) / w=|終点-始点| は必ず x+width<=bw を満たし、端ドラッグは全幅化せず帯に収まる。
+        const end = toImageCoord(e.clientX, e.clientY)
+        const ex = clampX(end.x, 0)
+        const ey = clampY(end.y, 0)
+        const w = Math.abs(ex - drag!.startX)
+        const h = Math.abs(ey - drag!.startY)
         if (w >= MIN_AREA && h >= MIN_AREA) {
           if (regionsRef.current.length >= MAX_REGIONS) {
             setLimitHit(true)
           } else {
-            const nx = clampX(Math.min(drag!.startX, x), w)
-            const ny = clampY(Math.min(drag!.startY, y), h)
+            const nx = Math.min(drag!.startX, ex)
+            const ny = Math.min(drag!.startY, ey)
             const next: MediaRegion = { x: String(nx), y: String(ny), width: String(w), height: String(h), actionType: 'uri', value: '' }
             const idx = regionsRef.current.length
             onChange([...regionsRef.current, next])
