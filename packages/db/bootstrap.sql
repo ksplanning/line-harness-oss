@@ -91,6 +91,18 @@ CREATE TABLE affiliates (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE ai_faq_drafts (
+  id                TEXT PRIMARY KEY,
+  line_account_id   TEXT,
+  friend_id         TEXT,
+  question          TEXT NOT NULL,
+  draft_answer      TEXT NOT NULL,
+  evidence_faq_ids  TEXT NOT NULL DEFAULT '[]',
+  status            TEXT NOT NULL DEFAULT 'pending',
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
+);
+
 CREATE TABLE auto_replies (
   id               TEXT PRIMARY KEY,
   keyword          TEXT NOT NULL,
@@ -383,11 +395,11 @@ CREATE TABLE faqs (
   is_active        INTEGER NOT NULL DEFAULT 1,
   hit_count        INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
-  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
-  -- Phase B reserved (add with additive ALTER in Phase B):
-  --   answer_type TEXT DEFAULT 'text'
-  --   embedding   BLOB
-  --   source_doc_id TEXT
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  answer_type      TEXT DEFAULT 'text',
+  source_doc_id    TEXT
+  -- Phase B reserved (add with additive ALTER):
+  --   embedding   BLOB  (B-4 / Vectorize)
 );
 
 CREATE TABLE form_opens (
@@ -1014,6 +1026,8 @@ CREATE INDEX idx_ad_conversion_logs_platform ON ad_conversion_logs (ad_platform_
 CREATE INDEX idx_ad_conversion_logs_status ON ad_conversion_logs (status);
 
 CREATE INDEX idx_affiliate_clicks_affiliate ON affiliate_clicks (affiliate_id);
+
+CREATE INDEX idx_ai_faq_drafts_account_status ON ai_faq_drafts(line_account_id, status);
 
 CREATE INDEX idx_auto_replies_template_id ON auto_replies(template_id);
 

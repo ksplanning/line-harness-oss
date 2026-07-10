@@ -221,14 +221,30 @@ CREATE TABLE IF NOT EXISTS faqs (
   is_active        INTEGER NOT NULL DEFAULT 1,
   hit_count        INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
-  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
-  -- Phase B reserved (add with additive ALTER in Phase B):
-  --   answer_type TEXT DEFAULT 'text'
-  --   embedding   BLOB
-  --   source_doc_id TEXT
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  answer_type      TEXT DEFAULT 'text',
+  source_doc_id    TEXT
+  -- Phase B reserved (add with additive ALTER):
+  --   embedding   BLOB  (B-4 / Vectorize)
 );
 
 CREATE INDEX IF NOT EXISTS idx_faqs_account_active ON faqs(line_account_id, is_active);
+
+-- ============================================================
+-- AI FAQ drafts (Phase B B-1 / answer_mode=draft の草案保存)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ai_faq_drafts (
+  id                TEXT PRIMARY KEY,
+  line_account_id   TEXT,
+  friend_id         TEXT,
+  question          TEXT NOT NULL,
+  draft_answer      TEXT NOT NULL,
+  evidence_faq_ids  TEXT NOT NULL DEFAULT '[]',
+  status            TEXT NOT NULL DEFAULT 'pending',
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_faq_drafts_account_status ON ai_faq_drafts(line_account_id, status);
 
 CREATE TABLE IF NOT EXISTS unmatched_questions (
   id               TEXT PRIMARY KEY,
