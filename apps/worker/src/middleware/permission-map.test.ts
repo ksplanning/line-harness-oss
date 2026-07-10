@@ -89,6 +89,8 @@ describe('機微 sub-route の意味的正しさ (reviewer Round1 再発防止 /
     ['/api/friends/abc/rich-menu', 'rich_menu'],
     // M-1: 個別スコア = analytics
     ['/api/friends/abc/score', 'analytics'],
+    // G64 R2-1: 個別友だちの予約リマインダー = booking (friend 権限では到達させない)
+    ['/api/friends/abc/reminders', 'booking'],
     // 親 friends は friend のまま (list/tag/metadata)
     ['/api/friends/abc', 'friend'],
     ['/api/friends/abc/tags', 'friend'],

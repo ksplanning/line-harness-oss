@@ -41,6 +41,8 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: /^\/api\/friends\/[^/]+\/rich-menu(?:\/|$)/, feature: 'rich_menu' },
   // 個別友だちスコア = 分析 (M-1)
   { test: /^\/api\/friends\/[^/]+\/score(?:\/|$)/, feature: 'analytics' },
+  // 個別友だちの予約リマインダー = 予約 (G64 R2-1: friend 管理では予約領域へ入れない)
+  { test: /^\/api\/friends\/[^/]+\/reminders(?:\/|$)/, feature: 'booking' },
   // FAQ bot 設定 (account-settings prefix だが FAQ 機能 / M-3)
   { test: /^\/api\/account-settings\/faq-bot(?:\/|$)/, feature: 'faq' },
 
@@ -126,7 +128,7 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('canned-responses'), feature: 'chat' },
 
   // ── 友だち管理 (friend) — users-grouped を users より前に ──
-  // (friend-reminders は booking / friends の messages・rich-menu・score は上の specific-first で除外済)
+  // (friend-reminders は booking / friends の messages・rich-menu・score・reminders は上の specific-first で除外済)
   { test: prefix('friends'), feature: 'friend' },
   { test: prefix('tags'), feature: 'friend' },
   { test: prefix('users-grouped'), feature: 'friend' },

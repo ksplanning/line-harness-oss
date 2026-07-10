@@ -71,6 +71,7 @@ function app() {
   a.post('/api/friends/:id/messages', (c) => c.json({ ok: 'send' })); // 実送信路 = chat
   a.get('/api/friends/:id', (c) => c.json({ ok: 'friend-detail' })); // = friend
   a.post('/api/friends/:id/rich-menu', (c) => c.json({ ok: 'rmlink' })); // = rich_menu
+  a.get('/api/friends/:id/reminders', (c) => c.json({ ok: 'friend-reminders' })); // = booking (G64 R2-1)
   return a;
 }
 
@@ -157,6 +158,47 @@ describe('送信境界 (reviewer Round1 H-1/H-2 / friend 管理では送信・ri
   test('chat 許可 role は POST /api/friends/:id/messages で送信到達 (200)', async () => {
     const key = await seedChatOnlyStaff(); // chat=true, friend=true, broadcast=false
     expect((await post('/api/friends/f1/messages', key)).status).toBe(200);
+  });
+});
+
+describe('予約境界 (G64 R2-1 / GET /api/friends/:id/reminders は friend でなく booking)', () => {
+  /** friend のみ許可 (booking は false) の custom role。 */
+  async function seedFriendNoBookingStaff(): Promise<string> {
+    const role = await createRole(DB, { name: '友だち管理のみ (予約なし)' });
+    await setRolePermissions(DB, role.id, [
+      { feature_key: 'friend', allowed: true },
+      { feature_key: 'booking', allowed: false },
+    ]);
+    const staff = await createStaffMember(DB, { name: '受付', role: 'staff' });
+    await setStaffRoleId(DB, staff.id, role.id);
+    return staff.api_key;
+  }
+
+  /** booking のみ許可 (friend は false) の custom role。 */
+  async function seedBookingNoFriendStaff(): Promise<string> {
+    const role = await createRole(DB, { name: '予約管理のみ (友だちなし)' });
+    await setRolePermissions(DB, role.id, [
+      { feature_key: 'booking', allowed: true },
+      { feature_key: 'friend', allowed: false },
+    ]);
+    const staff = await createStaffMember(DB, { name: '予約担当', role: 'staff' });
+    await setStaffRoleId(DB, staff.id, role.id);
+    return staff.api_key;
+  }
+
+  test('friend 権限のみ (booking なし) は GET /api/friends/:id/reminders で 403 (予約領域へ再割当)', async () => {
+    const key = await seedFriendNoBookingStaff();
+    // friend 詳細 (= friend feature) には到達できる
+    expect((await get('/api/friends/f1', key)).status).toBe(200);
+    // だがリマインダー (= booking feature) は 403 (friend 権限だけでは通らない)
+    expect((await get('/api/friends/f1/reminders', key)).status).toBe(403);
+  });
+
+  test('booking 権限あり (friend なし) は GET /api/friends/:id/reminders で到達 (200)', async () => {
+    const key = await seedBookingNoFriendStaff();
+    expect((await get('/api/friends/f1/reminders', key)).status).toBe(200);
+    // 逆向きの証拠: friend 詳細 (= friend feature) は booking 権限では 403 = reminders は friend でない
+    expect((await get('/api/friends/f1', key)).status).toBe(403);
   });
 });
 
