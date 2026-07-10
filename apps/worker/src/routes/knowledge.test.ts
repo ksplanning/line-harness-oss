@@ -219,7 +219,79 @@ describe('GET /documents — embed 状態露出 (serialize allowlist / T-E2)', (
   });
 });
 
+describe('GET /ai-usage + /ai-drafts — AI ログ/コスト (T-E4)', () => {
+  function seedUsage(acct: string, date: string, llm: number, embed = 0, image = 0, reply = 0) {
+    raw.prepare(
+      `INSERT INTO ai_usage_budget (id, line_account_id, usage_date, llm_neurons, embed_neurons, image_neurons, reply_count)
+       VALUES (?,?,?,?,?,?,?)`,
+    ).run(`${acct}-${date}`, acct, date, llm, embed, image, reply);
+  }
+  function seedDraft(acct: string | null, friend: string | null, q: string, a: string, status = 'pending') {
+    raw.prepare(
+      `INSERT INTO ai_faq_drafts (id, line_account_id, friend_id, question, draft_answer, status) VALUES (?,?,?,?,?,?)`,
+    ).run(crypto.randomUUID(), acct, friend, q, a, status);
+  }
+  test('GET /ai-usage が per-account 行 + global SUM + embeddedChunks を返す', async () => {
+    seedUsage('acc-1', '2026-07-11', 100, 10, 0, 2);
+    seedUsage('acc-2', '2026-07-11', 200, 5, 0, 3);
+    const res = await call('GET', '/api/knowledge/ai-usage?accountId=acc-1&days=30');
+    expect(res.status).toBe(200);
+    const j = await res.json() as { data: { account: Array<{ usageDate: string; llmNeurons: number; replyCount: number }>; global: Array<{ usageDate: string; llmNeurons: number }>; embeddedChunks: number } };
+    expect(j.data.account.length).toBe(1);
+    expect(j.data.account[0].llmNeurons).toBe(100);
+    expect(j.data.account[0].replyCount).toBe(2);
+    // global は acc-1+acc-2 の SUM。
+    const g = j.data.global.find((r) => r.usageDate === '2026-07-11')!;
+    expect(g.llmNeurons).toBe(300);
+    expect(typeof j.data.embeddedChunks).toBe('number');
+  });
+  test('GET /ai-usage の days は上限 clamp (不正値は default)', async () => {
+    seedUsage('acc-1', '2026-07-11', 100);
+    const res = await call('GET', '/api/knowledge/ai-usage?accountId=acc-1&days=999999');
+    expect(res.status).toBe(200); // clamp されて 500 等にならない
+    const res2 = await call('GET', '/api/knowledge/ai-usage?accountId=acc-1&days=abc');
+    expect(res2.status).toBe(200);
+  });
+  test('GET /ai-drafts が account スコープ草案を返し friend_id/account_id/evidence を露出しない (D-3)', async () => {
+    seedDraft('acc-1', 'friend-secret-123', '営業時間は？', '10時から19時です', 'pending');
+    seedDraft('acc-2', 'other-friend', '別アカ', '別回答', 'pending');
+    const res = await call('GET', '/api/knowledge/ai-drafts?accountId=acc-1');
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    const j = JSON.parse(body) as { data: Array<{ id: string; question: string; draftAnswer: string; status: string; createdAt: string }> };
+    expect(j.data.length).toBe(1);
+    expect(j.data[0].question).toBe('営業時間は？');
+    expect(j.data[0].draftAnswer).toBe('10時から19時です');
+    // 秘密/内部識別子は載らない (D-3 / B5-6)。
+    expect(body).not.toContain('friend-secret-123');
+    expect(body).not.toContain('friendId');
+    expect(body).not.toContain('evidence');
+    // 他 account の草案は出ない。
+    expect(body).not.toContain('別アカ');
+  });
+  test('GET /ai-drafts の status で絞れる', async () => {
+    seedDraft('acc-1', null, 'pending Q', 'A', 'pending');
+    seedDraft('acc-1', null, 'approved Q', 'A', 'approved');
+    const res = await call('GET', '/api/knowledge/ai-drafts?accountId=acc-1&status=pending');
+    const j = await res.json() as { data: Array<{ question: string }> };
+    expect(j.data.map((d) => d.question)).toEqual(['pending Q']);
+  });
+});
+
 describe('mount + 実 app 統合 (auth+permission 経由・M-15 dead-code 検知)', () => {
+  test('実 app 経由 (Bearer env-owner) で GET /ai-usage が mount+faq 権限を通り 200 (未 mount=404)', async () => {
+    const res = await app.request('/api/knowledge/ai-usage?accountId=acc-1', {
+      method: 'GET', headers: { Authorization: 'Bearer env-owner-key' },
+    }, env());
+    expect(res.status).not.toBe(404);
+    expect(res.status).toBe(200);
+  });
+  test('実 app 経由で GET /ai-drafts も mount+faq 権限を通り 200', async () => {
+    const res = await app.request('/api/knowledge/ai-drafts?accountId=acc-1', {
+      method: 'GET', headers: { Authorization: 'Bearer env-owner-key' },
+    }, env());
+    expect(res.status).toBe(200);
+  });
   test('実 app 経由 (Bearer env-owner) で POST /ingest が 201 保存到達 (未 mount=404)', async () => {
     const res = await app.request('/api/knowledge/ingest?accountId=acc-1', {
       method: 'POST',

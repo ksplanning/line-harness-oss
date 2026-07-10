@@ -7,7 +7,17 @@ import {
   deleteKnowledgeDocument,
   type KnowledgeDocument,
 } from '@line-crm/db';
-import { getChunksBySourceDoc, getDocumentChunkStats, type DocumentChunkStat } from '@line-crm/db';
+import {
+  getChunksBySourceDoc,
+  getDocumentChunkStats,
+  type DocumentChunkStat,
+  listAiUsageForAccount,
+  listAiUsageGlobal,
+  listAiFaqDrafts,
+  countEmbeddedChunks,
+  type AiUsageBudgetRow,
+  type AiFaqDraftRow,
+} from '@line-crm/db';
 import { safeFetch, resolveViaDoh, INGEST_ALLOWED_CONTENT_TYPES, SsrfBlockedError } from '../lib/ssrf-guard.js';
 import { sanitizeIngestedText, splitIntoChunks, buildChunkSearchText, embedChunksForDocument } from '../services/knowledge.js';
 import { createFaqAiRuntime, DEFAULT_EMBED_NEURON_PER_MTOK } from '../services/llm/runtime.js';
@@ -212,6 +222,56 @@ knowledge.delete('/api/knowledge/documents/:id', async (c) => {
   }
   await deleteKnowledgeDocument(c.env.DB, doc.id);
   return c.json({ success: true });
+});
+
+// clamp: 数値 query を [1, max] に収める (不正/欠損は default・無制限レスポンス防止 / M-3)。
+function clampInt(v: string | undefined, def: number, max: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(1, Math.floor(n)));
+}
+
+/** AI 使用量行の serialize allowlist (neuron/日次のみ・内部 id を露出しない / D-3)。 */
+function serializeUsage(r: AiUsageBudgetRow) {
+  return {
+    usageDate: r.usage_date,
+    llmNeurons: Number(r.llm_neurons),
+    embedNeurons: Number(r.embed_neurons),
+    imageNeurons: Number(r.image_neurons),
+    replyCount: Number(r.reply_count),
+  };
+}
+
+/** AI 草案の serialize allowlist (question/draft/status/日時のみ・friend_id/account_id/evidence は非露出 / D-3・B5-6)。 */
+function serializeDraft(r: AiFaqDraftRow) {
+  return {
+    id: r.id,
+    question: r.question,
+    draftAnswer: r.draft_answer,
+    status: r.status,
+    createdAt: r.created_at,
+  };
+}
+
+// GET /api/knowledge/ai-usage — AI 使用量/コスト (per-account + global SUM + embed 済 chunk 数)。
+// permission-map prefix('knowledge')→'faq' で gate (別 route なし)。**送信ゼロ・秘密非露出**。
+knowledge.get('/api/knowledge/ai-usage', async (c) => {
+  const accountId = c.req.query('accountId') ?? null;
+  const days = clampInt(c.req.query('days'), 30, 365);
+  const account = accountId ? (await listAiUsageForAccount(c.env.DB, accountId, days)).map(serializeUsage) : [];
+  const global = (await listAiUsageGlobal(c.env.DB, days)).map(serializeUsage);
+  // Vectorize stored dims の下限推定に使う embed 済 chunk 数 (§4-4)。次元は provisioning 後に UI で掛ける。
+  const embeddedChunks = await countEmbeddedChunks(c.env.DB, accountId);
+  return c.json({ success: true, data: { account, global, embeddedChunks } });
+});
+
+// GET /api/knowledge/ai-drafts — AI 草案ログ (draft のみ・auto-send 回答は非保存)。account スコープ・秘密非露出。
+knowledge.get('/api/knowledge/ai-drafts', async (c) => {
+  const accountId = c.req.query('accountId') ?? null;
+  const status = c.req.query('status') || undefined;
+  const limit = clampInt(c.req.query('limit'), 100, 500);
+  const drafts = (await listAiFaqDrafts(c.env.DB, accountId, status, limit)).map(serializeDraft);
+  return c.json({ success: true, data: drafts });
 });
 
 export { knowledge };
