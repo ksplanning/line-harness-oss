@@ -10,6 +10,7 @@ import {
   getEntryRouteByRefCode,
 } from '@line-crm/db';
 import { type WorkersAiBinding } from './services/llm/workers-ai.js';
+import { type VectorizeIndex } from './services/vectorize.js';
 import { processStepDeliveries } from './services/step-delivery.js';
 import { processScheduledBroadcasts, processQueuedBroadcasts } from './services/broadcast.js';
 import { isRichMenuScheduleEnabled, processRichMenuSchedule } from './services/rich-menu-schedule.js';
@@ -142,6 +143,13 @@ export type Env = {
     AI_NEURON_PER_MTOK_OUT?: string;
     AI_DAILY_NEURON_BUDGET_GLOBAL?: string;     // 共有無料枠の合算上限 (fail-closed)
     AI_DAILY_NEURON_BUDGET_PER_ACCOUNT?: string;
+    // Phase B (B-4) — chunks live RAG。`[[vectorize]] binding = "VECTORIZE"` と AI_EMBED_* [vars] は
+    // infra 工程で wrangler に追記 (repo に literal を置かない)。未設定 dev では chunk 検索を組まず
+    // faqs-only=B-3 挙動へ degrade (createFaqAiRuntime が vectorize:null / embedModelId:undefined)。
+    VECTORIZE?: VectorizeIndex;                  // Vectorize index binding
+    AI_EMBED_MODEL_ID?: string;                  // 非 deprecated 多言語 embedding (default 値は wrangler [vars])
+    AI_CHUNK_RELEVANCE_FLOOR?: string;           // chunk 採用の正規化 cosine [0,1] 下限
+    AI_EMBED_NEURON_PER_MTOK?: string;           // embed の token→neuron 換算係数
     // G17 期間限定リッチメニューの自動切替 flag。既定 OFF (未設定) = dark-ship。
     // KS 本番は crons=[] でもあり二重に dark (owner 立会後に 'true' + cron 設定で有効化)。
     RICH_MENU_SCHEDULE_ENABLED?: string;

@@ -7,8 +7,11 @@ import {
   deleteKnowledgeDocument,
   type KnowledgeDocument,
 } from '@line-crm/db';
+import { getChunksBySourceDoc } from '@line-crm/db';
 import { safeFetch, resolveViaDoh, INGEST_ALLOWED_CONTENT_TYPES, SsrfBlockedError } from '../lib/ssrf-guard.js';
-import { sanitizeIngestedText, splitIntoChunks, buildChunkSearchText } from '../services/knowledge.js';
+import { sanitizeIngestedText, splitIntoChunks, buildChunkSearchText, embedChunksForDocument } from '../services/knowledge.js';
+import { createFaqAiRuntime, DEFAULT_EMBED_NEURON_PER_MTOK } from '../services/llm/runtime.js';
+import { deleteChunkVectors } from '../services/vectorize.js';
 import type { Env } from '../index.js';
 
 /**
@@ -134,6 +137,30 @@ knowledge.post('/api/knowledge/ingest', async (c) => {
     await deleteKnowledgeDocument(c.env.DB, doc.id).catch(() => {});
     return c.json({ success: false, error: '取り込みの保存に失敗しました' }, 500);
   }
+
+  // B-4 (T-D5/T-D7): chunk 保存後に embed + Vectorize upsert (予算 gated・best-effort)。Vectorize 未 binding
+  // (dark-ship/dev) では createFaqAiRuntime が vectorize:null を返し no-op = FTS のみ (B-3 挙動)。embed 失敗は
+  // ingest を失敗させない (chunks は既に保存済で FTS で機能・embedded_at=null は後で backfill embed)。
+  const ai = createFaqAiRuntime(c.env);
+  if (ai?.vectorize && ai.embedModelId) {
+    try {
+      await embedChunksForDocument(
+        c.env.DB,
+        {
+          provider: ai.provider,
+          vectorize: ai.vectorize,
+          embedModelId: ai.embedModelId,
+          embedNeuronPerMTok: ai.embedNeuronPerMTok ?? DEFAULT_EMBED_NEURON_PER_MTOK,
+          globalBudget: ai.dailyNeuronBudgetGlobal,
+          perAccountBudget: ai.dailyNeuronBudgetPerAccount,
+        },
+        doc.id,
+        accountId,
+      );
+    } catch (err) {
+      console.error('knowledge ingest embed failed:', err instanceof Error ? err.name : 'unknown');
+    }
+  }
   return c.json({ success: true, data: { ...serializeDocument(doc), chunkCount: chunks.length } }, 201);
 });
 
@@ -159,6 +186,21 @@ knowledge.delete('/api/knowledge/documents/:id', async (c) => {
   if (!doc) return c.json({ success: false, error: 'Not found' }, 404);
   const rejected = accountScopeReject(doc, c.req.query('accountId') ?? null);
   if (rejected) return rejected;
+
+  // B-4 (T-D7): D1 削除の**前**に chunk id を取得し (削除後は id が分からず orphan 化)、Vectorize ベクトルを
+  // **先に**削除試行 → 成功後 D1 (chunks→document) 削除の順で「孤児ベクトルが再作成 doc へ leak」を防ぐ。
+  // Vectorize 削除失敗は id をログ (再試行キュー相当) に残し D1 削除は続行 (孤児は掃除ジョブが回収 / spec §7)。
+  const ai = createFaqAiRuntime(c.env);
+  if (ai?.vectorize) {
+    const chunkIds = (await getChunksBySourceDoc(c.env.DB, doc.id)).map((ch) => ch.id);
+    if (chunkIds.length > 0) {
+      try {
+        await deleteChunkVectors(ai.vectorize, chunkIds);
+      } catch (err) {
+        console.error('knowledge delete vectorize cleanup deferred:', doc.id, chunkIds.length, err instanceof Error ? err.name : 'unknown');
+      }
+    }
+  }
   await deleteKnowledgeDocument(c.env.DB, doc.id);
   return c.json({ success: true });
 });

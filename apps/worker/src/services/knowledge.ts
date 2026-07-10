@@ -1,8 +1,16 @@
-import type { KnowledgeChunk } from '@line-crm/db';
+import {
+  type KnowledgeChunk,
+  getChunksBySourceDoc,
+  markChunksEmbedded,
+  getAiUsageGlobalToday,
+  getAiUsageToday,
+  recordAiUsage,
+  utcDay,
+} from '@line-crm/db';
 import { normalize, ngrams } from './faq-match.js';
 import { buildQuerySearchText } from './faq-fts.js';
 import { type LlmProvider } from './llm/llm-provider.js';
-import { type VectorizeIndex, queryChunkVectors, getVectorsByIds } from './vectorize.js';
+import { type VectorizeIndex, queryChunkVectors, getVectorsByIds, upsertChunkVectors } from './vectorize.js';
 
 /**
  * Phase B B-3 — 取込ナレッジの worker 層 (計算/検索)。
@@ -323,4 +331,97 @@ export async function retrieveChunkEvidence(
   } catch {
     return { chunks: [], embedNeurons };
   }
+}
+
+// =============================================================================
+// 取込時 embed + Vectorize upsert (T-D5/T-D7) — 予測 delta 事前予約 + batch 分割 + 冪等 upsert
+// =============================================================================
+
+export interface EmbedIngestConfig {
+  provider: Pick<LlmProvider, 'embed'>;
+  vectorize: VectorizeIndex;
+  embedModelId: string;
+  embedNeuronPerMTok: number;
+  /** 全 account 合算の無料枠上限 (neuron/日)。 */
+  globalBudget: number;
+  /** 当該 account の上限 (neuron/日)。 */
+  perAccountBudget: number;
+  /** 1 batch の chunk 数 (batch ごとに残枠を再確認)。 */
+  batchSize?: number;
+}
+
+export interface EmbedIngestResult {
+  embedded: number;
+  /** 無料枠 defer or embed 失敗で未 embed のまま残った chunk 数 (FTS で機能・後で backfill)。 */
+  skipped: number;
+  embedNeurons: number;
+}
+
+/**
+ * 資料の未 embed chunk を batch で embed → Vectorize upsert → markChunksEmbedded → recordAiUsage (T-D5/T-D7)。
+ *
+ * - **予測 delta 事前判定** (単発 isOverAiBudget では 200chunk batch が超過し得る / Codex blocking#2): 各 batch 前に
+ *   `既存使用量 + 実行済 + 予測 delta ≤ budget` を確認し、超えるなら以降を defer (embedded_at=null・FTS で機能)。
+ * - 冪等: 既 embed (embedded_at != null) は skip。同 id 再 upsert は上書き (冪等)。
+ * - **upsert 確認後に markChunksEmbedded** (Vectorize は eventual consistent。受付直後にセットしない / spec §8)。
+ * - per-chunk embed 失敗はその chunk のみ skip (未 embed のまま・後で backfill)。取込 (owner 駆動) は拒否でなく defer。
+ */
+export async function embedChunksForDocument(
+  db: D1Database,
+  cfg: EmbedIngestConfig,
+  sourceDocId: string,
+  lineAccountId: string | null,
+): Promise<EmbedIngestResult> {
+  const all = await getChunksBySourceDoc(db, sourceDocId);
+  const pending = all.filter((c) => c.embedded_at == null);
+  if (pending.length === 0) return { embedded: 0, skipped: 0, embedNeurons: 0 };
+
+  const usageDate = utcDay();
+  const account = lineAccountId ?? 'unknown';
+  let globalUsed: number;
+  let accountUsed: number;
+  try {
+    globalUsed = await getAiUsageGlobalToday(db, usageDate);
+    accountUsed = await getAiUsageToday(db, account, usageDate);
+  } catch {
+    // budget 取得不能 → 過消費防止で embed せず (FTS のみ・後で backfill / fail-closed)。
+    return { embedded: 0, skipped: pending.length, embedNeurons: 0 };
+  }
+
+  const batchSize = cfg.batchSize ?? 20;
+  let embedded = 0;
+  let running = 0;
+  for (let i = 0; i < pending.length; i += batchSize) {
+    const batch = pending.slice(i, i + batchSize);
+    const predicted = batch.reduce((s, ch) => s + computeEmbedNeurons(ch.content, cfg.embedNeuronPerMTok), 0);
+    // [予測 delta 事前予約] batch を embed する前に残枠を確認 (超えるなら以降を defer)。
+    if (globalUsed + running + predicted > cfg.globalBudget || accountUsed + running + predicted > cfg.perAccountBudget) {
+      break;
+    }
+    const items: Array<{ id: string; values: number[]; accountId: string | null; sourceDocId: string }> = [];
+    let batchNeurons = 0;
+    for (const ch of batch) {
+      let vec: number[];
+      try {
+        vec = await cfg.provider.embed(ch.content);
+      } catch {
+        continue; // この chunk は未 embed のまま (backfill 対象)
+      }
+      if (!vec || vec.length === 0) continue;
+      items.push({ id: ch.id, values: vec, accountId: ch.line_account_id, sourceDocId });
+      batchNeurons += computeEmbedNeurons(ch.content, cfg.embedNeuronPerMTok);
+    }
+    if (items.length === 0) continue;
+    // upsert 成功後に embedded_at をセット (失敗ベクトルを backfill 対象外に落とさない / spec §8)。
+    await upsertChunkVectors(cfg.vectorize, items);
+    await markChunksEmbedded(db, items.map((it) => it.id), cfg.embedModelId);
+    try {
+      await recordAiUsage(db, { lineAccountId: account, usageDate, embedNeurons: batchNeurons });
+    } catch {
+      // accounting best-effort (embed/upsert は完了済)。
+    }
+    embedded += items.length;
+    running += batchNeurons;
+  }
+  return { embedded, skipped: pending.length - embedded, embedNeurons: running };
 }
