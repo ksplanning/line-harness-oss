@@ -191,6 +191,34 @@ describe('GET/DELETE — account スコープ (accountScopeReject / D-4)', () =>
   });
 });
 
+describe('GET /documents — embed 状態露出 (serialize allowlist / T-E2)', () => {
+  async function seedDoc(acct: string, content: string) {
+    mockedSafeFetch.mockReset();
+    const res = await call('POST', `/api/knowledge/ingest?accountId=${acct}`, { kind: 'text', content });
+    return (await res.json() as { data: { id: string } }).data.id;
+  }
+  test('GET /documents が chunkCount/embeddedCount を additive 露出 (embedded_at NULL=embeddedCount 0)', async () => {
+    const id = await seedDoc('acc-1', '営業時間は10時から19時です。\n\n駐車場は店舗の裏に10台分ございます。');
+    const res = await call('GET', '/api/knowledge/documents?accountId=acc-1');
+    const j = await res.json() as { data: Array<{ id: string; chunkCount: number; embeddedCount: number }> };
+    const doc = j.data.find((d) => d.id === id)!;
+    expect(doc.chunkCount).toBeGreaterThanOrEqual(1);
+    expect(doc.embeddedCount).toBe(0); // Vectorize 未 binding = embed されない (dark-ship)
+    // embed 済にすると embeddedCount が増える (serialize round-trip / M-8)。
+    raw.prepare(`UPDATE knowledge_chunks SET embedded_at = '2026-07-11T10:00:00.000+09:00' WHERE source_doc_id = ?`).run(id);
+    const res2 = await call('GET', '/api/knowledge/documents?accountId=acc-1');
+    const doc2 = (await res2.json() as { data: Array<{ id: string; chunkCount: number; embeddedCount: number }> }).data.find((d) => d.id === id)!;
+    expect(doc2.embeddedCount).toBe(doc2.chunkCount);
+  });
+  test('他 account の doc は一覧に出ず embed 集計も混ざらない (accountScopeReject / cross-account 0)', async () => {
+    await seedDoc('acc-1', 'アカウント1の資料。営業時間のご案内です。');
+    const otherId = await seedDoc('acc-2', 'アカウント2の資料。別アカウントの内容です。');
+    const res = await call('GET', '/api/knowledge/documents?accountId=acc-1');
+    const j = await res.json() as { data: Array<{ id: string }> };
+    expect(j.data.some((d) => d.id === otherId)).toBe(false);
+  });
+});
+
 describe('mount + 実 app 統合 (auth+permission 経由・M-15 dead-code 検知)', () => {
   test('実 app 経由 (Bearer env-owner) で POST /ingest が 201 保存到達 (未 mount=404)', async () => {
     const res = await app.request('/api/knowledge/ingest?accountId=acc-1', {

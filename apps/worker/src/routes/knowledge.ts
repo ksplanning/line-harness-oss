@@ -7,7 +7,7 @@ import {
   deleteKnowledgeDocument,
   type KnowledgeDocument,
 } from '@line-crm/db';
-import { getChunksBySourceDoc } from '@line-crm/db';
+import { getChunksBySourceDoc, getDocumentChunkStats, type DocumentChunkStat } from '@line-crm/db';
 import { safeFetch, resolveViaDoh, INGEST_ALLOWED_CONTENT_TYPES, SsrfBlockedError } from '../lib/ssrf-guard.js';
 import { sanitizeIngestedText, splitIntoChunks, buildChunkSearchText, embedChunksForDocument } from '../services/knowledge.js';
 import { createFaqAiRuntime, DEFAULT_EMBED_NEURON_PER_MTOK } from '../services/llm/runtime.js';
@@ -27,8 +27,11 @@ import type { Env } from '../index.js';
 
 const knowledge = new Hono<Env>();
 
-/** serialize allowlist (search_text は chunk 側の内部索引列で document には無いが、思想を踏襲し明示 allowlist)。 */
-function serializeDocument(d: KnowledgeDocument) {
+/**
+ * serialize allowlist (search_text は chunk 側の内部索引列で document には無いが、思想を踏襲し明示 allowlist)。
+ * stats を渡すと chunkCount/embeddedCount を additive 露出する (embed 状態表示 / B-5 T-E2・M-8 serialize round-trip)。
+ */
+function serializeDocument(d: KnowledgeDocument, stats?: DocumentChunkStat) {
   return {
     id: d.id,
     lineAccountId: d.line_account_id,
@@ -37,6 +40,7 @@ function serializeDocument(d: KnowledgeDocument) {
     title: d.title,
     createdAt: d.created_at,
     updatedAt: d.updated_at,
+    ...(stats ? { chunkCount: stats.chunkCount, embeddedCount: stats.embeddedCount } : {}),
   };
 }
 
@@ -164,11 +168,16 @@ knowledge.post('/api/knowledge/ingest', async (c) => {
   return c.json({ success: true, data: { ...serializeDocument(doc), chunkCount: chunks.length } }, 201);
 });
 
-// GET /api/knowledge/documents — account スコープ一覧 (global + 指定 account)。
+// GET /api/knowledge/documents — account スコープ一覧 (global + 指定 account) + embed 状態 (T-E2)。
 knowledge.get('/api/knowledge/documents', async (c) => {
   const accountId = c.req.query('accountId') ?? null;
   const docs = await listKnowledgeDocuments(c.env.DB, accountId);
-  return c.json({ success: true, data: docs.map(serializeDocument) });
+  // chunk/embed 集計を account 条件付きで join (chunk 0 の doc は 0 default)。
+  const stats = await getDocumentChunkStats(c.env.DB, accountId, docs.map((d) => d.id));
+  return c.json({
+    success: true,
+    data: docs.map((d) => serializeDocument(d, stats[d.id] ?? { chunkCount: 0, embeddedCount: 0 })),
+  });
 });
 
 // GET /api/knowledge/documents/:id — 単体 (accountScopeReject)。

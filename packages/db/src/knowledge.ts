@@ -176,3 +176,64 @@ export async function getUnembeddedChunks(
     .all<KnowledgeChunk>();
   return result.results;
 }
+
+export interface DocumentChunkStat {
+  chunkCount: number;
+  embeddedCount: number;
+}
+
+// D1 の prepared statement bind 変数上限 (100) を account 条件 (+1) 込みで越えないための安全 batch サイズ
+// (unanswered-inbox の本番事故 2026-05-08 と同じ IN×bind 上限を回避 / M-account-scope)。
+const DOC_STATS_BATCH = 90;
+
+/**
+ * 資料 (docIds) 単位の chunk 総数 + embed 済 chunk 数 (embedded_at NOT NULL) を **account 条件付き JOIN 集計**で返す
+ * (B-5 T-E2)。account 式は listKnowledgeDocuments と同一 (global(null) + 指定 account・他 account doc は集計対象外 =
+ * cross-account 0 の二重防御)。docIds は bind 上限を超えないよう batch 分割 (§10)。戻りは chunk を持つ doc のみ
+ * (chunk 0 の doc はキー無し → 呼出 route が {chunkCount:0, embeddedCount:0} を default にする)。空配列は SQL 非発行。
+ */
+export async function getDocumentChunkStats(
+  db: D1Database,
+  lineAccountId: string | null,
+  docIds: string[],
+): Promise<Record<string, DocumentChunkStat>> {
+  const out: Record<string, DocumentChunkStat> = {};
+  for (let i = 0; i < docIds.length; i += DOC_STATS_BATCH) {
+    const batch = docIds.slice(i, i + DOC_STATS_BATCH);
+    if (batch.length === 0) continue;
+    const placeholders = batch.map(() => '?').join(', ');
+    const result = await db
+      .prepare(
+        `SELECT source_doc_id AS docId,
+                COUNT(*) AS chunkCount,
+                SUM(CASE WHEN embedded_at IS NOT NULL THEN 1 ELSE 0 END) AS embeddedCount
+           FROM knowledge_chunks
+          WHERE source_doc_id IN (${placeholders})
+            AND (line_account_id IS NULL OR line_account_id = ?)
+          GROUP BY source_doc_id`,
+      )
+      .bind(...batch, lineAccountId)
+      .all<{ docId: string; chunkCount: number; embeddedCount: number }>();
+    for (const r of result.results) {
+      out[r.docId] = { chunkCount: Number(r.chunkCount), embeddedCount: Number(r.embeddedCount) };
+    }
+  }
+  return out;
+}
+
+/**
+ * embed 済 (embedded_at NOT NULL) chunk の総数を account スコープ (global(null) + 指定 account) で返す (B-5 T-E4)。
+ * Vectorize stored dims の**下限推定** (embed 済数 × 埋込次元) に使う (§4-4)。孤児 Vectorize は数えられないため
+ * 上限保証ではない。accountId=null は global のみ (listKnowledgeDocuments と同一 account 式)。
+ */
+export async function countEmbeddedChunks(db: D1Database, lineAccountId: string | null): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM knowledge_chunks
+        WHERE embedded_at IS NOT NULL
+          AND (line_account_id IS NULL OR line_account_id = ?)`,
+    )
+    .bind(lineAccountId)
+    .first<{ n: number }>();
+  return Number(row?.n ?? 0);
+}
