@@ -64,6 +64,9 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/api/friends')).toBe('friend');
     expect(mapPathToFeature('/api/forms')).toBe('form');
     expect(mapPathToFeature('/api/faqs')).toBe('faq');
+    // Phase B B-3: 取込ナレッジは既存 faq 権限で gate (新 FeatureKey なし / Codex #12)。
+    expect(mapPathToFeature('/api/knowledge/ingest')).toBe('faq');
+    expect(mapPathToFeature('/api/knowledge/documents')).toBe('faq');
     expect(mapPathToFeature('/api/booking/menus')).toBe('booking');
     expect(mapPathToFeature('/api/reminders')).toBe('booking');
     expect(mapPathToFeature('/api/events')).toBe('event');

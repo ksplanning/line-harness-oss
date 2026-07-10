@@ -96,6 +96,8 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('forms-advanced'), feature: 'forms_advanced' },
   { test: prefix('forms'), feature: 'form' },
   { test: prefix('faqs'), feature: 'faq' },
+  // 取込ナレッジ (Phase B B-3) は FAQ と同じ「よくある質問」機能の一部 = 既存 faq 権限で gate (新 FeatureKey なし)。
+  { test: prefix('knowledge'), feature: 'faq' },
 
   // ── テンプレート (template) — packs / message-templates を templates より前に ──
   { test: prefix('template-packs'), feature: 'template' },
