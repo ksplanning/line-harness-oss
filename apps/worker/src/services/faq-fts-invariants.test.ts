@@ -72,14 +72,16 @@ describe('D-2 — dark-ship gate + 検索スコア下限 + escalate/grounding/LL
     expect(unchangedVsMain('apps/worker/src/routes/webhook.ts')).toBe(true);
   });
 
-  test('faq-ai.ts (runFaqAiAnswer 本体・floor 判定・escalate reason・grounding) が byte-identical', () => {
-    expect(unchangedVsMain('apps/worker/src/services/faq-ai.ts')).toBe(true);
-    // 検索スコア下限の判定が保持されている (撤廃/緩和していない)。
-    expect(readRepo('apps/worker/src/services/faq-ai.ts')).toContain('detail.topScore < ai.retrievalFloor');
+  test('faq-ai.ts の faq Dice floor (retrievalFloor 尺度) が不変 (B-4 で chunk 結線しても faq 側 floor は緩和しない)', () => {
+    // B-4 (chunks live 結線) が faq-ai.ts を意図的に改修するため byte-identical は解除 (地雷 B4-7)。
+    // faq の Dice floor 判定 (topScore と retrievalFloor 比較) が撤廃/緩和されていないことを確認する。
+    const src = readRepo('apps/worker/src/services/faq-ai.ts');
+    expect(src).toContain('detail.topScore >= ai.retrievalFloor');
   });
 
-  test('runtime.ts (retrievalFloor default) が byte-identical (floor 緩和なし)', () => {
-    expect(unchangedVsMain('apps/worker/src/services/llm/runtime.ts')).toBe(true);
+  test('runtime.ts の retrievalFloor default (0.3) が不変 (faq floor 緩和なし・B-4 は additive)', () => {
+    // B-4 は runtime.ts に vectorize/embed 設定を additive 追加するため byte-identical は解除。faq floor は不変。
+    expect(readRepo('apps/worker/src/services/llm/runtime.ts')).toContain('DEFAULT_RETRIEVAL_FLOOR = 0.3');
   });
 });
 

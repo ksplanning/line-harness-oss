@@ -26,24 +26,32 @@ function unchangedVsMain(repoRelPath: string): boolean {
 }
 const readRepo = (p: string) => readFileSync(join(REPO, p), 'utf8');
 
-describe('D-1 — 送信安全 byte-identical + chunks 非結線 + 依存方向', () => {
+describe('D-1 (B-4 再編) — 送信安全 byte-identical + orchestrator 非結線 + chunk は runFaqAiAnswer 内で結線', () => {
+  // ⚠️ B-4 は faq-ai.ts / runtime.ts を意図的に改修する (chunks live 結線が目的 / 地雷 B4-7)。回帰 assert は
+  //    faq-match / faq-fts / faq-reply (orchestrator) byte-identical + 送信安全 (gate/crons/FAQ_BOT_ENABLED) に
+  //    組み替える (spec §7)。faq-ai/runtime の floor 不変は faq-fts-invariants.test.ts が担保。
   test.each([
     'apps/worker/src/services/faq-reply.ts',
-    'apps/worker/src/services/faq-ai.ts',
     'apps/worker/src/services/faq-fts.ts',
     'apps/worker/src/services/faq-match.ts',
-    'apps/worker/src/services/llm/runtime.ts',
   ])('%s が origin/main と byte-identical (送信安全 unchanged)', (p) => {
     expect(unchangedVsMain(p)).toBe(true);
   });
 
-  test('chunks を live RAG に結線しない: faq-reply/faq-ai が knowledge を import せず新 reply/push/multicast なし', () => {
-    for (const f of ['apps/worker/src/services/faq-reply.ts', 'apps/worker/src/services/faq-ai.ts']) {
-      const src = readRepo(f);
-      expect(src).not.toContain('knowledge.js');
-      expect(src).not.toContain('retrieveChunkCandidates');
-      expect(src).not.toContain('buildChunkEvidenceBlock');
-    }
+  test('orchestrator (faq-reply.ts) は chunk を直接 import せず新 reply/push/multicast を足さない (送信面不変)', () => {
+    const src = readRepo('apps/worker/src/services/faq-reply.ts');
+    expect(src).not.toContain('knowledge.js');
+    expect(src).not.toContain('retrieveChunkEvidence');
+    expect(src).not.toContain('buildChunkEvidenceBlock');
+    // 新たな送信 verb を足していない (chunk 結線後も送信面は runFaqAiAnswer の outcome 経由のみ)。
+    expect(src).not.toMatch(/pushMessage|multicast/);
+  });
+
+  test('chunk は runFaqAiAnswer 内で live 結線 (faq-ai.ts が retrieveChunkEvidence + nonce fence を使う / B-4)', () => {
+    const src = readRepo('apps/worker/src/services/faq-ai.ts');
+    expect(src).toMatch(/from ['"]\.\/knowledge\.js['"]/);
+    expect(src).toContain('retrieveChunkEvidence');
+    expect(src).toContain('buildChunkEvidenceBlock'); // chunk は必ず nonce fence で囲う (instruction/data 分離)
   });
 
   test('knowledge worker helper が normalize/ngrams と buildQuerySearchText を import 再利用 (自前再実装なし)', () => {

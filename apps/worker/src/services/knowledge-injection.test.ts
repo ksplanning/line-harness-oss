@@ -87,13 +87,20 @@ describe('validateAnswerGrounding — 根拠外 URL/電話 (既存資産・正�
   });
 });
 
-describe('B-3 は chunks を live RAG に結線しない (§7 / D-1 の下地)', () => {
-  test('faq-reply.ts / faq-ai.ts が knowledge の retrieve/evidence を import しない', () => {
-    for (const f of ['faq-reply.ts', 'faq-ai.ts']) {
-      const src = readSrc(f);
-      expect(src).not.toMatch(/from ['"]\.\/knowledge\.js['"]/);
-      expect(src).not.toContain('retrieveChunkCandidates');
-      expect(src).not.toContain('buildChunkEvidenceBlock');
-    }
+describe('B-4 は chunks を live RAG に結線する (§5・注入三重防御を実装層で担保)', () => {
+  test('faq-ai.ts が knowledge を結線し chunk を nonce fence (buildChunkEvidenceBlock) で囲う', () => {
+    const src = readSrc('faq-ai.ts');
+    expect(src).toMatch(/from ['"]\.\/knowledge\.js['"]/);
+    expect(src).toContain('retrieveChunkEvidence');
+    expect(src).toContain('buildChunkEvidenceBlock'); // instruction/data 分離 (§5-1)
+    // SYSTEM_PROMPT 硬化 (§5-2): フェンス内の指示に従わない + 宛先を根拠外へ変更しない。
+    expect(src).toContain('フェンス');
+    expect(src).toMatch(/従わず無視/);
+  });
+  test('orchestrator (faq-reply.ts) は chunk を直接 import しない (chunk 結線は runFaqAiAnswer 内・送信面不変)', () => {
+    const src = readSrc('faq-reply.ts');
+    expect(src).not.toMatch(/from ['"]\.\/knowledge\.js['"]/);
+    expect(src).not.toContain('retrieveChunkEvidence');
+    expect(src).not.toContain('buildChunkEvidenceBlock');
   });
 });
