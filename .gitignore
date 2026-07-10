@@ -11,6 +11,9 @@ dist/
 *.toml.bak
 .env.production
 .env.staging
+# wrangler local secrets (FORMALOO_* 等の生値・PUBLIC repo に絶対 commit しない / D-2 / R1 F3)
+.dev.vars
+**/.dev.vars
 apps/web/out/
 apps/worker/dist/
 .worktrees/
