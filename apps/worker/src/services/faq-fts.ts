@@ -65,6 +65,28 @@ export async function retrieveFaqCandidates(
 }
 
 /**
+ * 既存 faqs 全行の search_text を JS (buildFaqSearchText) で計算して埋める backfill (T-B5-b/d)。
+ * migration 091 は列/仮想表/トリガを additive で足すが「既存行」は未索引 (search_text='') のまま
+ * → 本 backfill が全行に search_text を書き、AU トリガ経由で faqs_fts を構築する。normalize は JS 依存
+ * につき純 SQL migration では不可 → deploy 手順のワンショット (再実行は同値を書くだけ = idempotent)。
+ * search_text 以外の列 (question/variants/answer/updated_at 等) は触らない (TRINA 既存データ無改変)。
+ * worker 層に置く (計算 + UPDATE) = db → worker 依存方向を保つ。返り値 = 更新行数。
+ */
+export async function backfillFaqsSearchText(db: D1Database): Promise<number> {
+  const result = await db
+    .prepare(`SELECT id, question, variants FROM faqs`)
+    .all<{ id: string; question: string; variants: string }>();
+  let updated = 0;
+  for (const row of result.results) {
+    const searchText = buildFaqSearchText(row.question, parseVariants(row.variants));
+    // search_text のみ更新 (updated_at 等は不変)。AU トリガが faqs_fts に反映。
+    await db.prepare(`UPDATE faqs SET search_text = ? WHERE id = ?`).bind(searchText, row.id).run();
+    updated += 1;
+  }
+  return updated;
+}
+
+/**
  * retrieveFaqCandidates + 既存 scoreFaq (Dice) 再ランク → FaqMatchDetail。
  * B-1 の暫定検索 (Dice-over-all の detail.best) の「供給元」をこれに差し替える (§3-3)。
  * runFaqAiAnswer は本 detail の best / topScore のみ参照 (match は使わない = null)。topScore は
