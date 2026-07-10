@@ -91,15 +91,19 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
   });
 
   // 7) LINE 後処理 (T-C3): published + verified のときだけ、claim 成功で 1 回だけ発火 (N-7・N-3)。
-  //    draft/preview・未署名隔離は発火しない (TRINA 実顧客への誤送信を防ぐ = failure_observable 回避)。
+  //    ⚠️ consume-at-receipt (R1 F1): 受信時点で発火不適格 (draft/in_review or 未署名隔離) の回答は、
+  //    発火せず line_processed=1 で **消費確定** する。これにより後で form が published になってから
+  //    同一 submission が再配信/リプレイされても claim できず、draft 回答が実顧客処理へ昇格する経路を
+  //    封鎖する (TRINA 実顧客への誤送信を防ぐ = failure_observable 回避)。昇格が必要なら (署名採用 or
+  //    pull-verify) は「新規 submission id での再受信」経路で行う (同一 id の後日昇格はしない)。
   const status = isBuilderStatus(form.builder_status) ? form.builder_status : 'draft';
-  if (verified && status === 'published') {
-    const claimed = await claimFormalooLineProcessing(c.env.DB, parsed.submissionId);
-    if (claimed) {
-      await fireFormalooSubmitSideEffects(c, form, parsed.friendId);
-      await incrementFormalooSubmitCount(c.env.DB, form.id);
-    }
+  const eligible = verified && status === 'published';
+  const claimed = await claimFormalooLineProcessing(c.env.DB, parsed.submissionId);
+  if (eligible && claimed) {
+    await fireFormalooSubmitSideEffects(c, form, parsed.friendId);
+    await incrementFormalooSubmitCount(c.env.DB, form.id);
   }
+  // eligible=false のときは claim (0→1 消費) のみ = 発火なし・以後昇格不可。
 
   return c.json({ success: true });
 });

@@ -184,18 +184,19 @@ describe('T-C1/T-C3 冪等 upsert + LINE 後処理 (published のみ / N-3・N-7
     expect(tagCount('fr_1', 'tag1')).toBe(1);
   });
 
-  test('draft form の回答 → 隔離: tag なし / line_processed=0 (N-7 誤送信防止)', async () => {
+  test('draft form の回答 → 隔離: tag なし / consume-at-receipt で line_processed=1 (N-7 / R1 F1)', async () => {
     seedTag('tag1');
     seedFriend('fr_1');
     seedForm('fa1', 'form_abc', 'draft', 'tag1');
     const res = await postWebhook(TOKEN, payloadFor('sub_1', 'form_abc', 'fr_1'), { sign: true });
     expect(res.status).toBe(200);
-    expect(sub('sub_1')!.line_processed).toBe(0);
+    // 発火不適格 (draft) → 消費確定 (line_processed=1)。後日 published でも claim 不可 = 昇格封鎖。
+    expect(sub('sub_1')!.line_processed).toBe(1);
     expect(tagCount('fr_1', 'tag1')).toBe(0);
     expect(submitCount('fa1')).toBe(0);
   });
 
-  test('未署名 (token のみ) → 隔離: verified=0 / tag なし (N-12)', async () => {
+  test('未署名 (token のみ) → 隔離: verified=0 / consume-at-receipt で line_processed=1 (N-12 / R1 F1)', async () => {
     seedTag('tag1');
     seedFriend('fr_1');
     seedForm('fa1', 'form_abc', 'published', 'tag1');
@@ -203,8 +204,36 @@ describe('T-C1/T-C3 冪等 upsert + LINE 後処理 (published のみ / N-3・N-7
     expect(res.status).toBe(200);
     const s = sub('sub_1')!;
     expect(s.verified).toBe(0);
-    expect(s.line_processed).toBe(0);
+    // 未署名隔離も消費確定 (発火せず line_processed=1)。以後の署名リプレイでも昇格しない。
+    expect(s.line_processed).toBe(1);
     expect(tagCount('fr_1', 'tag1')).toBe(0);
+  });
+
+  test('R1 F1 昇格封鎖: draft 中に署名回答受信 → publish → 同 submission 再配信/リプレイでも発火しない', async () => {
+    seedTag('tag1');
+    seedFriend('fr_1');
+    seedForm('fa1', 'form_abc', 'draft', 'tag1');
+    // ① draft 中に署名済み回答を受信 → consume-at-receipt (発火なし / line_processed=1)
+    await postWebhook(TOKEN, payloadFor('sub_1', 'form_abc', 'fr_1'), { sign: true });
+    expect(sub('sub_1')!.line_processed).toBe(1);
+    expect(tagCount('fr_1', 'tag1')).toBe(0);
+    expect(submitCount('fa1')).toBe(0);
+    // ② form を publish
+    raw.prepare(`UPDATE formaloo_forms SET builder_status='published' WHERE id='fa1'`).run();
+    // ③ 同一 submission を再配信 (リプレイ) → 消費済みで claim 不可 = 昇格しない
+    await postWebhook(TOKEN, payloadFor('sub_1', 'form_abc', 'fr_1'), { sign: true });
+    expect(submitCount('fa1')).toBe(0);
+    expect(tagCount('fr_1', 'tag1')).toBe(0);
+  });
+
+  test('R1 F1 正常系: published+verified の新規回答は従来どおり 1 回発火する (退行なし)', async () => {
+    seedTag('tag1');
+    seedFriend('fr_1');
+    seedForm('fa1', 'form_abc', 'published', 'tag1');
+    await postWebhook(TOKEN, payloadFor('sub_9', 'form_abc', 'fr_1'), { sign: true });
+    expect(sub('sub_9')!.line_processed).toBe(1);
+    expect(submitCount('fa1')).toBe(1);
+    expect(tagCount('fr_1', 'tag1')).toBe(1);
   });
 });
 
