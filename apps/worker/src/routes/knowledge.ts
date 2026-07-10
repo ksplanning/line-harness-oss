@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import {
   createKnowledgeDocument,
   insertKnowledgeChunks,
+  replaceKnowledgeChunks,
   listKnowledgeDocuments,
   getKnowledgeDocumentById,
   deleteKnowledgeDocument,
@@ -19,7 +20,7 @@ import {
   type AiFaqDraftRow,
 } from '@line-crm/db';
 import { safeFetch, resolveViaDoh, INGEST_ALLOWED_CONTENT_TYPES, SsrfBlockedError } from '../lib/ssrf-guard.js';
-import { sanitizeIngestedText, splitIntoChunks, buildChunkSearchText, embedChunksForDocument } from '../services/knowledge.js';
+import { sanitizeIngestedText, splitIntoChunks, buildChunkSearchText, embedChunksForDocument, backfillAccountEmbeddings } from '../services/knowledge.js';
 import { createFaqAiRuntime, DEFAULT_EMBED_NEURON_PER_MTOK } from '../services/llm/runtime.js';
 import { deleteChunkVectors } from '../services/vectorize.js';
 import type { Env } from '../index.js';
@@ -222,6 +223,97 @@ knowledge.delete('/api/knowledge/documents/:id', async (c) => {
   }
   await deleteKnowledgeDocument(c.env.DB, doc.id);
   return c.json({ success: true });
+});
+
+/** createFaqAiRuntime から embed 実行 config を組む (Vectorize/embedModel 未設定=null=no-op / dark-ship)。 */
+function embedConfigFrom(ai: ReturnType<typeof createFaqAiRuntime>) {
+  if (!ai?.vectorize || !ai.embedModelId) return null;
+  return {
+    provider: ai.provider,
+    vectorize: ai.vectorize,
+    embedModelId: ai.embedModelId,
+    embedNeuronPerMTok: ai.embedNeuronPerMTok ?? DEFAULT_EMBED_NEURON_PER_MTOK,
+    globalBudget: ai.dailyNeuronBudgetGlobal,
+    perAccountBudget: ai.dailyNeuronBudgetPerAccount,
+  };
+}
+
+// POST /api/knowledge/documents/:id/reingest — URL 資料の再取込 (再 fetch→原子置換→新 embed→旧 vector 削除)。
+// **送信ゼロ**。file/text 資料 (source_url なし=元 file 非保持) は再取込せず再アップロード/embed 再試行を案内 (Codex B-2/M-4)。
+knowledge.post('/api/knowledge/documents/:id/reingest', async (c) => {
+  const doc = await getKnowledgeDocumentById(c.env.DB, c.req.param('id'));
+  if (!doc) return c.json({ success: false, error: 'Not found' }, 404);
+  const rejected = accountScopeReject(doc, c.req.query('accountId') ?? null);
+  if (rejected) return rejected;
+
+  if (!doc.source_url) {
+    // 元 file を保持していないため再取込不可 (URL のみ再 fetch できる)。
+    return c.json(
+      { success: false, error: 'この資料は URL 取込ではないため再取込できません。テキストを貼り直すか、資料を再アップロードしてください。', reason: 'no_source_url' },
+      400,
+    );
+  }
+
+  // [1] URL を再 fetch → 本文抽出 → sanitize → 分割 (ingest と同一パイプライン・safeFetch は redirect hop 再検証)。
+  let text: string;
+  try {
+    const res = await safeFetch(doc.source_url, {
+      resolve: resolveViaDoh,
+      fetchImpl: fetch,
+      allowedContentTypes: INGEST_ALLOWED_CONTENT_TYPES,
+    });
+    text = sanitizeIngestedText(extractHtmlBodyText(res.text));
+  } catch (e) {
+    if (e instanceof SsrfBlockedError) return c.json({ success: false, error: `取り込めない URL です (${e.reason})` }, 400);
+    return c.json({ success: false, error: 'URL の再取得に失敗しました' }, 400);
+  }
+  const chunks = splitIntoChunks(text);
+  if (chunks.length === 0) return c.json({ success: false, error: '取り込める本文がありませんでした' }, 400);
+
+  // [2] 旧 chunk id を置換**前**に取得 (置換後は分からず Vectorize 掃除に使えない / T-D7 と同思想)。
+  const oldChunkIds = (await getChunksBySourceDoc(c.env.DB, doc.id)).map((ch) => ch.id);
+
+  // [3] DB 原子置換 (旧 chunks 全削除 + 新 chunks 挿入・親 doc は残す・account スコープ維持)。
+  await replaceKnowledgeChunks(
+    c.env.DB,
+    doc.id,
+    doc.line_account_id,
+    chunks.map((content, i) => ({ chunkIndex: i, content, searchText: buildChunkSearchText(content) })),
+  );
+
+  // [4] 新 embed → 旧 vector 削除 の順 (Vectorize 未 binding は no-op = dark-ship)。新 chunk は新 UUID = 旧 id 削除で
+  //     新ベクトルは消えない。旧 vector 削除失敗は掃除に委譲 (log)。
+  const cfg = embedConfigFrom(createFaqAiRuntime(c.env));
+  if (cfg) {
+    try {
+      await embedChunksForDocument(c.env.DB, cfg, doc.id, doc.line_account_id);
+    } catch (err) {
+      console.error('knowledge reingest embed failed:', err instanceof Error ? err.name : 'unknown');
+    }
+    if (oldChunkIds.length > 0) {
+      try {
+        await deleteChunkVectors(cfg.vectorize, oldChunkIds);
+      } catch (err) {
+        console.error('knowledge reingest vectorize cleanup deferred:', doc.id, oldChunkIds.length, err instanceof Error ? err.name : 'unknown');
+      }
+    }
+  }
+  const newCount = (await getChunksBySourceDoc(c.env.DB, doc.id)).length;
+  return c.json({ success: true, data: { id: doc.id, chunkCount: newCount } });
+});
+
+// POST /api/knowledge/backfill-embeddings — 前方 backfill (embedded_at NULL の chunk を再 embed)。**cron ではない**
+// 手動/任意 endpoint (crons=[] byte-identical)。Vectorize 未 binding (dark-ship) は no-op (準備完了・立会後に有効化)。送信ゼロ。
+knowledge.post('/api/knowledge/backfill-embeddings', async (c) => {
+  const accountId = c.req.query('accountId') ?? null;
+  if (!accountId) return c.json({ success: false, error: 'accountId is required' }, 403);
+  const cfg = embedConfigFrom(createFaqAiRuntime(c.env));
+  if (!cfg) {
+    // dark-ship: Vectorize/[ai] 未 provisioning のため embed をスキップ (自律実行しない)。
+    return c.json({ success: true, data: { docs: 0, embedded: 0, skipped: 0, note: 'Vectorize 未設定のため embed をスキップしました (準備完了・立会後に有効化)' } });
+  }
+  const result = await backfillAccountEmbeddings(c.env.DB, cfg, accountId);
+  return c.json({ success: true, data: result });
 });
 
 // clamp: 数値 query を [1, max] に収める (不正/欠損は default・無制限レスポンス防止 / M-3)。

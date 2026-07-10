@@ -1,6 +1,7 @@
 import {
   type KnowledgeChunk,
   getChunksBySourceDoc,
+  getUnembeddedChunks,
   markChunksEmbedded,
   getAiUsageGlobalToday,
   getAiUsageToday,
@@ -424,4 +425,42 @@ export async function embedChunksForDocument(
     running += batchNeurons;
   }
   return { embedded, skipped: pending.length - embedded, embedNeurons: running };
+}
+
+export interface BackfillEmbeddingsResult {
+  /** backfill 対象になった (未 embed chunk を持つ) 資料数。 */
+  docs: number;
+  embedded: number;
+  skipped: number;
+}
+
+/**
+ * **前方 backfill** (B-5 T-E7): account スコープの embedded_at IS NULL chunk (無料枠 defer / provisioning 前に
+ * 取り込んだ資料) を資料単位に embedChunksForDocument で再 embed する。**cron ではない**手動/任意 admin 経路
+ * (crons=[] byte-identical)。Vectorize 未 binding (dark-ship) の呼び手は本関数を呼ばず no-op = crons/Vectorize
+ * provisioning を自律実行しない。**逆方向の真の孤児 (Vectorize に在り D1 に無い id) は現 binding に列挙 API が
+ * 無く app 内回収は不能** → owner 立会 runbook の外部 CLI reconciliation にスコープ (回収関数と誤標榜しない / Codex B-3)。
+ * 予算 gated は embedChunksForDocument が担う (超過分は defer=embedded_at のまま)。
+ */
+export async function backfillAccountEmbeddings(
+  db: D1Database,
+  cfg: EmbedIngestConfig,
+  lineAccountId: string | null,
+  opts: { limit?: number } = {},
+): Promise<BackfillEmbeddingsResult> {
+  const pending = await getUnembeddedChunks(db, lineAccountId, opts.limit ?? 200);
+  // 資料単位に group (embedChunksForDocument は doc 単位に未 embed を拾う)。account は各 chunk の実 account を使う
+  // (global doc の embed cost を誤って account に付けないため)。
+  const docAccount = new Map<string, string | null>();
+  for (const ch of pending) {
+    if (!docAccount.has(ch.source_doc_id)) docAccount.set(ch.source_doc_id, ch.line_account_id);
+  }
+  let embedded = 0;
+  let skipped = 0;
+  for (const [docId, acct] of docAccount) {
+    const r = await embedChunksForDocument(db, cfg, docId, acct);
+    embedded += r.embedded;
+    skipped += r.skipped;
+  }
+  return { docs: docAccount.size, embedded, skipped };
 }

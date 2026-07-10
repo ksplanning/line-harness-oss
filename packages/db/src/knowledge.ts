@@ -92,6 +92,39 @@ export async function insertKnowledgeChunks(
   await db.batch(stmts);
 }
 
+/**
+ * 1 資料の chunks を単一 D1 batch で原子置換する (B-5 T-E3・再取込)。旧 chunks を全 DELETE → 新 chunks を INSERT →
+ * 親 document の updated_at を更新、を 1 トランザクションで実行 (途中失敗で部分置換を残さない / Codex B-2)。
+ * 親 document は削除しない (deleteKnowledgeDocument とは別・doc id/source_url は保持)。旧 chunk id は呼出 route が
+ * 置換**前**に取得して Vectorize 掃除に使う (置換後は分からない)。chunk.line_account_id = 引数 accountId
+ * (document とスコープ同値 / cross-account 防止)。scope 検証 (accountScopeReject) は呼出 route が事前に行う。
+ * knowledge_chunks_fts は 092 の AD/AI トリガが旧除去→新反映する。
+ */
+export async function replaceKnowledgeChunks(
+  db: D1Database,
+  sourceDocId: string,
+  lineAccountId: string | null,
+  chunks: KnowledgeChunkInput[],
+): Promise<void> {
+  const now = jstNow();
+  const stmts: D1PreparedStatement[] = [
+    db.prepare(`DELETE FROM knowledge_chunks WHERE source_doc_id = ?`).bind(sourceDocId),
+  ];
+  for (const ch of chunks) {
+    stmts.push(
+      db
+        .prepare(
+          `INSERT INTO knowledge_chunks
+             (id, source_doc_id, line_account_id, chunk_index, content, search_text, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(crypto.randomUUID(), sourceDocId, lineAccountId, ch.chunkIndex, ch.content, ch.searchText, now),
+    );
+  }
+  stmts.push(db.prepare(`UPDATE knowledge_documents SET updated_at = ? WHERE id = ?`).bind(now, sourceDocId));
+  await db.batch(stmts);
+}
+
 export async function getKnowledgeDocumentById(db: D1Database, id: string): Promise<KnowledgeDocument | null> {
   return db.prepare(`SELECT * FROM knowledge_documents WHERE id = ?`).bind(id).first<KnowledgeDocument>();
 }

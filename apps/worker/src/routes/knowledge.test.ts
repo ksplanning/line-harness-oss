@@ -219,6 +219,64 @@ describe('GET /documents — embed 状態露出 (serialize allowlist / T-E2)', (
   });
 });
 
+describe('POST /documents/:id/reingest — 再取込 (T-E3) + backfill (T-E7)', () => {
+  async function seedUrlDoc(acct: string, initialHtml: string) {
+    mockedSafeFetch.mockReset();
+    mockedSafeFetch.mockResolvedValue({ finalUrl: 'https://shop.example/info', contentType: 'text/html', text: initialHtml });
+    const res = await call('POST', `/api/knowledge/ingest?accountId=${acct}`, { kind: 'url', url: 'https://shop.example/info' });
+    return (await res.json() as { data: { id: string } }).data.id;
+  }
+  const contentsOf = (docId: string) =>
+    (raw.prepare(`SELECT content FROM knowledge_chunks WHERE source_doc_id = ? ORDER BY chunk_index`).all(docId) as { content: string }[]).map((r) => r.content);
+
+  test('URL 資料の再取込が旧 chunks を新 chunks で原子置換 (親 doc は残る)', async () => {
+    const id = await seedUrlDoc('acc-1', '<h1>旧情報</h1><p>営業時間は9時から17時です。ご来店お待ちしております。</p>');
+    const before = contentsOf(id);
+    expect(before.join()).toContain('9時から17時');
+    // 再取込時は新しい本文を返す。
+    mockedSafeFetch.mockResolvedValue({ finalUrl: 'https://shop.example/info', contentType: 'text/html', text: '<h1>新情報</h1><p>営業時間は10時から19時に変更しました。定休日は水曜です。</p>' });
+    const res = await call('POST', `/api/knowledge/documents/${id}/reingest?accountId=acc-1`);
+    expect(res.status).toBe(200);
+    const after = contentsOf(id);
+    expect(after.join()).toContain('10時から19時');
+    expect(after.join()).not.toContain('9時から17時'); // 旧 chunk は消えた
+    // 親 document は残る。
+    expect(docCount()).toBe(1);
+  });
+
+  test('file/text 資料 (source_url なし) は再取込せず案内 400 (no_source_url)', async () => {
+    mockedSafeFetch.mockReset();
+    const ing = await call('POST', '/api/knowledge/ingest?accountId=acc-1', { kind: 'text', content: 'テキスト貼付の資料です。営業時間のご案内。' });
+    const id = (await ing.json() as { data: { id: string } }).data.id;
+    const res = await call('POST', `/api/knowledge/documents/${id}/reingest?accountId=acc-1`);
+    expect(res.status).toBe(400);
+    const j = await res.json() as { reason: string };
+    expect(j.reason).toBe('no_source_url');
+    // 資料は無傷 (削除されない)。
+    expect(chunkCount()).toBeGreaterThanOrEqual(1);
+  });
+
+  test('他 account の再取込は 403 (accountScopeReject)', async () => {
+    const id = await seedUrlDoc('acc-1', '<p>アカウント1の資料。営業のご案内です。</p>');
+    const res = await call('POST', `/api/knowledge/documents/${id}/reingest?accountId=acc-2`);
+    expect(res.status).toBe(403);
+  });
+
+  test('backfill は Vectorize 未 binding で no-op (docs 0・crons/provisioning を自律実行しない / dark-ship)', async () => {
+    await seedUrlDoc('acc-1', '<p>営業のご案内。定休日は水曜です。</p>');
+    const res = await call('POST', '/api/knowledge/backfill-embeddings?accountId=acc-1');
+    expect(res.status).toBe(200);
+    const j = await res.json() as { data: { docs: number; embedded: number } };
+    expect(j.data.docs).toBe(0); // env に AI/Vectorize binding なし = no-op
+    expect(j.data.embedded).toBe(0);
+  });
+
+  test('backfill は accountId 必須 (403)', async () => {
+    const res = await call('POST', '/api/knowledge/backfill-embeddings');
+    expect(res.status).toBe(403);
+  });
+});
+
 describe('GET /ai-usage + /ai-drafts — AI ログ/コスト (T-E4)', () => {
   function seedUsage(acct: string, date: string, llm: number, embed = 0, image = 0, reply = 0) {
     raw.prepare(
