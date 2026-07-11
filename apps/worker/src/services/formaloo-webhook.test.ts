@@ -149,6 +149,38 @@ describe('parseWebhookPayload — 署名 fr_id 復元 (T-A6 / 順方向)', () =>
     expect(p!.friendId).toBeNull();
   });
 
+  test('F-3: 実 payload 形 (top-level submit_code=row / slug=form / rendered_data=alias) を正しく mapping', async () => {
+    const token = await signFriendToken(FRIEND, SECRET);
+    const p = await parseWebhookPayload(
+      {
+        event_type: 'form_submit',
+        submit_code: 'ROW_ABC123',               // row/submission id (top-level)
+        slug: 'form_xyz',                         // FORM slug (top-level)
+        data: { field_1: '田中', field_2: 'x' },  // field-id map (submission id ではない)
+        rendered_data: { fr_id: token, fr_name: '田中', q1: '田中' },
+        created_at: '2026-07-11T10:00:00+09:00',
+      },
+      now,
+      { friendTokenSecret: SECRET },
+    );
+    expect(p).not.toBeNull();
+    expect(p!.submissionId).toBe('ROW_ABC123');   // submit_code → submission (form-slug へ誤代入しない)
+    expect(p!.slug).toBe('form_xyz');             // top-level slug → form slug
+    expect(p!.friendId).toBe(FRIEND);             // rendered_data 署名 fr_id 復元
+    expect(p!.submittedAt).toBe('2026-07-11T10:00:00+09:00');
+  });
+
+  test('F-3: submit_code 不在 (legacy 形) では root.slug を form-slug に誤採用しない', async () => {
+    // legacy: data.slug=submission / data.form.slug=form。root.slug は無い前提だが、あっても submission 候補のみ。
+    const p = await parseWebhookPayload(
+      { slug: 'ambiguous', data: { slug: 'sub_leg', form: { slug: 'form_leg' } } },
+      now,
+    );
+    // data.slug が submission に勝ち、form は data.form.slug。root.slug は form-slug に採られない。
+    expect(p!.submissionId).toBe('sub_leg');
+    expect(p!.slug).toBe('form_leg');
+  });
+
   test('alias は上書き可 (friendTokenAlias)', async () => {
     const token = await signFriendToken(FRIEND, SECRET);
     const p = await parseWebhookPayload(

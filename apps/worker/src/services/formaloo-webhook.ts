@@ -81,11 +81,21 @@ export async function parseWebhookPayload(
   if (!root) return null;
   const data = asObject(root.data) ?? root;
 
-  const submissionId = firstString(data.slug, data.id, root.slug, root.id, asObject(data.submission)?.slug, asObject(data.submission)?.id);
+  // 実 payload (F-3 / spec §2.3): row(submission) = top-level submit_code / form = top-level slug /
+  //   data = field-id map。submit_code を submissionId の最優先候補にし、form-slug への誤代入を防ぐ。
+  //   submit_code 不在 (fixture/legacy 形) では従来 chain (data.slug 等) にそのまま落ちる。
+  const submitCode = firstString(root.submit_code, data.submit_code);
+  const submissionId = firstString(submitCode, data.slug, data.id, root.slug, root.id, asObject(data.submission)?.slug, asObject(data.submission)?.id);
   if (!submissionId) return null;
 
   const formObj = asObject(data.form) ?? asObject(root.form);
-  const slug = firstString(formObj?.slug, formObj?.address, data.form_slug, root.form_slug, data.form as unknown, root.form as unknown);
+  // top-level slug は submit_code が present の実 payload でのみ FORM slug として採る (legacy 形では
+  //   root.slug は上の submission 候補ゆえ form-slug に採らない = 誤代入防止)。
+  const slug = firstString(
+    formObj?.slug, formObj?.address, data.form_slug, root.form_slug,
+    submitCode ? root.slug : null,
+    data.form as unknown, root.form as unknown,
+  );
 
   const answersObj = asObject(data.answers) ?? asObject(data.fields) ?? asObject(root.answers) ?? {};
   const answers: Record<string, unknown> = { ...answersObj };
