@@ -35,7 +35,7 @@ import {
   isBuilderStatus,
   type BuilderStatus,
 } from '../services/formaloo-publish-gate.js';
-import { createFormalooClient } from '../services/formaloo-client.js';
+import { resolveFormalooClient } from '../services/formaloo-client.js';
 import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
 import type { Env } from '../index.js';
@@ -178,7 +178,9 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     });
 
     // Formaloo へ push (fail-soft): secret 未配備 (dev) や失敗は out_of_sync でローカル保存を維持
-    const client = createFormalooClient(c.env);
+    // F6-1: 多鍵 resolver。workspaceId=null = env 単一鍵 fallback = 既存挙動 byte-equivalent
+    // (form.workspace_id 列は F6-2 / migration 095 まで無い → dark-ship 安全 [FIX-4])。fail-soft 契約不変。
+    const client = await resolveFormalooClient(c.env, null);
     if (!client) {
       await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: 'Formaloo credentials 未設定 (S-1 待ち)' });
     } else {
@@ -217,7 +219,9 @@ formsAdvanced.get('/api/forms-advanced/:id/pull', async (c) => {
     const form = await getFormalooForm(c.env.DB, id);
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
-    const client = createFormalooClient(c.env);
+    // F6-1: 多鍵 resolver。workspaceId=null = env 単一鍵 fallback = 既存挙動 byte-equivalent
+    // (form.workspace_id 列は F6-2 / migration 095 まで無い → dark-ship 安全 [FIX-4])。fail-soft 契約不変。
+    const client = await resolveFormalooClient(c.env, null);
     if (!client) {
       return c.json({ success: true, data: { ok: false, fields: [], logic: [], note: 'Formaloo 未接続のため再取り込みできません（S-1 待ち）' } });
     }
@@ -382,7 +386,9 @@ formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
     if (!mirror || mirror.form_id !== id) return c.json({ success: false, error: '回答が見つかりません' }, 404);
 
     // Formaloo 側の最新をドリルスルー。client 未配備 (dev) / 失敗は mirror を返す (fail-soft)。
-    const client = createFormalooClient(c.env);
+    // F6-1: 多鍵 resolver。workspaceId=null = env 単一鍵 fallback = 既存挙動 byte-equivalent
+    // (form.workspace_id 列は F6-2 / migration 095 まで無い → dark-ship 安全 [FIX-4])。fail-soft 契約不変。
+    const client = await resolveFormalooClient(c.env, null);
     if (client && form.formaloo_slug) {
       const r = await client.get<{ data?: unknown }>(`/v3.0/forms/${form.formaloo_slug}/rows/${rowId}/`);
       if (r.ok) {
@@ -473,7 +479,9 @@ formsAdvanced.get('/api/forms-advanced/:id/stats', async (c) => {
 
     // Formaloo 側 stats を drill (fail-soft): client 未配備/失敗は null。
     let formaloo: unknown = null;
-    const client = createFormalooClient(c.env);
+    // F6-1: 多鍵 resolver。workspaceId=null = env 単一鍵 fallback = 既存挙動 byte-equivalent
+    // (form.workspace_id 列は F6-2 / migration 095 まで無い → dark-ship 安全 [FIX-4])。fail-soft 契約不変。
+    const client = await resolveFormalooClient(c.env, null);
     if (client && form.formaloo_slug) {
       const r = await client.get<{ data?: unknown }>(`/v3.0/forms/${form.formaloo_slug}/stats/`);
       if (r.ok) formaloo = r.data?.data ?? null;
@@ -546,7 +554,9 @@ formsAdvanced.post('/api/forms-advanced/:id/import', async (c) => {
 
     let pushed = false;
     let note = 'Formaloo 認証情報が未設定のため取り込みは保留しました（CSV は検証済み・S-1 で本番反映）';
-    const client = createFormalooClient(c.env);
+    // F6-1: 多鍵 resolver。workspaceId=null = env 単一鍵 fallback = 既存挙動 byte-equivalent
+    // (form.workspace_id 列は F6-2 / migration 095 まで無い → dark-ship 安全 [FIX-4])。fail-soft 契約不変。
+    const client = await resolveFormalooClient(c.env, null);
     if (client && form.formaloo_slug) {
       const r = await client.post(`/v3.0/forms/${form.formaloo_slug}/import-rows/`, { header: parsedRows[0], rows: dataRows });
       pushed = r.ok;
@@ -575,7 +585,9 @@ formsAdvanced.post('/api/forms-advanced/:id/rows/bulk-delete', async (c) => {
 
     const deleted = await bulkDeleteFormalooSubmissions(c.env.DB, id, ids);
     // Formaloo 側でも削除 (fail-soft): 失敗してもミラー削除は確定させる。
-    const client = createFormalooClient(c.env);
+    // F6-1: 多鍵 resolver。workspaceId=null = env 単一鍵 fallback = 既存挙動 byte-equivalent
+    // (form.workspace_id 列は F6-2 / migration 095 まで無い → dark-ship 安全 [FIX-4])。fail-soft 契約不変。
+    const client = await resolveFormalooClient(c.env, null);
     if (client && form.formaloo_slug) {
       try {
         await client.post(`/v3.0/forms/${form.formaloo_slug}/rows/bulk-delete/`, { rows: ids });
@@ -635,7 +647,9 @@ formsAdvanced.post('/api/forms-advanced/:id/gsheet/connect', async (c) => {
     let connected = false;
     let gsheetUrl: string | null = null;
     let note = 'Formaloo 認証情報が未設定のため連携できませんでした（S-1 で本番連携）';
-    const client = createFormalooClient(c.env);
+    // F6-1: 多鍵 resolver。workspaceId=null = env 単一鍵 fallback = 既存挙動 byte-equivalent
+    // (form.workspace_id 列は F6-2 / migration 095 まで無い → dark-ship 安全 [FIX-4])。fail-soft 契約不変。
+    const client = await resolveFormalooClient(c.env, null);
     if (client && form.formaloo_slug) {
       const r = await client.post<{ data?: { gsheet_url?: string; url?: string } }>(`/v3.0/forms/${form.formaloo_slug}/regenerate-gsheet-data/`, {});
       if (r.ok) {
