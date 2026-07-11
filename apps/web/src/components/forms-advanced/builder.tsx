@@ -30,6 +30,7 @@ import {
   hasLength,
 } from './field-types'
 import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
+import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 
 const LINE_GREEN = '#06C755'
 
@@ -49,6 +50,8 @@ export interface BuilderProps {
   publicUrl?: string | null
   embedCode?: string | null
   syncStatus?: string
+  /** formaloo-auto-pull: Formaloo 側定義変更 (drift) の状態 (none/detected/conflict/applied)。 */
+  driftStatus?: string
 }
 
 function newField(type: HarnessFieldType): HarnessField {
@@ -340,7 +343,18 @@ export default function FormBuilder(props: BuilderProps) {
       {/* 上部バー */}
       <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-gray-200">
         <span className="text-xs text-white px-2 py-0.5 rounded" style={{ backgroundColor: statusColor }}>{statusLabel}</span>
-        {props.syncStatus === 'out_of_sync' && <span className="text-xs text-amber-600" data-testid="sync-badge">未同期</span>}
+        {(() => {
+          // drift/sync 単一 badge (優先順位: 競合>更新あり>未同期>自動反映 / formSyncBadge 共有)。
+          const b = formSyncBadge({ driftStatus: props.driftStatus, syncStatus: props.syncStatus ?? 'idle' })
+          if (!b) return null
+          const needsReimport = b.kind === 'update' || b.kind === 'conflict'
+          return (
+            <span data-testid="sync-badge" className={`text-xs ${b.className}`}>
+              {b.label}
+              {needsReimport && <span className="ml-1 text-gray-500">→「Formaloo から再取り込み」で反映</span>}
+            </span>
+          )
+        })()}
         <div className="flex-1" />
         <button type="button" onClick={handleSave} disabled={saving} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>
           {saving ? '保存中...' : '保存'}

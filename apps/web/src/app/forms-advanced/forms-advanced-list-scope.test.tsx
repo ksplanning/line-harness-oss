@@ -65,6 +65,25 @@ describe('② account 確定で list(selectedAccountId)', () => {
   })
 })
 
+describe('② drift badge 一覧レンダリング (T-D2 / formaloo-auto-pull)', () => {
+  it('driftStatus=detected の form に「更新あり (要確認)」badge を出す', async () => {
+    mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
+    listMock.mockResolvedValue([{ ...form('fd', 'drift フォーム', 'acc_A'), driftStatus: 'detected' }])
+    render(<Page />)
+    await waitFor(() => expect(screen.getByTestId('form-card-fd')).toBeTruthy())
+    const badge = screen.getByTestId('drift-badge-fd')
+    expect(badge.textContent).toContain('更新あり (要確認)')
+  })
+
+  it('drift なし form は drift-badge を出さない', async () => {
+    mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
+    listMock.mockResolvedValue([form('fn', '通常フォーム', 'acc_A')])
+    render(<Page />)
+    await waitFor(() => expect(screen.getByTestId('form-card-fn')).toBeTruthy())
+    expect(screen.queryByTestId('drift-badge-fn')).toBeNull()
+  })
+})
+
 describe('③ stale 応答破棄', () => {
   it('A 取得中に B へ切替→遅延 A 応答で B を上書きしない', async () => {
     const deferreds: Record<string, (v: unknown) => void> = {}

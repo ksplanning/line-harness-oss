@@ -133,6 +133,32 @@ describe('FormBuilder — publish gate UI (T-B3 / N-7)', () => {
   })
 })
 
+describe('FormBuilder — drift badge (T-D2 / formaloo-auto-pull)', () => {
+  it("driftStatus='detected' → 「更新あり (要確認)」+ 再取り込み誘導", () => {
+    render(<FormBuilder {...base({ driftStatus: 'detected', syncStatus: 'idle' })} />)
+    const badge = screen.getByTestId('sync-badge')
+    expect(badge.textContent).toContain('更新あり (要確認)')
+    expect(badge.textContent).toContain('Formaloo から再取り込み') // 誘導文言
+  })
+
+  it("driftStatus='conflict' → 「競合 (要確認)」(sync out_of_sync より優先)", () => {
+    render(<FormBuilder {...base({ driftStatus: 'conflict', syncStatus: 'out_of_sync' })} />)
+    expect(screen.getByTestId('sync-badge').textContent).toContain('競合 (要確認)')
+  })
+
+  it("driftStatus='applied' → 「自動反映しました」(誘導なし)", () => {
+    render(<FormBuilder {...base({ driftStatus: 'applied', syncStatus: 'idle' })} />)
+    const badge = screen.getByTestId('sync-badge')
+    expect(badge.textContent).toContain('自動反映しました')
+    expect(badge.textContent).not.toContain('再取り込み')
+  })
+
+  it("drift なし + idle → badge なし", () => {
+    render(<FormBuilder {...base({ driftStatus: 'none', syncStatus: 'idle' })} />)
+    expect(screen.queryByTestId('sync-badge')).toBeNull()
+  })
+})
+
 describe('FormBuilder — Formaloo 再取り込み (pull / N-8 / B2/B3)', () => {
   const existing: HarnessField = { id: 'ex1', type: 'text', label: '既存項目', required: false, position: 0, config: {} }
 

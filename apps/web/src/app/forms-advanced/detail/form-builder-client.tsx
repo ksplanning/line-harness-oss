@@ -126,6 +126,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialLogic={form.logic}
             initialLogicFingerprint={form.logicFingerprint}
             syncStatus={form.syncStatus}
+            driftStatus={form.driftStatus}
             publicUrl={form.publicUrl}
             embedCode={form.embedCode}
             onSave={handleSave}

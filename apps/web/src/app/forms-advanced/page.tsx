@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import { formsAdvancedApi, type AdvancedForm } from '@/lib/formaloo-advanced-api'
+import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 import { formalooWorkspacesApi, type FormalooWorkspace } from '@/lib/formaloo-workspaces-api'
 import { formalooAccountBindingsApi } from '@/lib/formaloo-account-bindings-api'
 import { formalooFoldersApi, type FormalooFolder } from '@/lib/formaloo-folders-api'
@@ -339,13 +340,15 @@ export default function FormsAdvancedListPage() {
           <div data-testid="forms-grid" className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             {forms.map((form) => {
               const badge = statusBadge(form.builderStatus)
+              const syncBadge = formSyncBadge(form)
               return (
                 <div key={form.id} data-testid={`form-card-${form.id}`} className="bg-white rounded-lg border border-gray-200 p-4">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-xs text-white px-2 py-0.5 rounded" style={{ backgroundColor: badge.color }}>{badge.label}</span>
                     <span className="text-[10px] text-gray-400">高機能</span>
                     {form.lineAccountId == null && <span className="text-[10px] text-gray-400">共通</span>}
-                    {form.syncStatus === 'out_of_sync' && <span className="text-[10px] text-amber-600">未同期</span>}
+                    {/* drift/sync 単一 badge (優先順位: 競合>更新あり>未同期>自動反映 / formSyncBadge) */}
+                    {syncBadge && <span data-testid={`drift-badge-${form.id}`} className={`text-[10px] ${syncBadge.className}`}>{syncBadge.label}</span>}
                   </div>
                   <div className="text-sm font-bold mb-1 truncate">{form.title}</div>
                   <div className="text-xs text-gray-500 mb-3">回答 {form.submitCount} 件</div>

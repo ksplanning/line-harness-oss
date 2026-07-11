@@ -21,6 +21,11 @@ export interface AdvancedForm {
   embedCode: string | null
   syncStatus: string
   syncError: string | null
+  // formaloo-auto-pull: Formaloo 側定義変更 (drift) の状態 (pull 軸 / sync_status と直交)。
+  //   none=なし / detected=更新あり(要確認) / conflict=競合(要確認) / applied=自動反映済。既定は未露出=none 扱い。
+  driftStatus?: string
+  driftDetectedAt?: string | null
+  driftHasWarnings?: boolean
   // preserve-raw (formaloo-logic-fidelity Batch 1): 未編集判定用 fingerprint。rawLogic 逐語は server-side 保持
   // (reload→save は route が D1 の rawLogic を使う)。builder は save で fingerprint を carry する。
   logicFingerprint?: string | null
