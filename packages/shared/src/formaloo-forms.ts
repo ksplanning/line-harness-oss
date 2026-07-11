@@ -70,6 +70,32 @@ export interface HarnessField {
 export type LogicAction = 'show' | 'hide' | 'skip';
 export type LogicOperator = 'equals' | 'not_equals';
 
+// ─── R0 実測: Formaloo logic の実 operator / action 語彙 (formaloo-logic-fidelity Batch 0 spike) ───
+// harness の LogicOperator(equals/not_equals) / LogicAction(show/hide/skip) は Formaloo の真部分集合。
+// 複合ルールの additive 保持 (下記 HarnessLogicCondition/ActionRef) では実語彙をそのまま持つ。
+export type FormalooConditionOperator =
+  | 'is' | 'is_not' | 'gt' | 'gte' | 'lt' | 'lte' | 'is_answered'
+  | 'and' | 'or' | 'always' | 'otherwise';
+export type FormalooActionVerb =
+  | 'show' | 'hide' | 'jump' | 'jump_to_success_page' | 'submit'
+  | 'set' | 'add' | 'subtract' | 'multiply' | 'divide'
+  | 'send_email' | 'send_webhook' | 'send_slack' | 'generate_pdf' | 'redirect';
+
+/**
+ * 複合ルールの 1 条件 (additive / Batch 1 は保持のみ・表示/編集は Batch 2)。
+ * operator は R0 実測語彙 (harness の equals/not_equals も許容)。sourceFieldId は resolve 済 harness id か slug。
+ */
+export interface HarnessLogicCondition {
+  sourceFieldId: string;
+  operator: FormalooConditionOperator | LogicOperator;
+  value: string;
+}
+/** 複合ルールの 1 アクション参照 (additive)。action は R0 実測語彙。 */
+export interface HarnessLogicActionRef {
+  action: FormalooActionVerb | LogicAction;
+  targetFieldId: string;
+}
+
 /** 「もし [sourceField] が [value] [operator] なら [target] を [action]」。 */
 export interface HarnessLogicRule {
   id: string;
@@ -78,6 +104,16 @@ export interface HarnessLogicRule {
   value: string;
   action: LogicAction;
   targetFieldId: string;
+  // ── additive optional (compound / pulled 時のみ populate・single は付けない = R2 一意固定) ──
+  // 既存 6 フィールドは byte 不変・常に populate。以下は「欠けない保持」用の追加のみ (後方互換の要)。
+  /** 全条件 (index-0 含む・複合の AND/OR 木を平坦化した leaf 群)。 */
+  conditions?: HarnessLogicCondition[];
+  /** 最上位の結合子 (R0 実測: when.operation の and/or)。単一条件時は未設定。 */
+  conditionJoin?: 'and' | 'or';
+  /** 全アクション (index-0 含む)。 */
+  actions?: HarnessLogicActionRef[];
+  /** Formaloo logic item 断片の逐語 (未モデル prop passthrough / preserve-raw の per-rule 断片)。 */
+  raw?: unknown;
 }
 
 export interface HarnessFormDefinition {
@@ -251,10 +287,14 @@ export function toFormalooLogic(
  * rule id は安定的に再生成 (r1, r2, ...)。
  */
 export function fromFormalooLogic(
-  obj: FormalooLogicObject,
+  obj: FormalooLogicObject | readonly unknown[],
   resolveFieldId: (formalooFieldSlug: string) => string | undefined,
 ): HarnessLogicRule[] {
-  const rulesIn = Array.isArray(obj?.rules) ? obj.rules : [];
+  // R0 実測: 実 Formaloo logic は `.data.form.logic` の bare array (再帰 when 木)。
+  // bare array が渡されたら実 item 射影へ委譲 (単純 show/hide の弱化射影 + compound は additive 保持)。
+  // legacy synthetic `{rules:[{conditions,actions}]}` 形は従来経路 (byte-unchanged / 既存テスト green)。
+  if (Array.isArray(obj)) return fromFormalooRawLogic(obj, resolveFieldId);
+  const rulesIn = Array.isArray((obj as FormalooLogicObject)?.rules) ? (obj as FormalooLogicObject).rules : [];
   const out: HarnessLogicRule[] = [];
   let n = 0;
   for (const r of rulesIn) {
@@ -286,11 +326,172 @@ export function fromFormalooLogic(
  * その件数を返して pull note で運用者に surface する目的の純関数 (fromFormalooLogic 自体は無改変)。
  * 入力は Formaloo raw shape ゆえ非配列を許容的に 0 扱い (fail-soft)。
  */
-export function countWeakenedFormalooRules(obj: FormalooLogicObject): number {
-  const rulesIn = Array.isArray(obj?.rules) ? obj.rules : [];
+export function countWeakenedFormalooRules(obj: FormalooLogicObject | readonly unknown[]): number {
+  // R0 実測: bare array (実 Formaloo logic) は harness flat model に射影しきれない item を数える
+  // = 「ハーネス表示に映らない部分の点数」。legacy synthetic `{rules}` 形は従来の条件/アクション複数を数える。
+  if (Array.isArray(obj)) return obj.filter((it) => isCompoundRawLogicItem(it)).length;
+  const rulesIn = Array.isArray((obj as FormalooLogicObject)?.rules) ? (obj as FormalooLogicObject).rules : [];
   return rulesIn.filter(
     (r) =>
       (Array.isArray(r?.conditions) && r.conditions.length > 1) ||
       (Array.isArray(r?.actions) && r.actions.length > 1),
   ).length;
+}
+
+// =============================================================================
+// preserve-raw (formaloo-logic-fidelity Batch 1) — R0 実測: Formaloo logic は
+// `.data.form.logic` の bare array of `{ type, identifier, actions:[{action,args,when}] }`。
+// when は入れ子 and/or 再帰木。harness flat model の真部分集合にすら収まらないため、
+// 「モデル化」でなく「raw 配列を欠けなく保持 + 未編集なら verbatim 再送 (PATCH)」で往復不変を保証する。
+// 射影 (下記) は builder への弱化表示用 (Batch 1 は保持のみ・忠実表示は Batch 2)。
+// =============================================================================
+
+/** Formaloo logic item の `when` 木を平坦化して leaf 条件群 + 最上位結合子を返す (弱化射影用)。 */
+function flattenRawWhen(
+  when: unknown,
+  resolveFieldId: (slug: string) => string | undefined,
+): { conditions: HarnessLogicCondition[]; join?: 'and' | 'or' } {
+  if (!when || typeof when !== 'object') return { conditions: [] };
+  const w = when as Record<string, unknown>;
+  const op = w.operation;
+  if (op === 'and' || op === 'or') {
+    const conditions: HarnessLogicCondition[] = [];
+    const args = Array.isArray(w.args) ? w.args : [];
+    for (const sub of args) conditions.push(...flattenRawWhen(sub, resolveFieldId).conditions);
+    return { conditions, join: op };
+  }
+  // leaf: { operation:<op>, args:[ fieldOperand, valueOperand ] }。when.args の field operand は `value`=slug。
+  const args = Array.isArray(w.args) ? w.args : [];
+  const operands = args.map((x) => (x && typeof x === 'object' ? (x as Record<string, unknown>) : {}));
+  const fieldOperand = operands.find((x) => x.type === 'field');
+  const otherOperand = operands.find((x) => x !== fieldOperand);
+  const srcSlug = typeof fieldOperand?.value === 'string' ? (fieldOperand.value as string) : '';
+  const sourceFieldId = srcSlug ? resolveFieldId(srcSlug) ?? srcSlug : '';
+  const rawVal = otherOperand?.value;
+  const value = rawVal === undefined || rawVal === null ? '' : String(rawVal);
+  const operator = (typeof op === 'string' ? op : 'is') as FormalooConditionOperator | LogicOperator;
+  return { conditions: [{ sourceFieldId, operator, value }] };
+}
+
+/**
+ * Formaloo logic item が harness の単一条件・単一アクション simple rule で表せない (= 弱化される) か。
+ * countWeakenedFormalooRules (bare array) と fromFormalooRawLogic (additive 付与判定) の共通述語。
+ */
+export function isCompoundRawLogicItem(item: unknown): boolean {
+  if (!item || typeof item !== 'object') return false;
+  const it = item as Record<string, unknown>;
+  const rawActions = Array.isArray(it.actions) ? it.actions : [];
+  if (rawActions.length === 0) return false;
+  if (rawActions.length > 1) return true; // 複数アクション
+  const primary = (rawActions[0] && typeof rawActions[0] === 'object' ? rawActions[0] : {}) as Record<string, unknown>;
+  const flat = flattenRawWhen(primary.when, (s) => s);
+  if (flat.join) return true; // and/or 結合
+  if (flat.conditions.length > 1) return true; // 複数条件
+  const c0 = flat.conditions[0];
+  if (c0 && c0.operator !== 'is' && c0.operator !== 'is_not') return true; // 未モデル operator (gt/gte/is_answered 等)
+  const verb = primary.action;
+  if (verb !== undefined && verb !== 'show' && verb !== 'hide' && verb !== 'jump' && verb !== 'jump_to_success_page') {
+    return true; // 未モデル action (set/add/send_email 等)
+  }
+  return false;
+}
+
+/**
+ * 実 Formaloo logic (bare array) → harness rule 射影。simple item は従来同型の flat 弱化射影、
+ * compound item (isCompoundRawLogicItem) のみ additive フィールド (conditions/conditionJoin/actions/raw) を付与 (R2)。
+ * source/target slug は resolveFieldId で harness id へ (未解決は slug fallback)。弱化不能 item は drop。
+ */
+export function fromFormalooRawLogic(
+  items: readonly unknown[],
+  resolveFieldId: (formalooFieldSlug: string) => string | undefined,
+): HarnessLogicRule[] {
+  const out: HarnessLogicRule[] = [];
+  let n = 0;
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const it = item as Record<string, unknown>;
+    const rawActions = Array.isArray(it.actions) ? it.actions : [];
+    if (rawActions.length === 0) continue;
+
+    const actionRefs: HarnessLogicActionRef[] = [];
+    for (const a of rawActions) {
+      const ao = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
+      const aArgs = Array.isArray(ao.args) ? ao.args : [];
+      const tgt = aArgs
+        .map((x) => (x && typeof x === 'object' ? (x as Record<string, unknown>) : {}))
+        .find((x) => typeof x.identifier === 'string');
+      const tgtSlug = typeof tgt?.identifier === 'string' ? (tgt.identifier as string) : '';
+      const targetFieldId = tgtSlug ? resolveFieldId(tgtSlug) ?? tgtSlug : '';
+      const verb = (typeof ao.action === 'string' ? ao.action : 'show') as FormalooActionVerb | LogicAction;
+      actionRefs.push({ action: verb, targetFieldId });
+    }
+
+    const primary = (rawActions[0] && typeof rawActions[0] === 'object' ? rawActions[0] : {}) as Record<string, unknown>;
+    const flat = flattenRawWhen(primary.when, resolveFieldId);
+    const cond0 = flat.conditions[0];
+    const act0 = actionRefs[0];
+    if (!cond0 || !act0 || !cond0.sourceFieldId || !act0.targetFieldId) continue; // 弱化不能 / 孤立参照 → drop
+
+    n += 1;
+    const flatOperator: LogicOperator =
+      cond0.operator === 'is_not' || cond0.operator === 'not_equals' ? 'not_equals' : 'equals';
+    const flatAction: LogicAction =
+      act0.action === 'hide'
+        ? 'hide'
+        : act0.action === 'jump' || act0.action === 'jump_to_success_page' || act0.action === 'skip'
+          ? 'skip'
+          : 'show';
+    const rule: HarnessLogicRule = {
+      id: `r${n}`,
+      sourceFieldId: cond0.sourceFieldId,
+      operator: flatOperator,
+      value: cond0.value,
+      action: flatAction,
+      targetFieldId: act0.targetFieldId,
+    };
+    if (isCompoundRawLogicItem(item)) {
+      rule.conditions = flat.conditions;
+      if (flat.join) rule.conditionJoin = flat.join;
+      rule.actions = actionRefs;
+      rule.raw = item;
+    }
+    out.push(rule);
+  }
+  return out;
+}
+
+/** object の key を再帰的にソートした canonical JSON (配列順は保持 = R0 順序有意)。 */
+function canonicalStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    const keys = Object.keys(o).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalStringify(o[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/**
+ * logic の semantic deep-equal (R0: object key 順は無意・配列順は有意・server-managed prop 無し)。
+ * preserve-raw の往復不変判定 (Formaloo GET canonical object 突合) に使う。
+ */
+export function semanticLogicEqual(a: unknown, b: unknown): boolean {
+  return canonicalStringify(a) === canonicalStringify(b);
+}
+
+/**
+ * 射影 logic (HarnessLogicRule[]) の canonical fingerprint。pull 時と save 時に同一関数で算出し
+ * deep-equal 比較して「未編集」を判定する (edit-detection / R7)。
+ */
+export function logicFingerprint(rules: readonly HarnessLogicRule[]): string {
+  return canonicalStringify(rules);
+}
+
+/**
+ * preserve-only push: 未編集時に Formaloo へ再送する logic 配列を返す。
+ * R0 実測: 書込は `PATCH /v3.0/forms/{slug}/ {logic:<bare array>}`。raw 配列を **変換せず** そのまま返す
+ * (compound / calc / variable / jump / 未モデル構造を欠けなく保持)。array でなければ null (preserve 不成立)。
+ */
+export function serializeRawLogicForPush(rawLogic: unknown): unknown[] | null {
+  return Array.isArray(rawLogic) ? [...rawLogic] : null;
 }
