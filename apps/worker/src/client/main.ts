@@ -257,6 +257,10 @@ async function linkAndAddFlow() {
       ]);
       // Append LINE userId to worker tracking return paths (/t/:id, /fo/:id) so the return hop
       // resolves the friend. /fo/:id without lu re-enters the LIFF branch = infinite loop (F-1).
+      // Pathname-prefix guard (CX-1): only worker tracking pathnames get lu — a crafted redirect
+      // like `?fo=/fo/` no longer false-matches. Same-origin restriction is NOT applied here on
+      // purpose: this LIFF client is served cross-origin (…-liff.pages.dev) from the tracking
+      // routes (…workers.dev), so lu must cross to the worker origin for the round-trip to work.
       window.location.href = appendLineUserToReturnUrl(redirectUrl, profile.userId);
       return;
     }
