@@ -80,27 +80,26 @@ export async function processBroadcastSend(
     finalType = tracked.messageType;
     finalContent = tracked.content;
   }
-  // {{liff_id}} 置換: broadcast の line_account_id に紐付く LIFF ID で替える。
-  // multi-account-dedup は dedup-broadcast.ts 側で per-account 置換するので
-  // ここは scheduled / tag / segment / all 系の単一 account 経路のみ。
-  // multi-account-dedup の sentinel account を踏むと placeholder が消えて
-  // dedup ループ側で {{liff_id}} を見失うので、ここでは置換しない。
+  // {{liff_id}} 置換用 liffId を解決する。render 自体は buildBroadcastMessages が要素単位に行う。
+  // multi-account-dedup は dedup-broadcast.ts 側で per-account 置換するので、ここは
+  // scheduled / tag / segment / all 系の単一 account 経路のみ (dedup では liffId=null)。
+  let liffId: string | null = null;
   if (broadcast.target_type !== 'multi-account-dedup') {
     const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
     if (broadcastAccountId) {
       const { getLineAccountById: getLA } = await import('@line-crm/db');
       const acct = await getLA(db, broadcastAccountId);
-      const liffId = (acct as unknown as { liff_id?: string | null } | null)?.liff_id ?? null;
-      const { renderMessageContent } = await import('./render-message.js');
-      finalContent = renderMessageContent(finalContent, liffId);
+      liffId = (acct as unknown as { liff_id?: string | null } | null)?.liff_id ?? null;
     }
   }
-  const altText = (broadcast as unknown as Record<string, unknown>).alt_text as string | undefined;
-  let message: Message;
+  // auto-track 結果 (finalType/finalContent) を反映した broadcast から Message[] を組む。
+  // messages NULL は byte 等価な単発 (fallback)、非NULL は combo 配列。
+  const sendBroadcast = { ...broadcast, message_type: finalType as Broadcast['message_type'], message_content: finalContent };
+  let messages: Message[];
   try {
-    message = buildMessage(finalType, finalContent, altText || undefined);
+    messages = buildBroadcastMessages(sendBroadcast, liffId);
   } catch (err) {
-    // fail-closed: 不正な image/flex JSON は送信スキップ (生 JSON を送らない / W5 T-E2)。
+    // fail-closed: 不正な image/flex JSON や壊れた messages は送信スキップ (生 JSON を送らない / W5 T-E2)。
     // status は既存の rollback 流儀に合わせ 'draft' に戻す ('sending' で stuck させない)。
     // 'failed' は BroadcastStatus / CHECK 制約に無いので使わない。owner が draft を修正して送り直す。
     if (err instanceof MessageBuildError) {
@@ -115,7 +114,7 @@ export async function processBroadcastSend(
   try {
     if (broadcast.target_type === 'all') {
       // Use LINE broadcast API (sends to all followers)
-      const { requestId } = await lineClient.broadcast([message]);
+      const { requestId } = await lineClient.broadcast(messages);
       await updateBroadcastLineRequestId(db, broadcast.id, requestId, null);
       // We don't have exact count for broadcast API, set as 0 (unknown)
       totalCount = 0;
@@ -144,14 +143,11 @@ export async function processBroadcastSend(
           await sleep(delay);
         }
 
-        // Stealth: add slight variation to text messages
-        let batchMessage = message;
-        if (message.type === 'text' && totalBatches > 1) {
-          batchMessage = { ...message, text: addMessageVariation(message.text, batchIndex) };
-        }
+        // Stealth: add slight variation to text elements (combo は各 text 要素のみ)
+        const batchMessages = applyBatchVariation(messages, batchIndex, totalBatches);
 
         try {
-          await lineClient.multicast(lineUserIds, [batchMessage], [unit]);
+          await lineClient.multicast(lineUserIds, batchMessages, [unit]);
           successCount += batch.length;
 
           // Log only successfully sent messages (batch insert for performance)
@@ -325,21 +321,20 @@ async function processQueuedBroadcastBatches(
     }
   }
 
-  // {{liff_id}} 置換 (single account 経路のみ; multi は dedup 側で per-account 置換)。
+  // {{liff_id}} 置換用 liffId (single account 経路のみ; multi は dedup 側で per-account 置換)。
+  let liffId: string | null = null;
   const queuedAccountId = raw.line_account_id as string | null;
   if (queuedAccountId && broadcast.target_type !== 'multi-account-dedup') {
     const { getLineAccountById: getLA } = await import('@line-crm/db');
     const acct = await getLA(db, queuedAccountId);
-    const liffId = (acct as unknown as { liff_id?: string | null } | null)?.liff_id ?? null;
-    const { renderMessageContent } = await import('./render-message.js');
-    finalContent = renderMessageContent(finalContent, liffId);
+    liffId = (acct as unknown as { liff_id?: string | null } | null)?.liff_id ?? null;
   }
-  const altText = raw.alt_text as string | undefined;
-  let message: Message;
+  const sendBroadcast = { ...broadcast, message_type: finalType as Broadcast['message_type'], message_content: finalContent };
+  let messages: Message[];
   try {
-    message = buildMessage(finalType, finalContent, altText || undefined);
+    messages = buildBroadcastMessages(sendBroadcast, liffId);
   } catch (err) {
-    // fail-closed: 不正な image/flex JSON は送信スキップ (生 JSON を送らない / W5 T-E2)。
+    // fail-closed: 不正な image/flex JSON や壊れた messages は送信スキップ (生 JSON を送らない / W5 T-E2)。
     // batch_offset の排他ロック (-1) を解除しつつ status は既存 rollback 流儀の 'draft' に戻す。
     // 'failed' は BroadcastStatus / CHECK 制約に無いので使わない。次 cron の doomed retry を
     // 避けるためロックは 0 に戻さず -1 のまま status のみ draft にする手もあるが、recover が
@@ -396,7 +391,7 @@ async function processQueuedBroadcastBatches(
     friends = tagFriends.filter(f => f.is_following).map(f => ({ id: f.id, line_user_id: f.line_user_id }));
   } else {
     // target_type='all' でキューに入ることはないが、念のため
-    const { requestId } = await lineClient.broadcast([message]);
+    const { requestId } = await lineClient.broadcast(messages);
     await updateBroadcastLineRequestId(db, broadcast.id, requestId, null);
     await createBroadcastInsight(db, broadcast.id);
     await updateBroadcastStatus(db, broadcast.id, 'sent', { totalCount: 0, successCount: 0 });
@@ -441,14 +436,11 @@ async function processQueuedBroadcastBatches(
       await sleep(delay);
     }
 
-    // テキストメッセージのバリエーション
-    let batchMessage = message;
-    if (message.type === 'text' && totalBatches > 1) {
-      batchMessage = { ...message, text: addMessageVariation((message as { text: string }).text, batchIndex) };
-    }
+    // テキスト要素のバリエーション (combo は各 text 要素のみ)
+    const batchMessages = applyBatchVariation(messages, batchIndex, totalBatches);
 
     try {
-      await lineClient.multicast(lineUserIds, [batchMessage], [unit]);
+      await lineClient.multicast(lineUserIds, batchMessages, [unit]);
     } catch (err) {
       console.error(`Queued broadcast batch ${batchIndex} send failed:`, err);
       // 送信失敗: ロック解除 + offsetを保存して次のCronで再開
@@ -657,7 +649,10 @@ export function buildMessage(
  * - renderMessageContent ({{liff_id}} 置換) は要素単位に適用する。liffId は呼び側が解決して渡す
  *   (multi-account-dedup は per-account の liffId・single 経路は account の liffId or null)。
  */
-export function buildBroadcastMessages(broadcast: Broadcast, liffId: string | null = null): Message[] {
+export function buildBroadcastMessages(
+  broadcast: { message_type: string; message_content: string; messages?: string | null; alt_text?: string | null },
+  liffId: string | null = null,
+): Message[] {
   const raw = broadcast as unknown as Record<string, unknown>;
   const messagesJson = raw.messages as string | null | undefined;
   const altText = (raw.alt_text as string | undefined) || undefined;
@@ -687,4 +682,15 @@ export function buildBroadcastMessages(broadcast: Broadcast, liffId: string | nu
     const elAlt = typeof el.altText === 'string' ? el.altText : undefined;
     return buildMessage(el.type, renderMessageContent(el.content, liffId), elAlt);
   });
+}
+
+/**
+ * multicast のバッチごとの stealth 揺らぎを **text 要素だけ** に適用する (非 text・要素順序は不変)。
+ * broadcast/queued/dedup/segment の 4 送信経路で同一挙動。totalBatches<=1 は揺らぎ無し (byte 等価)。
+ */
+export function applyBatchVariation(messages: Message[], batchIndex: number, totalBatches: number): Message[] {
+  if (totalBatches <= 1) return messages;
+  return messages.map((m) =>
+    m.type === 'text' ? { ...m, text: addMessageVariation((m as { text: string }).text, batchIndex) } : m,
+  );
 }

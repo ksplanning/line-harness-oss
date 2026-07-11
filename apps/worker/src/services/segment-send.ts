@@ -7,10 +7,10 @@ import {
 } from '@line-crm/db';
 import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
-import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
+import { calculateStaggerDelay, sleep } from './stealth.js';
 import { buildSegmentWhere } from './segment-query.js';
 import type { SegmentCondition } from './segment-query.js';
-import { buildMessage } from './broadcast.js';
+import { buildBroadcastMessages, applyBatchVariation } from './broadcast.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -33,7 +33,7 @@ export async function processSegmentSend(
     throw new Error(`Broadcast ${broadcastId} not found`);
   }
 
-  const message = buildMessage(broadcast.message_type, broadcast.message_content);
+  const messages = buildBroadcastMessages(broadcast, null);
 
   let totalCount = 0;
   let successCount = 0;
@@ -76,14 +76,11 @@ export async function processSegmentSend(
         await sleep(delay);
       }
 
-      // Stealth: add slight variation to text messages
-      let batchMessage = message;
-      if (message.type === 'text' && totalBatches > 1) {
-        batchMessage = { ...message, text: addMessageVariation(message.text, batchIndex) };
-      }
+      // Stealth: text 要素のみバリエーション (combo は各 text 要素)
+      const batchMessages = applyBatchVariation(messages, batchIndex, totalBatches);
 
       try {
-        await lineClient.multicast(lineUserIds, [batchMessage], [unit]);
+        await lineClient.multicast(lineUserIds, batchMessages, [unit]);
         successCount += batch.length;
 
         // Log successfully sent messages (batch insert for performance)

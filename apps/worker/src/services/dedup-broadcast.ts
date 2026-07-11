@@ -184,9 +184,8 @@ export async function computeDedupBroadcastPreview(
 
 import { LineClient, type Message } from '@line-crm/line-sdk';
 import { getLineAccountById, jstNow, updateBroadcastLineRequestId } from '@line-crm/db';
-import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
-import { renderMessageContent } from './render-message.js';
-import { buildMessage } from './broadcast.js';
+import { calculateStaggerDelay, sleep } from './stealth.js';
+import { buildBroadcastMessages, applyBatchVariation } from './broadcast.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -331,14 +330,13 @@ export async function processMultiAccountDedupBroadcast(
     const client = lineClientFactory(account.channel_access_token);
     const totalBatches = Math.ceil(remaining.length / MULTICAST_BATCH_SIZE);
 
-    // Per-account の liff_id でテンプレ変数 ({{liff_id}}) を置換してから
-    // buildMessage する。これで 1 broadcast から複数アカへ配信する際、
-    // 友だちの所属アカに対応した LIFF URL が届く (events の運用要件)。
-    const renderedContent = renderMessageContent(
-      broadcast.message_content,
+    // Per-account の liff_id でテンプレ変数 ({{liff_id}}) を置換して Message[] を組む。
+    // これで 1 broadcast から複数アカへ配信する際、友だちの所属アカに対応した LIFF URL が
+    // 届く (events の運用要件)。combo (messages 非NULL) は全要素、single は byte 等価な単発。
+    const messages = buildBroadcastMessages(
+      broadcast,
       (account as unknown as { liff_id?: string | null }).liff_id ?? null,
     );
-    const message = buildMessage(broadcast.message_type, renderedContent, broadcast.alt_text ?? undefined);
 
     try {
       for (let i = 0; i < remaining.length; i += MULTICAST_BATCH_SIZE) {
@@ -349,12 +347,9 @@ export async function processMultiAccountDedupBroadcast(
           await sleep(calculateStaggerDelay(remaining.length, batchIdx));
         }
 
-        let batchMessage = message;
-        if (message.type === 'text' && totalBatches > 1) {
-          batchMessage = { ...message, text: addMessageVariation(message.text, batchIdx) } as Message;
-        }
+        const batchMessages = applyBatchVariation(messages, batchIdx, totalBatches);
 
-        await client.multicast(batch.map((r) => r.lineUserId), [batchMessage], [unit]);
+        await client.multicast(batch.map((r) => r.lineUserId), batchMessages, [unit]);
 
         // multicast 成功直後に identKey を sent set へ追加。
         for (const r of batch) {
