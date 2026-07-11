@@ -164,6 +164,42 @@ describe('PUT /api/broadcasts/:id combo messages', () => {
     const res = await app().request(`/api/broadcasts/${id}`, { method: 'PUT', body: JSON.stringify({ messages: next }) });
     expect(res.status).toBe(400);
   });
+
+  // ---- len1 (messages 配列 len1 = 実質 single) 行: 単一フィールド PUT を許し messages[0] を同期する ----
+  // (line-combo-iscombo-fix / 将来のインライン編集で len1 行が 400 で詰む地雷の除去 + ミラー乖離ゼロ)
+  async function createLen1(altText?: string): Promise<string> {
+    const block: Record<string, unknown> = { type: 'text', content: 'orig' };
+    if (altText !== undefined) block.altText = altText;
+    const res = await app().request('/api/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({ ...base, messageType: 'text', messageContent: 'orig', messages: [block] }),
+    });
+    return (await res.json() as PostResp).data.id;
+  }
+
+  test('len1 行への messageContent 単独 PUT → 200 + messages[0].content 同期 + ミラー列更新', async () => {
+    const id = await createLen1();
+    const res = await app().request(`/api/broadcasts/${id}`, { method: 'PUT', body: JSON.stringify({ messageContent: 'updated' }) });
+    expect(res.status).toBe(200);
+    const row = raw.prepare(`SELECT messages, message_type, message_content FROM broadcasts WHERE id=?`).get(id) as { messages: string; message_type: string; message_content: string };
+    // ミラー列が更新される。
+    expect(row.message_content).toBe('updated');
+    // messages[0] も同一書込で同期 → ミラー⇔messages[0] 乖離ゼロ (送信経路 buildBroadcastMessages は messages 優先)。
+    const blocks = JSON.parse(row.messages) as Array<{ type: string; content: string }>;
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe('text');
+    expect(blocks[0].content).toBe('updated');
+  });
+
+  test('len1 行の単一フィールド PUT は messages[0].altText を保持する (single-field 更新で消さない)', async () => {
+    const id = await createLen1('ALTKEEP');
+    const res = await app().request(`/api/broadcasts/${id}`, { method: 'PUT', body: JSON.stringify({ messageContent: 'new body' }) });
+    expect(res.status).toBe(200);
+    const row = raw.prepare(`SELECT messages FROM broadcasts WHERE id=?`).get(id) as { messages: string };
+    const blocks = JSON.parse(row.messages) as Array<{ type: string; content: string; altText?: string }>;
+    expect(blocks[0].content).toBe('new body');
+    expect(blocks[0].altText).toBe('ALTKEEP');
+  });
 });
 
 describe('POST /api/broadcasts/:id/test-send combo gate (F2)', () => {
@@ -186,6 +222,15 @@ describe('POST /api/broadcasts/:id/test-send combo gate (F2)', () => {
     const id = (await res.json() as PostResp).data.id;
     const ts = await app().request(`/api/broadcasts/${id}/test-send`, { method: 'POST', body: JSON.stringify({}) });
     // single は combo gate に当たらない (test_recipients 未設定などで別 400 になり得るが combo メッセージは出ない)。
+    const body = await ts.json() as { error?: string };
+    expect(body.error ?? '').not.toContain('組み合わせメッセージのテスト送信');
+  });
+
+  test('len1 (messages 配列 len1 = 実質 single) 行の test-send は combo gate を通過する', async () => {
+    const res = await app().request('/api/broadcasts', { method: 'POST', body: JSON.stringify({ ...base, messageType: 'text', messageContent: 'hi', messages: [{ type: 'text', content: 'hi' }] }) });
+    const id = (await res.json() as PostResp).data.id;
+    const ts = await app().request(`/api/broadcasts/${id}/test-send`, { method: 'POST', body: JSON.stringify({}) });
+    // len1 は真 combo (len>1) ではない → combo gate に当たらない (別 400 になり得るが combo メッセージは出ない)。
     const body = await ts.json() as { error?: string };
     expect(body.error ?? '').not.toContain('組み合わせメッセージのテスト送信');
   });

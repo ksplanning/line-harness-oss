@@ -545,10 +545,13 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       messages?: MessageBlock[];
     }>();
 
-    // combo 真理値表 (codex HIGH #4 / plan §5 R-12)。
-    const existingIsCombo = ((existing as unknown as { messages?: string | null }).messages ?? null) !== null;
-    // combo 行への単一フィールド更新 (messages 省略で messageType/messageContent を更新) は先頭だけ書換わり
-    // messages と不整合になる silent 事故 → fail-loud で 400。
+    // combo 真理値表 (codex HIGH #4 / plan §5 R-12 / line-combo-iscombo-fix)。
+    // 「combo」= messages 配列 length > 1 のときだけ真。len1 (実質 single・Batch 2 フォームが単発でも
+    // messages:[len1] を常時送るため生じる) は従来 single と同じ操作性 (単一フィールド PUT を許す) に戻す。
+    const existingBlocks = parseMessagesColumn((existing as unknown as { messages?: string | null }).messages ?? null);
+    const existingIsCombo = existingBlocks !== null && existingBlocks.length > 1;
+    // 真 combo (len>1) 行への単一フィールド更新 (messages 省略で messageType/messageContent を更新) は
+    // 先頭だけ書換わり messages と不整合になる silent 事故 → fail-loud で 400 (不変)。
     if (
       body.messages === undefined &&
       existingIsCombo &&
@@ -558,6 +561,21 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
         { success: false, error: 'この配信は組み合わせメッセージです。メッセージは messages 配列で更新してください' },
         400,
       );
+    }
+    // len1 (mirror-backed single) 行への単一フィールド更新は許すが、同一 UPDATE で messages[0] も同期して
+    // ミラー⇔messages[0] の乖離ゼロを保つ (送信経路 buildBroadcastMessages は messages を優先するため、
+    // 同期しないと編集後に古い内容が送られる新地雷になる)。altText 等の未指定フィールドは messages[0] から保持。
+    let len1MessagesSync: string | undefined;
+    if (
+      body.messages === undefined &&
+      existingBlocks !== null &&
+      existingBlocks.length === 1 &&
+      (body.messageType !== undefined || body.messageContent !== undefined)
+    ) {
+      const head = existingBlocks[0];
+      len1MessagesSync = JSON.stringify([
+        { ...head, type: body.messageType ?? head.type, content: body.messageContent ?? head.content },
+      ]);
     }
     // messages 配列が来たら検証し、先頭ミラー用の更新値を組む (原子的に同一 UPDATE で反映)。
     let comboUpdate:
@@ -630,6 +648,7 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       scheduled_at: body.scheduledAt,
       sender_preset_id: body.senderPresetId,
       ...(comboUpdate ? { messages: comboUpdate.messages, alt_text: comboUpdate.alt_text } : {}),
+      ...(len1MessagesSync !== undefined ? { messages: len1MessagesSync } : {}),
       ...(body.abTestId !== undefined ? { ab_test_id: body.abTestId } : {}),
       ...(body.abVariant !== undefined ? { ab_variant: body.abVariant } : {}),
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
@@ -1119,12 +1138,14 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
     if (broadcast.status !== 'draft') {
       return c.json({ success: false, error: 'Only draft broadcasts can be test-sent' }, 400);
     }
-    // [F2] combo (messages が JSON 文字列) の test-send は現状未対応。従来の単発 buildMessage 経路は先頭
+    // [F2] combo (messages 配列 length > 1) の test-send は現状未対応。従来の単発 buildMessage 経路は先頭
     // ブロックだけを送るため、owner が combo プレビューで踏むと「1通目しか届かない」silent 事故になる。単発
     // 送信して誤認させるより fail-loud で 400 明示する (excluded_scope: 予約発火のテスト送信は owner 判断 /
-    // 組み合わせのプレビュー・テスト送信は Batch 2 UI で配線する)。combo 判定は「messages が非空 JSON 文字列」=
-    // null/undefined(単発・legacy) は従来経路へ通す。
-    if (typeof broadcast.messages === 'string' && broadcast.messages.length > 0) {
+    // 組み合わせのプレビュー・テスト送信は Batch 2 UI で配線する)。combo 判定は「messages 配列 length > 1」=
+    // null/len1(単発・legacy・実質 single) は従来経路へ通す (line-combo-iscombo-fix)。len1 は先頭ミラー
+    // (=messages[0]) を送るため単発と同一の内容が正しく届く。
+    const testSendBlocks = parseMessagesColumn(broadcast.messages);
+    if (testSendBlocks !== null && testSendBlocks.length > 1) {
       return c.json(
         { success: false, error: '組み合わせメッセージのテスト送信は現在未対応です（組み合わせ配信の対応は次のアップデートで行います）。' },
         400,
