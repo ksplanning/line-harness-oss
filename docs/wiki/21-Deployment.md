@@ -21,7 +21,7 @@ line-harness/
 ```
 
 パッケージマネージャー: **pnpm 9.15.4**
-Node.js: **>= 20**
+Node.js: **>= 22**
 
 ---
 
@@ -29,7 +29,7 @@ Node.js: **>= 20**
 
 ### 前提条件
 
-- Node.js >= 20
+- Node.js >= 22
 - pnpm >= 9
 - Cloudflare アカウント
 - LINE Developers アカウント
