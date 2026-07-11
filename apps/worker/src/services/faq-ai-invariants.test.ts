@@ -2,8 +2,8 @@
  * D-1 / D-2 / D-3 (Phase B B-1) — 不可侵 assert (機械検証)。
  *  D-1: unanswered-inbox.ts が origin/main と byte-identical (AI 自動回答は既存 faq_bot 証拠経路)。
  *  D-2: プロンプトに秘密値/friend_id 等内部識別子が載らない (system+根拠+質問のみ)。
- *  D-3: faq-match.ts / webhook gate 行 / wrangler flag 行 (crons=[] / FAQ_BOT_ENABLED="false") が
- *       byte-identical。
+ *  D-3: faq-match.ts / webhook gate 行 byte-identical + wrangler dark-ship 現在形不変
+ *       (crons=[] 恒久 / FAQ_BOT_ENABLED スイッチ="true" go-live 承認 / binding 意図形)。
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -82,17 +82,20 @@ describe('D-3 — faq-match / webhook gate / flag byte-identical', () => {
     expect(unchangedVsMain('apps/worker/src/services/faq-match.ts')).toBe(true);
   });
 
-  test('wrangler.ks.toml の crons=[] と FAQ_BOT_ENABLED="false" 行が存在 (dark-ship)', () => {
-    const toml = readRepo('apps/worker/wrangler.ks.toml');
-    expect(toml).toContain('crons = []');
-    expect(toml).toContain('FAQ_BOT_ENABLED = "false"');
-    // B-3 が compatibility_flags に global_fetch_strictly_public を additive 追記するため、ファイル全体
-    // byte-identical ではなく「origin/main との差分行は compatibility_flags 行のみ」を行単位で確認する
-    // (dark-ship の crons=[] / FAQ_BOT_ENABLED 2 行は不可侵)。
-    const cur = toml.split('\n');
-    const main = execFileSync('git', ['show', 'origin/main:apps/worker/wrangler.ks.toml'], { cwd: REPO }).toString().split('\n');
-    expect(cur.length).toBe(main.length);
-    for (const l of cur.filter((l, i) => l !== main[i])) expect(l).toMatch(/compatibility_flags/);
+  // 【2026-07-11 rebaseline】go-live で FAQ_BOT_ENABLED="true"・[ai]/[[vectorize]] binding 実在。旧 assert は
+  // 「FAQ_BOT_ENABLED="false" 存在」+ origin/main 比較 (時限式) で go-live 後恒久 RED 化していた。守っていた実体
+  // (crons 閉・全体スイッチが黙って変わらない・binding 構成不変) を現ソースの現在形で保護し直す (時限式排除):
+  //   旧「crons=[] / FAQ_BOT_ENABLED="false" 存在」→ 新「crons=[]恒久1件 + スイッチ正確に1件・値="true"(承認) + "false"残骸0件」
+  //   旧「origin/main との差分行は compatibility_flags のみ」→ 新「binding が意図した現在形 ([ai]/[[vectorize]]/index_name)」
+  test('wrangler dark-ship 現在形: crons=[]恒久 / FAQ_BOT_ENABLED スイッチ="true"(承認) / binding 意図形', () => {
+    const lines = readRepo('apps/worker/wrangler.ks.toml').split('\n');
+    expect(lines.filter((l) => l === 'crons = []')).toHaveLength(1); // 自動送信トリガーなし = 不変
+    expect(lines.filter((l) => /^FAQ_BOT_ENABLED = "(?:true|false)"$/.test(l))).toEqual(['FAQ_BOT_ENABLED = "true"']);
+    expect(lines.filter((l) => l === 'FAQ_BOT_ENABLED = "false"')).toHaveLength(0); // dark-ship 代入行の残骸なし
+    expect(lines.filter((l) => l === '[ai]')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'binding = "AI"')).toHaveLength(1);
+    expect(lines.filter((l) => l === '[[vectorize]]')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'index_name = "ks-knowledge-chunks"')).toHaveLength(1);
   });
 
   test('webhook faq gate 行 (FAQ_BOT_ENABLED gate) が byte-identical で存在', () => {
