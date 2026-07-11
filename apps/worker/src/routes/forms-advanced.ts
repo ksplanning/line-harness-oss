@@ -19,6 +19,8 @@ import {
   getFormalooFieldMap,
   isActiveFormalooWorkspace,
   resolveDefaultWorkspace,
+  setFormalooFormFolder,
+  FolderError,
   type FormalooForm,
   type FormalooSubmissionRow,
 } from '@line-crm/db';
@@ -106,16 +108,20 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     // F6-2 表示スコープ: lineAccountId は全 role / workspaceId は owner のみ。
     lineAccountId: form.line_account_id,
     ...(isOwner ? { workspaceId: form.workspace_id } : {}),
+    // F6-3 ハーネス側フォルダ分類 (NULL=未分類 / round-trip / M-8)。全 role 露出 (秘密でない・表示に要る)。
+    folderId: form.folder_id,
     updatedAt: form.updated_at,
   };
 }
 
-// GET /api/forms-advanced — 一覧 (F6-2: ?lineAccountId= で表示スコープ絞り込み / broadcasts:152 規約)
+// GET /api/forms-advanced — 一覧 (F6-2: ?lineAccountId= 表示スコープ / F6-3: ?folderId= フォルダ絞り込み)
+//   folderId は account 絞りに **重ねる** (§3.3b 3 状態: 無指定=全フォルダ+未分類 / 実 id=特定 / none=未分類)。
 formsAdvanced.get('/api/forms-advanced', async (c) => {
   try {
     const lineAccountId = c.req.query('lineAccountId') || undefined;
+    const folderId = c.req.query('folderId') || undefined;
     const isOwner = isOwnerCtx(c);
-    const list = await listFormalooForms(c.env.DB, lineAccountId);
+    const list = await listFormalooForms(c.env.DB, lineAccountId, folderId);
     const data = await Promise.all(list.map((f) => serializeForm(c.env.DB, f, isOwner)));
     return c.json({ success: true, data });
   } catch (err) {
@@ -245,6 +251,26 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     return c.json({ success: true, data: await serializeForm(c.env.DB, updated!, isOwnerCtx(c)) });
   } catch (err) {
     console.error('PUT /api/forms-advanced/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PUT /api/forms-advanced/:id/folder — フォーム→フォルダ割当/解除 (F6-3 / ローカル分類 = Formaloo push なし)
+//   body {folderId: string|null}。同一 account 検証 (folder.line_account_id === form.line_account_id) は
+//   db 層 (setFormalooFormFolder) が実施し cross-account 混入を 400 で弾く (§3.3)。PUT /:id (定義保存 push) とは別 route。
+formsAdvanced.put('/api/forms-advanced/:id/folder', async (c) => {
+  const id = c.req.param('id')!;
+  const body = await c.req.json<{ folderId?: unknown }>().catch(() => ({}) as { folderId?: unknown });
+  const folderId = typeof body.folderId === 'string' && body.folderId.trim() ? body.folderId.trim() : null;
+  try {
+    await setFormalooFormFolder(c.env.DB, id, folderId);
+    const updated = await getFormalooForm(c.env.DB, id);
+    return c.json({ success: true, data: await serializeForm(c.env.DB, updated!, isOwnerCtx(c)) });
+  } catch (err) {
+    if (err instanceof FolderError) {
+      return c.json({ success: false, error: err.message }, err.status as 400 | 404);
+    }
+    console.error('PUT /api/forms-advanced/:id/folder error');
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

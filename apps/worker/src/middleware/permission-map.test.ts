@@ -83,6 +83,9 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     // F6-2: アカウント→既定 workspace の binding (forms_advanced で gate / 真の enforcement は ownerGate)
     expect(mapPathToFeature('/api/formaloo-account-bindings')).toBe('forms_advanced');
     expect(mapPathToFeature('/api/formaloo-account-bindings/acc_x')).toBe('forms_advanced');
+    // F6-3: ハーネス側フォルダ分類 (forms_advanced で gate / ownerGate なし = staff 利用可)
+    expect(mapPathToFeature('/api/formaloo-folders')).toBe('forms_advanced');
+    expect(mapPathToFeature('/api/formaloo-folders/ff_x')).toBe('forms_advanced');
     // forms-advanced とは別 prefix (bleed しない)
     expect(mapPathToFeature('/api/forms-advanced')).toBe('forms_advanced');
   });

@@ -100,6 +100,9 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   // F6-2: アカウント→既定 workspace の binding。formaloo-workspaces と同様 forms_advanced feature で gate
   //   (真の enforcement は route の ownerGate)。
   { test: prefix('formaloo-account-bindings'), feature: 'forms_advanced' },
+  // F6-3: ハーネス側フォルダ分類 (SoT)。forms_advanced feature で gate だが **ownerGate を route に付けない** =
+  //   staff 利用可 (F6-1/F6-2 と異なる)。forms_advanced を持たない custom role は middleware が 403 で締める。
+  { test: prefix('formaloo-folders'), feature: 'forms_advanced' },
   { test: prefix('forms'), feature: 'form' },
   { test: prefix('faqs'), feature: 'faq' },
   // 取込ナレッジ (Phase B B-3) は FAQ と同じ「よくある質問」機能の一部 = 既存 faq 権限で gate (新 FeatureKey なし)。

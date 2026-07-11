@@ -26,6 +26,8 @@ export interface FormalooForm {
   // migration 095 (F6-2): 表示スコープ + 作成先 workspace。
   line_account_id: string | null;  // NULL=全アカウント共通表示 (後方互換)
   workspace_id: string | null;     // NULL=既定=env 単一鍵 fallback (作成先 workspace 鍵)
+  // migration 096 (F6-3): ハーネス側フォルダ分類 (NULL=未分類)。
+  folder_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -173,26 +175,38 @@ export async function resolveDefaultWorkspace(
   return row?.wid ?? null;
 }
 
+/** 未分類 (folder_id IS NULL) を絞る sentinel。実 folder id (`ff_*`) と衝突しない予約語 (F6-3 §3.3b / Codex M#4)。 */
+export const FORM_FOLDER_UNFILED = 'none';
+
 /**
  * 一覧取得。lineAccountId 指定時は「そのアカウントの form + 共通(line_account_id NULL)」だけに絞る
  * (F6-2 表示スコープ / broadcasts:152 getBroadcasts と同型)。無引数/undefined は従来通り全件 (後方互換 D-1)。
  * これは表示フィルタ (運用ミス防止) であってアクセス強制ではない (URL 直打ちは G2 依存 / N-17)。
+ *
+ * F6-3: folderId で account 絞りに folder 絞りを **重ねる** (直交 / §3.3b の 3 状態):
+ *   - undefined       → folder では絞らない (全フォルダ + 未分類)。
+ *   - 'none' sentinel → AND folder_id IS NULL (未分類のみ)。
+ *   - 実 id           → AND folder_id = ? (その特定フォルダ)。
  */
-export async function listFormalooForms(db: D1Database, lineAccountId?: string): Promise<FormalooForm[]> {
+export async function listFormalooForms(
+  db: D1Database,
+  lineAccountId?: string,
+  folderId?: string,
+): Promise<FormalooForm[]> {
+  const where: string[] = ['deleted = 0'];
+  const binds: unknown[] = [];
   if (lineAccountId) {
-    const r = await db
-      .prepare(
-        `SELECT * FROM formaloo_forms
-         WHERE deleted = 0 AND (line_account_id = ? OR line_account_id IS NULL)
-         ORDER BY updated_at DESC`,
-      )
-      .bind(lineAccountId)
-      .all<FormalooForm>();
-    return r.results;
+    where.push('(line_account_id = ? OR line_account_id IS NULL)');
+    binds.push(lineAccountId);
   }
-  const r = await db
-    .prepare('SELECT * FROM formaloo_forms WHERE deleted = 0 ORDER BY updated_at DESC')
-    .all<FormalooForm>();
+  if (folderId === FORM_FOLDER_UNFILED) {
+    where.push('folder_id IS NULL');
+  } else if (folderId !== undefined) {
+    where.push('folder_id = ?');
+    binds.push(folderId);
+  }
+  const sql = `SELECT * FROM formaloo_forms WHERE ${where.join(' AND ')} ORDER BY updated_at DESC`;
+  const r = await db.prepare(sql).bind(...binds).all<FormalooForm>();
   return r.results;
 }
 
