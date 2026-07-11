@@ -39,6 +39,12 @@ export type PullResult =
       rawLogic?: unknown;
       /** 射影 logic の canonical fingerprint (save 時に受領 logic と突合して「未編集」判定 / R7)。 */
       logicFingerprint?: string;
+      /**
+       * 各 harness field id → 元の Formaloo field slug (drift auto-apply の field_map slug carry 用 / T-B3)。
+       * auto-apply が saveFormalooDefinition へ渡す field_map の formaloo_field_slug を `existingMap[id] ?? fieldSlugById[id]`
+       * で埋めることで slug wipe → 次回手動保存 push の重複作成 (idempotency B3 回帰) を防ぐ。route は無視 (後方互換)。
+       */
+      fieldSlugById?: Record<string, string>;
     }
   | { ok: false; error: string };
 
@@ -95,6 +101,68 @@ export function extractRawLogic(root: unknown): unknown[] | null {
 }
 
 /**
+ * 既に GET 済みの form-detail body (res.data) を harness 定義へ変換 (GET を含まない純粋変換)。
+ * pull route (下記 pullDefinitionFromFormaloo) と drift-check の auto-apply が同一 body から再利用する
+ * (drift-check は fingerprint 用に 1 回だけ GET し、その body を本関数へ渡す = 二重 GET 回避)。
+ *  - fields: fromFormalooField (非 subset は null で drop / M-21) → 空/欠落 id を drop (W3)
+ *            → Formaloo position 昇順に安定ソート (W2)。fieldSlugById (id→Formaloo slug) を併走構築 (T-B3)。
+ *  - logic: fromFormalooLogic → 変換済 field-id 集合に無い rule を除去 (孤立防止 / B5)。
+ *  - read-shape 不一致は {ok:false} (W1)。
+ */
+export function buildPullResult(
+  body: unknown,
+  resolveId: (formalooFieldSlug: string) => string | undefined,
+): PullResult {
+  const fieldsArr = extractFieldsList(body);
+  if (fieldsArr === null) return { ok: false, error: 'read shape mismatch: fields_list not found' };
+
+  // raw 要素と harness field を対にして持ち、fields (順序付き) と fieldSlugById を同時に組む (T-B3)。
+  const paired = fieldsArr
+    .map((el) => {
+      const field = fromFormalooField(el, resolveId);
+      const slug = el && typeof el === 'object' && typeof (el as { slug?: unknown }).slug === 'string'
+        ? ((el as { slug: string }).slug)
+        : '';
+      return { field, slug };
+    })
+    .filter((x): x is { field: HarnessField; slug: string } => x.field !== null)
+    .filter((x) => typeof x.field.id === 'string' && x.field.id !== '') // W3: 空/欠落 id は drop
+    .sort((a, b) => a.field.position - b.field.position); // W2: Formaloo position 昇順に安定ソート
+
+  const fields = paired.map((x) => x.field);
+  const fieldSlugById: Record<string, string> = {};
+  for (const x of paired) if (x.slug) fieldSlugById[x.field.id] = x.slug;
+
+  const logicObj = extractLogic(body);
+  // R0 実測: 実 logic は bare array。preserve-raw 用に逐語抽出 (legacy synthetic `{rules}` 形は null)。
+  const rawLogic = extractRawLogic(body);
+  const idSet = new Set(fields.map((f) => f.id));
+  // 表示用射影 (Batch 1 は表示不変: legacy synthetic 経路のまま。実 bare array の忠実射影は Batch 2)。
+  const logic = fromFormalooLogic(logicObj, resolveId).filter(
+    // B5: 変換済 field-id 集合に無い rule を除去 (孤立参照を editor に入れない)
+    (r) => idSet.has(r.sourceFieldId) && idSet.has(r.targetFieldId),
+  );
+
+  // pull-fidelity 弱化検知 (additive): 実 bare array は射影しきれない item 数を、legacy `{rules}` は
+  // 複条件/複アクション rule 数を数える。是正: preserve 導入後は「表示簡略化・データ保持」の意味 (D-6/D-10)。
+  const weakened = rawLogic != null ? countWeakenedFormalooRules(rawLogic) : countWeakenedFormalooRules(logicObj);
+  const warnings =
+    weakened > 0
+      ? [`複合ロジックルール ${weakened} 件は表示上 1 条件に簡略化されますが、そのまま保存すればデータは保持されます（Formaloo の複合条件は builder 非対応・編集保存時のみ簡略化）`]
+      : [];
+
+  return {
+    ok: true,
+    fields,
+    logic,
+    ...(warnings.length ? { warnings } : {}),
+    ...(rawLogic != null ? { rawLogic } : {}),
+    logicFingerprint: logicFingerprint(logic),
+    fieldSlugById,
+  };
+}
+
+/**
  * Formaloo form-detail を GET し、fields_list / logic を harness 定義へ変換して返す。
  *  - fields: fromFormalooField (非 subset は null で drop / M-21) → 空/欠落 id を drop (W3)
  *            → Formaloo position 昇順に安定ソート (W2)。
@@ -114,41 +182,7 @@ export async function pullDefinitionFromFormaloo(
     const res = await client.get(`/v3.0/forms/${params.formalooSlug}/`);
     if (!res.ok) return { ok: false, error: `pull failed: HTTP ${res.status}` };
 
-    const fieldsArr = extractFieldsList(res.data);
-    if (fieldsArr === null) return { ok: false, error: 'read shape mismatch: fields_list not found' };
-
-    const fields = fieldsArr
-      .map((el) => fromFormalooField(el, params.resolveId))
-      .filter((f): f is HarnessField => f !== null)
-      .filter((f) => typeof f.id === 'string' && f.id !== '') // W3: 空/欠落 id は drop
-      .sort((a, b) => a.position - b.position); // W2: Formaloo position 昇順に安定ソート
-
-    const logicObj = extractLogic(res.data);
-    // R0 実測: 実 logic は bare array。preserve-raw 用に逐語抽出 (legacy synthetic `{rules}` 形は null)。
-    const rawLogic = extractRawLogic(res.data);
-    const idSet = new Set(fields.map((f) => f.id));
-    // 表示用射影 (Batch 1 は表示不変: legacy synthetic 経路のまま。実 bare array の忠実射影は Batch 2)。
-    const logic = fromFormalooLogic(logicObj, params.resolveId).filter(
-      // B5: 変換済 field-id 集合に無い rule を除去 (孤立参照を editor に入れない)
-      (r) => idSet.has(r.sourceFieldId) && idSet.has(r.targetFieldId),
-    );
-
-    // pull-fidelity 弱化検知 (additive): 実 bare array は射影しきれない item 数を、legacy `{rules}` は
-    // 複条件/複アクション rule 数を数える。是正: preserve 導入後は「表示簡略化・データ保持」の意味 (D-6/D-10)。
-    const weakened = rawLogic != null ? countWeakenedFormalooRules(rawLogic) : countWeakenedFormalooRules(logicObj);
-    const warnings =
-      weakened > 0
-        ? [`複合ロジックルール ${weakened} 件は表示上 1 条件に簡略化されますが、そのまま保存すればデータは保持されます（Formaloo の複合条件は builder 非対応・編集保存時のみ簡略化）`]
-        : [];
-
-    return {
-      ok: true,
-      fields,
-      logic,
-      ...(warnings.length ? { warnings } : {}),
-      ...(rawLogic != null ? { rawLogic } : {}),
-      logicFingerprint: logicFingerprint(logic),
-    };
+    return buildPullResult(res.data, params.resolveId);
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
