@@ -16,6 +16,7 @@
 
 import {
   listLinkedFormalooForms,
+  getFormalooForm,
   getFormalooSyncState,
   setFormalooSyncState,
   getFormalooFieldMap,
@@ -47,15 +48,18 @@ export interface DriftDecisionInput {
  * 純粋な drift 判定器 (副作用なし)。以下の優先順で action を決める:
  *   1. baseline 無 → bootstrapped (前状態を知らない → 現状を基準採用・発火しない fail-safe)。
  *   2. fingerprint == baseline → none (drift なし)。
- *   3. drift かつ out_of_sync → conflict_held (ローカル編集を黙って上書きしない = 最優先の安全ガード)。
+ *   3. drift かつ sync_status != idle → conflict_held (ローカル編集待機 out_of_sync / PUT in-flight
+ *      pushing・pulling / error = **idle 以外は絶対 auto-apply しない** = 最優先の安全ガード / F1 TOCTOU 封じ)。
  *   4. drift かつ weakened → notified (弱化は flag に依らず自動反映しない = 分岐ロジック欠落防止)。
- *   5. drift かつ clean かつ autoApply ON → auto_applied。
- *   6. drift かつ clean かつ autoApply OFF → notified (案 B 既定)。
+ *   5. drift かつ clean かつ idle かつ autoApply ON → auto_applied。
+ *   6. drift かつ clean かつ idle かつ autoApply OFF → notified (案 B 既定)。
  */
 export function decideDriftAction(i: DriftDecisionInput): DriftAction {
   if (i.baseline == null) return 'bootstrapped';
   if (i.fingerprint === i.baseline) return 'none';
-  if (i.syncStatus === 'out_of_sync') return 'conflict_held';
+  // drift。sync_status が idle 以外 (out_of_sync / pushing / pulling / error) は in-flight or ローカル編集待機 or
+  // 異常 = D1 定義を黙って上書きしない → 必ず conflict_held で surface (F1: PUT×cron TOCTOU の decide 側ガード)。
+  if (i.syncStatus !== 'idle') return 'conflict_held';
   if (i.weakened) return 'notified';
   return i.autoApplyEnabled ? 'auto_applied' : 'notified';
 }
@@ -197,6 +201,15 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
             break;
           }
           case 'auto_applied': {
+            // F1 CAS: decide 後・書込前に最新状態を再読込。listLinked の snapshot 以降に併走 PUT が
+            // landed (updated_at 前進) / sync_status が idle でなくなった (PUT が 'pushing' へ先行遷移) 場合は
+            // ローカル保存の silent 上書きを避けるため apply せず skip (次 tick が settled 状態で再評価)。
+            const fresh = await getFormalooForm(deps.db, form.id);
+            const freshSync = await getFormalooSyncState(deps.db, form.id);
+            if (!fresh || fresh.deleted || fresh.updated_at !== form.updated_at || (freshSync?.sync_status ?? 'idle') !== 'idle') {
+              summary.skipped += 1;
+              break; // 併走保存/in-flight 検知 → 上書きしない (fail-safe)
+            }
             const applied = await applyDriftToD1(deps.db, form, res.data);
             if (!applied) { summary.skipped += 1; break; } // 変換不能 = fail-safe skip (baseline 不変)
             await setFormalooSyncState(deps.db, form.id, {
@@ -208,7 +221,12 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
             break;
           }
           case 'notified': {
-            if (sync?.pending_remote_hash !== fp) { // dedup: pending 変化時のみ
+            // F3: 状態遷移 (drift_status/detectedAt/pending) は毎 tick 最新判定を反映し、履歴 event の
+            // 記録だけを dedup する。新規 drift (pending 変化) or 遷移 (drift_status != detected = 例 conflict→detected)
+            // の時だけ書込 + 記録。同一 status + 同一 fp の repeat は no-op (badge/audit は既に最新 = 固着しない)。
+            const isNew = sync?.pending_remote_hash !== fp;
+            const transitioned = (sync?.drift_status ?? 'none') !== 'detected';
+            if (isNew || transitioned) {
               await setFormalooSyncState(deps.db, form.id, { syncStatus, driftStatus: 'detected', pendingRemoteHash: fp, driftDetectedAt: nowIso });
               await recordFormalooDriftEvent(deps.db, { formId: form.id, action: 'notified', detectedAt: nowIso, remoteHash: fp, prevHash: baseline, hasWarnings: weakened, syncStatusAt: syncStatus });
               summary.notified += 1;
@@ -216,7 +234,10 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
             break;
           }
           case 'conflict_held': {
-            if (sync?.pending_remote_hash !== fp) { // dedup
+            // F3: 同上。detected→conflict (同一 fp でも sync_status が out_of_sync 化) の遷移を毎 tick 反映。
+            const isNew = sync?.pending_remote_hash !== fp;
+            const transitioned = (sync?.drift_status ?? 'none') !== 'conflict';
+            if (isNew || transitioned) {
               await setFormalooSyncState(deps.db, form.id, { syncStatus, driftStatus: 'conflict', pendingRemoteHash: fp, driftDetectedAt: nowIso });
               await recordFormalooDriftEvent(deps.db, { formId: form.id, action: 'conflict_held', detectedAt: nowIso, remoteHash: fp, prevHash: baseline, hasWarnings: weakened, syncStatusAt: syncStatus });
               summary.conflicts += 1;

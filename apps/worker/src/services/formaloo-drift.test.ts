@@ -320,6 +320,81 @@ describe('runFormalooDriftCheck — 8. dedup (同一 pending_remote_hash 2 tick)
   });
 });
 
+describe('runFormalooDriftCheck — F1 PUT×cron TOCTOU (auto-apply が併走保存を上書きしない)', () => {
+  // 窓の状態表現: PUT は保存開始時に sync_status='pushing' へ先行遷移する → cron が窓の中で走ると非 idle を見て conflict_held。
+  it('sync_status=pushing (PUT in-flight) の窓では auto-apply せず conflict_held / D1 定義を上書きしない', async () => {
+    await seedForm('f1', 's_form1');
+    const v1 = body('s_form1', [rawField('s_q1', { title: '氏名' })]);
+    const v2 = body('s_form1', [rawField('s_q1', { title: 'お名前' })]); // remote drift (clean)
+    // 既存 remote drift + PUT in-flight (pushing) を表現
+    await setFormalooSyncState(DB, 'f1', { syncStatus: 'pushing', remoteDefinitionHash: await fpOf(v1), driftStatus: 'detected', pendingRemoteHash: await fpOf(v2) });
+    const defBefore = (await getFormalooForm(DB, 'f1'))!.definition_json;
+    const { client } = spyClient(() => v2);
+
+    const sum = await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: true });
+
+    expect(sum.autoApplied).toBe(0); // 窓の中では自動反映しない
+    expect(sum.conflicts).toBeGreaterThanOrEqual(0);
+    expect((await getFormalooForm(DB, 'f1'))!.definition_json).toBe(defBefore); // ローカル定義を silent 上書きしない
+  });
+
+  // CAS: decide 後・書込前に併走 PUT が landed (updated_at 前進) したら apply を中止 (skip)。
+  it('drift-check 中に併走保存が landed (updated_at 前進) したら auto-apply を中止 (CAS skip) / D1 不変', async () => {
+    await seedForm('f1', 's_form1');
+    const v1 = body('s_form1', [rawField('s_q1', { title: '氏名' })]);
+    const v2 = body('s_form1', [rawField('s_q1', { title: 'お名前' })]);
+    await setFormalooSyncState(DB, 'f1', { syncStatus: 'idle', remoteDefinitionHash: await fpOf(v1), driftStatus: 'none' });
+    const defBefore = (await getFormalooForm(DB, 'f1'))!.definition_json;
+    // 併走 PUT を表現: Formaloo GET (async 境界) の最中にローカル保存が landed し updated_at が前進する。
+    const raced = spyClient(() => v2);
+    raced.get.mockImplementation(async () => {
+      raw.prepare(`UPDATE formaloo_forms SET updated_at = '2099-01-01T00:00:00' WHERE id = 'f1'`).run();
+      return { ok: true, status: 200, data: v2 };
+    });
+
+    const sum = await runFormalooDriftCheck({ db: DB, resolveClient: async () => raced.client, autoApplyEnabled: true });
+
+    expect(sum.autoApplied).toBe(0); // 併走保存検知 → apply 中止
+    expect((await getFormalooForm(DB, 'f1'))!.definition_json).toBe(defBefore); // 併走保存を上書きしない
+  });
+});
+
+describe('runFormalooDriftCheck — F3 dedup は履歴のみ抑止し drift_status 遷移は毎 tick 反映', () => {
+  it('detected → push 失敗 (out_of_sync 化・同一 fp) → 次 tick で conflict へ遷移 (badge/audit 固着しない)', async () => {
+    await seedForm('f1', 's_form1');
+    const v1 = body('s_form1', [rawField('s_q1', { title: '氏名' })]);
+    const v2 = body('s_form1', [rawField('s_q1', { title: 'お名前' })]);
+    await setFormalooSyncState(DB, 'f1', { syncStatus: 'idle', remoteDefinitionHash: await fpOf(v1), driftStatus: 'none' });
+    const { client } = spyClient(() => v2);
+
+    // tick1: notified (detected)
+    await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: false });
+    expect((await getFormalooSyncState(DB, 'f1'))?.drift_status).toBe('detected');
+    // push 失敗で out_of_sync 化 (drift_status/pending は据置 = 同一 fp)
+    await setFormalooSyncState(DB, 'f1', { syncStatus: 'out_of_sync' });
+
+    // tick2: 同一 remote fp だが sync_status=out_of_sync → conflict_held 判定。dedup で固着させない。
+    const sum2 = await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: false });
+
+    expect((await getFormalooSyncState(DB, 'f1'))?.drift_status).toBe('conflict'); // 'detected' 固着でなく遷移
+    expect(sum2.conflicts).toBe(1);
+    const events = await listFormalooDriftEvents(DB, 'f1');
+    expect(events.map((e) => e.action)).toEqual(['conflict_held', 'notified']); // 遷移も履歴記録 (新しい順)
+  });
+
+  it('同一 status + 同一 fp の 2 連続 tick は履歴 1 件のみ (dedup 維持 = 無駄記録しない)', async () => {
+    await seedForm('f1', 's_form1');
+    const v1 = body('s_form1', [rawField('s_q1', { title: '氏名' })]);
+    const v2 = body('s_form1', [rawField('s_q1', { title: 'お名前' })]);
+    await setFormalooSyncState(DB, 'f1', { syncStatus: 'idle', remoteDefinitionHash: await fpOf(v1), driftStatus: 'none' });
+    const { client } = spyClient(() => v2);
+    await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: false });
+    const sum2 = await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: false });
+    expect(sum2.notified).toBe(0); // 同一 detected + 同一 fp → 無記録
+    expect((await listFormalooDriftEvents(DB, 'f1')).length).toBe(1);
+  });
+});
+
 describe('runFormalooDriftCheck — cap / 全走査', () => {
   it('maxChecks で走査上限を守る', async () => {
     await seedForm('f1', 's_a');

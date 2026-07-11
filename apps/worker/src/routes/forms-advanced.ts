@@ -290,6 +290,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     for (const row of existingMap) {
       if (row.formaloo_field_slug) existingFieldSlugs[row.id] = row.formaloo_field_slug;
     }
+    // F1 TOCTOU 窓閉じ: D1 定義を書き換える前に sync_status='pushing' へ先行遷移する。これで保存中 (D1 定義が
+    // 新ローカル内容に置き換わり push 完了まで) の窓に cron drift-check が割り込んでも、非 idle を見て auto-apply
+    // せず conflict_held に落ちる (ローカル編集の silent 上書き防止)。窓終了時に下の終端 setSyncState が
+    // idle/out_of_sync へ確定させる。baseline/drift 列はここでは触らない (終端の T-C2 無効化に委ねる)。
+    await setFormalooSyncState(c.env.DB, id, { syncStatus: 'pushing' });
     // まず D1 に保存 (SoT キャッシュ / fail-soft の土台)。field_map の slug は既存分を carry する
     // (現状は無 carry = slug wipe の欠陥。push 失敗時に喪失し次回保存で重複 POST になっていた / B3)。
     // preserve-raw: rawLogic (逐語) + logicFingerprint を additive JSON key で同梱 (migration 不要 / L-10)。

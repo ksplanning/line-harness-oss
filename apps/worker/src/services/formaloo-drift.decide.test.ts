@@ -38,4 +38,15 @@ describe('decideDriftAction', () => {
   it('drift かつ clean かつ autoApply ON → auto_applied (案 A)', () => {
     expect(decideDriftAction(input({ baseline: 'x', fingerprint: 'y', autoApplyEnabled: true }))).toBe('auto_applied');
   });
+
+  // F1: auto_apply は sync_status==='idle' の時だけ。in-flight/異常状態は絶対 apply しない (PUT×cron TOCTOU 封じ)。
+  it('drift かつ clean かつ autoApply ON でも sync_status が idle でなければ auto_apply しない → conflict_held', () => {
+    for (const s of ['pushing', 'pulling', 'error']) {
+      expect(decideDriftAction(input({ baseline: 'x', fingerprint: 'y', syncStatus: s, autoApplyEnabled: true }))).toBe('conflict_held');
+    }
+  });
+
+  it('sync_status idle のみ auto_apply へ到達 (idle は従来通り)', () => {
+    expect(decideDriftAction(input({ baseline: 'x', fingerprint: 'y', syncStatus: 'idle', autoApplyEnabled: true }))).toBe('auto_applied');
+  });
 });
