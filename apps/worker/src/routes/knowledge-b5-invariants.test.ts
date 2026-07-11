@@ -1,7 +1,7 @@
 /**
  * B-5 (D-1/D-2/D-3) — dark-ship 不可侵 + 送信ゼロ + 秘密非露出の回帰ガード (source 走査)。
- *  - D-1: wrangler crons=[] / FAQ_BOT_ENABLED="false" byte-identical・[ai]/[[vectorize]] binding 未追記・
- *         webhook.ts の faq gate (faqBotEnabled === 'true') が残る。
+ *  - D-1: wrangler dark-ship 現在形不変 (crons=[] 恒久・FAQ_BOT_ENABLED スイッチ="true" go-live 承認・
+ *         [ai]/[[vectorize]] binding は意図した現在形)・webhook.ts の faq gate (faqBotEnabled === 'true') が残る。
  *  - D-2: 送信 RAG コア (faq-match/faq-fts/faq-ai/faq-reply) を新 route が import しない。
  *  - D-3: AI 草案 serialize が friend_id/evidence/account_id を露出しない (allowlist)。
  */
@@ -17,15 +17,28 @@ const readSrc = (p: string) => readFileSync(join(WORKER_ROOT, p), 'utf8');
 const readCode = (p: string) =>
   readSrc(p).replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 
-describe('D-1 — dark-ship 不可侵 (wrangler / webhook gate byte-identical)', () => {
+// 【2026-07-11 rebaseline / dark-ship 番兵 → live-config 恒久 invariant】
+// go-live (owner 立会 2026-07-11) で本番 config が正式変更: FAQ_BOT_ENABLED="true"・[ai]/[[vectorize]]
+// binding 実在。旧 assert は Phase B dark-ship 時代の「false のはず/binding 無いはず」を固定しており
+// go-live 後は恒久 RED 化して実回帰を隠していた。守っていた実体を現在形で保護し直す (対応表):
+//   旧「FAQ_BOT_ENABLED="false" が1件」→ 実体=全体スイッチが意図せず書き換わらない・crons が閉じたまま
+//     → 新「crons=[] 恒久1件 + FAQ_BOT_ENABLED スイッチ正確に1件・値="true"(owner承認) + "false" 代入行残骸0件」
+//   旧「[ai]/[[vectorize]] 未追記」→ 実体=binding 構成が意図した形から黙って変わらない
+//     → 新「[ai] binding="AI" 1件・[[vectorize]] 1件・index_name="ks-knowledge-chunks" 1件」
+describe('D-1 — dark-ship gate 現在形不変 (wrangler live-config / webhook gate)', () => {
   const wrangler = readSrc('wrangler.ks.toml');
-  test('crons=[] と FAQ_BOT_ENABLED="false" が行内容で残る', () => {
-    expect(wrangler.split('\n').filter((l) => l === 'crons = []').length).toBe(1);
-    expect(wrangler.split('\n').filter((l) => l === 'FAQ_BOT_ENABLED = "false"').length).toBe(1);
+  const lines = wrangler.split('\n');
+  test('crons=[] 恒久1件 + FAQ_BOT_ENABLED スイッチ正確に1件・値="true"(owner立会承認)・"false" 残骸0件', () => {
+    expect(lines.filter((l) => l === 'crons = []')).toHaveLength(1); // 自動送信トリガーなし = 不変
+    expect(lines.filter((l) => /^FAQ_BOT_ENABLED = "(?:true|false)"$/.test(l))).toEqual(['FAQ_BOT_ENABLED = "true"']);
+    expect(lines.filter((l) => l === 'FAQ_BOT_ENABLED = "false"')).toHaveLength(0); // dark-ship 代入行が誤って書き戻されていない
   });
-  test('[ai] / [[vectorize]] binding は追記されていない (手順書のみ)', () => {
-    expect(wrangler).not.toMatch(/^\[ai\]/m);
-    expect(wrangler).not.toMatch(/^\[\[vectorize\]\]/m);
+  test('[ai]/[[vectorize]] binding は意図した現在形 (binding 構成が黙って変わらない)', () => {
+    expect(lines.filter((l) => l === '[ai]')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'binding = "AI"')).toHaveLength(1);
+    expect(lines.filter((l) => l === '[[vectorize]]')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'binding = "VECTORIZE"')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'index_name = "ks-knowledge-chunks"')).toHaveLength(1);
   });
   test('webhook.ts の faq gate (faqBotEnabled === \'true\') が残る', () => {
     expect(readCode('src/routes/webhook.ts')).toMatch(/faqBotEnabled\s*===\s*'true'/);
