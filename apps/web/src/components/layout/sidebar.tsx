@@ -298,6 +298,10 @@ export default function Sidebar() {
               </div>
             )}
             {section.items.filter((item) => {
+              // F6-1: Formaloo キー管理は owner 専用。custom-role 分岐 **より先** に評価し、forms_advanced を
+              //   持つ custom-role 非 owner にも owner 専用リンクを出さない (導線隠し / spec §2)。
+              //   enforcement は worker の ownerGate が正典 (ここは UX)。
+              if (item.href === '/settings/formaloo-workspaces' && staffRole !== 'owner') return false
               // custom role (G64): 許可されていない feature の項目を隠す。enforcement は worker が正典。
               if (hasCustomRole && permissions) {
                 const feature = NAV_FEATURE[item.href]
@@ -306,8 +310,6 @@ export default function Sidebar() {
               }
               // built-in role: 従来の出し分け (byte-identical)。
               if (item.href === '/staff' && staffRole !== 'owner') return false
-              // F6-1: Formaloo キー管理は owner 専用 (worker の ownerGate が enforcement)。
-              if (item.href === '/settings/formaloo-workspaces' && staffRole !== 'owner') return false
               if (item.href === '/accounts' && staffRole === 'staff') return false
               return true
             }).map((item) => {
