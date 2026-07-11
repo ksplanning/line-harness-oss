@@ -46,6 +46,11 @@ WORKER_PUBLIC_URL = "https://line-harness.workers.dev"
 ADMIN_PUBLIC_URL = "https://line-harness-admin.pages.dev"
 LIFF_PUBLIC_URL = "https://line-harness-liff.pages.dev"
 CF_ACCOUNT_ID = "YOUR_DEV_ACCOUNT_ID"
+# formaloo-auto-pull: 定義 drift の定期検知 (6h cron)。
+#   FORMALOO_DRIFT_ENABLED=false で即停止 (rollback / 既定 ON)。
+#   FORMALOO_DRIFT_AUTO_APPLY: 案 A="true"(自動反映) / 案 B="false"(通知のみ = 既定 dark-ship)。owner 確定後に flip。
+FORMALOO_DRIFT_ENABLED = "true"
+FORMALOO_DRIFT_AUTO_APPLY = "false"
 
 # ═══════════════════════════════════════════════════════════════
 # 本番環境
@@ -84,3 +89,6 @@ WORKER_PUBLIC_URL = "https://your-worker-name.workers.dev"
 ADMIN_PUBLIC_URL = "https://line-harness-admin.pages.dev"
 LIFF_PUBLIC_URL = "https://line-harness-liff.pages.dev"
 CF_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
+# formaloo-auto-pull: 定義 drift の定期検知 (6h cron)。owner が案 A を選んだら AUTO_APPLY を "true" に flip。
+FORMALOO_DRIFT_ENABLED = "true"
+FORMALOO_DRIFT_AUTO_APPLY = "false"
