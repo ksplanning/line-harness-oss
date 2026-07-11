@@ -7,9 +7,11 @@ interface TestSendSectionProps {
   broadcastId: string
   accountId: string
   disabled: boolean
+  /** 組み合わせ(combo)配信か。combo のテスト送信は worker が 400 で拒否する (Batch 1) ため UI で無効化する。 */
+  isCombo?: boolean
 }
 
-export default function TestSendSection({ broadcastId, accountId, disabled }: TestSendSectionProps) {
+export default function TestSendSection({ broadcastId, accountId, disabled, isCombo = false }: TestSendSectionProps) {
   const [recipients, setRecipients] = useState<Array<{ id: string; displayName: string; pictureUrl: string | null }>>([])
   const [sending, setSending] = useState(false)
   const [result, setResult] = useState<{ sent: number; failed: number; at: string; error?: boolean } | null>(null)
@@ -42,7 +44,11 @@ export default function TestSendSection({ broadcastId, accountId, disabled }: Te
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
       <h3 className="text-sm font-semibold text-gray-700 mb-2">テスト送信</h3>
-      {recipients.length === 0 ? (
+      {isCombo ? (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          組み合わせ配信（複数メッセージ）のテスト送信は今後対応します。今は本番送信でご確認ください。
+        </p>
+      ) : recipients.length === 0 ? (
         <p className="text-xs text-gray-400">
           テスト送信先が未設定です。
           <a href="/accounts" className="text-blue-500 hover:underline ml-1">アカウント設定</a>
