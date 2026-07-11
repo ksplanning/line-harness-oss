@@ -70,7 +70,15 @@ function parseDefinition(json: string): StoredDefinition {
   }
 }
 
-async function serializeForm(db: D1Database, form: FormalooForm) {
+/** ctx から owner (built-in owner role) かを判定 (ownerGate と同一基準)。 */
+function isOwnerCtx(c: Context<Env>): boolean {
+  return c.get('staff')?.role === 'owner';
+}
+
+// F6-2 role-aware redaction (Codex B#2): lineAccountId は全 role 露出 (表示スコープ判定に要る・秘密でない)。
+// workspaceId は owner 応答のみ露出 (F6-1 で workspace 情報は owner-only / 非 owner の POST body injection の
+// 下調べも封じる) → 非 owner 応答には workspaceId プロパティを一切載せない (undefined でなく不在)。
+async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolean) {
   const def = parseDefinition(form.definition_json);
   const status = (isBuilderStatus(form.builder_status) ? form.builder_status : 'draft') as BuilderStatus;
   const sync = await getFormalooSyncState(db, form.id);
@@ -93,15 +101,20 @@ async function serializeForm(db: D1Database, form: FormalooForm) {
     embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
     syncStatus: sync?.sync_status ?? 'idle',
     syncError: sync?.last_error ?? null,
+    // F6-2 表示スコープ: lineAccountId は全 role / workspaceId は owner のみ。
+    lineAccountId: form.line_account_id,
+    ...(isOwner ? { workspaceId: form.workspace_id } : {}),
     updatedAt: form.updated_at,
   };
 }
 
-// GET /api/forms-advanced — 一覧
+// GET /api/forms-advanced — 一覧 (F6-2: ?lineAccountId= で表示スコープ絞り込み / broadcasts:152 規約)
 formsAdvanced.get('/api/forms-advanced', async (c) => {
   try {
-    const list = await listFormalooForms(c.env.DB);
-    const data = await Promise.all(list.map((f) => serializeForm(c.env.DB, f)));
+    const lineAccountId = c.req.query('lineAccountId') || undefined;
+    const isOwner = isOwnerCtx(c);
+    const list = await listFormalooForms(c.env.DB, lineAccountId);
+    const data = await Promise.all(list.map((f) => serializeForm(c.env.DB, f, isOwner)));
     return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/forms-advanced error:', err);
@@ -125,7 +138,7 @@ formsAdvanced.post('/api/forms-advanced', async (c) => {
       onSubmitScenarioId: body.onSubmitScenarioId ?? null,
       submitMessage: body.submitMessage ?? null,
     });
-    return c.json({ success: true, data: await serializeForm(c.env.DB, form) }, 201);
+    return c.json({ success: true, data: await serializeForm(c.env.DB, form, isOwnerCtx(c)) }, 201);
   } catch (err) {
     console.error('POST /api/forms-advanced error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -137,7 +150,7 @@ formsAdvanced.get('/api/forms-advanced/:id', async (c) => {
   try {
     const form = await getFormalooForm(c.env.DB, c.req.param('id')!);
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
-    return c.json({ success: true, data: await serializeForm(c.env.DB, form) });
+    return c.json({ success: true, data: await serializeForm(c.env.DB, form, isOwnerCtx(c)) });
   } catch (err) {
     console.error('GET /api/forms-advanced/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -201,7 +214,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     }
 
     const updated = await getFormalooForm(c.env.DB, id);
-    return c.json({ success: true, data: await serializeForm(c.env.DB, updated!) });
+    return c.json({ success: true, data: await serializeForm(c.env.DB, updated!, isOwnerCtx(c)) });
   } catch (err) {
     console.error('PUT /api/forms-advanced/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -269,7 +282,7 @@ async function transition(c: Context<Env>, to: BuilderStatus, notAllowedMsg: str
   }
   await updateFormalooBuilderStatus(c.env.DB, id, to);
   const updated = await getFormalooForm(c.env.DB, id);
-  return c.json({ success: true, data: await serializeForm(c.env.DB, updated!) });
+  return c.json({ success: true, data: await serializeForm(c.env.DB, updated!, isOwnerCtx(c)) });
 }
 
 // POST /api/forms-advanced/:id/submit-for-review — draft → in_review

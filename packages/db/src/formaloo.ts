@@ -23,6 +23,9 @@ export interface FormalooForm {
   published_at: string | null;
   gsheet_connected: number;
   gsheet_url: string | null;
+  // migration 095 (F6-2): 表示スコープ + 作成先 workspace。
+  line_account_id: string | null;  // NULL=全アカウント共通表示 (後方互換)
+  workspace_id: string | null;     // NULL=既定=env 単一鍵 fallback (作成先 workspace 鍵)
   created_at: string;
   updated_at: string;
 }
@@ -83,7 +86,23 @@ export async function createFormalooForm(
   return (await getFormalooForm(db, id))!;
 }
 
-export async function listFormalooForms(db: D1Database): Promise<FormalooForm[]> {
+/**
+ * 一覧取得。lineAccountId 指定時は「そのアカウントの form + 共通(line_account_id NULL)」だけに絞る
+ * (F6-2 表示スコープ / broadcasts:152 getBroadcasts と同型)。無引数/undefined は従来通り全件 (後方互換 D-1)。
+ * これは表示フィルタ (運用ミス防止) であってアクセス強制ではない (URL 直打ちは G2 依存 / N-17)。
+ */
+export async function listFormalooForms(db: D1Database, lineAccountId?: string): Promise<FormalooForm[]> {
+  if (lineAccountId) {
+    const r = await db
+      .prepare(
+        `SELECT * FROM formaloo_forms
+         WHERE deleted = 0 AND (line_account_id = ? OR line_account_id IS NULL)
+         ORDER BY updated_at DESC`,
+      )
+      .bind(lineAccountId)
+      .all<FormalooForm>();
+    return r.results;
+  }
   const r = await db
     .prepare('SELECT * FROM formaloo_forms WHERE deleted = 0 ORDER BY updated_at DESC')
     .all<FormalooForm>();
