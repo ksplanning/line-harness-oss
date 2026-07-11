@@ -172,6 +172,46 @@ describe('forms-advanced 定義保存 (T-B2)', () => {
   });
 });
 
+describe('forms-advanced serializeForm — drift 露出 (T-D1 / formaloo-auto-pull)', () => {
+  test('drift 無し form は driftStatus="none" / driftHasWarnings=false', async () => {
+    const id = await createForm();
+    const res = await call('GET', `/api/forms-advanced/${id}`);
+    const d = (await res.json() as { data: { driftStatus: string; driftDetectedAt: string | null; driftHasWarnings: boolean } }).data;
+    expect(d.driftStatus).toBe('none');
+    expect(d.driftDetectedAt).toBeNull();
+    expect(d.driftHasWarnings).toBe(false);
+  });
+
+  test('detected + warnings ありの drift を露出 (driftStatus/driftDetectedAt/driftHasWarnings)', async () => {
+    const id = await createForm();
+    raw.prepare(
+      `INSERT INTO formaloo_sync_state (form_id, sync_status, remote_definition_hash, pending_remote_hash, drift_status, drift_detected_at)
+       VALUES (?, 'idle', 'BASE', 'PEND', 'detected', '2026-07-12T03:00:00')`,
+    ).run(id);
+    raw.prepare(
+      `INSERT INTO formaloo_drift_events (id, form_id, detected_at, action, remote_hash, has_warnings) VALUES (?, ?, '2026-07-12T03:00:00', 'notified', 'PEND', 1)`,
+    ).run(`de_${id}_1`, id);
+
+    const res = await call('GET', `/api/forms-advanced/${id}`);
+    const d = (await res.json() as { data: { driftStatus: string; driftDetectedAt: string | null; driftHasWarnings: boolean } }).data;
+    expect(d.driftStatus).toBe('detected');
+    expect(d.driftDetectedAt).toBe('2026-07-12T03:00:00');
+    expect(d.driftHasWarnings).toBe(true);
+  });
+
+  test('conflict の drift を露出 (driftStatus="conflict")', async () => {
+    const id = await createForm();
+    raw.prepare(
+      `INSERT INTO formaloo_sync_state (form_id, sync_status, remote_definition_hash, pending_remote_hash, drift_status, drift_detected_at)
+       VALUES (?, 'out_of_sync', 'BASE', 'PEND', 'conflict', '2026-07-12T04:00:00')`,
+    ).run(id);
+    const res = await call('GET', `/api/forms-advanced/${id}`);
+    const d = (await res.json() as { data: { driftStatus: string; syncStatus: string } }).data;
+    expect(d.driftStatus).toBe('conflict');
+    expect(d.syncStatus).toBe('out_of_sync'); // 直交 (両軸を独立露出)
+  });
+});
+
 describe('forms-advanced PUT /:id idempotent push (T-A3 / push-idempotency / B3)', () => {
   afterEach(() => vi.unstubAllGlobals());
 

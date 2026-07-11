@@ -8,6 +8,7 @@ import {
   softDeleteFormalooForm,
   setFormalooSyncState,
   getFormalooSyncState,
+  listFormalooDriftEvents,
   queryFormalooSubmissions,
   getFormalooSubmission,
   listFormalooSavedFilters,
@@ -96,6 +97,14 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
   const status = (isBuilderStatus(form.builder_status) ? form.builder_status : 'draft') as BuilderStatus;
   const sync = await getFormalooSyncState(db, form.id);
   const publicUrl = buildPublicUrl(status, def.formalooAddress ?? null);
+  // formaloo-auto-pull: drift 露出 (badge 用)。driftHasWarnings は drift 未解決時のみ最新 event を引く
+  // (drift_status='none' の一般ケースは追加 query なし = N+1 回避)。
+  const driftStatus = sync?.drift_status ?? 'none';
+  let driftHasWarnings = false;
+  if (driftStatus === 'detected' || driftStatus === 'conflict') {
+    const events = await listFormalooDriftEvents(db, form.id, 1);
+    driftHasWarnings = (events[0]?.has_warnings ?? 0) === 1;
+  }
   return {
     id: form.id,
     title: form.title,
@@ -117,6 +126,11 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
     syncStatus: sync?.sync_status ?? 'idle',
     syncError: sync?.last_error ?? null,
+    // formaloo-auto-pull: drift 状態 (pull 軸 / sync_status と直交)。UI badge の入力。
+    // none=なし / detected=更新あり(要確認) / conflict=競合(要確認) / applied=自動反映済。
+    driftStatus,
+    driftDetectedAt: sync?.drift_detected_at ?? null,
+    driftHasWarnings,
     // F6-2 表示スコープ: lineAccountId は全 role / workspaceId は owner のみ。
     lineAccountId: form.line_account_id,
     ...(isOwner ? { workspaceId: form.workspace_id } : {}),
