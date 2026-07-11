@@ -132,6 +132,14 @@ describe('checkMigration', () => {
     );
     expect(checkMigration(sql, '094_formaloo_workspaces.sql')).toEqual({ ok: true });
   });
+
+  it('095 formaloo_forms account/workspace (F6-2) is additive-only (real migration file)', () => {
+    const sql = readFileSync(
+      join(__dirname, '../packages/db/migrations/095_formaloo_forms_account_workspace.sql'),
+      'utf8',
+    );
+    expect(checkMigration(sql, '095_formaloo_forms_account_workspace.sql')).toEqual({ ok: true });
+  });
 });
 
 describe('documented rebuild exceptions (CHECK-widen table-recreate)', () => {

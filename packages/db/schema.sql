@@ -1143,10 +1143,22 @@ CREATE TABLE IF NOT EXISTS formaloo_forms (
   published_at          TEXT,                            -- migration 080: 初回公開時刻 (NULL=未公開)
   gsheet_connected      INTEGER NOT NULL DEFAULT 0,      -- migration 083: Google Sheets 連携済 (T-E1)
   gsheet_url            TEXT,                            -- migration 083: 連携先 Sheet URL (表示用 / NULL=未連携)
+  line_account_id       TEXT,                            -- migration 095: 表示スコープ (NULL=全アカウント共通 / F6-2 本柱②)
+  workspace_id          TEXT,                            -- migration 095: 作成先 Formaloo workspace (NULL=env 鍵 fallback / F6-2 本柱④)
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_formaloo_forms_slug ON formaloo_forms (formaloo_slug);
+CREATE INDEX IF NOT EXISTS idx_formaloo_forms_account ON formaloo_forms (line_account_id, deleted, updated_at);
+
+-- migration 095: 作成時の既定 workspace 解決台帳 (F6-2)。line_account_id PK → default_workspace_id。
+-- 平文鍵は持たない (D-2)。無効/未登録 workspace を指す binding は resolver の active 判定で NULL に落とす。
+CREATE TABLE IF NOT EXISTS formaloo_account_bindings (
+  line_account_id      TEXT PRIMARY KEY,
+  default_workspace_id TEXT,
+  created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
 
 CREATE TABLE IF NOT EXISTS formaloo_submissions (
   id            TEXT PRIMARY KEY,
