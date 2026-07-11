@@ -198,6 +198,8 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
   const raw = broadcast as unknown as Record<string, unknown>
   const accountId = raw.lineAccountId as string | null
   const mediaSummary = mediaPreviewSummary(broadcast.messageType, broadcast.messageContent)
+  // combo (組み合わせ配信): 先頭ミラーだけを見ると「1通」に見えるため、全 N 通を認識できるよう明示する。
+  const comboMessages = broadcast.messages && broadcast.messages.length > 1 ? broadcast.messages : null
 
   return (
     <div>
@@ -220,8 +222,26 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         {/* Left: Preview */}
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">メッセージプレビュー</h3>
-          {broadcast.messageType === 'flex' ? (
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">
+            メッセージプレビュー{comboMessages && `（全${comboMessages.length}通）`}
+          </h3>
+          {comboMessages ? (
+            // combo: 2-5 通目の存在を認識できるよう順序どおり全メッセージを列挙する。
+            <ol className="space-y-2">
+              {comboMessages.map((m, i) => (
+                <li key={i} className="border border-gray-200 rounded-lg p-2">
+                  <div className="text-[10px] font-medium text-gray-500 mb-1">
+                    {i + 1}通目・{messageTypeLabels[m.type]}
+                  </div>
+                  {m.type === 'text' ? (
+                    <div className="text-sm text-gray-700 whitespace-pre-wrap break-all">{m.content}</div>
+                  ) : (
+                    <div className="text-xs text-gray-500 break-all">{mediaPreviewSummary(m.type, m.content) ?? `${messageTypeLabels[m.type]}メッセージ`}</div>
+                  )}
+                </li>
+              ))}
+            </ol>
+          ) : broadcast.messageType === 'flex' ? (
             <FlexPreviewComponent content={broadcast.messageContent} maxWidth={300} />
           ) : broadcast.messageType === 'image' ? (
             (() => {
@@ -248,7 +268,10 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-gray-500">種別</dt>
-              <dd className="text-gray-900">{messageTypeLabels[broadcast.messageType]}</dd>
+              <dd className="text-gray-900">
+                {messageTypeLabels[broadcast.messageType]}
+                {comboMessages && <span className="ml-1 text-blue-700">（組み合わせ {comboMessages.length}通）</span>}
+              </dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-gray-500">対象</dt>
@@ -308,7 +331,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
       {/* Test Send */}
       {broadcast.status === 'draft' && accountId && (
         <div className="mb-4">
-          <TestSendSection broadcastId={id} accountId={accountId} disabled={false} />
+          <TestSendSection broadcastId={id} accountId={accountId} disabled={false} isCombo={!!comboMessages} />
         </div>
       )}
 

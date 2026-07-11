@@ -11,7 +11,7 @@ import SenderPresetManager from '@/components/broadcasts/sender-preset-manager'
 import AbTestPanel from '@/components/broadcasts/ab-test-panel'
 import SegmentBuilder, { type SegmentCondition } from '@/components/broadcasts/segment-builder'
 import BroadcastDetail from '@/components/broadcasts/broadcast-detail'
-import { messageTypeLabels } from '@/lib/broadcast-labels'
+import BroadcastMessageMeta from '@/components/broadcasts/broadcast-message-meta'
 import CcPromptButton from '@/components/cc-prompt-button'
 
 const ccPrompts = [
@@ -327,7 +327,7 @@ function BroadcastList() {
                           )}
                         </div>
                         <p className="text-xs text-gray-400 mt-0.5">
-                          {messageTypeLabels[broadcast.messageType]}
+                          <BroadcastMessageMeta broadcast={broadcast} />
                         </p>
                       </div>
                     </td>
