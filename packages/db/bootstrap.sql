@@ -454,6 +454,16 @@ CREATE TABLE formaloo_field_map (
   updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE formaloo_folders (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  parent_id       TEXT,
+  position        INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE formaloo_forms (
   id                    TEXT PRIMARY KEY,
   formaloo_slug         TEXT,
@@ -471,6 +481,7 @@ CREATE TABLE formaloo_forms (
   gsheet_url            TEXT,                            -- migration 083: 連携先 Sheet URL (表示用 / NULL=未連携)
   line_account_id       TEXT,                            -- migration 095: 表示スコープ (NULL=全アカウント共通 / F6-2 本柱②)
   workspace_id          TEXT,                            -- migration 095: 作成先 Formaloo workspace (NULL=env 鍵 fallback / F6-2 本柱④)
+  folder_id             TEXT,                            -- migration 096: ハーネス側フォルダ分類 (NULL=未分類 / F6-3 本柱③)
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
@@ -1171,7 +1182,11 @@ CREATE INDEX idx_form_submissions_friend ON form_submissions (friend_id);
 
 CREATE INDEX idx_formaloo_field_map_form ON formaloo_field_map (form_id, position);
 
+CREATE INDEX idx_formaloo_folders_account ON formaloo_folders (line_account_id);
+
 CREATE INDEX idx_formaloo_forms_account ON formaloo_forms (line_account_id, deleted, updated_at);
+
+CREATE INDEX idx_formaloo_forms_folder ON formaloo_forms (folder_id);
 
 CREATE INDEX idx_formaloo_forms_slug ON formaloo_forms (formaloo_slug);
 

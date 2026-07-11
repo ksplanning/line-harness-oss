@@ -1145,11 +1145,26 @@ CREATE TABLE IF NOT EXISTS formaloo_forms (
   gsheet_url            TEXT,                            -- migration 083: 連携先 Sheet URL (表示用 / NULL=未連携)
   line_account_id       TEXT,                            -- migration 095: 表示スコープ (NULL=全アカウント共通 / F6-2 本柱②)
   workspace_id          TEXT,                            -- migration 095: 作成先 Formaloo workspace (NULL=env 鍵 fallback / F6-2 本柱④)
+  folder_id             TEXT,                            -- migration 096: ハーネス側フォルダ分類 (NULL=未分類 / F6-3 本柱③)
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_formaloo_forms_slug ON formaloo_forms (formaloo_slug);
 CREATE INDEX IF NOT EXISTS idx_formaloo_forms_account ON formaloo_forms (line_account_id, deleted, updated_at);
+CREATE INDEX IF NOT EXISTS idx_formaloo_forms_folder ON formaloo_forms (folder_id);
+
+-- migration 096: ハーネス側フォルダ分類 (SoT / F6-3 本柱③)。Formaloo 側フォルダとは自動連動しない (API 非露出 / N-19)。
+-- line_account_id は NOT NULL (フォルダは必ず account に属す / Codex M#3)。FK off = アプリ層で cross-account/循環/削除を解決。
+CREATE TABLE IF NOT EXISTS formaloo_folders (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  parent_id       TEXT,
+  position        INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_formaloo_folders_account ON formaloo_folders (line_account_id);
 
 -- migration 095: 作成時の既定 workspace 解決台帳 (F6-2)。line_account_id PK → default_workspace_id。
 -- 平文鍵は持たない (D-2)。無効/未登録 workspace を指す binding は resolver の active 判定で NULL に落とす。

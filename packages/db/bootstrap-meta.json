@@ -79,7 +79,8 @@
     "092_phase_b_knowledge_chunks.sql",
     "093_phase_b_chunk_embeddings.sql",
     "094_formaloo_workspaces.sql",
-    "095_formaloo_forms_account_workspace.sql"
+    "095_formaloo_forms_account_workspace.sql",
+    "096_formaloo_folders.sql"
   ],
-  "migrationCount": 80
+  "migrationCount": 81
 }
