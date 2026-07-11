@@ -2,20 +2,31 @@
 
 import { useState, useEffect } from 'react'
 import { api, type TemplatePackListItem, type TemplatePackItem } from '@/lib/api'
-import { itemToFormPatch, packOptionLabel, isInsertablePack, type FormBubblePatch } from '@/lib/template-packs/pack-insert'
+import {
+  itemToFormPatch,
+  packOptionLabel,
+  isInsertablePack,
+  packToFormMessages,
+  packFitsRemaining,
+  type FormBubblePatch,
+} from '@/lib/template-packs/pack-insert'
 
 interface Props {
   accountId: string | null
-  /** 選んだ吹き出しをフォームに反映する (messageType/messageContent を差し替え)。送信はしない。 */
-  onInsert: (patch: FormBubblePatch) => void
+  /** 追加できる残りメッセージ枠 (最大5 − 現在のブロック数)。0 なら全ボタン無効。 */
+  remainingSlots: number
+  /** 選んだ吹き出しをフォームのメッセージ列に**追加**する (置換でない・送信はしない)。 */
+  onAppend: (patches: FormBubblePatch[]) => void
 }
 
 /**
- * broadcast-form のパック挿入導線 (G16)。パックを選ぶと吹き出し一覧が出て、1件ずつ
- * 「フォームに入れる」で messageType/messageContent に反映する (挿入のみ・送信しない)。
- * 単一 messageContent の broadcast-form に安全に載せるためのフォールバック方式。
+ * broadcast-form のパック挿入導線 (G16 → combo messages Batch 2 で「追加」化)。
+ * パックを選ぶと吹き出し一覧が出て、「パック全体を追加」でパックの全吹き出しを順序どおり
+ * まとめてメッセージ列に append する (owner「テンプレート通りに追加する」)。個別「追加」で
+ * 1件ずつ足すこともできる。残枠不足時は全体追加を無効化し不足を明示 (silent 切り詰めしない)。
+ * 挿入のみ・送信しない。
  */
-export default function PackInsertSelector({ accountId, onInsert }: Props) {
+export default function PackInsertSelector({ accountId, remainingSlots, onAppend }: Props) {
   const [packs, setPacks] = useState<TemplatePackListItem[]>([])
   const [selectedPackId, setSelectedPackId] = useState('')
   const [items, setItems] = useState<TemplatePackItem[] | null>(null)
@@ -68,34 +79,60 @@ export default function PackInsertSelector({ accountId, onInsert }: Props) {
           <option key={p.id} value={p.id}>{packOptionLabel(p.name, p.itemCount)}</option>
         ))}
       </select>
-      <p className="mt-1 text-xs text-gray-500">※ 選んだ吹き出しをフォームに展開するだけです。この操作では送信しません。</p>
+      <p className="mt-1 text-xs text-gray-500">※ 選んだ吹き出しをフォームのメッセージ列に追加するだけです。この操作では送信しません。</p>
 
       {selectedPackId && (
         loading ? (
           <p className="mt-2 text-xs text-gray-400">読み込み中...</p>
         ) : items && items.length > 0 ? (
-          <ul className="mt-2 divide-y divide-gray-100 border border-gray-200 rounded-lg">
-            {items.map((it, i) => (
-              <li key={it.id} className="flex items-center justify-between gap-2 px-3 py-2">
-                <div className="min-w-0 flex items-center gap-2">
-                  <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${it.message_type === 'flex' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-700'}`}>
-                    {it.message_type === 'flex' ? 'Flex' : 'テキスト'}
-                  </span>
-                  <span className="text-xs text-gray-600 truncate">
-                    #{i + 1} {it.message_type === 'flex' ? '(Flexメッセージ)' : it.message_content.slice(0, 30)}
-                  </span>
+          (() => {
+            const wholeFits = packFitsRemaining(items.length, remainingSlots)
+            return (
+              <div className="mt-2 space-y-2">
+                {/* パック全体を追加 (owner「テンプレート通りに追加する」)。残枠不足なら無効化 + 不足表示。 */}
+                <div>
+                  <button
+                    type="button"
+                    disabled={!wholeFits}
+                    onClick={() => onAppend(packToFormMessages(items))}
+                    className="w-full min-h-[40px] px-3 py-2 text-xs font-medium text-white rounded-md disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={{ backgroundColor: '#06C755' }}
+                  >
+                    パック全体を追加（{items.length}吹き出し）
+                  </button>
+                  {!wholeFits && (
+                    <p className="mt-1 text-xs text-red-600">
+                      残り枠が足りません（このパックは{items.length}件・残り{remainingSlots}件／最大5通）。個別に必要な分だけ追加してください。
+                    </p>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onInsert(itemToFormPatch(it))}
-                  className="shrink-0 px-3 py-1 text-xs font-medium text-white rounded-md"
-                  style={{ backgroundColor: '#06C755' }}
-                >
-                  フォームに入れる
-                </button>
-              </li>
-            ))}
-          </ul>
+
+                <ul className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
+                  {items.map((it, i) => (
+                    <li key={it.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                      <div className="min-w-0 flex items-center gap-2">
+                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${it.message_type === 'flex' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-700'}`}>
+                          {it.message_type === 'flex' ? 'Flex' : 'テキスト'}
+                        </span>
+                        <span className="text-xs text-gray-600 truncate">
+                          #{i + 1} {it.message_type === 'flex' ? '(Flexメッセージ)' : it.message_content.slice(0, 30)}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={remainingSlots <= 0}
+                        onClick={() => onAppend([itemToFormPatch(it)])}
+                        className="shrink-0 px-3 py-1 text-xs font-medium text-white rounded-md disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{ backgroundColor: '#06C755' }}
+                      >
+                        追加
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )
+          })()
         ) : (
           <p className="mt-2 text-xs text-gray-400">このパックには吹き出しがありません。</p>
         )

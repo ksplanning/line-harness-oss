@@ -1,24 +1,17 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Tag } from '@line-crm/shared'
-import { api, eventsApi, type ApiBroadcast, type EventListItem } from '@/lib/api'
+import { api, eventsApi, type ApiBroadcast, type EventListItem, type MessageBlock } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
-import FlexPreviewComponent from '@/components/flex-preview'
-import ImageUploader from '@/components/shared/image-uploader'
 import MultiAccountDedupSection from './multi-account-dedup-section'
 import PackInsertSelector from './pack-insert-selector'
-import BroadcastMediaInputs from './broadcast-media-inputs'
+import MessageBlockEditor from './message-block-editor'
 import SenderSelect from './sender-select'
 import { validateMediaClient, type MediaMessageType } from '@/lib/broadcast-media'
-import { messageTypeLabels, messageTypeHints } from '@/lib/broadcast-labels'
-import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
-import { flexToModel } from '@/lib/flex-builder/from-flex'
-import { imageLinkToFlexJson } from '@/lib/flex-builder/image-link'
 import { validateFlex } from '@/lib/flex-builder/validate'
 import type { FlexContents } from '@/lib/flex-builder/types'
-import { PencilIcon, TrashIcon, PaletteIcon } from '@/components/shared/icons'
-import type { BuilderModel, LinkSpec } from '@/lib/flex-builder/types'
+import type { FormBubblePatch } from '@/lib/template-packs/pack-insert'
 
 interface BroadcastFormProps {
   tags: Tag[]
@@ -26,14 +19,13 @@ interface BroadcastFormProps {
   onCancel: () => void
 }
 
+const MAX_MESSAGES = 5
 const NEW_MEDIA_TYPES: MediaMessageType[] = ['video', 'audio', 'imagemap', 'richvideo']
-const isMediaType = (t: ApiBroadcast['messageType']): t is MediaMessageType =>
+const isMediaType = (t: MessageBlock['type']): t is MediaMessageType =>
   (NEW_MEDIA_TYPES as string[]).includes(t)
 
 interface FormState {
   title: string
-  messageType: ApiBroadcast['messageType']
-  messageContent: string
   targetType: ApiBroadcast['targetType']
   targetTagId: string
   scheduledAt: string
@@ -44,6 +36,12 @@ interface FormState {
   // G1 A/B 紐付け (この配信を A/B テストの案 A/B として作る)。null = 非 A/B。
   abTestId: string | null
   abVariant: 'A' | 'B' | null
+}
+
+/** 編集用ブロック: 並べ替え/削除でも UI 状態を安定させるため stable key を持つ。payload は msg のみ。 */
+interface EditorBlock {
+  key: string
+  msg: MessageBlock
 }
 
 export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFormProps) {
@@ -61,8 +59,6 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
   }, [selectedAccountId])
   const [form, setForm] = useState<FormState>({
     title: '',
-    messageType: 'text',
-    messageContent: '',
     targetType: 'all',
     targetTagId: '',
     scheduledAt: '',
@@ -73,6 +69,30 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     abTestId: null,
     abVariant: null,
   })
+
+  // メッセージ・ブロック列 (combo messages Batch 2)。既定は 1 ブロック=従来の単発配信と同じ見た目。
+  const keyCounter = useRef(0)
+  const newBlock = (msg: MessageBlock): EditorBlock => ({ key: `blk-${++keyCounter.current}`, msg })
+  const [blocks, setBlocks] = useState<EditorBlock[]>(() => [{ key: 'blk-0', msg: { type: 'text', content: '' } }])
+
+  const addBlock = () =>
+    setBlocks((prev) => (prev.length >= MAX_MESSAGES ? prev : [...prev, newBlock({ type: 'text', content: '' })]))
+  const removeBlock = (i: number) =>
+    setBlocks((prev) => (prev.length <= 1 ? prev : prev.filter((_, j) => j !== i)))
+  const moveBlock = (i: number, dir: -1 | 1) =>
+    setBlocks((prev) => {
+      const j = i + dir
+      if (j < 0 || j >= prev.length) return prev
+      const next = [...prev]
+      ;[next[i], next[j]] = [next[j], next[i]]
+      return next
+    })
+  const updateBlock = (i: number, msg: MessageBlock) =>
+    setBlocks((prev) => prev.map((b, j) => (j === i ? { ...b, msg } : b)))
+  // パック追加 (append・置換でない)。PackInsertSelector が残枠を検証済 (silent 切り詰めしない)。
+  const appendPatches = (patches: FormBubblePatch[]) =>
+    setBlocks((prev) => [...prev, ...patches.map((p) => newBlock({ type: p.messageType, content: p.messageContent }))])
+
   // account の A/B テスト一覧 (この配信を案 A/B として紐付ける選択肢)。
   const [abTests, setAbTests] = useState<Array<{ id: string; name: string }>>([])
   useEffect(() => {
@@ -87,66 +107,24 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
   }, [selectedAccountId])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  // Flex ビジュアルビルダー: flex 作成/編集をビルダー起動に置換 (raw textarea は上級者折りたたみへ)
-  const [builderOpen, setBuilderOpen] = useState(false)
-  const [builderInitial, setBuilderInitial] = useState<BuilderModel | undefined>(undefined)
-  const [advancedJsonOpen, setAdvancedJsonOpen] = useState(false)
-  // 画像リッチ化: 「画像にリンクを付ける」ON で単一 bubble Flex に切替 (plan 判断A)
-  const [imageLinkOn, setImageLinkOn] = useState(false)
-  const [imageUrl, setImageUrl] = useState('')
-  const [imageLink, setImageLink] = useState<LinkSpec>({ type: 'url', uri: '' })
-
-  // ビルダーを開く。既存 messageContent があれば逆変換して初期モデルに (再編集)。
-  // 逆変換不能 (高度な形式) なら上級者 JSON 折りたたみに誘導し、ビルダーは新規で開かない。
-  const openBuilder = () => {
-    if (form.messageContent.trim()) {
-      const model = flexToModel(form.messageContent)
-      if (!model) {
-        setAdvancedJsonOpen(true)
-        setError('このFlexは高度な形式のため、ビジュアル編集できません。下の「上級者向け」で編集してください。')
-        return
-      }
-      setBuilderInitial(model)
-    } else {
-      setBuilderInitial(undefined)
-    }
-    setError('')
-    setBuilderOpen(true)
-  }
-
-  const handleBuilderSave = (jsonString: string) => {
-    setForm((prev) => ({ ...prev, messageContent: jsonString, messageType: 'flex' }))
-    setBuilderOpen(false)
-  }
-
-  // 画像リッチ化トグル。ON=画像を単一 bubble Flex に変換し message_type='flex' で保存 (plan 判断A)。
-  // OFF=従来の純 image 送信 (originalContentUrl/previewImageUrl / message_type='image') に戻す。
-  const applyImageLink = (on: boolean, url: string, link: LinkSpec) => {
-    if (on && url) {
-      setForm((prev) => ({ ...prev, messageType: 'flex', messageContent: imageLinkToFlexJson(url, link) }))
-    } else {
-      setForm((prev) => ({
-        ...prev,
-        messageType: 'image',
-        messageContent: url ? JSON.stringify({ originalContentUrl: url, previewImageUrl: url }) : '',
-      }))
-    }
-  }
 
   const handleSave = async () => {
     if (!form.title.trim()) { setError('配信タイトルを入力してください'); return }
-    if (!form.messageContent.trim()) { setError('メッセージ内容を入力してください'); return }
-    if (form.messageType === 'flex') {
-      // 画像リンク化/上級者直貼り/ビルダー保存の**全 flex 経路**を保存前に validateFlex に通す (M1)。
-      // これで LINE 制約違反 (不正 uri / http 画像 / 空 等) が送信時に初めて失敗する経路を潰す。
-      let parsed: FlexContents
-      try { parsed = JSON.parse(form.messageContent) as FlexContents } catch { setError('Flexメッセージの形式が正しくありません'); return }
-      const v = validateFlex(parsed)
-      if (!v.ok) { setError(v.errors[0].messageJa); return }
-    }
-    if (isMediaType(form.messageType)) {
-      const mediaErr = validateMediaClient(form.messageType, form.messageContent)
-      if (mediaErr) { setError(mediaErr); return }
+    // 各ブロックを順に検証 (先頭ミラーは payload 組立時に blocks[0] から取る)。
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i].msg
+      const label = blocks.length > 1 ? `${i + 1}通目の` : ''
+      if (!b.content.trim()) { setError(`${label}メッセージ内容を入力してください`); return }
+      if (b.type === 'flex') {
+        let parsed: FlexContents
+        try { parsed = JSON.parse(b.content) as FlexContents } catch { setError(`${label}Flexメッセージの形式が正しくありません`); return }
+        const v = validateFlex(parsed)
+        if (!v.ok) { setError(`${label}${v.errors[0].messageJa}`); return }
+      }
+      if (isMediaType(b.type)) {
+        const mediaErr = validateMediaClient(b.type, b.content)
+        if (mediaErr) { setError(`${label}${mediaErr}`); return }
+      }
     }
     if (!form.sendNow && !form.scheduledAt) {
       setError('予約配信の場合は配信日時を指定してください')
@@ -160,10 +138,13 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     setSaving(true)
     setError('')
     try {
+      const messages: MessageBlock[] = blocks.map((b) => b.msg)
       const res = await api.broadcasts.create({
         title: form.title,
-        messageType: form.messageType,
-        messageContent: form.messageContent,
+        // 先頭ミラー: messageType/messageContent は必ず messages[0] と一致 (既存 read 経路 + NOT NULL 制約)。
+        messageType: messages[0].type,
+        messageContent: messages[0].content,
+        messages,
         targetType: form.targetType,
         // tag mode: required; multi-account-dedup mode: optional narrowing filter; else: null
         targetTagId:
@@ -217,216 +198,73 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
           />
         </div>
 
-        {/* テンプレパックから入れる (G16・挿入のみ・送信しない) */}
+        {/* テンプレパックから入れる (G16・パック全体/個別を「追加」・送信しない) */}
         <PackInsertSelector
           accountId={selectedAccountId || null}
-          onInsert={(patch) => setForm((prev) => ({ ...prev, messageType: patch.messageType, messageContent: patch.messageContent }))}
+          remainingSlots={MAX_MESSAGES - blocks.length}
+          onAppend={appendPatches}
         />
 
-        {/* Message type */}
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-2">メッセージ種別</label>
-          <div className="flex flex-wrap gap-2">
-            {(Object.keys(messageTypeLabels) as ApiBroadcast['messageType'][]).map((type) => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => {
-                  // メディア種別に出入りする切替は内容の形式が変わるため messageContent をリセットする。
-                  const switchingMedia = isMediaType(type) || isMediaType(form.messageType)
-                  setForm({ ...form, messageType: type, ...(switchingMedia ? { messageContent: '' } : {}) })
-                }}
-                className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
-                  form.messageType === type
-                    ? 'border-green-500 text-green-700 bg-green-50'
-                    : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
-                }`}
-              >
-                {messageTypeLabels[type]}
-              </button>
-            ))}
-          </div>
-          {messageTypeHints[form.messageType] && (
-            <p className="text-xs text-gray-500 mt-2">{messageTypeHints[form.messageType]}</p>
-          )}
-        </div>
-
-        {/* Message content */}
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">
-            メッセージ内容 <span className="text-red-500">*</span>
+        {/* メッセージ・ブロック列 (最大5・画像+テキスト等を順序付きで束ねる) */}
+        <div className="space-y-3">
+          <label className="block text-xs font-medium text-gray-600">
+            メッセージ（{blocks.length} / {MAX_MESSAGES} 通）
           </label>
-
-          {/* text: 従来どおり textarea + イベントリンク挿入 */}
-          {form.messageType === 'text' && (
-            <>
-              {linkableEvents.length > 0 && (
-                <div className="mb-2">
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    リンクするイベント（任意）
-                  </label>
-                  <select
-                    value=""
-                    onChange={(e) => {
-                      const id = e.target.value
-                      if (!id) return
-                      const url = `https://liff.line.me/{{liff_id}}/?page=event&id=${id}`
-                      setForm((prev) => ({
-                        ...prev,
-                        messageContent: prev.messageContent ? `${prev.messageContent}\n${url}` : url,
-                      }))
-                      e.target.value = ''
-                    }}
-                    className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm w-full"
-                  >
-                    <option value="">— 選択しない —</option>
-                    {linkableEvents.map((ev) => (
-                      <option key={ev.id} value={ev.id}>
-                        {ev.name} ({ev.target_type === 'multi-account-dedup' ? 'multi' : 'single'})
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">
-                    選ぶと本文末尾にテンプレ URL を挿入。{'{{liff_id}}'} は配信時に各友だちのアカに対応した値に自動置換されます。
-                  </p>
-                </div>
-              )}
-              <textarea
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-                rows={4}
-                placeholder="配信するメッセージを入力..."
-                value={form.messageContent}
-                onChange={(e) => setForm({ ...form, messageContent: e.target.value })}
-              />
-            </>
-          )}
-
-          {/* image: ImageUploader + 「画像にリンクを付ける」トグル (ON で単一 bubble Flex に変換) */}
-          {(form.messageType === 'image' || (form.messageType === 'flex' && imageLinkOn)) && (
-            <div className="space-y-2">
-              <ImageUploader
-                mode="line-image"
-                value={imageUrl ? { mode: 'line-image' as const, originalContentUrl: imageUrl, previewImageUrl: imageUrl } : null}
-                onChange={(v) => {
-                  const url = v?.mode === 'line-image' ? v.originalContentUrl : ''
-                  setImageUrl(url)
-                  applyImageLink(imageLinkOn, url, imageLink)
-                }}
-                label="送信する画像"
-              />
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={imageLinkOn}
-                  onChange={(e) => {
-                    setImageLinkOn(e.target.checked)
-                    applyImageLink(e.target.checked, imageUrl, imageLink)
-                  }}
-                  className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
-                />
-                <span className="text-xs text-gray-600">画像を押したら移動する（リンクを付ける）</span>
-              </label>
-              {imageLinkOn && (
-                <input
-                  type="text"
-                  value={'uri' in imageLink ? imageLink.uri : ''}
-                  onChange={(e) => {
-                    const link: LinkSpec = { type: 'url', uri: e.target.value }
-                    setImageLink(link)
-                    applyImageLink(true, imageUrl, link)
-                  }}
-                  placeholder="押したときの飛び先 (https://...)"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                />
-              )}
-              {form.messageType === 'flex' && imageLinkOn && form.messageContent && (
-                <div className="mt-2">
-                  <p className="text-xs font-medium text-gray-500 mb-1">プレビュー</p>
-                  <FlexPreviewComponent content={form.messageContent} maxWidth={240} />
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* flex (画像リンク以外): ビジュアルビルダー起動 + プレビュー。生 JSON textarea は撤去し上級者折りたたみへ */}
-          {form.messageType === 'flex' && !imageLinkOn && (
-            <div className="space-y-3">
-              {form.messageContent && (() => { try { JSON.parse(form.messageContent); return true } catch { return false } })() ? (
-                <div className="border border-gray-200 rounded-lg p-3">
-                  <FlexPreviewComponent content={form.messageContent} maxWidth={300} />
-                  <div className="mt-2 flex gap-2">
+          {blocks.map((b, i) => (
+            <div key={b.key} className="border border-gray-200 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-gray-700">{i + 1}通目</span>
+                {blocks.length > 1 && (
+                  <div className="flex items-center gap-1">
                     <button
                       type="button"
-                      onClick={openBuilder}
-                      className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100 inline-flex items-center gap-1.5"
+                      onClick={() => moveBlock(i, -1)}
+                      disabled={i === 0}
+                      aria-label={`${i + 1}通目を上へ`}
+                      className="px-2 py-1 min-h-[32px] text-xs text-gray-600 border border-gray-300 rounded disabled:opacity-30"
                     >
-                      <PencilIcon /> カードを編集
+                      上へ
                     </button>
                     <button
                       type="button"
-                      onClick={() => setForm((prev) => ({ ...prev, messageContent: '' }))}
-                      className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-gray-500 border border-gray-300 rounded-md hover:text-red-600 inline-flex items-center gap-1.5"
+                      onClick={() => moveBlock(i, 1)}
+                      disabled={i === blocks.length - 1}
+                      aria-label={`${i + 1}通目を下へ`}
+                      className="px-2 py-1 min-h-[32px] text-xs text-gray-600 border border-gray-300 rounded disabled:opacity-30"
                     >
-                      <TrashIcon /> 削除
+                      下へ
                     </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={openBuilder}
-                  className="w-full min-h-[44px] px-4 py-3 text-sm font-medium text-white rounded-md inline-flex items-center justify-center gap-2"
-                  style={{ backgroundColor: '#06C755' }}
-                >
-                  <PaletteIcon /> ビジュアルでカードを作る
-                </button>
-              )}
-
-              {/* 上級者向け: 生 JSON 直貼り (既定閉・後方互換 / A9)。運用者はここを触らずビルダーで完結できる。 */}
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setAdvancedJsonOpen((v) => !v)}
-                  className="text-xs text-gray-500 hover:text-gray-700"
-                >
-                  {advancedJsonOpen ? '▾' : '▸'} 上級者向け: JSONを直接貼り付ける
-                </button>
-                {advancedJsonOpen && (
-                  <div className="mt-2">
-                    <textarea
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-                      rows={8}
-                      placeholder='{"type":"bubble","body":{...}}'
-                      value={form.messageContent}
-                      onChange={(e) => {
-                        let next = e.target.value
-                        // message object 丸ごと貼付 ({type:'flex',altText,contents}) を自動アンラップ (W5 T-E3(c))
-                        try {
-                          const parsed = JSON.parse(next)
-                          if (parsed && typeof parsed === 'object' && parsed.type === 'flex' && parsed.contents) {
-                            next = JSON.stringify(parsed.contents, null, 2)
-                          }
-                        } catch { /* 入力途中は無視 */ }
-                        setForm({ ...form, messageContent: next })
-                      }}
-                      style={{ fontFamily: 'monospace' }}
-                    />
-                    <p className="text-xs text-gray-400 mt-1">
-                      ⓘ contents(bubble/carousel)だけを貼ってください。message object を貼ると contents だけ自動で取り出します。
-                    </p>
+                    <button
+                      type="button"
+                      onClick={() => removeBlock(i)}
+                      aria-label={`${i + 1}通目を削除`}
+                      className="px-2 py-1 min-h-[32px] text-xs text-gray-500 border border-gray-300 rounded hover:text-red-600"
+                    >
+                      削除
+                    </button>
                   </div>
                 )}
               </div>
+              <MessageBlockEditor
+                block={b.msg}
+                onChange={(msg) => updateBlock(i, msg)}
+                linkableEvents={linkableEvents}
+              />
             </div>
-          )}
-
-          {/* video / audio / imagemap / richvideo: 種別ごとの入力 (JSON に直列化して保存) */}
-          {isMediaType(form.messageType) && (
-            <BroadcastMediaInputs
-              messageType={form.messageType}
-              onChange={(content) => setForm((prev) => ({ ...prev, messageContent: content }))}
-            />
-          )}
+          ))}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={addBlock}
+              disabled={blocks.length >= MAX_MESSAGES}
+              className="px-3 py-1.5 min-h-[40px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              ＋ メッセージを追加
+            </button>
+            {blocks.length >= MAX_MESSAGES && (
+              <span className="text-xs text-gray-500">最大{MAX_MESSAGES}通までです</span>
+            )}
+          </div>
         </div>
 
         {/* 送信者 (G25・account プリセットから選ぶ・任意入力不可) */}
@@ -590,14 +428,6 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
           </button>
         </div>
       </div>
-
-      {builderOpen && (
-        <FlexBuilderModal
-          initialModel={builderInitial}
-          onSave={handleBuilderSave}
-          onClose={() => setBuilderOpen(false)}
-        />
-      )}
     </div>
   )
 }
