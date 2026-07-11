@@ -218,11 +218,20 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     );
 
     const prevDef = parseDefinition(form.definition_json);
-    // まず D1 に保存 (SoT キャッシュ / fail-soft の土台)
+    // B3: 最初の save (field_map 全置換) より前に既存 field_map の slug を捕捉。
+    // これで (a) push へ update-vs-create の追跡キーを渡せ (重複作成を根絶)、(b) 最初の save で slug を
+    // carry して push 失敗時も slug を喪失しない (次回保存で PATCH 復帰 = 重複再発防止)。
+    const existingMap = await getFormalooFieldMap(c.env.DB, id);
+    const existingFieldSlugs: Record<string, string> = {};
+    for (const row of existingMap) {
+      if (row.formaloo_field_slug) existingFieldSlugs[row.id] = row.formaloo_field_slug;
+    }
+    // まず D1 に保存 (SoT キャッシュ / fail-soft の土台)。field_map の slug は既存分を carry する
+    // (現状は無 carry = slug wipe の欠陥。push 失敗時に喪失し次回保存で重複 POST になっていた / B3)。
     const definitionJson = JSON.stringify({ fields, logic, formalooAddress: prevDef.formalooAddress ?? null });
     await saveFormalooDefinition(c.env.DB, id, {
       definitionJson,
-      fields: fields.map((f) => ({ id: f.id, fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) })),
+      fields: fields.map((f) => ({ id: f.id, formalooFieldSlug: existingFieldSlugs[f.id] ?? null, fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) })),
     });
 
     // Formaloo へ push (fail-soft): secret 未配備 (dev) や失敗は out_of_sync でローカル保存を維持
@@ -232,7 +241,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!client) {
       await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: 'Formaloo credentials 未設定 (S-1 待ち)' });
     } else {
-      const pushed = await pushDefinitionToFormaloo(client, { formalooSlug: form.formaloo_slug, title: form.title, fields, logic });
+      const pushed = await pushDefinitionToFormaloo(client, { formalooSlug: form.formaloo_slug, title: form.title, fields, logic, existingFieldSlugs });
       if (pushed.ok) {
         // slug + address を反映
         const merged = JSON.stringify({ fields, logic, formalooAddress: pushed.publicAddress ?? prevDef.formalooAddress ?? null });

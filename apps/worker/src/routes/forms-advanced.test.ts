@@ -172,6 +172,113 @@ describe('forms-advanced 定義保存 (T-B2)', () => {
   });
 });
 
+describe('forms-advanced PUT /:id idempotent push (T-A3 / push-idempotency / B3)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** auth + field PATCH/POST/form PUT を stub し、送出 request の {method,url} を記録して返す。 */
+  function stubFetch(opts: { patchStatus?: number } = {}) {
+    const recorded: { method: string; url: string }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: { method?: string }) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      recorded.push({ method, url });
+      if (url.includes('/oauth2/authorization-token/')) {
+        return new Response(JSON.stringify({ authorization_token: 'jwt-test' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (method === 'PATCH' && url.includes('/v3.0/fields/')) {
+        return new Response(JSON.stringify({ data: {} }), { status: opts.patchStatus ?? 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (method === 'POST' && url.includes('/v3.0/fields/')) {
+        return new Response(JSON.stringify({ data: { field: { slug: 'SHOULD_NOT_CREATE' } } }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (method === 'PUT' && url.includes('/v3.0/forms/')) {
+        return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 404 });
+    }));
+    return recorded;
+  }
+  const FORMALOO_ENV = { FORMALOO_API_KEY: 'k', FORMALOO_API_SECRET: 's' };
+  /** 毎回ユニークな field id で field_map を slug 付き seed (D1 field_map.id は global UNIQUE / claim 101)。 */
+  function seedFieldSlug(formId: string, fieldId: string, slug: string, position: number) {
+    const now = jstNow();
+    raw.prepare(
+      `INSERT INTO formaloo_field_map (id, form_id, formaloo_field_slug, field_type, label, position, config_json, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(fieldId, formId, slug, 'short_text', 'L', position, '{}', now, now);
+  }
+
+  test('二回目保存: existingFieldSlugs から exact path の PATCH を field 数ぶん・POST /v3.0/fields/ は 0 回 (Formaloo 側に新規作成しない)', async () => {
+    const id = await createForm();
+    raw.prepare(`UPDATE formaloo_forms SET formaloo_slug=? WHERE id=?`).run('FSLUG', id);
+    const f1 = `fld_${id}_1`, f2 = `fld_${id}_2`;
+    seedFieldSlug(id, f1, 's_one', 0);
+    seedFieldSlug(id, f2, 's_two', 1);
+
+    const recorded = stubFetch();
+    const res = await callEnv('PUT', `/api/forms-advanced/${id}`, FORMALOO_ENV, {
+      fields: [
+        { id: f1, type: 'text', label: '名前', required: true, config: { maxLength: 30 } },
+        { id: f2, type: 'text', label: '住所', required: false, config: {} },
+      ],
+      logic: [],
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { data: { syncStatus: string } }).data.syncStatus).toBe('idle'); // push 成功
+
+    const patches = recorded.filter((r) => r.method === 'PATCH');
+    expect(patches).toHaveLength(2); // field 数ぶん
+    expect(patches.some((p) => p.url.endsWith('/v3.0/fields/s_one/'))).toBe(true); // exact path (W1)
+    expect(patches.some((p) => p.url.endsWith('/v3.0/fields/s_two/'))).toBe(true);
+    // 新規作成 (POST /v3.0/fields/) は 0 回 = 重複を作らない
+    expect(recorded.filter((r) => r.method === 'POST' && r.url.includes('/v3.0/fields/')).length).toBe(0);
+
+    // field_map の slug は確定 slug へ維持 (PATCH は slug 既知 = 元の slug)
+    const rows = raw.prepare(`SELECT formaloo_field_slug AS s FROM formaloo_field_map WHERE form_id=? ORDER BY position`).all(id) as { s: string | null }[];
+    expect(rows.map((r) => r.s)).toEqual(['s_one', 's_two']);
+  });
+
+  test('push 失敗時: field_map の slug が保持 (before==after 非 null) + out_of_sync + 直後の再保存が再び PATCH 経路 (B3)', async () => {
+    const id = await createForm();
+    raw.prepare(`UPDATE formaloo_forms SET formaloo_slug=? WHERE id=?`).run('FSLUG', id);
+    const f1 = `fld_${id}_1`;
+    seedFieldSlug(id, f1, 's_one', 0);
+    const before = (raw.prepare(`SELECT formaloo_field_slug AS s FROM formaloo_field_map WHERE id=?`).get(f1) as { s: string | null }).s;
+    expect(before).toBe('s_one');
+
+    // PATCH を 500 で失敗させる → push 失敗
+    stubFetch({ patchStatus: 500 });
+    const res = await callEnv('PUT', `/api/forms-advanced/${id}`, FORMALOO_ENV, {
+      fields: [{ id: f1, type: 'text', label: '名前', required: false, config: {} }],
+      logic: [],
+    });
+    expect((await res.json() as { data: { syncStatus: string } }).data.syncStatus).toBe('out_of_sync');
+    // slug が wipe されず保持 (次回保存で PATCH 復帰 = 重複再発防止 / B3)
+    const after = (raw.prepare(`SELECT formaloo_field_slug AS s FROM formaloo_field_map WHERE id=?`).get(f1) as { s: string | null }).s;
+    expect(after).toBe('s_one'); // before==after・非 null
+    vi.unstubAllGlobals();
+
+    // 再保存: PATCH 復旧 → 再び PATCH 経路 (POST 0 回)
+    const recorded2 = stubFetch();
+    const res2 = await callEnv('PUT', `/api/forms-advanced/${id}`, FORMALOO_ENV, {
+      fields: [{ id: f1, type: 'text', label: '名前', required: false, config: {} }],
+      logic: [],
+    });
+    expect((await res2.json() as { data: { syncStatus: string } }).data.syncStatus).toBe('idle');
+    expect(recorded2.filter((r) => r.method === 'PATCH').length).toBe(1);
+    expect(recorded2.filter((r) => r.method === 'POST' && r.url.includes('/v3.0/fields/')).length).toBe(0);
+  });
+
+  test('client 未配備 (FORMALOO_* 無) → out_of_sync (既存挙動不変・回帰)', async () => {
+    const id = await createForm();
+    const res = await call('PUT', `/api/forms-advanced/${id}`, {
+      fields: [{ id: 'h1', type: 'text', label: '名前', required: false, config: {} }],
+      logic: [],
+    });
+    expect((await res.json() as { data: { syncStatus: string } }).data.syncStatus).toBe('out_of_sync');
+  });
+});
+
 describe('forms-advanced publish gate (T-B3 / N-7)', () => {
   test('draft から publish 直行は 409 (レビュー必須)', async () => {
     const id = await createForm();
