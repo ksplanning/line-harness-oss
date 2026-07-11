@@ -67,4 +67,27 @@ describe('データ画面 scope 照合', () => {
     await waitFor(() => expect(screen.getByTestId('data-cockpit')).toBeTruthy())
     expect(screen.queryByTestId('scope-blocked')).toBeNull()
   })
+
+  it('P2 fail-closed: account 未確定 (selectedAccountId=null) で account-scoped form は回答を描画せず hold', async () => {
+    mockAccount.selectedAccountId = null
+    getMock.mockResolvedValue(form('acc_B'))
+    render(<DataCockpitClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('scope-hold')).toBeTruthy())
+    expect(screen.queryByTestId('data-cockpit')).toBeNull()
+  })
+
+  it('P2 fail-closed: form fetch 失敗 (formAccountId 未取得) は回答を描画せず hold', async () => {
+    getMock.mockRejectedValue(new Error('boom'))
+    render(<DataCockpitClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('scope-hold')).toBeTruthy())
+    expect(screen.queryByTestId('data-cockpit')).toBeNull()
+  })
+
+  it('P2: account 未確定でも NULL 共通 form は表示', async () => {
+    mockAccount.selectedAccountId = null
+    getMock.mockResolvedValue(form(null))
+    render(<DataCockpitClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('data-cockpit')).toBeTruthy())
+    expect(screen.queryByTestId('scope-hold')).toBeNull()
+  })
 })

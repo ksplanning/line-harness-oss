@@ -103,6 +103,8 @@ describe('④ workspace セレクタは owner のみ', () => {
 })
 
 describe('⑤ create payload', () => {
+  const btnEnabled = () => expect((screen.getByTestId('create-btn') as HTMLButtonElement).disabled).toBe(false)
+
   it('owner が workspace 選択 → create に lineAccountId + workspaceId', async () => {
     mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
     fetchApiMock.mockResolvedValue({ data: { role: 'owner' } })
@@ -110,6 +112,7 @@ describe('⑤ create payload', () => {
     createMock.mockResolvedValue({ id: 'faNew' })
     render(<Page />)
     await waitFor(() => expect(screen.getByTestId('workspace-select')).toBeTruthy())
+    await waitFor(btnEnabled) // settingsReady 完了まで待つ
     fireEvent.change(screen.getByTestId('workspace-select'), { target: { value: 'fw_1' } })
     await act(async () => { fireEvent.click(screen.getByTestId('create-btn')) })
     expect(createMock).toHaveBeenCalledWith({ title: '新しいフォーム', lineAccountId: 'acc_A', workspaceId: 'fw_1' })
@@ -120,8 +123,60 @@ describe('⑤ create payload', () => {
     fetchApiMock.mockResolvedValue({ data: { role: 'staff' } })
     createMock.mockResolvedValue({ id: 'faNew' })
     render(<Page />)
-    await waitFor(() => expect(screen.getByTestId('create-btn')).toBeTruthy())
+    await waitFor(btnEnabled)
     await act(async () => { fireEvent.click(screen.getByTestId('create-btn')) })
     expect(createMock).toHaveBeenCalledWith({ title: '新しいフォーム', lineAccountId: 'acc_A', workspaceId: undefined })
+  })
+})
+
+describe('P1 (reviewer R1) — account 切替 race で旧 workspace 鍵が新 form に載らない', () => {
+  it('A→B 切替直後は Create 無効 + selectedWorkspaceId リセット、B 解決後は B の値で作成', async () => {
+    mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
+    fetchApiMock.mockResolvedValue({ data: { role: 'owner' } })
+    wsListMock.mockResolvedValue([
+      { id: 'fw_A', label: 'A社', businessSlug: null, isActive: true },
+      { id: 'fw_B', label: 'B社', businessSlug: null, isActive: true },
+    ])
+    createMock.mockResolvedValue({ id: 'faNew' })
+    // binding 応答を deferred 化して切替窓を作る。
+    const bindingResolvers: Array<(v: unknown) => void> = []
+    bindingsListMock.mockImplementation(() => new Promise((resolve) => { bindingResolvers.push(resolve) }))
+
+    const { rerender } = render(<Page />)
+    // A の binding を解決 → 既定 fw_A / settingsReady=true。
+    await waitFor(() => expect(bindingResolvers.length).toBe(1))
+    await act(async () => { bindingResolvers[0]([{ lineAccountId: 'acc_A', defaultWorkspaceId: 'fw_A' }, { lineAccountId: 'acc_B', defaultWorkspaceId: 'fw_B' }]) })
+    await waitFor(() => expect((screen.getByTestId('create-btn') as HTMLButtonElement).disabled).toBe(false))
+    expect((screen.getByTestId('workspace-select') as HTMLSelectElement).value).toBe('fw_A')
+
+    // B へ切替 (B の binding は未解決 = 切替窓)。
+    mockAccount.selectedAccountId = 'acc_B'
+    rerender(<Page />)
+    await waitFor(() => expect(bindingResolvers.length).toBe(2))
+    // 窓の間: Create は無効 + selectedWorkspaceId は '' にリセット (旧 fw_A を持ち越さない)。
+    expect((screen.getByTestId('create-btn') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('workspace-select') as HTMLSelectElement).value).toBe('')
+    // 窓の間にクリックしても disabled ゆえ create は呼ばれない。
+    fireEvent.click(screen.getByTestId('create-btn'))
+    expect(createMock).not.toHaveBeenCalled()
+
+    // B の binding を解決 → 既定 fw_B / Create 有効化。
+    await act(async () => { bindingResolvers[1]([{ lineAccountId: 'acc_A', defaultWorkspaceId: 'fw_A' }, { lineAccountId: 'acc_B', defaultWorkspaceId: 'fw_B' }]) })
+    await waitFor(() => expect((screen.getByTestId('create-btn') as HTMLButtonElement).disabled).toBe(false))
+    await act(async () => { fireEvent.click(screen.getByTestId('create-btn')) })
+    // 旧 fw_A ではなく B の fw_B で作成 (stale 鍵混入なし)。
+    expect(createMock).toHaveBeenCalledWith({ title: '新しいフォーム', lineAccountId: 'acc_B', workspaceId: 'fw_B' })
+  })
+})
+
+describe('P3 (reviewer R1) — zero-account / 選択解除', () => {
+  it('accountLoading=false + selectedAccountId=null は no-account 表示・list 非呼出・Create 無効', async () => {
+    mockAccount.loading = false; mockAccount.selectedAccountId = null
+    render(<Page />)
+    await waitFor(() => expect(screen.getByTestId('no-account')).toBeTruthy())
+    expect(listMock).not.toHaveBeenCalled()
+    expect((screen.getByTestId('create-btn') as HTMLButtonElement).disabled).toBe(true)
+    // 「読み込み中...」の無限ループにならない。
+    expect(screen.queryByText('読み込み中...')).toBeNull()
   })
 })

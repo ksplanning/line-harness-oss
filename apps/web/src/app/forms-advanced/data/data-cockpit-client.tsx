@@ -93,18 +93,29 @@ export default function DataCockpitClient({ id }: { id: string }) {
   //   これは表示フィルタで、API 直打ちは防げない (N-17)。
   const scopeBlocked =
     formAccountId != null && selectedAccountId != null && formAccountId !== selectedAccountId
+  // reviewer R1 P2 fail-closed: ロード完了後も form の lineAccountId が未取得 (formAccountId===undefined =
+  //   form fetch 例外) か、account-scoped form で selectedAccountId が未確定 (null) の間は scope 判定不能
+  //   → 回答データを描画せず hold する (fail-open で他アカウントの PII を出さない)。
+  const scopeUnknown =
+    !loading && (formAccountId === undefined || (formAccountId != null && selectedAccountId == null))
 
-  if (scopeBlocked) {
+  if (scopeBlocked || scopeUnknown) {
     return (
       <div>
         <Header title="回答データ" description="回答の検索・集計・CSV 出し入れができます" />
         <div className="mb-3">
           <Link href="/forms-advanced" className="text-xs text-gray-500 hover:text-gray-800">← 一覧に戻る</Link>
         </div>
-        <div data-testid="scope-blocked" className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-500 text-sm">
-          このフォームは別の LINE アカウント向けです。表示するには対象のアカウントに切り替えてください。
-          <p className="mt-3 text-[11px] text-gray-400">※これは画面上の仕分けです。URL を直接開くと表示される場合があります（アクセス制限は今後の対応です）。</p>
-        </div>
+        {scopeBlocked ? (
+          <div data-testid="scope-blocked" className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-500 text-sm">
+            このフォームは別の LINE アカウント向けです。表示するには対象のアカウントに切り替えてください。
+            <p className="mt-3 text-[11px] text-gray-400">※これは画面上の仕分けです。URL を直接開くと表示される場合があります（アクセス制限は今後の対応です）。</p>
+          </div>
+        ) : (
+          <div data-testid="scope-hold" className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">
+            アカウントを確認しています。表示できない場合はアカウントを選択してから開き直してください。
+          </div>
+        )}
       </div>
     )
   }

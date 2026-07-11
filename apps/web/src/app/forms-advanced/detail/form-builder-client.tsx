@@ -87,6 +87,9 @@ export default function FormBuilderClient({ id }: { id: string }) {
   //   は表示しない。NULL 共通は全アカウントで許容。これは表示フィルタであり、API 直打ちは防げない (N-17)。
   const scopeBlocked =
     form != null && form.lineAccountId != null && selectedAccountId != null && form.lineAccountId !== selectedAccountId
+  // reviewer R1 P2 fail-closed: account-scoped form (lineAccountId != null) で selectedAccountId が未確定
+  //   (null: cold 直 visit / zero-account / discovery 失敗) の間は scope 判定不能 → 内容を描画せず hold する。
+  const scopeUnknown = form != null && form.lineAccountId != null && selectedAccountId == null
 
   return (
     <div>
@@ -99,6 +102,8 @@ export default function FormBuilderClient({ id }: { id: string }) {
         <div className="text-sm text-gray-400">読み込み中...</div>
       ) : error ? (
         <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">{error}</div>
+      ) : scopeUnknown ? (
+        <div data-testid="scope-hold" className="text-sm text-gray-400">アカウントを確認しています...</div>
       ) : scopeBlocked ? (
         <div data-testid="scope-blocked" className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-500 text-sm">
           このフォームは別の LINE アカウント向けです。表示するには対象のアカウントに切り替えてください。

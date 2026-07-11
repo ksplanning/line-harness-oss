@@ -59,4 +59,20 @@ describe('詳細画面 scope 照合', () => {
     await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
     expect(screen.queryByTestId('scope-blocked')).toBeNull()
   })
+
+  it('P2 fail-closed: account 未確定 (selectedAccountId=null) で account-scoped form は描画せず hold', async () => {
+    mockAccount.selectedAccountId = null
+    getMock.mockResolvedValue(form('acc_B'))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('scope-hold')).toBeTruthy())
+    expect(screen.queryByTestId('form-builder')).toBeNull()
+  })
+
+  it('P2: account 未確定でも NULL 共通 form は表示 (共通は全アカウント許容)', async () => {
+    mockAccount.selectedAccountId = null
+    getMock.mockResolvedValue(form(null))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+    expect(screen.queryByTestId('scope-hold')).toBeNull()
+  })
 })
