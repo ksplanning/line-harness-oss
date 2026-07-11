@@ -50,14 +50,30 @@ export default function SharePanel({ share, isOwner, connecting, onConnectSheets
     <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-4" data-testid="share-panel">
       <h3 className="text-sm font-bold text-gray-900">共有・連携</h3>
 
+      {/* LINE 配信用 URL (順方向 prefill / fr_id・fr_name / T-A5) */}
+      {share.published && share.lineDistUrl && (
+        <section className="space-y-1">
+          <div className="text-xs font-medium text-gray-700">LINE 配信用 URL</div>
+          <div className="text-xs text-gray-500" data-testid="line-dist-url">
+            配信URL：<a href={share.lineDistUrl} target="_blank" rel="noreferrer" className="text-blue-600 underline break-all">{share.lineDistUrl}</a>
+          </div>
+          <p className="text-[11px] leading-relaxed text-gray-400" data-testid="line-dist-note">
+            LINE の配信・導線ではこの URL を使ってください。開いた友だちの識別変数（fr_id / fr_name）が自動で付き、
+            スプレッドシートに「どの LINE アカウントの回答か」が並びます。
+            <br />
+            ※ Formaloo フォーム側に alias「fr_id」「fr_name」の hidden field と Google スプレッドシート連携の設定が必要です。
+          </p>
+        </section>
+      )}
+
       {/* HP 埋め込み */}
-      <section className="space-y-2">
+      <section className="space-y-2 border-t border-gray-100 pt-3">
         <div className="text-xs font-medium text-gray-700">ホームページに埋め込む</div>
         {share.published ? (
           <>
             {share.publicUrl && (
-              <div className="text-xs text-gray-500">
-                公開URL：<a href={share.publicUrl} target="_blank" rel="noreferrer" className="text-blue-600 underline break-all">{share.publicUrl}</a>
+              <div className="text-xs text-gray-500" data-testid="hp-public-url">
+                HP公開URL：<a href={share.publicUrl} target="_blank" rel="noreferrer" className="text-blue-600 underline break-all">{share.publicUrl}</a>
               </div>
             )}
             {share.iframeCode && <CodeBox label="iframe（枠で埋め込み）" code={share.iframeCode} testid="iframe-code" />}

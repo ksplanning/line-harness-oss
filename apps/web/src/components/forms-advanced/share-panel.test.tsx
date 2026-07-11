@@ -16,6 +16,7 @@ afterEach(() => cleanup())
 const PUBLISHED: ShareInfo = {
   published: true,
   publicUrl: 'https://formaloo.me/f/abc',
+  lineDistUrl: 'https://api.example.com/fo/xyz',
   iframeCode: '<iframe src="https://formaloo.me/f/abc"></iframe>',
   scriptCode: '<script>/*embed*/</script>',
   gsheetConnected: false,
@@ -25,6 +26,23 @@ const PUBLISHED: ShareInfo = {
 function base(overrides: Partial<SharePanelProps> = {}): SharePanelProps {
   return { share: PUBLISHED, isOwner: true, onConnectSheets: vi.fn(), ...overrides }
 }
+
+describe('SharePanel — 配布 URL 2 本 (T-A5 / 順方向)', () => {
+  it('published は LINE 配信用 URL と HP 公開用 URL を別々に表示する', () => {
+    render(<SharePanel {...base()} />)
+    // LINE 配信用 = /fo/:id (追跡 + prefill 経路)
+    expect(screen.getByTestId('line-dist-url').textContent).toContain('https://api.example.com/fo/xyz')
+    // HP 公開用 = 生 Formaloo URL (prefill 無し)
+    expect(screen.getByTestId('hp-public-url').textContent).toContain('https://formaloo.me/f/abc')
+    // hidden field 設定の案内が出る (owner/infra 手順 / R-F5)
+    expect(screen.getByTestId('line-dist-note').textContent).toContain('fr_id')
+  })
+
+  it('未公開は LINE 配信用 URL を出さない (未公開は配布不可)', () => {
+    render(<SharePanel {...base({ share: { ...PUBLISHED, published: false, lineDistUrl: null, publicUrl: null, iframeCode: null, scriptCode: null } })} />)
+    expect(screen.queryByTestId('line-dist-url')).toBeNull()
+  })
+})
 
 describe('SharePanel — 埋め込みコード (T-E1)', () => {
   it('published は iframe/script コードを出す', () => {

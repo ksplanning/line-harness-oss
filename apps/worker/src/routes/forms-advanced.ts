@@ -780,11 +780,18 @@ formsAdvanced.get('/api/forms-advanced/:id/share', async (c) => {
     const def = parseDefinition(form.definition_json);
     const status = (isBuilderStatus(form.builder_status) ? form.builder_status : 'draft') as BuilderStatus;
     const addr = def.formalooAddress ?? null;
+    const publicUrl = buildPublicUrl(status, addr);
+    // T-A5 順方向: LINE 配信用 URL = worker の /fo/:id (追跡 + fr_id/fr_name prefill 経路)。
+    //   HP 公開用 (publicUrl = 生 Formaloo URL / prefill 無し) と別キーで返す。published 時のみ
+    //   (未公開は /fo/:id が 404 = 配布不可 → publicUrl と同挙動で null)。
+    const base = c.env.WORKER_URL || new URL(c.req.url).origin;
+    const lineDistUrl = publicUrl ? `${base}/fo/${id}` : null;
     return c.json({
       success: true,
       data: {
         published: status === 'published',
-        publicUrl: buildPublicUrl(status, addr),
+        publicUrl,
+        lineDistUrl,
         // N-7: draft/in_review は埋め込みコードを発行しない (null)
         iframeCode: buildEmbedCode(status, addr, { title: form.title }),
         scriptCode: buildScriptEmbedCode(status, addr),

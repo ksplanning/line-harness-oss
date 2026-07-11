@@ -109,6 +109,22 @@ describe('T-E1 GET /share 埋め込みコード (publish gate 接続 / N-7)', ()
   test('unknown form → 404', async () => {
     expect((await call('GET', '/api/forms-advanced/nope/share')).status).toBe(404);
   });
+
+  test('T-A5: published → lineDistUrl(/fo/:id) を publicUrl と別キーで返す (既存 publicUrl 不変)', async () => {
+    seedForm('fa1', 'published');
+    const d = (await (await call('GET', '/api/forms-advanced/fa1/share')).json() as { data: { publicUrl: string; lineDistUrl: string } }).data;
+    // 既存 publicUrl は HP 生 URL のまま不変 (追加キーのみ / 非破壊)
+    expect(d.publicUrl).toBe(ADDR);
+    // LINE 配信用は worker の /fo/:id (追跡 + prefill 経路)。base は WORKER_URL。
+    expect(d.lineDistUrl).toBe('https://api.example.com/fo/fa1');
+  });
+
+  test('T-A5: draft → lineDistUrl も null (未公開は配布不可 / publicUrl と同挙動)', async () => {
+    seedForm('fa1', 'draft');
+    const d = (await (await call('GET', '/api/forms-advanced/fa1/share')).json() as { data: { publicUrl: string | null; lineDistUrl: string | null } }).data;
+    expect(d.publicUrl).toBeNull();
+    expect(d.lineDistUrl).toBeNull();
+  });
 });
 
 describe('T-E1 POST /gsheet/connect (owner gated / fail-soft)', () => {

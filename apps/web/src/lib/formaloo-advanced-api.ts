@@ -117,6 +117,8 @@ export const formsAdvancedApi = {
 export interface ShareInfo {
   published: boolean
   publicUrl: string | null
+  // T-A5 順方向: LINE 配信用 URL (/fo/:id / 追跡 + fr_id/fr_name prefill)。未公開は null。
+  lineDistUrl: string | null
   iframeCode: string | null
   scriptCode: string | null
   gsheetConnected: boolean
