@@ -51,6 +51,27 @@ export interface FormalooSyncState {
   sync_status: string;
   last_error: string | null;
   updated_at: string;
+  // migration 098 (formaloo-auto-pull): drift 検知の別軸 (sync_status と直交)。既存行は既定値で後方互換。
+  remote_definition_hash: string | null; // baseline fingerprint (NULL=未 bootstrap)
+  pending_remote_hash: string | null;    // 通知中 drift の fingerprint (dedup キー)
+  drift_status: string;                  // none|detected|applied|conflict
+  drift_detected_at: string | null;      // 最新 drift 検知時刻 (JST ISO)
+  remote_updated_at: string | null;      // optional: list timestamp フィルタ用
+}
+
+/** Formaloo 定義 drift の監査履歴行 (migration 098 / R5)。 */
+export interface FormalooDriftEventRow {
+  id: string;
+  form_id: string;
+  detected_at: string;
+  action: string; // notified | auto_applied | conflict_held | bootstrapped
+  remote_hash: string | null;
+  prev_hash: string | null;
+  has_warnings: number; // 1/0
+  warnings_json: string | null;
+  sync_status_at: string | null;
+  detail: string | null;
+  created_at: string;
 }
 
 export interface CreateFormalooFormInput {
@@ -312,25 +333,132 @@ export async function softDeleteFormalooForm(db: D1Database, id: string): Promis
     .run();
 }
 
+/**
+ * 同期状態を upsert。drift 系パラメータ (migration 098 / formaloo-auto-pull) は **additive で任意**:
+ * key が渡された時だけ当該列を更新する (undefined は「触らない」= 既存値保持 / null は「明示クリア」を許可)。
+ * drift key を一切渡さない既存呼出は byte-equivalent (drift 列は INSERT 時 DEFAULT / UPDATE 時無改変)。
+ * last_pushed_at / last_pulled_at は従来どおり COALESCE (null で前回値を消さない)。
+ */
 export async function setFormalooSyncState(
   db: D1Database,
   formId: string,
-  params: { syncStatus: string; lastError?: string | null; lastPushedAt?: string | null; lastPulledAt?: string | null },
+  params: {
+    syncStatus: string;
+    lastError?: string | null;
+    lastPushedAt?: string | null;
+    lastPulledAt?: string | null;
+    // ── migration 098 drift 追跡 (任意 / present-key で列を更新) ──
+    remoteDefinitionHash?: string | null;
+    pendingRemoteHash?: string | null;
+    driftStatus?: string;
+    driftDetectedAt?: string | null;
+    remoteUpdatedAt?: string | null;
+  },
 ): Promise<void> {
   const now = jstNow();
+  const cols = ['form_id', 'sync_status', 'last_error', 'last_pushed_at', 'last_pulled_at', 'updated_at'];
+  const vals: (string | number | null)[] = [
+    formId,
+    params.syncStatus,
+    params.lastError ?? null,
+    params.lastPushedAt ?? null,
+    params.lastPulledAt ?? null,
+    now,
+  ];
+  const updates = [
+    'sync_status = excluded.sync_status',
+    'last_error = excluded.last_error',
+    'last_pushed_at = COALESCE(excluded.last_pushed_at, formaloo_sync_state.last_pushed_at)',
+    'last_pulled_at = COALESCE(excluded.last_pulled_at, formaloo_sync_state.last_pulled_at)',
+    'updated_at = excluded.updated_at',
+  ];
+  // present-key の drift 列だけを INSERT 列 + UPDATE SET に足す (explicit-null を保つため COALESCE を使わない)。
+  const driftCols: [keyof typeof params, string][] = [
+    ['remoteDefinitionHash', 'remote_definition_hash'],
+    ['pendingRemoteHash', 'pending_remote_hash'],
+    ['driftStatus', 'drift_status'],
+    ['driftDetectedAt', 'drift_detected_at'],
+    ['remoteUpdatedAt', 'remote_updated_at'],
+  ];
+  for (const [key, col] of driftCols) {
+    if (key in params) {
+      cols.push(col);
+      vals.push((params[key] as string | null) ?? null);
+      updates.push(`${col} = excluded.${col}`);
+    }
+  }
+  const placeholders = cols.map(() => '?').join(', ');
   await db
     .prepare(
-      `INSERT INTO formaloo_sync_state (form_id, sync_status, last_error, last_pushed_at, last_pulled_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(form_id) DO UPDATE SET
-         sync_status = excluded.sync_status,
-         last_error = excluded.last_error,
-         last_pushed_at = COALESCE(excluded.last_pushed_at, formaloo_sync_state.last_pushed_at),
-         last_pulled_at = COALESCE(excluded.last_pulled_at, formaloo_sync_state.last_pulled_at),
-         updated_at = excluded.updated_at`,
+      `INSERT INTO formaloo_sync_state (${cols.join(', ')}) VALUES (${placeholders})
+       ON CONFLICT(form_id) DO UPDATE SET ${updates.join(', ')}`,
     )
-    .bind(formId, params.syncStatus, params.lastError ?? null, params.lastPushedAt ?? null, params.lastPulledAt ?? null, now)
+    .bind(...vals)
     .run();
+}
+
+/**
+ * Formaloo 連携済み (formaloo_slug NOT NULL / deleted=0) の全 form を返す (drift-check 走査対象)。
+ * push 済み (slug 確定) の form のみ = Formaloo 側に定義が存在する = drift 検知の対象。
+ */
+export async function listLinkedFormalooForms(db: D1Database): Promise<FormalooForm[]> {
+  const r = await db
+    .prepare('SELECT * FROM formaloo_forms WHERE formaloo_slug IS NOT NULL AND deleted = 0 ORDER BY updated_at DESC')
+    .all<FormalooForm>();
+  return r.results;
+}
+
+/** drift 監査履歴を 1 件記録 (R5 / de_ prefix)。detectedAt 未指定は jstNow。 */
+export async function recordFormalooDriftEvent(
+  db: D1Database,
+  input: {
+    formId: string;
+    action: string;
+    detectedAt?: string;
+    remoteHash?: string | null;
+    prevHash?: string | null;
+    hasWarnings?: boolean;
+    warningsJson?: string | null;
+    syncStatusAt?: string | null;
+    detail?: string | null;
+  },
+): Promise<void> {
+  const id = `de_${crypto.randomUUID()}`;
+  const detectedAt = input.detectedAt ?? jstNow();
+  await db
+    .prepare(
+      `INSERT INTO formaloo_drift_events
+         (id, form_id, detected_at, action, remote_hash, prev_hash, has_warnings, warnings_json, sync_status_at, detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      input.formId,
+      detectedAt,
+      input.action,
+      input.remoteHash ?? null,
+      input.prevHash ?? null,
+      input.hasWarnings ? 1 : 0,
+      input.warningsJson ?? null,
+      input.syncStatusAt ?? null,
+      input.detail ?? null,
+    )
+    .run();
+}
+
+/** form の drift 監査履歴を新しい順に取得 (R5 / 履歴表示・監査)。 */
+export async function listFormalooDriftEvents(
+  db: D1Database,
+  formId: string,
+  limit = 50,
+): Promise<FormalooDriftEventRow[]> {
+  const r = await db
+    .prepare(
+      'SELECT * FROM formaloo_drift_events WHERE form_id = ? ORDER BY detected_at DESC, created_at DESC LIMIT ?',
+    )
+    .bind(formId, limit)
+    .all<FormalooDriftEventRow>();
+  return r.results;
 }
 
 export async function getFormalooSyncState(
