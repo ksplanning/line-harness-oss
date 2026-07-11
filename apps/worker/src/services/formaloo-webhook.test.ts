@@ -168,6 +168,25 @@ describe('parseWebhookPayload — 署名 fr_id 復元 (T-A6 / 順方向)', () =>
     expect(p!.slug).toBe('form_xyz');             // top-level slug → form slug
     expect(p!.friendId).toBe(FRIEND);             // rendered_data 署名 fr_id 復元
     expect(p!.submittedAt).toBe('2026-07-11T10:00:00+09:00');
+    expect(p!.answers).toEqual({ field_1: '田中', field_2: 'x' }); // CX-2: data(field map)→answers 非空
+  });
+
+  test('CX-2: 実 payload の data(field map) が answers へ mapping され blank upsert しない (S-1 blocker)', async () => {
+    const p = await parseWebhookPayload(
+      { submit_code: 'ROW_9', slug: 'form_z', data: { field_a: 'x', field_b: 'y' }, rendered_data: {} },
+      now,
+    );
+    expect(p!.submissionId).toBe('ROW_9');
+    expect(Object.keys(p!.answers).length).toBeGreaterThan(0);
+    expect(p!.answers).toEqual({ field_a: 'x', field_b: 'y' });
+  });
+
+  test('CX-2: legacy 形 (data.answers) は従来どおり data.answers を採り data 全体を混ぜない (回帰なし)', async () => {
+    const p = await parseWebhookPayload(
+      { data: { slug: 'sub_l', form: { slug: 'form_l' }, answers: { q1: 'A' } } },
+      now,
+    );
+    expect(p!.answers).toEqual({ q1: 'A' }); // slug/form を answers へ混入しない
   });
 
   test('F-3: submit_code 不在 (legacy 形) では root.slug を form-slug に誤採用しない', async () => {

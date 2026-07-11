@@ -97,7 +97,12 @@ export async function parseWebhookPayload(
     data.form as unknown, root.form as unknown,
   );
 
-  const answersObj = asObject(data.answers) ?? asObject(data.fields) ?? asObject(root.answers) ?? {};
+  // answers 抽出: legacy 形は data.answers / data.fields / root.answers。実 payload 形 (submit_code present)
+  // は top-level data 自体が field-id map = answers 本体ゆえ data を採る (未 mapping で answers_json が空の
+  // まま upsert される blank submission を防ぐ / CX-2 / S-1 blocker)。data がラッパの legacy 形では
+  // submitCode が無いので data 全体を混ぜない (slug/form 等の構造キーが answers に漏れない = 回帰なし)。
+  const answersObj =
+    asObject(data.answers) ?? asObject(data.fields) ?? asObject(root.answers) ?? (submitCode ? asObject(data) : null) ?? {};
   const answers: Record<string, unknown> = { ...answersObj };
 
   const submittedAt = firstString(data.created_at, data.submitted_at, root.created_at, root.submitted_at) ?? nowIso;
