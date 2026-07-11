@@ -3,7 +3,7 @@
  * 送信は関与しない (form state 反映のみ)。
  */
 import { describe, test, expect } from 'vitest'
-import { itemToFormPatch, packOptionLabel, isInsertablePack } from './pack-insert'
+import { itemToFormPatch, packOptionLabel, isInsertablePack, packToFormMessages, packFitsRemaining } from './pack-insert'
 
 describe('itemToFormPatch', () => {
   test('text bubble → text form patch', () => {
@@ -31,5 +31,32 @@ describe('isInsertablePack', () => {
   test('true when >=1 item, false when empty', () => {
     expect(isInsertablePack(1)).toBe(true)
     expect(isInsertablePack(0)).toBe(false)
+  })
+})
+
+describe('packToFormMessages', () => {
+  test('maps every bubble to a form patch in the same order (no truncation)', () => {
+    const items = [
+      { message_type: 'text' as const, message_content: 'あいさつ' },
+      { message_type: 'flex' as const, message_content: '{"type":"bubble"}' },
+      { message_type: 'text' as const, message_content: '締め' },
+    ]
+    expect(packToFormMessages(items)).toEqual([
+      { messageType: 'text', messageContent: 'あいさつ' },
+      { messageType: 'flex', messageContent: '{"type":"bubble"}' },
+      { messageType: 'text', messageContent: '締め' },
+    ])
+  })
+  test('empty pack → empty patch array', () => {
+    expect(packToFormMessages([])).toEqual([])
+  })
+})
+
+describe('packFitsRemaining', () => {
+  test('true when the whole pack fits the remaining slots (fail-loud capacity check, no silent truncation)', () => {
+    expect(packFitsRemaining(3, 5)).toBe(true)
+    expect(packFitsRemaining(3, 3)).toBe(true)
+    expect(packFitsRemaining(3, 2)).toBe(false)
+    expect(packFitsRemaining(3, 0)).toBe(false)
   })
 })

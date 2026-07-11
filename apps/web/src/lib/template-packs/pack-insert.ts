@@ -21,6 +21,25 @@ export function itemToFormPatch(item: Pick<TemplatePackItem, 'message_type' | 'm
   return { messageType: item.message_type, messageContent: item.message_content }
 }
 
+/**
+ * パックの全吹き出しを form patch 配列に変換する (combo messages Batch 2)。
+ * 順序を保持し、切り詰めない (fail-loud: 残枠不足の判定は packFitsRemaining + 呼び側 UI の責務。
+ * ここで silent に一部だけ返すと「パック全体を追加」の意図が壊れる — codex-independent-check MED #7)。
+ */
+export function packToFormMessages(
+  items: Pick<TemplatePackItem, 'message_type' | 'message_content'>[],
+): FormBubblePatch[] {
+  return items.map(itemToFormPatch)
+}
+
+/**
+ * パック全体 (itemCount 件) が残り枠 (remainingSlots) に収まるか (最大5の容量判定)。
+ * false のとき呼び側 UI は「パック全体を追加」を無効化し不足を明示する (silent 切り詰めしない)。
+ */
+export function packFitsRemaining(itemCount: number, remainingSlots: number): boolean {
+  return itemCount <= remainingSlots
+}
+
 /** パックのラベル (一覧/セレクトの表示)。「名前（N吹き出し）」。 */
 export function packOptionLabel(name: string, itemCount: number): string {
   return `${name}（${itemCount}吹き出し）`
