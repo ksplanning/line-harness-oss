@@ -162,6 +162,11 @@ export type Env = {
     // null を返し fail-soft (高機能フォーム機能のみ無効・既存機能は無影響)。
     FORMALOO_API_KEY?: string;
     FORMALOO_API_SECRET?: string;
+    // F6-1 envelope 暗号化キー管理の親鍵 (KEK)。base64 32byte。`wrangler secret put FORMALOO_KEK` で
+    //   供給する (closer 工程 S-1 / repo・wrangler.toml・D1 に生値を置かない / D-2 / N-15)。未投入 dev は
+    //   resolveFormalooClient の登録 workspace 解決が null に落ち、env 単一鍵 fallback (workspaceId=null)
+    //   のみ動作する (dark-ship 安全)。
+    FORMALOO_KEK?: string;
     // F-3 回答 webhook の自前認証 (closer 工程 S-1 で wrangler secret put)。repo に生値を置かない (D-2)。
     //   FORMALOO_WEBHOOK_TOKEN  : /formaloo/webhook/:token の推測不能 path token (N-4)。未設定 dev は fail-closed。
     //   FORMALOO_WEBHOOK_SECRET : HMAC 署名検証の共有鍵 (N-12)。署名スキームは live 確定 (sidecar 申し送り)。

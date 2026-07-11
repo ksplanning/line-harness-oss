@@ -16,6 +16,8 @@
 //   - token 抽出は res.json() (JSON parse)。rtk jq は使わない (§15.2 教訓 / 地雷#1)。
 // =============================================================================
 
+import { decryptSecret, formalooFieldAad, type EncryptedField } from './formaloo-crypto.js';
+
 /** token キャッシュ TTL (help doc の 30 秒。安全側 cap = 実 exp より短く / 実 invalidation は 401)。 */
 export const FORMALOO_TOKEN_TTL_MS = 30_000;
 
@@ -216,4 +218,60 @@ export function createFormalooClient(env: {
 }): FormalooClient | null {
   if (!env.FORMALOO_API_KEY || !env.FORMALOO_API_SECRET) return null;
   return new FormalooClient({ apiKey: env.FORMALOO_API_KEY, apiSecret: env.FORMALOO_API_SECRET });
+}
+
+/** resolveFormalooClient の env 契約 (D1 + envelope 暗号化キー管理 / F6-1)。 */
+export interface ResolveFormalooEnv {
+  FORMALOO_API_KEY?: string;
+  FORMALOO_API_SECRET?: string;
+  FORMALOO_KEK?: string;
+  DB: D1Database;
+}
+
+interface WorkspaceSecretsRow {
+  key_ciphertext: string;
+  key_iv: string;
+  secret_ciphertext: string;
+  secret_iv: string;
+}
+
+/**
+ * 多鍵 resolver (F6-1 / T-A3)。workspaceId で「どの Formaloo workspace の鍵で動くか」を決める。
+ *
+ * 分岐 (Codex gap #1/#8 — 復号失敗は決して env 鍵へ silent fallback しない):
+ *   (a) workspaceId が null/undefined → **即 env 単一鍵 fallback** (createFormalooClient)。
+ *       D1/KEK に一切触れず短絡する (FORMALOO_KEK 未投入でも動く / 既存挙動と byte-equivalent /
+ *       dark-ship 安全)。F6-1 の 7 call site はこの経路 (form.workspace_id 列は F6-2 まで無い)。
+ *   (b) workspaceId 指定 かつ 有効な登録 workspace → D1 暗号文を KEK で復号し、その KEY/SECRET で
+ *       client 構築。**復号失敗 (KEK 不一致 / tamper / KEK 未投入) は null** (「要再登録」表示)。
+ *   (c) workspaceId 指定 だが 未登録 / 無効化 (is_active=0) → **null**。
+ *
+ * (b)(c) で env 鍵へ落とさないのが要: A の鍵で B に push する誤送信を構造的に防ぐ。
+ * token cache は apiKey キー (getToken) ゆえ workspace 毎に自然分離する (N-14)。
+ */
+export async function resolveFormalooClient(
+  env: ResolveFormalooEnv,
+  workspaceId?: string | null,
+): Promise<FormalooClient | null> {
+  // (a) 特定 workspace を要求していない → env fallback (D1/KEK 非接触短絡)。
+  if (workspaceId == null) return createFormalooClient(env);
+
+  // (b)(c) 特定 workspace を要求 → registry lookup (有効な行のみ)。
+  const row = await env.DB
+    .prepare(
+      `SELECT key_ciphertext, key_iv, secret_ciphertext, secret_iv
+       FROM formaloo_workspaces WHERE id = ? AND is_active = 1`,
+    )
+    .bind(workspaceId)
+    .first<WorkspaceSecretsRow>();
+  if (!row) return null; // 未登録 / 無効化 → null (env fallback しない)
+  if (!env.FORMALOO_KEK) return null; // KEK 未投入 → 復号不能 → null (env fallback しない)
+
+  const keyField: EncryptedField = { ciphertext: row.key_ciphertext, iv: row.key_iv };
+  const secretField: EncryptedField = { ciphertext: row.secret_ciphertext, iv: row.secret_iv };
+  const apiKey = await decryptSecret(env.FORMALOO_KEK, keyField, formalooFieldAad(workspaceId, 'key'));
+  const apiSecret = await decryptSecret(env.FORMALOO_KEK, secretField, formalooFieldAad(workspaceId, 'secret'));
+  if (apiKey == null || apiSecret == null) return null; // 復号失敗 → null (env fallback しない)
+
+  return new FormalooClient({ apiKey, apiSecret });
 }
