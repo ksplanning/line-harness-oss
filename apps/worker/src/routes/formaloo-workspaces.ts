@@ -1,4 +1,10 @@
 import { Hono } from 'hono';
+import {
+  isActiveFormalooWorkspace,
+  listFormalooAccountBindings,
+  upsertFormalooAccountBinding,
+  clearFormalooAccountBinding,
+} from '@line-crm/db';
 import { FormalooClient } from '../services/formaloo-client.js';
 import { encryptSecret, formalooFieldAad } from '../services/formaloo-crypto.js';
 import { ownerGate } from '../lib/owner-gate.js';
@@ -181,6 +187,71 @@ formalooWorkspaces.delete('/api/formaloo-workspaces/:id', async (c) => {
     return c.json({ success: true, data: null });
   } catch {
     console.error('DELETE /api/formaloo-workspaces/:id error');
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// =============================================================================
+// /api/formaloo-account-bindings — アカウント→既定 workspace の binding (F6-2 / 作成先の既定解決)
+// -----------------------------------------------------------------------------
+// owner-only (共有 ownerGate = built-in admin/staff も非 owner は 403 / Codex gap #6)。
+// permission-map は formaloo-workspaces と同じ forms_advanced feature で gate (custom role 導線用)。
+// 用途: ①作成 UI の workspace セレクタ既定 ②POST /api/forms-advanced で明示 workspace 無しのときの server 既定解決。
+// default_workspace_id は **登録済 active workspace のみ** 受理 (無効値で binding を書かない / 参照整合性 M-4)。
+// =============================================================================
+
+// GET /api/formaloo-account-bindings — 一覧 (owner only)
+formalooWorkspaces.get('/api/formaloo-account-bindings', async (c) => {
+  const denied = ownerGate(c, OWNER_MSG);
+  if (denied) return denied;
+  try {
+    const list = await listFormalooAccountBindings(c.env.DB);
+    return c.json({
+      success: true,
+      data: list.map((b) => ({ lineAccountId: b.line_account_id, defaultWorkspaceId: b.default_workspace_id })),
+    });
+  } catch {
+    console.error('GET /api/formaloo-account-bindings error');
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PUT /api/formaloo-account-bindings/:lineAccountId — 既定 workspace を set (active 検証 / owner only)
+formalooWorkspaces.put('/api/formaloo-account-bindings/:lineAccountId', async (c) => {
+  const denied = ownerGate(c, OWNER_MSG);
+  if (denied) return denied;
+  const lineAccountId = c.req.param('lineAccountId')!;
+  const body = await c.req.json<{ defaultWorkspaceId?: unknown }>().catch(() => ({}) as { defaultWorkspaceId?: unknown });
+  const defaultWorkspaceId = typeof body.defaultWorkspaceId === 'string' && body.defaultWorkspaceId.trim() ? body.defaultWorkspaceId.trim() : '';
+  if (!defaultWorkspaceId) {
+    return c.json({ success: false, error: '既定にするワークスペースを選択してください' }, 400);
+  }
+  try {
+    // 実在アカウントのみ (line_accounts に無い id への binding は作らない / 参照整合性)。
+    const acc = await c.env.DB.prepare('SELECT 1 AS ok FROM line_accounts WHERE id = ?').bind(lineAccountId).first<{ ok: number }>();
+    if (!acc) return c.json({ success: false, error: 'アカウントが見つかりません' }, 400);
+    // 登録済 active workspace のみ受理 (無効値で binding を書かない / Codex M#4)。
+    if (!(await isActiveFormalooWorkspace(c.env.DB, defaultWorkspaceId))) {
+      return c.json({ success: false, error: '指定されたワークスペースは登録されていないか無効です' }, 400);
+    }
+    await upsertFormalooAccountBinding(c.env.DB, lineAccountId, defaultWorkspaceId);
+    return c.json({ success: true, data: { lineAccountId, defaultWorkspaceId } });
+  } catch {
+    console.error('PUT /api/formaloo-account-bindings/:lineAccountId error');
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// DELETE /api/formaloo-account-bindings/:lineAccountId — 既定 workspace を clear (owner only)
+formalooWorkspaces.delete('/api/formaloo-account-bindings/:lineAccountId', async (c) => {
+  const denied = ownerGate(c, OWNER_MSG);
+  if (denied) return denied;
+  const lineAccountId = c.req.param('lineAccountId')!;
+  try {
+    await clearFormalooAccountBinding(c.env.DB, lineAccountId);
+    return c.json({ success: true, data: null });
+  } catch {
+    console.error('DELETE /api/formaloo-account-bindings/:lineAccountId error');
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

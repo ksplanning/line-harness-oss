@@ -97,6 +97,9 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   // F6-1: Formaloo workspace キー管理。custom role 導線用に forms_advanced feature で gate
   //   (真の enforcement は route の ownerGate = built-in admin/staff も非 owner は 403 / Codex gap #6)。
   { test: prefix('formaloo-workspaces'), feature: 'forms_advanced' },
+  // F6-2: アカウント→既定 workspace の binding。formaloo-workspaces と同様 forms_advanced feature で gate
+  //   (真の enforcement は route の ownerGate)。
+  { test: prefix('formaloo-account-bindings'), feature: 'forms_advanced' },
   { test: prefix('forms'), feature: 'form' },
   { test: prefix('faqs'), feature: 'faq' },
   // 取込ナレッジ (Phase B B-3) は FAQ と同じ「よくある質問」機能の一部 = 既存 faq 権限で gate (新 FeatureKey なし)。

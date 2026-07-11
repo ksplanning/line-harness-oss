@@ -57,6 +57,10 @@ export interface CreateFormalooFormInput {
   onSubmitTagId?: string | null;
   onSubmitScenarioId?: string | null;
   submitMessage?: string | null;
+  // F6-2: 表示スコープ + 作成先 workspace。workspaceId は route 側で §3.4 解決順序を経た確定値のみ渡す
+  // (client body を無条件採用しない = server 権威 / Codex B#1)。未指定は両 NULL (env 鍵 / 共通表示)。
+  lineAccountId?: string | null;
+  workspaceId?: string | null;
 }
 
 export async function createFormalooForm(
@@ -69,8 +73,8 @@ export async function createFormalooForm(
     .prepare(
       `INSERT INTO formaloo_forms
          (id, title, description, definition_json, on_submit_tag_id, on_submit_scenario_id, submit_message,
-          submit_count, deleted, builder_status, created_at, updated_at)
-       VALUES (?, ?, ?, '{"fields":[],"logic":[]}', ?, ?, ?, 0, 0, 'draft', ?, ?)`,
+          submit_count, deleted, builder_status, line_account_id, workspace_id, created_at, updated_at)
+       VALUES (?, ?, ?, '{"fields":[],"logic":[]}', ?, ?, ?, 0, 0, 'draft', ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -79,11 +83,94 @@ export async function createFormalooForm(
       input.onSubmitTagId ?? null,
       input.onSubmitScenarioId ?? null,
       input.submitMessage ?? null,
+      input.lineAccountId ?? null,
+      input.workspaceId ?? null,
       now,
       now,
     )
     .run();
   return (await getFormalooForm(db, id))!;
+}
+
+// ─── F6-2 作成先 workspace 解決 (server 権威 / account_binding 台帳) ──────────────
+
+export interface FormalooAccountBinding {
+  line_account_id: string;
+  default_workspace_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 登録済 かつ active な Formaloo workspace か (参照整合性 / 作成先の server 検証 / Codex M#4)。 */
+export async function isActiveFormalooWorkspace(db: D1Database, workspaceId: string): Promise<boolean> {
+  const row = await db
+    .prepare('SELECT 1 AS ok FROM formaloo_workspaces WHERE id = ? AND is_active = 1')
+    .bind(workspaceId)
+    .first<{ ok: number }>();
+  return row != null;
+}
+
+/** account→既定 workspace の binding を全件取得 (owner-gated GET 用)。 */
+export async function listFormalooAccountBindings(db: D1Database): Promise<FormalooAccountBinding[]> {
+  const r = await db
+    .prepare('SELECT * FROM formaloo_account_bindings ORDER BY line_account_id ASC')
+    .all<FormalooAccountBinding>();
+  return r.results;
+}
+
+export async function getFormalooAccountBinding(
+  db: D1Database,
+  lineAccountId: string,
+): Promise<FormalooAccountBinding | null> {
+  return db
+    .prepare('SELECT * FROM formaloo_account_bindings WHERE line_account_id = ?')
+    .bind(lineAccountId)
+    .first<FormalooAccountBinding>();
+}
+
+/** account の既定 workspace を UPSERT (set)。default_workspace_id の active 検証は route 側の責務。 */
+export async function upsertFormalooAccountBinding(
+  db: D1Database,
+  lineAccountId: string,
+  defaultWorkspaceId: string | null,
+): Promise<void> {
+  const now = jstNow();
+  await db
+    .prepare(
+      `INSERT INTO formaloo_account_bindings (line_account_id, default_workspace_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(line_account_id) DO UPDATE SET
+         default_workspace_id = excluded.default_workspace_id,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(lineAccountId, defaultWorkspaceId, now, now)
+    .run();
+}
+
+/** binding を削除 (clear)。 */
+export async function clearFormalooAccountBinding(db: D1Database, lineAccountId: string): Promise<void> {
+  await db.prepare('DELETE FROM formaloo_account_bindings WHERE line_account_id = ?').bind(lineAccountId).run();
+}
+
+/**
+ * 作成時の既定 workspace を解決 (Codex M#7)。binding が指す workspace が **登録済 active のとき** だけ
+ * default_workspace_id を返す。binding 無 / default NULL / 未登録 / 無効化 (is_active=0) は NULL に落とす
+ * (無効な workspace を指す新規 form を最初から孤立させない・binding は cascade 消去しない)。
+ */
+export async function resolveDefaultWorkspace(
+  db: D1Database,
+  lineAccountId: string,
+): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT b.default_workspace_id AS wid
+       FROM formaloo_account_bindings b
+       JOIN formaloo_workspaces w ON w.id = b.default_workspace_id AND w.is_active = 1
+       WHERE b.line_account_id = ?`,
+    )
+    .bind(lineAccountId)
+    .first<{ wid: string }>();
+  return row?.wid ?? null;
 }
 
 /**
