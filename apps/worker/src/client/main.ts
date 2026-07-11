@@ -18,6 +18,7 @@
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
+import { appendLineUserToReturnUrl } from '../lib/liff-return-url.js';
 
 declare const liff: {
   init(config: { liffId: string }): Promise<void>;
@@ -254,13 +255,9 @@ async function linkAndAddFlow() {
         linkPromise,
         new Promise((r) => setTimeout(r, 500)),
       ]);
-      // Append LINE userId to tracking links so clicks are attributed
-      if (redirectUrl.includes('/t/')) {
-        const sep = redirectUrl.includes('?') ? '&' : '?';
-        window.location.href = `${redirectUrl}${sep}lu=${encodeURIComponent(profile.userId)}`;
-      } else {
-        window.location.href = redirectUrl;
-      }
+      // Append LINE userId to worker tracking return paths (/t/:id, /fo/:id) so the return hop
+      // resolves the friend. /fo/:id without lu re-enters the LIFF branch = infinite loop (F-1).
+      window.location.href = appendLineUserToReturnUrl(redirectUrl, profile.userId);
       return;
     }
 

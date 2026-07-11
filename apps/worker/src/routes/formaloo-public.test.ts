@@ -352,6 +352,24 @@ describe('T-A4 /fo/:id LIFF 識別 (R-F2 / /t/:id と同型)', () => {
     expect(opens('fa1').length).toBe(0);
   });
 
+  test('F-1 round-trip: LIFF 復路 /fo/:id?lu= が friend を解決し Formaloo+fr_id へ 302 (再 LIFF せず=ループ閉じる)', async () => {
+    seedFriend('fr_1'); // line_user_id='U_fr_1'
+    seedFormWithAddress('fa1', 'published', ADDR);
+    // hop1: bare /fo (in-app・未解決) → LIFF へ (redirect=/fo/fa1)。
+    const hop1 = await app().request('/fo/fa1', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, envWithFriendSecret());
+    expect(hop1.status).toBe(302);
+    expect(hop1.headers.get('location')!).toContain(encodeURIComponent('https://api.example.com/fo/fa1'));
+    // hop3: LIFF client (appendLineUserToReturnUrl) が lu を付けて戻る → friend 解決 → Formaloo+fr_id へ 302。
+    //        in-app UA でも lu があるので LIFF を再発火しない (無限ループが閉じる = F-1 の芯)。
+    const hop3 = await app().request('/fo/fa1?lu=U_fr_1', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, envWithFriendSecret());
+    expect(hop3.status).toBe(302);
+    const loc = hop3.headers.get('location')!;
+    expect(loc.startsWith(ADDR)).toBe(true);
+    expect(loc).not.toContain('liff'); // 再 LIFF していない (ループ終端)
+    expect(await verifyFriendToken(new URL(loc).searchParams.get('fr_id'), FRIEND_SECRET)).toBe('fr_1');
+    expect(opens('fa1').length).toBe(1); // hop3 で 1 回だけ開封記録 (hop1 の LIFF 段階では記録なし)
+  });
+
   test('in-app UA でも ?f= 付きは LIFF せず Formaloo へ直行 + 開封記録 (既存 /t/:id と同型)', async () => {
     seedFriend('fr_1');
     seedFormWithAddress('fa1', 'published', ADDR);
