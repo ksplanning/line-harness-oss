@@ -19,6 +19,8 @@ import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { processInsightFetch } from './services/insight-fetcher.js';
 import { processDueReminders } from './services/booking-reminders.js';
+import { resolveFormalooClient } from './services/formaloo-client.js';
+import { runFormalooDriftCheck } from './services/formaloo-drift.js';
 import { runExpirer } from './services/booking-expirer.js';
 import { processDueEventReminders } from './services/event-booking-reminders.js';
 import { runEventBookingExpirer } from './services/event-booking-expirer.js';
@@ -179,6 +181,12 @@ export type Env = {
     //   既存 auth API_KEY / FORMALOO_WEBHOOK_SECRET とは別鍵で分離 (fr_id が権限昇格に使えない境界)。
     //   未設定 dev では /fo/:id が prefill を付けず生 Formaloo URL 相当へ degrade (fail-closed / §plan 6)。
     FORMALOO_FRIEND_TOKEN_SECRET?: string;
+    // formaloo-auto-pull: 定義 drift の定期検知 (6h cron) の flag。
+    //   FORMALOO_DRIFT_ENABLED : drift-check job 自体の入口ガード (既定 ON / env で 'false' 即停止 = rollback)。
+    //   FORMALOO_DRIFT_AUTO_APPLY : 安全な drift の自動反映 (案 A='true' / 案 B='false' = 既定 = 通知のみ dark-ship)。
+    //     owner が案 A を選んだら wrangler.toml で 'true' に flip するだけ (通知/バッジは OFF でも動く)。
+    FORMALOO_DRIFT_ENABLED?: string;
+    FORMALOO_DRIFT_AUTO_APPLY?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
@@ -746,6 +754,24 @@ async function scheduled(
       );
     } catch (e) {
       console.error('event-booking-expirer error:', e);
+    }
+  }
+
+  // Formaloo 定義 drift 検知 — 6h cron tick のみ (5min tick では走らない / 予算保護 R9)。
+  // 入口ガード: FORMALOO_DRIFT_ENABLED='false' で即停止 (rollback / 既定 ON)。
+  // auto-apply は FORMALOO_DRIFT_AUTO_APPLY='true' の時だけ (既定 OFF = 通知のみ dark-ship)。
+  if (event.cron === '0 */6 * * *' && env.FORMALOO_DRIFT_ENABLED !== 'false') {
+    try {
+      const summary = await runFormalooDriftCheck({
+        db: env.DB,
+        resolveClient: (wsid) => resolveFormalooClient(env, wsid),
+        autoApplyEnabled: env.FORMALOO_DRIFT_AUTO_APPLY === 'true',
+      });
+      console.log(
+        `[formaloo-drift] checked=${summary.checked} bootstrapped=${summary.bootstrapped} auto=${summary.autoApplied} notified=${summary.notified} conflicts=${summary.conflicts} inSync=${summary.inSync} skipped=${summary.skipped}`,
+      );
+    } catch (e) {
+      console.error('[formaloo-drift] error:', e);
     }
   }
 
