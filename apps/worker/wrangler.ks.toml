@@ -55,7 +55,7 @@ CF_ACCOUNT_ID = "8afbae04688d10af42d2d4ab5a323019"
 # FAQ 自動応答ボット (Phase A) の全体スイッチ。既定 OFF = webhook text 処理は byte-identical。
 # 有効化 (= "true") は owner 立会テスト時のみ (cron ON と同じ回で可)。ここを "true" にすると
 # アカウント別設定 (account_settings key='faq_bot' enabled) と AND で自動返信が発火する。
-FAQ_BOT_ENABLED = "false"
+FAQ_BOT_ENABLED = "true"
 MANIFEST_URL = "https://github.com/Shudesu/line-harness-oss/releases/latest/download/release-manifest.json"
 # ── FAQ AI (Phase B go-live / owner 立会 §1) additive。生成/埋め込みモデルは env 注入 (literal 焼き込みなし)。
 #    非 deprecated 実確認済 (2026-07-11 docs 200)・埋め込み次元 1024 は live 実測 (data[1][1024]) 済。
