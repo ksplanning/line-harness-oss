@@ -16,6 +16,7 @@ import {
   formalooSubmissionsDailyCounts,
   bulkDeleteFormalooSubmissions,
   setFormalooGsheetState,
+  getFormalooFieldMap,
   type FormalooForm,
   type FormalooSubmissionRow,
 } from '@line-crm/db';
@@ -36,6 +37,7 @@ import {
 } from '../services/formaloo-publish-gate.js';
 import { createFormalooClient } from '../services/formaloo-client.js';
 import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
+import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
 import type { Env } from '../index.js';
 
 // =============================================================================
@@ -199,6 +201,54 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     return c.json({ success: true, data: await serializeForm(c.env.DB, updated!) });
   } catch (err) {
     console.error('PUT /api/forms-advanced/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/forms-advanced/:id/pull — Formaloo から定義を再取り込み (N-8 / 非破壊プレビュー)
+//   Formaloo = 定義の権威 (§4)。運用者が Formaloo 管理画面で直接編集したフォームを builder に読み戻す。
+//   D1 は書き換えない (setFormalooSyncState/saveFormalooDefinition は呼ばない) = builder state 反映のみ。
+//   永続化は運用者が既存 PUT で「保存」。response.data.ok は「editor に適用してよいか」の判別子:
+//   frontend は ok===true の時だけ state を置換し、ok:false は note のみ表示する (B2 = editor を潰さない)。
+//   client 未配備 (dev) / formaloo_slug 無 / pull 失敗は fail-soft (ok:false + note + 200 / 500 にしない)。
+formsAdvanced.get('/api/forms-advanced/:id/pull', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+
+    const client = createFormalooClient(c.env);
+    if (!client) {
+      return c.json({ success: true, data: { ok: false, fields: [], logic: [], note: 'Formaloo 未接続のため再取り込みできません（S-1 待ち）' } });
+    }
+    if (!form.formaloo_slug) {
+      return c.json({ success: true, data: { ok: false, fields: [], logic: [], note: 'このフォームはまだ Formaloo に未同期です（先に保存してください）' } });
+    }
+
+    // slug → harness id の resolver を D1 field_map から組む (書込みなし = read のみ)。
+    const map = await getFormalooFieldMap(c.env.DB, id);
+    const bySlug = new Map<string, string>();
+    for (const row of map) {
+      if (row.formaloo_field_slug) bySlug.set(row.formaloo_field_slug, row.id);
+    }
+    const r = await pullDefinitionFromFormaloo(client, {
+      formalooSlug: form.formaloo_slug,
+      resolveId: (s) => bySlug.get(s) ?? s, // 既知 slug → 既存 id / 未知 → slug 自身 (fromFormalooField の fallback と整合)
+    });
+    if (!r.ok) {
+      return c.json({ success: true, data: { ok: false, fields: [], logic: [], note: `再取り込みに失敗しました（${r.error}）` } });
+    }
+    return c.json({
+      success: true,
+      data: {
+        ok: true,
+        fields: r.fields,
+        logic: r.logic,
+        note: 'Formaloo から再取り込みしました。内容を確認して「保存」してください（⚠️保存すると Formaloo に項目が重複作成される場合があります）',
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/forms-advanced/:id/pull error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

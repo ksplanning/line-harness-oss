@@ -10,7 +10,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { describe, expect, test, beforeEach } from 'vitest';
+import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { jstNow, createRole, setRolePermissions } from '@line-crm/db';
 import { authMiddleware } from '../middleware/auth.js';
@@ -75,6 +75,14 @@ function call(method: string, path: string, body?: unknown, auth = OWNER) {
     headers: { Authorization: auth, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   }, env());
+}
+/** env override 版 (FORMALOO_* を注入して client 配備をシミュレート)。 */
+function callEnv(method: string, path: string, envOverride: Partial<Env['Bindings']>, body?: unknown, auth = OWNER) {
+  return app().request(path, {
+    method,
+    headers: { Authorization: auth, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }, { ...env(), ...envOverride });
 }
 function seedStaff(id: string, role: string, apiKey: string, roleId: string | null = null) {
   const now = jstNow();
@@ -215,6 +223,106 @@ describe('forms-advanced publish gate (T-B3 / N-7)', () => {
     const d = (await un.json() as { data: { builderStatus: string; publicUrl: string | null } }).data;
     expect(d.builderStatus).toBe('draft');
     expect(d.publicUrl).toBeNull(); // 公開 URL 即無効
+  });
+});
+
+describe('forms-advanced pull 再取り込み (GET /:id/pull / N-8)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  test('happy-path: auth+form-detail stub → ok:true + resolver 反映 + D1 非書込み (B4)', async () => {
+    const id = await createForm();
+    const slug = 'formaloo_pull_happy';
+    // formaloo_slug + field_map seed。formaloo_field_map.id は global UNIQUE → 毎回ユニーク field id。
+    raw.prepare(`UPDATE formaloo_forms SET formaloo_slug=? WHERE id=?`).run(slug, id);
+    const now = jstNow();
+    const nameFieldId = `fmuniq_${id}_name`;
+    raw.prepare(
+      `INSERT INTO formaloo_field_map (id, form_id, formaloo_field_slug, field_type, label, position, config_json, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(nameFieldId, id, 's_name', 'short_text', '名前', 0, '{}', now, now);
+
+    const formDetail = {
+      data: {
+        form: {
+          slug,
+          fields_list: [
+            { slug: 's_name', type: 'short_text', title: '名前', required: true, position: 0, max_length: 30 },
+            { slug: 's_color', type: 'choice', title: '色', required: false, position: 1,
+              choice_items: [{ title: '青', position: 1, slug: 'ci2' }, { title: '赤', position: 0, slug: 'ci1' }] },
+          ],
+          logic: { rules: [
+            { conditions: [{ field: 's_color', operator: 'equals', value: '赤' }], actions: [{ type: 'show', field: 's_name' }] },
+          ] },
+        },
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: { method?: string }) => {
+      const url = String(input);
+      if (url.includes('/oauth2/authorization-token/')) {
+        return new Response(JSON.stringify({ authorization_token: 'jwt-test' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if ((init?.method ?? 'GET') === 'GET' && url.includes(`/v3.0/forms/${slug}/`)) {
+        return new Response(JSON.stringify(formDetail), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 404 });
+    }));
+
+    // D1 スナップショット (非書込み検証 / B4)
+    const beforeCount = (raw.prepare(`SELECT COUNT(*) AS n FROM formaloo_field_map`).get() as { n: number }).n;
+    const beforeDef = (raw.prepare(`SELECT definition_json AS d FROM formaloo_forms WHERE id=?`).get(id) as { d: string }).d;
+
+    const res = await callEnv('GET', `/api/forms-advanced/${id}/pull`, { FORMALOO_API_KEY: 'k', FORMALOO_API_SECRET: 's' });
+    expect(res.status).toBe(200);
+    const d = (await res.json() as {
+      data: { ok: boolean; fields: Array<{ id: string; type: string; config: { choices?: string[] } }>; logic: Array<{ sourceFieldId: string; targetFieldId: string }>; note: string };
+    }).data;
+    expect(d.ok).toBe(true);
+    // 既知 slug は field_map の id に resolve / 未知 slug は fallback で slug 自身
+    expect(d.fields.map((f) => f.id)).toEqual([nameFieldId, 's_color']);
+    expect(d.fields[1].config.choices).toEqual(['赤', '青']); // choice zero-loss (position 昇順)
+    expect(d.logic).toHaveLength(1);
+    expect(d.logic[0].sourceFieldId).toBe('s_color');
+    expect(d.logic[0].targetFieldId).toBe(nameFieldId);
+    expect(d.note).toContain('重複');
+
+    // D1 非書込み (B4): 行数・definition_json 不変
+    const afterCount = (raw.prepare(`SELECT COUNT(*) AS n FROM formaloo_field_map`).get() as { n: number }).n;
+    const afterDef = (raw.prepare(`SELECT definition_json AS d FROM formaloo_forms WHERE id=?`).get(id) as { d: string }).d;
+    expect(afterCount).toBe(beforeCount);
+    expect(afterDef).toBe(beforeDef);
+  });
+
+  test('client 未配備 (FORMALOO_* 無) → ok:false + note + 200 (500 にしない)', async () => {
+    const id = await createForm();
+    raw.prepare(`UPDATE formaloo_forms SET formaloo_slug=? WHERE id=?`).run('some_slug', id);
+    const res = await call('GET', `/api/forms-advanced/${id}/pull`);
+    expect(res.status).toBe(200);
+    const d = (await res.json() as { data: { ok: boolean; note: string } }).data;
+    expect(d.ok).toBe(false);
+    expect(d.note).toContain('未接続');
+  });
+
+  test('formaloo_slug 無 (未同期) → ok:false + note + 200', async () => {
+    const id = await createForm();
+    const res = await callEnv('GET', `/api/forms-advanced/${id}/pull`, { FORMALOO_API_KEY: 'k', FORMALOO_API_SECRET: 's' });
+    expect(res.status).toBe(200);
+    const d = (await res.json() as { data: { ok: boolean; note: string } }).data;
+    expect(d.ok).toBe(false);
+    expect(d.note).toContain('未同期');
+  });
+
+  test('未知 form → 404', async () => {
+    const res = await callEnv('GET', `/api/forms-advanced/NOPE/pull`, { FORMALOO_API_KEY: 'k', FORMALOO_API_SECRET: 's' });
+    expect(res.status).toBe(404);
+  });
+
+  test('forms_advanced 権限なし staff → 403', async () => {
+    const id = await createForm();
+    const role = await createRole(DB, { name: 'チャットのみ' });
+    await setRolePermissions(DB, role.id, [{ feature_key: 'forms_advanced', allowed: false }]);
+    seedStaff('s_pull', 'staff', 'lh_pullkey', role.id);
+    const res = await call('GET', `/api/forms-advanced/${id}/pull`, undefined, 'Bearer lh_pullkey');
+    expect(res.status).toBe(403);
   });
 });
 
