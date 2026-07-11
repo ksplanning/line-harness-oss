@@ -21,6 +21,9 @@ export interface AdvancedForm {
   embedCode: string | null
   syncStatus: string
   syncError: string | null
+  // preserve-raw (formaloo-logic-fidelity Batch 1): 未編集判定用 fingerprint。rawLogic 逐語は server-side 保持
+  // (reload→save は route が D1 の rawLogic を使う)。builder は save で fingerprint を carry する。
+  logicFingerprint?: string | null
   // F6-2 表示スコープ: lineAccountId は全 role 露出 / workspaceId は owner 応答のみ (非 owner は不在)。
   lineAccountId: string | null
   workspaceId?: string | null
@@ -41,6 +44,17 @@ export interface PulledDefinition {
   fields: HarnessField[]
   logic: HarnessLogicRule[]
   note: string
+  // preserve-raw: builder が opaque 保持し save で carry する (未編集 push で欠けなく再送)。
+  rawLogic?: unknown
+  logicFingerprint?: string | null
+}
+
+// preserve-raw: save body に carry する logic メタ (未編集判定 + verbatim 再送素材)。
+export interface SaveDefinitionBody {
+  fields: HarnessField[]
+  logic: HarnessLogicRule[]
+  rawLogic?: unknown
+  logicFingerprint?: string | null
 }
 
 export const formsAdvancedApi = {
@@ -66,7 +80,7 @@ export const formsAdvancedApi = {
       })
     ).data
   },
-  async saveDefinition(id: string, def: { fields: HarnessField[]; logic: HarnessLogicRule[] }): Promise<AdvancedForm> {
+  async saveDefinition(id: string, def: SaveDefinitionBody): Promise<AdvancedForm> {
     return (
       await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}`, {
         method: 'PUT',

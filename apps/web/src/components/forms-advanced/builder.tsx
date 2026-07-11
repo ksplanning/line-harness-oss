@@ -38,12 +38,14 @@ export interface BuilderProps {
   status: BuilderStatus
   initialFields: HarnessField[]
   initialLogic: HarnessLogicRule[]
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[] }) => Promise<void> | void
+  /** preserve-raw: 初期 logic の fingerprint (reload→save の未編集判定用に carry / Batch 1)。 */
+  initialLogicFingerprint?: string | null
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null }) => Promise<void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
   /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。 */
-  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string } | null>
+  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null } | null>
   publicUrl?: string | null
   embedCode?: string | null
   syncStatus?: string
@@ -249,6 +251,11 @@ function SettingsPanel({
 export default function FormBuilder(props: BuilderProps) {
   const [fields, setFields] = useState<HarnessField[]>(props.initialFields)
   const [logic, setLogic] = useState<HarnessLogicRule[]>(props.initialLogic)
+  // preserve-raw: rawLogic (pull 由来の Formaloo logic 逐語) + logicFingerprint (未編集判定) を opaque 保持。
+  // logic 編集時は更新しない (route が carry fingerprint vs 現 logic で編集を検知する)。reload 初期は raw 無し
+  // (server-side D1 が持つ) → save で fingerprint のみ carry し route が D1 rawLogic を使う。
+  const [rawLogic, setRawLogic] = useState<unknown>(undefined)
+  const [logicFingerprint, setLogicFingerprint] = useState<string | null>(props.initialLogicFingerprint ?? null)
   const [selectedId, setSelectedId] = useState<string | null>(props.initialFields[0]?.id ?? null)
   const [saving, setSaving] = useState(false)
   const [confirmPublish, setConfirmPublish] = useState(false)
@@ -297,7 +304,8 @@ export default function FormBuilder(props: BuilderProps) {
   const handleSave = async () => {
     setSaving(true)
     try {
-      await props.onSave({ fields: reposition(fields), logic })
+      // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
+      await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint })
     } finally {
       setSaving(false)
     }
@@ -314,6 +322,9 @@ export default function FormBuilder(props: BuilderProps) {
         setFields(reposition(d.fields))
         setLogic(d.logic)
         setSelectedId(d.fields[0]?.id ?? null)
+        // preserve-raw: pull の rawLogic + fingerprint を保持 (次の save で未編集なら verbatim 再送)。
+        setRawLogic(d.rawLogic)
+        setLogicFingerprint(d.logicFingerprint ?? null)
       }
     } finally {
       setReimporting(false)

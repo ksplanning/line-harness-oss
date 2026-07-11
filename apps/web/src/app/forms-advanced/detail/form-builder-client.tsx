@@ -57,8 +57,9 @@ export default function FormBuilderClient({ id }: { id: string }) {
     }
   }
 
-  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[] }) => {
+  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null }) => {
     try {
+      // preserve-raw: builder が carry した rawLogic + logicFingerprint をそのまま save body へ渡す。
       const updated = await formsAdvancedApi.saveDefinition(id, def)
       setForm(updated)
       await loadShare()
@@ -123,6 +124,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             status={form.builderStatus}
             initialFields={form.fields}
             initialLogic={form.logic}
+            initialLogicFingerprint={form.logicFingerprint}
             syncStatus={form.syncStatus}
             publicUrl={form.publicUrl}
             embedCode={form.embedCode}
