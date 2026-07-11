@@ -110,6 +110,17 @@ export default function FormBuilderClient({ id }: { id: string }) {
             onSubmitForReview={withErr(() => formsAdvancedApi.submitForReview(id))}
             onPublish={withErr(() => formsAdvancedApi.publish(id))}
             onUnpublish={withErr(() => formsAdvancedApi.unpublish(id))}
+            onReimport={async () => {
+              try {
+                const d = await formsAdvancedApi.reimport(id)
+                setNotice(d.note)
+                return d
+              } catch (e) {
+                const body = (e as { body?: { error?: string } })?.body
+                setNotice(body?.error ?? '再取り込みに失敗しました')
+                return null
+              }
+            }}
           />
           <div className="mt-4">
             <SharePanel share={share} isOwner={isOwner} connecting={connecting} onConnectSheets={handleConnectSheets} />

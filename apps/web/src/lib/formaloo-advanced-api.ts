@@ -30,6 +30,14 @@ interface Envelope<T> {
   error?: string
 }
 
+// N-8 pull: 再取り込み結果。ok は「builder に適用してよいか」の判別子 (ok:false は note のみ表示 / B2)。
+export interface PulledDefinition {
+  ok: boolean
+  fields: HarnessField[]
+  logic: HarnessLogicRule[]
+  note: string
+}
+
 export const formsAdvancedApi = {
   async list(): Promise<AdvancedForm[]> {
     return (await fetchApi<Envelope<AdvancedForm[]>>('/api/forms-advanced')).data
@@ -52,6 +60,10 @@ export const formsAdvancedApi = {
         body: JSON.stringify(def),
       })
     ).data
+  },
+  // N-8: Formaloo から定義を再取り込み (pull / 非破壊)。ok===true の時だけ builder に反映する。
+  async reimport(id: string): Promise<PulledDefinition> {
+    return (await fetchApi<Envelope<PulledDefinition>>(`/api/forms-advanced/${id}/pull`)).data
   },
   async submitForReview(id: string): Promise<AdvancedForm> {
     return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}/submit-for-review`, { method: 'POST' })).data

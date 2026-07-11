@@ -132,3 +132,68 @@ describe('FormBuilder — publish gate UI (T-B3 / N-7)', () => {
     expect(screen.getByTestId('sync-badge')).toBeTruthy()
   })
 })
+
+describe('FormBuilder — Formaloo 再取り込み (pull / N-8 / B2/B3)', () => {
+  const existing: HarnessField = { id: 'ex1', type: 'text', label: '既存項目', required: false, position: 0, config: {} }
+
+  it('再取り込み → 行内確認(M-16) → はい で ok:true 時 editor を置換', async () => {
+    const onReimport = vi.fn(async () => ({
+      ok: true,
+      fields: [{ id: 'new1', type: 'text' as const, label: '新項目', required: false, position: 0, config: {} }],
+      logic: [],
+    }))
+    render(<FormBuilder {...base({ initialFields: [existing], onReimport })} />)
+    fireEvent.click(screen.getByText('Formaloo から再取り込み'))
+    // 行内確認 (window.confirm 不使用 / M-16)
+    const confirm = screen.getByTestId('reimport-confirm')
+    fireEvent.click(within(confirm).getByText('はい'))
+    const canvas = screen.getByTestId('canvas')
+    expect(await within(canvas).findByText('新項目')).toBeTruthy()
+    expect(within(canvas).queryByText('既存項目')).toBeNull()
+    expect(onReimport).toHaveBeenCalledTimes(1)
+  })
+
+  it('ok:false は editor を保持 (B2 = 失敗時に空へ潰さない)', async () => {
+    const onReimport = vi.fn(async () => ({ ok: false, fields: [], logic: [], note: 'x' }))
+    render(<FormBuilder {...base({ initialFields: [existing], onReimport })} />)
+    fireEvent.click(screen.getByText('Formaloo から再取り込み'))
+    fireEvent.click(within(screen.getByTestId('reimport-confirm')).getByText('はい'))
+    await screen.findByText('Formaloo から再取り込み') // reimporting 解除まで待つ
+    expect(within(screen.getByTestId('canvas')).getByText('既存項目')).toBeTruthy()
+  })
+
+  it('null 返却でも editor を保持', async () => {
+    const onReimport = vi.fn(async () => null)
+    render(<FormBuilder {...base({ initialFields: [existing], onReimport })} />)
+    fireEvent.click(screen.getByText('Formaloo から再取り込み'))
+    fireEvent.click(within(screen.getByTestId('reimport-confirm')).getByText('はい'))
+    await screen.findByText('Formaloo から再取り込み')
+    expect(within(screen.getByTestId('canvas')).getByText('既存項目')).toBeTruthy()
+  })
+
+  it('いいえ で no-op (onReimport 未呼び出し)', () => {
+    const onReimport = vi.fn()
+    render(<FormBuilder {...base({ initialFields: [existing], onReimport })} />)
+    fireEvent.click(screen.getByText('Formaloo から再取り込み'))
+    fireEvent.click(within(screen.getByTestId('reimport-confirm')).getByText('いいえ'))
+    expect(onReimport).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('reimport-confirm')).toBeNull()
+  })
+
+  it('実行中はボタン disabled (二重実行防止)', async () => {
+    let resolveFn: (v: unknown) => void = () => {}
+    const onReimport = vi.fn(() => new Promise((r) => { resolveFn = r }))
+    render(<FormBuilder {...base({ initialFields: [existing], onReimport })} />)
+    fireEvent.click(screen.getByText('Formaloo から再取り込み'))
+    fireEvent.click(within(screen.getByTestId('reimport-confirm')).getByText('はい'))
+    const btn = screen.getByText('取り込み中...') as HTMLButtonElement
+    expect(btn.hasAttribute('disabled')).toBe(true)
+    resolveFn({ ok: true, fields: [], logic: [] })
+    await screen.findByText('Formaloo から再取り込み')
+  })
+
+  it('onReimport 未指定なら再取り込みボタンは出ない', () => {
+    render(<FormBuilder {...base()} />)
+    expect(screen.queryByText('Formaloo から再取り込み')).toBeNull()
+  })
+})

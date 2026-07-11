@@ -42,6 +42,8 @@ export interface BuilderProps {
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
+  /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。 */
+  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string } | null>
   publicUrl?: string | null
   embedCode?: string | null
   syncStatus?: string
@@ -250,6 +252,8 @@ export default function FormBuilder(props: BuilderProps) {
   const [selectedId, setSelectedId] = useState<string | null>(props.initialFields[0]?.id ?? null)
   const [saving, setSaving] = useState(false)
   const [confirmPublish, setConfirmPublish] = useState(false)
+  const [reimportConfirm, setReimportConfirm] = useState(false)
+  const [reimporting, setReimporting] = useState(false)
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -299,6 +303,23 @@ export default function FormBuilder(props: BuilderProps) {
     }
   }
 
+  // Formaloo 再取り込み (pull / N-8)。ok===true の時だけ editor を置換し、失敗 (ok:false/null) は
+  // editor を保持する (B2 = 空へ潰さない)。note は親が setNotice で表示。reimporting で二重実行防止。
+  const handleReimport = async () => {
+    setReimportConfirm(false)
+    setReimporting(true)
+    try {
+      const d = await props.onReimport?.()
+      if (d && d.ok) {
+        setFields(reposition(d.fields))
+        setLogic(d.logic)
+        setSelectedId(d.fields[0]?.id ?? null)
+      }
+    } finally {
+      setReimporting(false)
+    }
+  }
+
   const selected = fields.find((f) => f.id === selectedId) ?? null
   const statusLabel = props.status === 'published' ? '公開中' : props.status === 'in_review' ? 'レビュー中' : '下書き'
   const statusColor = props.status === 'published' ? LINE_GREEN : props.status === 'in_review' ? '#F59E0B' : '#9CA3AF'
@@ -313,6 +334,19 @@ export default function FormBuilder(props: BuilderProps) {
         <button type="button" onClick={handleSave} disabled={saving} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>
           {saving ? '保存中...' : '保存'}
         </button>
+        {props.onReimport && !reimportConfirm && (
+          <button type="button" onClick={() => setReimportConfirm(true)} disabled={reimporting} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200 disabled:opacity-50">
+            {reimporting ? '取り込み中...' : 'Formaloo から再取り込み'}
+          </button>
+        )}
+        {props.onReimport && reimportConfirm && (
+          // 行内確認 (window.confirm 不使用 / M-16): 未保存の編集が Formaloo の内容に置き換わる旨
+          <span className="flex items-center gap-1 text-xs" data-testid="reimport-confirm">
+            <span>未保存の変更は破棄され Formaloo の内容に置き換わります。よろしいですか？</span>
+            <button type="button" onClick={handleReimport} className="text-white px-2 py-0.5 rounded" style={{ backgroundColor: LINE_GREEN }}>はい</button>
+            <button type="button" onClick={() => setReimportConfirm(false)} className="text-gray-500">いいえ</button>
+          </span>
+        )}
         {props.status === 'draft' && props.onSubmitForReview && (
           <button type="button" onClick={props.onSubmitForReview} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200">レビュー依頼</button>
         )}
