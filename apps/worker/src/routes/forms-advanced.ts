@@ -38,6 +38,7 @@ import {
 import { resolveFormalooClient } from '../services/formaloo-client.js';
 import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
+import { ownerGate } from '../lib/owner-gate.js';
 import type { Env } from '../index.js';
 
 // =============================================================================
@@ -457,14 +458,7 @@ const MAX_EXPORT_BYTES = 20 * 1024 * 1024;
 const MAX_IMPORT_ROWS = 5_000;
 const MAX_BULK_DELETE = 1_000;
 
-/** N-9: 個人情報の書き出し/破壊操作は owner のみ。非 owner は 403。 */
-function ownerGate(c: Context<Env>): Response | null {
-  const staff = c.get('staff');
-  if (!staff || staff.role !== 'owner') {
-    return c.json({ success: false, error: 'この操作にはオーナー権限が必要です（個人情報保護）' }, 403);
-  }
-  return null;
-}
+// N-9: 個人情報の書き出し/破壊操作は owner のみ。ownerGate は共有 helper (lib/owner-gate.js) を流用。
 
 // GET /api/forms-advanced/:id/stats — 統計 (ローカル集計 + Formaloo stats drill fail-soft)
 formsAdvanced.get('/api/forms-advanced/:id/stats', async (c) => {

@@ -76,6 +76,12 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/api/integrations/stripe/x')).toBe('integration');
     expect(mapPathToFeature('/api/admin/refresh-profiles')).toBe('system_update');
     expect(mapPathToFeature('/api/auto-replies')).toBe('auto_reply');
+    // F6-1: Formaloo workspace キー管理 (custom role 導線 gate / 真の enforcement は route の ownerGate)
+    expect(mapPathToFeature('/api/formaloo-workspaces')).toBe('forms_advanced');
+    expect(mapPathToFeature('/api/formaloo-workspaces/test')).toBe('forms_advanced');
+    expect(mapPathToFeature('/api/formaloo-workspaces/fw_x')).toBe('forms_advanced');
+    // forms-advanced とは別 prefix (bleed しない)
+    expect(mapPathToFeature('/api/forms-advanced')).toBe('forms_advanced');
   });
 
   test('本当に存在しない /api path は undefined (未マップ)', () => {

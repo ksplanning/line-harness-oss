@@ -94,6 +94,9 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   //    並び替え耐性のため specific-first を明示。mutating (sync/publish) は roles/permissions.test で 403 固定。
   { test: prefix('auto-replies'), feature: 'auto_reply' },
   { test: prefix('forms-advanced'), feature: 'forms_advanced' },
+  // F6-1: Formaloo workspace キー管理。custom role 導線用に forms_advanced feature で gate
+  //   (真の enforcement は route の ownerGate = built-in admin/staff も非 owner は 403 / Codex gap #6)。
+  { test: prefix('formaloo-workspaces'), feature: 'forms_advanced' },
   { test: prefix('forms'), feature: 'form' },
   { test: prefix('faqs'), feature: 'faq' },
   // 取込ナレッジ (Phase B B-3) は FAQ と同じ「よくある質問」機能の一部 = 既存 faq 権限で gate (新 FeatureKey なし)。
