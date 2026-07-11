@@ -21,6 +21,9 @@ export interface AdvancedForm {
   embedCode: string | null
   syncStatus: string
   syncError: string | null
+  // F6-2 表示スコープ: lineAccountId は全 role 露出 / workspaceId は owner 応答のみ (非 owner は不在)。
+  lineAccountId: string | null
+  workspaceId?: string | null
   updatedAt: string
 }
 
@@ -39,13 +42,17 @@ export interface PulledDefinition {
 }
 
 export const formsAdvancedApi = {
-  async list(): Promise<AdvancedForm[]> {
-    return (await fetchApi<Envelope<AdvancedForm[]>>('/api/forms-advanced')).data
+  // F6-2: lineAccountId を渡すと表示スコープで絞る (選択アカウント form + 共通 NULL のみ)。
+  async list(lineAccountId?: string): Promise<AdvancedForm[]> {
+    const qs = lineAccountId ? `?lineAccountId=${encodeURIComponent(lineAccountId)}` : ''
+    return (await fetchApi<Envelope<AdvancedForm[]>>(`/api/forms-advanced${qs}`)).data
   },
   async get(id: string): Promise<AdvancedForm> {
     return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}`)).data
   },
-  async create(input: { title: string; description?: string | null }): Promise<AdvancedForm> {
+  // F6-2: lineAccountId(=選択アカウント) + workspaceId(owner 選択時のみ) を渡す。workspace_id の確定は
+  // server 権威 (client 指定は owner の active 値のみ採用・非 owner の明示は 403)。
+  async create(input: { title: string; description?: string | null; lineAccountId?: string | null; workspaceId?: string | null }): Promise<AdvancedForm> {
     return (
       await fetchApi<Envelope<AdvancedForm>>('/api/forms-advanced', {
         method: 'POST',

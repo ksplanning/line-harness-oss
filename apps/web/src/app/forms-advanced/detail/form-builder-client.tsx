@@ -7,10 +7,12 @@ import FormBuilder from '@/components/forms-advanced/builder'
 import SharePanel from '@/components/forms-advanced/share-panel'
 import { formsAdvancedApi, type AdvancedForm, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
+import { useAccount } from '@/contexts/account-context'
 import type { HarnessField, HarnessLogicRule } from '@line-crm/shared'
 
 // F-2/F-5 フォームビルダー本体。id は detail/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
 export default function FormBuilderClient({ id }: { id: string }) {
+  const { selectedAccountId } = useAccount()
   const [form, setForm] = useState<AdvancedForm | null>(null)
   const [share, setShare] = useState<ShareInfo | null>(null)
   const [isOwner, setIsOwner] = useState(false)
@@ -81,6 +83,11 @@ export default function FormBuilderClient({ id }: { id: string }) {
     }
   }
 
+  // F6-2 表示スコープ照合 (Codex B#3): 別アカウント向け form (lineAccountId != null かつ 選択アカウント不一致)
+  //   は表示しない。NULL 共通は全アカウントで許容。これは表示フィルタであり、API 直打ちは防げない (N-17)。
+  const scopeBlocked =
+    form != null && form.lineAccountId != null && selectedAccountId != null && form.lineAccountId !== selectedAccountId
+
   return (
     <div>
       <Header title="フォームビルダー" description="項目をドラッグ&ドロップして高機能フォームを組み立てます" />
@@ -92,6 +99,14 @@ export default function FormBuilderClient({ id }: { id: string }) {
         <div className="text-sm text-gray-400">読み込み中...</div>
       ) : error ? (
         <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">{error}</div>
+      ) : scopeBlocked ? (
+        <div data-testid="scope-blocked" className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-500 text-sm">
+          このフォームは別の LINE アカウント向けです。表示するには対象のアカウントに切り替えてください。
+          <div className="mt-2">
+            <Link href="/forms-advanced" className="text-xs text-gray-500 underline">← 一覧に戻る</Link>
+          </div>
+          <p className="mt-3 text-[11px] text-gray-400">※これは画面上の仕分けです。URL を直接開くと表示される場合があります（アクセス制限は今後の対応です）。</p>
+        </div>
       ) : form ? (
         <>
           {notice && (

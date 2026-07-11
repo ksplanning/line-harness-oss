@@ -13,13 +13,17 @@ import {
   type SavedFilter,
 } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
+import { useAccount } from '@/contexts/account-context'
 import { csvDateStamp, safeFilenamePart } from '@/lib/download'
 
 const DEFAULT_QUERY: RowsQuery = { sort: 'desc', page: 1, pageSize: 25 }
 
 // F-4 データコックピット本体。id は data/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
 export default function DataCockpitClient({ id }: { id: string }) {
+  const { selectedAccountId } = useAccount()
   const [title, setTitle] = useState('')
+  // F6-2 表示スコープ: 読み込んだ form の lineAccountId (undefined=未取得 / null=共通)。
+  const [formAccountId, setFormAccountId] = useState<string | null | undefined>(undefined)
   const [rowsPage, setRowsPage] = useState<RowsPage>({ rows: [], total: 0, page: 1, pageSize: 25 })
   const [stats, setStats] = useState<FormStats | null>(null)
   const [filters, setFilters] = useState<SavedFilter[]>([])
@@ -50,7 +54,10 @@ export default function DataCockpitClient({ id }: { id: string }) {
         formalooDataApi.listFilters(id).then(setFilters).catch(() => setFilters([])),
         loadRows(DEFAULT_QUERY),
       ])
-      if (form) setTitle(form.title)
+      if (form) {
+        setTitle(form.title)
+        setFormAccountId(form.lineAccountId)
+      }
       try {
         const me = await fetchApi<{ data: { role: string } }>('/api/staff/me')
         setIsOwner(me.data.role === 'owner')
@@ -80,6 +87,26 @@ export default function DataCockpitClient({ id }: { id: string }) {
   }
   const onOpenRow = async (rowId: string) => {
     try { setDetail(await formalooDataApi.row(id, rowId)) } catch { setNotice('回答の取得に失敗しました') }
+  }
+
+  // F6-2 表示スコープ照合 (Codex B#3): 別アカウント向け form の回答データは表示しない (NULL 共通は許容)。
+  //   これは表示フィルタで、API 直打ちは防げない (N-17)。
+  const scopeBlocked =
+    formAccountId != null && selectedAccountId != null && formAccountId !== selectedAccountId
+
+  if (scopeBlocked) {
+    return (
+      <div>
+        <Header title="回答データ" description="回答の検索・集計・CSV 出し入れができます" />
+        <div className="mb-3">
+          <Link href="/forms-advanced" className="text-xs text-gray-500 hover:text-gray-800">← 一覧に戻る</Link>
+        </div>
+        <div data-testid="scope-blocked" className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-500 text-sm">
+          このフォームは別の LINE アカウント向けです。表示するには対象のアカウントに切り替えてください。
+          <p className="mt-3 text-[11px] text-gray-400">※これは画面上の仕分けです。URL を直接開くと表示される場合があります（アクセス制限は今後の対応です）。</p>
+        </div>
+      </div>
+    )
   }
 
   return (

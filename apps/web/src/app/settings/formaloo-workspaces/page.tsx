@@ -3,9 +3,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import Header from '@/components/layout/header'
 import FormalooWorkspacesPanel from '@/components/settings/formaloo-workspaces-panel'
+import FormalooAccountBindingsPanel, { type AccountLite } from '@/components/settings/formaloo-account-bindings-panel'
 import { formalooWorkspacesApi, type FormalooWorkspace } from '@/lib/formaloo-workspaces-api'
+import { formalooAccountBindingsApi } from '@/lib/formaloo-account-bindings-api'
+import { api } from '@/lib/api'
 
-// F6-1: Formaloo workspace の API キー設定管理画面 (owner のみ / 静的 export 互換 = dynamic route なし / N-18)。
+// F6-1/F6-2: Formaloo workspace の API キー設定管理 + アカウント→既定 workspace binding (owner のみ /
+//   静的 export 互換 = dynamic route なし / N-18)。
 
 function errorMessage(e: unknown): string {
   const body = (e as { body?: { error?: string } })?.body
@@ -15,6 +19,8 @@ function errorMessage(e: unknown): string {
 
 export default function FormalooWorkspacesPage() {
   const [workspaces, setWorkspaces] = useState<FormalooWorkspace[]>([])
+  const [accounts, setAccounts] = useState<AccountLite[]>([])
+  const [bindings, setBindings] = useState<Record<string, string | null>>({})
   const [testResult, setTestResult] = useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')
   const [addError, setAddError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -28,9 +34,49 @@ export default function FormalooWorkspacesPage() {
     }
   }, [])
 
+  const reloadBindings = useCallback(async () => {
+    try {
+      const list = await formalooAccountBindingsApi.list()
+      setBindings(Object.fromEntries(list.map((b) => [b.lineAccountId, b.defaultWorkspaceId])))
+    } catch {
+      setBindings({})
+    }
+  }, [])
+
   useEffect(() => {
     void reload()
-  }, [reload])
+    void reloadBindings()
+    void (async () => {
+      try {
+        const res = await api.lineAccounts.list()
+        if (res.success) setAccounts((res.data as AccountLite[]) ?? [])
+      } catch {
+        setAccounts([])
+      }
+    })()
+  }, [reload, reloadBindings])
+
+  const handleSetBinding = async (lineAccountId: string, workspaceId: string) => {
+    setBusy(true)
+    try {
+      await formalooAccountBindingsApi.set(lineAccountId, workspaceId)
+      await reloadBindings()
+    } catch {
+      /* enforcement は worker 側 (非 owner 403 等) */
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleClearBinding = async (lineAccountId: string) => {
+    setBusy(true)
+    try {
+      await formalooAccountBindingsApi.clear(lineAccountId)
+      await reloadBindings()
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const handleAdd = async (input: { label: string; key: string; secret: string; businessSlug: string }) => {
     setBusy(true)
@@ -93,6 +139,16 @@ export default function FormalooWorkspacesPage() {
         addError={addError}
         busy={busy}
       />
+      <div className="mt-8">
+        <FormalooAccountBindingsPanel
+          accounts={accounts}
+          workspaces={workspaces.filter((w) => w.isActive)}
+          bindings={bindings}
+          onSet={handleSetBinding}
+          onClear={handleClearBinding}
+          busy={busy}
+        />
+      </div>
     </div>
   )
 }

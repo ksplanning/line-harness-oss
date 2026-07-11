@@ -1,10 +1,14 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import { formsAdvancedApi, type AdvancedForm } from '@/lib/formaloo-advanced-api'
+import { formalooWorkspacesApi, type FormalooWorkspace } from '@/lib/formaloo-workspaces-api'
+import { formalooAccountBindingsApi } from '@/lib/formaloo-account-bindings-api'
+import { useAccount } from '@/contexts/account-context'
+import { fetchApi } from '@/lib/api'
 
 const LINE_GREEN = '#06C755'
 
@@ -16,44 +20,116 @@ function statusBadge(status: AdvancedForm['builderStatus']) {
 
 export default function FormsAdvancedListPage() {
   const router = useRouter()
+  const { selectedAccountId, loading: accountLoading } = useAccount()
   const [forms, setForms] = useState<AdvancedForm[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
+  const [isOwner, setIsOwner] = useState(false)
+  const [workspaces, setWorkspaces] = useState<FormalooWorkspace[]>([])
+  // '' = 既定 (アカウント設定 binding / env)。owner が明示選択したときだけ workspaceId を送る。
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('')
+  // stale 応答破棄 (A 取得中に B へ切替→遅延 A 応答で B 画面を上書きしない / Codex M#9)。
+  const reqToken = useRef(0)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (accountId: string) => {
+    const token = ++reqToken.current
     setLoading(true)
     try {
-      setForms(await formsAdvancedApi.list())
+      const data = await formsAdvancedApi.list(accountId)
+      if (token !== reqToken.current) return // stale 応答は破棄
+      setForms(data)
     } catch {
+      if (token !== reqToken.current) return
       setForms([])
     } finally {
-      setLoading(false)
+      if (token === reqToken.current) setLoading(false)
     }
   }, [])
 
+  // account 文脈が確定してからロード (loading 中 / selectedAccountId=null は取得しない =
+  // 初回に全アカウント一覧を一瞬でも出さない・作成で line_account_id=NULL の誤共通化を防ぐ / Codex M#8)。
   useEffect(() => {
-    void load()
-  }, [load])
+    if (accountLoading || !selectedAccountId) return
+    void load(selectedAccountId)
+  }, [accountLoading, selectedAccountId, load])
+
+  // owner のみ: workspace セレクタ用に一覧 + 既定 binding を取得 (非 owner は server 解決に任せる / §3.1)。
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const me = await fetchApi<{ data: { role: string } }>('/api/staff/me')
+        if (cancelled) return
+        const owner = me.data.role === 'owner'
+        setIsOwner(owner)
+        if (!owner) return
+        const [ws, bindings] = await Promise.all([
+          formalooWorkspacesApi.list().catch(() => [] as FormalooWorkspace[]),
+          formalooAccountBindingsApi.list().catch(() => []),
+        ])
+        if (cancelled) return
+        setWorkspaces(ws.filter((w) => w.isActive))
+        const b = bindings.find((x) => x.lineAccountId === selectedAccountId)
+        setSelectedWorkspaceId(b?.defaultWorkspaceId ?? '')
+      } catch {
+        /* 非 owner 扱い */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedAccountId])
 
   const handleCreate = async () => {
+    if (!selectedAccountId) return
     setCreating(true)
     try {
-      const form = await formsAdvancedApi.create({ title: '新しいフォーム' })
+      const form = await formsAdvancedApi.create({
+        title: '新しいフォーム',
+        lineAccountId: selectedAccountId,
+        // workspace_id の確定は server 権威。owner が明示選択したときだけ送る (非 owner は送らない)。
+        workspaceId: isOwner && selectedWorkspaceId ? selectedWorkspaceId : undefined,
+      })
       router.push(`/forms-advanced/detail?id=${form.id}`)
     } catch {
       setCreating(false)
     }
   }
 
+  const showLoading = accountLoading || loading
+
   return (
     <div>
       <Header title="高機能フォーム" description="ドラッグ&ドロップで条件分岐・ファイル添付・埋め込み対応の高機能フォームを作れます" />
 
-      <div className="flex justify-end mb-4">
+      {/* N-17: 誠実な限界開示 — 表示フィルタ (画面の仕分け) であってアクセス強制ではない。 */}
+      <p data-testid="scope-note" className="text-xs text-gray-400 mb-3">
+        このアカウント（{selectedAccountId ? '選択中' : '未選択'}）向けのフォームと共通フォームだけを表示しています。
+        ※URL を直接開くと他アカウントのフォームも見えます（アクセス制限は今後の対応です）。
+      </p>
+
+      <div className="flex items-center justify-end gap-2 mb-4">
+        {isOwner && (
+          <label className="flex items-center gap-1 text-xs text-gray-500">
+            作成先ワークスペース
+            <select
+              data-testid="workspace-select"
+              value={selectedWorkspaceId}
+              onChange={(e) => setSelectedWorkspaceId(e.target.value)}
+              className="border border-gray-300 rounded px-2 py-1 text-sm"
+            >
+              <option value="">既定（アカウント設定 / 環境の鍵）</option>
+              {workspaces.map((w) => (
+                <option key={w.id} value={w.id}>{w.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <button
           type="button"
+          data-testid="create-btn"
           onClick={handleCreate}
-          disabled={creating}
+          disabled={creating || !selectedAccountId}
           className="px-4 py-2 rounded-lg text-sm text-white disabled:opacity-50"
           style={{ backgroundColor: LINE_GREEN }}
         >
@@ -62,21 +138,22 @@ export default function FormsAdvancedListPage() {
       </div>
 
       <section>
-        {loading ? (
+        {showLoading ? (
           <div className="text-sm text-gray-400">読み込み中...</div>
         ) : forms.length === 0 ? (
           <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">
-            高機能フォームはまだありません。「＋ 新規フォーム」から作成してください。
+            このアカウントの高機能フォームはまだありません。「＋ 新規フォーム」から作成してください。
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+          <div data-testid="forms-grid" className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             {forms.map((form) => {
               const badge = statusBadge(form.builderStatus)
               return (
-                <div key={form.id} className="bg-white rounded-lg border border-gray-200 p-4">
+                <div key={form.id} data-testid={`form-card-${form.id}`} className="bg-white rounded-lg border border-gray-200 p-4">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-xs text-white px-2 py-0.5 rounded" style={{ backgroundColor: badge.color }}>{badge.label}</span>
                     <span className="text-[10px] text-gray-400">高機能</span>
+                    {form.lineAccountId == null && <span className="text-[10px] text-gray-400">共通</span>}
                     {form.syncStatus === 'out_of_sync' && <span className="text-[10px] text-amber-600">未同期</span>}
                   </div>
                   <div className="text-sm font-bold mb-1 truncate">{form.title}</div>
