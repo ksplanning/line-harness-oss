@@ -16,6 +16,7 @@ import type { LineClient } from '@line-crm/line-sdk';
 import type { Message, MessageSender, ImageMapVideo } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
 import { checkMonthlyCap } from './monthly-cap.js';
+import { renderMessageContent } from './render-message.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -642,4 +643,48 @@ export function buildMessage(
   // fail-loud: text/image/flex/video/audio/imagemap/richvideo 以外の未知 type は silent に text 送信
   // せず throw して送信をスキップする (「動画を送ったつもりが JSON/URL が text で飛ぶ」silent 事故の根治)。
   throw new MessageBuildError('unknown');
+}
+
+/**
+ * broadcast を LINE の messages 配列 (最大5) に変換する (combo messages / broadcast-combo-messages)。
+ *
+ * - `messages` 列が **NULL** のときだけ従来 single へ fallback する (現行挙動と byte 等価):
+ *   `[buildMessage(message_type, renderMessageContent(message_content, liffId), alt_text)]`。
+ * - `messages` が **非 NULL** なら配列送信経路: JSON.parse → 各要素 buildMessage(要素単位 render)。
+ * - [codex HIGH #3] 非 NULL だが不正 (parse失敗/非配列/空/len>5/要素の未知type/unbuildable) は
+ *   silent に single へ落とさず MessageBuildError を throw する。呼び側は既存 image/flex と同じ
+ *   fail-closed (送信スキップ→status draft・生 JSON を送らない) で処理する。
+ * - renderMessageContent ({{liff_id}} 置換) は要素単位に適用する。liffId は呼び側が解決して渡す
+ *   (multi-account-dedup は per-account の liffId・single 経路は account の liffId or null)。
+ */
+export function buildBroadcastMessages(broadcast: Broadcast, liffId: string | null = null): Message[] {
+  const raw = broadcast as unknown as Record<string, unknown>;
+  const messagesJson = raw.messages as string | null | undefined;
+  const altText = (raw.alt_text as string | undefined) || undefined;
+
+  if (messagesJson == null) {
+    // fallback は messages === NULL のときだけ (byte 等価な単発)。
+    return [buildMessage(broadcast.message_type, renderMessageContent(broadcast.message_content, liffId), altText)];
+  }
+
+  let blocks: unknown;
+  try {
+    blocks = JSON.parse(messagesJson);
+  } catch {
+    throw new MessageBuildError('messages');
+  }
+  if (!Array.isArray(blocks) || blocks.length < 1 || blocks.length > 5) {
+    throw new MessageBuildError('messages');
+  }
+  return blocks.map((rawBlock) => {
+    if (!rawBlock || typeof rawBlock !== 'object' || Array.isArray(rawBlock)) {
+      throw new MessageBuildError('messages');
+    }
+    const el = rawBlock as { type?: unknown; content?: unknown; altText?: unknown };
+    if (typeof el.type !== 'string' || typeof el.content !== 'string') {
+      throw new MessageBuildError('messages');
+    }
+    const elAlt = typeof el.altText === 'string' ? el.altText : undefined;
+    return buildMessage(el.type, renderMessageContent(el.content, liffId), elAlt);
+  });
 }
