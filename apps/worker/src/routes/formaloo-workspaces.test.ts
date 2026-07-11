@@ -272,3 +272,50 @@ describe('T-A5 enable/disable 切替 + soft-delete (owner)', () => {
     expect((await call('DELETE', '/api/formaloo-workspaces/fw_missing')).status).toBe(404);
   });
 });
+
+describe('I1 疎通テストの token cache 素通り穴 (reviewer Round1)', () => {
+  /** oauth は Basic が CORRECT の時のみ 200 (誤 secret は 403)。GET は 200。 = apiSecret を oauth で検証。 */
+  function stubSecretSensitive(correctSecret: string) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      if (String(url).includes('authorization-token')) {
+        const auth = (init.headers as Record<string, string>).Authorization;
+        return auth === `Basic ${correctSecret}`
+          ? new Response(JSON.stringify({ authorization_token: 'jwt' }), { status: 200 })
+          : new Response(JSON.stringify({ error: 'bad secret' }), { status: 403 });
+      }
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    }));
+  }
+
+  test('同一 apiKey で先に正 secret 保存後、誤 secret の追加は保存拒否 400 (cache-hit で誤 200 させない)', async () => {
+    stubSecretSensitive('correct-secret');
+    // 1) 正 secret で追加 → 201 (共有 cache 経路だと apiKey のトークンがここで cache される)
+    const ok = await call('POST', '/api/formaloo-workspaces', { label: 'A社', key: 'CACHE_K', secret: 'correct-secret' });
+    expect(ok.status).toBe(201);
+    // 2) 同一 apiKey・誤 secret → **保存拒否 400** (旧実装は cache-hit で oauth を skip し誤 200→保存する穴)
+    const ng = await call('POST', '/api/formaloo-workspaces', { label: 'B社', key: 'CACHE_K', secret: 'WRONG-secret' });
+    expect(ng.status).toBe(400);
+    // 保存は 1 件のみ (正 secret のみ)
+    expect((raw.prepare(`SELECT COUNT(*) c FROM formaloo_workspaces`).get() as { c: number }).c).toBe(1);
+  });
+
+  test('dry-run 疎通も同様: 正 secret 後の 同一 apiKey・誤 secret は ok=false', async () => {
+    stubSecretSensitive('correct-secret');
+    expect((await (await call('POST', '/api/formaloo-workspaces/test', { key: 'CK2', secret: 'correct-secret' })).json() as { data: { ok: boolean } }).data.ok).toBe(true);
+    expect((await (await call('POST', '/api/formaloo-workspaces/test', { key: 'CK2', secret: 'WRONG-secret' })).json() as { data: { ok: boolean } }).data.ok).toBe(false);
+  });
+});
+
+describe('I2 S-1 手順書は KS 用 wrangler config を使う (reviewer Round1)', () => {
+  test('runbook 内の全 wrangler コマンド行に --config wrangler.ks.toml が付く', () => {
+    const runbook = readFileSync(join(__dirname, '../../../../docs/formaloo-kek-secret-runbook.md'), 'utf8');
+    const wranglerCmdLines = runbook
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('wrangler ')); // コマンド行のみ (prose の 'wrangler.toml' 言及は除外)
+    expect(wranglerCmdLines.length).toBeGreaterThan(0);
+    for (const line of wranglerCmdLines) {
+      expect(line, `--config 欠落: ${line}`).toContain('--config wrangler.ks.toml');
+    }
+  });
+});

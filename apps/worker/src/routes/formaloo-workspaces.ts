@@ -70,10 +70,15 @@ function validateAddInput(body: Record<string, unknown>): AddInput {
 /**
  * 入力鍵で Formaloo に疎通確認 (誤鍵早期検知)。FormalooClient は fail-soft (throw しない) ゆえ ok を返す。
  * 平文鍵は request 変数スコープのみ・Formaloo 応答本文は返さない (呼び出し側で generic 化)。
+ *
+ * **isolated cache 必須** (reviewer I1): FormalooClient の default は module-level token cache (apiKey キー /
+ * TTL 30秒)。共有 cache を使うと、同 apiKey のトークンが既に cache 済みの窓では **getToken が oauth を
+ * skip し、誤った apiSecret でも 200 になり誤鍵が保存される** 穴が開く。疎通テストは apiSecret を必ず
+ * oauth で検証する必要があるため、専用の空 cache を渡して毎回 fresh 認証させる (共有 cache も汚さない)。
  */
 async function testConnection(apiKey: string, apiSecret: string): Promise<boolean> {
   try {
-    const client = new FormalooClient({ apiKey, apiSecret });
+    const client = new FormalooClient({ apiKey, apiSecret, cache: new Map() });
     const r = await client.get('/v3.0/forms/?page_size=1');
     return r.ok;
   } catch {
