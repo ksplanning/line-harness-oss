@@ -28,19 +28,27 @@ function readRepo(repoRelPath: string): string {
   return readFileSync(join(REPO, repoRelPath), 'utf8');
 }
 
-// B-5 (T-E5 / D-1 救済) で unanswered-inbox.ts は source 別証拠窓を導入する = 「ファイル全体 byte-identical」は
-// 撤回し、dark-ship 安全の実体である「auto_reply の 5000ms 窓が byte-identical」を不変条件に置き換える。
-describe('D-1 — unanswered-inbox.ts の auto_reply 証拠窓は byte-identical (B-5 T-E5 は faq_bot のみ source 別大窓)', () => {
+// B-5 (T-E5 / D-1 救済) で unanswered-inbox.ts は source 別証拠窓を導入した = 「ファイル全体 byte-identical」は
+// 撤回し、dark-ship 安全の実体である「auto_reply の 5000ms 窓」を不変条件に置き換える。
+//
+// 【2026-07-11 書き直し / temporal invariant の恒常化】旧 assert は
+// `expect(git show origin/main:unanswered-inbox.ts).not.toContain('FAQ_AI_EVIDENCE_WINDOW_MS')` という
+// 時限式 (temporal) invariant だった: B-5 が origin/main に merge/push された瞬間に前提が反転し恒常 red 化して
+// 自己無効化する (全 suite の回帰信号を濁す)。origin/main との比較を排除し、現ソース (working tree) に対する
+// 現在形の不変条件 = 「auto_reply 経路は 5000ms・faq_bot 経路のみ 30s 大窓・両者は source で分岐」に置換した。
+describe('D-1 — unanswered-inbox.ts の証拠窓は source 別 (auto_reply=5000ms 不変 / faq_bot=30s は sanctioned な大窓)', () => {
   const cur = readRepo('apps/worker/src/services/unanswered-inbox.ts');
-  const main = execFileSync('git', ['show', 'origin/main:apps/worker/src/services/unanswered-inbox.ts'], { cwd: REPO }).toString();
-  test('auto_reply の 5000ms 窓定数は不変 (自動応答の既存挙動を退行させない)', () => {
+  test('auto_reply の 5000ms 窓定数は現ソースで不変 (自動応答の既存挙動を退行させない = dark-ship 安全の実体)', () => {
     expect(cur).toContain('const AUTO_REPLY_EVIDENCE_WINDOW_MS = 5_000;');
-    expect(main).toContain('const AUTO_REPLY_EVIDENCE_WINDOW_MS = 5_000;');
   });
-  test('B-5 の変更は faq_bot 用 source 別大窓の追加に限る (本番 faq_bot 行は flag ON まで 0 件 = dark-ship 安全)', () => {
-    expect(cur).toContain('FAQ_AI_EVIDENCE_WINDOW_MS');
-    // origin/main には存在しない = B-5 で追加した sanctioned な変更。
-    expect(main).not.toContain('FAQ_AI_EVIDENCE_WINDOW_MS');
+  test('faq_bot 用 30s 大窓 (FAQ_AI_EVIDENCE_WINDOW_MS = 30_000) が sanctioned な追加として現ソースに存在する', () => {
+    // B-5 T-E5 で追加した faq_bot 専用の大窓。LLM 生成 + LINE 往復 + log 遅延を吸収する保守値。
+    expect(cur).toContain('const FAQ_AI_EVIDENCE_WINDOW_MS = 30_000;');
+  });
+  test('30s 大窓は faq_bot 経路にのみ適用され auto_reply 経路には適用されない (source === "faq_bot" で分岐)', () => {
+    // 証拠窓の選択は source === 'faq_bot' の三項でのみ大窓へ切替わる = auto_reply (非 faq_bot) は 5000ms 固定。
+    // これで「auto_reply 監視 (5000ms) が 30s 大窓に紛れて緩む」退行を構造で検知する (dark-ship 安全の維持)。
+    expect(cur).toContain("out.source === 'faq_bot' ? FAQ_AI_EVIDENCE_WINDOW_MS : AUTO_REPLY_EVIDENCE_WINDOW_MS");
   });
 });
 
