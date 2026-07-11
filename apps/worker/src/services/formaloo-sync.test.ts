@@ -92,18 +92,210 @@ describe('pushDefinitionToFormaloo — fail-soft (N-6)', () => {
     expect(r.formalooSlug).toBe('S');
     expect(r.error).toContain('field push failed');
   });
-  test('既存 slug なら form 作成をスキップして field から', async () => {
-    const { client, calls } = mockClient({
-      post: [
-        () => ({ ok: true, status: 201, data: { data: { field: { slug: 'FS1' } } } }),
-        () => ({ ok: true, status: 201, data: { data: { field: { slug: 'FS2' } } } }),
-      ],
-      put: [() => ({ ok: true, status: 200, data: {} })],
+  test('既存 form + 未知 field は form 作成をスキップし probe(404)→POST で作成 (top-level endpoint / body で form 紐づけ)', async () => {
+    // 冪等化後: formalooSlug 既存 (formPreExisted) かつ existingFieldSlugs 未渡し → 各 field を probe。
+    // probe 404 (真の新規) → POST /v3.0/fields/ で作成 (form 作成は skip)。旧「常に POST」の spirit を継承しつつ probe 経路化。
+    const { client, calls } = upsertMock(({ method, path }) => {
+      if (method === 'GET') return { ok: false, status: 404, error: 'not found' }; // probe: 未存在
+      if (method === 'POST' && path === '/v3.0/fields/') return { ok: true, status: 201, data: { data: { field: { slug: 'FSx' } } } };
+      if (method === 'PUT') return { ok: true, status: 200, data: {} };
+      return { ok: true, status: 200, data: {} };
     });
     const r = await pushDefinitionToFormaloo(client, { formalooSlug: 'EXISTING', title: 't', fields, logic });
     expect(r.ok).toBe(true);
     expect(r.formalooSlug).toBe('EXISTING');
-    expect(calls[0].path).toBe('/v3.0/fields/'); // form 作成なし・field は top-level endpoint へ
-    expect(calls[0].body).toMatchObject({ form: 'EXISTING', type: 'short_text' }); // 既存 slug を body で紐づけ
+    // form 作成 (POST /v3.0/forms/) は叩かない
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/forms/')).toBe(false);
+    // field は top-level /v3.0/fields/ へ POST し、既存 slug を body の form で紐づける
+    const fieldPost = calls.find((c) => c.method === 'POST' && c.path === '/v3.0/fields/')!;
+    expect(fieldPost.body).toMatchObject({ form: 'EXISTING', type: 'short_text' });
+  });
+});
+
+// =============================================================================
+// push upsert 冪等化 (formaloo-push-idempotency / T-A1・T-A2) — update-vs-create で
+// field 重複作成を根絶。mock client は method+exact path+body を記録する handler 型。
+// =============================================================================
+
+type MockResp = FormalooResult;
+/** handler(method,path,body)→FormalooResult を返し全 call を記録する mock (probe GET / PATCH / POST / PUT を統一記録)。 */
+function upsertMock(handler: (call: { method: string; path: string; body?: unknown }) => MockResp) {
+  const calls: { method: string; path: string; body?: unknown }[] = [];
+  const run = (method: string, path: string, body?: unknown) => {
+    const call = { method, path, body };
+    calls.push(call);
+    return handler(call);
+  };
+  const client = {
+    async get<T>(path: string) { return run('GET', path) as FormalooResult<T>; },
+    async post<T>(path: string, body?: unknown) { return run('POST', path, body) as FormalooResult<T>; },
+    async put<T>(path: string, body?: unknown) { return run('PUT', path, body) as FormalooResult<T>; },
+    async request<T>(method: string, path: string, body?: unknown) { return run(method, path, body) as FormalooResult<T>; },
+  } as unknown as import('./formaloo-client').FormalooClient;
+  return { client, calls };
+}
+
+const textField: HarnessField = { id: 'h1', type: 'text', label: '名前', required: true, position: 0, config: { maxLength: 30 } };
+const choiceField: HarnessField = { id: 'h2', type: 'choice', label: '性別', required: true, position: 1, config: { choices: ['男', '女'] } };
+
+describe('pushDefinitionToFormaloo — upsert 冪等化 (T-A1)', () => {
+  test('(a) existingFieldSlugs にある field は PATCH /v3.0/fields/{slug}/ で更新・choice_items を含まない・POST を叩かない', async () => {
+    const { client, calls } = upsertMock(({ method }) => {
+      if (method === 'PATCH') return { ok: true, status: 200, data: {} };
+      return { ok: true, status: 200, data: {} };
+    });
+    const r = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'FSLUG', title: 't', fields: [choiceField], logic: [],
+      existingFieldSlugs: { h2: 'sl2' },
+    });
+    expect(r.ok).toBe(true);
+    const patch = calls.find((c) => c.method === 'PATCH')!;
+    expect(patch.path).toBe('/v3.0/fields/sl2/'); // exact path (W1)
+    // update は choices を触らない (B6): choice_items を送らない = dup も wipe も起こさない
+    expect((patch.body as Record<string, unknown>).choice_items).toBeUndefined();
+    expect((patch.body as Record<string, unknown>).title).toBe('性別'); // scalar option は更新する
+    // 新規作成 (POST /v3.0/fields/) は叩かない = 重複を作らない
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/')).toBe(false);
+    // probe も不要 (slug 既知)
+    expect(calls.some((c) => c.method === 'GET')).toBe(false);
+    expect(r.fieldSlugs).toEqual({ h2: 'sl2' }); // PATCH は slug 既知 = 応答 parse 不要
+  });
+
+  test('(b) slug 無し新規 field は POST /v3.0/fields/ で choices 込み作成', async () => {
+    const { client, calls } = upsertMock(({ method, path }) => {
+      if (method === 'POST' && path === '/v3.0/forms/') return { ok: true, status: 201, data: { data: { form: { slug: 'NEWFORM' } } } };
+      if (method === 'POST' && path === '/v3.0/fields/') return { ok: true, status: 201, data: { data: { field: { slug: 'FS' } } } };
+      return { ok: true, status: 200, data: {} };
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: null, title: 't', fields: [choiceField], logic: [] });
+    expect(r.ok).toBe(true);
+    const post = calls.find((c) => c.method === 'POST' && c.path === '/v3.0/fields/')!;
+    expect((post.body as Record<string, unknown>).choice_items).toEqual([{ title: '男' }, { title: '女' }]); // choices 込み
+    expect((post.body as Record<string, unknown>).form).toBe('NEWFORM');
+    expect(r.fieldSlugs).toEqual({ h2: 'FS' });
+  });
+
+  test('(c) PATCH が HTTP 404 (Formaloo 側で削除済) → 同 field を POST へ self-heal し fieldSlugs に新 slug', async () => {
+    const { client, calls } = upsertMock(({ method, path }) => {
+      if (method === 'PATCH') return { ok: false, status: 404, error: 'gone' };
+      if (method === 'POST' && path === '/v3.0/fields/') return { ok: true, status: 201, data: { data: { field: { slug: 'REBORN' } } } };
+      return { ok: true, status: 200, data: {} };
+    });
+    const r = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'FSLUG', title: 't', fields: [textField], logic: [],
+      existingFieldSlugs: { h1: 'oldslug' },
+    });
+    expect(r.ok).toBe(true);
+    expect(calls.find((c) => c.method === 'PATCH')!.path).toBe('/v3.0/fields/oldslug/');
+    const post = calls.find((c) => c.method === 'POST' && c.path === '/v3.0/fields/')!;
+    expect((post.body as Record<string, unknown>).form).toBe('FSLUG'); // self-heal は full payload (choices 込み)
+    expect(r.fieldSlugs).toEqual({ h1: 'REBORN' }); // 新 slug へ置換
+  });
+
+  test('(d) formalooSlug=null (初回・form 新規作成) は probe 0 回で全 field POST (従来挙動同値)', async () => {
+    let n = 0;
+    const { client, calls } = upsertMock(({ method, path }) => {
+      if (method === 'POST' && path === '/v3.0/forms/') return { ok: true, status: 201, data: { data: { form: { slug: 'NF' } } } };
+      if (method === 'POST' && path === '/v3.0/fields/') { n += 1; return { ok: true, status: 201, data: { data: { field: { slug: `fs${n}` } } } }; }
+      return { ok: true, status: 200, data: {} };
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: null, title: 't', fields: [textField, choiceField], logic: [] });
+    expect(r.ok).toBe(true);
+    expect(calls.filter((c) => c.method === 'GET').length).toBe(0); // probe 0 回 (B2)
+    expect(calls.filter((c) => c.method === 'POST' && c.path === '/v3.0/fields/').length).toBe(2); // 全 field POST
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+    expect(r.fieldSlugs).toEqual({ h1: 'fs1', h2: 'fs2' });
+  });
+});
+
+describe('pushDefinitionToFormaloo — probe (T-A2 / formPreExisted + slug 未知)', () => {
+  test('(e) probe GET /v3.0/fields/{id}/ が 200 → PATCH 更新 (新規作成しない = 重複防止)', async () => {
+    const { client, calls } = upsertMock(({ method }) => {
+      if (method === 'GET') return { ok: true, status: 200, data: {} };
+      if (method === 'PATCH') return { ok: true, status: 200, data: {} };
+      return { ok: true, status: 200, data: {} };
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: 'FSLUG', title: 't', fields: [textField], logic: [] });
+    expect(r.ok).toBe(true);
+    expect(calls.find((c) => c.method === 'GET')!.path).toBe('/v3.0/fields/h1/'); // probe は field.id で
+    expect(calls.find((c) => c.method === 'PATCH')!.path).toBe('/v3.0/fields/h1/'); // slug=field.id で PATCH
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/')).toBe(false);
+    expect(r.fieldSlugs).toEqual({ h1: 'h1' });
+  });
+
+  test('(e) probe が 404 → POST 作成', async () => {
+    const { client, calls } = upsertMock(({ method, path }) => {
+      if (method === 'GET') return { ok: false, status: 404, error: 'nf' };
+      if (method === 'POST' && path === '/v3.0/fields/') return { ok: true, status: 201, data: { data: { field: { slug: 'CREATED' } } } };
+      return { ok: true, status: 200, data: {} };
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: 'FSLUG', title: 't', fields: [textField], logic: [] });
+    expect(r.ok).toBe(true);
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+    expect(calls.find((c) => c.method === 'POST' && c.path === '/v3.0/fields/')!.body).toMatchObject({ form: 'FSLUG' });
+    expect(r.fieldSlugs).toEqual({ h1: 'CREATED' });
+  });
+
+  test.each([401, 403, 429, 500, 503])('(e) probe が %i → {ok:false} で fail-soft 停止 (POST も PATCH もしない = 憶測 create で重複を作らない / B1)', async (status) => {
+    const { client, calls } = upsertMock(({ method }) => {
+      if (method === 'GET') return { ok: false, status, error: `HTTP ${status}` };
+      return { ok: true, status: 201, data: { data: { field: { slug: 'X' } } } };
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: 'FSLUG', title: 't', fields: [textField], logic: [] });
+    expect(r.ok).toBe(false);
+    expect(r.formalooSlug).toBe('FSLUG');
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/')).toBe(false); // 憶測作成しない
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+  });
+
+  test('(e) probe が例外相当 (client.request fail-soft = status 0) → {ok:false} 停止 (POST しない)', async () => {
+    const { client, calls } = upsertMock(({ method }) => {
+      if (method === 'GET') return { ok: false, status: 0, error: 'network boom' }; // client.request が例外を status 0 に握り潰す形 (N-6)
+      return { ok: true, status: 201, data: { data: { field: { slug: 'X' } } } };
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: 'FSLUG', title: 't', fields: [textField], logic: [] });
+    expect(r.ok).toBe(false);
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/')).toBe(false);
+  });
+});
+
+describe('pushDefinitionToFormaloo — fail-soft 非 ok (T-A2 (f) / N-6 throw しない)', () => {
+  test('(f) PATCH が 500 (非 404) → throw せず {ok:false, formalooSlug, error}', async () => {
+    const { client } = upsertMock(({ method }) => {
+      if (method === 'PATCH') return { ok: false, status: 500, error: 'boom' };
+      return { ok: true, status: 200, data: {} };
+    });
+    const r = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'FSLUG', title: 't', fields: [textField], logic: [], existingFieldSlugs: { h1: 'sl1' },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.formalooSlug).toBe('FSLUG');
+    expect(r.error).toContain('update failed');
+  });
+
+  test('(f) 新規 POST が非 ok → {ok:false, formalooSlug, error}', async () => {
+    const { client } = upsertMock(({ method, path }) => {
+      if (method === 'GET') return { ok: false, status: 404, error: 'nf' };
+      if (method === 'POST' && path === '/v3.0/fields/') return { ok: false, status: 400, error: 'bad field' };
+      return { ok: true, status: 200, data: {} };
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: 'FSLUG', title: 't', fields: [textField], logic: [] });
+    expect(r.ok).toBe(false);
+    expect(r.formalooSlug).toBe('FSLUG');
+    expect(r.error).toContain('field push failed');
+  });
+
+  test('(f) self-heal POST (PATCH 404 後) が非 ok → {ok:false, formalooSlug, error}', async () => {
+    const { client } = upsertMock(({ method, path }) => {
+      if (method === 'PATCH') return { ok: false, status: 404, error: 'gone' };
+      if (method === 'POST' && path === '/v3.0/fields/') return { ok: false, status: 500, error: 'heal boom' };
+      return { ok: true, status: 200, data: {} };
+    });
+    const r = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'FSLUG', title: 't', fields: [textField], logic: [], existingFieldSlugs: { h1: 'sl1' },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.formalooSlug).toBe('FSLUG');
+    expect(r.error).toContain('field push failed');
   });
 });

@@ -46,9 +46,20 @@ export async function pushDefinitionToFormaloo(
     title: string;
     fields: HarnessField[];
     logic: HarnessLogicRule[];
+    /**
+     * harness field id → Formaloo field slug の既知対応 (呼び出し前に field_map から構築)。
+     * ここに slug がある field は PATCH で更新し、無い field のみ probe/POST で作成する = 重複作成を根絶
+     * (push-idempotency / update-vs-create)。未渡し (default {}) は従来 create 挙動へ自然縮退。
+     */
+    existingFieldSlugs?: Record<string, string>;
   },
 ): Promise<PushResult> {
-  // 1) form を確保 (未 push なら作成)
+  const existingFieldSlugs = params.existingFieldSlugs ?? {};
+  // form-ensure より前に「form が既に存在するか」を捕捉 (B2)。初回 push (form 新規作成) は全 field 新規 =
+  // probe 不要 = 従来 POST 経路と同値 (R5 回帰)。form 既存時のみ、未知 field を probe で実在確認する。
+  const formPreExisted = !!params.formalooSlug;
+
+  // 1) form を確保 (未 push なら作成) — 既存挙動不変
   let slug = params.formalooSlug;
   let publicAddress: string | null = null;
   if (!slug) {
@@ -60,18 +71,59 @@ export async function pushDefinitionToFormaloo(
     if (!slug) return { ok: false, error: 'form create: slug missing' };
   }
 
-  // 2) fields を作成し slug を集める (N-13: field 単位。1 つでも失敗したら out_of_sync)
-  // field は top-level POST /v3.0/fields/ へ送り、所属 form は body の `form` slug で紐づける。
-  // 旧実装の form-nested path (POST /v3.0/forms/{slug}/fields/) は本番 Formaloo API に存在せず
-  // HTTP 404 になっていた (2026-07-10 本番検証で発覚 / 正 endpoint は live 実測で確定)。
-  const fieldSlugs: Record<string, string> = {};
-  for (const field of params.fields) {
+  // field 新規作成 (POST /v3.0/fields/) の共通ヘルパ。full payload (choices 込み) で作成し slug を集める。
+  // field は top-level /v3.0/fields/ へ送り、所属 form は body の `form` slug で紐づける (旧 form-nested path は
+  // 本番 Formaloo API に存在せず HTTP 404 だった / 2026-07-10 本番検証)。
+  const createField = async (field: HarnessField): Promise<PushResult | { fslug: string }> => {
     const payload = { ...toFormalooFieldPayload(field), form: slug };
     const res = await client.post<FieldCreateResp>('/v3.0/fields/', payload);
     if (!res.ok) return { ok: false, formalooSlug: slug, error: `field push failed (${field.id}): HTTP ${res.status}` };
     const fslug = res.data?.data?.field?.slug ?? res.data?.data?.slug;
     if (!fslug) return { ok: false, formalooSlug: slug, error: `field push: slug missing (${field.id})` };
-    fieldSlugs[field.id] = fslug;
+    return { fslug };
+  };
+
+  // 2) fields を upsert (update-vs-create で冪等化 / N-13: field 単位。1 つでも失敗したら out_of_sync)。
+  const fieldSlugs: Record<string, string> = {};
+  for (const field of params.fields) {
+    let fieldSlug: string | undefined = existingFieldSlugs[field.id];
+
+    // slug 未知 かつ form 既存 → probe GET /v3.0/fields/{field.id}/ で実在確認 (B1/B2)。
+    //   200 → 既存 (pull で id=slug fallback した Formaloo-native field 等) → PATCH 更新。
+    //   404 → 真の新規 → POST 作成。
+    //   その他 (401/403/429/5xx/例外=status 0) → fail-soft 停止 (憶測 create で重複を作らない)。
+    if (!fieldSlug && formPreExisted) {
+      const probe = await client.request('GET', `/v3.0/fields/${field.id}/`);
+      if (probe.status === 200) {
+        fieldSlug = field.id;
+      } else if (probe.status === 404) {
+        fieldSlug = undefined;
+      } else {
+        return { ok: false, formalooSlug: slug, error: `field probe failed (${field.id}): HTTP ${probe.status}` };
+      }
+    }
+
+    if (fieldSlug) {
+      // update = PATCH /v3.0/fields/{slug}/。choice_items を送らない (B6) = choices は不変 (dup も wipe も無し)。
+      const patchBody = toFormalooFieldPayload(field);
+      delete patchBody.choice_items;
+      const r = await client.request('PATCH', `/v3.0/fields/${fieldSlug}/`, patchBody);
+      if (r.status === 404) {
+        // self-heal: Formaloo 側で field 削除済 → full payload (choices 込み) で作り直し。
+        const created = await createField(field);
+        if ('ok' in created) return created;
+        fieldSlugs[field.id] = created.fslug;
+      } else if (!r.ok) {
+        return { ok: false, formalooSlug: slug, error: `field update failed (${field.id}): HTTP ${r.status}` };
+      } else {
+        fieldSlugs[field.id] = fieldSlug; // PATCH は slug 既知 = 応答 parse 不要
+      }
+    } else {
+      // 新規 = POST /v3.0/fields/ (choices 込み) — 初回 push の従来挙動と同値。
+      const created = await createField(field);
+      if ('ok' in created) return created;
+      fieldSlugs[field.id] = created.fslug;
+    }
   }
 
   // 3) logic を Formaloo slug ベースで保存 (harness field id → Formaloo slug に解決)
