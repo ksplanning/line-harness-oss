@@ -278,3 +278,19 @@ export function fromFormalooLogic(
   }
   return out;
 }
+
+/**
+ * Formaloo logic object 内の「複合ロジックルール」件数を数える (pull-fidelity 弱化検知 / additive)。
+ * harness の HarnessLogicRule は単一 condition + 単一 action 設計のため、Formaloo 側の
+ * conditions.length>1 または actions.length>1 の rule は fromFormalooLogic で index-0 に弱化される。
+ * その件数を返して pull note で運用者に surface する目的の純関数 (fromFormalooLogic 自体は無改変)。
+ * 入力は Formaloo raw shape ゆえ非配列を許容的に 0 扱い (fail-soft)。
+ */
+export function countWeakenedFormalooRules(obj: FormalooLogicObject): number {
+  const rulesIn = Array.isArray(obj?.rules) ? obj.rules : [];
+  return rulesIn.filter(
+    (r) =>
+      (Array.isArray(r?.conditions) && r.conditions.length > 1) ||
+      (Array.isArray(r?.actions) && r.actions.length > 1),
+  ).length;
+}

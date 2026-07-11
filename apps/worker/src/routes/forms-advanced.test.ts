@@ -409,6 +409,56 @@ describe('forms-advanced pull 再取り込み (GET /:id/pull / N-8)', () => {
     expect(d.note).toContain('未接続');
   });
 
+  test('B7: 弱化ありフォーム → note が既存文言 + warning (複合ロジックルール) を含む', async () => {
+    const id = await createForm();
+    const slug = 'formaloo_pull_weak';
+    raw.prepare(`UPDATE formaloo_forms SET formaloo_slug=? WHERE id=?`).run(slug, id);
+    const formDetail = {
+      data: { form: { slug, fields_list: [
+        { slug: 's_a', type: 'short_text', title: 'A', required: false, position: 0 },
+        { slug: 's_b', type: 'short_text', title: 'B', required: false, position: 1 },
+      ], logic: { rules: [
+        { conditions: [{ field: 's_a', operator: 'equals', value: 'x' }, { field: 's_b', operator: 'equals', value: 'y' }], actions: [{ type: 'show', field: 's_b' }] },
+      ] } } },
+    };
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: { method?: string }) => {
+      const url = String(input);
+      if (url.includes('/oauth2/authorization-token/')) return new Response(JSON.stringify({ authorization_token: 'jwt' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if ((init?.method ?? 'GET') === 'GET' && url.includes(`/v3.0/forms/${slug}/`)) return new Response(JSON.stringify(formDetail), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 404 });
+    }));
+    const res = await callEnv('GET', `/api/forms-advanced/${id}/pull`, { FORMALOO_API_KEY: 'k', FORMALOO_API_SECRET: 's' });
+    const d = (await res.json() as { data: { ok: boolean; note: string } }).data;
+    expect(d.ok).toBe(true);
+    expect(d.note).toContain('重複'); // 既存文言 保持
+    expect(d.note).toContain('複合ロジックルール'); // warning 追記 (B7)
+  });
+
+  test('B7: 弱化無しフォーム → note は既存文言のまま不変 (warning 追記なし)', async () => {
+    const id = await createForm();
+    const slug = 'formaloo_pull_nowarn';
+    raw.prepare(`UPDATE formaloo_forms SET formaloo_slug=? WHERE id=?`).run(slug, id);
+    const formDetail = {
+      data: { form: { slug, fields_list: [
+        { slug: 's_a', type: 'short_text', title: 'A', required: false, position: 0 },
+        { slug: 's_b', type: 'short_text', title: 'B', required: false, position: 1 },
+      ], logic: { rules: [
+        { conditions: [{ field: 's_a', operator: 'equals', value: 'x' }], actions: [{ type: 'hide', field: 's_b' }] },
+      ] } } },
+    };
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: { method?: string }) => {
+      const url = String(input);
+      if (url.includes('/oauth2/authorization-token/')) return new Response(JSON.stringify({ authorization_token: 'jwt' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if ((init?.method ?? 'GET') === 'GET' && url.includes(`/v3.0/forms/${slug}/`)) return new Response(JSON.stringify(formDetail), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 404 });
+    }));
+    const res = await callEnv('GET', `/api/forms-advanced/${id}/pull`, { FORMALOO_API_KEY: 'k', FORMALOO_API_SECRET: 's' });
+    const d = (await res.json() as { data: { ok: boolean; note: string } }).data;
+    expect(d.ok).toBe(true);
+    expect(d.note).toContain('重複'); // 既存文言
+    expect(d.note).not.toContain('複合ロジックルール'); // 弱化無し = warning 追記されない
+  });
+
   test('formaloo_slug 無 (未同期) → ok:false + note + 200', async () => {
     const id = await createForm();
     const res = await callEnv('GET', `/api/forms-advanced/${id}/pull`, { FORMALOO_API_KEY: 'k', FORMALOO_API_SECRET: 's' });

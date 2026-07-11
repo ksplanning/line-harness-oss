@@ -1,6 +1,7 @@
 import {
   fromFormalooField,
   fromFormalooLogic,
+  countWeakenedFormalooRules,
   type HarnessField,
   type HarnessLogicRule,
   type FormalooLogicObject,
@@ -24,7 +25,7 @@ import type { FormalooClient } from './formaloo-client';
  * frontend は ok===true の時だけ state を置換し、ok:false は note のみ表示する (B2 = editor を空へ潰さない)。
  */
 export type PullResult =
-  | { ok: true; fields: HarnessField[]; logic: HarnessLogicRule[] }
+  | { ok: true; fields: HarnessField[]; logic: HarnessLogicRule[]; warnings?: string[] }
   | { ok: false; error: string };
 
 /**
@@ -94,13 +95,22 @@ export async function pullDefinitionFromFormaloo(
       .filter((f) => typeof f.id === 'string' && f.id !== '') // W3: 空/欠落 id は drop
       .sort((a, b) => a.position - b.position); // W2: Formaloo position 昇順に安定ソート
 
+    const logicObj = extractLogic(res.data);
     const idSet = new Set(fields.map((f) => f.id));
-    const logic = fromFormalooLogic(extractLogic(res.data), params.resolveId).filter(
+    const logic = fromFormalooLogic(logicObj, params.resolveId).filter(
       // B5: 変換済 field-id 集合に無い rule を除去 (孤立参照を editor に入れない)
       (r) => idSet.has(r.sourceFieldId) && idSet.has(r.targetFieldId),
     );
 
-    return { ok: true, fields, logic };
+    // pull-fidelity 弱化検知 (additive): Formaloo の複合ロジック (conditions/actions 複数) は
+    // fromFormalooLogic で index-0 に弱化される。件数を warnings で surface (変換挙動は無改変)。
+    const weakened = countWeakenedFormalooRules(logicObj);
+    const warnings =
+      weakened > 0
+        ? [`複合ロジックルール ${weakened} 件が 1 条件に簡略化されました（Formaloo の複合条件は builder 非対応）`]
+        : [];
+
+    return { ok: true, fields, logic, ...(warnings.length ? { warnings } : {}) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

@@ -319,13 +319,17 @@ formsAdvanced.get('/api/forms-advanced/:id/pull', async (c) => {
     if (!r.ok) {
       return c.json({ success: true, data: { ok: false, fields: [], logic: [], note: `再取り込みに失敗しました（${r.error}）` } });
     }
+    // B7: pull-fidelity 弱化 warnings を既存 note にマージ (additive・既存文言は不変)。
+    const baseNote =
+      'Formaloo から再取り込みしました。内容を確認して「保存」してください（⚠️保存すると Formaloo に項目が重複作成される場合があります）';
+    const note = r.warnings && r.warnings.length ? `${baseNote} ⚠️${r.warnings.join(' / ')}` : baseNote;
     return c.json({
       success: true,
       data: {
         ok: true,
         fields: r.fields,
         logic: r.logic,
-        note: 'Formaloo から再取り込みしました。内容を確認して「保存」してください（⚠️保存すると Formaloo に項目が重複作成される場合があります）',
+        note,
       },
     });
   } catch (err) {

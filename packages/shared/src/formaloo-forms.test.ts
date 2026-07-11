@@ -13,6 +13,7 @@ import {
   fromFormalooField,
   toFormalooLogic,
   fromFormalooLogic,
+  countWeakenedFormalooRules,
   validateHarnessField,
   type HarnessField,
   type HarnessLogicRule,
@@ -210,5 +211,43 @@ describe('formaloo-forms — logic 条件分岐 round-trip (R1 / N-8)', () => {
     // slugC の逆引きを消す = f3 が解決できない
     const back = fromFormalooLogic(obj, (slug) => (slug === 'slugC' ? undefined : slugToId[slug]));
     expect(back.map((r) => r.id)).toEqual(['r1']); // r2 (f3 参照) は落ちる
+  });
+});
+
+describe('formaloo-forms — countWeakenedFormalooRules (pull-fidelity 弱化検知 / additive)', () => {
+  const single = { conditions: [{ field: 'a', operator: 'equals', value: '1' }], actions: [{ type: 'show', field: 'c' }] };
+  const multiCond = { conditions: [{ field: 'a', operator: 'equals', value: '1' }, { field: 'b', operator: 'equals', value: '2' }], actions: [{ type: 'show', field: 'c' }] };
+  const multiAct = { conditions: [{ field: 'a', operator: 'equals', value: '1' }], actions: [{ type: 'show', field: 'c' }, { type: 'hide', field: 'd' }] };
+
+  test('複条件 (conditions.length>1) rule を 1 と数える', () => {
+    expect(countWeakenedFormalooRules({ rules: [multiCond] } as never)).toBe(1);
+  });
+  test('複アクション (actions.length>1) rule を 1 と数える', () => {
+    expect(countWeakenedFormalooRules({ rules: [multiAct] } as never)).toBe(1);
+  });
+  test('単一条件・単一アクションの rule は 0', () => {
+    expect(countWeakenedFormalooRules({ rules: [single] } as never)).toBe(0);
+  });
+  test('rules 非配列 / 空 / null は 0 (fail-soft)', () => {
+    expect(countWeakenedFormalooRules({ rules: 'nope' } as never)).toBe(0);
+    expect(countWeakenedFormalooRules({} as never)).toBe(0);
+    expect(countWeakenedFormalooRules(null as never)).toBe(0);
+  });
+  test('混在 rule 群で弱化のみ数える (単一 0 + 複条件 1 + 複アクション 1 = 2)', () => {
+    expect(countWeakenedFormalooRules({ rules: [single, multiCond, multiAct] } as never)).toBe(2);
+  });
+});
+
+describe('formaloo-forms — fromFormalooLogic の index-0 弱化挙動は無改変 (回帰 / byte-unchanged)', () => {
+  test('複合ロジックは conditions[0]/actions[0] のみ取り込み残りを捨てる (検知は別関数・変換は不変)', () => {
+    const obj = { rules: [
+      { conditions: [{ field: 'A', operator: 'equals', value: 'x' }, { field: 'B', operator: 'equals', value: 'y' }],
+        actions: [{ type: 'show', field: 'C' }, { type: 'hide', field: 'D' }] },
+    ] };
+    const back = fromFormalooLogic(obj as never, (s) => ({ A: 'a', B: 'b', C: 'c', D: 'd' } as Record<string, string>)[s]);
+    expect(back).toHaveLength(1);
+    expect(back[0].sourceFieldId).toBe('a'); // conditions[0]
+    expect(back[0].targetFieldId).toBe('c'); // actions[0]
+    expect(back[0].action).toBe('show'); // actions[0].type
   });
 });

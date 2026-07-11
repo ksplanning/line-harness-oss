@@ -195,6 +195,49 @@ describe('pullDefinitionFromFormaloo — fail-soft (N-6)', () => {
   });
 });
 
+describe('pullDefinitionFromFormaloo — 複合ロジック弱化検知 warnings (T-A4 / additive)', () => {
+  const fields = [
+    { slug: 's_a', type: 'short_text', title: 'A', required: false, position: 0 },
+    { slug: 's_b', type: 'short_text', title: 'B', required: false, position: 1 },
+  ];
+
+  it('複条件 (conditions 2件) rule を含むフォームで warnings を載せる (文言「複合ロジックルール」)', async () => {
+    const body = detail(fields, {
+      rules: [
+        { conditions: [{ field: 's_a', operator: 'equals', value: 'x' }, { field: 's_b', operator: 'equals', value: 'y' }], actions: [{ type: 'show', field: 's_b' }] },
+      ],
+    });
+    const r = await pullDefinitionFromFormaloo(mockClient(body), { formalooSlug: 'form_slug', resolveId: (s) => s });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings).toBeDefined();
+    expect(r.warnings!.length).toBeGreaterThanOrEqual(1);
+    expect(r.warnings![0]).toContain('複合ロジックルール');
+  });
+
+  it('複アクション (actions 2件) rule も弱化として warnings に含める', async () => {
+    const body = detail(fields, {
+      rules: [
+        { conditions: [{ field: 's_a', operator: 'equals', value: 'x' }], actions: [{ type: 'show', field: 's_a' }, { type: 'hide', field: 's_b' }] },
+      ],
+    });
+    const r = await pullDefinitionFromFormaloo(mockClient(body), { formalooSlug: 'form_slug', resolveId: (s) => s });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings?.[0]).toContain('複合ロジックルール');
+  });
+
+  it('弱化無し (単一条件・単一アクションのみ) は warnings 未載 (undefined)', async () => {
+    const body = detail(fields, {
+      rules: [{ conditions: [{ field: 's_a', operator: 'equals', value: 'x' }], actions: [{ type: 'hide', field: 's_b' }] }],
+    });
+    const r = await pullDefinitionFromFormaloo(mockClient(body), { formalooSlug: 'form_slug', resolveId: (s) => s });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings).toBeUndefined();
+  });
+});
+
 describe('extractFieldsList / extractLogic — 許容的抽出 (候補キー順試行)', () => {
   it('extractFieldsList は複数候補パスを許容的に拾う', () => {
     expect(extractFieldsList({ data: { form: { fields_list: [1] } } })).toEqual([1]);
