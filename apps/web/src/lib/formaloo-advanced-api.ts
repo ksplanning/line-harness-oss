@@ -24,6 +24,8 @@ export interface AdvancedForm {
   // F6-2 表示スコープ: lineAccountId は全 role 露出 / workspaceId は owner 応答のみ (非 owner は不在)。
   lineAccountId: string | null
   workspaceId?: string | null
+  // F6-3 ハーネス側フォルダ分類 (NULL=未分類 / 全 role 露出)。
+  folderId: string | null
   updatedAt: string
 }
 
@@ -42,10 +44,14 @@ export interface PulledDefinition {
 }
 
 export const formsAdvancedApi = {
-  // F6-2: lineAccountId を渡すと表示スコープで絞る (選択アカウント form + 共通 NULL のみ)。
-  async list(lineAccountId?: string): Promise<AdvancedForm[]> {
-    const qs = lineAccountId ? `?lineAccountId=${encodeURIComponent(lineAccountId)}` : ''
-    return (await fetchApi<Envelope<AdvancedForm[]>>(`/api/forms-advanced${qs}`)).data
+  // F6-2: lineAccountId で表示スコープ絞り。F6-3: folderId で folder 絞りを重ねる (§3.3b 3 状態:
+  //   undefined=全フォルダ+未分類 / 実 id=特定フォルダ / 'none' sentinel=未分類のみ)。
+  async list(lineAccountId?: string, folderId?: string): Promise<AdvancedForm[]> {
+    const p = new URLSearchParams()
+    if (lineAccountId) p.set('lineAccountId', lineAccountId)
+    if (folderId !== undefined) p.set('folderId', folderId)
+    const qs = p.toString()
+    return (await fetchApi<Envelope<AdvancedForm[]>>(`/api/forms-advanced${qs ? `?${qs}` : ''}`)).data
   },
   async get(id: string): Promise<AdvancedForm> {
     return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}`)).data
