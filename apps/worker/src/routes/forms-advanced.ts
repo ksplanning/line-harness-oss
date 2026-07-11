@@ -331,11 +331,20 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           fields: fieldRows((fid) => pushed.fieldSlugs?.[fid] ?? null),
           formalooSlug: pushed.formalooSlug ?? null,
         });
+        // push 成功で Formaloo 側 = harness が今送った内容 → 旧 baseline は stale。
+        // remote_definition_hash=NULL で無効化し次 tick で silent re-bootstrap (自分の push を drift 誤検知しない
+        // / formaloo-auto-pull R6)。drift 状態 (badge/pending) も掃除 (remote drift は解消 = harness と一致)。
         // compound を builder 編集した場合は push 成功でも未同期 + 明示警告 (複合は簡略化せず Formaloo に残す)。
         if (compoundEditWarning) {
-          await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: compoundEditWarning });
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync', lastError: compoundEditWarning,
+            remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
+          });
         } else {
-          await setFormalooSyncState(c.env.DB, id, { syncStatus: 'idle', lastError: null, lastPushedAt: new Date().toISOString() });
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'idle', lastError: null, lastPushedAt: new Date().toISOString(),
+            remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
+          });
         }
       } else {
         await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: pushed.error ?? 'push failed' });

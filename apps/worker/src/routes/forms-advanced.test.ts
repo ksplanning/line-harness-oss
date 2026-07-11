@@ -238,6 +238,32 @@ describe('forms-advanced PUT /:id idempotent push (T-A3 / push-idempotency / B3)
     expect(rows.map((r) => r.s)).toEqual(['s_one', 's_two']);
   });
 
+  test('push 成功で baseline (remote_definition_hash) を NULL 無効化 + drift 状態を掃除 (T-C2 / R6)', async () => {
+    const id = await createForm();
+    raw.prepare(`UPDATE formaloo_forms SET formaloo_slug=? WHERE id=?`).run('FSLUG', id);
+    const f1 = `fld_${id}_1`;
+    seedFieldSlug(id, f1, 's_one', 0);
+    // 既存の drift baseline / pending / detected を仕込む (push 前状態)。
+    raw.prepare(
+      `INSERT INTO formaloo_sync_state (form_id, sync_status, remote_definition_hash, pending_remote_hash, drift_status, drift_detected_at)
+       VALUES (?, 'idle', 'OLD_BASE', 'PEND', 'detected', '2026-07-12T00:00:00')`,
+    ).run(id);
+
+    stubFetch();
+    const res = await callEnv('PUT', `/api/forms-advanced/${id}`, FORMALOO_ENV, {
+      fields: [{ id: f1, type: 'text', label: '名前', required: false, config: {} }],
+      logic: [],
+    });
+    expect((await res.json() as { data: { syncStatus: string } }).data.syncStatus).toBe('idle'); // push 成功
+
+    const st = raw.prepare(
+      `SELECT remote_definition_hash AS h, pending_remote_hash AS p, drift_status AS d FROM formaloo_sync_state WHERE form_id=?`,
+    ).get(id) as { h: string | null; p: string | null; d: string };
+    expect(st.h).toBeNull(); // baseline 無効化 → 次 tick で silent re-bootstrap
+    expect(st.p).toBeNull(); // pending 掃除
+    expect(st.d).toBe('none'); // drift 状態掃除
+  });
+
   test('push 失敗時: field_map の slug が保持 (before==after 非 null) + out_of_sync + 直後の再保存が再び PATCH 経路 (B3)', async () => {
     const id = await createForm();
     raw.prepare(`UPDATE formaloo_forms SET formaloo_slug=? WHERE id=?`).run('FSLUG', id);
