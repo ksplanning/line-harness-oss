@@ -14,5 +14,9 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
+    // Vitest 3 の fork プール並列度では、subprocess を起こす invariant テスト
+    // (D-3 の `generate-bootstrap --check` は execFileSync('node', ...) で ~7s)
+    // が既定 5000ms を超えて timeout する。assert は不変・実行時間の margin のみ拡大。
+    testTimeout: 30000,
   },
 });
