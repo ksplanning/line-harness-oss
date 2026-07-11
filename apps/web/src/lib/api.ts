@@ -38,12 +38,25 @@ import type {
 } from '@line-crm/shared'
 import { downloadBlob } from './download'
 
+/**
+ * 1 配信に束ねる 1 メッセージ (combo messages / broadcast-combo-messages Batch 2)。
+ * worker 側 (apps/worker/src/routes/broadcasts.ts の MessageBlock) と同一形状。
+ * messages[0] が message_type/message_content/alt_text に先頭ミラーされる。
+ */
+export interface MessageBlock {
+  type: ApiBroadcast['messageType'];
+  content: string;
+  altText?: string | null;
+}
+
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
   targetType: BroadcastTargetType;
   accountIds: string[] | null;
   dedupPriority: string[] | null;
   failedAccountIds: string[] | null;
+  /** combo 配信の順序付きメッセージ列 (最大5)。NULL/未指定=従来 single。 */
+  messages?: MessageBlock[] | null;
 };
 
 export type BroadcastInsight = {
@@ -390,6 +403,8 @@ export const api = {
       title: string
       messageType: ApiBroadcast['messageType']
       messageContent: string
+      // combo: 順序付きメッセージ列 (最大5)。未指定=従来 single (後方互換)。先頭は messageType/messageContent にミラー。
+      messages?: MessageBlock[]
       targetType: ApiBroadcast['targetType']
       targetTagId?: string | null
       scheduledAt?: string | null
@@ -411,6 +426,8 @@ export const api = {
         title?: string
         messageType?: ApiBroadcast['messageType']
         messageContent?: string
+        // combo: 順序付きメッセージ列 (最大5)。指定時は worker が先頭ミラー + messages 更新 (combo 行の単一フィールド PUT は 400)。
+        messages?: MessageBlock[]
         targetType?: ApiBroadcast['targetType']
         targetTagId?: string | null
         scheduledAt?: string | null
