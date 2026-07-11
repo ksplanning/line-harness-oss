@@ -92,18 +92,18 @@ export async function parseWebhookPayload(
 
   const submittedAt = firstString(data.created_at, data.submitted_at, root.created_at, root.submitted_at) ?? nowIso;
 
-  // ① 順方向: 署名 fr_id を最優先で復元 (rendered_data[alias] = /fo/:id が付与した alias 事前充填)。
+  // 順方向 friend 解決: 署名 fr_id を最優先 (rendered_data[alias] = /fo/:id が付与した alias 事前充填)。
+  // F-2 (R-F4 / R-R7): 署名 field が present の時は verify 成功のみ採用し、invalid / 検証不能 (secret 未供給)
+  //   は fail-closed で null 確定する。ここで legacy 未署名 chain に落とすと、攻撃者が『改ざん fr_id +
+  //   別 friendId (legacy field)』を注入して別人へ tag/scenario を発火できる (署名の forgery 耐性が無効化)。
+  //   legacy 未署名 chain は署名 field が完全に absent の時のみ許可 (後方互換 / HP 経由・旧 hidden field)。
   const alias = opts?.friendTokenAlias ?? FRIEND_TOKEN_ALIAS;
   const rendered = asObject(root.rendered_data) ?? asObject(data.rendered_data);
   const signedToken = firstString(rendered?.[alias], answers[alias], data[alias]);
-  let friendId: string | null = null;
-  if (signedToken && opts?.friendTokenSecret) {
-    friendId = await verifyFriendToken(signedToken, opts.friendTokenSecret);
-  }
-
-  // ② fallback: 従来の unsigned 候補 chain (redirect が付与する ?f=/lu= 由来 / G11 と同源)。
-  //    署名 fr_id が復元できた場合はそれを優先 (誤タグ防止)。
-  if (!friendId) {
+  let friendId: string | null;
+  if (signedToken) {
+    friendId = opts?.friendTokenSecret ? await verifyFriendToken(signedToken, opts.friendTokenSecret) : null;
+  } else {
     friendId = firstString(
       answers.friend_id,
       answers.f,

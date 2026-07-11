@@ -118,14 +118,35 @@ describe('parseWebhookPayload — 署名 fr_id 復元 (T-A6 / 順方向)', () =>
     expect(p!.friendId).toBeNull();
   });
 
-  test('secret 未供給時は署名 fr_id を復元せず legacy 候補 chain に fallback (回帰安全)', async () => {
-    const token = await signFriendToken(FRIEND, SECRET);
-    // secret を渡さない → 署名 fr_id は無視され、legacy answers.friend_id で解決
+  test('署名 fr_id が完全に absent の時のみ legacy 候補 chain で解決 (後方互換 / 旧 hidden field)', async () => {
     const p = await parseWebhookPayload(
-      { data: { slug: 'sub_3', form: { slug: 'form_abc' }, answers: { friend_id: 'legacy_fr' } }, rendered_data: { fr_id: token } },
+      { data: { slug: 'sub_3', form: { slug: 'form_abc' }, answers: { friend_id: 'legacy_fr' } } },
       now,
+      { friendTokenSecret: SECRET },
     );
     expect(p!.friendId).toBe('legacy_fr');
+  });
+
+  test('F-2: 署名 fr_id が present かつ invalid なら legacy chain に落とさず null 確定 (別人誤タグ封鎖 / R-R7)', async () => {
+    const token = await signFriendToken(FRIEND, SECRET);
+    const tampered = token!.slice(0, -1) + (token!.endsWith('A') ? 'B' : 'A');
+    // 攻撃者が「改ざん fr_id + 別 friendId(legacy field)」を同時注入しても別人に解決しない
+    const p = await parseWebhookPayload(
+      { data: { slug: 'sub_5', form: { slug: 'form_abc' }, answers: { friend_id: 'attacker_other', f: 'attacker_other2' } }, rendered_data: { fr_id: tampered } },
+      now,
+      { friendTokenSecret: SECRET },
+    );
+    expect(p!.friendId).toBeNull();
+  });
+
+  test('F-2: 署名 fr_id が present だが secret 未供給でも legacy chain に落とさず null (検証迂回を許さない)', async () => {
+    const token = await signFriendToken(FRIEND, SECRET);
+    const p = await parseWebhookPayload(
+      { data: { slug: 'sub_6', form: { slug: 'form_abc' }, answers: { friend_id: 'legacy_other' } }, rendered_data: { fr_id: token } },
+      now,
+      // secret 未供給 (rollback/dev) → 署名検証不能は null 確定 (未署名 chain を信用しない)
+    );
+    expect(p!.friendId).toBeNull();
   });
 
   test('alias は上書き可 (friendTokenAlias)', async () => {
