@@ -44,6 +44,14 @@ export default function FormsAdvancedListPage() {
   const [selectedFolderId, setSelectedFolderId] = useState<FolderFilter>(null)
   // folder fetch も stale 応答破棄 (Codex M#5: A→B 切替後に遅い A の folder 応答で B 画面を上書きしない)。
   const folderReqToken = useRef(0)
+  // F6-3b (CRUD race): 常に最新の選択 account を保持し、CRUD (作成/リネーム/削除/移動) の応答待ち中に
+  // account を切り替えたら、旧 account 向けの reload (loadFolders/reloadForms) を破棄する。
+  // reqToken guard は各 reload の「自分の stale 応答」は捨てられるが、CRUD 完了後に旧 account の reload を
+  // "新規に発行" してしまう経路 (= 最新 token を握って勝つ) を塞げないため、account 同一性で発行自体を止める。
+  const accountRef = useRef(selectedAccountId)
+  useEffect(() => {
+    accountRef.current = selectedAccountId
+  }, [selectedAccountId])
 
   const load = useCallback(async (accountId: string, folderFilter?: string) => {
     const token = ++reqToken.current
@@ -166,11 +174,13 @@ export default function FormsAdvancedListPage() {
 
   const handleCreateFolder = async () => {
     if (!selectedAccountId) return
+    const acct = selectedAccountId // 応答後に account が変わっていないか判定するため固定
     const name = window.prompt('新しいフォルダ名を入力してください')
     if (!name || !name.trim()) return
     try {
-      await formalooFoldersApi.create(selectedAccountId, name.trim())
-      await loadFolders(selectedAccountId)
+      await formalooFoldersApi.create(acct, name.trim())
+      if (accountRef.current !== acct) return // account 切替 → 旧 account の reload を破棄 (F6-3b race)
+      await loadFolders(acct)
     } catch {
       /* fail-soft: 一覧は現状維持 */
     }
@@ -179,9 +189,11 @@ export default function FormsAdvancedListPage() {
   const handleRenameFolder = async (id: string, current: string) => {
     const name = window.prompt('新しいフォルダ名', current)
     if (!name || !name.trim() || !selectedAccountId) return
+    const acct = selectedAccountId
     try {
       await formalooFoldersApi.rename(id, name.trim())
-      await loadFolders(selectedAccountId)
+      if (accountRef.current !== acct) return // account 切替 → 旧 account の reload を破棄 (F6-3b race)
+      await loadFolders(acct)
     } catch {
       /* fail-soft */
     }
@@ -191,10 +203,12 @@ export default function FormsAdvancedListPage() {
     // 削除の安心開示: form は消えず未分類へ戻る (spec §3.2 の実利を UI で明示)。
     const ok = window.confirm('このフォルダを削除しますか？\n中のフォームは削除されず「未分類」に戻ります（消えません）。')
     if (!ok || !selectedAccountId) return
+    const acct = selectedAccountId
     try {
       await formalooFoldersApi.remove(id)
+      if (accountRef.current !== acct) return // account 切替 → 旧 account の reload/絞り reset を破棄 (F6-3b race)
       if (selectedFolderId === id) setSelectedFolderId(null) // 絞り中フォルダを消したら「すべて」へ
-      await loadFolders(selectedAccountId)
+      await loadFolders(acct)
       reloadForms() // 未分類化された form を反映
     } catch {
       /* fail-soft */
@@ -203,8 +217,10 @@ export default function FormsAdvancedListPage() {
 
   const handleMoveForm = async (formId: string, value: string) => {
     const folderId = value === '' ? null : value
+    const acct = selectedAccountId
     try {
       await formalooFoldersApi.assign(formId, folderId)
+      if (accountRef.current !== acct) return // account 切替 → 旧 account の reload を破棄 (F6-3b race)
       reloadForms()
     } catch {
       /* fail-soft: cross-account 等は server が 400・一覧は現状維持 */

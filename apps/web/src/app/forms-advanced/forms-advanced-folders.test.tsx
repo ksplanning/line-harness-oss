@@ -178,6 +178,71 @@ describe('フォーム→フォルダ移動', () => {
   })
 })
 
+describe('CRUD race (F6-3b) — CRUD 応答待ち中の account 切替で旧 account の reload が新画面を上書きしない', () => {
+  it('フォルダ作成の応答待ち中に A→B 切替 → 遅延した A の create 応答後 loadFolders(A) が B 画面へ混入しない', async () => {
+    // folder 一覧は account 別に即解決。
+    foldersListMock.mockImplementation((accountId: string) =>
+      Promise.resolve(accountId === 'acc_B' ? [folder('ff_B1', 'B社フォルダ')] : [folder('ff_A1', 'A社フォルダ')]))
+    // foldersCreate を deferred 化して account 切替の窓を作る (create 応答待ちのまま切替)。
+    let resolveCreate!: (v: unknown) => void
+    foldersCreateMock.mockImplementation(() => new Promise((r) => { resolveCreate = r }))
+    vi.spyOn(window, 'prompt').mockReturnValue('新フォルダ')
+
+    mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
+    const { rerender } = render(<Page />)
+    await waitFor(() => expect(screen.getByTestId('folder-item-ff_A1')).toBeTruthy())
+
+    // 作成開始 → foldersCreate(A) in-flight。
+    await act(async () => { fireEvent.click(screen.getByTestId('folder-create-btn')) })
+    await waitFor(() => expect(foldersCreateMock).toHaveBeenCalledWith('acc_A', '新フォルダ'))
+
+    // B へ切替 (create 応答待ちのまま) → B のフォルダに更新。
+    mockAccount.selectedAccountId = 'acc_B'
+    rerender(<Page />)
+    await waitFor(() => expect(screen.getByTestId('folder-item-ff_B1')).toBeTruthy())
+    expect(screen.queryByTestId('folder-item-ff_A1')).toBeNull()
+
+    // ここで A の create を解決。修正前は loadFolders(A) が走り ff_A1 が B 画面に復活してしまう。
+    await act(async () => { resolveCreate({ id: 'ff_new', name: '新フォルダ', lineAccountId: 'acc_A', parentId: null, position: 0 }) })
+    await act(async () => { await Promise.resolve() })
+
+    // 修正後: B 画面のまま (ff_B1)、旧 account A の folder は混入しない。
+    expect(screen.getByTestId('folder-item-ff_B1')).toBeTruthy()
+    expect(screen.queryByTestId('folder-item-ff_A1')).toBeNull()
+  })
+
+  it('フォーム移動の応答待ち中に A→B 切替 → 遅延した A の assign 応答後 reloadForms(A) が B 画面へ混入しない', async () => {
+    listMock.mockImplementation((accountId: string) =>
+      Promise.resolve(accountId === 'acc_B' ? [form('fb_1', 'B社フォーム', 'acc_B')] : [form('fa_1', 'A社フォーム', 'acc_A')]))
+    foldersListMock.mockResolvedValue([folder('ff_1', '販促')])
+    // foldersAssign を deferred 化して切替窓を作る。
+    let resolveAssign!: (v: unknown) => void
+    foldersAssignMock.mockImplementation(() => new Promise((r) => { resolveAssign = r }))
+
+    mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
+    const { rerender } = render(<Page />)
+    await waitFor(() => expect(screen.getByTestId('form-card-fa_1')).toBeTruthy())
+
+    // 移動開始 → assign(fa_1, ff_1) in-flight。
+    await act(async () => { fireEvent.change(screen.getByTestId('form-move-fa_1'), { target: { value: 'ff_1' } }) })
+    await waitFor(() => expect(foldersAssignMock).toHaveBeenCalledWith('fa_1', 'ff_1'))
+
+    // B へ切替 → B のフォームに更新。
+    mockAccount.selectedAccountId = 'acc_B'
+    rerender(<Page />)
+    await waitFor(() => expect(screen.getByTestId('form-card-fb_1')).toBeTruthy())
+    expect(screen.queryByTestId('form-card-fa_1')).toBeNull()
+
+    // A の assign を解決。修正前は reloadForms(A) が走り fa_1 が B 画面に復活してしまう。
+    await act(async () => { resolveAssign(undefined) })
+    await act(async () => { await Promise.resolve() })
+
+    // 修正後: B 画面のまま (fb_1)、旧 account A の form は混入しない。
+    expect(screen.getByTestId('form-card-fb_1')).toBeTruthy()
+    expect(screen.queryByTestId('form-card-fa_1')).toBeNull()
+  })
+})
+
 describe('⑤ 正直表示 (芯 / Codex B#3)', () => {
   it('(a positive) 「Formaloo 側と自動連動しません」注記が render される', async () => {
     mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
