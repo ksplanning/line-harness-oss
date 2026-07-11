@@ -63,7 +63,7 @@ MANIFEST_URL = "https://github.com/Shudesu/line-harness-oss/releases/latest/down
 AI_MODEL_ID = "@cf/meta/llama-3.1-8b-instruct-fast"
 AI_EMBED_MODEL_ID = "@cf/qwen/qwen3-embedding-0.6b"
 AI_EMBED_NEURON_PER_MTOK = "3000"
-AI_CHUNK_RELEVANCE_FLOOR = "0.6"
+AI_CHUNK_RELEVANCE_FLOOR = "0.70"
 
 # Workers AI binding (env.AI.run(modelId, ...))。B-1 WorkersAiProvider が使用。
 [ai]

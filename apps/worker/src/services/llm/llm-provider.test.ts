@@ -9,7 +9,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { type LlmProvider, LlmConfigError } from './llm-provider.js';
 import { WorkersAiProvider, type WorkersAiBinding } from './workers-ai.js';
 import { MockLlmProvider } from './mock-provider.js';
-import { createFaqAiRuntime } from './runtime.js';
+import { createFaqAiRuntime, DEFAULT_CHUNK_RELEVANCE_FLOOR } from './runtime.js';
 
 function fakeAi(runImpl: WorkersAiBinding['run']): { ai: WorkersAiBinding; run: ReturnType<typeof vi.fn> } {
   const run = vi.fn(runImpl);
@@ -101,6 +101,26 @@ describe('createFaqAiRuntime (inject 1 点)', () => {
     expect(rt.dailyNeuronBudgetPerAccount).toBe(2500);
     expect(rt.neuronPerMTokIn).toBe(4119);
     expect(rt.neuronPerMTokOut).toBe(34868);
+  });
+
+  test('chunk relevance floor を env AI_CHUNK_RELEVANCE_FLOOR から読む (立会 §2: 0.70 = 第二層防御強化)', () => {
+    const { ai } = fakeAi(async () => ({ response: 'x' }));
+    // 立会 §2 retrieval-forensics 実測: Q1(営業時間質問) に無関係 chunk MAL-b cosine 0.6551 /
+    // MAL-a 0.6483 が floor 0.6 では採用されていた。env で 0.70 に引き上げると両者不採用となり、
+    // 無関係 chunk の混入とトークン消費を削る (floor は正規化 cosine の採否下限)。
+    const rt = createFaqAiRuntime({ AI: ai, AI_MODEL_ID: 'model-x', AI_CHUNK_RELEVANCE_FLOOR: '0.70' })!;
+    expect(rt.chunkRelevanceFloor).toBe(0.70);
+    // 実測された無関係 chunk (0.6551 / 0.6483) は floor 0.70 で不採用になる。
+    expect(0.6551).toBeLessThan(rt.chunkRelevanceFloor!);
+    expect(0.6483).toBeLessThan(rt.chunkRelevanceFloor!);
+  });
+
+  test('AI_CHUNK_RELEVANCE_FLOOR 未設定なら既定 0.6 のまま (env 未設定環境の既定は不可侵 = env var のみが正)', () => {
+    const { ai } = fakeAi(async () => ({ response: 'x' }));
+    const rt = createFaqAiRuntime({ AI: ai, AI_MODEL_ID: 'model-x' })!;
+    expect(rt.chunkRelevanceFloor).toBe(DEFAULT_CHUNK_RELEVANCE_FLOOR);
+    // 既定値そのものは 0.6 据え置き (wrangler [vars] の env 値のみを 0.70 へ引き上げる)。
+    expect(DEFAULT_CHUNK_RELEVANCE_FLOOR).toBe(0.6);
   });
 
   test('runtime.provider は LlmProvider として差替可能 (Mock を注入できる)', async () => {
