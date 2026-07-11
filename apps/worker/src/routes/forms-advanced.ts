@@ -28,6 +28,7 @@ import {
   validateHarnessField,
   toCsv,
   parseCsv,
+  logicFingerprint,
   type HarnessField,
   type HarnessLogicRule,
 } from '@line-crm/shared';
@@ -59,18 +60,26 @@ interface StoredDefinition {
   fields: HarnessField[];
   logic: HarnessLogicRule[];
   formalooAddress?: string | null;
+  // ── formaloo-logic-fidelity Batch 1 (preserve-raw) additive ──
+  // rawLogic = 最後に pull した Formaloo `.data.form.logic` bare array の逐語 (未編集 push 時に PATCH で再送)。
+  //   表示用キャッシュ (SoT は Formaloo)。migration 不要 (既存 TEXT の additive JSON key)。
+  rawLogic?: unknown;
+  // logicFingerprint = pull 時の射影 logic の canonical hash。save 時に受領 logic と突合して未編集を判定 (R7)。
+  logicFingerprint?: string | null;
 }
 
 function parseDefinition(json: string): StoredDefinition {
   try {
-    const d = JSON.parse(json) as Partial<StoredDefinition>;
+    const d = JSON.parse(json) as Partial<StoredDefinition> & Record<string, unknown>;
     return {
       fields: Array.isArray(d.fields) ? d.fields : [],
       logic: Array.isArray(d.logic) ? d.logic : [],
       formalooAddress: typeof d.formalooAddress === 'string' ? d.formalooAddress : null,
+      rawLogic: 'rawLogic' in d ? d.rawLogic : null,
+      logicFingerprint: typeof d.logicFingerprint === 'string' ? d.logicFingerprint : null,
     };
   } catch {
-    return { fields: [], logic: [], formalooAddress: null };
+    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null };
   }
 }
 
@@ -100,6 +109,9 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     submitMessage: form.submit_message,
     fields: def.fields,
     logic: def.logic,
+    // preserve-raw (Batch 1): 未編集判定用の fingerprint のみ露出 (builder が save で carry する)。
+    // rawLogic 逐語は server-side に留め PUBLIC/一覧面へ出さない (機密面 raw 非露出 / plan §grep4)。
+    logicFingerprint: def.logicFingerprint ?? null,
     // N-7: publish 前は null (公開/埋め込み URL 発行不可)
     publicUrl,
     embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
@@ -199,10 +211,10 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[] }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[] });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string });
     const rawFields = Array.isArray(body.fields) ? body.fields : [];
-    const rawLogic = Array.isArray(body.logic) ? body.logic : [];
+    const rawLogicRules = Array.isArray(body.logic) ? body.logic : [];
 
     // field を MVP subset で検証 (M-21 明示 reject)。1 つでも不正なら 400。
     const fields: HarnessField[] = [];
@@ -211,13 +223,51 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       if (!r.ok) return c.json({ success: false, error: `フィールド ${i + 1}: ${r.error}` }, 400);
       fields.push(r.field);
     }
-    // logic は既存 field id を参照する rule だけ残す (孤立参照防止 / N-11)
+    // logic は既存 field id を参照する rule だけ残す (孤立参照防止 / N-11)。
+    // compound rule (additive actions[]) は flat target だけでなく **全アクション target** を idSet 照合し、
+    // 存在 field を参照する compound は保持・dangling ref を作る rule のみ除去 (R-4/L-9/D-12)。
     const fieldIds = new Set(fields.map((f) => f.id));
-    const logic: HarnessLogicRule[] = (rawLogic as HarnessLogicRule[]).filter(
-      (r) => r && fieldIds.has(r.sourceFieldId) && fieldIds.has(r.targetFieldId),
-    );
+    const logic: HarnessLogicRule[] = (rawLogicRules as HarnessLogicRule[]).filter((r) => {
+      if (!r || !fieldIds.has(r.sourceFieldId) || !fieldIds.has(r.targetFieldId)) return false;
+      if (Array.isArray(r.actions)) {
+        for (const a of r.actions) if (a && !fieldIds.has(a.targetFieldId)) return false;
+      }
+      return true;
+    });
 
     const prevDef = parseDefinition(form.definition_json);
+
+    // ── preserve-raw edit-detection (R7) ──
+    // pull 時 fingerprint (body 経由) と save 対象 logic の canonical hash を突合。一致=未編集。
+    // fingerprint 不在 (レガシー/非 pull 保存) は fail-safe で「編集扱い」(silent 消失を起こさない)。
+    const incomingFingerprint = typeof body.logicFingerprint === 'string' ? body.logicFingerprint : null;
+    const currentFingerprint = logicFingerprint(logic);
+    const logicUnedited = incomingFingerprint != null && incomingFingerprint === currentFingerprint;
+    // preserve 元 raw: fresh pull carry (body.rawLogic) 優先、無ければ D1 の前回 rawLogic (reload carry)。
+    const carriedRawLogic = body.rawLogic != null ? body.rawLogic : prevDef.rawLogic;
+    const hadRawLogic = body.rawLogic != null || prevDef.rawLogic != null;
+
+    // preserve / 従来 / compound-edit の分岐。
+    let logicToPush: HarnessLogicRule[] = logic; // Formaloo へ送る harness logic (compound-edit 時は空)
+    let preserveRawLogic: unknown = undefined; // 未編集時に PATCH で verbatim 再送する bare array
+    let persistRawLogic: unknown = undefined; // definition_json に保存する rawLogic
+    let compoundEditWarning: string | null = null;
+    if (logicUnedited) {
+      if (carriedRawLogic != null) {
+        preserveRawLogic = carriedRawLogic;
+        persistRawLogic = carriedRawLogic;
+      }
+      // carriedRawLogic 無し (レガシー) は下の client ブロックで re-pull backfill (R6)。
+    } else if (hadRawLogic) {
+      // 複合ロジック (Formaloo 由来 raw あり) を builder で編集 → Batch 1 は merge 不可 (Batch 2)。
+      // 破壊的な logic 全置換 push を **行わず** ローカル保存を維持し、未同期 + 明示警告 (silent 消失回避 /
+      // failure_observable「保持はするが push で落とす」を防ぐ)。複合編集は Formaloo 側で行う導線を提示。
+      logicToPush = [];
+      persistRawLogic = undefined; // stale raw は破棄 (次回 reload は re-pull backfill 経路)
+      compoundEditWarning =
+        '複合ロジックを編集したため未同期です。複合条件（AND/OR・複数アクション・計算）は Formaloo 側で編集してください（この画面での複合編集は今後対応）。';
+    }
+    // else: 純ハーネス logic の編集 (raw 無し) → 従来通り push。
     // B3: 最初の save (field_map 全置換) より前に既存 field_map の slug を捕捉。
     // これで (a) push へ update-vs-create の追跡キーを渡せ (重複作成を根絶)、(b) 最初の save で slug を
     // carry して push 失敗時も slug を喪失しない (次回保存で PATCH 復帰 = 重複再発防止)。
@@ -228,10 +278,20 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     }
     // まず D1 に保存 (SoT キャッシュ / fail-soft の土台)。field_map の slug は既存分を carry する
     // (現状は無 carry = slug wipe の欠陥。push 失敗時に喪失し次回保存で重複 POST になっていた / B3)。
-    const definitionJson = JSON.stringify({ fields, logic, formalooAddress: prevDef.formalooAddress ?? null });
+    // preserve-raw: rawLogic (逐語) + logicFingerprint を additive JSON key で同梱 (migration 不要 / L-10)。
+    const buildDefinitionJson = (address: string | null): string =>
+      JSON.stringify({
+        fields,
+        logic,
+        formalooAddress: address,
+        ...(persistRawLogic != null ? { rawLogic: persistRawLogic } : {}),
+        logicFingerprint: currentFingerprint,
+      });
+    const fieldRows = (slugFor: (fid: string) => string | null) =>
+      fields.map((f) => ({ id: f.id, formalooFieldSlug: slugFor(f.id), fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) }));
     await saveFormalooDefinition(c.env.DB, id, {
-      definitionJson,
-      fields: fields.map((f) => ({ id: f.id, formalooFieldSlug: existingFieldSlugs[f.id] ?? null, fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) })),
+      definitionJson: buildDefinitionJson(prevDef.formalooAddress ?? null),
+      fields: fieldRows((fid) => existingFieldSlugs[fid] ?? null),
     });
 
     // Formaloo へ push (fail-soft): secret 未配備 (dev) や失敗は out_of_sync でローカル保存を維持
@@ -241,16 +301,42 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!client) {
       await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: 'Formaloo credentials 未設定 (S-1 待ち)' });
     } else {
-      const pushed = await pushDefinitionToFormaloo(client, { formalooSlug: form.formaloo_slug, title: form.title, fields, logic, existingFieldSlugs });
+      // legacy backfill (R6): 未編集 かつ preserve 元 raw 未取得 かつ formaloo_slug あり → push 前に re-pull で
+      // 現行 Formaloo raw を取得し、射影 fingerprint が未編集 logic と一致すれば preserve 経路へ。
+      // re-pull 不能 / divergent は preserve せず従来 push (silent 消失なし)。
+      if (logicUnedited && preserveRawLogic === undefined && form.formaloo_slug) {
+        const bySlug = new Map<string, string>();
+        for (const row of existingMap) if (row.formaloo_field_slug) bySlug.set(row.formaloo_field_slug, row.id);
+        const repull = await pullDefinitionFromFormaloo(client, {
+          formalooSlug: form.formaloo_slug,
+          resolveId: (s) => bySlug.get(s) ?? s,
+        });
+        if (repull.ok && repull.rawLogic != null && repull.logicFingerprint === currentFingerprint) {
+          preserveRawLogic = repull.rawLogic;
+          persistRawLogic = repull.rawLogic;
+        }
+      }
+      const pushed = await pushDefinitionToFormaloo(client, {
+        formalooSlug: form.formaloo_slug,
+        title: form.title,
+        fields,
+        logic: logicToPush,
+        existingFieldSlugs,
+        preserveRawLogic,
+      });
       if (pushed.ok) {
-        // slug + address を反映
-        const merged = JSON.stringify({ fields, logic, formalooAddress: pushed.publicAddress ?? prevDef.formalooAddress ?? null });
+        // slug + address + (backfill 後の) rawLogic を反映
         await saveFormalooDefinition(c.env.DB, id, {
-          definitionJson: merged,
-          fields: fields.map((f) => ({ id: f.id, formalooFieldSlug: pushed.fieldSlugs?.[f.id] ?? null, fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) })),
+          definitionJson: buildDefinitionJson(pushed.publicAddress ?? prevDef.formalooAddress ?? null),
+          fields: fieldRows((fid) => pushed.fieldSlugs?.[fid] ?? null),
           formalooSlug: pushed.formalooSlug ?? null,
         });
-        await setFormalooSyncState(c.env.DB, id, { syncStatus: 'idle', lastError: null, lastPushedAt: new Date().toISOString() });
+        // compound を builder 編集した場合は push 成功でも未同期 + 明示警告 (複合は簡略化せず Formaloo に残す)。
+        if (compoundEditWarning) {
+          await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: compoundEditWarning });
+        } else {
+          await setFormalooSyncState(c.env.DB, id, { syncStatus: 'idle', lastError: null, lastPushedAt: new Date().toISOString() });
+        }
       } else {
         await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: pushed.error ?? 'push failed' });
       }
@@ -330,6 +416,9 @@ formsAdvanced.get('/api/forms-advanced/:id/pull', async (c) => {
         fields: r.fields,
         logic: r.logic,
         note,
+        // preserve-raw: builder が opaque 保持し save body で carry する (未編集 push で欠けなく再送 / D-7)。
+        ...(r.rawLogic != null ? { rawLogic: r.rawLogic } : {}),
+        logicFingerprint: r.logicFingerprint,
       },
     });
   } catch (err) {
