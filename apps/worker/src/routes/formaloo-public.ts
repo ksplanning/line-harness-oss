@@ -73,7 +73,9 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
   } catch {
     return c.json({ success: true });
   }
-  const parsed = parseWebhookPayload(payload, new Date().toISOString());
+  const parsed = await parseWebhookPayload(payload, new Date().toISOString(), {
+    friendTokenSecret: c.env.FORMALOO_FRIEND_TOKEN_SECRET,
+  });
   if (!parsed || !parsed.slug) return c.json({ success: true });
 
   // 5) 台帳照合 (どの harness form の回答か)

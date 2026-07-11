@@ -5,6 +5,7 @@ import {
   parseWebhookPayload,
   verifyHmacSignature,
 } from './formaloo-webhook.js';
+import { signFriendToken } from './formaloo-friend-token.js';
 
 // =============================================================================
 // F-3 / T-C1 — Formaloo webhook 認証 & payload 正規化 (純関数)。
@@ -35,13 +36,13 @@ describe('verifyWebhookToken (path token / N-4)', () => {
 
 describe('parseWebhookPayload (whitelist 抽出 / M-21)', () => {
   const now = '2026-07-10T09:00:00+09:00';
-  test('submission id 欠落は null (dedup キー無しは処理不能)', () => {
-    expect(parseWebhookPayload({ data: { answers: {} } }, now)).toBeNull();
-    expect(parseWebhookPayload(null, now)).toBeNull();
-    expect(parseWebhookPayload('not-object', now)).toBeNull();
+  test('submission id 欠落は null (dedup キー無しは処理不能)', async () => {
+    expect(await parseWebhookPayload({ data: { answers: {} } }, now)).toBeNull();
+    expect(await parseWebhookPayload(null, now)).toBeNull();
+    expect(await parseWebhookPayload('not-object', now)).toBeNull();
   });
-  test('data.slug + data.form.slug + answers を抽出', () => {
-    const p = parseWebhookPayload(
+  test('data.slug + data.form.slug + answers を抽出', async () => {
+    const p = await parseWebhookPayload(
       {
         data: {
           slug: 'sub_123',
@@ -59,19 +60,82 @@ describe('parseWebhookPayload (whitelist 抽出 / M-21)', () => {
     expect(p!.friendId).toBe('fr_1');
     expect(p!.submittedAt).toBe('2026-07-10T08:59:00+09:00');
   });
-  test('submitted_at 欠落は now を採用', () => {
-    const p = parseWebhookPayload({ id: 'sub_x', answers: {} }, now);
+  test('submitted_at 欠落は now を採用', async () => {
+    const p = await parseWebhookPayload({ id: 'sub_x', answers: {} }, now);
     expect(p!.submissionId).toBe('sub_x');
     expect(p!.submittedAt).toBe(now);
     expect(p!.friendId).toBeNull();
   });
-  test('friend は answers の複数キー候補から解決 (f / line_friend_id など)', () => {
-    expect(parseWebhookPayload({ id: 's', answers: { f: 'fr_2' } }, now)!.friendId).toBe('fr_2');
-    expect(parseWebhookPayload({ id: 's', answers: { line_friend_id: 'fr_3' } }, now)!.friendId).toBe('fr_3');
+  test('friend は answers の複数キー候補から解決 (f / line_friend_id など)', async () => {
+    expect((await parseWebhookPayload({ id: 's', answers: { f: 'fr_2' } }, now))!.friendId).toBe('fr_2');
+    expect((await parseWebhookPayload({ id: 's', answers: { line_friend_id: 'fr_3' } }, now))!.friendId).toBe('fr_3');
   });
-  test('未知プロパティは answers 以外に漏らさない (whitelist)', () => {
-    const p = parseWebhookPayload({ id: 's', evil: 'x', answers: { a: 1 } }, now)!;
+  test('未知プロパティは answers 以外に漏らさない (whitelist)', async () => {
+    const p = (await parseWebhookPayload({ id: 's', evil: 'x', answers: { a: 1 } }, now))!;
     expect(Object.keys(p).sort()).toEqual(['answers', 'friendId', 'slug', 'submissionId', 'submittedAt']);
+  });
+});
+
+describe('parseWebhookPayload — 署名 fr_id 復元 (T-A6 / 順方向)', () => {
+  const now = '2026-07-10T09:00:00+09:00';
+  const SECRET = 'frtok_parse_test_secret';
+  const FRIEND = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+
+  test('rendered_data[fr_id] の署名トークンを verify して friendId を復元 (実 payload 形)', async () => {
+    const token = await signFriendToken(FRIEND, SECRET);
+    const p = await parseWebhookPayload(
+      {
+        event_type: 'form_submit',
+        data: { slug: 'sub_1', form: { slug: 'form_abc' }, answers: { q1: '田中' } },
+        rendered_data: { fr_id: token, fr_name: '田中' },
+      },
+      now,
+      { friendTokenSecret: SECRET },
+    );
+    expect(p).not.toBeNull();
+    expect(p!.friendId).toBe(FRIEND);
+    // 出力 shape は不変 (whitelist / 5 キー) — event_type 等は 1a では出力に足さない
+    expect(Object.keys(p!).sort()).toEqual(['answers', 'friendId', 'slug', 'submissionId', 'submittedAt']);
+  });
+
+  test('改ざんした fr_id は verify で reject され friendId=null (誤タグ防止 / R-F4)', async () => {
+    const token = await signFriendToken(FRIEND, SECRET);
+    const tampered = token!.slice(0, -1) + (token!.endsWith('A') ? 'B' : 'A');
+    const p = await parseWebhookPayload(
+      { data: { slug: 'sub_1', form: { slug: 'form_abc' } }, rendered_data: { fr_id: tampered } },
+      now,
+      { friendTokenSecret: SECRET },
+    );
+    expect(p!.friendId).toBeNull();
+  });
+
+  test('fr_id 欠落 payload (HP 経由) は friendId=null (legacy 候補も無い)', async () => {
+    const p = await parseWebhookPayload(
+      { data: { slug: 'sub_2', form: { slug: 'form_abc' }, answers: { q1: '匿名' } }, rendered_data: { q1: '匿名' } },
+      now,
+      { friendTokenSecret: SECRET },
+    );
+    expect(p!.friendId).toBeNull();
+  });
+
+  test('secret 未供給時は署名 fr_id を復元せず legacy 候補 chain に fallback (回帰安全)', async () => {
+    const token = await signFriendToken(FRIEND, SECRET);
+    // secret を渡さない → 署名 fr_id は無視され、legacy answers.friend_id で解決
+    const p = await parseWebhookPayload(
+      { data: { slug: 'sub_3', form: { slug: 'form_abc' }, answers: { friend_id: 'legacy_fr' } }, rendered_data: { fr_id: token } },
+      now,
+    );
+    expect(p!.friendId).toBe('legacy_fr');
+  });
+
+  test('alias は上書き可 (friendTokenAlias)', async () => {
+    const token = await signFriendToken(FRIEND, SECRET);
+    const p = await parseWebhookPayload(
+      { data: { slug: 'sub_4', form: { slug: 'form_abc' } }, rendered_data: { line_fr: token } },
+      now,
+      { friendTokenSecret: SECRET, friendTokenAlias: 'line_fr' },
+    );
+    expect(p!.friendId).toBe(FRIEND);
   });
 });
 

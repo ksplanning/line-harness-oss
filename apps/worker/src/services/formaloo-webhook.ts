@@ -13,6 +13,8 @@
 // 副作用なし・DB 非依存 = 単体テスト可能 (@cloudflare/vite-plugin の 401→500 化を避ける / 地雷#3)。
 // =============================================================================
 
+import { verifyFriendToken } from './formaloo-friend-token.js';
+
 /** 定数時間比較 (長さ違いは即 false・内容差はタイミングに漏らさない)。 */
 export function timingSafeEqualStr(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -49,11 +51,32 @@ function firstString(...vals: unknown[]): string | null {
   return null;
 }
 
+/** 既定の署名 friend token alias (hidden field の alias ID / URL param 名 = fr_id / §spec 2.1)。 */
+export const FRIEND_TOKEN_ALIAS = 'fr_id';
+
+export interface ParseWebhookOptions {
+  /**
+   * 署名 fr_id 検証用の専用 secret (FORMALOO_FRIEND_TOKEN_SECRET)。供給時のみ rendered_data[alias] の
+   * 署名トークンを verify して friendId を復元する。未供給は署名 fr_id を無視し legacy 候補 chain に落ちる。
+   */
+  friendTokenSecret?: string | null;
+  /** 署名 fr_id の alias (既定 fr_id)。 */
+  friendTokenAlias?: string;
+}
+
 /**
  * Formaloo webhook payload を正規化。submission id が取れなければ null (処理不能)。
  * 実 payload 形が未確定 (N-12) のため documented な候補キー chain で defensive に抽出する。
+ *
+ * 順方向 (T-A6): rendered_data[alias] (alias/slug キー) に載る署名 fr_id を verifyFriendToken で復元し
+ * friendId とする (改ざんは reject=null=誤タグ防止 / R-F4)。secret 未供給 or 署名不一致 or fr_id 欠落
+ * (= HP 経由) は既存の unsigned 候補 chain に fallback する (回帰安全)。crypto 検証のため async。
  */
-export function parseWebhookPayload(payload: unknown, nowIso: string): ParsedWebhookSubmission | null {
+export async function parseWebhookPayload(
+  payload: unknown,
+  nowIso: string,
+  opts?: ParseWebhookOptions,
+): Promise<ParsedWebhookSubmission | null> {
   const root = asObject(payload);
   if (!root) return null;
   const data = asObject(root.data) ?? root;
@@ -69,15 +92,27 @@ export function parseWebhookPayload(payload: unknown, nowIso: string): ParsedWeb
 
   const submittedAt = firstString(data.created_at, data.submitted_at, root.created_at, root.submitted_at) ?? nowIso;
 
-  // friend は hidden field の複数キー候補から解決 (redirect が付与する ?f=/lu= 由来 / G11 と同源)。
-  const friendId = firstString(
-    answers.friend_id,
-    answers.f,
-    answers.line_friend_id,
-    answers.friendId,
-    data.friend_id,
-    root.friend_id,
-  );
+  // ① 順方向: 署名 fr_id を最優先で復元 (rendered_data[alias] = /fo/:id が付与した alias 事前充填)。
+  const alias = opts?.friendTokenAlias ?? FRIEND_TOKEN_ALIAS;
+  const rendered = asObject(root.rendered_data) ?? asObject(data.rendered_data);
+  const signedToken = firstString(rendered?.[alias], answers[alias], data[alias]);
+  let friendId: string | null = null;
+  if (signedToken && opts?.friendTokenSecret) {
+    friendId = await verifyFriendToken(signedToken, opts.friendTokenSecret);
+  }
+
+  // ② fallback: 従来の unsigned 候補 chain (redirect が付与する ?f=/lu= 由来 / G11 と同源)。
+  //    署名 fr_id が復元できた場合はそれを優先 (誤タグ防止)。
+  if (!friendId) {
+    friendId = firstString(
+      answers.friend_id,
+      answers.f,
+      answers.line_friend_id,
+      answers.friendId,
+      data.friend_id,
+      root.friend_id,
+    );
+  }
 
   return { submissionId, slug: slug ?? null, answers, submittedAt, friendId };
 }
