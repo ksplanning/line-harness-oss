@@ -442,6 +442,20 @@ CREATE TABLE formaloo_account_bindings (
   updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE formaloo_drift_events (
+  id             TEXT PRIMARY KEY,                 -- de_...
+  form_id        TEXT NOT NULL,                    -- formaloo_forms.id (FK はアプリ層 / D1 FK off)
+  detected_at    TEXT NOT NULL,                    -- 検知時刻 (JST ISO)
+  action         TEXT NOT NULL,                    -- notified | auto_applied | conflict_held | bootstrapped
+  remote_hash    TEXT,                             -- 検知した Formaloo fingerprint
+  prev_hash      TEXT,                             -- 直前 baseline (差分の起点)
+  has_warnings   INTEGER NOT NULL DEFAULT 0,       -- 弱化 warnings 有無 (1/0)
+  warnings_json  TEXT,                             -- warnings 文言 (任意)
+  sync_status_at TEXT,                             -- 検知時の sync_status (競合判定の証跡)
+  detail         TEXT,                             -- 補足 (任意)
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE formaloo_field_map (
   id                  TEXT PRIMARY KEY,
   form_id             TEXT NOT NULL,
@@ -513,7 +527,13 @@ CREATE TABLE formaloo_sync_state (
   last_pulled_at TEXT,
   sync_status    TEXT NOT NULL DEFAULT 'idle',
   last_error     TEXT,
-  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  -- migration 098 (formaloo-auto-pull): drift 検知の別軸 (sync_status と直交)。
+  remote_definition_hash TEXT,                          -- baseline fingerprint (NULL=未 bootstrap)
+  pending_remote_hash    TEXT,                          -- 通知中 drift の fingerprint (dedup キー)
+  drift_status           TEXT NOT NULL DEFAULT 'none',  -- none|detected|applied|conflict
+  drift_detected_at      TEXT,                          -- 最新 drift 検知時刻 (JST ISO)
+  remote_updated_at      TEXT                           -- optional: list timestamp フィルタ用 (live 実在時)
 );
 
 CREATE TABLE formaloo_workspaces (
@@ -1179,6 +1199,8 @@ CREATE INDEX idx_form_opens_form ON form_opens (form_id, opened_at);
 CREATE INDEX idx_form_submissions_form ON form_submissions (form_id);
 
 CREATE INDEX idx_form_submissions_friend ON form_submissions (friend_id);
+
+CREATE INDEX idx_formaloo_drift_events_form ON formaloo_drift_events (form_id, detected_at);
 
 CREATE INDEX idx_formaloo_field_map_form ON formaloo_field_map (form_id, position);
 
