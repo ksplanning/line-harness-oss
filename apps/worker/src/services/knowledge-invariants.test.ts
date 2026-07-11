@@ -2,8 +2,8 @@
  * D-1 / D-2 / D-3 / D-4 (Phase B B-3) — 不可侵 assert (機械検証)。
  *  D-1: 送信安全 byte-identical (faq-reply/faq-ai/faq-fts/faq-match/runtime) + chunks を live RAG に非結線 +
  *       normalize/ngrams・buildQuerySearchText 再利用 (自前再実装なし) + packages/db→apps/worker 逆流禁止。
- *  D-2: wrangler crons=[]/FAQ_BOT_ENABLED / webhook gate byte-identical (compat flag は additive 別行) +
- *       既存 outbound fetch ファイル無改変 + ingest/list/delete に LINE 送信呼出なし (dark-ship)。
+ *  D-2: wrangler dark-ship 現在形不変 (crons=[] 恒久 / FAQ_BOT_ENABLED スイッチ="true" go-live 承認 /
+ *       SSRF backstop / binding 意図形) + webhook gate + 既存 outbound fetch ファイル無改変 (dark-ship)。
  *  D-3: bootstrap --check clean + 092=091+1(最高) + check-migrations pass + backup doc を knowledge_* 拡張。
  *  D-4: route が accountScopeReject / POST 認証スコープ / db helper が account 同値コピーを実装 (source 検証)。
  */
@@ -72,15 +72,19 @@ describe('D-1 (B-4 再編) — 送信安全 byte-identical + orchestrator 非結
 });
 
 describe('D-2 — dark-ship gate byte-identical + compat flag additive + 既存 fetch 無改変', () => {
-  test('wrangler crons=[] / FAQ_BOT_ENABLED は不変・差分は compatibility_flags 行のみ (additive)', () => {
+  // 【2026-07-11 rebaseline】go-live で FAQ_BOT_ENABLED="true"・[ai]/[[vectorize]] 結線。旧 assert は "false" 固定
+  // + origin/main 比較 (時限式) で go-live 後恒久 RED 化していた。守っていた実体 (crons 閉・スイッチが黙って変わ
+  // らない・SSRF backstop 存在・binding 意図形) を現ソースの現在形で保護し直す (時限式排除)。
+  test('wrangler dark-ship 現在形: crons=[]恒久 / FAQ_BOT_ENABLED="true"(承認) / SSRF backstop / binding 意図形', () => {
     const toml = readRepo('apps/worker/wrangler.ks.toml');
-    expect(toml).toContain('crons = []');
-    expect(toml).toContain('FAQ_BOT_ENABLED = "false"');
-    expect(toml).toContain('global_fetch_strictly_public'); // backstop 追記済
-    const cur = toml.split('\n');
-    const main = execFileSync('git', ['show', 'origin/main:apps/worker/wrangler.ks.toml'], { cwd: REPO }).toString().split('\n');
-    expect(cur.length).toBe(main.length);
-    for (const l of cur.filter((l, i) => l !== main[i])) expect(l).toMatch(/compatibility_flags/);
+    const lines = toml.split('\n');
+    expect(lines.filter((l) => l === 'crons = []')).toHaveLength(1); // 自動送信トリガーなし = 不変
+    expect(lines.filter((l) => /^FAQ_BOT_ENABLED = "(?:true|false)"$/.test(l))).toEqual(['FAQ_BOT_ENABLED = "true"']);
+    expect(lines.filter((l) => l === 'FAQ_BOT_ENABLED = "false"')).toHaveLength(0); // dark-ship 代入行の残骸なし
+    expect(toml).toContain('global_fetch_strictly_public'); // SSRF backstop 存在 (現在形・追記済)
+    expect(lines.filter((l) => l === '[ai]')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'binding = "VECTORIZE"')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'index_name = "ks-knowledge-chunks"')).toHaveLength(1);
   });
 
   test('webhook faq gate 行が byte-identical', () => {
