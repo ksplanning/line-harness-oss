@@ -14,6 +14,7 @@ import {
 } from '@line-crm/db';
 import { isBuilderStatus, buildPublicUrl } from '../services/formaloo-publish-gate.js';
 import { verifyWebhookToken, verifyHmacSignature, parseWebhookPayload } from '../services/formaloo-webhook.js';
+import { signFriendToken } from '../services/formaloo-friend-token.js';
 import type { Env } from '../index.js';
 
 /** definition_json から公開フォーム address を取り出す (表示用キャッシュ / forms-advanced と同源)。 */
@@ -161,6 +162,17 @@ formalooPublic.get('/fo/:id', async (c) => {
   // friend 解決 (?lu= line user id / ?f= friend id) — tracked-links /t/:id と同源。
   const lineUserId = c.req.query('lu') ?? null;
   let friendId = c.req.query('f') ?? null;
+
+  // LIFF 識別 (R-F2 / /t/:id と同型): LINE in-app browser で開かれ friend 未解決なら、LIFF へ飛ばして
+  // line_user_id を取得し ?lu= 付きで /fo/:id に戻す。これで broadcast は単一 /fo/:id リンクを配れば
+  // per-recipient で識別が付く (メッセージ本文の個別化不要)。friend 未特定の段階では form_opens に記録しない。
+  const ua = c.req.header('user-agent') || '';
+  const isLineApp = /\bLine\b/i.test(ua);
+  if (!lineUserId && !friendId && isLineApp && c.env.LIFF_URL) {
+    const directUrl = `${c.env.WORKER_URL || new URL(c.req.url).origin}/fo/${id}`;
+    return c.redirect(`${c.env.LIFF_URL}?redirect=${encodeURIComponent(directUrl)}`, 302);
+  }
+
   let friendName: string | null = null;
   try {
     if (!friendId && lineUserId) {
@@ -184,5 +196,24 @@ formalooPublic.get('/fo/:id', async (c) => {
     console.error(`/fo/${id} form_opens insert failed (non-blocking):`, err);
   }
 
-  return c.redirect(url, 302);
+  // 順方向 prefill 合成 (R-F1): friend 解決済 + 専用 secret 設定時のみ、転送先 Formaloo URL に署名付き
+  // fr_id (改ざん検知) と URL エンコード表示名 fr_name を付与 → Formaloo hidden field 経由で Google Sheets 列に
+  // 「どの LINE アカウントか」が出る。secret 未設定 / friend 未解決 (HP 経由相当) は付与しない (生 URL へ degrade)。
+  let redirectUrl = url;
+  if (friendId) {
+    const signed = await signFriendToken(friendId, c.env.FORMALOO_FRIEND_TOKEN_SECRET);
+    if (signed) {
+      try {
+        const u = new URL(url);
+        u.searchParams.set('fr_id', signed);
+        if (friendName) u.searchParams.set('fr_name', friendName);
+        redirectUrl = u.toString();
+      } catch (err) {
+        // 転送先 address が不正 URL の場合は prefill を諦めて生 url へ (fail-soft / 誤 404 を出さない)。
+        console.error(`/fo/${id} prefill compose failed (non-blocking):`, err);
+      }
+    }
+  }
+
+  return c.redirect(redirectUrl, 302);
 });

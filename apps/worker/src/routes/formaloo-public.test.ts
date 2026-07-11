@@ -19,6 +19,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formalooPublic } from './formaloo-public.js';
 import { buildSegmentWhere, type SegmentCondition } from '../services/segment-query.js';
+import { verifyFriendToken } from '../services/formaloo-friend-token.js';
 import type { Env } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -72,6 +73,12 @@ function app() {
   a.use('*', permissionMiddleware);
   a.route('/', formalooPublic);
   return a;
+}
+
+// C2 順方向: fr_id 署名の専用 secret (既存 webhook secret とは別鍵)。
+const FRIEND_SECRET = 'frtok_route_test_secret';
+function envWithFriendSecret(): Env['Bindings'] {
+  return { ...env(), FORMALOO_FRIEND_TOKEN_SECRET: FRIEND_SECRET } as Env['Bindings'];
 }
 
 async function hmac(raw: string, ts?: string): Promise<string> {
@@ -294,5 +301,78 @@ describe('T-C2 開封リダイレクト /fo/:id (G11 / 認証除外)', () => {
     const rows = opens('fa1');
     expect(rows.length).toBe(1);
     expect(rows[0].friend_id).toBeNull();
+  });
+});
+
+describe('T-A3 /fo/:id prefill 合成 (順方向 fr_id/fr_name)', () => {
+  test('secret 設定時 ?f= は Location に署名 fr_id + URLエンコード fr_name を付与 (生 address 直行でない)', async () => {
+    seedFriend('fr_1'); // display_name='田中'
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1?f=fr_1', { method: 'GET' }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc).not.toBe(ADDR); // 生 address 直行でない
+    expect(loc.startsWith(ADDR)).toBe(true);
+    const u = new URL(loc);
+    const frId = u.searchParams.get('fr_id');
+    expect(frId).not.toBeNull();
+    // 署名検証で friendId が復元できる (改ざん不可な形で埋め込まれている / R-F4)
+    expect(await verifyFriendToken(frId, FRIEND_SECRET)).toBe('fr_1');
+    // 表示名は URL エンコードして付与 (searchParams はデコード後の値 / 生 Location は %エンコード)
+    expect(u.searchParams.get('fr_name')).toBe('田中');
+    expect(loc).toContain('fr_name=%');
+    // 開封記録は従来どおり付く (friend 解決済)
+    expect(opens('fa1').length).toBe(1);
+  });
+
+  test('secret 未設定なら prefill を付けない (fail-closed = 生 address 直行 / rollback §plan6)', async () => {
+    seedFriend('fr_1');
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1?f=fr_1', { method: 'GET' }, env());
+    expect(res.headers.get('location')).toBe(ADDR);
+  });
+
+  test('friend 未解決 (?f= 無し・非 in-app) は prefill を付けない (HP 経由相当 = fr_id 列が空になる)', async () => {
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1', { method: 'GET' }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(ADDR);
+  });
+});
+
+describe('T-A4 /fo/:id LIFF 識別 (R-F2 / /t/:id と同型)', () => {
+  test('in-app UA かつ friend 未解決 → LIFF へ 302 (redirect back = /fo/:id / 開封記録しない)', async () => {
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1', { method: 'GET', headers: { 'user-agent': 'Mozilla/5.0 Line/13.0.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc.startsWith('https://liff.example.test')).toBe(true);
+    expect(loc).toContain(encodeURIComponent('https://api.example.com/fo/fa1'));
+    // friend 未特定の段階では form_opens に記録しない
+    expect(opens('fa1').length).toBe(0);
+  });
+
+  test('in-app UA でも ?f= 付きは LIFF せず Formaloo へ直行 + 開封記録 (既存 /t/:id と同型)', async () => {
+    seedFriend('fr_1');
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1?f=fr_1', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')!.startsWith(ADDR)).toBe(true);
+    expect(opens('fa1').length).toBe(1);
+  });
+
+  test('非 in-app (通常ブラウザ) は friend 未解決でも LIFF せず従来どおり 302', async () => {
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1', { method: 'GET', headers: { 'user-agent': 'Mozilla/5.0 (iPhone) Safari' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(ADDR);
+  });
+
+  test('LIFF_URL 未設定なら in-app 未解決でも LIFF せず従来どおり (dark-ship 安全)', async () => {
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const e = { ...envWithFriendSecret(), LIFF_URL: '' } as Env['Bindings'];
+    const res = await app().request('/fo/fa1', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, e);
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(ADDR);
   });
 });

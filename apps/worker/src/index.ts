@@ -174,6 +174,11 @@ export type Env = {
     //   FORMALOO_WEBHOOK_SECRET : HMAC 署名検証の共有鍵 (N-12)。署名スキームは live 確定 (sidecar 申し送り)。
     FORMALOO_WEBHOOK_TOKEN?: string;
     FORMALOO_WEBHOOK_SECRET?: string;
+    // 順方向 fr_id 署名 friend token の専用鍵 (C1 / R-F4 / formaloo-sheets-roundtrip)。
+    //   `wrangler secret put FORMALOO_FRIEND_TOKEN_SECRET` で供給 (closer 工程 / repo に生値を置かない / D-2)。
+    //   既存 auth API_KEY / FORMALOO_WEBHOOK_SECRET とは別鍵で分離 (fr_id が権限昇格に使えない境界)。
+    //   未設定 dev では /fo/:id が prefill を付けず生 Formaloo URL 相当へ degrade (fail-closed / §plan 6)。
+    FORMALOO_FRIEND_TOKEN_SECRET?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
