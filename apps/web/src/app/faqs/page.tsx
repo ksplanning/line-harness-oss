@@ -89,6 +89,9 @@ export default function FaqsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
+    // account 切替時に前アカウントの「自動送信にしますか？」確認を残さない
+    // (パネル残存 → 別アカウントを誤って auto 化する cross-account 事故の防止)。
+    setConfirmAutoMode(false)
     try {
       const accountId = selectedAccountId || undefined
       const [faqRes, unmatchedRes] = await Promise.all([

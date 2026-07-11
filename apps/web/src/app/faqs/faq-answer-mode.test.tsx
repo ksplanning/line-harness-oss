@@ -11,9 +11,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
 
 const m = vi.hoisted(() => ({
-  list: vi.fn(), unmatched: vi.fn(), settingsGet: vi.fn(), settingsPut: vi.fn(),
+  list: vi.fn(), unmatched: vi.fn(), settingsGet: vi.fn(), settingsPut: vi.fn(), accountId: 'acc-1',
 }))
-vi.mock('@/contexts/account-context', () => ({ useAccount: () => ({ selectedAccountId: 'acc-1', accounts: [] }) }))
+vi.mock('@/contexts/account-context', () => ({ useAccount: () => ({ selectedAccountId: m.accountId, accounts: [] }) }))
 vi.mock('@/components/layout/header', () => ({ default: () => null }))
 vi.mock('@/components/faqs/edit-dialog', () => ({ default: () => null }))
 vi.mock('@/components/faqs/bulk-import-dialog', () => ({ default: () => null }))
@@ -51,7 +51,7 @@ const openSettingsTab = async (answerMode: 'auto' | 'draft') => {
   fireEvent.click(screen.getByText('設定'))
 }
 
-beforeEach(() => { vi.clearAllMocks() })
+beforeEach(() => { vi.clearAllMocks(); m.accountId = 'acc-1' })
 afterEach(() => { cleanup() })
 
 describe('/faqs 設定タブ — 回答モード切替 (下書き / 自動送信)', () => {
@@ -113,5 +113,24 @@ describe('/faqs 設定タブ — 回答モード切替 (下書き / 自動送信
     fireEvent.click(await screen.findByText('設定を保存'))
     await waitFor(() => expect(m.settingsPut).toHaveBeenCalledTimes(1))
     expect(m.settingsPut).toHaveBeenCalledWith(expect.objectContaining({ answerMode: 'draft' }))
+  })
+
+  it('確認パネルを開いたまま account を切り替えるとパネルが reset される (cross-account 誤 auto 化防止 / F-STALE-1)', async () => {
+    m.list.mockResolvedValue({ success: true, data: [] })
+    m.unmatched.mockResolvedValue({ success: true, data: [] })
+    m.settingsGet.mockResolvedValue({ success: true, data: baseSettings('draft') })
+    m.settingsPut.mockResolvedValue({ success: true, data: baseSettings('draft') })
+    const { rerender } = render(<FaqsPage />)
+    await waitFor(() => expect(m.settingsGet).toHaveBeenCalled())
+    fireEvent.click(screen.getByText('設定'))
+    // account A で確認パネルを開く。
+    fireEvent.click(await screen.findByText('自動で送信する'))
+    expect(screen.getByText('自動送信にする')).toBeTruthy()
+    // sidebar で account B へ切替 (load() 再実行)。
+    m.accountId = 'acc-2'
+    rerender(<FaqsPage />)
+    // 確認パネルが消え、B が誤って auto 化する PUT は飛ばない。
+    await waitFor(() => expect(screen.queryByText('自動送信にする')).toBeNull())
+    expect(m.settingsPut).not.toHaveBeenCalled()
   })
 })
