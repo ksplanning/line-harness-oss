@@ -2,6 +2,7 @@ import {
   fromFormalooField,
   fromFormalooLogic,
   countWeakenedFormalooRules,
+  logicFingerprint,
   type HarnessField,
   type HarnessLogicRule,
   type FormalooLogicObject,
@@ -25,7 +26,20 @@ import type { FormalooClient } from './formaloo-client';
  * frontend は ok===true の時だけ state を置換し、ok:false は note のみ表示する (B2 = editor を空へ潰さない)。
  */
 export type PullResult =
-  | { ok: true; fields: HarnessField[]; logic: HarnessLogicRule[]; warnings?: string[] }
+  | {
+      ok: true;
+      fields: HarnessField[];
+      logic: HarnessLogicRule[];
+      warnings?: string[];
+      /**
+       * R0 実測: Formaloo GET `.data.form.logic` の bare array 逐語 (preserve-raw の格納素材)。
+       * 未編集保存時にこの配列を PATCH で verbatim 再送し複合/calc/variable/jump を欠けなく保持する。
+       * bare array でない (null 等) 時は未載 (preserve 不成立 = 従来経路)。
+       */
+      rawLogic?: unknown;
+      /** 射影 logic の canonical fingerprint (save 時に受領 logic と突合して「未編集」判定 / R7)。 */
+      logicFingerprint?: string;
+    }
   | { ok: false; error: string };
 
 /**
@@ -67,6 +81,20 @@ export function extractLogic(root: unknown): FormalooLogicObject {
 }
 
 /**
+ * R0 実測: 実 Formaloo logic は `.data.form.logic` の **bare array** (`{rules}` object ではない)。
+ * preserve-raw 用に生配列を逐語抽出する (extractLogic は legacy synthetic `{rules}` 用で無改変)。
+ * 候補パスを順に試し、最初に見つかった **配列** を返す。配列でなければ null (= preserve 対象外 / null logic)。
+ */
+export function extractRawLogic(root: unknown): unknown[] | null {
+  const r = (root ?? {}) as Record<string, any>;
+  const candidates: unknown[] = [r?.data?.form?.logic, r?.data?.logic, r?.form?.logic, r?.logic];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c as unknown[];
+  }
+  return null;
+}
+
+/**
  * Formaloo form-detail を GET し、fields_list / logic を harness 定義へ変換して返す。
  *  - fields: fromFormalooField (非 subset は null で drop / M-21) → 空/欠落 id を drop (W3)
  *            → Formaloo position 昇順に安定ソート (W2)。
@@ -96,21 +124,31 @@ export async function pullDefinitionFromFormaloo(
       .sort((a, b) => a.position - b.position); // W2: Formaloo position 昇順に安定ソート
 
     const logicObj = extractLogic(res.data);
+    // R0 実測: 実 logic は bare array。preserve-raw 用に逐語抽出 (legacy synthetic `{rules}` 形は null)。
+    const rawLogic = extractRawLogic(res.data);
     const idSet = new Set(fields.map((f) => f.id));
+    // 表示用射影 (Batch 1 は表示不変: legacy synthetic 経路のまま。実 bare array の忠実射影は Batch 2)。
     const logic = fromFormalooLogic(logicObj, params.resolveId).filter(
       // B5: 変換済 field-id 集合に無い rule を除去 (孤立参照を editor に入れない)
       (r) => idSet.has(r.sourceFieldId) && idSet.has(r.targetFieldId),
     );
 
-    // pull-fidelity 弱化検知 (additive): Formaloo の複合ロジック (conditions/actions 複数) は
-    // fromFormalooLogic で index-0 に弱化される。件数を warnings で surface (変換挙動は無改変)。
-    const weakened = countWeakenedFormalooRules(logicObj);
+    // pull-fidelity 弱化検知 (additive): 実 bare array は射影しきれない item 数を、legacy `{rules}` は
+    // 複条件/複アクション rule 数を数える。是正: preserve 導入後は「表示簡略化・データ保持」の意味 (D-6/D-10)。
+    const weakened = rawLogic != null ? countWeakenedFormalooRules(rawLogic) : countWeakenedFormalooRules(logicObj);
     const warnings =
       weakened > 0
-        ? [`複合ロジックルール ${weakened} 件が 1 条件に簡略化されました（Formaloo の複合条件は builder 非対応）`]
+        ? [`複合ロジックルール ${weakened} 件は表示上 1 条件に簡略化されますが、そのまま保存すればデータは保持されます（Formaloo の複合条件は builder 非対応・編集保存時のみ簡略化）`]
         : [];
 
-    return { ok: true, fields, logic, ...(warnings.length ? { warnings } : {}) };
+    return {
+      ok: true,
+      fields,
+      logic,
+      ...(warnings.length ? { warnings } : {}),
+      ...(rawLogic != null ? { rawLogic } : {}),
+      logicFingerprint: logicFingerprint(logic),
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
