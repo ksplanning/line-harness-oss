@@ -444,6 +444,53 @@ describe('processMultiAccountDedupBroadcast', () => {
     expect(clients[1].calls).toHaveLength(1);
   });
 
+  // [F5] C5「4 送信経路とも test で assert」の dedup leg を充足する combo/single 送信 test。
+  function oneAccountSendDb() {
+    return makeSendDb({
+      selectedCounts: [{ line_account_id: 'acc1', cnt: 1 }],
+      rankedRows: [{ friend_id: 'f1', line_user_id: 'u1', line_account_id: 'acc1' }],
+      accountMeta: [{ id: 'acc1', name: 'A1', country: 'JP' }],
+    });
+  }
+  function oneAccountFactory(clients: MockLineClient[]) {
+    vi.mocked(getLineAccountById).mockImplementation(async (_db: D1Database, id: string) =>
+      id === 'acc1' ? ({ id, channel_access_token: 'tok1', is_active: 1 } as never) : null,
+    );
+    return (token: string) => { const c = new MockLineClient(token); clients.push(c); return c as unknown as LineClient; };
+  }
+
+  it('[F5] combo (messages len2) → multicast receives length-2 same-order array', async () => {
+    const { db } = oneAccountSendDb();
+    const clients: MockLineClient[] = [];
+    const factory = oneAccountFactory(clients);
+    const IMG = '{"originalContentUrl":"https://x/a.jpg","previewImageUrl":"https://x/a.jpg"}';
+    const combo = JSON.stringify([{ type: 'image', content: IMG }, { type: 'text', content: 'せつめい' }]);
+    await processMultiAccountDedupBroadcast(
+      db,
+      { id: 'bc', account_ids: '["acc1"]', dedup_priority: '["acc1"]', message_type: 'image', message_content: IMG, messages: combo },
+      factory,
+    );
+    expect(clients).toHaveLength(1);
+    const sent = clients[0].calls[0].args[1] as Array<{ type: string }>;
+    expect(sent).toHaveLength(2);
+    expect(sent[0].type).toBe('image');
+    expect(sent[1].type).toBe('text');
+  });
+
+  it('[F5] dedup single (messages NULL) → multicast length 1 (byte-equivalent)', async () => {
+    const { db } = oneAccountSendDb();
+    const clients: MockLineClient[] = [];
+    const factory = oneAccountFactory(clients);
+    await processMultiAccountDedupBroadcast(
+      db,
+      { id: 'bs', account_ids: '["acc1"]', dedup_priority: '["acc1"]', message_type: 'text', message_content: 'hi', messages: null },
+      factory,
+    );
+    const sent = clients[0].calls[0].args[1] as unknown[];
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toEqual({ type: 'text', text: 'hi' });
+  });
+
   it('one account multicast throws: other succeeds, failedAccountIds = [thrower]', async () => {
     const { db, updates } = makeSendDb({
       selectedCounts: [
