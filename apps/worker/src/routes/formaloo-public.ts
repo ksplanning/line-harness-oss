@@ -186,7 +186,11 @@ formalooPublic.get('/fo/:id', async (c) => {
       if (!fr) friendId = null; // 実在しない friend id は記録しない (opened_form の EXISTS 結合が無効になるため)
     }
   } catch (err) {
+    // 解決失敗 (transient D1 等) は未検証 ?f= を確定させない: friend を null 化 (fail-closed / F-4)。
+    // 未検証 ID を form_opens に記録せず・署名 fr_id も発行しない (誤 attribution 防止)。
     console.error(`/fo/${id} friend resolve failed (non-blocking):`, err);
+    friendId = null;
+    friendName = null;
   }
 
   // 開封計測 (非ブロッキング / fail-soft): form_opens へ INSERT (既存テーブル・既存スキーマ無改変 / D-1)。

@@ -81,6 +81,27 @@ function envWithFriendSecret(): Env['Bindings'] {
   return { ...env(), FORMALOO_FRIEND_TOKEN_SECRET: FRIEND_SECRET } as Env['Bindings'];
 }
 
+// F-4: getFriendById (`SELECT * FROM friends WHERE id = ?`) だけを throw させる D1 (transient D1 検証)。
+function d1ThrowOnFriendById(base: D1Database): D1Database {
+  return {
+    prepare(sql: string) {
+      if (/FROM friends WHERE id\s*=\s*\?/i.test(sql)) {
+        const api = {
+          bind() { return api; },
+          async first() { throw new Error('transient D1'); },
+          async all() { throw new Error('transient D1'); },
+          async run() { throw new Error('transient D1'); },
+        };
+        return api;
+      }
+      return base.prepare(sql);
+    },
+  } as unknown as D1Database;
+}
+function envThrowFriendById(): Env['Bindings'] {
+  return { ...envWithFriendSecret(), DB: d1ThrowOnFriendById(DB) } as Env['Bindings'];
+}
+
 async function hmac(raw: string, ts?: string): Promise<string> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey('raw', enc.encode(SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -392,5 +413,20 @@ describe('T-A4 /fo/:id LIFF 識別 (R-F2 / /t/:id と同型)', () => {
     const res = await app().request('/fo/fa1', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, e);
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe(ADDR);
+  });
+});
+
+describe('F-4 /fo/:id friend 解決 throw 時の fail-closed', () => {
+  test('getFriendById throw → 未検証 ?f= を署名/記録せず生 URL へ (friendId null 確定)', async () => {
+    seedFriend('fr_1');
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1?f=fr_1', { method: 'GET' }, envThrowFriendById());
+    expect(res.status).toBe(302);
+    // 未検証 ID を署名しない → 生 address (fr_id 無し)
+    expect(res.headers.get('location')).toBe(ADDR);
+    // form_opens は friend_id null で記録 (未検証 ID を invariant 違反で INSERT しない)
+    const rows = opens('fa1');
+    expect(rows.length).toBe(1);
+    expect(rows[0].friend_id).toBeNull();
   });
 });
