@@ -1,6 +1,6 @@
 /**
  * D-1 / D-2 / D-3 (Phase B B-4) — 送信安全・回帰・cross-account/秘密漏洩 の機械 assert。
- *  D-1: dark-ship byte-identical (crons=[]/FAQ_BOT_ENABLED="false"/webhook gate) + chunks 結線後も
+ *  D-1: dark-ship 現在形不変 (crons=[]恒久/FAQ_BOT_ENABLED スイッチ="true" go-live 承認/binding 意図形/webhook gate) + chunks 結線後も
  *       FAQ_BOT_ENABLED=false/account gate 閉で embed/generate/replyMessage 全 0 (RAG 配線が送信を漏らさない)。
  *  D-2: faq-match/faq-fts/faq-reply byte-identical + faq Dice floor 尺度不変 (baseline green/tsc は runner が担保)。
  *  D-3: embed 入力=chunk/質問のみ・buildRagPrompt に秘密値/内部識別子なし・Vectorize metadata は account/doc id のみ。
@@ -103,14 +103,25 @@ function ragRuntime(provider: LlmProvider, vectorize: VectorizeIndex): FaqAiRunt
 const OPTS = { friend: { id: 'f1', line_account_id: 'acc-1' }, incomingText: '営業時間は何時ですか', lineAccountId: 'acc-1', replyToken: 'rt1' };
 
 describe('D-1 — dark-ship byte-identical + chunks 結線後も送信ゼロ', () => {
-  test('wrangler crons=[] / FAQ_BOT_ENABLED="false" が行内容 byte-identical (grep -c == 1)', () => {
+  // 【2026-07-11 rebaseline】go-live で FAQ_BOT_ENABLED="true"。旧 assert は "false" 行1件を固定し恒久 RED 化。
+  // 実体=crons が閉じたまま・全体スイッチが黙って書き換わらない を現在形で保護。
+  test('wrangler crons=[] 恒久1件 + FAQ_BOT_ENABLED スイッチ正確に1件・値="true"(go-live 承認)・"false" 残骸0件', () => {
     const lines = readRepo('apps/worker/wrangler.ks.toml').split('\n');
     expect(lines.filter((l) => l === 'crons = []')).toHaveLength(1);
-    expect(lines.filter((l) => l === 'FAQ_BOT_ENABLED = "false"')).toHaveLength(1);
+    expect(lines.filter((l) => /^FAQ_BOT_ENABLED = "(?:true|false)"$/.test(l))).toEqual(['FAQ_BOT_ENABLED = "true"']);
+    expect(lines.filter((l) => l === 'FAQ_BOT_ENABLED = "false"')).toHaveLength(0);
   });
 
-  test('wrangler.ks.toml は B-4 で無改変 (binding 追記は infra 工程・本 batch は触らない)', () => {
-    expect(unchangedVsMain('apps/worker/wrangler.ks.toml')).toBe(true);
+  // 【2026-07-11 rebaseline】旧 assert は unchangedVsMain(origin/main 比較=時限式) で「B-4 は wrangler 無改変」を
+  // 固定していたが、go-live で binding が正式結線され意図が obsolete 化。実体=binding 構成が意図した形から黙って
+  // 変わらない を現在形 (現ソース直接) で保護し直す (時限式 origin/main 比較を排除)。
+  test('wrangler binding は意図した現在形 ([ai]/[[vectorize]]/index_name が黙って変わらない)', () => {
+    const lines = readRepo('apps/worker/wrangler.ks.toml').split('\n');
+    expect(lines.filter((l) => l === '[ai]')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'binding = "AI"')).toHaveLength(1);
+    expect(lines.filter((l) => l === '[[vectorize]]')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'binding = "VECTORIZE"')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'index_name = "ks-knowledge-chunks"')).toHaveLength(1);
   });
 
   test('webhook faq gate 行が byte-identical (env-level dark-ship・webhook.ts は B-4 無改変)', () => {
