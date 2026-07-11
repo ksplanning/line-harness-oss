@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   DOCUMENTED_REBUILD_EXCEPTIONS,
@@ -5,6 +8,8 @@ import {
   checkMigration,
   filterMigrationsByPolicy,
 } from './check-migrations';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe('checkMigration', () => {
   it('allows CREATE TABLE', () => {
@@ -118,6 +123,14 @@ describe('checkMigration', () => {
     const sql = `drop table foo;`;
     const result = checkMigration(sql);
     expect(result.ok).toBe(false);
+  });
+
+  it('094 formaloo_workspaces (F6-1) is additive-only (real migration file)', () => {
+    const sql = readFileSync(
+      join(__dirname, '../packages/db/migrations/094_formaloo_workspaces.sql'),
+      'utf8',
+    );
+    expect(checkMigration(sql, '094_formaloo_workspaces.sql')).toEqual({ ok: true });
   });
 });
 

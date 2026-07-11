@@ -496,6 +496,20 @@ CREATE TABLE formaloo_sync_state (
   updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE formaloo_workspaces (
+  id                 TEXT PRIMARY KEY,
+  label              TEXT NOT NULL DEFAULT '',
+  business_slug      TEXT,
+  key_ciphertext     TEXT NOT NULL,                 -- AES-GCM(base64) 暗号文: API KEY (平文非保持)
+  key_iv             TEXT NOT NULL,                 -- KEY 用 12-byte IV (base64)
+  secret_ciphertext  TEXT NOT NULL,                 -- AES-GCM(base64) 暗号文: API SECRET (平文非保持)
+  secret_iv          TEXT NOT NULL,                 -- SECRET 用 12-byte IV (base64)
+  kek_version        INTEGER NOT NULL DEFAULT 1,    -- migration 094: KEK ローテーション前方互換 (Codex gap #4)
+  is_active          INTEGER NOT NULL DEFAULT 1,    -- 1=有効 / 0=無効 (enable/disable soft-delete)
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE forms (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -1157,6 +1171,8 @@ CREATE INDEX idx_formaloo_submissions_form ON formaloo_submissions (form_id, sub
 CREATE INDEX idx_formaloo_submissions_friend ON formaloo_submissions (friend_id);
 
 CREATE INDEX idx_formaloo_submissions_unverified ON formaloo_submissions (form_id, verified);
+
+CREATE INDEX idx_formaloo_workspaces_active ON formaloo_workspaces (is_active);
 
 CREATE INDEX idx_friend_reminders_friend ON friend_reminders (friend_id);
 

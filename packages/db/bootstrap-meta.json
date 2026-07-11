@@ -77,7 +77,8 @@
     "090_phase_b_ai_usage_budget.sql",
     "091_phase_b_faq_fts.sql",
     "092_phase_b_knowledge_chunks.sql",
-    "093_phase_b_chunk_embeddings.sql"
+    "093_phase_b_chunk_embeddings.sql",
+    "094_formaloo_workspaces.sql"
   ],
-  "migrationCount": 78
+  "migrationCount": 79
 }

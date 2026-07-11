@@ -95,14 +95,16 @@ describe('migration 093 — additive ALTER (T-D6)', () => {
     for (const re of forbidden) expect(code).not.toMatch(re);
   });
 
-  test('093 が台帳最大 092 超の最小未使用 (094 は存在しない)', () => {
+  test('093 が 092 の直後に単一で存在する (Phase B chunk_embeddings の順序不変)', () => {
     const nums = readdirSync(MIGRATIONS_DIR)
       .filter((f) => /^\d+_/.test(f))
       .map((f) => Number(f.slice(0, f.indexOf('_'))));
-    const max = Math.max(...nums);
-    expect(max).toBe(93);
+    // Phase B は 092→093 が正順で単一であること (093 の位置不変) を保証する。
+    // 094 以降は後続バッチ (F6-1 = formaloo_workspaces) が最小未使用を順次 claim する。
+    expect(nums).toContain(93);
     expect(nums.filter((n) => n === 93)).toHaveLength(1);
-    expect(nums).not.toContain(94);
+    expect(nums.filter((n) => n === 92)).toHaveLength(1);
+    expect(nums.filter((n) => n < 93).every((n) => n <= 92)).toBe(true);
   });
 
   test('実 093 を pre-093 の行入り knowledge_chunks に適用 → 既存行が無改変・2 列 NULL default', () => {

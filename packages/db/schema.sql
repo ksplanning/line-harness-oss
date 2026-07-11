@@ -1195,3 +1195,20 @@ CREATE TABLE IF NOT EXISTS formaloo_saved_filters (
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_formaloo_saved_filters_form ON formaloo_saved_filters (form_id);
+
+-- Formaloo workspace registry (migration 094 / F6-1 / envelope 暗号化キー管理)。複数 workspace の
+-- API キーを平文で置かず AES-256-GCM 暗号文で保管する台帳。KEK=worker secret FORMALOO_KEK (D-2 / S-1)。
+CREATE TABLE IF NOT EXISTS formaloo_workspaces (
+  id                 TEXT PRIMARY KEY,
+  label              TEXT NOT NULL DEFAULT '',
+  business_slug      TEXT,
+  key_ciphertext     TEXT NOT NULL,                 -- AES-GCM(base64) 暗号文: API KEY (平文非保持)
+  key_iv             TEXT NOT NULL,                 -- KEY 用 12-byte IV (base64)
+  secret_ciphertext  TEXT NOT NULL,                 -- AES-GCM(base64) 暗号文: API SECRET (平文非保持)
+  secret_iv          TEXT NOT NULL,                 -- SECRET 用 12-byte IV (base64)
+  kek_version        INTEGER NOT NULL DEFAULT 1,    -- migration 094: KEK ローテーション前方互換 (Codex gap #4)
+  is_active          INTEGER NOT NULL DEFAULT 1,    -- 1=有効 / 0=無効 (enable/disable soft-delete)
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_formaloo_workspaces_active ON formaloo_workspaces (is_active);
