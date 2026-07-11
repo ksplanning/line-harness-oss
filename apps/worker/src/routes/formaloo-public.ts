@@ -9,6 +9,7 @@ import {
   enrollFriendInScenario,
   getFriendById,
   getFriendByLineUserId,
+  getLineAccountById,
   jstNow,
   type FormalooForm,
 } from '@line-crm/db';
@@ -170,9 +171,24 @@ formalooPublic.get('/fo/:id', async (c) => {
   // per-recipient で識別が付く (メッセージ本文の個別化不要)。friend 未特定の段階では form_opens に記録しない。
   const ua = c.req.header('user-agent') || '';
   const isLineApp = /\bLine\b/i.test(ua);
-  if (!lineUserId && !friendId && isLineApp && c.env.LIFF_URL) {
-    const directUrl = `${c.env.WORKER_URL || new URL(c.req.url).origin}/fo/${id}`;
-    return c.redirect(`${c.env.LIFF_URL}?redirect=${encodeURIComponent(directUrl)}`, 302);
+  if (!lineUserId && !friendId && isLineApp) {
+    // form の account 固有 LIFF を優先解決 (F-5): secondary account の form では返る LINE userId が
+    // provider-scoped ゆえ global LIFF だと当該 account に存在しない ID になり得る。未束縛 (line_account_id
+    // NULL) / 未登録 / liff_id 無し / 解決 throw は global LIFF_URL へ fallback。
+    let liffBase = c.env.LIFF_URL;
+    if (form.line_account_id) {
+      try {
+        const account = await getLineAccountById(c.env.DB, form.line_account_id);
+        const liffId = (account as unknown as { liff_id?: string | null } | null)?.liff_id;
+        if (liffId) liffBase = `https://liff.line.me/${liffId}`;
+      } catch (err) {
+        console.error(`/fo/${id} per-account LIFF resolve failed (fallback global):`, err);
+      }
+    }
+    if (liffBase) {
+      const directUrl = `${c.env.WORKER_URL || new URL(c.req.url).origin}/fo/${id}`;
+      return c.redirect(`${liffBase}?redirect=${encodeURIComponent(directUrl)}`, 302);
+    }
   }
 
   let friendName: string | null = null;

@@ -416,6 +416,35 @@ describe('T-A4 /fo/:id LIFF 識別 (R-F2 / /t/:id と同型)', () => {
   });
 });
 
+describe('F-5 /fo/:id per-account LIFF 解決', () => {
+  test('form が account 束縛 + account に liff_id → LIFF は account 固有 (global でない)', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret, liff_id) VALUES ('acc-2','ch2','B','t','s','2000-XYZ')`).run();
+    raw.prepare(`INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status, definition_json, line_account_id) VALUES ('fa2','slug_fa2','F','published',?,'acc-2')`)
+      .run(JSON.stringify({ fields: [], logic: [], formalooAddress: ADDR }));
+    const res = await app().request('/fo/fa2', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc.startsWith('https://liff.line.me/2000-XYZ')).toBe(true);
+    expect(loc).toContain(encodeURIComponent('https://api.example.com/fo/fa2'));
+  });
+
+  test('account 束縛だが liff_id 無し → global LIFF_URL に fallback', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret) VALUES ('acc-3','ch3','C','t','s')`).run();
+    raw.prepare(`INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status, definition_json, line_account_id) VALUES ('fa3','slug_fa3','F','published',?,'acc-3')`)
+      .run(JSON.stringify({ fields: [], logic: [], formalooAddress: ADDR }));
+    const res = await app().request('/fo/fa3', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')!.startsWith('https://liff.example.test')).toBe(true);
+  });
+
+  test('account 未束縛 (line_account_id NULL) → global LIFF_URL (後方互換)', async () => {
+    seedFormWithAddress('fa4', 'published', ADDR); // line_account_id NULL
+    const res = await app().request('/fo/fa4', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')!.startsWith('https://liff.example.test')).toBe(true);
+  });
+});
+
 describe('F-4 /fo/:id friend 解決 throw 時の fail-closed', () => {
   test('getFriendById throw → 未検証 ?f= を署名/記録せず生 URL へ (friendId null 確定)', async () => {
     seedFriend('fr_1');
