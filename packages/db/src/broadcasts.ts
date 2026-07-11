@@ -34,6 +34,13 @@ export interface Broadcast {
   ab_test_id: string | null;
   /** A/B の案識別子 ('A'/'B' 等・null = 非 A/B)。CHECK なし (将来多変種拡張)。 */
   ab_variant: string | null;
+  /**
+   * combo messages: JSON 文字列 `MessageBlock[]` (len 1..5) | null(=従来 single)。
+   * MessageBlock = { type: BroadcastMessageType, content: string, altText?: string }。
+   * 非 null なら先頭ミラー不変条件で message_type/message_content/alt_text = messages[0] を同期する
+   * (route 層責務)。妥当性/長さ検証は route + buildBroadcastMessages で担保 (列 CHECK 無し)。
+   */
+  messages?: string | null;
 }
 
 export async function getBroadcasts(db: D1Database, accountId?: string): Promise<Broadcast[]> {
@@ -102,6 +109,8 @@ export interface CreateBroadcastInput {
   abTestId?: string | null;
   /** A/B の案識別子 ('A'/'B' 等・null/未指定 = 非 A/B)。 */
   abVariant?: string | null;
+  /** combo messages JSON 文字列 (MessageBlock[])。null/未指定 = 単発 (message_type/message_content を使う)。 */
+  messages?: string | null;
 }
 
 export async function createBroadcast(
@@ -116,8 +125,8 @@ export async function createBroadcast(
   await db
     .prepare(
       `INSERT INTO broadcasts
-         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, sender_preset_id, ab_test_id, ab_variant, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?, ?, ?, ?)`,
+         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, sender_preset_id, ab_test_id, ab_variant, messages, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -133,6 +142,7 @@ export async function createBroadcast(
       input.senderPresetId ?? null,
       input.abTestId ?? null,
       input.abVariant ?? null,
+      input.messages ?? null,
       now,
     )
     .run();
@@ -153,8 +163,15 @@ export type UpdateBroadcastInput = Partial<
     | 'sender_preset_id'
     | 'ab_test_id'
     | 'ab_variant'
+    | 'messages'
   >
->;
+> & {
+  /**
+   * combo 保存時の先頭ミラーで message_type/message_content と原子的に同期する alt_text。
+   * Broadcast 型には無い列 (既存は cast 経由アクセス) だが、update では明示的に受ける。
+   */
+  alt_text?: string | null;
+};
 
 export async function updateBroadcast(
   db: D1Database,
@@ -203,6 +220,15 @@ export async function updateBroadcast(
   if (updates.ab_variant !== undefined) {
     fields.push('ab_variant = ?');
     values.push(updates.ab_variant);
+  }
+  // combo messages + 先頭ミラー用 alt_text (原子的に同一 UPDATE で message_type/content と同期)。
+  if (updates.messages !== undefined) {
+    fields.push('messages = ?');
+    values.push(updates.messages);
+  }
+  if (updates.alt_text !== undefined) {
+    fields.push('alt_text = ?');
+    values.push(updates.alt_text);
   }
 
   if (fields.length > 0) {
