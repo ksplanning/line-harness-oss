@@ -2,7 +2,7 @@
  * D-1 / D-2 / D-3 / D-4 (Phase B B-3) — 不可侵 assert (機械検証)。
  *  D-1: 送信安全 byte-identical (faq-reply/faq-ai/faq-fts/faq-match/runtime) + chunks を live RAG に非結線 +
  *       normalize/ngrams・buildQuerySearchText 再利用 (自前再実装なし) + packages/db→apps/worker 逆流禁止。
- *  D-2: wrangler dark-ship 現在形不変 (crons=[] 恒久 / FAQ_BOT_ENABLED スイッチ="true" go-live 承認 /
+ *  D-2: wrangler 現在形不変 (crons 正定義2本 (2026-07-11 解禁) / FAQ_BOT_ENABLED スイッチ="true" go-live 承認 /
  *       SSRF backstop / binding 意図形) + webhook gate + 既存 outbound fetch ファイル無改変 (dark-ship)。
  *  D-3: bootstrap --check clean + 092=091+1(最高) + check-migrations pass + backup doc を knowledge_* 拡張。
  *  D-4: route が accountScopeReject / POST 認証スコープ / db helper が account 同値コピーを実装 (source 検証)。
@@ -73,12 +73,13 @@ describe('D-1 (B-4 再編) — 送信安全 byte-identical + orchestrator 非結
 
 describe('D-2 — dark-ship gate byte-identical + compat flag additive + 既存 fetch 無改変', () => {
   // 【2026-07-11 rebaseline】go-live で FAQ_BOT_ENABLED="true"・[ai]/[[vectorize]] 結線。旧 assert は "false" 固定
-  // + origin/main 比較 (時限式) で go-live 後恒久 RED 化していた。守っていた実体 (crons 閉・スイッチが黙って変わ
+  // + origin/main 比較 (時限式) で go-live 後恒久 RED 化していた。守っていた実体 (crons 正定義2本 (2026-07-11 解禁)・スイッチが黙って変わ
   // らない・SSRF backstop 存在・binding 意図形) を現ソースの現在形で保護し直す (時限式排除)。
-  test('wrangler dark-ship 現在形: crons=[]恒久 / FAQ_BOT_ENABLED="true"(承認) / SSRF backstop / binding 意図形', () => {
+  test('wrangler 現在形: crons 正定義2本 exact / FAQ_BOT_ENABLED="true"(承認) / SSRF backstop / binding 意図形', () => {
     const toml = readRepo('apps/worker/wrangler.ks.toml');
     const lines = toml.split('\n');
-    expect(lines.filter((l) => l === 'crons = []')).toHaveLength(1); // 自動送信トリガーなし = 不変
+    // 2026-07-11 crons 解禁 (case line-crons-enable): crons=[] → 正定義2本。5min tick=配信/リマインダー/stuck 復旧/token refresh、6h tick=booking/event expirer (index.ts:708,736 の event.cron === '0 */6 * * *' と exact 一致)。config と同一 diff で更新し解禁直後の恒久 RED を防止。
+    expect(lines.filter((l) => l === 'crons = ["*/5 * * * *", "0 */6 * * *"]')).toHaveLength(1); // 正 cron 2 本 exact (重複/追加なし)
     expect(lines.filter((l) => /^FAQ_BOT_ENABLED = "(?:true|false)"$/.test(l))).toEqual(['FAQ_BOT_ENABLED = "true"']);
     expect(lines.filter((l) => l === 'FAQ_BOT_ENABLED = "false"')).toHaveLength(0); // dark-ship 代入行の残骸なし
     expect(toml).toContain('global_fetch_strictly_public'); // SSRF backstop 存在 (現在形・追記済)

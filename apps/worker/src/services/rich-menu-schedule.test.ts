@@ -3,7 +3,7 @@
  *  - isRichMenuScheduleEnabled: 'true' のみ有効 (既定 OFF)
  *  - computeScheduledMenuChanges: 決定論 (期間内→activate / 終了後→expire)
  *  - processRichMenuSchedule: switcher 未注入 = dark (switched 0・LINE を叩かない) / 注入時のみ切替が動く
- *  - wrangler.ks.toml crons=[] byte-identical (cron 発火なし)
+ *  - wrangler.ks.toml crons = 正定義2本 exact (2026-07-11 owner 解禁 / case line-crons-enable)
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -105,9 +105,10 @@ describe('processRichMenuSchedule dark-ship', () => {
   });
 });
 
-describe('wrangler.ks.toml crons byte-identical (dark-ship)', () => {
-  test('KS production crons is [] (cron never fires)', () => {
+describe('wrangler.ks.toml crons 正定義2本 (owner 承認 2026-07-11 解禁)', () => {
+  test('KS production crons = 正定義2本 exact (5min tick + 6h tick / cron 発火有効)', () => {
     const toml = readFileSync(join(__dirname, '../../wrangler.ks.toml'), 'utf8');
-    expect(toml).toMatch(/crons\s*=\s*\[\s*\]/);
+    // 2026-07-11 crons 解禁 (case line-crons-enable): crons=[] → 正定義2本 exact。6h 式は index.ts:708,736 の event.cron === '0 */6 * * *' 判定と一致必須。config と同一 diff で更新し解禁直後の恒久 RED を防止。
+    expect(toml.split('\n').filter((l) => l === 'crons = ["*/5 * * * *", "0 */6 * * *"]')).toHaveLength(1);
   });
 });

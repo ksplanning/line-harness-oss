@@ -7,13 +7,15 @@
 # 秘密は含まない。ADMIN_API_KEY / API_KEY / LINE_* / WORKER_URL は `wrangler secret put`
 # で Cloudflare 側に保存済み (このファイルには絶対に書かない)。
 #
-# デプロイ (cron は空 = 自動送信なし・owner gate 済むまで物理除外):
+# デプロイ (cron は owner 承認 2026-07-11 で解禁済み = 自動送信トリガー有効。deploy 前に D1 仕掛品 0 件確認):
 #   cd apps/worker && pnpm build
 #   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... \
 #     npx wrangler deploy dist/line_harness/index.js --config wrangler.ks.toml
 #
-# ⚠️ [triggers] crons は意図的に空。cron 有効化は owner 承認後の別ステップ
-#    (Phase1 立会テスト時)。ここに crons を書き戻すと自動送信が復活するので触らない。
+# [triggers] crons は owner 承認 2026-07-11 で解禁済み (case line-crons-enable)。
+#    正定義 = ["*/5 * * * *", "0 */6 * * *"] の 2 本 (5分tick=配信/リマインダー/復旧/token refresh、
+#    6h tick=booking/event expirer)。6h 式は index.ts:708,736 の event.cron === '0 */6 * * *' 判定と
+#    一致必須。cron 追加/変更時は expirer 判定と scheduled() 本体 (index.ts:642-755) を必ず確認。
 
 name = "line-harness-ks"
 main = "dist/line_harness/index.js"
@@ -35,9 +37,11 @@ database_id = "8367d856-4aa6-4a5a-9d76-6d8cf4997284"
 binding = "IMAGES"
 bucket_name = "line-harness-images-ks"
 
-# cron は空 (excluded_scope / owner gate)。自動送信トリガーなし。
+# owner 承認 2026-07-11 で crons 解禁済み (case line-crons-enable)。5分tick=step/scheduled/reminder
+# 配信・stuck 復旧・queue・health・token refresh・insight・booking/event reminders、6h tick=booking/event
+# expirer。6h 式は index.ts:708,736 の event.cron === '0 */6 * * *' 判定と一致必須 (変えると expirer が永久に走らない)。
 [triggers]
-crons = []
+crons = ["*/5 * * * *", "0 */6 * * *"]
 
 [vars]
 WORKER_NAME = "line-harness-ks"

@@ -1,6 +1,6 @@
 /**
  * B-5 (D-1/D-2/D-3) — dark-ship 不可侵 + 送信ゼロ + 秘密非露出の回帰ガード (source 走査)。
- *  - D-1: wrangler dark-ship 現在形不変 (crons=[] 恒久・FAQ_BOT_ENABLED スイッチ="true" go-live 承認・
+ *  - D-1: wrangler 現在形不変 (crons 正定義2本 (2026-07-11 owner 解禁)・FAQ_BOT_ENABLED スイッチ="true" go-live 承認・
  *         [ai]/[[vectorize]] binding は意図した現在形)・webhook.ts の faq gate (faqBotEnabled === 'true') が残る。
  *  - D-2: 送信 RAG コア (faq-match/faq-fts/faq-ai/faq-reply) を新 route が import しない。
  *  - D-3: AI 草案 serialize が friend_id/evidence/account_id を露出しない (allowlist)。
@@ -22,14 +22,15 @@ const readCode = (p: string) =>
 // binding 実在。旧 assert は Phase B dark-ship 時代の「false のはず/binding 無いはず」を固定しており
 // go-live 後は恒久 RED 化して実回帰を隠していた。守っていた実体を現在形で保護し直す (対応表):
 //   旧「FAQ_BOT_ENABLED="false" が1件」→ 実体=全体スイッチが意図せず書き換わらない・crons が閉じたまま
-//     → 新「crons=[] 恒久1件 + FAQ_BOT_ENABLED スイッチ正確に1件・値="true"(owner承認) + "false" 代入行残骸0件」
+//     → 新「crons 正定義2本 exact 1件 + FAQ_BOT_ENABLED スイッチ正確に1件・値="true"(owner承認) + "false" 代入行残骸0件」
 //   旧「[ai]/[[vectorize]] 未追記」→ 実体=binding 構成が意図した形から黙って変わらない
 //     → 新「[ai] binding="AI" 1件・[[vectorize]] 1件・index_name="ks-knowledge-chunks" 1件」
 describe('D-1 — dark-ship gate 現在形不変 (wrangler live-config / webhook gate)', () => {
   const wrangler = readSrc('wrangler.ks.toml');
   const lines = wrangler.split('\n');
-  test('crons=[] 恒久1件 + FAQ_BOT_ENABLED スイッチ正確に1件・値="true"(owner立会承認)・"false" 残骸0件', () => {
-    expect(lines.filter((l) => l === 'crons = []')).toHaveLength(1); // 自動送信トリガーなし = 不変
+  test('crons 正定義2本 exact + FAQ_BOT_ENABLED スイッチ正確に1件・値="true"(owner立会承認)・"false" 残骸0件', () => {
+    // 2026-07-11 crons 解禁 (case line-crons-enable): crons=[] → 正定義2本。5min tick=配信/リマインダー/stuck 復旧/token refresh、6h tick=booking/event expirer (index.ts:708,736 の event.cron === '0 */6 * * *' と exact 一致)。config と同一 diff で更新し解禁直後の恒久 RED を防止。
+    expect(lines.filter((l) => l === 'crons = ["*/5 * * * *", "0 */6 * * *"]')).toHaveLength(1); // 正 cron 2 本 exact (重複/追加なし)
     expect(lines.filter((l) => /^FAQ_BOT_ENABLED = "(?:true|false)"$/.test(l))).toEqual(['FAQ_BOT_ENABLED = "true"']);
     expect(lines.filter((l) => l === 'FAQ_BOT_ENABLED = "false"')).toHaveLength(0); // dark-ship 代入行が誤って書き戻されていない
   });

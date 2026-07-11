@@ -2,8 +2,8 @@
  * D-1 / D-2 / D-3 (Phase B B-1) — 不可侵 assert (機械検証)。
  *  D-1: unanswered-inbox.ts が origin/main と byte-identical (AI 自動回答は既存 faq_bot 証拠経路)。
  *  D-2: プロンプトに秘密値/friend_id 等内部識別子が載らない (system+根拠+質問のみ)。
- *  D-3: faq-match.ts / webhook gate 行 byte-identical + wrangler dark-ship 現在形不変
- *       (crons=[] 恒久 / FAQ_BOT_ENABLED スイッチ="true" go-live 承認 / binding 意図形)。
+ *  D-3: faq-match.ts / webhook gate 行 byte-identical + wrangler 現在形不変
+ *       (crons 正定義2本 (2026-07-11 解禁) / FAQ_BOT_ENABLED スイッチ="true" go-live 承認 / binding 意図形)。
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -84,12 +84,13 @@ describe('D-3 — faq-match / webhook gate / flag byte-identical', () => {
 
   // 【2026-07-11 rebaseline】go-live で FAQ_BOT_ENABLED="true"・[ai]/[[vectorize]] binding 実在。旧 assert は
   // 「FAQ_BOT_ENABLED="false" 存在」+ origin/main 比較 (時限式) で go-live 後恒久 RED 化していた。守っていた実体
-  // (crons 閉・全体スイッチが黙って変わらない・binding 構成不変) を現ソースの現在形で保護し直す (時限式排除):
-  //   旧「crons=[] / FAQ_BOT_ENABLED="false" 存在」→ 新「crons=[]恒久1件 + スイッチ正確に1件・値="true"(承認) + "false"残骸0件」
+  // (crons 正定義2本 (2026-07-11 解禁)・全体スイッチが黙って変わらない・binding 構成不変) を現ソースの現在形で保護し直す (時限式排除):
+  //   旧「crons=[] / FAQ_BOT_ENABLED="false" 存在」→ 新「crons 正定義2本 exact 1件 + スイッチ正確に1件・値="true"(承認) + "false"残骸0件」
   //   旧「origin/main との差分行は compatibility_flags のみ」→ 新「binding が意図した現在形 ([ai]/[[vectorize]]/index_name)」
-  test('wrangler dark-ship 現在形: crons=[]恒久 / FAQ_BOT_ENABLED スイッチ="true"(承認) / binding 意図形', () => {
+  test('wrangler 現在形: crons 正定義2本 exact / FAQ_BOT_ENABLED スイッチ="true"(承認) / binding 意図形', () => {
     const lines = readRepo('apps/worker/wrangler.ks.toml').split('\n');
-    expect(lines.filter((l) => l === 'crons = []')).toHaveLength(1); // 自動送信トリガーなし = 不変
+    // 2026-07-11 crons 解禁 (case line-crons-enable): crons=[] → 正定義2本。5min tick=配信/リマインダー/stuck 復旧/token refresh、6h tick=booking/event expirer (index.ts:708,736 の event.cron === '0 */6 * * *' と exact 一致)。config と同一 diff で更新し解禁直後の恒久 RED を防止。
+    expect(lines.filter((l) => l === 'crons = ["*/5 * * * *", "0 */6 * * *"]')).toHaveLength(1); // 正 cron 2 本 exact (重複/追加なし)
     expect(lines.filter((l) => /^FAQ_BOT_ENABLED = "(?:true|false)"$/.test(l))).toEqual(['FAQ_BOT_ENABLED = "true"']);
     expect(lines.filter((l) => l === 'FAQ_BOT_ENABLED = "false"')).toHaveLength(0); // dark-ship 代入行の残骸なし
     expect(lines.filter((l) => l === '[ai]')).toHaveLength(1);
