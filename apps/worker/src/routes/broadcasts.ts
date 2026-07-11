@@ -61,6 +61,7 @@ function serializeBroadcast(row: DbBroadcast) {
     senderPresetId: (r.sender_preset_id as string | null) ?? null,
     abTestId: (r.ab_test_id as string | null) ?? null,
     abVariant: (r.ab_variant as string | null) ?? null,
+    messages: parseMessagesColumn(r.messages),
     createdAt: row.created_at,
   };
 }
@@ -144,6 +145,60 @@ function validateBroadcastContent(messageType: string, messageContent: string): 
     }
   }
   return null;
+}
+
+// ---- combo messages (broadcast-combo-messages Batch 1) ----
+const ALLOWED_MESSAGE_TYPES: readonly string[] = ['text', 'image', 'flex', 'video', 'audio', 'imagemap', 'richvideo'];
+
+/** 保存/更新 payload の 1 メッセージブロック (先頭ミラーの正典・messages[0] が message_type/content/alt_text)。 */
+interface MessageBlock {
+  type: BroadcastMessageType;
+  content: string;
+  altText?: string | null;
+}
+
+/**
+ * messages 配列の保存前検証 (C3 / codex HIGH #4)。配列・len 1..5・各要素 buildable を確認し、
+ * 不正なら日本語エラー文字列 (400 用) を、OK なら null を返す。fail-loud: 壊れた要素は送信 builder
+ * (buildMessage) が確定してから弾く (image の壊れ JSON 等を silent に通さない)。
+ */
+function validateMessagesArray(input: unknown): string | null {
+  if (!Array.isArray(input)) return 'messages は配列で指定してください';
+  if (input.length < 1) return 'メッセージを1件以上指定してください';
+  if (input.length > 5) return 'メッセージは最大5件までです';
+  for (const rawBlock of input) {
+    if (!rawBlock || typeof rawBlock !== 'object' || Array.isArray(rawBlock)) return 'メッセージの形式が正しくありません';
+    const b = rawBlock as { type?: unknown; content?: unknown; altText?: unknown };
+    if (typeof b.type !== 'string' || !ALLOWED_MESSAGE_TYPES.includes(b.type)) return 'メッセージの種別が不正です';
+    if (typeof b.content !== 'string' || b.content.length === 0) return 'メッセージ内容が空です';
+    if (b.altText !== undefined && b.altText !== null && typeof b.altText !== 'string') return 'altText の形式が正しくありません';
+    const altText = typeof b.altText === 'string' ? b.altText : undefined;
+    // 既存 single POST と同一の検証チェーンを要素ごとに適用。
+    if (b.type === 'flex') {
+      const guard = guardFlexContent(b.content, altText);
+      if (!guard.ok) return guard.messageJa;
+    }
+    const contentErr = validateBroadcastContent(b.type, b.content);
+    if (contentErr) return contentErr;
+    // buildability の最終ゲート (validateBroadcastContent が拾わない image 等も送信 builder で確定)。
+    try {
+      buildMessage(b.type, b.content, altText);
+    } catch {
+      return 'メッセージ内容の形式が正しくありません';
+    }
+  }
+  return null;
+}
+
+/** serializeBroadcast 用: 保存済み messages JSON を配列へ復元 (壊れていれば null にフォールバックせず null 返す)。 */
+function parseMessagesColumn(value: unknown): MessageBlock[] | null {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as MessageBlock[]) : null;
+  } catch {
+    return null;
+  }
 }
 
 // GET /api/broadcasts - list all
@@ -359,7 +414,21 @@ broadcasts.post('/api/broadcasts', async (c) => {
       senderPresetId?: string | null;
       abTestId?: string | null;
       abVariant?: string | null;
+      messages?: MessageBlock[];
     }>();
+
+    // combo: messages が来たら検証し、先頭を message_type/message_content/alt_text に server-authoritative
+    // でミラーする (先頭ミラー不変条件)。単発 POST は comboMessages=undefined で従来経路 (byte 等価)。
+    let comboMessages: string | undefined;
+    if (body.messages !== undefined) {
+      const mErr = validateMessagesArray(body.messages);
+      if (mErr) return c.json({ success: false, error: mErr }, 400);
+      const blocks = body.messages as MessageBlock[];
+      comboMessages = JSON.stringify(blocks);
+      body.messageType = blocks[0].type;
+      body.messageContent = blocks[0].content;
+      body.altText = blocks[0].altText ?? body.altText ?? null;
+    }
 
     if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
       return c.json(
@@ -428,6 +497,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
       senderPresetId: body.senderPresetId ?? null,
       abTestId: body.abTestId ?? null,
       abVariant: body.abVariant ?? null,
+      messages: comboMessages,
     });
 
     // Save line_account_id and alt_text if provided
@@ -472,7 +542,38 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       senderPresetId?: string | null;
       abTestId?: string | null;
       abVariant?: string | null;
+      messages?: MessageBlock[];
     }>();
+
+    // combo 真理値表 (codex HIGH #4 / plan §5 R-12)。
+    const existingIsCombo = ((existing as unknown as { messages?: string | null }).messages ?? null) !== null;
+    // combo 行への単一フィールド更新 (messages 省略で messageType/messageContent を更新) は先頭だけ書換わり
+    // messages と不整合になる silent 事故 → fail-loud で 400。
+    if (
+      body.messages === undefined &&
+      existingIsCombo &&
+      (body.messageType !== undefined || body.messageContent !== undefined)
+    ) {
+      return c.json(
+        { success: false, error: 'この配信は組み合わせメッセージです。メッセージは messages 配列で更新してください' },
+        400,
+      );
+    }
+    // messages 配列が来たら検証し、先頭ミラー用の更新値を組む (原子的に同一 UPDATE で反映)。
+    let comboUpdate:
+      | { messages: string; message_type: BroadcastMessageType; message_content: string; alt_text: string | null }
+      | undefined;
+    if (body.messages !== undefined) {
+      const mErr = validateMessagesArray(body.messages);
+      if (mErr) return c.json({ success: false, error: mErr }, 400);
+      const blocks = body.messages as MessageBlock[];
+      comboUpdate = {
+        messages: JSON.stringify(blocks),
+        message_type: blocks[0].type,
+        message_content: blocks[0].content,
+        alt_text: blocks[0].altText ?? null,
+      };
+    }
 
     // server 側 Flex 検証 (BACKLOG-flex): 更新後の実効 messageType が flex で、かつ
     // messageContent が body に present のときだけ検証する。messageType 未指定なら既存 type を採用。
@@ -521,12 +622,14 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
 
     const updated = await updateBroadcast(c.env.DB, id, {
       title: body.title,
-      message_type: body.messageType,
-      message_content: body.messageContent,
+      // combo 更新時は先頭ミラー値で message_type/message_content を上書き (server-authoritative)。
+      message_type: comboUpdate ? comboUpdate.message_type : body.messageType,
+      message_content: comboUpdate ? comboUpdate.message_content : body.messageContent,
       target_type: body.targetType,
       target_tag_id: body.targetTagId,
       scheduled_at: body.scheduledAt,
       sender_preset_id: body.senderPresetId,
+      ...(comboUpdate ? { messages: comboUpdate.messages, alt_text: comboUpdate.alt_text } : {}),
       ...(body.abTestId !== undefined ? { ab_test_id: body.abTestId } : {}),
       ...(body.abVariant !== undefined ? { ab_variant: body.abVariant } : {}),
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
