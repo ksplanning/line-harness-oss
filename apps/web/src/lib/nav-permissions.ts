@@ -30,6 +30,7 @@ export const NAV_FEATURE: Record<string, string> = {
   '/scoring': 'analytics',
   '/form-submissions': 'form',
   '/forms-advanced': 'forms_advanced',
+  '/settings/formaloo-workspaces': 'forms_advanced',
   '/duplicates': 'friend',
   '/automations': 'scenario',
   '/auto-replies': 'auto_reply',
