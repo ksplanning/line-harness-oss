@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   batch_lock_at      TEXT,
   sender_preset_id   TEXT REFERENCES sender_presets (id) ON DELETE SET NULL,
   ab_test_id         TEXT REFERENCES ab_tests (id) ON DELETE SET NULL,
-  ab_variant         TEXT
+  ab_variant         TEXT,
+  messages           TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);

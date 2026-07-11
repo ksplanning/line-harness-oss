@@ -80,7 +80,8 @@
     "093_phase_b_chunk_embeddings.sql",
     "094_formaloo_workspaces.sql",
     "095_formaloo_forms_account_workspace.sql",
-    "096_formaloo_folders.sql"
+    "096_formaloo_folders.sql",
+    "097_broadcasts_messages_column.sql"
   ],
-  "migrationCount": 81
+  "migrationCount": 82
 }

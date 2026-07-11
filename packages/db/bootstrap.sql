@@ -240,7 +240,7 @@ CREATE TABLE "broadcasts" (
   dedup_progress     TEXT,
   batch_lock_at      TEXT,
   campaign_id        TEXT REFERENCES campaigns (id) ON DELETE SET NULL
-, sender_preset_id TEXT REFERENCES sender_presets (id) ON DELETE SET NULL, ab_test_id TEXT REFERENCES ab_tests (id) ON DELETE SET NULL, ab_variant TEXT);
+, sender_preset_id TEXT REFERENCES sender_presets (id) ON DELETE SET NULL, ab_test_id TEXT REFERENCES ab_tests (id) ON DELETE SET NULL, ab_variant TEXT, messages TEXT);
 
 CREATE TABLE calendar_bookings (
   id             TEXT PRIMARY KEY,
