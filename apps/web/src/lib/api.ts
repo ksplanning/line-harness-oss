@@ -943,6 +943,8 @@ export const api = {
           handoffMessage: string;
           autoReplyNotice: string;
           maxRepliesPerDay: number;
+          // 'draft'=草案保存のみ / 'auto'=自動送信 (worker faqs.ts:27)。
+          answerMode: 'draft' | 'auto';
         }>>(`/api/account-settings/faq-bot?accountId=${encodeURIComponent(params.accountId)}`),
       put: (body: {
         accountId: string;
@@ -951,6 +953,8 @@ export const api = {
         handoffMessage: string;
         autoReplyNotice: string;
         maxRepliesPerDay: number;
+        // PUT は部分更新でない — 全フィールド (answerMode 含む) を現在値のまま送る。
+        answerMode: 'draft' | 'auto';
       }) =>
         fetchApi<ApiResponse<{
           enabled: boolean;
@@ -958,6 +962,7 @@ export const api = {
           handoffMessage: string;
           autoReplyNotice: string;
           maxRepliesPerDay: number;
+          answerMode: 'draft' | 'auto';
         }>>('/api/account-settings/faq-bot', {
           method: 'PUT',
           body: JSON.stringify(body),

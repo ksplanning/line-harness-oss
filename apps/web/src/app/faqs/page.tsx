@@ -36,6 +36,8 @@ interface FaqBotSettings {
   handoffMessage: string
   autoReplyNotice: string
   maxRepliesPerDay: number
+  // 'draft'=AIは草案を作るだけで送信しない / 'auto'=お客さまへ自動送信。
+  answerMode: 'draft' | 'auto'
 }
 
 const DEFAULT_SETTINGS: FaqBotSettings = {
@@ -44,6 +46,9 @@ const DEFAULT_SETTINGS: FaqBotSettings = {
   handoffMessage: '',
   autoReplyNotice: '',
   maxRepliesPerDay: 5,
+  // 安全側の既定。未取得状態で誤って自動送信化しないよう 'draft' 始点
+  // (実値は GET 応答で上書きされる — settings.get の answerMode をそのまま保持)。
+  answerMode: 'draft',
 }
 
 type Tab = 'faqs' | 'unmatched' | 'settings'
@@ -73,6 +78,8 @@ export default function FaqsPage() {
   const [editing, setEditing] = useState<FaqDraft | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
+  // 「自動で送信する」に切り替える時だけ出す行内確認 (native window.confirm は使わない / M-16)。
+  const [confirmAutoMode, setConfirmAutoMode] = useState(false)
 
   const accountName =
     accounts.find((a) => a.id === selectedAccountId)?.displayName ??
@@ -142,6 +149,23 @@ export default function FaqsPage() {
       // OFF is the safe direction — no confirmation.
       setSettings((s) => ({ ...s, enabled: false }))
     }
+  }
+
+  const selectAnswerMode = (mode: 'draft' | 'auto') => {
+    if (mode === 'auto') {
+      if (settings.answerMode === 'auto') return
+      // 自動送信化は危険方向 → 行内確認を挟む (この時点では state を変えない)。
+      setConfirmAutoMode(true)
+    } else {
+      // 下書きは安全方向 → 確認なしで即切替。
+      setConfirmAutoMode(false)
+      setSettings((s) => ({ ...s, answerMode: 'draft' }))
+    }
+  }
+
+  const confirmSwitchToAuto = () => {
+    setSettings((s) => ({ ...s, answerMode: 'auto' }))
+    setConfirmAutoMode(false)
   }
 
   const saveSettings = async () => {
@@ -415,6 +439,62 @@ export default function FaqsPage() {
             ) : (
               <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
                 ※ 全体スイッチ（管理者設定）もONのときだけ実際に返信されます。
+              </div>
+            )}
+          </div>
+
+          {/* 回答モード (下書き / 自動送信) */}
+          <div className="bg-white border border-gray-200 rounded-lg p-5">
+            <h3 className="text-sm font-semibold text-gray-800">AIの答えをどうする？</h3>
+            <div className="mt-3 inline-flex bg-gray-100 rounded-lg p-1 w-fit">
+              {([
+                { key: 'draft', label: '下書きにする' },
+                { key: 'auto', label: '自動で送信する' },
+              ] as const).map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => selectAnswerMode(key)}
+                  className={`min-h-[44px] px-4 rounded-md text-sm font-medium transition-colors ${
+                    settings.answerMode === key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {settings.answerMode === 'draft' ? (
+              <p className="mt-3 text-xs text-gray-600 bg-gray-50 rounded-md px-3 py-2 leading-relaxed">
+                いまは<span className="font-semibold">下書き</span>です。AIは答えの草案を作るだけで、お客さまには送信しません。草案は「資料・AIログ」画面で確認できます。
+              </p>
+            ) : (
+              <p className="mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 leading-relaxed">
+                いまは<span className="font-semibold">自動送信</span>です。AIがお客さまに自動で返信します。
+              </p>
+            )}
+
+            {confirmAutoMode && (
+              <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <p className="text-xs text-amber-800 leading-relaxed">
+                  自動送信にすると、これ以降お客さまの質問にAIが実際に返信します。よろしいですか？
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={confirmSwitchToAuto}
+                    className="px-3 py-1.5 text-xs font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700"
+                  >
+                    自動送信にする
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmAutoMode(false)}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-md"
+                  >
+                    やめる
+                  </button>
+                </div>
               </div>
             )}
           </div>
