@@ -1,0 +1,354 @@
+{
+  "patchStatus": 200,
+  "sent": [
+    {
+      "type": "field",
+      "identifier": "rvmJCJui",
+      "actions": [
+        {
+          "action": "show",
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "operation": "and",
+            "args": [
+              {
+                "operation": "is",
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "4HBthMW8"
+                  }
+                ]
+              },
+              {
+                "operation": "is",
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "OJEABEJS"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "QEsPFzwG"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "field",
+      "identifier": "rvmJCJui",
+      "actions": [
+        {
+          "action": "hide",
+          "args": [
+            {
+              "type": "field",
+              "identifier": "onzscQWn"
+            }
+          ],
+          "when": {
+            "operation": "or",
+            "args": [
+              {
+                "operation": "is",
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "4HBthMW8"
+                  }
+                ]
+              },
+              {
+                "operation": "is",
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "Ex97MGIt"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "field",
+      "identifier": "rvmJCJui",
+      "actions": [
+        {
+          "action": "show",
+          "args": [
+            {
+              "type": "field",
+              "identifier": "onzscQWn"
+            }
+          ],
+          "when": {
+            "operation": "is",
+            "args": [
+              {
+                "type": "field",
+                "value": "rvmJCJui"
+              },
+              {
+                "type": "choice",
+                "value": "4HBthMW8"
+              }
+            ]
+          }
+        },
+        {
+          "action": "hide",
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "operation": "is",
+            "args": [
+              {
+                "type": "field",
+                "value": "rvmJCJui"
+              },
+              {
+                "type": "choice",
+                "value": "Ex97MGIt"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "field",
+      "identifier": "kB6HfSoC",
+      "actions": [
+        {
+          "action": "show",
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "operation": "gt",
+            "args": [
+              {
+                "type": "field",
+                "value": "kB6HfSoC"
+              },
+              {
+                "type": "constant",
+                "value": 5
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "getLogic": [
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "4HBthMW8"
+                  }
+                ],
+                "operation": "is"
+              },
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "OJEABEJS"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "QEsPFzwG"
+                  }
+                ],
+                "operation": "is"
+              }
+            ],
+            "operation": "and"
+          },
+          "action": "show"
+        }
+      ],
+      "identifier": "rvmJCJui"
+    },
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "onzscQWn"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "4HBthMW8"
+                  }
+                ],
+                "operation": "is"
+              },
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "Ex97MGIt"
+                  }
+                ],
+                "operation": "is"
+              }
+            ],
+            "operation": "or"
+          },
+          "action": "hide"
+        }
+      ],
+      "identifier": "rvmJCJui"
+    },
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "onzscQWn"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "type": "field",
+                "value": "rvmJCJui"
+              },
+              {
+                "type": "choice",
+                "value": "4HBthMW8"
+              }
+            ],
+            "operation": "is"
+          },
+          "action": "show"
+        },
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "type": "field",
+                "value": "rvmJCJui"
+              },
+              {
+                "type": "choice",
+                "value": "Ex97MGIt"
+              }
+            ],
+            "operation": "is"
+          },
+          "action": "hide"
+        }
+      ],
+      "identifier": "rvmJCJui"
+    },
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "type": "field",
+                "value": "kB6HfSoC"
+              },
+              {
+                "type": "constant",
+                "value": 5
+              }
+            ],
+            "operation": "gt"
+          },
+          "action": "show"
+        }
+      ],
+      "identifier": "kB6HfSoC"
+    }
+  ],
+  "logic_metadata": {
+    "fields_hidden_by_default": [
+      "fRUnHPed",
+      "onzscQWn"
+    ]
+  },
+  "run_field_logics_on_update": false
+}

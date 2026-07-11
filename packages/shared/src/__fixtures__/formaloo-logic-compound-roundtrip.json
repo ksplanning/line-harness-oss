@@ -1,0 +1,350 @@
+{
+  "sentEqualsGet": true,
+  "rePatch": 200,
+  "semanticEqual": true,
+  "clearStatus": 200,
+  "canonical1": [
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "4HBthMW8"
+                  }
+                ],
+                "operation": "is"
+              },
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "OJEABEJS"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "QEsPFzwG"
+                  }
+                ],
+                "operation": "is"
+              }
+            ],
+            "operation": "and"
+          },
+          "action": "show"
+        }
+      ],
+      "identifier": "rvmJCJui"
+    },
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "onzscQWn"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "4HBthMW8"
+                  }
+                ],
+                "operation": "is"
+              },
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "Ex97MGIt"
+                  }
+                ],
+                "operation": "is"
+              }
+            ],
+            "operation": "or"
+          },
+          "action": "hide"
+        }
+      ],
+      "identifier": "rvmJCJui"
+    },
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "onzscQWn"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "type": "field",
+                "value": "rvmJCJui"
+              },
+              {
+                "type": "choice",
+                "value": "4HBthMW8"
+              }
+            ],
+            "operation": "is"
+          },
+          "action": "show"
+        },
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "type": "field",
+                "value": "rvmJCJui"
+              },
+              {
+                "type": "choice",
+                "value": "Ex97MGIt"
+              }
+            ],
+            "operation": "is"
+          },
+          "action": "hide"
+        }
+      ],
+      "identifier": "rvmJCJui"
+    },
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "type": "field",
+                "value": "kB6HfSoC"
+              },
+              {
+                "type": "constant",
+                "value": 5
+              }
+            ],
+            "operation": "gt"
+          },
+          "action": "show"
+        }
+      ],
+      "identifier": "kB6HfSoC"
+    }
+  ],
+  "canonical2": [
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "4HBthMW8"
+                  }
+                ],
+                "operation": "is"
+              },
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "OJEABEJS"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "QEsPFzwG"
+                  }
+                ],
+                "operation": "is"
+              }
+            ],
+            "operation": "and"
+          },
+          "action": "show"
+        }
+      ],
+      "identifier": "rvmJCJui"
+    },
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "onzscQWn"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "4HBthMW8"
+                  }
+                ],
+                "operation": "is"
+              },
+              {
+                "args": [
+                  {
+                    "type": "field",
+                    "value": "rvmJCJui"
+                  },
+                  {
+                    "type": "choice",
+                    "value": "Ex97MGIt"
+                  }
+                ],
+                "operation": "is"
+              }
+            ],
+            "operation": "or"
+          },
+          "action": "hide"
+        }
+      ],
+      "identifier": "rvmJCJui"
+    },
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "onzscQWn"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "type": "field",
+                "value": "rvmJCJui"
+              },
+              {
+                "type": "choice",
+                "value": "4HBthMW8"
+              }
+            ],
+            "operation": "is"
+          },
+          "action": "show"
+        },
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "type": "field",
+                "value": "rvmJCJui"
+              },
+              {
+                "type": "choice",
+                "value": "Ex97MGIt"
+              }
+            ],
+            "operation": "is"
+          },
+          "action": "hide"
+        }
+      ],
+      "identifier": "rvmJCJui"
+    },
+    {
+      "type": "field",
+      "actions": [
+        {
+          "args": [
+            {
+              "type": "field",
+              "identifier": "fRUnHPed"
+            }
+          ],
+          "when": {
+            "args": [
+              {
+                "type": "field",
+                "value": "kB6HfSoC"
+              },
+              {
+                "type": "constant",
+                "value": 5
+              }
+            ],
+            "operation": "gt"
+          },
+          "action": "show"
+        }
+      ],
+      "identifier": "kB6HfSoC"
+    }
+  ]
+}
