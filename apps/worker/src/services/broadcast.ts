@@ -71,14 +71,25 @@ export async function processBroadcastSend(
     throw new Error(`Broadcast ${broadcastId} not found`);
   }
 
-  // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
+  // Auto-wrap URLs with tracking links。combo は messages 配列の各要素を tracking 化する
+  // (即時経路は cross-batch persist 不要なので送信用にのみ計算・single も従来どおり非永続)。
   let finalType: string = broadcast.message_type;
   let finalContent = broadcast.message_content;
+  let finalMessages = ((broadcast as unknown as Record<string, unknown>).messages as string | null | undefined) ?? null;
   if (workerUrl) {
-    const { autoTrackContent } = await import('./auto-track.js');
-    const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl);
-    finalType = tracked.messageType;
-    finalContent = tracked.content;
+    if (finalMessages != null) {
+      const tracked = await autoTrackBroadcastMessages(db, finalMessages, workerUrl);
+      if (tracked.blocks.length > 0) {
+        finalMessages = tracked.messages;
+        finalType = tracked.blocks[0].type;
+        finalContent = tracked.blocks[0].content;
+      }
+    } else {
+      const { autoTrackContent } = await import('./auto-track.js');
+      const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl);
+      finalType = tracked.messageType;
+      finalContent = tracked.content;
+    }
   }
   // {{liff_id}} 置換用 liffId を解決する。render 自体は buildBroadcastMessages が要素単位に行う。
   // multi-account-dedup は dedup-broadcast.ts 側で per-account 置換するので、ここは
@@ -92,9 +103,9 @@ export async function processBroadcastSend(
       liffId = (acct as unknown as { liff_id?: string | null } | null)?.liff_id ?? null;
     }
   }
-  // auto-track 結果 (finalType/finalContent) を反映した broadcast から Message[] を組む。
+  // auto-track 結果 (finalType/finalContent/finalMessages) を反映した broadcast から Message[] を組む。
   // messages NULL は byte 等価な単発 (fallback)、非NULL は combo 配列。
-  const sendBroadcast = { ...broadcast, message_type: finalType as Broadcast['message_type'], message_content: finalContent };
+  const sendBroadcast = { ...broadcast, message_type: finalType as Broadcast['message_type'], message_content: finalContent, messages: finalMessages };
   let messages: Message[];
   try {
     messages = buildBroadcastMessages(sendBroadcast, liffId);
@@ -174,7 +185,7 @@ export async function processBroadcastSend(
       // 結果 (finalType / finalContent) を反映した broadcast を渡さないと
       // tracked Flex 変換が落ちる。
       const { processMultiAccountDedupBroadcast } = await import('./dedup-broadcast.js');
-      const broadcastForDedup = { ...broadcast, message_type: finalType, message_content: finalContent };
+      const broadcastForDedup = { ...broadcast, message_type: finalType, message_content: finalContent, messages: finalMessages };
       const result = await processMultiAccountDedupBroadcast(db, broadcastForDedup);
       totalCount = result.totalCount;
       successCount = result.successCount;
@@ -306,18 +317,32 @@ async function processQueuedBroadcastBatches(
     return;
   }
 
-  // auto-track（初回バッチのみ、offsetが0のとき）
+  // auto-track（初回バッチのみ、offsetが0のとき）。combo は messages 配列の各要素を tracking 化し、
+  // 更新後 messages を先頭ミラー付きで persist する (次バッチ以降で使えるように・offset 0 のみ = 冪等)。
   let finalType: string = broadcast.message_type;
   let finalContent = broadcast.message_content;
+  let finalMessages = ((broadcast as unknown as Record<string, unknown>).messages as string | null | undefined) ?? null;
   if (workerUrl && batchOffset === 0) {
-    const { autoTrackContent } = await import('./auto-track.js');
-    const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl);
-    finalType = tracked.messageType;
-    finalContent = tracked.content;
-    // 変換後のコンテンツを保存（次バッチ以降で使えるように）
-    if (finalType !== broadcast.message_type || finalContent !== broadcast.message_content) {
-      await db.prepare('UPDATE broadcasts SET message_type = ?, message_content = ? WHERE id = ?')
-        .bind(finalType, finalContent, broadcast.id).run();
+    if (finalMessages != null) {
+      const tracked = await autoTrackBroadcastMessages(db, finalMessages, workerUrl);
+      if (tracked.changed) {
+        finalMessages = tracked.messages;
+        finalType = tracked.blocks[0].type;
+        finalContent = tracked.blocks[0].content;
+        // messages + 先頭ミラー(message_type/content) を原子的に persist。
+        await db.prepare('UPDATE broadcasts SET messages = ?, message_type = ?, message_content = ? WHERE id = ?')
+          .bind(finalMessages, finalType, finalContent, broadcast.id).run();
+      }
+    } else {
+      const { autoTrackContent } = await import('./auto-track.js');
+      const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl);
+      finalType = tracked.messageType;
+      finalContent = tracked.content;
+      // 変換後のコンテンツを保存（次バッチ以降で使えるように）
+      if (finalType !== broadcast.message_type || finalContent !== broadcast.message_content) {
+        await db.prepare('UPDATE broadcasts SET message_type = ?, message_content = ? WHERE id = ?')
+          .bind(finalType, finalContent, broadcast.id).run();
+      }
     }
   }
 
@@ -329,7 +354,7 @@ async function processQueuedBroadcastBatches(
     const acct = await getLA(db, queuedAccountId);
     liffId = (acct as unknown as { liff_id?: string | null } | null)?.liff_id ?? null;
   }
-  const sendBroadcast = { ...broadcast, message_type: finalType as Broadcast['message_type'], message_content: finalContent };
+  const sendBroadcast = { ...broadcast, message_type: finalType as Broadcast['message_type'], message_content: finalContent, messages: finalMessages };
   let messages: Message[];
   try {
     messages = buildBroadcastMessages(sendBroadcast, liffId);
@@ -355,7 +380,7 @@ async function processQueuedBroadcastBatches(
   // 落ちる)。
   if (broadcast.target_type === 'multi-account-dedup') {
     const { processMultiAccountDedupBroadcast } = await import('./dedup-broadcast.js');
-    const broadcastForDedup = { ...broadcast, message_type: finalType, message_content: finalContent };
+    const broadcastForDedup = { ...broadcast, message_type: finalType, message_content: finalContent, messages: finalMessages };
     const result = await processMultiAccountDedupBroadcast(db, broadcastForDedup);
     await createBroadcastInsight(db, broadcast.id);
     await updateBroadcastStatus(db, broadcast.id, 'sent', {
@@ -693,4 +718,36 @@ export function applyBatchVariation(messages: Message[], batchIndex: number, tot
   return messages.map((m) =>
     m.type === 'text' ? { ...m, text: addMessageVariation((m as { text: string }).text, batchIndex) } : m,
   );
+}
+
+/**
+ * combo messages の各要素を auto-track する (C6)。text/flex 要素内の URL を tracking link 化し
+ * (media 系は passthrough)、更新後 messages(JSON)と blocks を返す。block 単位のクリック帰属は v1
+ * 対象外 — 全要素のリンクが漏れなく tracking 化されることが要件 (2-5 通目のリンクも追跡される)。
+ * parse 不能/非配列は changed=false + blocks=[] で返し (呼び側で無改変)、送信は buildBroadcastMessages が
+ * fail-closed で確定する。
+ */
+async function autoTrackBroadcastMessages(
+  db: D1Database,
+  messagesJson: string,
+  workerUrl: string,
+): Promise<{ messages: string; blocks: Array<{ type: string; content: string; altText?: string }>; changed: boolean }> {
+  const { autoTrackContent } = await import('./auto-track.js');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(messagesJson);
+  } catch {
+    return { messages: messagesJson, blocks: [], changed: false };
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    return { messages: messagesJson, blocks: [], changed: false };
+  }
+  let changed = false;
+  const blocks: Array<{ type: string; content: string; altText?: string }> = [];
+  for (const b of parsed as Array<{ type: string; content: string; altText?: string }>) {
+    const tracked = await autoTrackContent(db, b.type, b.content, workerUrl);
+    if (tracked.messageType !== b.type || tracked.content !== b.content) changed = true;
+    blocks.push({ ...b, type: tracked.messageType, content: tracked.content });
+  }
+  return { messages: JSON.stringify(blocks), blocks, changed };
 }
