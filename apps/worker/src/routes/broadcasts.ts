@@ -1119,6 +1119,17 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
     if (broadcast.status !== 'draft') {
       return c.json({ success: false, error: 'Only draft broadcasts can be test-sent' }, 400);
     }
+    // [F2] combo (messages が JSON 文字列) の test-send は現状未対応。従来の単発 buildMessage 経路は先頭
+    // ブロックだけを送るため、owner が combo プレビューで踏むと「1通目しか届かない」silent 事故になる。単発
+    // 送信して誤認させるより fail-loud で 400 明示する (excluded_scope: 予約発火のテスト送信は owner 判断 /
+    // 組み合わせのプレビュー・テスト送信は Batch 2 UI で配線する)。combo 判定は「messages が非空 JSON 文字列」=
+    // null/undefined(単発・legacy) は従来経路へ通す。
+    if (typeof broadcast.messages === 'string' && broadcast.messages.length > 0) {
+      return c.json(
+        { success: false, error: '組み合わせメッセージのテスト送信は現在未対応です（組み合わせ配信の対応は次のアップデートで行います）。' },
+        400,
+      );
+    }
 
     const raw = broadcast as unknown as Record<string, unknown>;
     const accountId = raw.line_account_id as string | null;

@@ -165,3 +165,28 @@ describe('PUT /api/broadcasts/:id combo messages', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('POST /api/broadcasts/:id/test-send combo gate (F2)', () => {
+  async function createComboDraft(): Promise<string> {
+    const messages = [{ type: 'image', content: IMG }, { type: 'text', content: 'a' }];
+    const res = await app().request('/api/broadcasts', { method: 'POST', body: JSON.stringify({ ...base, messageType: 'image', messageContent: IMG, messages }) });
+    return (await res.json() as PostResp).data.id;
+  }
+
+  test('combo 行への test-send → 400 fail-loud (先頭ブロックだけ送って owner を誤認させない)', async () => {
+    const id = await createComboDraft();
+    const ts = await app().request(`/api/broadcasts/${id}/test-send`, { method: 'POST', body: JSON.stringify({}) });
+    expect(ts.status).toBe(400);
+    const body = await ts.json() as { error: string };
+    expect(body.error).toContain('組み合わせメッセージのテスト送信');
+  });
+
+  test('single 行の test-send は combo gate を通過する (combo エラーは出ない)', async () => {
+    const res = await app().request('/api/broadcasts', { method: 'POST', body: JSON.stringify({ ...base, messageType: 'text', messageContent: 'hi' }) });
+    const id = (await res.json() as PostResp).data.id;
+    const ts = await app().request(`/api/broadcasts/${id}/test-send`, { method: 'POST', body: JSON.stringify({}) });
+    // single は combo gate に当たらない (test_recipients 未設定などで別 400 になり得るが combo メッセージは出ない)。
+    const body = await ts.json() as { error?: string };
+    expect(body.error ?? '').not.toContain('組み合わせメッセージのテスト送信');
+  });
+});
