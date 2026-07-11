@@ -39,8 +39,10 @@ export interface Broadcast {
    * MessageBlock = { type: BroadcastMessageType, content: string, altText?: string }。
    * 非 null なら先頭ミラー不変条件で message_type/message_content/alt_text = messages[0] を同期する
    * (route 層責務)。妥当性/長さ検証は route + buildBroadcastMessages で担保 (列 CHECK 無し)。
+   * **非 optional (string | null)**: migration 097 で列は常に存在するため、送信経路 (buildBroadcastMessages)
+   * へ messages を渡し忘れた projection を compiler が弾く構造保証にする (silent single 化の根治・F1)。
    */
-  messages?: string | null;
+  messages: string | null;
 }
 
 export async function getBroadcasts(db: D1Database, accountId?: string): Promise<Broadcast[]> {

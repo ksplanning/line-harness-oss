@@ -431,6 +431,7 @@ describe('processMultiAccountDedupBroadcast', () => {
         dedup_priority: '["acc1","acc2"]',
         message_type: 'text',
         message_content: 'hello',
+        messages: null,
       },
       factory,
     );
@@ -479,6 +480,7 @@ describe('processMultiAccountDedupBroadcast', () => {
         dedup_priority: '["acc1","acc2"]',
         message_type: 'text',
         message_content: 'hello',
+        messages: null,
       },
       factory,
     );
@@ -520,6 +522,7 @@ describe('processMultiAccountDedupBroadcast', () => {
         dedup_priority: '["acc1","acc2"]',
         message_type: 'text',
         message_content: 'hello',
+        messages: null,
       },
       factory,
     );
@@ -555,6 +558,7 @@ describe('processMultiAccountDedupBroadcast', () => {
         dedup_priority: '["acc1"]',
         message_type: 'text',
         message_content: 'hello',
+        messages: null,
         dedup_progress: null,
       },
       factory,
@@ -612,6 +616,7 @@ describe('processMultiAccountDedupBroadcast', () => {
         dedup_priority: '["acc1","acc2"]',
         message_type: 'text',
         message_content: 'hello',
+        messages: null,
         // 前回の partial run state: ident_key 'f1' 送信済み (acc1 の u1 配信済), 'f2' 未送信
         dedup_progress: JSON.stringify({
           sentIdentKeys: ['f1'],
@@ -673,6 +678,7 @@ describe('processMultiAccountDedupBroadcast', () => {
         dedup_priority: '["acc1"]',
         message_type: 'text',
         message_content: 'hello',
+        messages: null,
         // 前回 batch1 (f0..f499 = ident_key) だけ完了して死んだ想定。f500 は未送信。
         dedup_progress: JSON.stringify({
           sentIdentKeys: Array.from({ length: 500 }, (_, i) => `f${i}`),

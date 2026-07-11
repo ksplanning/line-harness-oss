@@ -43,9 +43,10 @@ describe('buildBroadcastMessages', () => {
     expect(out[0]).toEqual({ type: 'text', text: 'こんにちは LIFF123' });
   });
 
-  it('messages undefined (column absent) → single fallback (no throw)', () => {
-    const out = buildBroadcastMessages(bc({ message_type: 'text', message_content: 'hi' }), null);
-    expect(out).toEqual([{ type: 'text', text: 'hi' }]);
+  it('messages undefined (column absent / projection 渡し忘れ) → throw (F1: undefined は null と別・silent single 禁止)', () => {
+    // 構造契約: fallback は messages === null のときだけ。undefined は projection の渡し忘れの兆候ゆえ
+    // silent single に落とさず throw する (compiler は非 optional 型で渡し忘れを弾くが、runtime backstop)。
+    expect(() => buildBroadcastMessages(bc({ message_type: 'text', message_content: 'hi' }), null)).toThrow(MessageBuildError);
   });
 
   it('applies renderMessageContent per element ({{liff_id}} replaced in each)', () => {

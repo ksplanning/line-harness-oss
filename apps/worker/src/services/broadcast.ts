@@ -675,16 +675,23 @@ export function buildMessage(
  *   (multi-account-dedup は per-account の liffId・single 経路は account の liffId or null)。
  */
 export function buildBroadcastMessages(
-  broadcast: { message_type: string; message_content: string; messages?: string | null; alt_text?: string | null },
+  // messages は **非 optional** (string | null)。呼出元が messages を渡し忘れた projection を compiler が
+  // 弾き、silent single 化を構造的に不可能にする (F1)。
+  broadcast: { message_type: string; message_content: string; messages: string | null; alt_text?: string | null },
   liffId: string | null = null,
 ): Message[] {
   const raw = broadcast as unknown as Record<string, unknown>;
-  const messagesJson = raw.messages as string | null | undefined;
+  const messagesJson = broadcast.messages;
   const altText = (raw.alt_text as string | undefined) || undefined;
 
-  if (messagesJson == null) {
+  // fail-loud: fallback は messages === null のときだけ。undefined / 非文字列は throw して silent single
+  // に落とさない (spec C4「fallback は messages===NULL のみ」/ success_observable「構造的に不可能」)。
+  if (messagesJson === null) {
     // fallback は messages === NULL のときだけ (byte 等価な単発)。
     return [buildMessage(broadcast.message_type, renderMessageContent(broadcast.message_content, liffId), altText)];
+  }
+  if (typeof messagesJson !== 'string') {
+    throw new MessageBuildError('messages');
   }
 
   let blocks: unknown;

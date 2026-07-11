@@ -266,6 +266,8 @@ export async function processMultiAccountDedupBroadcast(
     target_tag_id?: string | null;
     message_type: string;
     message_content: string;
+    // 非 optional: combo messages の伝播を compiler 強制 (F1・呼出元 broadcastForDedup が必ず渡す)。
+    messages: string | null;
     alt_text?: string | null;
     dedup_progress?: string | null;
     aggregation_unit?: string | null;
