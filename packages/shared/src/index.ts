@@ -7,3 +7,4 @@ export * from "./csv";
 export * from "./business-hours";
 export * from "./permissions";
 export * from "./formaloo-forms";
+export * from "./formaloo-fingerprint";
