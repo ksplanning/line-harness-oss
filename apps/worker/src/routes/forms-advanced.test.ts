@@ -210,6 +210,34 @@ describe('forms-advanced serializeForm — drift 露出 (T-D1 / formaloo-auto-pu
     expect(d.driftStatus).toBe('conflict');
     expect(d.syncStatus).toBe('out_of_sync'); // 直交 (両軸を独立露出)
   });
+
+  test('GET /:id/drift-events が当該 form の履歴を新しい順で返す (T-D3 / R5 監査)', async () => {
+    const id = await createForm();
+    raw.prepare(
+      `INSERT INTO formaloo_drift_events (id, form_id, detected_at, action, remote_hash, prev_hash, has_warnings) VALUES (?, ?, '2026-07-12T01:00:00', 'bootstrapped', 'h1', NULL, 0)`,
+    ).run(`de_${id}_1`, id);
+    raw.prepare(
+      `INSERT INTO formaloo_drift_events (id, form_id, detected_at, action, remote_hash, prev_hash, has_warnings) VALUES (?, ?, '2026-07-12T02:00:00', 'notified', 'h2', 'h1', 1)`,
+    ).run(`de_${id}_2`, id);
+    // 別 form の履歴は混入しない
+    const other = await createForm();
+    raw.prepare(
+      `INSERT INTO formaloo_drift_events (id, form_id, detected_at, action, has_warnings) VALUES (?, ?, '2026-07-12T03:00:00', 'notified', 0)`,
+    ).run(`de_${other}_x`, other);
+
+    const res = await call('GET', `/api/forms-advanced/${id}/drift-events`);
+    expect(res.status).toBe(200);
+    const rows = (await res.json() as { data: Array<{ action: string; hasWarnings: boolean; remoteHash: string | null }> }).data;
+    expect(rows.map((r) => r.action)).toEqual(['notified', 'bootstrapped']); // 新しい順
+    expect(rows[0].hasWarnings).toBe(true);
+    expect(rows[0].remoteHash).toBe('h2');
+    expect(rows.length).toBe(2); // 他 form 混入なし
+  });
+
+  test('GET /:id/drift-events は存在しない form で 404', async () => {
+    const res = await call('GET', `/api/forms-advanced/NOPE/drift-events`);
+    expect(res.status).toBe(404);
+  });
 });
 
 describe('forms-advanced PUT /:id idempotent push (T-A3 / push-idempotency / B3)', () => {

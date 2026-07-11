@@ -450,6 +450,33 @@ formsAdvanced.get('/api/forms-advanced/:id/pull', async (c) => {
   }
 });
 
+// GET /api/forms-advanced/:id/drift-events — 定義 drift の監査履歴 (formaloo-auto-pull R5 / 新しい順)。
+//   forms_advanced 権限で gate 済 (permissionMiddleware)。自動反映/通知/競合/bootstrap を後から追える。
+formsAdvanced.get('/api/forms-advanced/:id/drift-events', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    const events = await listFormalooDriftEvents(c.env.DB, id, 50);
+    return c.json({
+      success: true,
+      data: events.map((e) => ({
+        id: e.id,
+        detectedAt: e.detected_at,
+        action: e.action,
+        remoteHash: e.remote_hash,
+        prevHash: e.prev_hash,
+        hasWarnings: e.has_warnings === 1,
+        syncStatusAt: e.sync_status_at,
+        detail: e.detail,
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/forms-advanced/:id/drift-events error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 /** 状態遷移の共通ハンドラ (publish gate)。 */
 async function transition(c: Context<Env>, to: BuilderStatus, notAllowedMsg: string) {
   const id = c.req.param('id')!;
