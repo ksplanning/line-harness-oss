@@ -3,6 +3,7 @@ import { usePathname } from 'next/navigation'
 import Sidebar from './layout/sidebar'
 import { UpdateBanner } from './update/update-banner'
 import AuthGuard from './auth-guard'
+import StaffHelpPanel from './staff-help/staff-help-panel'
 import { AccountProvider } from '@/contexts/account-context'
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -29,6 +30,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </main>
           </div>
         </div>
+        {/* line-staff-docs-chat: 全認証ページ共通の常駐ヘルプチャット (capability-gate + /login 除外は component 内)。 */}
+        <StaffHelpPanel />
       </AccountProvider>
     </AuthGuard>
   )
