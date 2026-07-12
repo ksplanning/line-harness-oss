@@ -38,6 +38,19 @@ import type { Env } from '../index.js';
 
 const knowledge = new Hono<Env>();
 
+// T-A7 (Codex BLOCKER-1) — 予約 sentinel の enforce。顧客 knowledge route は account-scoped だが、
+// accountId に予約値 ('__staff_docs__' = staff corpus / '__global__' = Vectorize global sentinel) を
+// 指定されると顧客経路から staff/global corpus を閲覧/取込/削除できてしまう。これを 403 で拒否する
+// (正常系=実 account は byte 不変・拒否分岐のみ additive)。staff sentinel を書けるのは staff seed 専用経路のみ。
+const RESERVED_KNOWLEDGE_ACCOUNTS = new Set(['__staff_docs__', '__global__']);
+knowledge.use('*', async (c, next) => {
+  const q = c.req.query('accountId');
+  if (q && RESERVED_KNOWLEDGE_ACCOUNTS.has(q)) {
+    return c.json({ success: false, error: 'この account は指定できません' }, 403);
+  }
+  return next();
+});
+
 /**
  * serialize allowlist (search_text は chunk 側の内部索引列で document には無いが、思想を踏襲し明示 allowlist)。
  * stats を渡すと chunkCount/embeddedCount を additive 露出する (embed 状態表示 / B-5 T-E2・M-8 serialize round-trip)。
