@@ -211,6 +211,82 @@ describe('parseWebhookPayload — 署名 fr_id 復元 (T-A6 / 順方向)', () =>
   });
 });
 
+describe('parseWebhookPayload — S-1 実 Formaloo serialization live-confirm (rendered_data=array / form=string)', () => {
+  // 実 Formaloo REST row serialization (S-1 live capture 2026-07-12・使い捨てフォームで実測)。fixture が仮定した
+  // 「rendered_data=alias 直引き object / top-level slug=form slug」と実物が乖離していたことを固定する:
+  //   - rendered_data は **配列** ([{slug, alias, value}]) = alias 直引き object ではない。
+  //   - form slug は 文字列の `form` フィールド。top-level `slug` は ROW(submission) slug (form slug ではない)。
+  //   - 署名 fr_id は data[<auto-slug>] と rendered_data[i].value (alias==='fr_id') に載る (data['fr_id'] ではない)。
+  const now = '2026-07-10T09:00:00+09:00';
+  const SECRET = 'frtok_parse_test_secret';
+  const FRIEND = 'fr_testfriend_0001';
+
+  // 実測ペイロード (使い捨てフォーム hatDzKMp の実 row を逐語再現・auto-slug も実物由来)。
+  async function realPayload() {
+    const token = await signFriendToken(FRIEND, SECRET); // 実 sign アルゴ (base64url HMAC-SHA256[:27])
+    return {
+      payload: {
+        event_type: 'form_submit',
+        submit_code: 'gz06eufzfk8skjrhez7w', // top-level = submission(row) id
+        slug: 'IdfWDQcstLvY8nC8YmDI', // ⚠️ top-level slug = ROW slug (decoy・form slug ではない)
+        form: 'hatDzKMp', // 文字列 form slug (これが台帳照合キー)
+        data: {
+          // field-id(auto-slug) map。署名 fr_id は hidden field の auto-slug 配下 (alias 'fr_id' ではない)。
+          RUEBj39b: token,
+          TvIxv7XD: 'テスト太郎',
+          oChQGxYk: 'テスト太郎',
+        },
+        rendered_data: [
+          { slug: 'oChQGxYk', alias: null, value: 'テスト太郎' },
+          { slug: 'RUEBj39b', alias: 'fr_id', value: token },
+          { slug: 'TvIxv7XD', alias: 'fr_name', value: 'テスト太郎' },
+        ],
+        created_at: '2026-07-12T05:00:00Z',
+      },
+      token,
+    };
+  }
+
+  test('submissionId=submit_code (row) ・ slug=文字列 form (row slug に誤代入しない)', async () => {
+    const { payload } = await realPayload();
+    const p = await parseWebhookPayload(payload, now, { friendTokenSecret: SECRET });
+    expect(p).not.toBeNull();
+    expect(p!.submissionId).toBe('gz06eufzfk8skjrhez7w'); // = submit_code
+    expect(p!.slug).toBe('hatDzKMp'); // = 文字列 form (ROW slug 'IdfWDQ…' ではない)
+  });
+
+  test('answers = data(field-id map) 非空 (blank upsert しない / CX-2 実物照合)', async () => {
+    const { payload, token } = await realPayload();
+    const p = await parseWebhookPayload(payload, now, { friendTokenSecret: SECRET });
+    expect(Object.keys(p!.answers).length).toBe(3);
+    expect(p!.answers).toEqual({ RUEBj39b: token, TvIxv7XD: 'テスト太郎', oChQGxYk: 'テスト太郎' });
+  });
+
+  test('fr_id 署名を rendered_data 配列 (alias==="fr_id") の value から復元 (本番 payload 実測)', async () => {
+    const { payload } = await realPayload();
+    const p = await parseWebhookPayload(payload, now, { friendTokenSecret: SECRET });
+    expect(p!.friendId).toBe(FRIEND); // 配列 rendered_data から alias 一致 value を verify して復元
+  });
+
+  test('改ざんした fr_id (配列形) は verify で reject → friendId=null (誤タグ防止 / R-F4)', async () => {
+    const { payload, token } = await realPayload();
+    const tampered = token.slice(0, -1) + (token.slice(-1) === 'A' ? 'B' : 'A');
+    payload.rendered_data = payload.rendered_data.map((e) => (e.alias === 'fr_id' ? { ...e, value: tampered } : e));
+    payload.data.RUEBj39b = tampered;
+    const p = await parseWebhookPayload(payload, now, { friendTokenSecret: SECRET });
+    expect(p!.friendId).toBeNull();
+  });
+
+  test('HP 経由 (fr_id alias 不在の配列) は friendId=null (署名も legacy も無い)', async () => {
+    const { payload } = await realPayload();
+    payload.rendered_data = payload.rendered_data.filter((e) => e.alias !== 'fr_id');
+    delete payload.data.RUEBj39b;
+    const p = await parseWebhookPayload(payload, now, { friendTokenSecret: SECRET });
+    expect(p!.friendId).toBeNull();
+    expect(Object.keys(p!.answers).length).toBeGreaterThan(0); // answers は非空のまま
+  });
+});
+
 describe('verifyHmacSignature (HMAC-SHA256 + timestamp 窓 / N-12)', () => {
   const secret = 'whsec_test';
   const body = '{"data":{"slug":"sub_1"}}';

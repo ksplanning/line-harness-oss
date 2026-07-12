@@ -51,6 +51,31 @@ function firstString(...vals: unknown[]): string | null {
   return null;
 }
 
+/**
+ * rendered_data から署名 alias (既定 fr_id) の値を取り出す。**実 Formaloo serialization は配列**
+ *   `[{ slug, alias, value }, ...]` (S-1 live-confirm 2026-07-12 実測) ゆえ alias 直引き object 前提の
+ *   `rendered_data[alias]` では取れない。配列は alias 一致 (無ければ slug 一致) の value を、object 形
+ *   (fixture/legacy) は alias 直引きを返す。どちらでもない/該当無しは null (fail-safe / 候補 chain 継続)。
+ */
+function renderedAliasValue(rendered: unknown, alias: string): string | null {
+  if (Array.isArray(rendered)) {
+    for (const entry of rendered) {
+      const e = asObject(entry);
+      if (e && (e.alias === alias || e.slug === alias)) {
+        const v = e.value ?? e.rendered_value;
+        if (typeof v === 'string' && v) return v;
+      }
+    }
+    return null;
+  }
+  const obj = asObject(rendered);
+  if (obj) {
+    const v = obj[alias];
+    if (typeof v === 'string' && v) return v;
+  }
+  return null;
+}
+
 /** 既定の署名 friend token alias (hidden field の alias ID / URL param 名 = fr_id / §spec 2.1)。 */
 export const FRIEND_TOKEN_ALIAS = 'fr_id';
 
@@ -89,12 +114,14 @@ export async function parseWebhookPayload(
   if (!submissionId) return null;
 
   const formObj = asObject(data.form) ?? asObject(root.form);
-  // top-level slug は submit_code が present の実 payload でのみ FORM slug として採る (legacy 形では
-  //   root.slug は上の submission 候補ゆえ form-slug に採らない = 誤代入防止)。
+  // 実 Formaloo serialization (S-1 live-confirm 2026-07-12): `form` は **文字列の form slug**・top-level
+  //   `slug` は ROW(submission) slug。ゆえ文字列 `form` を `submitCode ? root.slug` より先に採り、ROW slug を
+  //   form slug に誤代入して台帳照合を落とす事故を防ぐ。`form` が object の仮定 payload 形は formObj.slug が先勝ち。
+  //   `submitCode ? root.slug` は「form 欠落 + top-level slug=form slug」の仮定 payload 形への fallback として残置。
   const slug = firstString(
     formObj?.slug, formObj?.address, data.form_slug, root.form_slug,
-    submitCode ? root.slug : null,
     data.form as unknown, root.form as unknown,
+    submitCode ? root.slug : null,
   );
 
   // answers 抽出: legacy 形は data.answers / data.fields / root.answers。実 payload 形 (submit_code present)
@@ -113,8 +140,14 @@ export async function parseWebhookPayload(
   //   別 friendId (legacy field)』を注入して別人へ tag/scenario を発火できる (署名の forgery 耐性が無効化)。
   //   legacy 未署名 chain は署名 field が完全に absent の時のみ許可 (後方互換 / HP 経由・旧 hidden field)。
   const alias = opts?.friendTokenAlias ?? FRIEND_TOKEN_ALIAS;
-  const rendered = asObject(root.rendered_data) ?? asObject(data.rendered_data);
-  const signedToken = firstString(rendered?.[alias], answers[alias], data[alias]);
+  // 実 Formaloo は rendered_data が配列 [{slug,alias,value}] (S-1 live-confirm)。renderedAliasValue が
+  //   配列/object の両形から alias 値を取り出す。取れなければ answers[alias]/data[alias] へ (回帰安全)。
+  const signedToken = firstString(
+    renderedAliasValue(root.rendered_data, alias),
+    renderedAliasValue(data.rendered_data, alias),
+    answers[alias],
+    data[alias],
+  );
   let friendId: string | null;
   if (signedToken) {
     friendId = opts?.friendTokenSecret ? await verifyFriendToken(signedToken, opts.friendTokenSecret) : null;
