@@ -365,7 +365,37 @@ export interface StaffSeedResult {
   updated: number;
   unchanged: number;
   deleted: number;
+  /**
+   * O-1 点灯前 precondition の可観測化: seed 後の staff corpus で **検索可能ベクトルを持つ** chunk 数
+   * (embedded_at IS NOT NULL)。retrieval は Vectorize/getByIds のベクトルで cosine を確定するため、
+   * これが 0 だと chat は必ず fail-closed no_evidence になる (本番 O-1 の症状)。運用者は点灯前にこの値で
+   * 「資料が検索可能になったか」を機械確認する。**seed が created を返すこと ≠ 検索可能** (embed は budget/
+   * provisioning で silent defer/fail し得る) ゆえ本フィールドを success signal と別に surface する。
+   */
+  embedded: number;
+  /**
+   * embedded_at IS NULL の staff chunk 数 (無料枠 defer / Vectorize 未 provisioning / embed 失敗で未 embed)。
+   * > 0 なら該当 chunk は retrieval で不採用 = 点灯前に backfill / provisioning 修正が必要。fail-closed は緩めない。
+   */
+  embedPending: number;
   docs: StaffSeedDocResult[];
+}
+
+/**
+ * staff corpus の embed 被覆を数える (O-1 点灯前 precondition 可観測化)。等値 exact scope (sentinel)。
+ * embedded = embedded_at IS NOT NULL (検索可能) / embedPending = IS NULL (未 embed = retrieval 不採用)。
+ */
+async function countStaffEmbedCoverage(db: D1Database): Promise<{ embedded: number; embedPending: number }> {
+  const row = await db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN embedded_at IS NOT NULL THEN 1 ELSE 0 END) AS embedded,
+         SUM(CASE WHEN embedded_at IS NULL THEN 1 ELSE 0 END) AS pending
+       FROM knowledge_chunks WHERE line_account_id = ?`,
+    )
+    .bind(STAFF_DOCS_ACCOUNT_SENTINEL)
+    .first<{ embedded: number | null; pending: number | null }>();
+  return { embedded: row?.embedded ?? 0, embedPending: row?.pending ?? 0 };
 }
 
 /** staff sentinel の資料一覧 (**等値 exact** = listKnowledgeDocuments の NULL union を使わない)。 */
@@ -415,7 +445,7 @@ export async function seedStaffDocs(
   const bySourceUrl = new Map(existing.map((d) => [d.source_url ?? '', d]));
   const manifestSourceUrls = new Set(docs.map((d) => STAFF_DOC_SOURCE_PREFIX + d.docKey));
 
-  const out: StaffSeedResult = { revision, created: 0, updated: 0, unchanged: 0, deleted: 0, docs: [] };
+  const out: StaffSeedResult = { revision, created: 0, updated: 0, unchanged: 0, deleted: 0, embedded: 0, embedPending: 0, docs: [] };
 
   for (const input of docs) {
     const sourceUrl = STAFF_DOC_SOURCE_PREFIX + input.docKey;
@@ -485,6 +515,11 @@ export async function seedStaffDocs(
     out.deleted += 1;
     out.docs.push({ docKey: url.slice(STAFF_DOC_SOURCE_PREFIX.length), documentId: d.id, chunkIds: [], action: 'deleted' });
   }
+
+  // [点灯前 precondition] seed 後の corpus 実状態で embed 被覆を surface (created の成功 signal とは別軸)。
+  const coverage = await countStaffEmbedCoverage(db);
+  out.embedded = coverage.embedded;
+  out.embedPending = coverage.embedPending;
 
   return out;
 }
