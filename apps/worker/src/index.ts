@@ -76,6 +76,7 @@ import { setup } from './routes/setup.js';
 import { autoReplies } from './routes/auto-replies.js';
 import { faqs } from './routes/faqs.js';
 import { knowledge } from './routes/knowledge.js';
+import { staffDocs } from './routes/staff-docs.js';
 import { adminAuth } from './routes/admin-auth.js';
 import { resolveCorsOrigin } from './middleware/admin-auth-config.js';
 import booking from './routes/booking.js';
@@ -136,6 +137,10 @@ export type Env = {
     LIFF_PAGES_PROJECT?: string;
     D1_DATABASE_ID?: string;
     FAQ_BOT_ENABLED?: string;
+    // line-staff-docs-chat — スタッフ用 常駐 RAG chat の入口 flag。既定 OFF (未設定/'false') = dark-ship。
+    // 'true' で /api/staff-docs/* が有効化 + capabilities に staffDocs:true が出て web 常駐パネルが描画される
+    // (両面 OFF: route 404 かつ panel 非表示)。既存 FAQ_BOT_ENABLED 等の不可侵設定とは別 env で独立 rollback。
+    STAFF_DOCS_ENABLED?: string;
     // Phase B (B-1) — Workers AI 接続層。`[ai] binding = "AI"` と AI_* [vars] は
     // infra 工程 (closer/デプロイ) で wrangler に追記する (repo/コードに literal を置かない)。
     // 未設定 dev では createFaqAiRuntime() が null を返し AI 後段を組まない (dark-ship default)。
@@ -264,6 +269,7 @@ app.route('/', setup);
 app.route('/', autoReplies);
 app.route('/', faqs);
 app.route('/', knowledge);
+app.route('/', staffDocs);
 app.route('/', adminAuth);
 app.route('/', trafficPools);
 app.route('/', booking);

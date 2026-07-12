@@ -35,6 +35,14 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/t/abc')).toBeNull();
   });
 
+  test('staff-docs は全認証可 (null) で staff prefix に飲まれない (Codex #15)', () => {
+    // help chat = read-only 全認証可。seed の admin gate は route の requireRole が担う。
+    expect(mapPathToFeature('/api/staff-docs/chat')).toBeNull();
+    expect(mapPathToFeature('/api/staff-docs/seed')).toBeNull();
+    // 既存 staff は staff_admin のまま (staff-docs が staff prefix に飲まれない = 非衝突)。
+    expect(mapPathToFeature('/api/staff')).toBe('staff_admin');
+  });
+
   test('staff/me は staff より先に評価され staff_admin に落ちない', () => {
     expect(mapPathToFeature('/api/staff/me')).toBeNull();
     expect(mapPathToFeature('/api/staff')).toBe('staff_admin');

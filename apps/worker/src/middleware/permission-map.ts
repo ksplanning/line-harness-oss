@@ -46,6 +46,12 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   // FAQ bot 設定 (account-settings prefix だが FAQ 機能 / M-3)
   { test: /^\/api\/account-settings\/faq-bot(?:\/|$)/, feature: 'faq' },
 
+  // ── スタッフ用 常駐ヘルプチャット (staff-docs) = read-only・全認証可 (null) ──
+  // help chat は読むだけゆえ全認証スタッフ可。seed(取込) は route の requireRole('owner','admin') が enforce。
+  // ⚠️ prefix('staff-docs')=^/api/staff-docs(?:/|$) は prefix('staff')=^/api/staff(?:/|$) と非衝突 ("staff" の次が
+  //    "-" は (?:/|$) 不一致 / Codex #15)。順序不問だが specific-first 明示で並び替え耐性を持たせ staff の上に置く。
+  { test: prefix('staff-docs'), feature: null },
+
   // ── スタッフ・ロール管理 (staff_admin) ──
   { test: prefix('staff'), feature: 'staff_admin' },
   { test: prefix('roles'), feature: 'staff_admin' }, // ロール CRUD (owner requireRole でも二重 gate)

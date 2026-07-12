@@ -37,6 +37,9 @@ capabilities.get('/api/capabilities', async (c) => {
     success: true,
     data: {
       harness_kind: 'line',
+      // line-staff-docs-chat: web 常駐パネルが mount 時にこれを見て描画可否を決める (両面 OFF の web 側)。
+      // STAFF_DOCS_ENABLED != 'true' → false → パネル非描画 (dark-ship / plan §6・Codex #10)。
+      staffDocs: c.env?.STAFF_DOCS_ENABLED === 'true',
       harness_version: HARNESS_VERSION,
       api_version: API_VERSION,
       features: FEATURES,
