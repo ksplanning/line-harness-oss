@@ -19,6 +19,7 @@ import ScheduleInput, {
   uiFromOffsetMinutes,
   type ScheduleValue,
 } from '@/components/scenarios/schedule-input'
+import { formatScheduleLabel } from '@/lib/scenario-schedule'
 import BulkPreviewModal from '@/components/scenarios/bulk-preview-modal'
 import EnrollFriendDialog from '@/components/scenarios/enroll-friend-dialog'
 
@@ -40,40 +41,6 @@ const modeBadgeStyle: Record<DeliveryMode, { bg: string; text: string; label: st
   relative: { bg: 'bg-gray-100', text: 'text-gray-600', label: 'Legacy' },
   elapsed: { bg: 'bg-blue-50', text: 'text-blue-700', label: '経過時間' },
   absolute_time: { bg: 'bg-amber-50', text: 'text-amber-700', label: '時刻指定' },
-}
-
-function formatDelay(minutes: number): string {
-  if (minutes === 0) return '即時'
-  if (minutes < 60) return `${minutes}分後`
-  if (minutes < 1440) {
-    const h = Math.floor(minutes / 60)
-    const m = minutes % 60
-    return m === 0 ? `${h}時間後` : `${h}時間${m}分後`
-  }
-  const d = Math.floor(minutes / 1440)
-  const remaining = minutes % 1440
-  if (remaining === 0) return `${d}日後`
-  const h = Math.floor(remaining / 60)
-  return h > 0 ? `${d}日${h}時間後` : `${d}日${remaining}分後`
-}
-
-function formatScheduleLabel(mode: DeliveryMode | undefined, step: ScenarioStep): string {
-  const m = mode ?? 'relative'
-  if (m === 'relative') return formatDelay(step.delayMinutes)
-  if (m === 'elapsed') {
-    const days = step.offsetDays ?? 0
-    const mins = step.offsetMinutes ?? 0
-    const h = Math.floor(mins / 60)
-    const r = mins % 60
-    if (days === 0 && mins === 0) return '即時 (購読開始)'
-    const parts: string[] = []
-    if (days > 0) parts.push(`${days}日`)
-    if (h > 0) parts.push(`${h}時間`)
-    if (r > 0) parts.push(`${r}分`)
-    return `購読開始から${parts.join('')}後`
-  }
-  // absolute_time
-  return `購読開始から${step.offsetDays ?? 0}日後の ${step.deliveryTime ?? '00:00'}`
 }
 
 interface StepFormState {
