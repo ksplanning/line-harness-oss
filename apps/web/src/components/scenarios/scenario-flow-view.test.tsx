@@ -125,13 +125,14 @@ describe('ScenarioFlowView — 分岐エッジ（T-A5）', () => {
     expect(screen.getByText('条件不成立時')).toBeTruthy()
   })
 
-  it('ランタイム乖離（L3）の凡例注記が表示される', () => {
+  it('分岐の配信挙動を説明する凡例注記が表示される（runtime 修正後: 飛び先どおり配信）', () => {
     render(
       <ScenarioFlowView
         scenario={mkScenario([mkStep({ stepOrder: 1, conditionType: 'tag_exists', nextStepOnFalse: 1 })])}
       />,
     )
-    expect(screen.getByText(/実配信.*ステップ順|Phase|要修正/)).toBeTruthy()
+    // runtime 分岐ジャンプ修正 (step-delivery.ts) 後、凡例は「保存した分岐は実配信でも飛び先どおり」を明記する。
+    expect(screen.getByText(/実際の配信でも.*飛び先どおり/)).toBeTruthy()
   })
 })
 
