@@ -336,6 +336,9 @@ export const api = {
         deliveryTime?: string
         templateId?: string | null
         onReachTagId?: string | null
+        conditionType?: string | null
+        conditionValue?: string | null
+        nextStepOnFalse?: number | null
       },
     ) =>
       fetchApi<ApiResponse<ScenarioStep>>(`/api/scenarios/${id}/steps`, {
@@ -355,6 +358,9 @@ export const api = {
         deliveryTime?: string
         templateId?: string | null
         onReachTagId?: string | null
+        conditionType?: string | null
+        conditionValue?: string | null
+        nextStepOnFalse?: number | null
       },
     ) =>
       fetchApi<ApiResponse<ScenarioStep>>(`/api/scenarios/${id}/steps/${stepId}`, {
