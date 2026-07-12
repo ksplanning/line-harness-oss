@@ -176,18 +176,25 @@ formalooPublic.get('/fo/:id', async (c) => {
     // provider-scoped ゆえ global LIFF だと当該 account に存在しない ID になり得る。未束縛 (line_account_id
     // NULL) / 未登録 / liff_id 無し / 解決 throw は global LIFF_URL へ fallback。
     let liffBase = c.env.LIFF_URL;
+    let resolvedLiffId: string | null = null;
     if (form.line_account_id) {
       try {
         const account = await getLineAccountById(c.env.DB, form.line_account_id);
         const liffId = (account as unknown as { liff_id?: string | null } | null)?.liff_id;
-        if (liffId) liffBase = `https://liff.line.me/${liffId}`;
+        if (liffId) { liffBase = `https://liff.line.me/${liffId}`; resolvedLiffId = liffId; }
       } catch (err) {
         console.error(`/fo/${id} per-account LIFF resolve failed (fallback global):`, err);
       }
     }
     if (liffBase) {
       const directUrl = `${c.env.WORKER_URL || new URL(c.req.url).origin}/fo/${id}`;
-      return c.redirect(`${liffBase}?redirect=${encodeURIComponent(directUrl)}`, 302);
+      // CX-3 (per-account LIFF 実効化): 解決済み per-account liffId を復路 URL に同梱する。共有 LIFF client の
+      //   detectLiffId() は ?liffId= を最優先で読むため、secondary account でも当該 account の LIFF で liff.init
+      //   でき、default VITE_LIFF_ID(=primary) への誤 fallback (wrong LIFF context) を防ぐ。これにより LINE
+      //   console/API での endpoint ?liffId= provisioning (owner立会) 無しで per-account 解決が成立する。global
+      //   fallback (resolvedLiffId null = 未束縛/liff_id 無し) は付与せず client の VITE_LIFF_ID(default) に委ねる。
+      const liffIdParam = resolvedLiffId ? `&liffId=${encodeURIComponent(resolvedLiffId)}` : '';
+      return c.redirect(`${liffBase}?redirect=${encodeURIComponent(directUrl)}${liffIdParam}`, 302);
     }
   }
 

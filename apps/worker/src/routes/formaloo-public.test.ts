@@ -428,20 +428,35 @@ describe('F-5 /fo/:id per-account LIFF 解決', () => {
     expect(loc).toContain(encodeURIComponent('https://api.example.com/fo/fa2'));
   });
 
-  test('account 束縛だが liff_id 無し → global LIFF_URL に fallback', async () => {
+  test('CX-3: account 固有 LIFF は復路 URL に &liffId=<id> を同梱 (共有 client の detectLiffId が per-account LIFF で init / default VITE_LIFF_ID 誤 fallback を防ぐ・endpoint provisioning 非依存)', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret, liff_id) VALUES ('acc-2b','ch2b','B','t','s','2000-XYZ')`).run();
+    raw.prepare(`INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status, definition_json, line_account_id) VALUES ('fa2b','slug_fa2b','F','published',?,'acc-2b')`)
+      .run(JSON.stringify({ fields: [], logic: [], formalooAddress: ADDR }));
+    const res = await app().request('/fo/fa2b', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc.startsWith('https://liff.line.me/2000-XYZ')).toBe(true);
+    expect(loc).toContain('liffId=2000-XYZ'); // detectLiffId が ?liffId= から per-account LIFF を解決
+  });
+
+  test('account 束縛だが liff_id 無し → global LIFF_URL に fallback (liffId 同梱なし)', async () => {
     raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret) VALUES ('acc-3','ch3','C','t','s')`).run();
     raw.prepare(`INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status, definition_json, line_account_id) VALUES ('fa3','slug_fa3','F','published',?,'acc-3')`)
       .run(JSON.stringify({ fields: [], logic: [], formalooAddress: ADDR }));
     const res = await app().request('/fo/fa3', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, envWithFriendSecret());
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')!.startsWith('https://liff.example.test')).toBe(true);
+    const loc = res.headers.get('location')!;
+    expect(loc.startsWith('https://liff.example.test')).toBe(true);
+    expect(loc).not.toContain('liffId='); // global fallback は client の VITE_LIFF_ID(default) に任せる
   });
 
-  test('account 未束縛 (line_account_id NULL) → global LIFF_URL (後方互換)', async () => {
+  test('account 未束縛 (line_account_id NULL) → global LIFF_URL (後方互換・liffId 同梱なし)', async () => {
     seedFormWithAddress('fa4', 'published', ADDR); // line_account_id NULL
     const res = await app().request('/fo/fa4', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, envWithFriendSecret());
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')!.startsWith('https://liff.example.test')).toBe(true);
+    const loc = res.headers.get('location')!;
+    expect(loc.startsWith('https://liff.example.test')).toBe(true);
+    expect(loc).not.toContain('liffId=');
   });
 });
 
