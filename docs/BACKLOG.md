@@ -18,8 +18,8 @@ owner 要望（2026-07-12）:「線で繋ぐストーリーメッセージの構
 - [x] `next_step_on_false` の「条件不成立時」分岐エッジ + ランタイム乖離注記
 - [x] `/scenarios/flow?id=`（Suspense-wrap）+ list/detail の入口リンク
 - [x] jsdom component/unit test（chrome wedge 代替）
-- [ ] reviewer 通過 → closer（worktree ff/cherry-pick → main + build + `wrangler pages deploy`）
-- **owner ゲート: 不要**（低リスク・read-only・早く見せられる）
+- [x] reviewer 通過 → closer（worktree cherry-pick → main + build + `wrangler pages deploy`）— 2026-07-12 close (scenario-visual-p1)。admin https://line-harness-ks-admin.pages.dev/scenarios/flow?id=<UUID> で稼働中
+- **owner ゲート: 不要**（低リスク・read-only・早く見せられる）— Phase1 完了。Phase2 着手は owner の 1 問決定待ち（キャンバス手段）
 
 ### Phase2 — 編集ビルダー（web + api.ts 拡張・worker は既存受理で無改変想定）
 - [ ] **owner 決定（1 問）: 編集キャンバス手段** — 「縦フローのまま inline 編集（自作継続・依存ゼロ）」 vs 「自由キャンバスで drag-connect（React Flow `@xyflow/react` v12 導入・既定 chrome 全非表示で没個性回避）」。plan.md §1 決定ゲート参照。
