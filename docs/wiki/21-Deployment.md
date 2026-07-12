@@ -213,6 +213,7 @@ Worker デプロイ時に以下の環境変数が必要です（`.env` または
 |--------|------|
 | `VITE_LIFF_ID` | LIFF ID（例: `2009554425-4IMBmLQ9`） |
 | `VITE_BOT_BASIC_ID` | Bot Basic ID（例: `@123abcde`） |
+| `VITE_WORKER_ORIGIN` | **Worker の正準 origin**（= `wrangler [vars]` の `WORKER_PUBLIC_URL`。例: `https://line-harness-ks.web-8af.workers.dev`）。LIFF 復路 `?lu=`（LINE userId）を「この origin の `/fo/:id` `/t/:id` へ戻る時だけ」付与するための same-origin アンカー（CX-1 cross-origin 漏出防止）。**LIFF/pages.dev の origin を入れてはいけない**（正しい worker 復路を弾いて F-1 無限ループを再発させる）。未設定でも復路は壊れない（pathname 前方一致に縮退）が、cross-origin 漏出は閉じないので**本番ビルドでは必ず設定する**。 |
 
 ### LIFF エンドポイント URL
 

@@ -85,3 +85,55 @@ describe('appendLineUserToReturnUrl — same-origin ガード (CX-1 / LINE userI
     expect(appendLineUserToReturnUrl('::::bad', LU, SELF)).toBe('::::bad');
   });
 });
+
+describe('appendLineUserToReturnUrl — configured WORKER origin アンカー (CX-1 wire / 本番トポロジ実測)', () => {
+  // 本番 KS: client は cross-origin (…-liff.pages.dev) で配信され、追跡経路 /fo/:id は WORKER origin
+  // (…workers.dev) に在る。client が selfOrigin として渡すのは WORKER canonical origin であって
+  // window.location.origin(=pages.dev) ではない (pages.dev を渡すと legit worker URL を弾き F-1 復路が壊れる)。
+  const WORKER = 'https://line-harness-ks.web-8af.workers.dev';
+
+  test('legit な worker /fo/:id 復路は lu を維持 (3-hop round-trip 非退行)', () => {
+    expect(appendLineUserToReturnUrl(`${WORKER}/fo/fa_abc`, LU, WORKER)).toBe(
+      `${WORKER}/fo/fa_abc?lu=${LU}`,
+    );
+  });
+
+  test('legit な worker /t/:id 復路も lu を維持 (旧 tracked-links 経路 非退行)', () => {
+    expect(appendLineUserToReturnUrl(`${WORKER}/t/lnk_1`, LU, WORKER)).toBe(
+      `${WORKER}/t/lnk_1?lu=${LU}`,
+    );
+  });
+
+  test('攻撃者 origin (evil.com/fo/x forward-slash) には lu を付けない (LINE userId 非漏出)', () => {
+    expect(appendLineUserToReturnUrl('https://evil.com/fo/x', LU, WORKER)).toBe('https://evil.com/fo/x');
+  });
+
+  test('backslash 正規化形 (Codex P1) も origin 不一致で lu を付けない', () => {
+    // URL parser は authority 直後の backslash を `/` に正規化する → origin=evil.example ≠ worker origin。
+    const back = 'https://evil.example\\fo\\x';
+    const got = appendLineUserToReturnUrl(back, LU, WORKER);
+    // origin が worker と不一致なので無改変 (lu を含まない = 漏出しない)。
+    expect(got).not.toContain(`lu=${LU}`);
+    expect(new URL(got).origin).toBe('https://evil.example');
+  });
+
+  test('protocol-relative //evil.example/fo/x も worker origin 不一致で無改変', () => {
+    // selfOrigin を base に解決 → //evil.example は別 authority → origin 不一致 → lu 無し。
+    const got = appendLineUserToReturnUrl('//evil.example/fo/x', LU, WORKER);
+    expect(got).not.toContain(`lu=${LU}`);
+  });
+
+  test('worker origin 詐称を狙った userinfo 混入 (workers.dev@evil.example) も lu を付けない', () => {
+    // `https://line-harness-ks.web-8af.workers.dev@evil.example/fo/x` の実 host は evil.example。
+    const spoof = 'https://line-harness-ks.web-8af.workers.dev@evil.example/fo/x';
+    const got = appendLineUserToReturnUrl(spoof, LU, WORKER);
+    expect(got).not.toContain(`lu=${LU}`);
+  });
+
+  test('WORKER origin 未設定 (selfOrigin undefined) は pathname 判定に縮退 = 復路は壊さない (fail-safe)', () => {
+    // build env 未注入時: legit worker 復路は絶対 URL の pathname 前方一致で従来どおり lu 付与され round-trip は維持。
+    expect(appendLineUserToReturnUrl(`${WORKER}/fo/fa_abc`, LU, undefined)).toBe(
+      `${WORKER}/fo/fa_abc?lu=${LU}`,
+    );
+  });
+});

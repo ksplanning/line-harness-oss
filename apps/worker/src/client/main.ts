@@ -42,6 +42,12 @@ const LIFF_ID = detectLiffId();
 if (!LIFF_ID) {
   throw new Error('LIFF ID not found. Set ?liffId= in LIFF endpoint URL or VITE_LIFF_ID env.');
 }
+// CX-1: configured WORKER canonical origin (build-time inject = wrangler WORKER_PUBLIC_URL). This is the
+// same-origin anchor for the復路 lu guard below. It must be the WORKER origin (…workers.dev) — NOT
+// window.location.origin (this LIFF client is served cross-origin at …-liff.pages.dev, so its own origin
+// would wrongly reject the legit worker /fo/:id target and re-open the F-1 loop). Unset → undefined →
+// pathname-only fallback (round-trip preserved, cross-origin lu-leak not yet closed).
+const WORKER_ORIGIN = import.meta.env?.VITE_WORKER_ORIGIN || undefined;
 const UUID_STORAGE_KEY = 'lh_uuid';
 // Bot basic ID — resolved dynamically from API after liff.init()
 let BOT_BASIC_ID = '';
@@ -257,11 +263,13 @@ async function linkAndAddFlow() {
       ]);
       // Append LINE userId to worker tracking return paths (/t/:id, /fo/:id) so the return hop
       // resolves the friend. /fo/:id without lu re-enters the LIFF branch = infinite loop (F-1).
-      // Pathname-prefix guard (CX-1): only worker tracking pathnames get lu — a crafted redirect
-      // like `?fo=/fo/` no longer false-matches. Same-origin restriction is NOT applied here on
-      // purpose: this LIFF client is served cross-origin (…-liff.pages.dev) from the tracking
-      // routes (…workers.dev), so lu must cross to the worker origin for the round-trip to work.
-      window.location.href = appendLineUserToReturnUrl(redirectUrl, profile.userId);
+      // Two-part guard (CX-1): (a) pathname-prefix — only worker tracking pathnames get lu, so a crafted
+      // redirect like `?fo=/fo/` no longer false-matches; (b) same-origin vs WORKER_ORIGIN — lu is only
+      // carried when the redirect target is the configured worker origin, so an attacker-supplied
+      // `?redirect=https://evil.com/fo/x` (and backslash/userinfo/protocol-relative variants) gets no lu
+      // = the LINE userId never leaks cross-origin. WORKER_ORIGIN unset → pathname-only (legacy) fallback,
+      // which still carries lu to the absolute worker URL so the round-trip is never broken.
+      window.location.href = appendLineUserToReturnUrl(redirectUrl, profile.userId, WORKER_ORIGIN);
       return;
     }
 
