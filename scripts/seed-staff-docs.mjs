@@ -100,6 +100,18 @@ async function main() {
   console.log(
     `[seed] done. revision=${data.revision} created=${data.created} updated=${data.updated} unchanged=${data.unchanged} deleted=${data.deleted}`,
   );
+  // O-1 点灯前 precondition: embed 被覆を surface (created の成功 ≠ 検索可能)。embedPending>0 は
+  // 「資料が chat で検索できない = 質問すると必ず no_evidence」を意味する → 点灯前に provisioning/backfill を要す。
+  if (typeof data.embedded === 'number' || typeof data.embedPending === 'number') {
+    console.log(`[seed] embed coverage: embedded=${data.embedded ?? '?'} embedPending=${data.embedPending ?? '?'}`);
+    if ((data.embedPending ?? 0) > 0) {
+      console.error(
+        `[seed] WARNING: ${data.embedPending} staff chunk(s) are NOT embedded (embedded_at NULL). ` +
+          `chat will fail-closed (no_evidence) for these until Vectorize is provisioned / backfilled. ` +
+          `Do NOT flip STAFF_DOCS_ENABLED for positive-path use while embedPending > 0.`,
+      );
+    }
+  }
   process.exit(0);
 }
 
