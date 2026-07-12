@@ -190,10 +190,21 @@ async function processSingleDelivery(
     if (!conditionMet) {
       if (currentStep.next_step_on_false !== null && currentStep.next_step_on_false !== undefined) {
         const jumpStep = steps.find((s) => s.step_order === currentStep.next_step_on_false);
-        if (jumpStep) {
+        // Forward-only branch jump: set the cursor to jumpStep.step_order - 1 so the next
+        // cron's `find(s => s.step_order > cursor)` lands exactly on jumpStep. step_order is
+        // INTEGER + per-scenario UNIQUE, so the open interval (J-1, J) contains no other step
+        // (same sentinel shape as enroll's current_step_order = -1). Backward/self jumps are
+        // refused (logged) and fall through to the sequential skip below — this keeps the cursor
+        // monotonic and structurally prevents an infinite re-delivery loop across crons. A
+        // persisted transition counter would need a friend_scenarios column (migration — banned
+        // for this case), so the stateless monotonic guard gives the same termination safety.
+        if (jumpStep && jumpStep.step_order > currentStep.step_order) {
           const jitteredDate = jitterDeliveryTime(nextDeliveryFor(jumpStep));
-          await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+          await advanceFriendScenario(db, fs.id, jumpStep.step_order - 1, jitteredDate.toISOString().slice(0, -1) + '+09:00');
           return false;
+        }
+        if (jumpStep) {
+          console.error(`[scenario] refusing non-forward branch jump fs=${fs.id} step_order=${currentStep.step_order} -> ${jumpStep.step_order} (loop guard)`);
         }
       }
       const nextIndex = steps.indexOf(currentStep) + 1;

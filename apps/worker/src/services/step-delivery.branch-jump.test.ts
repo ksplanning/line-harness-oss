@@ -131,4 +131,43 @@ describe('T-A2 分岐ジャンプ E2E (実 SQLite)', () => {
     const fsRow = raw.prepare(`SELECT status FROM friend_scenarios WHERE friend_id = 'f1'`).get() as { status: string };
     expect(fsRow.status).toBe('completed');
   });
+
+  test('条件成立 (metadata_equals 一致) 時は分岐せず順次配信される', async () => {
+    const scenario = await createScenario(db, { name: '条件成立', triggerType: 'manual', deliveryMode: 'relative' });
+    await createScenarioStep(db, { scenarioId: scenario.id, stepOrder: 0, messageType: 'text', messageContent: 'STEP0' });
+    await createScenarioStep(db, {
+      scenarioId: scenario.id, stepOrder: 1, messageType: 'text', messageContent: 'STEP1-gate',
+      conditionType: 'metadata_equals', conditionValue: JSON.stringify({ key: 'answer', value: 'A' }), nextStepOnFalse: 3,
+    });
+    await createScenarioStep(db, { scenarioId: scenario.id, stepOrder: 2, messageType: 'text', messageContent: 'STEP2-routeA' });
+    await createScenarioStep(db, { scenarioId: scenario.id, stepOrder: 3, messageType: 'text', messageContent: 'STEP3-routeB' });
+
+    // 回答 = "A" → 条件成立 → order1 も配信され、順次 order2/order3 へ進む (分岐しない)。
+    seedFriend('f1', { answer: 'A' });
+    await enrollFriendInScenario(db, 'f1', scenario.id);
+    for (let i = 0; i < 4; i++) await runTick();
+
+    expect(deliveredStepOrders()).toEqual([0, 1, 2, 3]);
+  });
+
+  test('後方 next_step_on_false (loop guard) は無限ループせず順次 skip して完了する', async () => {
+    const scenario = await createScenario(db, { name: '後方ジャンプ防御', triggerType: 'manual', deliveryMode: 'relative' });
+    await createScenarioStep(db, { scenarioId: scenario.id, stepOrder: 0, messageType: 'text', messageContent: 'STEP0' });
+    await createScenarioStep(db, {
+      scenarioId: scenario.id, stepOrder: 1, messageType: 'text', messageContent: 'STEP1-gate',
+      // next_step_on_false=0 は後方 (0 < 1) = ループ危険。runtime guard が拒否し順次 skip へフォール。
+      conditionType: 'metadata_equals', conditionValue: JSON.stringify({ key: 'answer', value: 'A' }), nextStepOnFalse: 0,
+    });
+    await createScenarioStep(db, { scenarioId: scenario.id, stepOrder: 2, messageType: 'text', messageContent: 'STEP2' });
+
+    seedFriend('f1', { answer: 'B' }); // order1 不成立 → 後方ジャンプ発火を試みる
+    await enrollFriendInScenario(db, 'f1', scenario.id);
+    // 十分な tick 数を回しても無限ループせず終端する (cursor 単調前進の証明)。
+    for (let i = 0; i < 6; i++) await runTick();
+
+    // 後方ジャンプは拒否され、順次 skip で order2 が配られて完了 (order0, order2)。
+    expect(deliveredStepOrders()).toEqual([0, 2]);
+    const fsRow = raw.prepare(`SELECT status FROM friend_scenarios WHERE friend_id = 'f1'`).get() as { status: string };
+    expect(fsRow.status).toBe('completed');
+  });
 });

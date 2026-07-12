@@ -282,9 +282,9 @@ function FlowLegend() {
           <span>ゴール（完了）</span>
         </span>
       </div>
-      <p className="leading-relaxed text-[11px] text-amber-700">
-        ※ 条件分岐の線はデータ上の設定（不成立時の飛び先）をそのまま描いています。実際の配信挙動は現在ステップ順を優先するため、
-        分岐の飛び先が設定どおりに動かない既知の要修正があります（後続フェーズで対応予定）。
+      <p className="leading-relaxed text-[11px] text-slate-500">
+        ※ 条件分岐の線はデータ上の設定（不成立時の飛び先）をそのまま描いています。保存した分岐は実際の配信でも、
+        この飛び先どおりに配信されます。
       </p>
     </div>
   )
