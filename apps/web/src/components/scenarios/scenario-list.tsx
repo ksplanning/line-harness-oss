@@ -98,6 +98,12 @@ export default function ScenarioList({ scenarios, onToggleActive, onDuplicate, o
             >
               編集
             </Link>
+            <Link
+              href={`/scenarios/flow?id=${scenario.id}`}
+              className="flex-1 min-w-[64px] text-center text-xs font-medium text-green-600 hover:text-green-700 py-1 min-h-[44px] flex items-center justify-center rounded-md hover:bg-green-50 transition-colors"
+            >
+              🔗 図で見る
+            </Link>
             <button
               onClick={() => onDuplicate(scenario.id)}
               disabled={loading}

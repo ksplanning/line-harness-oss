@@ -438,12 +438,21 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       <Header
         title="シナリオ詳細"
         action={
-          <Link
-            href="/scenarios"
-            className="px-4 py-2 min-h-[44px] text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors inline-flex items-center"
-          >
-            ← シナリオ一覧
-          </Link>
+          <div className="flex gap-2">
+            <Link
+              href={`/scenarios/flow?id=${id}`}
+              className="px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 inline-flex items-center"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              🔗 フロー表示
+            </Link>
+            <Link
+              href="/scenarios"
+              className="px-4 py-2 min-h-[44px] text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors inline-flex items-center"
+            >
+              ← シナリオ一覧
+            </Link>
+          </div>
         }
       />
 
