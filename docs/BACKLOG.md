@@ -22,17 +22,17 @@ owner 要望（2026-07-12）:「線で繋ぐストーリーメッセージの構
 - **owner ゲート: 不要**（低リスク・read-only・早く見せられる）— Phase1 完了。Phase2 着手は owner の 1 問決定待ち（キャンバス手段）
 
 ### Phase2 — 編集ビルダー（web + api.ts 拡張・worker は既存受理で無改変想定）
-- [ ] **owner 決定（1 問）: 編集キャンバス手段** — 「縦フローのまま inline 編集（自作継続・依存ゼロ）」 vs 「自由キャンバスで drag-connect（React Flow `@xyflow/react` v12 導入・既定 chrome 全非表示で没個性回避）」。plan.md §1 決定ゲート参照。
-- [ ] node inline 編集 ↔ step CRUD 配線
-- [ ] `apps/web/src/lib/api.ts` の `addStep/updateStep` に condition3列（conditionType/conditionValue/nextStepOnFalse）を追加（worker は既に受理・api.ts:327-363 が渡せない = L4）
-- [ ] 編集 UX（後方互換 100%・step_order 再採番せず既存 `reorderSteps` を使う）
-- **owner ゲート: 要**（キャンバス手段 1 問 + 編集 UX 方針）
+- [x] **owner 決定（1 問）: 編集キャンバス手段 — 案A確定**「縦フローのまま inline 編集（自作継続・依存ゼロ）」に決定。React Flow 不採用。
+- [ ] **[REQUIRED-BACKLOG] slice-2**: node inline 編集 ↔ step CRUD 配線（scenario-flow-view editable 拡張・図上分岐先選択）— 設計正本 `.plans/2026-07-12-scenario-visual-p2-branch/{spec,plan,tasks}.md` T-B1/T-B2。slice-1(2026-07-12 close) で保存経路・runtime・フォーム欄は開通済 → slice-2 は「図上で組める」体験の後継実装
+- [x] `apps/web/src/lib/api.ts` の `addStep/updateStep` に condition3列（conditionType/conditionValue/nextStepOnFalse）を追加 — slice-1 T-A4 で完了(additive optional・旧 caller byte 同等)
+- [ ] 編集 UX（後方互換 100%・step_order 再採番せず既存 `reorderSteps` を使う）— slice-2 GUI 翻訳層(scenario-branch-compile)で対応
+- **owner ゲート**: slice-2 着手可否 1 問（closer REPORT 参照）。編集 UX 方針は slice-2 内で確定
 
-### Phase3 — 分岐拡張（worker + db + web・配信挙動変更＝高リスク）
-- [ ] **分岐ランタイム乖離の修正（RED 先行）** — `apps/worker/src/services/step-delivery.ts:191-197`。分岐ジャンプ時 `advanceFriendScenario` が `currentStep.step_order` を使い、次回 cron が順次の次を返して jumpStep に遷移しない疑い（spec §2.4）。回帰テストを先に RED で立ててから修正。
-- [ ] 多分岐が要るなら additive migration（branch edge の一般化・複数出力エッジ）
-- [ ] 複数出力エッジ UI
-- **owner ゲート: 要**（配信挙動変更＝立会・KS 本番は cron 空 dark のため点火時に別途確認）
+### Phase3 — 分岐拡張（worker + db + web・配信挙動変更＝高リスク） ✅ slice-1 で「起こす」工事 完了（2026-07-12 close / scenario-branch-slice1）
+- [x] **分岐ランタイム乖離の修正（RED 先行）** — `apps/worker/src/services/step-delivery.ts:195`。E2E(実SQLite)で RED(A誤配信)→GREEN(B配信正常)実証済。skip/normal 経路は byte 同等・後方互換回帰 green。フォームから分岐欄で組めて実配信で効く状態まで到達
+- [ ] 多分岐が要るなら additive migration（branch edge の一般化・複数出力エッジ）— slice-1 は既存 schema(005) の 2 分岐で対応可のため見送り。owner 2 ユースケースに migration 不要と確定済
+- [ ] 複数出力エッジ UI — slice-2 (図上編集) の後継範囲
+- **owner ゲート**: 済（本番は現状 branch_step_count=0 = 挙動変化対象ゼロで deploy 実施。実運用で分岐を使い始める判断は owner）
 
 ### 図ビルダー ⇄ チャット構築（staff-docs-chat Phase2）の役割分担
 - 図 = 全体俯瞰・精緻な微修正・検証面。チャット = 自然言語から素早い骨子生成。両者は同一 `scenario_steps` を単一正本として共有（競合しない）。`scenario-graph.ts` の正規化はチャット出力の検証にも再利用可。
@@ -44,6 +44,8 @@ owner 要望（2026-07-12）:「線で繋ぐストーリーメッセージの構
 4. anti-generic 審美（既定フロー chrome 不在・LINE 緑調和・テンプレ感のなさ）
 5. native scroll 挙動（Lenis 慣性なし・縦スクロールの素直さ）
 6. 長文/多ステップ時の可読性（内容要約の truncate・ノード高さ固定の破綻有無）
+- [OPTIONAL-POLISH] 上記 + slice-1(scenario-branch-slice1) の分岐フォーム UI(condition_type/value/飛び先欄)の anti-generic 目視確認を同時に実施
+- [OPTIONAL-POLISH] Codex cross-vendor 独立 review（slice-1 は他セッション codex 多重稼働のため DEFER・clean な単独稼働窓が取れた時に任意実施。Claude 独立検証で代替済のため必須ではない）
 
 ---
 
