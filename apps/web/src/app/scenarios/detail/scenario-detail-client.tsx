@@ -43,6 +43,26 @@ const modeBadgeStyle: Record<DeliveryMode, { bg: string; text: string; label: st
   absolute_time: { bg: 'bg-amber-50', text: 'text-amber-700', label: '時刻指定' },
 }
 
+// 分岐条件の種別。null = 条件なし（常に配信）。owner の 2 ユースケースは
+// タグ (tag_exists/tag_not_exists) と 回答 (metadata_equals/metadata_not_equals) で表現できる（spec §2.4）。
+type BranchConditionType =
+  | 'tag_exists'
+  | 'tag_not_exists'
+  | 'metadata_equals'
+  | 'metadata_not_equals'
+
+const branchConditionOptions: { value: BranchConditionType; label: string }[] = [
+  { value: 'tag_exists', label: 'このタグを持っている' },
+  { value: 'tag_not_exists', label: 'このタグを持っていない' },
+  { value: 'metadata_equals', label: '回答が次の値と一致する' },
+  { value: 'metadata_not_equals', label: '回答が次の値と一致しない' },
+]
+
+const isTagCondition = (t: BranchConditionType | null): boolean =>
+  t === 'tag_exists' || t === 'tag_not_exists'
+const isMetaCondition = (t: BranchConditionType | null): boolean =>
+  t === 'metadata_equals' || t === 'metadata_not_equals'
+
 interface StepFormState {
   stepOrder: number
   schedule: ScheduleValue
@@ -51,6 +71,12 @@ interface StepFormState {
   templateId: string | null
   onReachTagId: string | null
   inputMode: 'direct' | 'template'
+  // --- 分岐条件（slice-1）: 条件不成立時に「飛び先 step_order」へ分岐 ---
+  conditionType: BranchConditionType | null
+  conditionTagId: string | null        // tag 条件のとき condition_value = tag_id
+  conditionMetaKey: string             // metadata 条件のとき {"key","value"} の key
+  conditionMetaValue: string           // metadata 条件のとき {"key","value"} の value
+  nextStepOnFalse: number | null       // 不成立時のジャンプ先 step_order（前方のみ・null=順次スキップ）
 }
 
 function emptyStepForm(stepOrder: number): StepFormState {
@@ -62,6 +88,11 @@ function emptyStepForm(stepOrder: number): StepFormState {
     templateId: null,
     onReachTagId: null,
     inputMode: 'direct',
+    conditionType: null,
+    conditionTagId: null,
+    conditionMetaKey: '',
+    conditionMetaValue: '',
+    nextStepOnFalse: null,
   }
 }
 
@@ -272,6 +303,20 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
 
   const openEditStep = (step: ScenarioStep) => {
     const ui = uiFromOffsetMinutes(step.offsetMinutes)
+    // 分岐条件を UI 状態へ復元（condition_value を tag_id または {"key","value"} に読み解く）。
+    const ct = (step.conditionType ?? null) as BranchConditionType | null
+    let conditionTagId: string | null = null
+    let conditionMetaKey = ''
+    let conditionMetaValue = ''
+    if (isTagCondition(ct)) {
+      conditionTagId = step.conditionValue ?? null
+    } else if (isMetaCondition(ct)) {
+      try {
+        const parsed = JSON.parse(step.conditionValue ?? '{}') as { key?: unknown; value?: unknown }
+        conditionMetaKey = typeof parsed.key === 'string' ? parsed.key : ''
+        conditionMetaValue = parsed.value != null ? String(parsed.value) : ''
+      } catch { /* 壊れた値は空欄で開く */ }
+    }
     setStepForm({
       stepOrder: step.stepOrder,
       schedule: {
@@ -286,6 +331,11 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       templateId: step.templateId ?? null,
       onReachTagId: step.onReachTagId ?? null,
       inputMode: step.templateId ? 'template' : 'direct',
+      conditionType: ct,
+      conditionTagId,
+      conditionMetaKey,
+      conditionMetaValue,
+      nextStepOnFalse: step.nextStepOnFalse ?? null,
     })
     setEditingStepId(step.id)
     setShowStepForm(true)
@@ -317,6 +367,17 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         return
       }
     }
+    // 分岐条件を選んだら、種別に応じた必須項目を検証する。
+    if (stepForm.conditionType) {
+      if (isTagCondition(stepForm.conditionType) && !stepForm.conditionTagId) {
+        setStepError('分岐条件の対象タグを選択してください')
+        return
+      }
+      if (isMetaCondition(stepForm.conditionType) && !stepForm.conditionMetaKey.trim()) {
+        setStepError('分岐条件の項目名（設問キー）を入力してください')
+        return
+      }
+    }
     setStepSaving(true)
     setStepError('')
     try {
@@ -338,6 +399,18 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
           payloadMessageContent = tpl.messageContent || ' '
         }
       }
+      // 分岐条件を DB 表現へ変換（tag → tag_id / metadata → {"key","value"} JSON）。
+      // 種別なしのときは 3 列とも null を送り、既存の条件を解除する。
+      let conditionType: string | null = null
+      let conditionValue: string | null = null
+      let nextStepOnFalse: number | null = null
+      if (stepForm.conditionType) {
+        conditionType = stepForm.conditionType
+        conditionValue = isTagCondition(stepForm.conditionType)
+          ? stepForm.conditionTagId
+          : JSON.stringify({ key: stepForm.conditionMetaKey.trim(), value: stepForm.conditionMetaValue })
+        nextStepOnFalse = stepForm.nextStepOnFalse
+      }
       const payload = {
         stepOrder: stepForm.stepOrder,
         ...schedulePayload,
@@ -345,6 +418,9 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         messageContent: payloadMessageContent,
         templateId: stepForm.inputMode === 'template' ? stepForm.templateId : null,
         onReachTagId: stepForm.onReachTagId,
+        conditionType,
+        conditionValue,
+        nextStepOnFalse,
       }
       if (editingStepId) {
         const res = await api.scenarios.updateStep(id, editingStepId, payload)
@@ -894,6 +970,108 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                     このステップが配信完了したら、選んだタグを友だちに付与します
                   </p>
                 </div>
+              </div>
+
+              {/* 分岐条件（回答／タグで枝分かれ・slice-1） */}
+              <div className="pt-3 border-t border-gray-200 space-y-2">
+                <h4 className="text-xs font-semibold text-gray-700">分岐条件（任意）</h4>
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  条件を設定すると、条件に合う友だちだけがこのステップに進みます。合わない友だちは「不成立のときの飛び先」へ分岐します（未設定なら次のステップへ順送り）。
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">条件の種類</label>
+                  <select
+                    aria-label="分岐条件の種類"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                    value={stepForm.conditionType ?? ''}
+                    onChange={(e) =>
+                      setStepForm({
+                        ...stepForm,
+                        conditionType: (e.target.value || null) as BranchConditionType | null,
+                      })
+                    }
+                  >
+                    <option value="">なし（常にこのステップを配信）</option>
+                    {branchConditionOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {isTagCondition(stepForm.conditionType) && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">対象タグ</label>
+                    <select
+                      aria-label="分岐条件の対象タグ"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                      value={stepForm.conditionTagId ?? ''}
+                      onChange={(e) => setStepForm({ ...stepForm, conditionTagId: e.target.value || null })}
+                    >
+                      <option value="">-- タグを選択 --</option>
+                      {tags.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {isMetaCondition(stepForm.conditionType) && (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">項目名（設問キー）</label>
+                        <input
+                          type="text"
+                          aria-label="回答の項目名"
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                          placeholder="例: answer"
+                          value={stepForm.conditionMetaKey}
+                          onChange={(e) => setStepForm({ ...stepForm, conditionMetaKey: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">値</label>
+                        <input
+                          type="text"
+                          aria-label="回答の値"
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                          placeholder="例: A"
+                          value={stepForm.conditionMetaValue}
+                          onChange={(e) => setStepForm({ ...stepForm, conditionMetaValue: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      ※ フォーム回答が友だち情報（メタデータ）に保存されている場合に使えます。単一回答が対象です。
+                    </p>
+                  </div>
+                )}
+
+                {stepForm.conditionType && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">不成立のときの飛び先</label>
+                    <select
+                      aria-label="不成立のときの飛び先"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                      value={stepForm.nextStepOnFalse ?? ''}
+                      onChange={(e) =>
+                        setStepForm({ ...stepForm, nextStepOnFalse: e.target.value ? Number(e.target.value) : null })
+                      }
+                    >
+                      <option value="">次のステップへ順送り（スキップ）</option>
+                      {sortedSteps
+                        .filter((s) => s.stepOrder > stepForm.stepOrder)
+                        .map((s) => (
+                          <option key={s.id} value={s.stepOrder}>
+                            ステップ {s.stepOrder} へ分岐
+                          </option>
+                        ))}
+                    </select>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      飛び先はこのステップより後ろのステップだけを選べます（後戻りループを防ぐため）。
+                    </p>
+                  </div>
+                )}
               </div>
 
               {stepError && <p className="text-xs text-red-600">{stepError}</p>}
