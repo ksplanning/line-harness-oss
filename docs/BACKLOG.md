@@ -103,3 +103,38 @@ owner 要望（2026-07-12）:「線で繋ぐストーリーメッセージの構
 ## 物理分離 hardening (owner-optional)
 - sentinel 方式 (既存 index 共有 + 予約 `__staff_docs__`) は顧客間アカウント隔離と同一信頼モデル。より強い分離が要れば
   別 Vectorize index (`ks-staff-knowledge-chunks`) + 別 D1 table を provisioning (owner_role: infra-ops + 追加コード)。
+
+---
+
+## piecemaker-line-harness — 第 2 テナント（Sukedachi 顧客提供 1 号）+ 双方向伝播体制
+
+🎯 目的: ks と**同一システムをそのまま** Piecemaker (Sukedachi の顧客) 専用インフラで第 2 テナント稼働させ、以後の修正/機能が ks ⇄ Piecemaker で**双方向伝播**する体制を作る。repo/forum は Sukedachi 経路（ks は Ksplanning のまま）。
+
+計画正本: `.plans/2026-07-15-piecemaker-line-harness/{spec,plan,tasks}.md` / sidecar: workspace `.ars-state/piecemaker-line-harness-sidecar.md`
+
+推奨 repo 戦略（planner 確定）: **共有 1 tree → dual-remote mirror**（origin=ksplanning 不変 + 2nd remote=Sukedachi PUBLIC mirror）+ per-tenant config 兄弟ファイル + テナント別挙動は wrangler `[vars]` flag。双方向伝播＝同一 commit を両 remote に push（drift 構造ゼロ）。データ完全分離＝deploy `--config` が指す独自 Worker/D1/R2/Vectorize/Pages/secrets/(CF account)。
+
+**P1（repo 戦略配線 additive 部分: P1-3 verify-tenant-sync.sh）+ P2（wrangler.piecemaker.toml + invariant test）+ P3（bootstrap-piecemaker-tenant.sh）+ B-4/B-5 runbook 文書 は piecemaker-p1 で実装・reviewer PASS・2026-07-15 closer で main 統合済み**（コミット 10896b1/6ecd8bd/1b48bec/e341e1c）。P1-1/P1-2/P1-4/P1-5（remote 登録・dual-push配線・cron）は owner 着荷物待ちのため未着手。
+
+### 次の必須: P0 owner 決定 gate（4 択・これが埋まるまで P1 remote 登録以降の着手不可）
+- [ ] **P0-1** CF アカウント名義: 「ks 同一 account 内別リソース」or「Sukedachi 別 CF account」（推奨=別 account）— owner 決定
+- [ ] **P0-2** Sukedachi GitHub org 名（推奨=独立 PUBLIC mirror repo）— owner 決定
+- [ ] **P0-3** Piecemaker LINE OA credential（Messaging/Login/LIFF id）を **Box BOLT escrow**（生値非露出）— owner 作業
+- [ ] **P0-4** ドメイン: 当面 `*.workers.dev`/`*.pages.dev` 既定で可の Yes/No（推奨=Yes）— owner 決定
+
+### 実装フェーズ（P0 決定後・owner ゲート付き）
+- [x] **P1-3** `scripts/verify-tenant-sync.sh`(SHA 一致検知) — 2026-07-15 piecemaker-p1 実装済み・main 統合済み
+- [ ] **P1-1/P1-2/P1-4/P1-5** Sukedachi mirror repo 作成 + 2nd remote 登録 + dual-push を closer 配線 + weekly cron（owner_role: infra-ops）— P0-1/P0-2 着荷待ち
+- [x] **P2** `apps/worker/wrangler.piecemaker.toml` 新設（wrangler.ks.toml 雛形・値差し替え・秘密ゼロ・placeholder）+ Piecemaker invariant test（自 config 番人）— 2026-07-15 piecemaker-p1 実装済み・main 統合済み
+- [x] **P3** `scripts/bootstrap-piecemaker-tenant.sh`（空 D1 assert→bootstrap.sql→pending→ledger→verify・冪等 fail-closed）— 2026-07-15 piecemaker-p1 実装済み・main 統合済み
+- [ ] **[REQUIRED-BACKLOG] P4a**: placeholder-gate invariant test (`piecemaker-tenant.wrangler.test.ts:75-86`) は `<PIECEMAKER_D1_ID>`/`<PIECEMAKER_CF_ACCOUNT_ID>` が **残存すること**を assert する設計（意図的）。P4 provisioning で実 id を記入した時点でこの assertion は失敗する想定 → P4 実施時に同テストの assertion を「placeholder 残存」から「実 id 記入」検証へ flip すること（reviewer piecemaker-p1 Round1 carryover）。
+- [ ] **P4** CF リソース provisioning（Worker/D1/R2/Vectorize 1024-cosine-metadata line_account_id/Pages）— owner_role: infra-ops + CF token（P0 着荷後）
+- [ ] **P5** secrets 投入（BOLT から）+ LINE 配線（Webhook/LIFF）+ deploy + smoke（openapi 200 / friends count 200 / 友だち追加 1 行）— owner_role: infra-ops + owner 立会
+- [ ] **P6** Piecemaker Discord forum bot 新設（別 systemd/tmux/DISCORD_STATE_DIR/Box folder・ks 混線 0）— owner_role: infra-ops
+
+### 💡 任意磨き込み（後回し可・自動着手禁止）
+- [ ] O-1: `piecemaker.skdcc.jp` 等カスタムドメイン配線（当面既定 URL で稼働・memory sukedachi-domain 戦略: 道具=サブドメイン）
+- [ ] Formaloo 連携鍵の後日投入（当面 Formaloo 無しで芯機能稼働）
+- [ ] [OPTIONAL-POLISH] `FAQ_BOT_ENABLED="false"` の H-8 cutover gate を invariant test でも明示 pin する（現状 toml 上は正しいが assert 未追加・非ブロッキング、reviewer piecemaker-p1 Round1 carryover）
+
+> **ks 本番不可触**: 全工程 `--config wrangler.piecemaker.toml`。ks の worker/D1/Pages/webhook/secrets/wrangler.ks.toml は 1 バイトも触らない（additive only・2026-07-15 closer 検証: wrangler.ks.toml diff 0 / runtime source 変更 0）。
