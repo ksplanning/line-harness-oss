@@ -1,0 +1,86 @@
+# wrangler.piecemaker.toml — line-harness-piecemaker (Sukedachi 顧客 Piecemaker) 本番デプロイ用 config テンプレート。
+#
+# WHY: ks の wrangler.<tenant>.toml (兄弟ファイル) と同型の per-tenant config 正本。
+#   コードは ks/piecemaker 共通の 1 tree。テナント identity はこの config + CF リソース + secrets の
+#   非コード層だけに置く (plan.md §2 の設計原理)。deploy 時 `--config wrangler.piecemaker.toml` で選択。
+#
+# ★ このファイルは PROVISIONING 前テンプレート (§10 B-3):
+#   <PIECEMAKER_...> の明示ダミー placeholder は provisioning (P4a) で実値に置換する。
+#   provisioning 前に実 D1 id / account id / workers subdomain を焼き込まないこと
+#   (実値を先に書くと「未 provisioning なのに実値がある」不整合を生む)。
+#   置換対象: <PIECEMAKER_CF_ACCOUNT_ID> / <PIECEMAKER_D1_ID> / <PIECEMAKER_WORKERS_SUBDOMAIN>。
+#
+# 秘密は含まない。ADMIN_API_KEY / API_KEY / LINE_* は `wrangler secret put --name line-harness-piecemaker`
+#   で Cloudflare 側に保存する (このファイルには絶対に書かない・両 repo PUBLIC 前提の秘密ゼロ規律)。
+#
+# デプロイ (初回 cutover は crons を空で deploy → seed+配線+smoke+owner 確認後に crons 有効化 = §10 H-8):
+#   cd apps/worker && VITE_LIFF_ID=... VITE_BOT_BASIC_ID=... VITE_WORKER_ORIGIN=<piecemaker worker URL> pnpm build
+#   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... \
+#     npx wrangler deploy dist/line_harness/index.js --config wrangler.piecemaker.toml
+#
+# crons: ks と同値の 2 本 (5分tick=配信/リマインダー/復旧/token refresh、6h tick=booking/event expirer)。
+#   6h 式 "0 */6 * * *" は index.ts:708,736 の event.cron === '0 */6 * * *' 判定と一致必須
+#   (変えると expirer が永久に走らない = L-10)。
+
+name = "line-harness-piecemaker"
+main = "dist/line_harness/index.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
+workers_dev = true
+account_id = "<PIECEMAKER_CF_ACCOUNT_ID>"
+
+[assets]
+directory = "dist/client"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "line-harness-piecemaker"
+database_id = "<PIECEMAKER_D1_ID>"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "line-harness-images-piecemaker"
+
+[triggers]
+crons = ["*/5 * * * *", "0 */6 * * *"]
+
+[vars]
+WORKER_NAME = "line-harness-piecemaker"
+WORKER_PUBLIC_URL = "https://line-harness-piecemaker.<PIECEMAKER_WORKERS_SUBDOMAIN>.workers.dev"
+ADMIN_PAGES_PROJECT = "line-harness-piecemaker-admin"
+ADMIN_PUBLIC_URL = "https://line-harness-piecemaker-admin.pages.dev"
+# ADMIN_ORIGIN + ADMIN_ALLOW_CROSS_SITE=true が無いと *.pages.dev↔*.workers.dev の
+# クロスサイト httpOnly Cookie 認証が壊れ、管理画面にログインできなくなる (L-12)。
+ADMIN_ORIGIN = "https://line-harness-piecemaker-admin.pages.dev"
+ADMIN_ALLOW_CROSS_SITE = "true"
+LIFF_PAGES_PROJECT = "line-harness-piecemaker-liff"
+LIFF_PUBLIC_URL = "https://line-harness-piecemaker-liff.pages.dev"
+D1_DATABASE_ID = "<PIECEMAKER_D1_ID>"
+CF_ACCOUNT_ID = "<PIECEMAKER_CF_ACCOUNT_ID>"
+# formaloo-auto-pull: 定義 drift の定期検知 (6h cron)。detection+通知は ON、自動反映は AUTO_APPLY="false"
+#   で dark-ship (通知のみ = 案 B 既定)。owner が案 A を選んだら AUTO_APPLY を "true" に flip するだけ。
+FORMALOO_DRIFT_ENABLED = "true"
+FORMALOO_DRIFT_AUTO_APPLY = "false"
+# FAQ 自動応答ボット (Phase A) の全体スイッチ。cutover gate (§10 H-8): 初回は "false" 固定 =
+#   webhook text 処理は byte-identical。seed+LINE 配線+smoke+owner 立会 完了後にのみ "true" へ flip。
+FAQ_BOT_ENABLED = "false"
+# 自己更新 MANIFEST (§10 H-7): upstream release からの self-update は dual-remote の同一 SHA 保証を
+#   迂回するため、Piecemaker では /admin/update/* self-update 機能を「使わない」運用ルール。
+#   MANIFEST_URL をテナント制御下に固定する恒久対応は owner 承認の別 case。
+MANIFEST_URL = "https://github.com/Shudesu/line-harness-oss/releases/latest/download/release-manifest.json"
+# ── FAQ AI (Phase B) additive。生成/埋め込みモデルは env 注入 (literal 焼き込みなし)。ks と同値。
+AI_MODEL_ID = "@cf/meta/llama-3.1-8b-instruct-fast"
+AI_EMBED_MODEL_ID = "@cf/qwen/qwen3-embedding-0.6b"
+AI_EMBED_NEURON_PER_MTOK = "3000"
+AI_CHUNK_RELEVANCE_FLOOR = "0.70"
+
+# Workers AI binding (env.AI.run(modelId, ...))。account-level・provisioning 不要。
+[ai]
+binding = "AI"
+
+# Vectorize index binding (env.VECTORIZE)。index は provisioning (P4a) で先に作成:
+#   piecemaker-knowledge-chunks / 1024 dim / cosine / metadata index=line_account_id。
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "piecemaker-knowledge-chunks"
