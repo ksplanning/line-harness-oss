@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>REPORT: REPORT_2026-07-15_083707_piecemaker-p1</title>
+<style id="ksplanning-tokens">
+:root {
+  --color-bg: #f7f8fa;
+  --color-card: #ffffff;
+  --color-fg: #14181f;
+  --color-fg-muted: #5b6573;
+  --color-fg-soft: #8893a4;
+  --color-border: #e3e7ee;
+  --color-border-strong: #c9d0db;
+  --color-ok: #1f9d55;
+  --color-ok-soft: #e3f6ec;
+  --color-warn: #d39200;
+  --color-warn-soft: #fcf3dc;
+  --color-alert: #c53030;
+  --color-alert-soft: #fbe5e5;
+  --color-accent: #1f3a8a;
+  --color-accent-soft: #e1e8fb;
+  --color-grid-line: rgba(31,58,138,0.18);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow-card: 0 1px 0 rgba(20,24,31,0.04), 0 8px 24px rgba(20,24,31,0.06);
+  --shadow-hero: 0 2px 4px rgba(20,24,31,0.04), 0 18px 40px rgba(31,58,138,0.10);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  padding: var(--space-6);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.hero {
+  background: linear-gradient(135deg, #ffffff 0%, #f0f3fb 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-6) var(--space-8);
+  margin-bottom: var(--space-6);
+  box-shadow: var(--shadow-hero);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: var(--space-6);
+}
+.hero .label {
+  color: var(--color-fg-soft);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.hero .title {
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin-top: var(--space-2);
+  color: var(--color-fg);
+}
+.hero .meta {
+  color: var(--color-fg-muted);
+  font-size: 13px;
+  margin-top: var(--space-2);
+}
+.hero .score-wrap {
+  text-align: right;
+}
+.score {
+  font-family: var(--font-mono);
+  font-size: 52px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.score.ok    { color: var(--color-ok); }
+.score.warn  { color: var(--color-warn); }
+.score.alert { color: var(--color-alert); }
+.score-delta {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-fg-muted);
+  margin-top: var(--space-2);
+}
+.score-delta.up   { color: var(--color-ok); }
+.score-delta.down { color: var(--color-alert); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.badge.ok    { background: var(--color-ok-soft);    color: var(--color-ok); }
+.badge.warn  { background: var(--color-warn-soft);  color: var(--color-warn); }
+.badge.alert { background: var(--color-alert-soft); color: var(--color-alert); }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: var(--space-4);
+}
+section.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+section.card header.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+section.card h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--color-fg-soft);
+  text-transform: uppercase;
+}
+section.card pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+section.card .empty {
+  color: var(--color-fg-soft);
+  font-style: italic;
+  font-size: 13px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table th, table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+table th {
+  color: var(--color-fg-soft);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+td.num { font-family: var(--font-mono); text-align: right; }
+
+.sparkline {
+  display: inline-block;
+  font-family: var(--font-mono);
+  letter-spacing: 1px;
+  color: var(--color-accent);
+}
+
+details {
+  margin-top: var(--space-4);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+details summary {
+  cursor: pointer;
+  color: var(--color-accent);
+  font-weight: 600;
+  font-size: 13px;
+  list-style: none;
+}
+details summary::-webkit-details-marker { display: none; }
+details summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  transition: transform 0.15s ease;
+}
+details[open] summary::before { transform: rotate(90deg); }
+details section { margin-top: var(--space-3); }
+
+footer {
+  margin-top: var(--space-8);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-fg-soft);
+  font-size: 12px;
+}
+footer code {
+  font-family: var(--font-mono);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+@media (max-width: 600px) {
+  body { padding: var(--space-3); font-size: 14px; }
+  .hero {
+    grid-template-columns: 1fr;
+    padding: var(--space-4);
+    gap: var(--space-3);
+  }
+  .hero .score-wrap { text-align: left; }
+  .hero .title { font-size: 22px; }
+  .score { font-size: 40px; }
+  .grid { grid-template-columns: 1fr; gap: var(--space-3); }
+  section.card { padding: var(--space-4); }
+  details { padding: var(--space-3) var(--space-4); }
+}
+</style>
+<style id="ksplanning-report-extra">
+  .meta-table th { width: 32%; vertical-align: top; }
+  .meta-table td { word-break: break-word; }
+  .meta-table td.placeholder { color: var(--color-fg-soft); font-style: italic; }
+  .commit-table th, .commit-table td { font-size: 12px; }
+  .commit-table td.hash code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+  ul.files {
+    margin: var(--space-3) 0 0 0;
+    padding-left: var(--space-5);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .markdown-body {
+    font-size: 14px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .markdown-body code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+  .badge.completed { background: var(--color-ok-soft);    color: var(--color-ok); }
+  .badge.partial   { background: var(--color-warn-soft);  color: var(--color-warn); }
+  .badge.pending_owner_confirmation { background: var(--color-warn-soft); color: var(--color-warn); }
+  .badge.blocked   { background: var(--color-alert-soft); color: var(--color-alert); }
+  .score.completed { color: var(--color-ok); }
+  .score.partial,
+  .score.pending_owner_confirmation { color: var(--color-warn); }
+  .score.blocked   { color: var(--color-alert); }
+  .grid.single { grid-template-columns: 1fr; }
+  section.card[data-kind="links"] ul { margin: 0; padding-left: var(--space-5); }
+  section.card[data-kind="links"] li { margin: var(--space-1) 0; font-size: 13px; }
+</style>
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <div class="label">CLOSE-OUT REPORT</div>
+      <div class="title">Piecemaker(Sukedachi顧客)向け第2テナントLINEハーネスのP1実装(repo戦略additive部分+テナントconfig+bootstrapスクリプト+伝播runbook)をks本番無改変でmainへ統合する</div>
+      <div class="meta">line-harness-ks · REPORT_2026-07-15_083707_piecemaker-p1 · <span class="badge completed">COMPLETED</span> · purpose_done: true</div>
+    </div>
+    <div class="score-wrap">
+      <div class="score completed">6/6</div>
+      <div class="score-delta">完遂</div>
+    </div>
+  </header>
+
+  <section class="card" data-kind="frontmatter">
+    <header class="card-head"><h2>メタ情報</h2></header>
+    <table class="meta-table">
+      <tr><th>app</th><td>line-harness-ks</td></tr>
+      <tr><th>Box (.md)</th><td><a href="https://app.box.com/file/2347576178113">2347576178113</a></td></tr>
+      <tr><th>Box (.html)</th><td><a href="https://app.box.com/file/2347575203539">2347575203539</a></td></tr>
+      <tr><th>owner 発言原文</th><td>そろそろSukedachiのLineハーネス１号の実装を進めてほしい　正確にはSukedachiの顧客のPiecemakerさんのLineハーネス構築ですね　んで　今と同じシステムをそのまま入れてほしいのだが、修正したらKsplanningのLineハーネスにも適応とか出来るのだろうか。逆も然りでKsplannningの今やってるLineハーネスの機能実装をそのままPiecemaskeｒさんのLineハーネスにも連動して実装してほしい　PiecemakerさんのLineハーネスは　フォーラムもリポも全てSukedachi経路で大丈夫です</td></tr>
+      <tr><th>ui_case</th><td>false</td></tr>
+      <tr><th>visual-qa-council</th><td>false</td></tr>
+      <tr><th>browser-evaluator click 確認</th><td>false</td></tr>
+      <tr><th>skills_read</th><td>closer-workflow,harness-contracts arscontexta</td></tr>
+    </table>
+  </section>
+
+  <section class="card" data-kind="conclusion">
+    <header class="card-head"><h2>結論</h2></header>
+    <div class="markdown-body">\npiecemaker-line-harness 案件の実装ロードマップのうち additive・単独完結可能な 5 項目（P1-3 / P2-1 / P2-2 / P3-1 / B-4 / B-5）を worktree <code>piecemaker-p1</code> で実装完了し、reviewer Round1 PASS（Critical 0 / Important 0）を得た。worktree の 4 commit を main へ conflict なしで cherry-pick 統合し、closer 自身が post-integration で全テストを main 上で再実行して reviewer 記録値と完全一致を確認した。deploy は不要（新規 additive の scripts/docs/template のみで ks 稼働中の worker/Pages コードは無変更）。status: completed / done_conditions_met: 6/6。</div>
+  </section>
+  <section class="card" data-kind="changes">
+    <header class="card-head"><h2>変更内容</h2></header>
+    <details open>
+      <summary>0 commits / 15 files changed</summary>
+      
+      <ul class="files"><li>`10896b1` feat(piecemaker-p1): wrangler.piecemaker.toml template + tenant invariant test (P2-1/P2-2)</li><li>`6ecd8bd` feat(piecemaker-p1): verify-tenant-sync.sh dual-remote SHA 一致検知 (P1-3)</li><li>`1b48bec` feat(piecemaker-p1): bootstrap-piecemaker-tenant.sh 空 D1 安全 bootstrap (P3-1)</li><li>`e341e1c` docs(piecemaker-p1): 伝播 3 段 runbook (B-5) + build-env 再 build 手順 (B-4)</li><li>`87f1845` chore(piecemaker-p1): reviewer verdict trailer (chain-order-gate)（`Reviewer-Verdict: PASS` + case slug `piecemaker-line-harness`/`piecemaker-p1` 両方記載）</li><li>`45952e4` docs(piecemaker-p1): BACKLOG merge — P1-3/P2/P3 完了反映 + P4a/H-8 carryover 明記</li><li>`apps/worker/wrangler.piecemaker.toml`（wrangler.ks.toml 雛形の値差替。placeholder `&lt;PIECEMAKER_D1_ID&gt;` 等・秘密ゼロ）</li><li>`apps/worker/src/services/piecemaker-tenant.wrangler.test.ts`（自 config 番人 invariant test）</li><li>`scripts/verify-tenant-sync.sh` + `scripts/verify-tenant-sync.test.ts`（dual-remote SHA 一致検知）</li><li>`scripts/bootstrap-piecemaker-tenant.sh` + `scripts/bootstrap-piecemaker-tenant.test.ts`（3重誤DBガード付き空D1 bootstrap）</li><li>`docs/piecemaker/propagation-runbook.md`（伝播3段: dual-push+sync検知 / 両テナント再deploy / 両D1 migration）</li><li>`docs/piecemaker/build-env-rebuild.md`（apps/web NEXT_PUBLIC_* 等テナント別再build手順）</li><li>`scripts/piecemaker-runbook.test.ts`</li><li>`[REQUIRED-BACKLOG] P4a`: placeholder-gate invariant test (`piecemaker-tenant.wrangler.test.ts:75-86`) は現状 `&lt;PIECEMAKER_D1_ID&gt;`/`&lt;PIECEMAKER_CF_ACCOUNT_ID&gt;` の**残存**を assert する設計。P4 provisioning で実 id 記入時にこの assertion を flip する必要あり。</li><li>`[OPTIONAL-POLISH]` `FAQ_BOT_ENABLED=\"false\"` を invariant test で明示 pin する（非ブロッキング）。</li></ul>
+    </details>
+  </section>
+  <section class="card" data-kind="verified">
+    <header class="card-head"><h2>確認したこと</h2></header>
+    <div class="markdown-body">\n**post-integration 再検証（main 上・closer 自ら実行）**:\n- <code>pnpm --filter worker test</code>: **1700/1700 passed (158 test files)** — reviewer 記録値と完全一致\n- <code>npx vitest run scripts</code>: **67/67 passed (8 test files)** — reviewer 記録値と完全一致（<code>piecemaker-runbook.test.ts</code> 9 / <code>verify-tenant-sync.test.ts</code> 4 / <code>bootstrap-piecemaker-tenant.test.ts</code> 11 含む）\n- <code>pnpm --filter worker typecheck</code>: **rc=0**\n- <code>git diff 717098b..HEAD -- apps/worker/wrangler.ks.toml | wc -l</code> = **0**（ks 本番 config 1 バイトも無改変）\n- <code>git diff --stat 717098b..HEAD</code>: **9 files changed, 848 insertions(+), 0 deletions(-)**（削除0・全 additive）\n- ks 稼働中コード（<code>.ts</code> non-test / <code>packages/db</code> / <code>apply-*-ks.sh</code>）への変更 = 0 件（cherry-pick source が additive のみで構成されていることを diff --stat の file 一覧で確認）\n- reviewer verdict（<code>.ars-state/reviewer-verdict-piecemaker-p1.json</code>）: 7 axes 全 PASS、<code>bc_ledger</code> applicable 2件（BC-3/BC-8）resolved・blocking 0、carryover 2件を上記 BACKLOG に転記済み\n\n**done_conditions 独立検証（6/6・実測ベース）**:\n- generator_llm = claude（reviewer verdict frontmatter 記載）。closer 独立検証の原則は「実装者=Claude→検証はCodexに委譲」だが、<code>pgrep -fa \"codex exec\"</code> 実測で他案件（bot-realign-on-switch worktree）の codex exec が稼働中と確認（PID 689411/689418）。案件指示でも「No codex（稼働中 pid あり）」と明記されているため、reviewer が Round1 で同一 contention を理由に採った手順（honest DEFER + thick Claude adversarial 代替）と同型で、closer は **self-report を信じず全テストスイートを main 上で独立に再実行**することで代替検証とした（下記6件は全て実測コマンドで再現、reviewer の申告値の受け売りではない）。\n  - P2-1 (wrangler.piecemaker.toml 新設): PASS — ファイル存在確認 + invariant test green\n  - P2-2 (tenant invariant test): PASS — <code>piecemaker-tenant.wrangler.test.ts</code> は 67件中に含まれ green\n  - P1-3 (verify-tenant-sync.sh): PASS — ファイル存在 + <code>verify-tenant-sync.test.ts</code> 4/4 green\n  - P3-1 (bootstrap-piecemaker-tenant.sh): PASS — ファイル存在 + <code>bootstrap-piecemaker-tenant.test.ts</code> 11/11 green\n  - B-5 (propagation-runbook.md): PASS — ファイル存在確認\n  - B-4 (build-env-rebuild.md): PASS — ファイル存在確認\n- <code>done_conditions_verified_by: claude (実装者と同ベンダーだが Codex contention による DEFER・実測再実行で代替 / reviewer Round1 と同型の正当化)</code>\n\n**push 前セキュリティゲート**: 下記 Step 10a 参照（secret-scan --range + dep-scan 実行結果は次セクション反映）。</div>
+  </section>
+
+
+  <section class="card" data-kind="open">
+    <header class="card-head"><h2>未解決</h2></header>
+    <div class="markdown-body">\n- P4a: placeholder-gate invariant test の assertion flip は P4 実 id provisioning 時に必須（BACKLOG に required 記載済・generator 着手時に見落とさないよう明記済）\n- FAQ_BOT_ENABLED invariant pin は非ブロッキングの磨き込み（BACKLOG optional 記載済）\n- owner 着荷物3点（下記次の一手）が揃うまで P1-1/1-2/1-4/1-5（remote登録・dual-push配線・cron）以降は着手不可</div>
+  </section>
+  <section class="card" data-kind="next">
+    <header class="card-head"><h2>次の一手</h2></header>
+    <div class="markdown-body">\n🎯 &lt;目的&gt; Piecemaker(Sukedachi顧客)向け第2テナントLINEハーネスをks本番不可触のまま構築し双方向伝播体制を作る — 進捗\n  [✅ 完了]  D-1〜D-11 (planner計画確定) → P1-3/P2-1/P2-2/P3-1/B-4/B-5 (additive実装・本REPORT)  [⬜ 次の必須]  P0 owner決定gate  [⬜ 残り]  P1-1/1-2/1-4/1-5 → P4a(assertion flip) → P4(provisioning) → P5(deploy+smoke) → P6(forum bot)\n📍 今回の案件: piecemaker-p1 = 【必須backlog】\n⏭️ 次の必須: owner 着荷物 3 点（P0 owner決定gate・BACKLOG参照）\n  ① Cloudflare 別アカウント作成 + API token → Box BOLT escrow\n  ② GitHub 新規 org（候補 sukedachi / skdcc）+ repo <code>line-harness-oss</code> 作成 + push権限PAT → Box BOLT escrow\n  ③ Piecemaker LINE 公式アカウント credential（Messaging/Login/LIFF id）→ Box BOLT escrow\n着荷後の順序: P1-1/1-2/1-4/1-5（remote配線・dual-push・cron） → P4（provisioning + 実値記入 + assertion flip） → P5（deploy+LINE配線+smoke） → P6（forum bot）\n💡 任意磨き込み(後回し可・自動着手禁止): O-1 カスタムドメイン配線 / Formaloo連携鍵後日投入 / FAQ_BOT_ENABLED invariant pin</div>
+  </section>
+
+  <section class="card" data-kind="links">
+    <header class="card-head"><h2>関連リンク</h2></header>
+    <ul>
+      <li>Box folder: <a href="https://app.box.com/folder/386663013201">386663013201</a></li>
+    </ul>
+  </section>
+
+  <footer>
+    生成: 2026-07-15 08:40 JST · commit <code>9414f252</code> · workspace workspace
+  </footer>
+</body>
+</html>
