@@ -53,7 +53,9 @@ toml_val() {
 
 # ─────────────────────────── 3 重ガード ───────────────────────────
 echo "==> [guard 1/3] 対象 D1 が完全に空か (sqlite_master user table count)"
-TCOUNT="$(d1_count "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'd1_%'")"
+# Cloudflare の新規 D1 は必ず '_cf_KV' システム表を含む (将来 '_cf_METADATA' も)。これらを
+# 除外しないと真に空の fresh テナント D1 を「user table 1 個」と誤認して常時 block する (誤 fail-closed)。
+TCOUNT="$(d1_count "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'd1_%' AND name NOT IN ('_cf_KV','_cf_METADATA')")"
 if [ -z "${TCOUNT:-}" ]; then
   echo "!! ABORT: table count を取得できない (D1 未 provisioning / config 誤り / token 不正)。" >&2
   exit 1

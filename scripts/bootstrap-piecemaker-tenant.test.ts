@@ -45,7 +45,7 @@ function writeToml(content: string): string {
 /** mock wrangler を通してスクリプトを実行し {code, out} を返す。 */
 function run(
   toml: string,
-  opts: { tableCount?: number; tables?: string; guardOnly?: boolean } = {},
+  opts: { tableCount?: number; tables?: string; guardOnly?: boolean; d1Tables?: string } = {},
 ): { code: number; out: string } {
   const env: Record<string, string> = {
     ...process.env,
@@ -54,6 +54,8 @@ function run(
     MOCK_TABLE_COUNT: String(opts.tableCount ?? 0),
     MOCK_TABLES: opts.tables ?? 'line_accounts friends formaloo_forms knowledge_chunks account_migrations',
   };
+  // d1Tables を渡すと mock は guard1 SQL の除外句どおりに実テーブル集合を数える (MOCK_TABLE_COUNT より優先)。
+  if (opts.d1Tables !== undefined) env.MOCK_D1_TABLES = opts.d1Tables;
   if (opts.guardOnly) env.GUARD_ONLY = '1';
   try {
     const out = execFileSync('bash', [SCRIPT], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -74,7 +76,19 @@ beforeAll(() => {
       '#!/usr/bin/env bash',
       'all="$*"',
       'if [[ "$all" == *"COUNT(*)"* && "$all" == *"sqlite_master"* ]]; then',
-      '  echo "{\\"COUNT(*)\\": ${MOCK_TABLE_COUNT:-0}}"',
+      '  if [[ -n "${MOCK_D1_TABLES:-}" ]]; then',
+      '    # 実 D1 のテーブル集合を guard1 SQL の WHERE 除外句どおりに数える (SQL に忠実):',
+      '    #   sqlite_/d1_ は常に除外。_cf_KV/_cf_METADATA は SQL に NOT IN 除外がある時のみ除外。',
+      '    n=0',
+      '    for t in ${MOCK_D1_TABLES}; do',
+      '      case "$t" in sqlite_*|d1_*) continue ;; esac',
+      '      if { [[ "$t" == "_cf_KV" ]] || [[ "$t" == "_cf_METADATA" ]]; } && [[ "$all" == *"_cf_KV"* ]]; then continue; fi',
+      '      n=$((n+1))',
+      '    done',
+      '    echo "{\\"COUNT(*)\\": $n}"',
+      '  else',
+      '    echo "{\\"COUNT(*)\\": ${MOCK_TABLE_COUNT:-0}}"',
+      '  fi',
       'elif [[ "$all" == *"name IN ("* ]]; then',
       '  for t in ${MOCK_TABLES:-}; do echo "  \\"$t\\""; done',
       'else',
@@ -130,6 +144,30 @@ describe('bootstrap-piecemaker-tenant.sh — 3 重ガード (B/C)', () => {
     const r = run(writeToml(PROVISIONED_TOML()), { guardOnly: true });
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/GUARD-ONLY|通過/);
+  });
+});
+
+describe('bootstrap-piecemaker-tenant.sh — guard1 _cf_ system table 除外 (fresh D1)', () => {
+  // Cloudflare の新規 D1 は常に '_cf_KV' システム表を含む。guard1 の空判定がこれを
+  // 除外しないと、真に空の fresh テナント D1 を「user table 1 個」と誤認して常時 block する
+  // (infra-ops 実測欠陥)。除外句 NOT IN ('_cf_KV','_cf_METADATA') で fresh D1 を空とみなす。
+  it('guard1 SQL が _cf_KV / _cf_METADATA を NOT IN で除外する (静的)', () => {
+    expect(readFileSync(SCRIPT, 'utf8')).toMatch(/NOT IN \('_cf_KV','_cf_METADATA'\)/);
+  });
+  it("'_cf_KV' のみ持つ fresh D1 → guard1 pass (空とみなす)", () => {
+    const r = run(writeToml(PROVISIONED_TOML()), { d1Tables: '_cf_KV', guardOnly: true });
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/GUARD-ONLY|通過/);
+  });
+  it("'_cf_KV' + '_cf_METADATA' のみ → guard1 pass (CF システム表 2 種を全除外)", () => {
+    const r = run(writeToml(PROVISIONED_TOML()), { d1Tables: '_cf_KV _cf_METADATA', guardOnly: true });
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/GUARD-ONLY|通過/);
+  });
+  it("'_cf_KV' + 実 user table → guard1 は依然 block (除外は CF システム表に限定)", () => {
+    const r = run(writeToml(PROVISIONED_TOML()), { d1Tables: '_cf_KV line_accounts' });
+    expect(r.code).not.toBe(0);
+    expect(r.out).toMatch(/空でない|ABORT/);
   });
 });
 
