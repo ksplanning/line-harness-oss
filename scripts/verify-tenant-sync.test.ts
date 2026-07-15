@@ -1,6 +1,6 @@
 /**
  * P1-3 — verify-tenant-sync.sh の機械検証。
- *   dual-remote (origin=ksplanning / mirror=sukedachi) の同一 branch HEAD SHA 一致検知。
+ *   dual-remote (origin=ksplanning / mirror=piecemaker) の同一 branch HEAD SHA 一致検知。
  *   実 git fixture (2 bare repo + working repo) を組み、`git ls-remote` を実際に叩いて:
  *     ① 両 remote 同一 SHA        → exit 0
  *     ② 片側だけ push (drift)     → exit ≠ 0 (片側 push 漏れ検知)
@@ -25,7 +25,8 @@ function runSync(work: string, env: Record<string, string> = {}): { code: number
   try {
     const out = execFileSync('bash', [SCRIPT], {
       encoding: 'utf8',
-      env: { ...process.env, REPO_DIR: work, ORIGIN_REMOTE: 'origin', MIRROR_REMOTE: 'sukedachi', BRANCH: 'main', ...env },
+      // MIRROR_REMOTE は敢えて渡さない = スクリプト既定 (piecemaker) を実際に行使して検証する。
+      env: { ...process.env, REPO_DIR: work, ORIGIN_REMOTE: 'origin', BRANCH: 'main', ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return { code: 0, out };
@@ -55,7 +56,7 @@ describe('verify-tenant-sync.sh (P1-3)', () => {
     git(work, 'config', 'user.email', 'test@example.com');
     git(work, 'config', 'user.name', 'test');
     git(work, 'remote', 'add', 'origin', origin);
-    git(work, 'remote', 'add', 'sukedachi', mirror);
+    git(work, 'remote', 'add', 'piecemaker', mirror);
     execFileSync('git', ['-C', work, 'commit', '--allow-empty', '-m', 'c1']);
   });
 
@@ -65,7 +66,7 @@ describe('verify-tenant-sync.sh (P1-3)', () => {
 
   it('① 両 remote 同一 SHA → exit 0', () => {
     git(work, 'push', 'origin', 'main');
-    git(work, 'push', 'sukedachi', 'main');
+    git(work, 'push', 'piecemaker', 'main');
     const r = runSync(work);
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/OK|sync/i);
@@ -73,14 +74,14 @@ describe('verify-tenant-sync.sh (P1-3)', () => {
 
   it('② 片側 (origin) だけ push で drift → exit ≠ 0', () => {
     execFileSync('git', ['-C', work, 'commit', '--allow-empty', '-m', 'c2']);
-    git(work, 'push', 'origin', 'main'); // sukedachi へは push しない (片側 push 漏れ)
+    git(work, 'push', 'origin', 'main'); // piecemaker へは push しない (片側 push 漏れ)
     const r = runSync(work);
     expect(r.code).not.toBe(0);
     expect(r.out).toMatch(/DRIFT|drift|漏れ/i);
   });
 
   it('②b 追随 push で再び一致 → exit 0', () => {
-    git(work, 'push', 'sukedachi', 'main');
+    git(work, 'push', 'piecemaker', 'main');
     const r = runSync(work);
     expect(r.code).toBe(0);
   });

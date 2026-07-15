@@ -22,7 +22,7 @@ describe('propagation runbook (§10 B-5: 3 段伝播)', () => {
   it('段1 dual-push: 両 remote への push + verify-tenant-sync 同期チェック (H-5)', () => {
     const s = read(PROP);
     expect(s).toMatch(/git push origin/);
-    expect(s).toMatch(/git push sukedachi/);
+    expect(s).toMatch(/git push piecemaker/);
     expect(s).toContain('verify-tenant-sync.sh');
   });
   it('段2 両テナント re-deploy: ks/piecemaker 双方の config で deploy', () => {

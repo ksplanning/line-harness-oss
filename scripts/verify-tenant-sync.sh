@@ -2,14 +2,14 @@
 # verify-tenant-sync.sh — dual-remote テナント sync の drift 検知 (P1-3 / plan.md §5)。
 #
 # WHY: Piecemaker は「共有 1 tree → dual-remote mirror」戦略 (plan.md §2 案 c)。
-#   共有コードは origin(=ksplanning) と mirror(=sukedachi) の両 remote に同一 SHA で push される。
+#   共有コードは origin(=ksplanning) と mirror(=piecemaker) の両 remote に同一 SHA で push される。
 #   残る唯一の drift 源 = 「片側 remote への push 忘れ」。これを機械で塞ぐ。
 #   `git ls-remote` で両 remote の branch HEAD SHA を比較し、不一致 (=片側 push 漏れ) を
 #   非ゼロ exit + 1 行通知で検知する。§10 H-5: dual-push 直後に同期実行する土台。
 #
 # USAGE:
 #   scripts/verify-tenant-sync.sh
-#   REPO_DIR=/path ORIGIN_REMOTE=origin MIRROR_REMOTE=sukedachi BRANCH=main scripts/verify-tenant-sync.sh
+#   REPO_DIR=/path ORIGIN_REMOTE=origin MIRROR_REMOTE=piecemaker BRANCH=main scripts/verify-tenant-sync.sh
 #
 # EXIT CODES (done 条件: 同一 SHA→0 / 乖離→非0):
 #   0 = 両 remote の HEAD SHA 一致 (in sync)
@@ -23,7 +23,7 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ORIGIN_REMOTE="${ORIGIN_REMOTE:-origin}"
-MIRROR_REMOTE="${MIRROR_REMOTE:-sukedachi}"
+MIRROR_REMOTE="${MIRROR_REMOTE:-piecemaker}"
 BRANCH="${BRANCH:-main}"
 
 cd "$REPO_DIR"

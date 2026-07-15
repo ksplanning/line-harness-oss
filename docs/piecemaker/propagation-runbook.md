@@ -10,7 +10,7 @@
 「機能伝播」を成立させるには下の **3 段すべて** を通す必要がある。
 
 共有戦略: コードは 1 tree（`/root/.openclaw/line-harness-ks` checkout）。remote は 2 本
-（`origin` = ksplanning / `sukedachi` = Sukedachi mirror）。テナント差は `wrangler.<tenant>.toml` の
+（`origin` = ksplanning / `piecemaker` = Sukedachi mirror）。テナント差は `wrangler.<tenant>.toml` の
 `[vars]` flag と CF リソース・secrets だけ（コード分岐なし）。
 
 ---
@@ -22,13 +22,13 @@ line-harness コードに触れた案件は closer 工程で必ず両 remote へ
 ```bash
 cd /root/.openclaw/line-harness-ks
 git push origin <branch>       # ks 経路 (ksplanning)
-git push sukedachi <branch>    # Piecemaker 経路 (Sukedachi mirror)
+git push piecemaker <branch>   # Piecemaker 経路 (Sukedachi mirror)
 
 # H-5: dual-push 非原子性の即時検知（2 本目 push 失敗を週次まで放置しない）
 scripts/verify-tenant-sync.sh  # 両 remote の main HEAD SHA 一致を確認。不一致→非ゼロ exit→再 push
 ```
 
-- `sukedachi` remote 未登録の間（P1-2 未実施）は `verify-tenant-sync.sh` が exit 2 を返す（drift とは別事象）。
+- `piecemaker` remote 未登録の間（P1-2 未実施）は `verify-tenant-sync.sh` が exit 2 を返す（drift とは別事象）。
 - force-push 禁止（git destructive guard で block）。競合は 1 tree 前提で原則起きない。別 checkout が生じたら fast-forward のみ。
 
 ## 段 2 — 両テナントを各 config で re-deploy
@@ -86,7 +86,7 @@ CLOUDFLARE_API_TOKEN=<pm> CLOUDFLARE_ACCOUNT_ID=<pm> DB_NAME=line-harness-piecem
 
 | 段 | 目的 | 実行物 | これを飛ばすと |
 |---|---|---|---|
-| 1 | SHA を両 remote で一致 | `git push origin` + `git push sukedachi` + `verify-tenant-sync.sh` | 片側 repo が旧コード |
+| 1 | SHA を両 remote で一致 | `git push origin` + `git push piecemaker` + `verify-tenant-sync.sh` | 片側 repo が旧コード |
 | 2 | 本番反映（両テナント） | 各 `--config` で再 build + deploy（worker + admin Pages） | 本番は旧挙動のまま |
 | 3 | スキーマ整合（migration 時のみ） | 両 D1 に backup 先行の additive applier | 片側 DB がカラム欠落で 500 |
 
