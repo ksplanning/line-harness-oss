@@ -9,8 +9,8 @@
  *   2. 横断データ分離 番人 (H-4):
  *        ks の識別子 (D1 id / Vectorize index / R2 bucket / worker 名 / account id / workers subdomain)
  *        が piecemaker config に 1 度も現れないことを機械保証 = 顧客データ混線 0 の構造証明。
- *   3. provisioning 前 placeholder ゲート (§10 B-3):
- *        実 D1 id / account_id は provisioning まで placeholder のまま = 誤って実値を焼き込まない。
+ *   3. provisioning 後 実値記入ゲート (§10 B-3 / P4a):
+ *        provisioning で採番した実 D1 id / account_id / subdomain が記入済 + placeholder 不在。
  *   4. 秘密ゼロ (PUBLIC repo 前提 L-1):
  *        token / secret 様のリテラルが config に 0 件。
  */
@@ -72,17 +72,25 @@ describe('piecemaker tenant wrangler config (P2-2 / H-4)', () => {
     }
   });
 
-  it('provisioning 前 placeholder ゲート: 実 D1 id / account_id は未記入 (§10 B-3)', () => {
+  it('provisioning 後 実値記入ゲート: placeholder 不在 + 実 D1 id / account_id / subdomain 記入済 (§10 B-3 / P4a)', () => {
     const src = read('wrangler.piecemaker.toml');
-    // 明示ダミー placeholder が残っている = provisioning でまだ実値を採番していない
-    expect(src).toContain('<PIECEMAKER_D1_ID>');
-    expect(src).toContain('<PIECEMAKER_CF_ACCOUNT_ID>');
-    // 実 D1 id / account id は 32/36 桁 hex 形。placeholder の間はこの形が現れない
-    // (ダミー placeholder が消え実値が入るのは P4a provisioning 後)。
+    const lines = src.split('\n').map((l) => l.trim());
+    // 明示ダミー placeholder は provisioning で全て実値へ置換済 = 1 件も残っていない (comment 含め全消し)
+    expect(src).not.toContain('<PIECEMAKER_D1_ID>');
+    expect(src).not.toContain('<PIECEMAKER_CF_ACCOUNT_ID>');
+    expect(src).not.toContain('<PIECEMAKER_WORKERS_SUBDOMAIN>');
+    // 実 account id (32 桁 hex) / D1 id (UUID) の形が実在する = provisioning 済の証明。
     const looksLikeCfAccountId = /\b[0-9a-f]{32}\b/;
     const looksLikeD1Uuid = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/;
-    expect(looksLikeCfAccountId.test(src)).toBe(false);
-    expect(looksLikeD1Uuid.test(src)).toBe(false);
+    expect(looksLikeCfAccountId.test(src)).toBe(true);
+    expect(looksLikeD1Uuid.test(src)).toBe(true);
+    // provisioning で採番した Piecemaker 専用の実値を pin (ks 資源でないことは H-4 番人が別途保証)。
+    expect(lines.filter((l) => l === 'account_id = "9e4c603b3f47d4072f8a3a27759e8aff"')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'database_id = "5a12defb-80cd-4e1b-b6fa-762e5308a21b"')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'D1_DATABASE_ID = "5a12defb-80cd-4e1b-b6fa-762e5308a21b"')).toHaveLength(1);
+    expect(lines.filter((l) => l === 'CF_ACCOUNT_ID = "9e4c603b3f47d4072f8a3a27759e8aff"')).toHaveLength(1);
+    // workers.dev subdomain が解決済 = WORKER_PUBLIC_URL に piecemaker が焼き込まれている。
+    expect(src).toContain('https://line-harness-piecemaker.piecemaker.workers.dev');
   });
 
   it('秘密ゼロ: token / secret 様リテラルが 0 件 (PUBLIC repo 前提 L-1)', () => {

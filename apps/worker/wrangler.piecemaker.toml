@@ -4,11 +4,11 @@
 #   コードは ks/piecemaker 共通の 1 tree。テナント identity はこの config + CF リソース + secrets の
 #   非コード層だけに置く (plan.md §2 の設計原理)。deploy 時 `--config wrangler.piecemaker.toml` で選択。
 #
-# ★ このファイルは PROVISIONING 前テンプレート (§10 B-3):
-#   <PIECEMAKER_...> の明示ダミー placeholder は provisioning (P4a) で実値に置換する。
-#   provisioning 前に実 D1 id / account id / workers subdomain を焼き込まないこと
-#   (実値を先に書くと「未 provisioning なのに実値がある」不整合を生む)。
-#   置換対象: <PIECEMAKER_CF_ACCOUNT_ID> / <PIECEMAKER_D1_ID> / <PIECEMAKER_WORKERS_SUBDOMAIN>。
+# ★ PROVISIONING 済 (§10 B-3 / P4a・2026-07-15): 下記 3 識別子は provisioning で採番した実値を記入済:
+#   account_id / database_id (D1) / workers.dev subdomain (WORKER_PUBLIC_URL の piecemaker 部)。
+#   これらは秘密でない標準識別子 (ks の wrangler.ks.toml も同型の実 id を PUBLIC repo に既載)。
+#   秘密 (LINE token/secret・API key) は含めない — 下記のとおり wrangler secret put で
+#   Cloudflare 側にのみ投入する (両 repo PUBLIC 前提の秘密ゼロ規律)。
 #
 # 秘密は含まない。ADMIN_API_KEY / API_KEY / LINE_* は `wrangler secret put --name line-harness-piecemaker`
 #   で Cloudflare 側に保存する (このファイルには絶対に書かない・両 repo PUBLIC 前提の秘密ゼロ規律)。
@@ -27,7 +27,7 @@ main = "dist/line_harness/index.js"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = true
-account_id = "<PIECEMAKER_CF_ACCOUNT_ID>"
+account_id = "9e4c603b3f47d4072f8a3a27759e8aff"
 
 [assets]
 directory = "dist/client"
@@ -36,7 +36,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "line-harness-piecemaker"
-database_id = "<PIECEMAKER_D1_ID>"
+database_id = "5a12defb-80cd-4e1b-b6fa-762e5308a21b"
 
 [[r2_buckets]]
 binding = "IMAGES"
@@ -47,7 +47,7 @@ crons = ["*/5 * * * *", "0 */6 * * *"]
 
 [vars]
 WORKER_NAME = "line-harness-piecemaker"
-WORKER_PUBLIC_URL = "https://line-harness-piecemaker.<PIECEMAKER_WORKERS_SUBDOMAIN>.workers.dev"
+WORKER_PUBLIC_URL = "https://line-harness-piecemaker.piecemaker.workers.dev"
 ADMIN_PAGES_PROJECT = "line-harness-piecemaker-admin"
 ADMIN_PUBLIC_URL = "https://line-harness-piecemaker-admin.pages.dev"
 # ADMIN_ORIGIN + ADMIN_ALLOW_CROSS_SITE=true が無いと *.pages.dev↔*.workers.dev の
@@ -56,8 +56,8 @@ ADMIN_ORIGIN = "https://line-harness-piecemaker-admin.pages.dev"
 ADMIN_ALLOW_CROSS_SITE = "true"
 LIFF_PAGES_PROJECT = "line-harness-piecemaker-liff"
 LIFF_PUBLIC_URL = "https://line-harness-piecemaker-liff.pages.dev"
-D1_DATABASE_ID = "<PIECEMAKER_D1_ID>"
-CF_ACCOUNT_ID = "<PIECEMAKER_CF_ACCOUNT_ID>"
+D1_DATABASE_ID = "5a12defb-80cd-4e1b-b6fa-762e5308a21b"
+CF_ACCOUNT_ID = "9e4c603b3f47d4072f8a3a27759e8aff"
 # formaloo-auto-pull: 定義 drift の定期検知 (6h cron)。detection+通知は ON、自動反映は AUTO_APPLY="false"
 #   で dark-ship (通知のみ = 案 B 既定)。owner が案 A を選んだら AUTO_APPLY を "true" に flip するだけ。
 FORMALOO_DRIFT_ENABLED = "true"
