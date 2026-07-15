@@ -114,7 +114,7 @@ owner 要望（2026-07-12）:「線で繋ぐストーリーメッセージの構
 
 推奨 repo 戦略（planner 確定）: **共有 1 tree → dual-remote mirror**（origin=ksplanning 不変 + 2nd remote=Sukedachi PUBLIC mirror）+ per-tenant config 兄弟ファイル + テナント別挙動は wrangler `[vars]` flag。双方向伝播＝同一 commit を両 remote に push（drift 構造ゼロ）。データ完全分離＝deploy `--config` が指す独自 Worker/D1/R2/Vectorize/Pages/secrets/(CF account)。
 
-**P0〜P5 全完了（2026-07-15）**。P1（repo 戦略配線）+ P2（config+invariant test）+ P3（bootstrap script）+ P4/P4a（CF provisioning + config 実値記入）+ P4b（D1 bootstrap 実行・reviewer PASS・piecemaker-p4b で main 統合）+ **P5（secrets 投入 + D1 seed + LINE webhook 配線 + build-env deploy + cutover + smoke）は本 closer 案件（piecemaker-p4b-close-and-p5）で完遂**。稼働中: worker https://line-harness-piecemaker.piecemaker.workers.dev / admin https://line-harness-piecemaker-admin.pages.dev/login。詳細は app-profile `docs/shared-runbooks/app-profiles/line-harness-piecemaker.md`。
+**P0〜P6 全完了（2026-07-15）**。P1（repo 戦略配線）+ P2（config+invariant test）+ P3（bootstrap script）+ P4/P4a（CF provisioning + config 実値記入）+ P4b（D1 bootstrap 実行・reviewer PASS・piecemaker-p4b で main 統合）+ P5（secrets 投入 + D1 seed + LINE webhook 配線 + build-env deploy + cutover + smoke）+ **P6（LIFF 配線 + Discord 発注窓口 + ログイン Key 固定）は本 closer 案件（piecemaker-liff-and-forum）で完遂**。稼働中: worker https://line-harness-piecemaker.piecemaker.workers.dev / admin https://line-harness-piecemaker-admin.pages.dev/login。詳細は app-profile `docs/shared-runbooks/app-profiles/line-harness-piecemaker.md`。
 
 ### 実装フェーズ（全完了）
 - [x] **P0** owner 決定 gate（CF 別アカウント / GitHub 新規 / 履歴込み mirror / LINE credential 受領）— OWNER-DECISIONS.md
@@ -124,15 +124,19 @@ owner 要望（2026-07-12）:「線で繋ぐストーリーメッセージの構
 - [x] **P4/P4a** CF リソース provisioning（Worker/D1 `5a12defb…`/R2/Vectorize 1024-cosine-metadata line_account_id/Pages）+ config 実値記入
 - [x] **P4b** D1 bootstrap 実行（reviewer PASS Round1・main 統合コミット a15a101）
 - [x] **P5** secrets 投入（API_KEY/ADMIN_API_KEY 新規生成・LINE_CHANNEL_ID/SECRET owner 提供・LINE_CHANNEL_ACCESS_TOKEN 発行）+ D1 line_accounts seed（channelId 1661399637）+ owner ID/PASS ログイン作成（login_id=piecemaker-owner）+ webhook 配線・疎通確認（`/webhook` active=true, test 200）+ worker/admin build-env deploy（cutover: crons-empty→steady-state 2 段）+ smoke 全 green（worker/admin/D1 read/ks 非影響）
-- [ ] **P6** Piecemaker Discord forum bot 新設（別 systemd/tmux/DISCORD_STATE_DIR/Box folder・ks 混線 0）— owner_role: infra-ops（未着手・別 case）
+- [x] **P6** LIFF 配線（liffId `2010719554-oNAvHzEr`・D1 登録・worker/admin 再deploy・smoke 全pass）+ Piecemaker Discord forum bot 新設（フォーラム `1526909290026242138`・operator-console 登録・readiness=ready・ks 混線 0）+ ログイン Key 固定（本番実測 login 200）— closer 案件 piecemaker-liff-and-forum（2026-07-15）で完遂
+
+### 🎯 次の必須（required backlog）
+- [ ] [REQUIRED-BACKLOG] owner が「piecemaker受付」フォーラムへ最初の投稿 → claim→spawn→reply の live round-trip 実証（`shouldClaim()` が owner ID 送信者のみ claim する設計上、closer/bot 側では実証不能・owner action 待ち）
+- [ ] [REQUIRED-BACKLOG] BOLT piecemaker-* 6 ファイルの SECRETS-LEDGER.md/escrow-manifest.txt 一括登録（P5 由来のギャップ。FROZEN baseline を歪めないため単独 append せず matched-pair 一括登録の別 case で実施）
 
 ### 💡 任意磨き込み（後回し可・自動着手禁止）
 - [ ] O-1: `piecemaker.skdcc.jp` 等カスタムドメイン配線（当面既定 URL で稼働・memory sukedachi-domain 戦略: 道具=サブドメイン）
 - [ ] Formaloo 連携鍵の後日投入（当面 Formaloo 無しで芯機能稼働）
 - [ ] [OPTIONAL-POLISH] bootstrap-piecemaker-tenant.sh guard1 の `_cf_%` 誤カウント欠陥を repo 本体で修理（`AND name NOT IN ('_cf_KV','_cf_METADATA')` を guard1 SQL に追加）
-- [ ] LIFF/LINE Login channel の owner 発行待ち（発行後 LIFF_URL/LINE_LOGIN_CHANNEL_ID/LINE_LOGIN_CHANNEL_SECRET を投入）
 - [ ] FAQ_BOT_ENABLED の owner 立会後 flip（現状 dark-ship "false"）
 - [ ] LINE_CHANNEL_ACCESS_TOKEN の長命トークンへの切替（現状 client_credentials 短命 ~30日）
 - [ ] scripts/inject-version.ts が repo に存在しない gap の解消（/admin/version が 0.0.0-dev のまま・cosmetic）
+- [ ] [OPTIONAL-POLISH] SECRETS-LEDGER.md の pre-existing mojibake クリーン化
 
 > **ks 本番不可触**: 全工程 `--config wrangler.piecemaker.toml`。ks の worker/D1/Pages/webhook/secrets/wrangler.ks.toml は 1 バイトも触らない（additive only・2026-07-15 closer 検証: wrangler.ks.toml diff 0 / runtime source 変更 0 / ks /admin/version 200 を deploy 前後で確認）。
