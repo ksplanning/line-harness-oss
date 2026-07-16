@@ -31,7 +31,7 @@ import {
   fieldTypeLabel,
   fieldTypeIcon,
   hasChoices,
-  hasLength,
+  hasMaxLength,
   isDecoration,
 } from './field-types'
 import FormPreview from './form-preview'
@@ -379,16 +379,13 @@ function SettingsPanel({
         />
       </div>
 
-      {hasLength(field.type) && (
-        <div className="flex gap-2">
-          <div className="flex-1">
-            <label className="block text-xs text-gray-500 mb-1">最小文字数</label>
-            <input type="number" aria-label="最小文字数" value={cfg.minLength ?? ''} onChange={(e) => setCfg({ minLength: e.target.value === '' ? undefined : Number(e.target.value) })} className="w-full border border-gray-300 rounded px-2 py-1" />
-          </div>
-          <div className="flex-1">
-            <label className="block text-xs text-gray-500 mb-1">最大文字数</label>
-            <input type="number" aria-label="最大文字数" value={cfg.maxLength ?? ''} onChange={(e) => setCfg({ maxLength: e.target.value === '' ? undefined : Number(e.target.value) })} className="w-full border border-gray-300 rounded px-2 py-1" />
-          </div>
+      {/* 最大文字数は一行テキストのみ (OD-2: Formaloo hosted が max_length を enforce する唯一の型)。
+          複数行の最大文字数欄・全型の最小文字数欄は Formaloo 非対応の no-op ゆえ撤去 (OD-3)。
+          既存 config.minLength/maxLength の型・保存値は後方互換で残置 (push は最大のみ)。 */}
+      {hasMaxLength(field.type) && (
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">最大文字数</label>
+          <input type="number" aria-label="最大文字数" value={cfg.maxLength ?? ''} onChange={(e) => setCfg({ maxLength: e.target.value === '' ? undefined : Number(e.target.value) })} className="w-full border border-gray-300 rounded px-2 py-1" />
         </div>
       )}
 

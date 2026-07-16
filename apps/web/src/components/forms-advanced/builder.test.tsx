@@ -19,7 +19,7 @@ import FormBuilder, {
   resolveDragEnd,
 } from './builder'
 import type { HarnessField, HarnessLogicRule } from '@line-crm/shared'
-import { hasChoices, hasLength } from './field-types'
+import { hasChoices, hasLength, hasMaxLength } from './field-types'
 
 afterEach(() => cleanup())
 
@@ -258,6 +258,34 @@ describe('FormBuilder — 入力項目の補足説明 (field-help-charlimit T-A3
     fireEvent.click(screen.getByLabelText('見出し＋説明を追加'))
     expect(screen.getByLabelText('説明文')).toBeTruthy()
     expect(screen.queryByLabelText('補足説明')).toBeNull()
+  })
+})
+
+describe('FormBuilder — 文字数制限の正直化 (field-help-charlimit T-A4 / OD-2 OD-3)', () => {
+  it('最大文字数欄は一行テキストのみ・複数行テキストでは出さない (OD-2: Formaloo 非対応)', () => {
+    render(<FormBuilder {...base()} />)
+    fireEvent.click(screen.getByLabelText('1行テキストを追加'))
+    expect(screen.getByLabelText('最大文字数')).toBeTruthy()
+    cleanup()
+    render(<FormBuilder {...base()} />)
+    fireEvent.click(screen.getByLabelText('複数行テキストを追加'))
+    expect(screen.queryByLabelText('最大文字数')).toBeNull()
+  })
+
+  it('最小文字数欄はどの型でも出さない (OD-3: Formaloo 非対応の no-op を撤去)', () => {
+    for (const addLabel of ['1行テキストを追加', '複数行テキストを追加', '数値を追加']) {
+      render(<FormBuilder {...base()} />)
+      fireEvent.click(screen.getByLabelText(addLabel))
+      expect(screen.queryByLabelText('最小文字数')).toBeNull()
+      cleanup()
+    }
+  })
+
+  it('hasMaxLength は一行 text のみ true (textarea/装飾は false)', () => {
+    expect(hasMaxLength('text')).toBe(true)
+    expect(hasMaxLength('textarea')).toBe(false)
+    expect(hasMaxLength('number')).toBe(false)
+    expect(hasMaxLength('section')).toBe(false)
   })
 })
 

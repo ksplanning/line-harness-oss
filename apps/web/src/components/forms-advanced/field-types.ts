@@ -49,3 +49,11 @@ export function hasChoices(type: HarnessFieldType): boolean {
 export function hasLength(type: HarnessFieldType): boolean {
   return type === 'text' || type === 'textarea'
 }
+/**
+ * 種別が「公開フォームで実効する最大文字数を設定できる」か。
+ * 一行テキスト (short_text) のみ = Formaloo が max_length を hosted で enforce する唯一の型 (spike 実測 / OD-2)。
+ * 複数行 (long_text) は Formaloo が max_length を無視するため対象外 (効かない欄=footgun を出さない)。
+ */
+export function hasMaxLength(type: HarnessFieldType): boolean {
+  return type === 'text'
+}
