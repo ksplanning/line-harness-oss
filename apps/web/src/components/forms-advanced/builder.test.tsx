@@ -18,7 +18,8 @@ import FormBuilder, {
   TOUCH_ACTIVATION,
   resolveDragEnd,
 } from './builder'
-import type { HarnessField } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule } from '@line-crm/shared'
+import { hasChoices, hasLength } from './field-types'
 
 afterEach(() => cleanup())
 
@@ -40,6 +41,8 @@ describe('FormBuilder — パレット & 追加 (T-B1)', () => {
     expect(within(palette).getByText('1行テキスト')).toBeTruthy()
     expect(within(palette).getByText('単一選択')).toBeTruthy()
     expect(within(palette).getByText('ファイル添付')).toBeTruthy()
+    expect(within(palette).getByText('見出し＋説明')).toBeTruthy()
+    expect(within(palette).getByText('改ページ')).toBeTruthy()
     // MVP subset 外は無い
     expect(within(palette).queryByText('マトリクス')).toBeNull()
   })
@@ -216,6 +219,121 @@ describe('FormBuilder — 設定パネル', () => {
   })
 })
 
+describe('FormBuilder — 装飾ブロック (T-B5/T-B10)', () => {
+  it('見出し＋説明を追加し、見出しと説明だけを編集してカードへ反映できる', () => {
+    render(<FormBuilder {...base()} />)
+
+    fireEvent.click(screen.getByLabelText('見出し＋説明を追加'))
+
+    const canvas = screen.getByTestId('canvas')
+    expect(within(canvas).getByText('見出し＋説明')).toBeTruthy()
+    expect(screen.getByLabelText('見出し')).toBeTruthy()
+    expect(screen.getByLabelText('説明文')).toBeTruthy()
+    expect(screen.queryByLabelText('必須')).toBeNull()
+    expect(screen.queryByLabelText('最大文字数')).toBeNull()
+    expect(screen.queryByLabelText('選択肢1')).toBeNull()
+    expect(screen.queryByLabelText('許可拡張子')).toBeNull()
+    expect(screen.queryByText(/条件分岐（この項目/)).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('見出し'), { target: { value: 'ご利用前の案内' } })
+    fireEvent.change(screen.getByLabelText('説明文'), { target: { value: '注意事項をお読みください' } })
+    expect(within(canvas).getByText('ご利用前の案内')).toBeTruthy()
+    expect(within(canvas).getByText('注意事項をお読みください')).toBeTruthy()
+    expect(within(canvas).queryByText('必須')).toBeNull()
+  })
+
+  it('改ページを追加すると divider 表示になり、任意ラベル以外の入力設定を出さない', () => {
+    render(<FormBuilder {...base()} />)
+
+    fireEvent.click(screen.getByLabelText('改ページを追加'))
+
+    expect(within(screen.getByTestId('canvas')).getByText('改ページ')).toBeTruthy()
+    expect(screen.getByLabelText('ラベル(任意)')).toBeTruthy()
+    expect(screen.queryByLabelText('説明文')).toBeNull()
+    expect(screen.queryByLabelText('必須')).toBeNull()
+    expect(screen.queryByLabelText('複数ファイル許可')).toBeNull()
+    expect(screen.queryByText(/条件分岐（この項目/)).toBeNull()
+  })
+
+  it('新規 section は config.text=""、装飾は choices/length を持たない', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave })} />)
+    fireEvent.click(screen.getByLabelText('見出し＋説明を追加'))
+    fireEvent.click(screen.getByText('保存'))
+
+    const saved = onSave.mock.calls[0][0] as { fields: HarnessField[] }
+    expect(saved.fields[0]).toMatchObject({ type: 'section', required: false, position: 0, config: { text: '' } })
+    expect(hasChoices('section')).toBe(false)
+    expect(hasLength('section')).toBe(false)
+    expect(hasChoices('page_break')).toBe(false)
+    expect(hasLength('page_break')).toBe(false)
+  })
+})
+
+describe('FormBuilder — 装飾を条件分岐から除外 (T-B9)', () => {
+  const source: HarnessField = { id: 'source', type: 'text', label: '回答元', required: false, position: 0, config: {} }
+  const target: HarnessField = { id: 'target', type: 'email', label: '通常の分岐先', required: false, position: 1, config: {} }
+  const section: HarnessField = { id: 'section', type: 'section', label: '案内見出し', required: false, position: 2, config: { text: '案内本文' } }
+  const validRule: HarnessLogicRule = {
+    id: 'valid', sourceFieldId: source.id, operator: 'equals', value: 'はい', action: 'show', targetFieldId: target.id,
+  }
+
+  it('装飾は既存 rule の target options に出ず、装飾自身には条件分岐 UI がない', () => {
+    const staleRule: HarnessLogicRule = {
+      id: 'stale', sourceFieldId: source.id, operator: 'equals', value: '旧値', action: 'hide', targetFieldId: section.id,
+    }
+    render(<FormBuilder {...base({ initialFields: [source, target, section], initialLogic: [validRule, staleRule] })} />)
+
+    for (const select of screen.getAllByLabelText('分岐対象') as HTMLSelectElement[]) {
+      expect(Array.from(select.options).map((option) => option.value)).not.toContain(section.id)
+    }
+
+    fireEvent.click(within(screen.getByTestId('canvas')).getByText('案内見出し'))
+    expect(screen.queryByText(/条件分岐（この項目/)).toBeNull()
+    expect(screen.queryByText('＋ 分岐を追加')).toBeNull()
+  })
+
+  it('装飾追加では既存 rule を変えず、分岐先候補が装飾だけなら追加できない', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ initialFields: [source, target], initialLogic: [validRule], onSave })} />)
+
+    fireEvent.click(screen.getByLabelText('見出し＋説明を追加'))
+    fireEvent.click(within(screen.getByTestId('canvas')).getByText('回答元'))
+    fireEvent.click(screen.getByText('保存'))
+    expect((onSave.mock.calls[0][0] as { logic: HarnessLogicRule[] }).logic).toEqual([validRule])
+
+    cleanup()
+    render(<FormBuilder {...base({ initialFields: [source, section] })} />)
+    expect((screen.getByText('＋ 分岐を追加') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('装飾削除は flat/conditions[]/actions[] の参照 rule を除き、無関係な rule を保持する', () => {
+    const onSave = vi.fn()
+    const conditionRef: HarnessLogicRule = {
+      id: 'condition-ref', sourceFieldId: source.id, operator: 'equals', value: 'x', action: 'show', targetFieldId: target.id,
+      conditions: [{ sourceFieldId: section.id, operator: 'is', value: 'x' }],
+    }
+    const actionRef: HarnessLogicRule = {
+      id: 'action-ref', sourceFieldId: source.id, operator: 'equals', value: 'x', action: 'show', targetFieldId: target.id,
+      actions: [{ action: 'show', targetFieldId: section.id }],
+    }
+    const flatRef: HarnessLogicRule = {
+      id: 'flat-ref', sourceFieldId: section.id, operator: 'equals', value: 'x', action: 'show', targetFieldId: target.id,
+    }
+    render(<FormBuilder {...base({ initialFields: [source, target, section], initialLogic: [validRule, conditionRef, actionRef, flatRef], onSave })} />)
+
+    const canvas = screen.getByTestId('canvas')
+    fireEvent.click(within(canvas).getAllByLabelText('削除')[2])
+    fireEvent.click(within(canvas).getByText('はい'))
+    fireEvent.click(screen.getByText('保存'))
+
+    const saved = onSave.mock.calls[0][0] as { fields: HarnessField[]; logic: HarnessLogicRule[] }
+    expect(saved.fields.map((field) => field.id)).toEqual([source.id, target.id])
+    expect(saved.fields.map((field) => field.position)).toEqual([0, 1])
+    expect(saved.logic).toEqual([validRule])
+  })
+})
+
 describe('FormBuilder — 削除 (M-16 行内確認)', () => {
   it('削除は window.confirm でなく行内で はい/いいえ', () => {
     render(<FormBuilder {...base()} />)
@@ -240,6 +358,51 @@ describe('FormBuilder — 保存', () => {
     const def = onSave.mock.calls[0][0] as { fields: HarnessField[] }
     expect(def.fields.map((f) => f.type)).toEqual(['text', 'number'])
     expect(def.fields.map((f) => f.position)).toEqual([0, 1])
+  })
+
+  it('タイトルと説明を編集して保存 payload に含め、説明の空文字も明示送信する (T-B6)', async () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ formTitle: '旧タイトル', formDescription: '旧説明', onSave })} />)
+
+    fireEvent.change(screen.getByLabelText('フォームタイトル'), { target: { value: '新タイトル' } })
+    fireEvent.change(screen.getByLabelText('フォーム説明'), { target: { value: '新説明' } })
+    fireEvent.click(screen.getByText('保存'))
+    expect(onSave.mock.calls[0][0]).toMatchObject({ title: '新タイトル', description: '新説明' })
+
+    await waitFor(() => expect(screen.getByText('保存')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('フォーム説明'), { target: { value: '' } })
+    fireEvent.click(screen.getByText('保存'))
+    expect(onSave.mock.calls[1][0]).toMatchObject({ title: '新タイトル', description: '' })
+  })
+
+  it('空白だけのタイトルでは保存できない (T-B6)', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave })} />)
+
+    fireEvent.change(screen.getByLabelText('フォームタイトル'), { target: { value: '   ' } })
+    const save = screen.getByText('保存') as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    fireEvent.click(save)
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('装飾 drag を sort として解決し、並べ替え後の再採番・保存→再読込でも config.text を保持する (T-B10)', () => {
+    const onSave = vi.fn()
+    const section: HarnessField = { id: 'section', type: 'section', label: '先頭の案内', required: false, position: 8, config: { text: '保持する本文' } }
+    const input: HarnessField = { id: 'input', type: 'text', label: '入力欄', required: false, position: 9, config: {} }
+    expect(resolveDragEnd(section.id, input.id, [section.id, input.id])).toEqual({ kind: 'sort', from: section.id, to: input.id })
+    const view = render(<FormBuilder {...base({ initialFields: [input, section], onSave })} />)
+
+    fireEvent.click(screen.getByText('保存'))
+
+    const saved = onSave.mock.calls[0][0] as { fields: HarnessField[] }
+    expect(saved.fields.map((field) => field.id)).toEqual(['input', 'section'])
+    expect(saved.fields.map((field) => field.position)).toEqual([0, 1])
+    expect(saved.fields[1].config.text).toBe('保持する本文')
+
+    view.unmount()
+    render(<FormBuilder {...base({ initialFields: saved.fields })} />)
+    expect(within(screen.getByTestId('canvas')).getByText('保持する本文')).toBeTruthy()
   })
 })
 

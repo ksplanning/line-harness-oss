@@ -41,6 +41,17 @@ describe('formsAdvancedApi.create — payload', () => {
   })
 })
 
+describe('formsAdvancedApi.saveDefinition — metadata payload', () => {
+  it('title と空 description を PUT body にそのまま載せる', async () => {
+    fetchApi.mockResolvedValue({ success: true, data: { id: 'fa1' } })
+    await formsAdvancedApi.saveDefinition('fa1', { fields: [], logic: [], title: '新タイトル', description: '' })
+    const [url, opts] = fetchApi.mock.calls[0]
+    expect(url).toBe('/api/forms-advanced/fa1')
+    expect((opts as { method: string }).method).toBe('PUT')
+    expect(JSON.parse((opts as { body: string }).body)).toEqual({ fields: [], logic: [], title: '新タイトル', description: '' })
+  })
+})
+
 describe('formalooAccountBindingsApi', () => {
   it('list → GET /api/formaloo-account-bindings', async () => {
     await formalooAccountBindingsApi.list()

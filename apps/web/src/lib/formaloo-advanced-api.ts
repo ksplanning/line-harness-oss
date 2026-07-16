@@ -60,6 +60,8 @@ export interface SaveDefinitionBody {
   logic: HarnessLogicRule[]
   rawLogic?: unknown
   logicFingerprint?: string | null
+  title?: string
+  description?: string | null
 }
 
 export const formsAdvancedApi = {

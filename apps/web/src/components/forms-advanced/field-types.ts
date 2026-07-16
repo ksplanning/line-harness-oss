@@ -1,11 +1,11 @@
-import type { HarnessFieldType } from '@line-crm/shared'
+import { isDecorationType, type HarnessFieldType } from '@line-crm/shared'
 
 // =============================================================================
 // パレット field 種別メタ (F-2 / T-B1) — 素人向け日本語ラベル (英語 type 名を見せない / ui-design)。
 // MVP subset のみ (N-13)。matrix/repeating_section 等は F-2b 以降。
 // =============================================================================
 
-export type FieldCategory = '入力' | '選択' | '高度'
+export type FieldCategory = '入力' | '選択' | '高度' | '装飾'
 
 export interface FieldTypeMeta {
   type: HarnessFieldType
@@ -25,9 +25,14 @@ export const FIELD_TYPE_META: FieldTypeMeta[] = [
   { type: 'dropdown', label: 'ドロップダウン', icon: '🔽', category: '選択' },
   { type: 'multiple_select', label: '複数選択', icon: '☑️', category: '選択' },
   { type: 'file', label: 'ファイル添付', icon: '📎', category: '高度' },
+  { type: 'section', label: '見出し＋説明', icon: '🔖', category: '装飾' },
+  { type: 'page_break', label: '改ページ', icon: '➖', category: '装飾' },
 ]
 
-export const FIELD_CATEGORIES: FieldCategory[] = ['入力', '選択', '高度']
+export const FIELD_CATEGORIES: FieldCategory[] = ['入力', '選択', '高度', '装飾']
+
+export { isDecorationType }
+export const isDecoration = isDecorationType
 
 export function fieldTypeLabel(type: HarnessFieldType): string {
   return FIELD_TYPE_META.find((m) => m.type === type)?.label ?? type

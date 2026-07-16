@@ -6,21 +6,32 @@
  *   ※ 表示フィルタで API 直打ちは防げない旨 (N-17) を画面に明記。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, waitFor, cleanup, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
+const builderProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: 'acc_A' }
 const getMock = vi.fn()
 const shareMock = vi.fn()
+const saveDefinitionMock = vi.fn()
 const fetchApiMock = vi.fn()
 
 vi.mock('next/link', () => ({ default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a> }))
 vi.mock('@/components/layout/header', () => ({ default: () => null }))
-vi.mock('@/components/forms-advanced/builder', () => ({ default: () => <div data-testid="form-builder" /> }))
+vi.mock('@/components/forms-advanced/builder', () => ({
+  default: (props: Record<string, unknown>) => {
+    builderProps.current = props
+    return <div data-testid="form-builder" />
+  },
+}))
 vi.mock('@/components/forms-advanced/share-panel', () => ({ default: () => null }))
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
 vi.mock('@/lib/formaloo-advanced-api', () => ({
-  formsAdvancedApi: { get: (...a: unknown[]) => getMock(...a), share: (...a: unknown[]) => shareMock(...a) },
+  formsAdvancedApi: {
+    get: (...a: unknown[]) => getMock(...a),
+    share: (...a: unknown[]) => shareMock(...a),
+    saveDefinition: (...a: unknown[]) => saveDefinitionMock(...a),
+  },
 }))
 vi.mock('@/lib/api', () => ({ fetchApi: (...a: unknown[]) => fetchApiMock(...a) }))
 
@@ -31,7 +42,8 @@ function form(lineAccountId: string | null) {
 }
 
 beforeEach(() => {
-  getMock.mockReset(); shareMock.mockReset(); fetchApiMock.mockReset()
+  getMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); fetchApiMock.mockReset()
+  builderProps.current = undefined
   mockAccount.selectedAccountId = 'acc_A'
   shareMock.mockResolvedValue({ published: false, publicUrl: null, iframeCode: null, scriptCode: null, gsheetConnected: false, gsheetUrl: null })
   fetchApiMock.mockResolvedValue({ data: { role: 'owner' } })
@@ -58,6 +70,24 @@ describe('詳細画面 scope 照合', () => {
     render(<FormBuilderClient id="fa1" />)
     await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
     expect(screen.queryByTestId('scope-blocked')).toBeNull()
+  })
+
+  it('フォーム説明を builder に渡し、title/description を saveDefinition へ欠落なく転送する', async () => {
+    const loaded = { ...form('acc_A'), title: '旧タイトル', description: '旧説明' }
+    getMock.mockResolvedValue(loaded)
+    saveDefinitionMock.mockResolvedValue({ ...loaded, title: '新タイトル', description: '' })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+
+    expect(builderProps.current?.formDescription).toBe('旧説明')
+    await act(async () => {
+      await (builderProps.current?.onSave as (def: Record<string, unknown>) => Promise<void>)({
+        fields: [], logic: [], title: '新タイトル', description: '',
+      })
+    })
+    expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', {
+      fields: [], logic: [], title: '新タイトル', description: '',
+    })
   })
 
   it('P2 fail-closed: account 未確定 (selectedAccountId=null) で account-scoped form は描画せず hold', async () => {

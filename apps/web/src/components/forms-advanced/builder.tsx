@@ -32,6 +32,7 @@ import {
   fieldTypeIcon,
   hasChoices,
   hasLength,
+  isDecoration,
 } from './field-types'
 import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
@@ -61,12 +62,13 @@ export function resolveDragEnd(activeId: string, overId: string | null, fieldIds
 
 export interface BuilderProps {
   formTitle: string
+  formDescription?: string | null
   status: BuilderStatus
   initialFields: HarnessField[]
   initialLogic: HarnessLogicRule[]
   /** preserve-raw: 初期 logic の fingerprint (reload→save の未編集判定用に carry / Batch 1)。 */
   initialLogicFingerprint?: string | null
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null }) => Promise<void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null }) => Promise<void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
@@ -86,7 +88,7 @@ function newField(type: HarnessFieldType): HarnessField {
     label: fieldTypeLabel(type),
     required: false,
     position: 0,
-    config: hasChoices(type) ? { choices: ['選択肢1', '選択肢2'] } : {},
+    config: hasChoices(type) ? { choices: ['選択肢1', '選択肢2'] } : type === 'section' ? { text: '' } : {},
   }
 }
 
@@ -218,10 +220,27 @@ function FieldCard({
         <span className="text-gray-400 cursor-grab" aria-label="ドラッグして並べ替え" {...attributes} {...listeners}>
           ⋮⋮
         </span>
-        <button type="button" onClick={onSelect} className="flex-1 flex items-center gap-2 text-left text-sm">
-          <span aria-hidden>{fieldTypeIcon(field.type)}</span>
-          <span className="font-medium">{field.label}</span>
-          {field.required && <span className="text-xs text-white px-1.5 rounded" style={{ backgroundColor: LINE_GREEN }}>必須</span>}
+        <button type="button" onClick={onSelect} className="flex-1 text-left text-sm">
+          {isDecoration(field.type) ? (
+            field.type === 'section' ? (
+              <span className="block">
+                <span className="block font-bold text-gray-800">{field.label}</span>
+                {field.config.text && <span className="block mt-1 text-xs text-gray-500">{field.config.text}</span>}
+              </span>
+            ) : (
+              <span className="flex items-center gap-2 text-xs text-gray-500">
+                <span className="h-px flex-1 bg-gray-200" aria-hidden />
+                <span>{field.label || '改ページ'}</span>
+                <span className="h-px flex-1 bg-gray-200" aria-hidden />
+              </span>
+            )
+          ) : (
+            <span className="flex items-center gap-2">
+              <span aria-hidden>{fieldTypeIcon(field.type)}</span>
+              <span className="font-medium">{field.label}</span>
+              {field.required && <span className="text-xs text-white px-1.5 rounded" style={{ backgroundColor: LINE_GREEN }}>必須</span>}
+            </span>
+          )}
         </button>
         <button type="button" aria-label="設定" onClick={onSelect} className="text-gray-400 hover:text-gray-700">⚙️</button>
         {!confirming ? (
@@ -302,9 +321,27 @@ function SettingsPanel({
   const set = (patch: Partial<HarnessField>) => onChange({ ...field, ...patch })
   const setCfg = (patch: Partial<HarnessField['config']>) => onChange({ ...field, config: { ...cfg, ...patch } })
 
+  if (isDecoration(field.type)) {
+    const label = field.type === 'section' ? '見出し' : 'ラベル(任意)'
+    return (
+      <div className="space-y-3 text-sm" data-testid="settings-panel">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">{label}</label>
+          <input aria-label={label} value={field.label} onChange={(e) => set({ label: e.target.value })} className="w-full border border-gray-300 rounded px-2 py-1" />
+        </div>
+        {field.type === 'section' && (
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">説明</label>
+            <textarea aria-label="説明文" value={cfg.text ?? ''} onChange={(e) => setCfg({ text: e.target.value })} className="w-full border border-gray-300 rounded px-2 py-1" />
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const rulesForField = logic.filter((r) => r.sourceFieldId === field.id)
   const addRule = () => {
-    const other = allFields.find((f) => f.id !== field.id)
+    const other = allFields.find((f) => f.id !== field.id && !isDecoration(f.type))
     if (!other) return
     onLogicChange([
       ...logic,
@@ -393,12 +430,12 @@ function SettingsPanel({
               <option value="skip">スキップ</option>
             </select>
             <select aria-label="分岐対象" value={rule.targetFieldId} onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, targetFieldId: e.target.value } : r)))} className="border border-gray-300 rounded px-1">
-              {allFields.filter((f) => f.id !== field.id).map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+              {allFields.filter((f) => f.id !== field.id && !isDecoration(f.type)).map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
             </select>
             <button type="button" aria-label="分岐を削除" onClick={() => onLogicChange(logic.filter((r) => r.id !== rule.id))} className="text-gray-400 hover:text-red-600">✕</button>
           </div>
         ))}
-        <button type="button" onClick={addRule} disabled={allFields.length < 2} className="text-xs disabled:opacity-40" style={{ color: LINE_GREEN }}>＋ 分岐を追加</button>
+        <button type="button" onClick={addRule} disabled={allFields.filter((f) => f.id !== field.id && !isDecoration(f.type)).length < 1} className="text-xs disabled:opacity-40" style={{ color: LINE_GREEN }}>＋ 分岐を追加</button>
       </div>
     </div>
   )
@@ -407,6 +444,8 @@ function SettingsPanel({
 export default function FormBuilder(props: BuilderProps) {
   const [fields, setFields] = useState<HarnessField[]>(props.initialFields)
   const [logic, setLogic] = useState<HarnessLogicRule[]>(props.initialLogic)
+  const [title, setTitle] = useState(props.formTitle)
+  const [description, setDescription] = useState(props.formDescription ?? '')
   // preserve-raw: rawLogic (pull 由来の Formaloo logic 逐語) + logicFingerprint (未編集判定) を opaque 保持。
   // logic 編集時は更新しない (route が carry fingerprint vs 現 logic で編集を検知する)。reload 初期は raw 無し
   // (server-side D1 が持つ) → save で fingerprint のみ carry し route が D1 rawLogic を使う。
@@ -494,16 +533,23 @@ export default function FormBuilder(props: BuilderProps) {
 
   const updateField = (f: HarnessField) => setFields((cur) => cur.map((x) => (x.id === f.id ? f : x)))
   const deleteField = (id: string) => {
+    const deletingDecoration = fields.some((field) => field.id === id && isDecoration(field.type))
     setFields((cur) => reposition(cur.filter((f) => f.id !== id)))
-    setLogic((cur) => cur.filter((r) => r.sourceFieldId !== id && r.targetFieldId !== id))
+    setLogic((cur) => cur.filter((r) =>
+      r.sourceFieldId !== id
+      && r.targetFieldId !== id
+      && (!deletingDecoration || !r.conditions?.some((condition) => condition.sourceFieldId === id))
+      && (!deletingDecoration || !r.actions?.some((action) => action.targetFieldId === id)),
+    ))
     if (selectedId === id) setSelectedId(null)
   }
 
   const handleSave = async () => {
+    if (!title.trim()) return
     setSaving(true)
     try {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
-      await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint })
+      await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description })
     } finally {
       setSaving(false)
     }
@@ -544,6 +590,14 @@ export default function FormBuilder(props: BuilderProps) {
     >
       {/* 上部バー */}
       <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-gray-200">
+        <label className="min-w-48 flex-1">
+          <span className="block text-[10px] text-gray-500 mb-0.5">タイトル</span>
+          <input aria-label="フォームタイトル" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm" />
+        </label>
+        <label className="min-w-56 flex-[2]">
+          <span className="block text-[10px] text-gray-500 mb-0.5">説明</span>
+          <textarea aria-label="フォーム説明" rows={1} value={description} onChange={(e) => setDescription(e.target.value)} className="w-full resize-y rounded border border-gray-300 bg-white px-2 py-1 text-sm" />
+        </label>
         <span className="text-xs text-white px-2 py-0.5 rounded" style={{ backgroundColor: statusColor }}>{statusLabel}</span>
         {(() => {
           // drift/sync 単一 badge (優先順位: 競合>更新あり>未同期>自動反映 / formSyncBadge 共有)。
@@ -558,7 +612,7 @@ export default function FormBuilder(props: BuilderProps) {
           )
         })()}
         <div className="flex-1" />
-        <button type="button" onClick={handleSave} disabled={saving} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>
+        <button type="button" onClick={handleSave} disabled={saving || !title.trim()} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>
           {saving ? '保存中...' : '保存'}
         </button>
         {props.onReimport && !reimportConfirm && (
