@@ -49,7 +49,7 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
   test('form 作成 → field を mapped payload で push → logic を slug ベースで push', async () => {
     const { client, calls } = mockClient({
       post: [
-        () => ({ ok: true, status: 201, data: { data: { form: { slug: 'FORMSLUG', full_form_address: 'https://forms.formaloo.net/FORMSLUG' } } } }),
+        () => ({ ok: true, status: 201, data: { data: { form: { slug: 'FORMSLUG', full_form_address: 'https://demo-forms.formaloo.me/f/FORMSLUG' } } } }),
         () => ({ ok: true, status: 201, data: { data: { field: { slug: 'FS1' } } } }),
         () => ({ ok: true, status: 201, data: { data: { field: { slug: 'FS2' } } } }),
       ],
@@ -59,7 +59,7 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
     expect(r.ok).toBe(true);
     expect(r.formalooSlug).toBe('FORMSLUG');
     expect(r.fieldSlugs).toEqual({ h1: 'FS1', h2: 'FS2' });
-    expect(r.publicAddress).toBe('https://forms.formaloo.net/FORMSLUG');
+    expect(r.publicAddress).toBe('https://demo-forms.formaloo.me/f/FORMSLUG');
 
     // form 作成呼び出し
     expect(calls[0]).toMatchObject({ method: 'POST', path: '/v3.0/forms/', body: { title: 'テスト' } });
@@ -91,6 +91,38 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
         ],
       },
     ]);
+  });
+
+  test('⑤(a): create 応答に full_form_address 欠落 → GET /v3.0/forms/{slug}/ を 1 回叩いて正本を取込む', async () => {
+    // address_is_universal:false の account では create 応答が slug のみを返し full_form_address を欠く実挙動。
+    // host 推測補完 (o.formaloo.co) は soft-200 エラーページに着地する (実測 2026-07-17) ため、正本 full_form_address を
+    // GET で確実に取り込む。
+    const { client, calls } = mockClient({
+      post: [
+        () => ({ ok: true, status: 201, data: { data: { form: { slug: 'FORMSLUG' } } } }),
+      ],
+      request: [
+        () => ({ ok: true, status: 200, data: { data: { form: { slug: 'FORMSLUG', full_form_address: 'https://demo-forms.formaloo.me/f/FORMSLUG' } } } }),
+      ],
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: null, title: 't', fields: [], logic: [] });
+    expect(r.ok).toBe(true);
+    expect(r.publicAddress).toBe('https://demo-forms.formaloo.me/f/FORMSLUG');
+    // create 直後に form GET を 1 回だけ (host 推測補完はしない)
+    const gets = calls.filter((c) => c.method === 'GET' && c.path === '/v3.0/forms/FORMSLUG/');
+    expect(gets).toHaveLength(1);
+  });
+
+  test('⑤(a): create 応答に full_form_address があれば追加 GET を叩かない (余分な往復なし)', async () => {
+    const { client, calls } = mockClient({
+      post: [
+        () => ({ ok: true, status: 201, data: { data: { form: { slug: 'FORMSLUG', full_form_address: 'https://demo-forms.formaloo.me/f/FORMSLUG' } } } }),
+      ],
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: null, title: 't', fields: [], logic: [] });
+    expect(r.ok).toBe(true);
+    expect(r.publicAddress).toBe('https://demo-forms.formaloo.me/f/FORMSLUG');
+    expect(calls.some((c) => c.method === 'GET' && c.path === '/v3.0/forms/FORMSLUG/')).toBe(false);
   });
 
   test('T-C1: choice source が choiceItems を持つ既存 form → PATCH bare-array の when を {type:choice,value:slug} で生成 (fieldby 経由 / hosted 発火)', async () => {
@@ -325,7 +357,7 @@ describe('pushDefinitionToFormaloo — upsert 冪等化 (T-A1)', () => {
     });
     const r = await pushDefinitionToFormaloo(client, { formalooSlug: null, title: 't', fields: [textField, choiceField], logic: [] });
     expect(r.ok).toBe(true);
-    expect(calls.filter((c) => c.method === 'GET').length).toBe(0); // probe 0 回 (B2)
+    expect(calls.filter((c) => c.method === 'GET' && c.path.startsWith('/v3.0/fields/')).length).toBe(0); // field probe 0 回 (B2)
     expect(calls.filter((c) => c.method === 'POST' && c.path === '/v3.0/fields/').length).toBe(2); // 全 field POST
     expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
     expect(r.fieldSlugs).toEqual({ h1: 'fs1', h2: 'fs2' });

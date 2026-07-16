@@ -404,7 +404,7 @@ describe('forms-advanced publish gate (T-B3 / N-7)', () => {
     const id = await createForm();
     // push 成功をシミュレート: definition_json に formalooAddress を注入
     raw.prepare(`UPDATE formaloo_forms SET definition_json=? WHERE id=?`).run(
-      JSON.stringify({ fields: [], logic: [], formalooAddress: 'https://forms.formaloo.net/abc' }), id,
+      JSON.stringify({ fields: [], logic: [], formalooAddress: 'https://demo-forms.formaloo.me/f/abc' }), id,
     );
     await call('POST', `/api/forms-advanced/${id}/submit-for-review`);
     await call('POST', `/api/forms-advanced/${id}/publish`);
@@ -412,13 +412,13 @@ describe('forms-advanced publish gate (T-B3 / N-7)', () => {
     expect(embed.status).toBe(200);
     const d = (await embed.json() as { data: { embedCode: string; publicUrl: string } }).data;
     expect(d.embedCode).toContain('<iframe');
-    expect(d.publicUrl).toBe('https://forms.formaloo.net/abc');
+    expect(d.publicUrl).toBe('https://demo-forms.formaloo.me/f/abc');
   });
 
   test('unpublish (published→draft) で URL 即無効化', async () => {
     const id = await createForm();
     raw.prepare(`UPDATE formaloo_forms SET definition_json=? WHERE id=?`).run(
-      JSON.stringify({ fields: [], logic: [], formalooAddress: 'https://forms.formaloo.net/abc' }), id,
+      JSON.stringify({ fields: [], logic: [], formalooAddress: 'https://demo-forms.formaloo.me/f/abc' }), id,
     );
     await call('POST', `/api/forms-advanced/${id}/submit-for-review`);
     await call('POST', `/api/forms-advanced/${id}/publish`);
