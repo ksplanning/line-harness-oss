@@ -228,3 +228,30 @@ describe('T-B3 — FormDisplayType モデル + jump preserve 往復不変 (prese
     expect((resent as any[])[1].actions[0].action).toBe('jump_to_success_page');
   });
 });
+
+describe('R-1 — 後方互換: jump 未使用 + 既存 show/hide + form_type 未設定 が byte/挙動不変', () => {
+  test('show/hide のみ (非 choice source) の edited-push は constant operand の bare-array で byte 安定', () => {
+    const rules: HarnessLogicRule[] = [
+      { id: 'r1', sourceFieldId: 'src', operator: 'equals', value: 'はい', action: 'show', targetFieldId: 'tgt' },
+      { id: 'r2', sourceFieldId: 'src', operator: 'not_equals', value: 'いいえ', action: 'hide', targetFieldId: 'tgt2' },
+    ]
+    const out = toFormalooRawLogic(rules, slugId, () => textField('src')) as any[]
+    expect(out).toEqual([
+      { type: 'field', identifier: 'src', actions: [{ action: 'show', args: [{ type: 'field', identifier: 'tgt' }], when: { operation: 'is', args: [{ type: 'field', value: 'src' }, { type: 'constant', value: 'はい' }] } }] },
+      { type: 'field', identifier: 'src', actions: [{ action: 'hide', args: [{ type: 'field', identifier: 'tgt2' }], when: { operation: 'is_not', args: [{ type: 'field', value: 'src' }, { type: 'constant', value: 'いいえ' }] } }] },
+    ])
+  })
+
+  test('jump を含まない rawLogic の preserve 往復は不変 (経路1 不可侵の再確認)', () => {
+    const showHideRaw = [
+      { type: 'field', identifier: 's', actions: [{ action: 'show', args: [{ type: 'field', identifier: 't' }], when: { operation: 'is', args: [{ type: 'field', value: 's' }, { type: 'constant', value: 'x' }] } }] },
+    ]
+    expect(serializeRawLogicForPush(showHideRaw)).toEqual(showHideRaw)
+    expect(semanticLogicEqual(serializeRawLogicForPush(showHideRaw), showHideRaw)).toBe(true)
+  })
+
+  test('HarnessFormDefinition は formType 未設定でも有効 (後方互換)', () => {
+    const def: HarnessFormDefinition = { fields: [], logic: [] }
+    expect('formType' in def).toBe(false)
+  })
+})
