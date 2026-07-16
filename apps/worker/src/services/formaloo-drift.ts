@@ -24,7 +24,7 @@ import {
   recordFormalooDriftEvent,
   type FormalooForm,
 } from '@line-crm/db';
-import { formalooDefinitionFingerprint, countWeakenedFormalooRules } from '@line-crm/shared';
+import { formalooDefinitionFingerprint, countWeakenedFormalooRules, normalizeFormDesign, type FormDesign } from '@line-crm/shared';
 import { buildPullResult, extractFieldsList, extractRawLogic, extractLogic } from './formaloo-pull.js';
 import type { FormalooClient } from './formaloo-client.js';
 
@@ -101,6 +101,18 @@ function parseFormalooAddress(definitionJson: string): string | null {
   }
 }
 
+/** definition_json から保存済み form-design を取り出す (auto-apply で design を carry / gap-check #2)。 */
+function parseStoredDesign(definitionJson: string): FormDesign | undefined {
+  try {
+    const d = JSON.parse(definitionJson) as { design?: unknown };
+    return d?.design && typeof d.design === 'object' && !Array.isArray(d.design)
+      ? normalizeFormDesign(d.design)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * auto-apply: pull 結果を D1 のみに反映 (push しない)。field_map の formaloo_field_slug は
  * `existingMap[id] ?? fieldSlugById[id]` で carry (slug wipe → 重複 push 回帰を防ぐ / T-B3)。
@@ -124,12 +136,18 @@ async function applyDriftToD1(
   const pull = buildPullResult(body, (s) => bySlug.get(s) ?? s);
   if (!pull.ok) return false;
 
+  // form-design carry (gap-check #2 BLOCKER): remote body の design を優先、無ければ local(保存済み)
+  // design を保つ。carry しないと fields/logic だけの無関係 drift で保存済み design が消える。
+  const localDesign = parseStoredDesign(form.definition_json);
+  const design = pull.design && Object.keys(pull.design).length ? pull.design : localDesign;
+
   const definitionJson = JSON.stringify({
     fields: pull.fields,
     logic: pull.logic,
     formalooAddress: parseFormalooAddress(form.definition_json),
     ...(pull.rawLogic != null ? { rawLogic: pull.rawLogic } : {}),
     logicFingerprint: pull.logicFingerprint,
+    ...(design && Object.keys(design).length ? { design } : {}),
   });
   const fieldRows = pull.fields.map((f) => ({
     id: f.id,
