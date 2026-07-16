@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   toFormalooRawLogic,
   fromFormalooRawLogic,
+  fromFormalooField,
   isExpandableTerminalItem,
   isExpandableMultiJumpItem,
   countWeakenedFormalooRules,
@@ -294,6 +295,14 @@ describe('C5 — computeRouteTerminalWarnings (T-A5)', () => {
     const logic = [...abcJumps, submitRule('sa', 'A2'), submitRule('sb', 'B2')];
     const w = computeRouteTerminalWarnings(abcFields(), logic, 'multi_step');
     expect(w.some((m) => m.includes('データ損失'))).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('T-C4b — fromFormalooField は success_page type を安全に null-drop (Phase1 crash 防御)', () => {
+  it('type=success_page 要素は null (harness field 化しない・pull が crash しない)', () => {
+    const spElement = { type: 'success_page', slug: 'sp1', title: 'THANKS', description: 'done', is_default: false, position: 11 };
+    expect(fromFormalooField(spElement)).toBeNull();
   });
 });
 

@@ -69,6 +69,12 @@ export async function pushDefinitionToFormaloo(
     formType?: FormDisplayType;
     /** pull 時点の form_type (baseline)。formType との差分判定に使う。 */
     prevFormType?: FormDisplayType;
+    /**
+     * route-terminal-submit (T-C5): logic が空 (編集で全 rule 削除) の時に `PATCH {logic:[]}` を送って
+     * remote logic を明示クリアするか。default(false) は従来どおり空 logic では PATCH を送らない
+     * (design のみ save 等で remote logic を勝手に消さない = byte 不変)。最後の submit 削除で早期送信を消す用。
+     */
+    clearLogicIfEmpty?: boolean;
   },
 ): Promise<PushResult> {
   const existingFieldSlugs = params.existingFieldSlugs ?? {};
@@ -172,6 +178,10 @@ export async function pushDefinitionToFormaloo(
     const logicArray = toFormalooRawLogic(params.logic, (hid) => fieldSlugs[hid], fieldById);
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: logicArray });
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic push failed: HTTP ${res.status}` };
+  } else if (params.clearLogicIfEmpty) {
+    // route-terminal-submit (T-C5): 編集で logic 空 → 明示クリア (最後の submit 削除で remote 早期送信を消す)。
+    const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: [] });
+    if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic clear failed: HTTP ${res.status}` };
   }
 
   // 4) form-route-branching R2: form_type を pull baseline から変化した時のみ PATCH (idempotent / 勝手に変えない)。

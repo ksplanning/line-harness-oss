@@ -34,6 +34,9 @@ import {
   parseCsv,
   logicFingerprint,
   normalizeFormDesign,
+  countWeakenedFormalooRules,
+  serializeRawLogicForPush,
+  computeRouteTerminalWarnings,
   type HarnessField,
   type HarnessLogicRule,
   type FormDesign,
@@ -279,7 +282,14 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const fieldIds = new Set(fields.map((f) => f.id));
     const decorationIds = new Set(fields.filter((f) => isDecorationType(f.type)).map((f) => f.id));
     const logic: HarnessLogicRule[] = (rawLogicRules as HarnessLogicRule[]).filter((r) => {
-      if (!r || !fieldIds.has(r.sourceFieldId) || !fieldIds.has(r.targetFieldId)) return false;
+      if (!r || !fieldIds.has(r.sourceFieldId)) return false;
+      // route-terminal-submit (T-C3): submit rule は target 空 (既定完了ページ) を許可 = target を idSet 照合しない。
+      //   Phase2 の success-page target は success-page 集合で別途照合 (Phase1 は空のみ)。
+      if (r.action === 'submit') {
+        if (r.targetFieldId !== '' && !fieldIds.has(r.targetFieldId)) return false;
+      } else if (!fieldIds.has(r.targetFieldId)) {
+        return false;
+      }
       // 条件源 (source) は常に実入力 field (decoration を条件源にしない)。
       if (decorationIds.has(r.sourceFieldId)) return false;
       // target: form-route-branching — jump は page_break(改ページ=decoration)へ飛ぶのが正。
@@ -316,6 +326,12 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     let preserveRawLogic: unknown = undefined; // 未編集時に PATCH で verbatim 再送する bare array
     let persistRawLogic: unknown = undefined; // definition_json に保存する rawLogic
     let compoundEditWarning: string | null = null;
+    // route-terminal-submit (T-C5): 編集で logic が空になったら remote logic を明示クリア (最後の submit 削除で
+    //   Formaloo 側の早期送信が残らないように PATCH {logic:[]} を送る)。preserve / compound-refuse では立てない。
+    //   前回 logic (harness or raw) が非空だった時のみ = design/metadata のみ save (元々 logic 無し) では立てない。
+    const prevRawArr = serializeRawLogicForPush(prevDef.rawLogic);
+    const prevHadLogic = (Array.isArray(prevDef.logic) && prevDef.logic.length > 0) || (prevRawArr != null && prevRawArr.length > 0);
+    let clearRemoteLogicIfEmpty = false;
     if (logicUnedited) {
       if (carriedRawLogic != null) {
         preserveRawLogic = carriedRawLogic;
@@ -323,15 +339,30 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       }
       // carriedRawLogic 無し (レガシー) は下の client ブロックで re-pull backfill (R6)。
     } else if (hadRawLogic) {
-      // 複合ロジック (Formaloo 由来 raw あり) を builder で編集 → Batch 1 は merge 不可 (Batch 2)。
-      // 破壊的な logic 全置換 push を **行わず** ローカル保存を維持し、未同期 + 明示警告 (silent 消失回避 /
-      // failure_observable「保持はするが push で落とす」を防ぐ)。複合編集は Formaloo 側で行う導線を提示。
-      logicToPush = [];
-      persistRawLogic = undefined; // stale raw は破棄 (次回 reload は re-pull backfill 経路)
-      compoundEditWarning =
-        '複合ロジックを編集したため未同期です。複合条件（AND/OR・複数アクション・計算）は Formaloo 側で編集してください（この画面での複合編集は今後対応）。';
+      // route-terminal-submit (T-A8): raw が **terminal-only** (submit/jump 系のみ = 弱化ゼロ) なら編集後 logic を
+      //   安全に再生成 push できる (欠けなく往復する射影)。未対応 compound (AND/OR・計算・show/hide 複数) 混在時のみ
+      //   従来どおり破壊 push を避けて refuse (silent 消失回避)。
+      const carriedArray = serializeRawLogicForPush(carriedRawLogic);
+      const terminalOnly = carriedArray != null && countWeakenedFormalooRules(carriedArray) === 0;
+      if (terminalOnly) {
+        logicToPush = logic; // 編集後 harness logic を再生成 push
+        persistRawLogic = undefined; // raw は再生成 logic に置き換え (次回 reload は re-pull backfill)
+        if (logic.length === 0 && prevHadLogic) clearRemoteLogicIfEmpty = true; // 全 submit/jump 削除 → remote 空へ
+      } else {
+        // 複合ロジック (Formaloo 由来 raw あり) を builder で編集 → Batch 1 は merge 不可 (Batch 2)。
+        // 破壊的な logic 全置換 push を **行わず** ローカル保存を維持し、未同期 + 明示警告 (silent 消失回避 /
+        // failure_observable「保持はするが push で落とす」を防ぐ)。複合編集は Formaloo 側で行う導線を提示。
+        logicToPush = [];
+        persistRawLogic = undefined; // stale raw は破棄 (次回 reload は re-pull backfill 経路)
+        compoundEditWarning =
+          '複合ロジックを編集したため未同期です。複合条件（AND/OR・複数アクション・計算）は Formaloo 側で編集してください（この画面での複合編集は今後対応）。';
+      }
+    } else if (logic.length === 0 && prevHadLogic) {
+      // 純ハーネス logic (raw 無し) を非空→空へ編集 → remote logic を明示クリア (早期送信/分岐が remote に残らない)。
+      //   元々 logic 無しの design/metadata のみ save では立てない (byte 不変・回帰)。
+      clearRemoteLogicIfEmpty = true;
     }
-    // else: 純ハーネス logic の編集 (raw 無し) → 従来通り push。
+    // else: 純ハーネス logic の編集 (raw 無し・非空) → 従来通り push。
     // B3: 最初の save (field_map 全置換) より前に既存 field_map の slug を捕捉。
     // これで (a) push へ update-vs-create の追跡キーを渡せ (重複作成を根絶)、(b) 最初の save で slug を
     // carry して push 失敗時も slug を喪失しない (次回保存で PATCH 復帰 = 重複再発防止)。
@@ -375,6 +406,9 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         '「ページへ飛ぶ」分岐がありますが、表示形式が「1問ずつ表示」ではありません。ページ移動は「1問ずつ表示（multi_step）」でのみ動作します。表示形式を切り替えてください。',
       );
     }
+    // route-terminal-submit (T-D1): なだれ込み/送信不能/データ損失 lint を save レスポンス warnings に additive 合流。
+    //   純 show/hide フォームは 0 件 (computeRouteTerminalWarnings 保証) = 既存 backstop 文言は byte 不変。
+    for (const w of computeRouteTerminalWarnings(fields, logic, formTypeToPersist)) saveWarnings.push(w);
 
     // preserve-raw: rawLogic (逐語) + logicFingerprint を additive JSON key で同梱 (migration 不要 / L-10)。
     const buildDefinitionJson = (address: string | null): string =>
@@ -439,6 +473,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         logic: logicToPush,
         existingFieldSlugs,
         preserveRawLogic,
+        // route-terminal-submit (T-C5): 編集で logic 空になった時 remote logic を明示クリア (PATCH {logic:[]})。
+        clearLogicIfEmpty: clearRemoteLogicIfEmpty,
         // form-route-branching R2: baseline 差分時のみ form_type PATCH (勝手に変えない)。
         formType: formTypeToPersist,
         prevFormType: prevDef.formType,
