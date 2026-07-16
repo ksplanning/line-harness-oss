@@ -66,6 +66,8 @@ export interface HarnessFieldConfig {
   allowedExtensions?: string[];
   /** section の本文=description */
   text?: string;
+  /** 入力項目の補足説明 (Help text / Formaloo field description)。全入力型で表示。section 本文(text)とは別欄。 */
+  description?: string;
 }
 
 export interface HarnessField {
@@ -195,6 +197,10 @@ export function validateHarnessField(
     if (typeof rawCfg.text !== 'string') return { ok: false, error: 'config.text must be string' };
     config.text = rawCfg.text;
   }
+  if (rawCfg.description !== undefined) {
+    if (typeof rawCfg.description !== 'string') return { ok: false, error: 'config.description must be string' };
+    config.description = rawCfg.description;
+  }
 
   return {
     ok: true,
@@ -234,6 +240,9 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
     position: field.position,
   };
   const c = field.config;
+  // 入力項目の補足説明 (Help text)。Formaloo は全入力型 field で `description` を Help text として配信する
+  // (spike 実測: CharFieldRequest/TextFieldRequest 共通プロパティ)。section 経路 (上) の description=本文とは別。
+  if (c.description !== undefined) p.description = c.description;
   if (c.maxLength !== undefined) p.max_length = c.maxLength;
   if (c.minLength !== undefined) p.min_length = c.minLength;
   // choice/dropdown/multiple_select の選択肢は Formaloo writeOnly `choice_items` ([{title}] 形式) で送る。
@@ -293,6 +302,8 @@ export function fromFormalooField(
   if (!type) return null; // MVP subset 外 = 復元しない (M-21)
 
   const config: HarnessFieldConfig = {};
+  // 入力項目の補足説明 (Help text) を復元。section 経路 (上) は description→config.text にマップ済のためここは入力型のみ。
+  if (typeof o.description === 'string') config.description = o.description;
   if (typeof o.max_length === 'number' && Number.isFinite(o.max_length)) config.maxLength = o.max_length;
   if (typeof o.min_length === 'number' && Number.isFinite(o.min_length)) config.minLength = o.min_length;
   if (typeof o.allow_multiple_files === 'boolean') config.allowMultipleFiles = o.allow_multiple_files;
