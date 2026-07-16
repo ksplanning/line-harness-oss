@@ -206,6 +206,64 @@ describe('C3 — pull 展開 isExpandableTerminalItem (T-A3)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe('F-HIGH-2 — isExpandableTerminalItem 厳密検証 (負例は非展開・raw保持)', () => {
+  // 正例 (自己参照 is_answered / submit args空 / jsp target必須 / 正順)
+  const okSubmit = { type: 'field', identifier: 'tail', actions: [{ action: 'submit', args: [], when: generateSubmitWhen('tail') }] };
+  const okPair = { type: 'field', identifier: 'tail', actions: [
+    { action: 'jump_to_success_page', args: [{ type: 'field', identifier: 'sp1' }], when: generateSubmitWhen('tail') },
+    { action: 'submit', args: [], when: generateSubmitWhen('tail') },
+  ] };
+
+  it('正例 (自己参照 submit / 隣接ペア) は expandable', () => {
+    expect(isExpandableTerminalItem(okSubmit)).toBe(true);
+    expect(isExpandableTerminalItem(okPair)).toBe(true);
+  });
+
+  it('非自己参照 submit (when.field.value !== item.identifier) は非展開', () => {
+    const item = { type: 'field', identifier: 'tail', actions: [{ action: 'submit', args: [], when: generateSubmitWhen('OTHER') }] };
+    expect(isExpandableTerminalItem(item)).toBe(false);
+  });
+
+  it('submit args が空でない (汚れた args) は非展開', () => {
+    const item = { type: 'field', identifier: 'tail', actions: [{ action: 'submit', args: [{ type: 'field', identifier: 'x' }], when: generateSubmitWhen('tail') }] };
+    expect(isExpandableTerminalItem(item)).toBe(false);
+  });
+
+  it('jump_to_success_page が target identifier を欠く (args 空) は非展開', () => {
+    const item = { type: 'field', identifier: 'tail', actions: [
+      { action: 'jump_to_success_page', args: [], when: generateSubmitWhen('tail') },
+      { action: 'submit', args: [], when: generateSubmitWhen('tail') },
+    ] };
+    expect(isExpandableTerminalItem(item)).toBe(false);
+  });
+
+  it('順序逆転 (submit → jump_to_success_page) は非展開', () => {
+    const item = { type: 'field', identifier: 'tail', actions: [
+      { action: 'submit', args: [], when: generateSubmitWhen('tail') },
+      { action: 'jump_to_success_page', args: [{ type: 'field', identifier: 'sp1' }], when: generateSubmitWhen('tail') },
+    ] };
+    expect(isExpandableTerminalItem(item)).toBe(false);
+  });
+
+  it('terminal の後に jump が来る (jump 後置) は非展開', () => {
+    const item = { type: 'field', identifier: 'q1', actions: [
+      { action: 'submit', args: [], when: generateSubmitWhen('q1') },
+      { action: 'jump', args: [{ type: 'field', identifier: 'pA' }], when: { operation: 'is', args: [{ type: 'field', value: 'q1' }, { type: 'choice', value: 'A' }] } },
+    ] };
+    expect(isExpandableTerminalItem(item)).toBe(false);
+  });
+
+  it('正順 jump → jsp → submit (自己参照) は expandable', () => {
+    const item = { type: 'field', identifier: 'q1', actions: [
+      { action: 'jump', args: [{ type: 'field', identifier: 'pA' }], when: { operation: 'is', args: [{ type: 'field', value: 'q1' }, { type: 'choice', value: 'A' }] } },
+      { action: 'jump_to_success_page', args: [{ type: 'field', identifier: 'sp1' }], when: generateSubmitWhen('q1') },
+      { action: 'submit', args: [], when: generateSubmitWhen('q1') },
+    ] };
+    expect(isExpandableTerminalItem(item)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 describe('C4 — countWeakenedFormalooRules terminal 除外 (T-A4)', () => {
   it('submit / 隣接ペア item は弱化 0', () => {
     const items = [
@@ -297,6 +355,40 @@ describe('C5 — computeRouteTerminalWarnings (T-A5)', () => {
     const logic = [...abcJumps, submitRule('sa', 'A2'), submitRule('sb', 'B2')];
     const w = computeRouteTerminalWarnings(abcFields(), logic, 'multi_step');
     expect(w.some((m) => m.includes('データ損失'))).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('F-MED-3 — lint(b) は submit で閉じたルートに誤警告しない (誤解ゼロ)', () => {
+  // A/B 2ルート・両末尾に submit・submit host は自動 required 化 (案A)。全ルート submit 閉鎖 = 通常 Submit 到達路なし。
+  function twoClosedFields(): HarnessField[] {
+    return [
+      field('q1', 'choice', 0),
+      field('pbA', 'page_break', 1),
+      field('A1', 'text', 2),
+      field('A2', 'text', 3, true), // submit host = 自動 required
+      field('pbB', 'page_break', 4),
+      field('B1', 'text', 5),
+      field('B2', 'text', 6, true), // submit host = 自動 required
+    ];
+  }
+  const jumps: HarnessLogicRule[] = [
+    jumpRule('j1', 'q1', 'A', 'pbA'),
+    jumpRule('j2', 'q1', 'B', 'pbB'),
+  ];
+
+  it('全ルートを submit で閉じたフォームは lint(b) 送信不能警告 0 件', () => {
+    const logic = [...jumps, submitRule('sa', 'A2'), submitRule('sb', 'B2')];
+    const w = computeRouteTerminalWarnings(twoClosedFields(), logic, 'multi_step');
+    expect(w.some((m) => m.includes('送信でき') || (m.includes('必須') && m.includes('飛ばした')))).toBe(false);
+  });
+
+  it('submit で閉じていない開放ルートが required をスキップする時は lint(b) を出す (footgun は残す)', () => {
+    // A ルートのみ submit で閉じ、B ルートは開放 (通常 Submit へ到達)。A2 required が B ルートでスキップ → 警告。
+    const logic = [...jumps, submitRule('sa', 'A2')]; // B は submit なし = 開放
+    const w = computeRouteTerminalWarnings(twoClosedFields(), logic, 'multi_step');
+    // A2(required, pos3) は jump B(q1→pbB pos4) にスキップされ、B ルートは通常 Submit へ到達 → 警告
+    expect(w.some((m) => m.includes('必須') && m.includes('飛ばした'))).toBe(true);
   });
 });
 

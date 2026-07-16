@@ -667,33 +667,58 @@ export function isExpandableTerminalItem(item: unknown): boolean {
   const it = item as Record<string, unknown>;
   const rawActions = Array.isArray(it.actions) ? it.actions : [];
   if (rawActions.length === 0) return false;
+  const hostSlug = typeof it.identifier === 'string' ? it.identifier : '';
+  if (!hostSlug) return false; // host identifier 必須 (自己参照 when の照合基準)
   const verbs = rawActions.map((a) => (a && typeof a === 'object' ? (a as Record<string, unknown>).action : undefined));
   // terminal item = submit または jump_to_success_page を含む (pure-jump は isExpandableMultiJumpItem へ委譲)
   if (!verbs.some((v) => v === 'submit' || v === 'jump_to_success_page')) return false;
-  // 全 action の verb + when 形を検証
-  for (const a of rawActions) {
-    const ao = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
-    const verb = ao.action;
-    if (verb !== 'jump' && verb !== 'jump_to_success_page' && verb !== 'submit') return false;
-    const flat = flattenRawWhen(ao.when, (s) => s);
-    if (flat.join) return false; // and/or は展開しない
-    if (flat.conditions.length !== 1) return false;
-    const op = flat.conditions[0].operator;
-    if (verb === 'submit' || verb === 'jump_to_success_page') {
-      // terminal trigger: submit / ペアの jump_to_success_page は host 自己参照 is_answered を共有 (S-1)。
-      // always(on_reach) 等は封印 = 非展開 (データ損失毒)。
-      if (op !== 'is_answered') return false;
-    } else if (op !== 'is' && op !== 'is_not') {
-      return false; // jump は routing = is/is_not
-    }
-  }
-  // pairing: 各 jump_to_success_page は「直後に同一 raw when の submit」が隣接 (単独 jsp は no-op = 非展開)。
+
+  // F-HIGH-2 厳密検証: submit は host 自己参照 is_answered ∧ args 空 / jsp は自己参照 is_answered ∧ target identifier 必須。
+  //   terminal(jsp/submit) の後に jump は不可 (total order 通常jump→jsp→submit)。各 jsp は直後 submit と隣接ペア(when 一致)。
+  const isSelfRefIsAnswered = (when: unknown): boolean => {
+    if (!when || typeof when !== 'object') return false;
+    const w = when as Record<string, unknown>;
+    if (w.operation !== 'is_answered') return false;
+    const args = Array.isArray(w.args) ? w.args : [];
+    if (args.length !== 1) return false; // is_answered は field operand 1 個のみ
+    const o = (args[0] && typeof args[0] === 'object' ? args[0] : {}) as Record<string, unknown>;
+    return o.type === 'field' && o.value === hostSlug; // 自己参照 (host)
+  };
+  const targetIdentifier = (a: Record<string, unknown>): string => {
+    const args = Array.isArray(a.args) ? a.args : [];
+    const tgt = args.map((x) => (x && typeof x === 'object' ? (x as Record<string, unknown>) : {})).find((x) => typeof x.identifier === 'string');
+    return typeof tgt?.identifier === 'string' ? (tgt.identifier as string) : '';
+  };
+
+  let terminalSeen = false;
   for (let i = 0; i < rawActions.length; i++) {
     const ao = (rawActions[i] && typeof rawActions[i] === 'object' ? rawActions[i] : {}) as Record<string, unknown>;
-    if (ao.action !== 'jump_to_success_page') continue;
-    const next = (rawActions[i + 1] && typeof rawActions[i + 1] === 'object' ? rawActions[i + 1] : {}) as Record<string, unknown>;
-    if (next.action !== 'submit') return false; // 直後が submit でない = 単独 jsp
-    if (!semanticLogicEqual(ao.when, next.when)) return false; // when 完全一致でなければペア不成立
+    const verb = ao.action;
+    if (verb === 'jump') {
+      if (terminalSeen) return false; // jump は terminal より前 (total order 違反)
+      const flat = flattenRawWhen(ao.when, (s) => s);
+      if (flat.join || flat.conditions.length !== 1) return false;
+      const op = flat.conditions[0].operator;
+      if (op !== 'is' && op !== 'is_not') return false;
+    } else if (verb === 'jump_to_success_page') {
+      terminalSeen = true;
+      if (!isSelfRefIsAnswered(ao.when)) return false; // 自己参照 is_answered
+      if (Array.isArray(ao.args) === false || !targetIdentifier(ao)) return false; // target identifier 必須
+      // 隣接ペア: 直後は submit (同一 when)。
+      const next = (rawActions[i + 1] && typeof rawActions[i + 1] === 'object' ? rawActions[i + 1] : {}) as Record<string, unknown>;
+      if (next.action !== 'submit') return false; // 単独 jsp = no-op
+      if (!semanticLogicEqual(ao.when, next.when)) return false;
+      const nextArgs = Array.isArray(next.args) ? next.args : null;
+      if (!nextArgs || nextArgs.length !== 0) return false; // submit args 空
+      i += 1; // ペアの submit を消費
+    } else if (verb === 'submit') {
+      terminalSeen = true;
+      if (!isSelfRefIsAnswered(ao.when)) return false; // 自己参照 is_answered (always/on_reach 封印)
+      const args = Array.isArray(ao.args) ? ao.args : null;
+      if (!args || args.length !== 0) return false; // submit args 空
+    } else {
+      return false; // 未モデル verb
+    }
   }
   return true;
 }
@@ -969,11 +994,27 @@ export function computeRouteTerminalWarnings(
     push(`「${seg.pageBreak?.label || 'ページ'}」のルートが「ここで送信」で閉じられていません。公開フォームでは次の質問へ流れ込みます（なだれ込み）。ルート末尾に「ここで送信」を追加してください。`);
   }
 
-  // (b) 送信不能: jump が飛び越える区間 (source と target の間) の required → 最終 Submit がブロックされ得る。
+  // (b) 送信不能: jump が飛び越える区間 (source と target の間) の required → **通常 Submit** がブロックされ得る。
+  //   F-MED-3: 早期 submit (logic submit) は他ページ required を素通しする (R-f)。よって飛越先ルートが submit で
+  //   閉じる (通常 Submit へ到達しない) 場合は required がブロックしない = 誤警告になる → 抑制する。
+  //   飛越先 (jump target 区間) から末尾まで submit-close が無い = 通常 Submit へ到達する時のみ warn。
+  const routeReachesNormalSubmit = (startSegIdx: number): boolean => {
+    for (let i = startSegIdx; i < segments.length; i++) {
+      const seg = segments[i];
+      if (seg.inputs.length === 0) continue;
+      const last = seg.inputs[seg.inputs.length - 1];
+      if (submitHostIds.has(last.id)) return false; // この区間で早期 submit → 通常 Submit へ到達しない
+    }
+    return true; // 末尾まで submit-close 無し = 通常 Submit へ到達
+  };
   for (const jr of jumpRules) {
     const src = byId.get(jr.sourceFieldId);
     const tgt = byId.get(jr.targetFieldId);
     if (!src || !tgt) continue;
+    // jump target 区間の index を特定 (target = page_break id)。
+    const targetSegIdx = segments.findIndex((s) => s.pageBreak != null && s.pageBreak.id === jr.targetFieldId);
+    if (targetSegIdx < 0) continue;
+    if (!routeReachesNormalSubmit(targetSegIdx)) continue; // 飛越先が submit で閉じる = required ブロックなし (誤警告抑制)
     for (const f of ordered) {
       if (isDecorationType(f.type)) continue;
       if (f.position > src.position && f.position < tgt.position && f.required) {
