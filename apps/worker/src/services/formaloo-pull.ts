@@ -3,9 +3,14 @@ import {
   fromFormalooLogic,
   countWeakenedFormalooRules,
   logicFingerprint,
+  formalooColorToHex,
+  normalizeFormDesign,
+  FORM_DESIGN_COLOR_KEYS,
+  FORM_DESIGN_TO_FORMALOO,
   type HarnessField,
   type HarnessLogicRule,
   type FormalooLogicObject,
+  type FormDesign,
 } from '@line-crm/shared';
 import type { FormalooClient } from './formaloo-client';
 
@@ -39,6 +44,12 @@ export type PullResult =
       rawLogic?: unknown;
       /** 射影 logic の canonical fingerprint (save 時に受領 logic と突合して「未編集」判定 / R7)。 */
       logicFingerprint?: string;
+      /**
+       * form-design (Batch D): Formaloo 側の色/画像 (テーマ) を harness canonical へ復元したもの。
+       * pull route が builder の initialDesign へ、drift auto-apply が definition_json へ carry する。
+       * 色は formalooColorToHex で多相吸収 (JSON-string RGBA / hex 両対応)。design が無いフォームは空 {}。
+       */
+      design?: FormDesign;
       /**
        * 各 harness field id → 元の Formaloo field slug (drift auto-apply の field_map slug carry 用 / T-B3)。
        * auto-apply が saveFormalooDefinition へ渡す field_map の formaloo_field_slug を `existingMap[id] ?? fieldSlugById[id]`
@@ -101,6 +112,54 @@ export function extractRawLogic(root: unknown): unknown[] | null {
 }
 
 /**
+ * form-detail JSON body から Formaloo form object を許容的に取り出す (read endpoint の shape 揺れ吸収)。
+ * design 系 key (theme_color / logo / background_image) か fields_list を持つ候補を優先する。
+ */
+function extractFormObject(root: unknown): Record<string, unknown> {
+  const r = (root ?? {}) as Record<string, any>;
+  const candidates = [r?.data?.form, r?.data, r?.form, r];
+  for (const c of candidates) {
+    if (c && typeof c === 'object' && !Array.isArray(c) &&
+      ('theme_color' in c || 'logo' in c || 'background_image' in c || 'fields_list' in c)) {
+      return c as Record<string, unknown>;
+    }
+  }
+  const first = candidates.find((c) => c && typeof c === 'object' && !Array.isArray(c));
+  return (first ?? {}) as Record<string, unknown>;
+}
+
+/** 最初に見つかった http(s) 文字列を返す (S3 URL 等)。無ければ undefined。 */
+function firstHttpUrl(...vals: unknown[]): string | undefined {
+  for (const v of vals) {
+    if (typeof v === 'string' && /^https?:\/\//i.test(v.trim())) return v.trim();
+  }
+  return undefined;
+}
+
+/**
+ * Formaloo GET body から form-design (色/画像テーマ) を harness canonical FormDesign へ復元する (T-B/OFF-LANE)。
+ *  - 色: `theme_color` 等 7 フィールドを formalooColorToHex で多相吸収 (fresh=JSON-string RGBA / hex 両対応)。
+ *  - logo: `logo`(S3 URL) 優先・`logo_url` fallback。カバー(ヘッダー背景) = `background_image`‖`background_image_url`。
+ *  - normalizeFormDesign で whitelist / http(s) URL 検証 / 不正値 drop (design 無しフォームは空 {})。
+ */
+export function extractDesign(root: unknown): FormDesign {
+  const f = extractFormObject(root);
+  const raw: Record<string, unknown> = {};
+  for (const key of FORM_DESIGN_COLOR_KEYS) {
+    const hex = formalooColorToHex(f[FORM_DESIGN_TO_FORMALOO[key]] as never);
+    if (hex !== null) raw[key] = hex;
+  }
+  if (typeof f.theme_name === 'string' && f.theme_name) raw.themeName = f.theme_name;
+  const logoUrl = firstHttpUrl(f.logo, f.logo_url);
+  if (logoUrl) raw.logoUrl = logoUrl;
+  const bgUrl = firstHttpUrl(f.background_image, f.background_image_url);
+  if (bgUrl) raw.backgroundImageUrl = bgUrl;
+  const coverUrl = firstHttpUrl(f.cover_image_url);
+  if (coverUrl) raw.coverImageUrl = coverUrl;
+  return normalizeFormDesign(raw);
+}
+
+/**
  * 既に GET 済みの form-detail body (res.data) を harness 定義へ変換 (GET を含まない純粋変換)。
  * pull route (下記 pullDefinitionFromFormaloo) と drift-check の auto-apply が同一 body から再利用する
  * (drift-check は fingerprint 用に 1 回だけ GET し、その body を本関数へ渡す = 二重 GET 回避)。
@@ -159,6 +218,8 @@ export function buildPullResult(
     ...(rawLogic != null ? { rawLogic } : {}),
     logicFingerprint: logicFingerprint(logic),
     fieldSlugById,
+    // form-design (Batch D): 色/画像テーマを復元 (design 無しは空 {})。
+    design: extractDesign(body),
   };
 }
 
