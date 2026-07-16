@@ -14,6 +14,8 @@ import {
   computeRouteTerminalWarnings,
   generateSubmitWhen,
   logicFingerprint,
+  serializeRawLogicForPush,
+  semanticLogicEqual,
   type HarnessField,
   type HarnessLogicRule,
 } from './formaloo-forms';
@@ -321,5 +323,32 @@ describe('S-3 — 後方互換 (submit 未使用フォームは射影不変)', (
         { action: 'jump', args: [{ type: 'field', identifier: 'pbA' }], when: { operation: 'is', args: [{ type: 'field', value: 'q1' }, { type: 'constant', value: 'y' }] } },
       ] },
     ]);
+  });
+
+  it('submit を足しても show/hide の logicFingerprint は不変 (LogicAction 拡張の byte 後方互換)', () => {
+    const legacy: HarnessLogicRule[] = [
+      { id: 'r1', sourceFieldId: 'q1', operator: 'equals', value: 'x', action: 'show', targetFieldId: 't1' },
+      { id: 'r2', sourceFieldId: 'q1', operator: 'not_equals', value: 'y', action: 'hide', targetFieldId: 't2' },
+    ];
+    // canonicalStringify(rules) は additive 型追加に影響されない (byte 固定 = 後方互換)。
+    expect(logicFingerprint(legacy)).toBe('[{"action":"show","id":"r1","operator":"equals","sourceFieldId":"q1","targetFieldId":"t1","value":"x"},{"action":"hide","id":"r2","operator":"not_equals","sourceFieldId":"q1","targetFieldId":"t2","value":"y"}]');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('S-4 — preserve-raw byte pin (submit-bearing raw も verbatim 再送)', () => {
+  it('submit-bearing bare array は serializeRawLogicForPush で byte 一致再送 (逐語保持)', () => {
+    const raw = [
+      { type: 'field', identifier: 'q1', actions: [
+        { action: 'jump', args: [{ type: 'field', identifier: 'pbA' }], when: { operation: 'is', args: [{ type: 'field', value: 'q1' }, { type: 'choice', value: 'ca' }] } },
+      ] },
+      { type: 'field', identifier: 'tail', actions: [
+        { action: 'submit', args: [], when: { operation: 'is_answered', args: [{ type: 'field', value: 'tail' }] } },
+      ] },
+    ];
+    const out = serializeRawLogicForPush(raw);
+    expect(out).not.toBeNull();
+    expect(semanticLogicEqual(out, raw)).toBe(true);
+    expect(JSON.stringify(out)).toBe(JSON.stringify(raw)); // 逐語 byte 一致
   });
 });
