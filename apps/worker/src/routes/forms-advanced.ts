@@ -414,8 +414,12 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
             })
           : { ok: false as const, status: 0 };
         // form-design 画像: meta 成功後に replace(multipart)/remove(JSON null) を反映し、確定 S3 URL を再永続。
+        // F1: applyDesignImages 失敗 (replace/remove の非 ok・不正 payload) は imageSyncError に集約し、
+        //     下の sync 判定で out_of_sync へ合流させる (silent success 禁止)。成功 slot のみ URL を確定。
+        let imageSyncError: string | null = null;
         if (metaRes.ok && slug && designImages) {
           const applied = await applyDesignImages(client, slug, designImages);
+          if (!applied.ok) imageSyncError = applied.error ?? '画像の同期に失敗しました';
           designToPersist = { ...(designToPersist ?? {}) };
           if ('logoUrl' in applied) {
             if (applied.logoUrl == null) delete designToPersist.logoUrl;
@@ -446,6 +450,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: compoundEditWarning,
             remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
+          });
+          syncSettled = true;
+        } else if (imageSyncError) {
+          // F1: 色/フィールドは同期したが画像 upload/削除が失敗 → out_of_sync で owner に surface
+          //     (meta PATCH 失敗と同じ経路)。owner が「ロゴ設定済」と誤認しないための honest state。
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync', lastError: imageSyncError,
           });
           syncSettled = true;
         } else {

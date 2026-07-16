@@ -14,9 +14,12 @@ function okForm(form: Record<string, unknown>) {
   return { ok: true as const, status: 200, data: { data: { form } } };
 }
 
-function mockClient() {
-  const requestForm = vi.fn(async () => okForm({ logo: 'https://s3/new-logo.png', background_image: 'https://s3/new-bg.png' }));
-  const request = vi.fn(async () => okForm({}));
+function failRes(status = 500) {
+  return { ok: false as const, status, error: `HTTP ${status}` };
+}
+function mockClient(opts: { multipartFails?: boolean; removeFails?: boolean } = {}) {
+  const requestForm = vi.fn(async () => (opts.multipartFails ? failRes() : okForm({ logo: 'https://s3/new-logo.png', background_image: 'https://s3/new-bg.png' })));
+  const request = vi.fn(async () => (opts.removeFails ? failRes() : okForm({})));
   return { requestForm, request } as unknown as FormalooClient & { requestForm: ReturnType<typeof vi.fn>; request: ReturnType<typeof vi.fn> };
 }
 
@@ -57,6 +60,7 @@ describe('applyDesignImages (画像 intent → Formaloo)', () => {
     expect(form).toBeInstanceOf(FormData);
     expect((form as FormData).has('logo')).toBe(true);
     expect((form as FormData).has('background_image')).toBe(true);
+    expect(r.ok).toBe(true);
     expect(r.logoUrl).toBe('https://s3/new-logo.png');
     expect(r.backgroundImageUrl).toBe('https://s3/new-bg.png');
     expect(c.request).not.toHaveBeenCalled();
@@ -71,15 +75,16 @@ describe('applyDesignImages (画像 intent → Formaloo)', () => {
     expect(method).toBe('PATCH');
     expect(path).toBe('/v3.0/forms/slug2/');
     expect(body).toEqual({ logo: null, background_image: null });
+    expect(r.ok).toBe(true);
     expect(r.logoUrl).toBeNull();
     expect(r.backgroundImageUrl).toBeNull();
     expect(c.requestForm).not.toHaveBeenCalled();
   });
 
-  test('keep / 空は何も送らない (no-op)', async () => {
+  test('keep / 空は何も送らない (ok:true / no-op)', async () => {
     const c = mockClient();
-    expect(await applyDesignImages(c, 'slug3', { logo: { intent: 'keep' } })).toEqual({});
-    expect(await applyDesignImages(c, 'slug3', {})).toEqual({});
+    expect(await applyDesignImages(c, 'slug3', { logo: { intent: 'keep' } })).toEqual({ ok: true });
+    expect(await applyDesignImages(c, 'slug3', {})).toEqual({ ok: true });
     expect(c.requestForm).not.toHaveBeenCalled();
     expect(c.request).not.toHaveBeenCalled();
   });
@@ -91,14 +96,33 @@ describe('applyDesignImages (画像 intent → Formaloo)', () => {
     expect(c.requestForm).toHaveBeenCalledTimes(1);
     expect(c.request).toHaveBeenCalledTimes(1);
     expect(c.request.mock.calls[0][2]).toEqual({ background_image: null });
+    expect(r.ok).toBe(true);
     expect(r.logoUrl).toBe('https://s3/new-logo.png');
     expect(r.backgroundImageUrl).toBeNull();
   });
 
-  test('不正 dataUrl の replace は送らない (検証で弾く)', async () => {
+  test('不正 dataUrl の replace は ok:false (silent success にしない / F1)', async () => {
     const c = mockClient();
     const r = await applyDesignImages(c, 'slug5', { logo: { intent: 'replace', dataUrl: 'not-a-data-url' } });
     expect(c.requestForm).not.toHaveBeenCalled();
-    expect(r).toEqual({});
+    expect(r.ok).toBe(false);
+    expect(r.error).toEqual(expect.any(String));
+  });
+
+  test('F1: multipart replace が非 ok なら ok:false・URL 未確定 (silent success 禁止)', async () => {
+    const c = mockClient({ multipartFails: true });
+    const r = await applyDesignImages(c, 'slug6', { logo: { intent: 'replace', dataUrl, mimeType: 'image/png' } });
+    expect(c.requestForm).toHaveBeenCalledTimes(1);
+    expect(r.ok).toBe(false);
+    expect(r.error).toEqual(expect.any(String));
+    expect('logoUrl' in r).toBe(false); // 失敗 slot の URL は確定しない (D1 は prev を維持)
+  });
+
+  test('F1: JSON remove が非 ok なら ok:false', async () => {
+    const c = mockClient({ removeFails: true });
+    const r = await applyDesignImages(c, 'slug7', { cover: { intent: 'remove' } });
+    expect(c.request).toHaveBeenCalledTimes(1);
+    expect(r.ok).toBe(false);
+    expect('backgroundImageUrl' in r).toBe(false);
   });
 });

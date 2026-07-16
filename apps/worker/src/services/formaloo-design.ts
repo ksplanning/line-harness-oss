@@ -26,9 +26,16 @@ type ImageSlot = keyof typeof IMAGE_SLOT_TO_FORMALOO;
 
 /** applyDesignImages が返す、upload 後に確定した Formaloo ホスト URL (persist / response 用)。 */
 export interface AppliedDesignImages {
-  /** 差し替え後の logo URL (replace 時) / null (remove 時) / 未変更は不在。 */
+  /**
+   * F1: 試行した全 slot が成功したか (keep/no-op も ok:true)。false なら route が out_of_sync を set する
+   * (silent success 禁止 = owner が「ロゴ設定済」と誤認する failure_observable を防ぐ)。
+   */
+  ok: boolean;
+  /** 失敗時の要約 (out_of_sync の lastError 用)。 */
+  error?: string;
+  /** 差し替え後の logo URL (replace 成功時) / null (remove 成功時) / 未変更・失敗は不在。 */
   logoUrl?: string | null;
-  /** 差し替え後の背景(カバー) URL (replace 時) / null (remove 時) / 未変更は不在。 */
+  /** 差し替え後の背景(カバー) URL (replace 成功時) / null (remove 成功時) / 未変更・失敗は不在。 */
   backgroundImageUrl?: string | null;
 }
 
@@ -84,21 +91,23 @@ export async function applyDesignImages(
   formalooSlug: string,
   images: FormDesignImages | undefined | null,
 ): Promise<AppliedDesignImages> {
-  const result: AppliedDesignImages = {};
+  const result: AppliedDesignImages = { ok: true };
   if (!images || typeof images !== 'object') return result;
   const path = `/v3.0/forms/${formalooSlug}/`;
+  const fail = (msg: string) => { result.ok = false; result.error = result.error ?? msg; };
 
   const slots = Object.keys(IMAGE_SLOT_TO_FORMALOO) as ImageSlot[];
 
-  // 1) replace → 1 回の multipart PATCH に束ねる。
+  // 1) replace → 1 回の multipart PATCH に束ねる。不正 payload / PATCH 非 ok は ok:false (silent success 禁止 / F1)。
   const form = new FormData();
   const replaceSlots: ImageSlot[] = [];
   for (const slot of slots) {
     const up = images[slot] as FormDesignImageUpload | undefined;
     if (!up || up.intent !== 'replace') continue;
-    if (!validateImageUpload(up).ok || !up.dataUrl) continue; // 不正 payload は送らない
+    const v = validateImageUpload(up);
+    if (!v.ok || !up.dataUrl) { fail(v.reason ?? '画像が不正です'); continue; } // 弾いた replace は失敗として surface
     const decoded = dataUrlToBytes(up.dataUrl);
-    if (!decoded) continue;
+    if (!decoded) { fail('画像を読み込めませんでした'); continue; }
     const field = IMAGE_SLOT_TO_FORMALOO[slot];
     const filename = up.filename && /\.[a-z0-9]+$/i.test(up.filename)
       ? up.filename
@@ -116,10 +125,13 @@ export async function applyDesignImages(
         if (slot === 'logo') result.logoUrl = url ?? null;
         else result.backgroundImageUrl = url ?? null;
       }
+    } else {
+      // 失敗 slot の URL は確定させない (route が D1 の prev URL を維持し out_of_sync へ)。
+      fail(`画像のアップロードに失敗しました（HTTP ${r.status}）`);
     }
   }
 
-  // 2) remove → 1 回の JSON PATCH {field:null} (空文字は 400)。
+  // 2) remove → 1 回の JSON PATCH {field:null} (空文字は 400)。非 ok は ok:false。
   const removeBody: Record<string, null> = {};
   for (const slot of slots) {
     const up = images[slot] as FormDesignImageUpload | undefined;
@@ -130,6 +142,8 @@ export async function applyDesignImages(
     if (r.ok) {
       if ('logo' in removeBody) result.logoUrl = null;
       if ('background_image' in removeBody) result.backgroundImageUrl = null;
+    } else {
+      fail(`画像の削除に失敗しました（HTTP ${r.status}）`);
     }
   }
 

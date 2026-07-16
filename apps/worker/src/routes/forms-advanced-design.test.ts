@@ -88,7 +88,7 @@ function definitionOf(id: string): Record<string, unknown> {
 
 interface ApiCall { method: string; url: string; body: unknown; multipartFields?: string[] }
 
-function stubFormaloo(opts: { getForm?: Record<string, unknown> } = {}) {
+function stubFormaloo(opts: { getForm?: Record<string, unknown>; imageFails?: boolean } = {}) {
   const calls: ApiCall[] = [];
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -112,8 +112,9 @@ function stubFormaloo(opts: { getForm?: Record<string, unknown> } = {}) {
       return new Response(JSON.stringify({ data: { form: { fields_list: [], ...(opts.getForm ?? {}) } } }), { status: 200 });
     }
     if (method === 'PATCH' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
-      // multipart 画像 upload は S3 URL を返す
+      // multipart 画像 upload は S3 URL を返す (imageFails 指定時は 500)
       if (multipartFields) {
+        if (opts.imageFails) return new Response(JSON.stringify({ errors: { general_errors: ['boom'] } }), { status: 500 });
         const form: Record<string, unknown> = {};
         if (multipartFields.includes('logo')) form.logo = 'https://s3/new-logo.png';
         if (multipartFields.includes('background_image')) form.background_image = 'https://s3/new-bg.png';
@@ -185,6 +186,22 @@ describe('PUT /api/forms-advanced/:id — form-design 画像', () => {
     expect((definitionOf('i1').design as Record<string, unknown>).logoUrl).toBe('https://s3/new-logo.png');
     const data = (await res.json() as { data: { design: Record<string, unknown> } }).data;
     expect(data.design.logoUrl).toBe('https://s3/new-logo.png');
+  });
+
+  test('F1: 画像 replace が失敗したら out_of_sync + D1 の logoUrl を更新しない (silent success 禁止)', async () => {
+    seedForm('i3', 'SLUGF', JSON.stringify({ fields: [], logic: [], design: { logoUrl: 'https://s3/old-logo.png' } }));
+    stubFormaloo({ imageFails: true });
+    const res = await call('PUT', '/api/forms-advanced/i3', {
+      fields: [], logic: [],
+      design: { logoUrl: 'https://s3/old-logo.png' },
+      designImages: { logo: { intent: 'replace', dataUrl: DATA_URL, mimeType: 'image/png' } },
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string; syncError: string | null } }).data;
+    expect(data.syncStatus).toBe('out_of_sync'); // owner に「未同期」を surface
+    expect(data.syncError).toEqual(expect.any(String));
+    // D1 の logoUrl は旧値のまま (失敗 slot を確定させない)
+    expect((definitionOf('i3').design as Record<string, unknown>).logoUrl).toBe('https://s3/old-logo.png');
   });
 
   test('cover remove は JSON PATCH {background_image:null} で送られ URL が消える', async () => {
