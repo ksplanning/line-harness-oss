@@ -85,6 +85,8 @@ export interface BuilderProps {
   publicUrl?: string | null
   embedCode?: string | null
   syncStatus?: string
+  /** ① 未同期リカバリ用の原因表示 (sync last_error)。out_of_sync 時に『未同期』の隣へ出す。 */
+  syncError?: string | null
   /** formaloo-auto-pull: Formaloo 側定義変更 (drift) の状態 (none/detected/conflict/applied)。 */
   driftStatus?: string
   layoutMode?: 'mobile' | 'desktop'
@@ -782,6 +784,53 @@ export default function FormBuilder(props: BuilderProps) {
           <button type="button" onClick={props.onUnpublish} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200">非公開に戻す</button>
         )}
       </div>
+
+      {/* ① 今すぐ同期リカバリ: sync_status=out_of_sync のとき、原因 (syncError) + 再送ヘルプ + 「今すぐ同期」を
+          目立つ位置に出す。ボタンは既存の保存/push 経路 (handleSave) を再実行するだけ (新経路を作らず状態機械を壊さない)。 */}
+      {props.syncStatus === 'out_of_sync' && (
+        <div data-testid="sync-recovery" role="status" className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <span className="font-medium">未同期です。</span>
+          {props.syncError && <span data-testid="sync-recovery-cause">原因: {props.syncError}</span>}
+          <span className="text-amber-700">保存し直すと再送されます。</span>
+          <button
+            type="button"
+            data-testid="sync-now"
+            onClick={handleSave}
+            disabled={saving || !title.trim()}
+            className="ml-auto rounded-lg px-3 py-1 font-medium text-white disabled:opacity-50"
+            style={{ backgroundColor: LINE_GREEN }}
+          >
+            {saving ? '同期中...' : '今すぐ同期'}
+          </button>
+        </div>
+      )}
+
+      {/* ③ 公開ページを開いてテスト導線: 公開済み+URL 確定でテストリンク / 準備中 or 未公開は案内。 */}
+      {props.status === 'published' ? (
+        props.publicUrl ? (
+          <div data-testid="public-test-link" className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+            <span>公開中です。回答者と同じ画面でテストできます。</span>
+            <a
+              href={props.publicUrl}
+              target="_blank"
+              rel="noreferrer"
+              data-testid="open-public-page"
+              className="ml-auto rounded-lg px-3 py-1 font-medium text-white"
+              style={{ backgroundColor: LINE_GREEN }}
+            >
+              公開ページを開いてテスト
+            </a>
+          </div>
+        ) : (
+          <div data-testid="public-url-pending" className="mb-2 text-xs text-amber-700">
+            公開URLを準備中です。保存し直すと公開ページのURLが確定します。
+          </div>
+        )
+      ) : (
+        <div data-testid="public-test-hint" className="mb-2 text-xs text-gray-400">
+          公開すると回答者用ページが作られ、ここから開いてテストできます。
+        </div>
+      )}
 
       {/* form-route-branching: 表示形式 自動切替の可視通知 (jump 追加時) + save 時の非ブロッキング警告 (backstop)。 */}
       {formTypeNotice && (

@@ -155,7 +155,7 @@ describe('FormPreview — form-design 反映 (Batch D)', () => {
   })
 })
 
-describe('FormPreview — 補足説明 + 最大文字数ヒント + 縮退カウンター注記 (field-help-charlimit T-A5)', () => {
+describe('FormPreview — 補足説明 + 残り文字数ライブカウンター (② プレビュー入力可能化)', () => {
   it('補足説明をラベルの直下に描画する', () => {
     const fields: HarnessField[] = [
       { id: 'phone', type: 'text', label: '電話番号', required: false, position: 0, config: { description: '例: 日中つながる番号をご記入ください' } },
@@ -174,19 +174,36 @@ describe('FormPreview — 補足説明 + 最大文字数ヒント + 縮退カウ
     expect(node.querySelector('[data-testid="preview-field-description"]')).toBeNull()
   })
 
-  it('一行テキストに最大文字数を設定すると「最大 N 文字」の静的ヒントを入力欄下に描画する', () => {
+  it('一行テキストに最大文字数を設定すると「残り N 文字」ライブカウンターを表示し、maxLength を効かせる', () => {
     render(<FormPreview title="確認" fields={[{ id: 't', type: 'text', label: 'お名前', required: false, position: 0, config: { maxLength: 8 } }]} />)
     const node = screen.getByTestId('preview-field')
-    expect(within(node).getByText(/最大\s*8\s*文字/)).toBeTruthy()
+    const counter = within(node).getByTestId('preview-char-counter')
+    expect(counter.textContent).toMatch(/残り\s*8\s*文字/)
+    // 入力に maxLength が実際に効く (attribute 反映)
+    const input = node.querySelector('input[type="text"]') as HTMLInputElement
+    expect(input.getAttribute('maxlength')).toBe('8')
   })
 
-  it('複数行テキストは最大文字数を設定してもヒントを出さない (OD-2: hosted 非対応)', () => {
-    render(<FormPreview title="確認" fields={[{ id: 'ta', type: 'textarea', label: 'ご要望', required: false, position: 0, config: { maxLength: 8 } }]} />)
+  it('一行テキストを type するとカウンターが減る (local state のみ・送信なし)', () => {
+    render(<FormPreview title="確認" fields={[{ id: 't', type: 'text', label: 'お名前', required: false, position: 0, config: { maxLength: 8 } }]} />)
     const node = screen.getByTestId('preview-field')
-    expect(within(node).queryByText(/最大\s*8\s*文字/)).toBeNull()
+    const input = node.querySelector('input[type="text"]') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'あいう' } })
+    expect(input.value).toBe('あいう')
+    expect(within(node).getByTestId('preview-char-counter').textContent).toMatch(/残り\s*5\s*文字/)
   })
 
-  it('忠実性注記が公開フォームの実挙動 (静的注記+超過エラー / ライブカウンター無し) を正しく説明する', () => {
+  it('最大文字数 未設定の一行テキストにはカウンターを出さない', () => {
+    render(<FormPreview title="確認" fields={[{ id: 't', type: 'text', label: 'お名前', required: false, position: 0, config: {} }]} />)
+    expect(screen.getByTestId('preview-field').querySelector('[data-testid="preview-char-counter"]')).toBeNull()
+  })
+
+  it('複数行テキストは最大文字数を設定してもカウンターを出さない (hosted 非対応 / 単一行のみ)', () => {
+    render(<FormPreview title="確認" fields={[{ id: 'ta', type: 'textarea', label: 'ご要望', required: false, position: 0, config: { maxLength: 8 } }]} />)
+    expect(screen.getByTestId('preview-field').querySelector('[data-testid="preview-char-counter"]')).toBeNull()
+  })
+
+  it('忠実性注記が公開フォームの実挙動 (静的注記+超過エラー / ライブカウンターは公開フォームには無い) を正しく説明する', () => {
     render(<FormPreview title="確認" fields={[]} />)
     const note = screen.getByTestId('preview-fidelity-note')
     expect(note.textContent).toContain('残り文字数')
@@ -194,35 +211,42 @@ describe('FormPreview — 補足説明 + 最大文字数ヒント + 縮退カウ
   })
 })
 
-describe('FormPreview — fidelity disclosure と read-only regression (T-C5/T-C7/R-4)', () => {
-  it('公開フォームとの差分を 3 点とも正直に開示する', () => {
+describe('FormPreview — fidelity disclosure と 入力可能プレビュー (T-C5/T-C7/R-4 更新)', () => {
+  it('公開フォームとの差分を 3 点とも正直に開示する (入力可・送信なし)', () => {
     render(<FormPreview title="確認" fields={[]} />)
     const note = screen.getByTestId('preview-fidelity-note')
 
     expect(note.textContent).toContain('見出しや説明文も公開フォームに表示されます。')
     expect(note.textContent).toContain('色・フォント・ロゴは公開時に Formaloo 側のテーマで決まります。')
-    expect(note.textContent).toContain('これは見た目の確認用のプレビューです（read-only）。入力・条件分岐・送信などの実際の動作は公開フォームで動きます。')
+    // プレビューは入力を試せる (read-only ではない) が、入力内容はどこにも送信されない旨を開示する。
+    expect(note.textContent).toContain('入力を試せます')
+    expect(note.textContent).toContain('送信されません')
   })
 
-  it('form や submit control を作らず、すべての control を disabled に固定する', () => {
+  // R-4 (誤送信防止の芯 = 入力可でも form タグなし・submit なし・外部送信なし) を維持しつつ入力可能化を検証。
+  it('form や submit control を作らず外部送信経路を持たないまま、入力部品を type 可能にする', () => {
     render(<FormPreview title="確認" fields={inputFields} />)
     const preview = screen.getByTestId('form-preview')
 
+    // 誤送信防止の芯: form タグなし・submit control なし = どこにもデータ送信しない。
     expect(preview.querySelector('form')).toBeNull()
     expect(preview.querySelector('button[type="submit"], input[type="submit"]')).toBeNull()
-    const controls = Array.from(preview.querySelectorAll('input, textarea, select, button')) as Array<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement>
-    expect(controls.length).toBeGreaterThan(0)
-    expect(controls.every((control) => control.disabled)).toBe(true)
 
-    const send = within(preview).queryByText('送信') as HTMLButtonElement | null
-    if (send) {
-      expect(send.type).toBe('button')
-      expect(send.disabled).toBe(true)
-    }
-
-    // disabled control は change しても値を受け付ける動作を component 側に持たない。
+    // 入力可能化 (②): text 入力は disabled でなく、type した値が local state に反映される。
     const text = preview.querySelector('input[type="text"]') as HTMLInputElement
-    fireEvent.change(text, { target: { value: '入力しても送信されない' } })
+    expect(text.disabled).toBe(false)
+    fireEvent.change(text, { target: { value: 'テスト入力' } })
+    expect(text.value).toBe('テスト入力')
+    // 入力しても form/送信経路は生まれない (芯の維持)。
     expect(preview.querySelector('form')).toBeNull()
+
+    // 送信ボタンは視覚モックのみ (type=button・disabled = 押しても送信されない)。
+    const send = within(preview).getByText('送信') as HTMLButtonElement
+    expect(send.type).toBe('button')
+    expect(send.disabled).toBe(true)
+
+    // file は type 対象でないので read-only 表示のまま (実選択は公開フォーム)。
+    const file = preview.querySelector('input[type="file"]') as HTMLInputElement
+    expect(file.disabled).toBe(true)
   })
 })

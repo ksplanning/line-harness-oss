@@ -136,6 +136,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialDesign={form.design ?? undefined}
             initialFormType={form.formType ?? undefined}
             syncStatus={form.syncStatus}
+            syncError={form.syncError}
             driftStatus={form.driftStatus}
             publicUrl={form.publicUrl}
             embedCode={form.embedCode}

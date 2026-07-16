@@ -98,7 +98,7 @@ function seedForm(id: string, workspaceId: string | null, slug: string | null = 
   raw.prepare(
     `INSERT INTO formaloo_forms (id, title, definition_json, formaloo_slug, workspace_id, builder_status)
      VALUES (?,?,?,?,?,'published')`,
-  ).run(id, 'T', JSON.stringify({ fields: [], logic: [], formalooAddress: 'https://forms.formaloo.net/a' }), slug, workspaceId);
+  ).run(id, 'T', JSON.stringify({ fields: [], logic: [], formalooAddress: 'https://demo-forms.formaloo.me/f/a' }), slug, workspaceId);
 }
 function seedSubmission(id: string, formId: string) {
   const now = jstNow();

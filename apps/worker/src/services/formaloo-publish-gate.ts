@@ -32,12 +32,27 @@ export function isPublicUrlEnabled(status: BuilderStatus): boolean {
 }
 
 /**
- * 公開フォーム URL を返す。published かつ Formaloo 側 address 確定時のみ。
- * それ以外 (draft/in_review / 未 push) は null = URL 発行不可 (誤配信防止 N-7)。
+ * 絶対 https URL か (⑤b 公開アドレス正本化)。scheme 無し bare host / 相対パス / http / 非 http(s) / 解析不能は false。
+ * full_form_address は絶対 https URL が唯一の正本。bare/相対を redirect に流さない
+ * (ドメイン推測補完 o.formaloo.co が soft-200 エラーページに着地した実測事故 2026-07-17 の恒久ガード)。
+ */
+function isAbsoluteHttpsUrl(v: string): boolean {
+  try {
+    return new URL(v).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 公開フォーム URL を返す。published かつ Formaloo 側 address が絶対 https URL で確定時のみ。
+ * それ以外 (draft/in_review / 未 push / 非絶対 https) は null = URL 発行不可 (誤配信防止 N-7 / ⑤b)。
  */
 export function buildPublicUrl(status: BuilderStatus, publicAddress: string | null | undefined): string | null {
   if (!isPublicUrlEnabled(status)) return null;
   if (!publicAddress) return null;
+  // ⑤(b): 絶対 https URL でなければ null (bare host / 相対 / http / 非 http(s) を公開 URL・埋め込みに流さない)。
+  if (!isAbsoluteHttpsUrl(publicAddress)) return null;
   return publicAddress;
 }
 

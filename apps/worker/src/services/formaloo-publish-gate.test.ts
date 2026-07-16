@@ -49,7 +49,8 @@ describe('publish gate — 状態遷移 (draft→review→publish)', () => {
 });
 
 describe('publish gate — 公開 URL / 埋め込み (N-7)', () => {
-  const ADDR = 'https://forms.formaloo.net/my-form-abc';
+  // full_form_address は account 固有サブドメインの絶対 https URL が唯一の正本 (実 API 系 formaloo.me)。
+  const ADDR = 'https://demo-forms.formaloo.me/f/my-form-abc';
 
   test('published のみ公開 URL 有効', () => {
     expect(isPublicUrlEnabled('published')).toBe(true);
@@ -69,6 +70,21 @@ describe('publish gate — 公開 URL / 埋め込み (N-7)', () => {
   test('published でも address 未確定 (未 push) なら null', () => {
     expect(buildPublicUrl('published', null)).toBeNull();
     expect(buildPublicUrl('published', '')).toBeNull();
+  });
+
+  test('published でも絶対 https URL でない address は null (bare/相対を redirect に流さない)', () => {
+    // full_form_address は絶対 https URL が唯一の正本。scheme 無し bare host / 相対パス / http / 非 http(s) は
+    // 解決させない (ドメイン推測補完 o.formaloo.co が soft-200 エラーページに着地した実測事故 2026-07-17 の恒久ガード)。
+    expect(buildPublicUrl('published', 'demo-forms.formaloo.me/f/abc')).toBeNull(); // scheme 無し bare host
+    expect(buildPublicUrl('published', '/f/abc')).toBeNull(); // 相対パス
+    expect(buildPublicUrl('published', 'http://demo-forms.formaloo.me/f/abc')).toBeNull(); // http は不可
+    expect(buildPublicUrl('published', 'ftp://x/abc')).toBeNull(); // 非 http(s)
+    expect(buildPublicUrl('published', 'not a url')).toBeNull(); // 解析不能
+  });
+
+  test('絶対 https でない address は埋め込みコードも null (buildPublicUrl 経由の一元ガード)', () => {
+    expect(buildEmbedCode('published', 'demo-forms.formaloo.me/f/abc')).toBeNull();
+    expect(buildScriptEmbedCode('published', 'demo-forms.formaloo.me/f/abc')).toBeNull();
   });
 
   test('draft では埋め込みコードも null (R4 は publish 後のみ)', () => {
