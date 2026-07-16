@@ -12,6 +12,7 @@ import {
   isValidHexColor,
   normalizeFormDesign,
   validateImageUpload,
+  MAX_IMAGE_UPLOAD_BYTES,
   type FormalooColorValue,
 } from './form-design';
 
@@ -131,6 +132,20 @@ describe('validateImageUpload', () => {
       dataUrl: 'data:image/svg+xml;base64,AA',
       mimeType: 'image/svg+xml',
     })).toEqual({ ok: false, reason: expect.any(String) });
+  });
+
+  it('F4: rejects a replacement whose decoded bytes exceed the 10MB cap', () => {
+    // 14MB of base64 'A' → ~10.5MB decoded (> MAX_IMAGE_UPLOAD_BYTES).
+    const oversize = 'data:image/png;base64,' + 'A'.repeat(14 * 1024 * 1024);
+    expect(validateImageUpload({ intent: 'replace', dataUrl: oversize, mimeType: 'image/png' }))
+      .toEqual({ ok: false, reason: expect.any(String) });
+    // just-under-cap payload stays ok.
+    const small = 'data:image/png;base64,' + 'A'.repeat(1024);
+    expect(validateImageUpload({ intent: 'replace', dataUrl: small, mimeType: 'image/png' })).toEqual({ ok: true });
+  });
+
+  it('F4: MAX_IMAGE_UPLOAD_BYTES is 10MB', () => {
+    expect(MAX_IMAGE_UPLOAD_BYTES).toBe(10 * 1024 * 1024);
   });
 });
 

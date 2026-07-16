@@ -1,8 +1,10 @@
 'use client'
 
+import { useState } from 'react'
 import {
   LINE_PRESET_PALETTES,
   FORM_DESIGN_COLOR_KEYS,
+  MAX_IMAGE_UPLOAD_BYTES,
   type FormDesign,
   type FormDesignColorKey,
   type FormDesignImages,
@@ -51,6 +53,7 @@ function colorInputValue(v: string | null | undefined): string {
 }
 
 export default function DesignPanel({ design, images, onChange, onImagesChange }: DesignPanelProps) {
+  const [imageError, setImageError] = useState<string | null>(null)
   const setColor = (key: FormDesignColorKey, value: string) => {
     // 手動で色を変えたら preset との一致は崩れる → presetId を外す。
     onChange({ ...design, [key]: value.toUpperCase(), presetId: undefined })
@@ -62,6 +65,12 @@ export default function DesignPanel({ design, images, onChange, onImagesChange }
   }
   const onFile = (slot: ImageSlot, file: File | null) => {
     if (!file || !ALLOWED_IMAGE_MIME.includes(file.type)) return
+    // F4 (plan R-4): クライアント側で 10MB 上限を弾く (worker も validateImageUpload で二重防御)。
+    if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+      setImageError('画像が大きすぎます（10MB まで）。小さい画像を選んでください。')
+      return
+    }
+    setImageError(null)
     const reader = new FileReader()
     reader.onload = () => {
       onImagesChange({ ...images, [slot]: { intent: 'replace', dataUrl: String(reader.result), mimeType: file.type, filename: file.name } })
@@ -151,8 +160,11 @@ export default function DesignPanel({ design, images, onChange, onImagesChange }
             </div>
           )
         })}
+        {imageError && (
+          <p data-testid="image-error" role="alert" className="mb-1 text-[11px] text-red-600">{imageError}</p>
+        )}
         <p className="text-[11px] leading-relaxed text-gray-400">
-          画像は保存時に Formaloo にアップロードされ、公開ページに反映されます（PNG / JPG / GIF / WebP）。
+          画像は保存時に Formaloo にアップロードされ、公開ページに反映されます（PNG / JPG / GIF / WebP・10MB まで）。
         </p>
       </div>
     </div>

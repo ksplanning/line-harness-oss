@@ -65,4 +65,13 @@ describe('DesignPanel — 画像 (ロゴ / カバー)', () => {
     fireEvent.change(screen.getByLabelText('カバー画像（ヘッダー背景）を選ぶ'), { target: { files: [file] } })
     expect(onImagesChange).not.toHaveBeenCalled()
   })
+
+  it('F4: 10MB 超の画像は弾いてエラー表示 (onImagesChange 呼ばない)', () => {
+    const { onImagesChange } = setup()
+    const file = new File([new Uint8Array(11 * 1024 * 1024)], 'big.png', { type: 'image/png' })
+    expect(file.size).toBe(11 * 1024 * 1024)
+    fireEvent.change(screen.getByLabelText('ロゴを選ぶ'), { target: { files: [file] } })
+    expect(onImagesChange).not.toHaveBeenCalled()
+    expect(screen.getByTestId('image-error').textContent).toMatch(/10MB/)
+  })
 })

@@ -194,6 +194,18 @@ const ALLOWED_IMAGE_MIME_TYPES = [
   'image/webp',
 ] as const;
 
+/**
+ * 画像 upload の decoded byte 上限 (plan R-4 / images.ts と同水準)。
+ * 大 base64 → atob → Uint8Array → File が Worker メモリ(128MB)を圧迫するのを防ぐ。
+ */
+export const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+/** base64 payload の decoded byte 長を padding 考慮で概算する。 */
+export function base64DecodedByteLength(b64: string): number {
+  const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((b64.length * 3) / 4) - padding);
+}
+
 function isAllowedImageMime(value: unknown): value is (typeof ALLOWED_IMAGE_MIME_TYPES)[number] {
   return typeof value === 'string'
     && (ALLOWED_IMAGE_MIME_TYPES as readonly string[]).includes(value);
@@ -222,6 +234,10 @@ export function validateImageUpload(u: unknown): { ok: boolean; reason?: string 
   }
   if (upload.mimeType !== undefined && upload.mimeType !== match[1]) {
     return { ok: false, reason: 'mimeType must match the dataUrl image type' };
+  }
+  // F4 (plan R-4): decoded byte 上限。大画像で Worker メモリを圧迫させない。
+  if (base64DecodedByteLength(match[2]) > MAX_IMAGE_UPLOAD_BYTES) {
+    return { ok: false, reason: '画像が大きすぎます（10MB まで）' };
   }
   return { ok: true };
 }
