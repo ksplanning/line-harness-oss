@@ -31,8 +31,11 @@ import {
   toCsv,
   parseCsv,
   logicFingerprint,
+  normalizeFormDesign,
   type HarnessField,
   type HarnessLogicRule,
+  type FormDesign,
+  type FormDesignImages,
 } from '@line-crm/shared';
 import {
   canTransition,
@@ -45,6 +48,7 @@ import {
 import { resolveFormalooClient } from '../services/formaloo-client.js';
 import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
+import { designColorFields, applyDesignImages } from '../services/formaloo-design.js';
 import { ownerGate } from '../lib/owner-gate.js';
 import type { Env } from '../index.js';
 
@@ -68,6 +72,8 @@ interface StoredDefinition {
   rawLogic?: unknown;
   // logicFingerprint = pull 時の射影 logic の canonical hash。save 時に受領 logic と突合して未編集を判定 (R7)。
   logicFingerprint?: string | null;
+  // form-design (Batch D): 色/画像テーマ (additive JSON key / migration 不要)。design 無しフォームは undefined。
+  design?: FormDesign;
 }
 
 function parseDefinition(json: string): StoredDefinition {
@@ -79,9 +85,13 @@ function parseDefinition(json: string): StoredDefinition {
       formalooAddress: typeof d.formalooAddress === 'string' ? d.formalooAddress : null,
       rawLogic: 'rawLogic' in d ? d.rawLogic : null,
       logicFingerprint: typeof d.logicFingerprint === 'string' ? d.logicFingerprint : null,
+      // whitelist 正規化 (M-21)。design が無ければ undefined = 後方互換。
+      design: d.design && typeof d.design === 'object' && !Array.isArray(d.design)
+        ? normalizeFormDesign(d.design)
+        : undefined,
     };
   } catch {
-    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null };
+    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined };
   }
 }
 
@@ -122,6 +132,8 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     // preserve-raw (Batch 1): 未編集判定用の fingerprint のみ露出 (builder が save で carry する)。
     // rawLogic 逐語は server-side に留め PUBLIC/一覧面へ出さない (機密面 raw 非露出 / plan §grep4)。
     logicFingerprint: def.logicFingerprint ?? null,
+    // form-design (Batch D): 色/画像テーマ (builder の initialDesign / プレビュー反映用)。未設定は null。
+    design: def.design ?? null,
     // N-7: publish 前は null (公開/埋め込み URL 発行不可)
     publicUrl,
     embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
@@ -228,8 +240,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -318,6 +330,19 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     syncStarted = true;
     // まず D1 に保存 (SoT キャッシュ / fail-soft の土台)。field_map の slug は既存分を carry する
     // (現状は無 carry = slug wipe の欠陥。push 失敗時に喪失し次回保存で重複 POST になっていた / B3)。
+    // ── form-design (Batch D) ──
+    // update 意味論: design 未提供 (body に design key 無し) は Formaloo 色 PATCH を送らず prev design を carry。
+    // 提供時は normalizeFormDesign (whitelist / 不正色/不正 URL drop) → prev に merge (色は panel の全設定 /
+    // 画像 URL は intent 反映後に上書き)。designToPersist は let: 画像 upload 後の S3 URL を反映して再永続する。
+    const designProvided = body.design !== undefined;
+    const incomingDesign = designProvided ? normalizeFormDesign(body.design) : undefined;
+    const designImages = body.designImages && typeof body.designImages === 'object' && !Array.isArray(body.designImages)
+      ? (body.designImages as FormDesignImages)
+      : undefined;
+    let designToPersist: FormDesign | undefined = designProvided
+      ? { ...(prevDef.design ?? {}), ...incomingDesign }
+      : prevDef.design;
+
     // preserve-raw: rawLogic (逐語) + logicFingerprint を additive JSON key で同梱 (migration 不要 / L-10)。
     const buildDefinitionJson = (address: string | null): string =>
       JSON.stringify({
@@ -326,6 +351,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         formalooAddress: address,
         ...(persistRawLogic != null ? { rawLogic: persistRawLogic } : {}),
         logicFingerprint: currentFingerprint,
+        // form-design: design が非空のときだけ載せる (未設定フォームは従来と byte 一致 = 後方互換)。
+        ...(designToPersist && Object.keys(designToPersist).length ? { design: designToPersist } : {}),
       });
     const fieldRows = (slugFor: (fid: string) => string | null) =>
       fields.map((f) => ({ id: f.id, formalooFieldSlug: slugFor(f.id), fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) }));
@@ -369,7 +396,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         preserveRawLogic,
       });
       if (pushed.ok) {
-        // slug + address + (backfill 後の) rawLogic を反映
+        // slug + address + (backfill 後の) rawLogic + design(色) を反映
         await saveFormalooDefinition(c.env.DB, id, {
           definitionJson: buildDefinitionJson(pushed.publicAddress ?? prevDef.formalooAddress ?? null),
           fields: fieldRows((fid) => pushed.fieldSlugs?.[fid] ?? null),
@@ -378,9 +405,34 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           description: newDescription,
         });
         const slug = pushed.formalooSlug ?? form.formaloo_slug;
+        // form-design (Batch D): 色は既存 meta PATCH に hex で合流 (update 意味論: design 未提供なら載せない)。
         const metaRes = slug
-          ? await client.request('PATCH', `/v3.0/forms/${slug}/`, { title: newTitle, description: newDescription ?? '' })
+          ? await client.request('PATCH', `/v3.0/forms/${slug}/`, {
+              title: newTitle,
+              description: newDescription ?? '',
+              ...(designProvided ? designColorFields(incomingDesign) : {}),
+            })
           : { ok: false as const, status: 0 };
+        // form-design 画像: meta 成功後に replace(multipart)/remove(JSON null) を反映し、確定 S3 URL を再永続。
+        if (metaRes.ok && slug && designImages) {
+          const applied = await applyDesignImages(client, slug, designImages);
+          designToPersist = { ...(designToPersist ?? {}) };
+          if ('logoUrl' in applied) {
+            if (applied.logoUrl == null) delete designToPersist.logoUrl;
+            else designToPersist.logoUrl = applied.logoUrl;
+          }
+          if ('backgroundImageUrl' in applied) {
+            if (applied.backgroundImageUrl == null) delete designToPersist.backgroundImageUrl;
+            else designToPersist.backgroundImageUrl = applied.backgroundImageUrl;
+          }
+          await saveFormalooDefinition(c.env.DB, id, {
+            definitionJson: buildDefinitionJson(pushed.publicAddress ?? prevDef.formalooAddress ?? null),
+            fields: fieldRows((fid) => pushed.fieldSlugs?.[fid] ?? null),
+            formalooSlug: pushed.formalooSlug ?? null,
+            title: newTitle,
+            description: newDescription,
+          });
+        }
         if (!metaRes.ok) {
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: 'フォーム情報の同期に失敗しました',
@@ -495,6 +547,8 @@ formsAdvanced.get('/api/forms-advanced/:id/pull', async (c) => {
         // preserve-raw: builder が opaque 保持し save body で carry する (未編集 push で欠けなく再送 / D-7)。
         ...(r.rawLogic != null ? { rawLogic: r.rawLogic } : {}),
         logicFingerprint: r.logicFingerprint,
+        // form-design (Batch D): Formaloo 側の色/画像テーマを builder に復元させる (非空のときのみ)。
+        ...(r.design && Object.keys(r.design).length ? { design: r.design } : {}),
       },
     });
   } catch (err) {
