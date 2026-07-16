@@ -159,6 +159,9 @@ function PreviewField({ field, themeColor }: { field: HarnessField; themeColor: 
 export default function FormPreview({ title, description, fields, design, formType, logic }: FormPreviewProps) {
   const isMultiStep = formType === 'multi_step'
   const hasJump = Array.isArray(logic) && logic.some((r) => r.action === 'jump')
+  // route-terminal-submit: 「ここで送信」凡例 + page_break の Continue のみ空画面注記。
+  const hasSubmit = Array.isArray(logic) && logic.some((r) => r.action === 'submit')
+  const hasPageBreak = fields.some((f) => f.type === 'page_break')
   // form-design (Batch D): テーマ色/ロゴ/カバーを反映。未指定は従来の LINE green 既定 (後方互換)。
   const themeColor = design?.themeColor || LINE_GREEN
   const buttonColor = design?.buttonColor || LINE_GREEN
@@ -216,6 +219,14 @@ export default function FormPreview({ title, description, fields, design, formTy
           )}
           {hasJump && (
             <p data-testid="preview-jump-note">「ページへ飛ぶ」分岐は、公開フォーム（1問ずつ表示）でのみ動作します。</p>
+          )}
+          {/* route-terminal-submit: 「ここで送信」凡例 (submit rule のある項目でルートを閉じる)。 */}
+          {hasSubmit && (
+            <p data-testid="preview-submit-note">「ここで送信」を設定した項目では、その項目に回答するとルートを閉じて完了ページへ送信します（以降の質問はスキップ）。</p>
+          )}
+          {/* route-terminal-submit: page_break は hosted で Continue のみの空画面を1枚挟む。 */}
+          {hasPageBreak && (
+            <p data-testid="preview-pagebreak-note">改ページは、公開フォームでは「Continue」だけの空画面を1枚挟みます（Formaloo の仕様）。</p>
           )}
           {hasVisualDesign ? (
             <p>設定したテーマ色・ロゴ/カバーを反映しています。細かなフォント・余白は公開時に Formaloo 側で微調整されます。</p>

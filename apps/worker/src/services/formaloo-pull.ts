@@ -1,6 +1,9 @@
 import {
   fromFormalooField,
   fromFormalooLogic,
+  fromFormalooRawLogic,
+  isExpandableMultiJumpItem,
+  isExpandableTerminalItem,
   countWeakenedFormalooRules,
   logicFingerprint,
   formalooColorToHex,
@@ -214,11 +217,29 @@ export function buildPullResult(
   // R0 実測: 実 logic は bare array。preserve-raw 用に逐語抽出 (legacy synthetic `{rules}` 形は null)。
   const rawLogic = extractRawLogic(body);
   const idSet = new Set(fields.map((f) => f.id));
-  // 表示用射影 (Batch 1 は表示不変: legacy synthetic 経路のまま。実 bare array の忠実射影は Batch 2)。
-  const logic = fromFormalooLogic(logicObj, resolveId).filter(
-    // B5: 変換済 field-id 集合に無い rule を除去 (孤立参照を editor に入れない)
-    (r) => idSet.has(r.sourceFieldId) && idSet.has(r.targetFieldId),
-  );
+  // B5 action-aware filter (孤立参照を editor に入れない)。route-terminal-submit (T-C4): submit rule は
+  //   target 空 (既定完了ページ) を drop しない。F-MED-2: Phase1 は SP 未対応ゆえ submit target を '' へ正規化
+  //   (下段 map) してから B5 = submit は常に target='' で通過。
+  const b5Keep = (r: HarnessLogicRule): boolean => {
+    if (!idSet.has(r.sourceFieldId)) return false;
+    if (r.action === 'submit') return true; // target は '' 正規化済 = 既定完了ページ (Phase1)
+    return idSet.has(r.targetFieldId);
+  };
+  // F-MED-2: Phase1 は submit の success-page target 非対応 → 表示 submit rule の target を '' へ正規化。
+  const normalizePhase1 = (r: HarnessLogicRule): HarnessLogicRule =>
+    r.action === 'submit' && r.targetFieldId !== '' ? { ...r, targetFieldId: '' } : r;
+  // 表示用射影。実 bare array は route-branching (multi-jump) / route-terminal (submit) の **展開可能 item** のみを
+  //   第一級 rule へ射影する (compound/simple-single は非表示 = preserve-raw で保持・弱化 count で surface / Batch 1 不変)。
+  //   legacy synthetic `{rules}` 形は従来経路。
+  const logic = (Array.isArray(rawLogic)
+    ? fromFormalooRawLogic(
+        rawLogic.filter((it) => isExpandableMultiJumpItem(it) || isExpandableTerminalItem(it)),
+        resolveId,
+      )
+    : fromFormalooLogic(logicObj, resolveId)
+  )
+    .map(normalizePhase1)
+    .filter(b5Keep);
 
   // pull-fidelity 弱化検知 (additive): 実 bare array は射影しきれない item 数を、legacy `{rules}` は
   // 複条件/複アクション rule 数を数える。是正: preserve 導入後は「表示簡略化・データ保持」の意味 (D-6/D-10)。

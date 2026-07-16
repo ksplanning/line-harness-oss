@@ -90,8 +90,10 @@ export interface HarnessField {
 /** 条件分岐アクション (R1)。
  * 'jump' = 指定ページ (page_break) へ丸ごと飛ぶ真のルート分岐 (form-route-branching / multi_step でのみ発火)。
  * 'skip' = レガシー射影名 (旧 UI で jump/jump_to_success_page を 'skip' に丸めていた) / 後方互換で残置。
+ * 'submit' = ルートをここで閉じて送信する早期送信 (route-terminal-submit / S-1)。target 空=既定完了ページ /
+ *            target=success-page field=ルート専用完了ページ (jump_to_success_page + submit ペア)。
  */
-export type LogicAction = 'show' | 'hide' | 'jump' | 'skip';
+export type LogicAction = 'show' | 'hide' | 'jump' | 'skip' | 'submit';
 export type LogicOperator = 'equals' | 'not_equals';
 
 /**
@@ -145,6 +147,19 @@ export interface HarnessLogicRule {
   actions?: HarnessLogicActionRef[];
   /** Formaloo logic item 断片の逐語 (未モデル prop passthrough / preserve-raw の per-rule 断片)。 */
   raw?: unknown;
+  // ── route-terminal-submit (S-1) additive optional (submit rule のみ populate) ──
+  /**
+   * submit rule の発火条件 canonical 表現 (route-terminal-submit / S-1)。単一値 `'on_answered'` のみ。
+   * `'on_reach'`(=always) は封印 (サイレントデータ損失毒 / spike §3) = 型に載せない。
+   * submit rule の operator/value/targetFieldId(空時) は canonical placeholder 固定で logicFingerprint 安定。
+   * 非 submit rule には付かない = 後方互換 byte 不変 (S-3)。
+   */
+  terminalTrigger?: 'on_answered';
+  /**
+   * submit host field の元 required 値 (submit 追加で自動 required 化する前の値 / S-1 案A)。
+   * submit rule 削除時の required 復元に使う (元 false→false / 元 true→true)。builder のみ populate。
+   */
+  terminalHostWasRequired?: boolean;
 }
 
 export interface HarnessFormDefinition {
@@ -422,10 +437,22 @@ function resolveWhenValueOperand(
 }
 
 /**
+ * submit rule の発火条件 raw `when` を決定的に生成 (route-terminal-submit / S-1 実測正形)。
+ * host item identifier = when の field value = **同一末尾 field slug** (自己参照)。
+ * spike §1: `{"operation":"is_answered","args":[{"type":"field","value":"<host slug>"}]}` のみ hosted 発火。
+ */
+export function generateSubmitWhen(hostSlug: string): { operation: 'is_answered'; args: { type: 'field'; value: string }[] } {
+  return { operation: 'is_answered', args: [{ type: 'field', value: hostSlug }] };
+}
+
+/**
  * harness logic rules → Formaloo R0 bare-array logic (edited-push の是正生成形)。
  * field は harness id → Formaloo slug に解決。resolveSlug が undefined を返す rule は捨てる (孤立参照防止)。
  * fieldById (任意) を渡すと source field の型を見て choice/constant のオペランド型を判定する (choice_slug 発火)。
  * action: show/hide/jump はそのまま・レガシー 'skip' → Formaloo 'jump' に動詞変換。
+ * route-terminal-submit (S-1): action='submit' は host 自己参照 is_answered when + args:[] (target 空でも drop しない)。
+ *   success-page target 有りは `jump_to_success_page`(identifier=SP slug)+`submit` のペアを同一 when で生成。
+ *   同一 source に jump と submit が混在したら total order = **通常 jump → jump_to_success_page → submit** (spike §2c 逆順禁止)。
  */
 export function toFormalooRawLogic(
   rules: HarnessLogicRule[],
@@ -438,11 +465,33 @@ export function toFormalooRawLogic(
   // 格納する compound 形にすると 3 ルート正しく分岐する (spike 実機実証)。→ source slug でグルーピングして生成。
   // 単一ルールは 1 item・1 action = 従来と byte 一致 (回帰なし)。source 出現順・action 順は builder 順を保持。
   const order: string[] = [];
-  const actionsBySrc = new Map<string, unknown[]>();
+  // jump 系 (通常 jump / skip→jump) と submit 系を分離集積し、item 出力時に total order で連結する
+  // (S-1 §2c: hosted は actions 順序どおり実行 = jump_to_success_page → submit の正順のみ SP 着地)。
+  const jumpActionsBySrc = new Map<string, unknown[]>();
+  const submitActionsBySrc = new Map<string, unknown[]>();
+  const ensureOrder = (srcSlug: string) => {
+    if (!jumpActionsBySrc.has(srcSlug)) {
+      jumpActionsBySrc.set(srcSlug, []);
+      submitActionsBySrc.set(srcSlug, []);
+      order.push(srcSlug);
+    }
+  };
   for (const r of rules) {
     const srcSlug = resolveSlug(r.sourceFieldId);
+    if (!srcSlug) continue; // source 未解決 (未 push field 等) は送らない
+    if (r.action === 'submit') {
+      // submit rule: host 自己参照 is_answered when。target 空でも drop しない (args:[] 単独)。
+      const when = generateSubmitWhen(srcSlug);
+      const spSlug = r.targetFieldId ? resolveSlug(r.targetFieldId) : undefined;
+      ensureOrder(srcSlug);
+      const bucket = submitActionsBySrc.get(srcSlug)!;
+      // success-page 併用時のみ jump_to_success_page を submit の前に積む (R-c: page 着地 → submit)。
+      if (spSlug) bucket.push({ action: 'jump_to_success_page', args: [{ type: 'field', identifier: spSlug }], when });
+      bucket.push({ action: 'submit', args: [], when });
+      continue;
+    }
     const tgtSlug = resolveSlug(r.targetFieldId);
-    if (!srcSlug || !tgtSlug) continue; // 未 push field 等の孤立参照は Formaloo に送らない
+    if (!tgtSlug) continue; // 非 submit は target 必須 (孤立参照は送らない)
     const verb: FormalooActionVerb = r.action === 'skip' ? 'jump' : r.action; // レガシー skip→jump 動詞変換
     const operation: FormalooConditionOperator = r.operator === 'not_equals' ? 'is_not' : 'is';
     const valueOperand = resolveWhenValueOperand(r, fieldById?.(r.sourceFieldId));
@@ -451,13 +500,15 @@ export function toFormalooRawLogic(
       args: [{ type: 'field', identifier: tgtSlug }],
       when: { operation, args: [{ type: 'field', value: srcSlug }, valueOperand] },
     };
-    if (!actionsBySrc.has(srcSlug)) {
-      actionsBySrc.set(srcSlug, []);
-      order.push(srcSlug);
-    }
-    actionsBySrc.get(srcSlug)!.push(action);
+    ensureOrder(srcSlug);
+    jumpActionsBySrc.get(srcSlug)!.push(action);
   }
-  return order.map((srcSlug) => ({ type: 'field', identifier: srcSlug, actions: actionsBySrc.get(srcSlug) }));
+  return order.map((srcSlug) => ({
+    type: 'field',
+    identifier: srcSlug,
+    // total order: 通常 jump → (jump_to_success_page → submit)。pure-jump は submit 空 = 従来と byte 一致。
+    actions: [...jumpActionsBySrc.get(srcSlug)!, ...submitActionsBySrc.get(srcSlug)!],
+  }));
 }
 
 /**
@@ -510,7 +561,9 @@ export function countWeakenedFormalooRules(obj: FormalooLogicObject | readonly u
   // = 「ハーネス表示に映らない部分の点数」。legacy synthetic `{rules}` 形は従来の条件/アクション複数を数える。
   // form-route-branching compound-fix: 展開可能な multi-jump item は N 本の flat rule に逐語展開され欠けが無いため
   // 弱化として数えない (isExpandableMultiJumpItem を除外)。show/hide 複数・AND/OR compound は従来どおり数える。
-  if (Array.isArray(obj)) return obj.filter((it) => isCompoundRawLogicItem(it) && !isExpandableMultiJumpItem(it)).length;
+  // route-terminal-submit (T-A4): terminal-expandable (submit / 隣接ペア) も弱化除外 (第一級展開で欠けゼロ)。
+  //   standalone jump_to_success_page / always(on_reach) submit は isExpandableTerminalItem=false = 従来どおり計数。
+  if (Array.isArray(obj)) return obj.filter((it) => isCompoundRawLogicItem(it) && !isExpandableMultiJumpItem(it) && !isExpandableTerminalItem(it)).length;
   const rulesIn = Array.isArray((obj as FormalooLogicObject)?.rules) ? (obj as FormalooLogicObject).rules : [];
   return rulesIn.filter(
     (r) =>
@@ -601,6 +654,76 @@ export function isExpandableMultiJumpItem(item: unknown): boolean {
 }
 
 /**
+ * route-terminal-submit (S-1): submit を含む terminal item を flat rule 群へ逐語展開できるか。
+ * `isExpandableMultiJumpItem` は無改変 (pure-jump byte-identity 回帰死守)。本述語は submit-bearing item 専用:
+ *  - submit または jump_to_success_page を **含む** (pure-jump は multi-jump 経路へ委譲 = ここでは false)
+ *  - 全 action が route/terminal verb (jump / jump_to_success_page / submit) で単一 leaf when
+ *  - jump / jump_to_success_page: operator is/is_not / submit: operator is_answered (**always=on_reach は封印 = false**)
+ *  - 各 jump_to_success_page は直後に同一 when の submit と隣接ペア (単独 jsp = no-op = 非展開 = false / S-1 §2c/d)
+ * 非該当 (standalone jsp / always submit / 未モデル verb) は従来の弱化射影 + raw 保持へ落とす (データ損失毒の封印)。
+ */
+export function isExpandableTerminalItem(item: unknown): boolean {
+  if (!item || typeof item !== 'object') return false;
+  const it = item as Record<string, unknown>;
+  const rawActions = Array.isArray(it.actions) ? it.actions : [];
+  if (rawActions.length === 0) return false;
+  const hostSlug = typeof it.identifier === 'string' ? it.identifier : '';
+  if (!hostSlug) return false; // host identifier 必須 (自己参照 when の照合基準)
+  const verbs = rawActions.map((a) => (a && typeof a === 'object' ? (a as Record<string, unknown>).action : undefined));
+  // terminal item = submit または jump_to_success_page を含む (pure-jump は isExpandableMultiJumpItem へ委譲)
+  if (!verbs.some((v) => v === 'submit' || v === 'jump_to_success_page')) return false;
+
+  // F-HIGH-2 厳密検証: submit は host 自己参照 is_answered ∧ args 空 / jsp は自己参照 is_answered ∧ target identifier 必須。
+  //   terminal(jsp/submit) の後に jump は不可 (total order 通常jump→jsp→submit)。各 jsp は直後 submit と隣接ペア(when 一致)。
+  const isSelfRefIsAnswered = (when: unknown): boolean => {
+    if (!when || typeof when !== 'object') return false;
+    const w = when as Record<string, unknown>;
+    if (w.operation !== 'is_answered') return false;
+    const args = Array.isArray(w.args) ? w.args : [];
+    if (args.length !== 1) return false; // is_answered は field operand 1 個のみ
+    const o = (args[0] && typeof args[0] === 'object' ? args[0] : {}) as Record<string, unknown>;
+    return o.type === 'field' && o.value === hostSlug; // 自己参照 (host)
+  };
+  const targetIdentifier = (a: Record<string, unknown>): string => {
+    const args = Array.isArray(a.args) ? a.args : [];
+    const tgt = args.map((x) => (x && typeof x === 'object' ? (x as Record<string, unknown>) : {})).find((x) => typeof x.identifier === 'string');
+    return typeof tgt?.identifier === 'string' ? (tgt.identifier as string) : '';
+  };
+
+  let terminalSeen = false;
+  for (let i = 0; i < rawActions.length; i++) {
+    const ao = (rawActions[i] && typeof rawActions[i] === 'object' ? rawActions[i] : {}) as Record<string, unknown>;
+    const verb = ao.action;
+    if (verb === 'jump') {
+      if (terminalSeen) return false; // jump は terminal より前 (total order 違反)
+      const flat = flattenRawWhen(ao.when, (s) => s);
+      if (flat.join || flat.conditions.length !== 1) return false;
+      const op = flat.conditions[0].operator;
+      if (op !== 'is' && op !== 'is_not') return false;
+    } else if (verb === 'jump_to_success_page') {
+      terminalSeen = true;
+      if (!isSelfRefIsAnswered(ao.when)) return false; // 自己参照 is_answered
+      if (Array.isArray(ao.args) === false || !targetIdentifier(ao)) return false; // target identifier 必須
+      // 隣接ペア: 直後は submit (同一 when)。
+      const next = (rawActions[i + 1] && typeof rawActions[i + 1] === 'object' ? rawActions[i + 1] : {}) as Record<string, unknown>;
+      if (next.action !== 'submit') return false; // 単独 jsp = no-op
+      if (!semanticLogicEqual(ao.when, next.when)) return false;
+      const nextArgs = Array.isArray(next.args) ? next.args : null;
+      if (!nextArgs || nextArgs.length !== 0) return false; // submit args 空
+      i += 1; // ペアの submit を消費
+    } else if (verb === 'submit') {
+      terminalSeen = true;
+      if (!isSelfRefIsAnswered(ao.when)) return false; // 自己参照 is_answered (always/on_reach 封印)
+      const args = Array.isArray(ao.args) ? ao.args : null;
+      if (!args || args.length !== 0) return false; // submit args 空
+    } else {
+      return false; // 未モデル verb
+    }
+  }
+  return true;
+}
+
+/**
  * 実 Formaloo logic (bare array) → harness rule 射影。simple item は従来同型の flat 弱化射影、
  * compound item (isCompoundRawLogicItem) のみ additive フィールド (conditions/conditionJoin/actions/raw) を付与 (R2)。
  * source/target slug は resolveFieldId で harness id へ (未解決は slug fallback)。弱化不能 item は drop。
@@ -645,6 +768,66 @@ export function fromFormalooRawLogic(
       continue; // 展開済 → 従来の弱化射影経路はスキップ
     }
 
+    // route-terminal-submit (S-1): submit を含む terminal item を第一級 submit rule / jump rule 群へ展開。
+    //   jump → jump rule / jump_to_success_page+submit 隣接ペア → submit rule(target=SP) / 単独 submit → submit rule(target='')。
+    //   isExpandableTerminalItem が pairing・封印 (always/standalone jsp) を保証済 = ここは逐語展開のみ。
+    if (isExpandableTerminalItem(item)) {
+      for (let ai = 0; ai < rawActions.length; ai++) {
+        const ao = (rawActions[ai] && typeof rawActions[ai] === 'object' ? rawActions[ai] : {}) as Record<string, unknown>;
+        const verb = ao.action;
+        const flat = flattenRawWhen(ao.when, resolveFieldId);
+        const c0 = flat.conditions[0];
+        if (verb === 'jump') {
+          const aArgs = Array.isArray(ao.args) ? ao.args : [];
+          const tgt = aArgs.map((x) => (x && typeof x === 'object' ? (x as Record<string, unknown>) : {})).find((x) => typeof x.identifier === 'string');
+          const tgtSlug = typeof tgt?.identifier === 'string' ? (tgt.identifier as string) : '';
+          const targetFieldId = tgtSlug ? resolveFieldId(tgtSlug) ?? tgtSlug : '';
+          if (!c0 || !c0.sourceFieldId || !targetFieldId) continue;
+          n += 1;
+          out.push({
+            id: `r${n}`,
+            sourceFieldId: c0.sourceFieldId,
+            operator: c0.operator === 'is_not' || c0.operator === 'not_equals' ? 'not_equals' : 'equals',
+            value: c0.value,
+            action: 'jump',
+            targetFieldId,
+          });
+        } else if (verb === 'jump_to_success_page') {
+          // 隣接ペア: 次 action の submit と合わせて 1 submit rule(target=SP) にコラプス (isExpandableTerminalItem 保証済)。
+          const aArgs = Array.isArray(ao.args) ? ao.args : [];
+          const tgt = aArgs.map((x) => (x && typeof x === 'object' ? (x as Record<string, unknown>) : {})).find((x) => typeof x.identifier === 'string');
+          const spSlug = typeof tgt?.identifier === 'string' ? (tgt.identifier as string) : '';
+          const targetFieldId = spSlug ? resolveFieldId(spSlug) ?? spSlug : '';
+          if (!c0 || !c0.sourceFieldId) { ai += 1; continue; } // ペアの submit を消費して skip
+          n += 1;
+          out.push({
+            id: `r${n}`,
+            sourceFieldId: c0.sourceFieldId,
+            operator: 'equals',
+            value: '',
+            action: 'submit',
+            targetFieldId,
+            terminalTrigger: 'on_answered',
+          });
+          ai += 1; // ペアの submit を消費
+        } else if (verb === 'submit') {
+          // 単独 submit (ペア済み submit は上で ai++ 消費済) → target 空 rule (drop しない)。
+          if (!c0 || !c0.sourceFieldId) continue;
+          n += 1;
+          out.push({
+            id: `r${n}`,
+            sourceFieldId: c0.sourceFieldId,
+            operator: 'equals',
+            value: '',
+            action: 'submit',
+            targetFieldId: '',
+            terminalTrigger: 'on_answered',
+          });
+        }
+      }
+      continue; // 展開済 → 従来の弱化射影経路はスキップ
+    }
+
     const actionRefs: HarnessLogicActionRef[] = [];
     for (const a of rawActions) {
       const ao = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
@@ -660,9 +843,17 @@ export function fromFormalooRawLogic(
 
     const primary = (rawActions[0] && typeof rawActions[0] === 'object' ? rawActions[0] : {}) as Record<string, unknown>;
     const flat = flattenRawWhen(primary.when, resolveFieldId);
-    const cond0 = flat.conditions[0];
+    let cond0 = flat.conditions[0];
     const act0 = actionRefs[0];
-    if (!cond0 || !act0 || !cond0.sourceFieldId || !act0.targetFieldId) continue; // 弱化不能 / 孤立参照 → drop
+    // route-terminal-submit: 弱化経路に落ちた submit (always/on_reach 封印 = target 空・when に field operand 無し)
+    //   は drop せず raw 保持で surface。sourceFieldId は item identifier (host) から補完 (自己参照)。
+    const submitWeakened = act0?.action === 'submit';
+    if (submitWeakened && (!cond0 || !cond0.sourceFieldId)) {
+      const itemHost = typeof it.identifier === 'string' ? it.identifier : '';
+      const hostId = itemHost ? resolveFieldId(itemHost) ?? itemHost : '';
+      cond0 = { sourceFieldId: hostId, operator: (cond0?.operator ?? 'is_answered') as HarnessLogicCondition['operator'], value: cond0?.value ?? '' };
+    }
+    if (!cond0 || !act0 || !cond0.sourceFieldId || (!act0.targetFieldId && !submitWeakened)) continue; // 弱化不能 / 孤立参照 → drop
 
     n += 1;
     const flatOperator: LogicOperator =
@@ -674,9 +865,11 @@ export function fromFormalooRawLogic(
         ? 'hide'
         : act0.action === 'jump' || act0.action === 'jump_to_success_page'
           ? 'jump'
-          : act0.action === 'skip'
-            ? 'skip'
-            : 'show';
+          : act0.action === 'submit'
+            ? 'submit'
+            : act0.action === 'skip'
+              ? 'skip'
+              : 'show';
     const rule: HarnessLogicRule = {
       id: `r${n}`,
       sourceFieldId: cond0.sourceFieldId,
@@ -730,4 +923,117 @@ export function logicFingerprint(rules: readonly HarnessLogicRule[]): string {
  */
 export function serializeRawLogicForPush(rawLogic: unknown): unknown[] | null {
   return Array.isArray(rawLogic) ? [...rawLogic] : null;
+}
+
+// =============================================================================
+// route-terminal-submit (S-1) — builder lint (誤解ゼロ原則)。builder と worker save が共用する純関数。
+// ページ区間グラフ (page_break で分割) を組み、submit/jump/required の配置から 3 種の警告を算定する:
+//   (a) なだれ込み〔UX〕: jump ルート末尾が閉じていない (submit も終端 jump も無い) → 次区間へ線形続行。
+//       (S-1 §3: 未閉鎖ルート自体は全値保存で送信可能 = データ損失に格上げしない・UX 警告のまま)
+//   (b) 送信不能: 恒常スキップされ得る区間の required → 飛ばした回答者が最後の Submit で「必須未入力」ブロック。
+//   (d) データ損失: submit host がそのページ区間の最終 field でない → host より後の同ルート回答が silent 欠落 (S-1 §3)。
+// 純 show/hide 運用フォーム (jump/submit なし) には 1 件も出さない (誤警告 0 = RK-4)。
+// =============================================================================
+
+/** ページ区間 = page_break で分割した入力 field の連なり (先頭 page_break は区間の開始マーカ)。 */
+interface RouteSegment {
+  /** この区間の開始 page_break field (先頭区間は null)。 */
+  pageBreak: HarnessField | null;
+  /** 区間内の入力 (非 decoration) field (position 昇順)。 */
+  inputs: HarnessField[];
+}
+
+function buildRouteSegments(orderedFields: HarnessField[]): RouteSegment[] {
+  const segments: RouteSegment[] = [{ pageBreak: null, inputs: [] }];
+  for (const f of orderedFields) {
+    if (f.type === 'page_break') {
+      segments.push({ pageBreak: f, inputs: [] });
+    } else if (!isDecorationType(f.type)) {
+      segments[segments.length - 1].inputs.push(f);
+    }
+    // section (decoration・非 page_break) は区間を分割しない (入力でもない)。
+  }
+  return segments;
+}
+
+export function computeRouteTerminalWarnings(
+  fields: HarnessField[],
+  logic: HarnessLogicRule[],
+  _formType?: FormDisplayType,
+): string[] {
+  const jumpRules = logic.filter((r) => r.action === 'jump');
+  const submitRules = logic.filter((r) => r.action === 'submit');
+  // 純 show/hide (jump も submit も無い) → 誤警告 0。
+  if (jumpRules.length === 0 && submitRules.length === 0) return [];
+
+  const ordered = [...fields].sort((a, b) => a.position - b.position);
+  const byId = new Map(ordered.map((f) => [f.id, f]));
+  const segments = buildRouteSegments(ordered);
+  const lastSegmentIdx = segments.length - 1;
+  const submitHostIds = new Set(submitRules.map((r) => r.sourceFieldId));
+  const jumpTargetIds = new Set(jumpRules.map((r) => r.targetFieldId));
+  const segmentOf = (fieldId: string): { seg: RouteSegment; idx: number } | undefined => {
+    for (let i = 0; i < segments.length; i++) {
+      if (segments[i].inputs.some((f) => f.id === fieldId)) return { seg: segments[i], idx: i };
+    }
+    return undefined;
+  };
+
+  const warnings: string[] = [];
+  const push = (msg: string) => { if (!warnings.includes(msg)) warnings.push(msg); };
+
+  // (a) なだれ込み: jump 先の区間 (route) が最終区間でなく submit で閉じていない → 次区間へ流れ込む。
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg.inputs.length === 0) continue;
+    const isJumpTarget = seg.pageBreak != null && jumpTargetIds.has(seg.pageBreak.id);
+    if (!isJumpTarget) continue;
+    if (i >= lastSegmentIdx) continue; // 最終区間は通常 Submit で閉じる = なだれ込まない
+    const lastInput = seg.inputs[seg.inputs.length - 1];
+    if (submitHostIds.has(lastInput.id)) continue; // submit で閉じている
+    push(`「${seg.pageBreak?.label || 'ページ'}」のルートが「ここで送信」で閉じられていません。公開フォームでは次の質問へ流れ込みます（なだれ込み）。ルート末尾に「ここで送信」を追加してください。`);
+  }
+
+  // (b) 送信不能: jump が飛び越える区間 (source と target の間) の required → **通常 Submit** がブロックされ得る。
+  //   F-MED-3: 早期 submit (logic submit) は他ページ required を素通しする (R-f)。よって飛越先ルートが submit で
+  //   閉じる (通常 Submit へ到達しない) 場合は required がブロックしない = 誤警告になる → 抑制する。
+  //   飛越先 (jump target 区間) から末尾まで submit-close が無い = 通常 Submit へ到達する時のみ warn。
+  const routeReachesNormalSubmit = (startSegIdx: number): boolean => {
+    for (let i = startSegIdx; i < segments.length; i++) {
+      const seg = segments[i];
+      if (seg.inputs.length === 0) continue;
+      const last = seg.inputs[seg.inputs.length - 1];
+      if (submitHostIds.has(last.id)) return false; // この区間で早期 submit → 通常 Submit へ到達しない
+    }
+    return true; // 末尾まで submit-close 無し = 通常 Submit へ到達
+  };
+  for (const jr of jumpRules) {
+    const src = byId.get(jr.sourceFieldId);
+    const tgt = byId.get(jr.targetFieldId);
+    if (!src || !tgt) continue;
+    // jump target 区間の index を特定 (target = page_break id)。
+    const targetSegIdx = segments.findIndex((s) => s.pageBreak != null && s.pageBreak.id === jr.targetFieldId);
+    if (targetSegIdx < 0) continue;
+    if (!routeReachesNormalSubmit(targetSegIdx)) continue; // 飛越先が submit で閉じる = required ブロックなし (誤警告抑制)
+    for (const f of ordered) {
+      if (isDecorationType(f.type)) continue;
+      if (f.position > src.position && f.position < tgt.position && f.required) {
+        push(`「${f.label}」は必須ですが、条件分岐で飛ばされる可能性があります。飛ばした回答者は最後の送信で「必須未入力」になり送信できなくなります。`);
+      }
+    }
+  }
+
+  // (d) データ損失: submit host がそのページ区間の最終入力 field でない → host より後の同ルート回答が落ちる (S-1 §3)。
+  for (const sr of submitRules) {
+    const host = byId.get(sr.sourceFieldId);
+    if (!host) continue;
+    const found = segmentOf(host.id);
+    if (!found || found.seg.inputs.length === 0) continue;
+    const lastInput = found.seg.inputs[found.seg.inputs.length - 1];
+    if (lastInput.id !== host.id) {
+      push(`「${host.label}」で送信すると、同じページのこれより後ろの回答が保存されません（データ損失）。「ここで送信」は各ルートの最後の項目に置いてください。`);
+    }
+  }
+
+  return warnings;
 }

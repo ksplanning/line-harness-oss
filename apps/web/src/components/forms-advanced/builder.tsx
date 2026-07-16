@@ -25,6 +25,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType } from '@line-crm/shared'
+import { computeRouteTerminalWarnings } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
   FIELD_CATEGORIES,
@@ -365,6 +366,63 @@ function SettingsPanel({
       { id: `r_${Math.random().toString(36).slice(2, 8)}`, sourceFieldId: field.id, operator: 'equals', value: '', action: 'show', targetFieldId: other.id },
     ])
   }
+  // route-terminal-submit (F-MED-1): submit 状態遷移を一元化。
+  //   host required は「残存 submit があれば true / 無ければ元値 (terminalHostWasRequired) へ復元」で再計算する。
+  const hostHasSubmit = (list: HarnessLogicRule[]) => list.some((r) => r.sourceFieldId === field.id && r.action === 'submit')
+  const firstPageId = () => allFields.find((f) => f.type === 'page_break')?.id ?? ''
+  const firstOtherFieldId = () => allFields.find((f) => f.id !== field.id && !isDecoration(f.type))?.id ?? ''
+  // logic 差替 + required 再計算。restoreRequired = submit が host から消えた時に戻す元値。
+  const applyLogic = (nextLogic: HarnessLogicRule[], restoreRequired?: boolean) => {
+    onLogicChange(nextLogic)
+    if (hostHasSubmit(nextLogic)) { if (!field.required) set({ required: true }) }
+    else if (restoreRequired !== undefined) set({ required: restoreRequired })
+  }
+  // 「ここで送信」rule 追加 (target 空=既定完了ページ / Phase1)。**同一 host に既に submit があれば追加しない (先頭勝ち)**。
+  const addSubmitRule = () => {
+    if (hostHasSubmit(logic)) return // 重複 submit 禁止 (F-MED-1 / T-B3 先頭勝ち)
+    applyLogic([
+      ...logic,
+      { id: `r_${Math.random().toString(36).slice(2, 8)}`, sourceFieldId: field.id, operator: 'equals', value: '', action: 'submit', targetFieldId: '', terminalTrigger: 'on_answered', terminalHostWasRequired: field.required },
+    ])
+    if (formType !== 'multi_step') onEnsureMultiStep?.()
+  }
+  // action select 変更。submit 入場=正規化(空値/空target/terminalTrigger/元 required 保存)・submit 退場=terminal metadata 除去 + 有効 target 設定。
+  const onActionChange = (rule: HarnessLogicRule, nextAction: HarnessLogicRule['action']) => {
+    if (nextAction === rule.action) return
+    // 重複 submit 禁止: 別 rule が既に host を submit で閉じている状態で submit へ変更しない (先頭勝ち)。
+    if (nextAction === 'submit' && logic.some((r) => r.id !== rule.id && r.sourceFieldId === field.id && r.action === 'submit')) return
+    const wasRequired = field.required
+    const leavingSubmit = rule.action === 'submit' && nextAction !== 'submit'
+    const nextLogic = logic.map((r) => {
+      if (r.id !== rule.id) return r
+      const next: HarnessLogicRule = { ...r, action: nextAction }
+      if (nextAction === 'submit') {
+        next.targetFieldId = '' // Phase1: 既定完了ページ (target 空)
+        next.terminalTrigger = 'on_answered'
+        if (next.terminalHostWasRequired === undefined) next.terminalHostWasRequired = wasRequired
+      } else {
+        // submit / 他 action からの離脱: terminal metadata を除去し **有効 target** を設定 (target 空だと save filter で消える)。
+        delete next.terminalTrigger
+        delete next.terminalHostWasRequired
+        if (nextAction === 'jump') {
+          const curIsPage = allFields.some((f) => f.id === r.targetFieldId && f.type === 'page_break')
+          next.targetFieldId = curIsPage ? r.targetFieldId : firstPageId()
+        } else {
+          const curValid = allFields.some((f) => f.id === r.targetFieldId && f.id !== field.id && !isDecoration(f.type))
+          next.targetFieldId = curValid ? r.targetFieldId : firstOtherFieldId()
+        }
+      }
+      return next
+    })
+    // 多層防御 (主機構): jump/submit 選択で simple なら multi_step へ自動切替 (可視通知は親が表示)。
+    if ((nextAction === 'jump' || nextAction === 'submit') && formType !== 'multi_step') onEnsureMultiStep?.()
+    // required 再計算: submit 離脱時は元値復元 (残存 submit があれば applyLogic 内で true 維持)。
+    applyLogic(nextLogic, leavingSubmit ? (rule.terminalHostWasRequired ?? false) : undefined)
+  }
+  // rule 削除。submit rule 削除は host の required を再計算 (残存 submit 無ければ元値へ復元)。
+  const onDeleteRule = (rule: HarnessLogicRule) => {
+    applyLogic(logic.filter((r) => r.id !== rule.id), rule.action === 'submit' ? (rule.terminalHostWasRequired ?? false) : undefined)
+  }
 
   return (
     <div className="space-y-3 text-sm" data-testid="settings-panel">
@@ -451,6 +509,7 @@ function SettingsPanel({
         </div>
         {rulesForField.map((rule) => {
           const isJump = rule.action === 'jump'
+          const isSubmit = rule.action === 'submit'
           // choice source は選択肢 select 化 (title 表示・値は title を送出 → 生成側で slug へ写像)。
           // pull 由来 (rule.value=slug) は choiceItems から title へ解決して選択表示。
           const choiceItems = cfg.choiceItems
@@ -461,6 +520,44 @@ function SettingsPanel({
           const targetOptions = isJump
             ? allFields.filter((f) => f.type === 'page_break')
             : allFields.filter((f) => f.id !== field.id && !isDecoration(f.type))
+          // 分岐アクション select (submit option 含む・route-terminal-submit)。
+          const actionSelect = (
+            <select
+              aria-label="分岐アクション"
+              value={rule.action}
+              onChange={(e) => onActionChange(rule, e.target.value as HarnessLogicRule['action'])}
+              className="border border-gray-300 rounded px-1"
+            >
+              <option value="show">表示</option>
+              <option value="hide">隠す</option>
+              <option value="jump">ページへ飛ぶ</option>
+              <option value="submit">ここで送信（完了ページへ）</option>
+              <option value="skip">（旧）スキップ</option>
+            </select>
+          )
+          const deleteBtn = (
+            <button type="button" aria-label="分岐を削除" onClick={() => onDeleteRule(rule)} className="text-gray-400 hover:text-red-600">✕</button>
+          )
+          // route-terminal-submit: submit rule は「もし値なら」でなく「この項目に回答したら送信」= 専用行。
+          if (isSubmit) {
+            return (
+              <div key={rule.id} className="text-xs mb-1 space-y-1">
+                <div className="flex flex-wrap items-center gap-1">
+                  <span>この項目に回答したら</span>
+                  {actionSelect}
+                  {/* Phase1: 完了ページは既定固定 (target 空)。Phase2 で success-page 候補を露出。 */}
+                  <select aria-label="送信先の完了ページ" value="" disabled className="border border-gray-300 rounded px-1 bg-gray-50 text-gray-500">
+                    <option value="">（既定の完了ページ）</option>
+                  </select>
+                  {deleteBtn}
+                </div>
+                {/* lint(c) 誤解ゼロ: submit は必須素通し + host 自動必須化を明示 (S-1 確定文言)。 */}
+                <div data-testid="submit-lint-note" className="text-[10px] text-amber-600 leading-snug">
+                  この項目は自動で必須になります。※「ここで送信」は他の必須項目をスキップして送信します（他ページの必須チェックは効きません）。
+                </div>
+              </div>
+            )
+          }
           return (
             <div key={rule.id} className="flex flex-wrap items-center gap-1 text-xs mb-1">
               <span>もし「</span>
@@ -479,36 +576,11 @@ function SettingsPanel({
                 <input aria-label="分岐の値" value={rule.value} onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, value: e.target.value } : r)))} className="border border-gray-300 rounded px-1 w-20" />
               )}
               <span>」なら</span>
-              <select
-                aria-label="分岐アクション"
-                value={rule.action}
-                onChange={(e) => {
-                  const nextAction = e.target.value as HarnessLogicRule['action']
-                  // jump 選択時: 飛び先を page_break へ切替 (現 target が page_break でなければ最初の改ページへ)。
-                  const firstPage = allFields.find((f) => f.type === 'page_break')
-                  onLogicChange(logic.map((r) => {
-                    if (r.id !== rule.id) return r
-                    const next = { ...r, action: nextAction }
-                    if (nextAction === 'jump' && field.type !== 'page_break') {
-                      const curIsPage = allFields.some((f) => f.id === r.targetFieldId && f.type === 'page_break')
-                      if (!curIsPage && firstPage) next.targetFieldId = firstPage.id
-                    }
-                    return next
-                  }))
-                  // 多層防御 (主機構): jump 選択で simple なら multi_step へ自動切替 (可視通知は親が表示)。
-                  if (nextAction === 'jump' && formType !== 'multi_step') onEnsureMultiStep?.()
-                }}
-                className="border border-gray-300 rounded px-1"
-              >
-                <option value="show">表示</option>
-                <option value="hide">隠す</option>
-                <option value="jump">ページへ飛ぶ</option>
-                <option value="skip">（旧）スキップ</option>
-              </select>
+              {actionSelect}
               <select aria-label="分岐対象" value={rule.targetFieldId} onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, targetFieldId: e.target.value } : r)))} className="border border-gray-300 rounded px-1">
                 {targetOptions.map((f) => <option key={f.id} value={f.id}>{f.type === 'page_break' ? (f.label || 'ページ区切り') : f.label}</option>)}
               </select>
-              <button type="button" aria-label="分岐を削除" onClick={() => onLogicChange(logic.filter((r) => r.id !== rule.id))} className="text-gray-400 hover:text-red-600">✕</button>
+              {deleteBtn}
               {/* case-b 注記: choice source だが choice_slug 未取得 (新規フォーム) → 保存後 再取り込みで有効化。 */}
               {isJump && isChoiceSource && !cfg.choiceItems ? (
                 <div className="w-full text-[10px] text-amber-600">この選択肢での分岐は「保存」後に有効になります（保存で選択肢が Formaloo に登録されます）。</div>
@@ -516,7 +588,11 @@ function SettingsPanel({
             </div>
           )
         })}
-        <button type="button" onClick={addRule} disabled={allFields.filter((f) => f.id !== field.id && !isDecoration(f.type)).length < 1} className="text-xs disabled:opacity-40" style={{ color: LINE_GREEN }}>＋ 分岐を追加</button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={addRule} disabled={allFields.filter((f) => f.id !== field.id && !isDecoration(f.type)).length < 1} className="text-xs disabled:opacity-40" style={{ color: LINE_GREEN }}>＋ 分岐を追加</button>
+          {/* route-terminal-submit: 「ここで送信」は他 field を要さず追加可 (入力1項目でも可)。 */}
+          <button type="button" onClick={addSubmitRule} className="text-xs" style={{ color: LINE_GREEN }}>＋「ここで送信」を追加</button>
+        </div>
       </div>
     </div>
   )
@@ -705,6 +781,9 @@ export default function FormBuilder(props: BuilderProps) {
   const selected = fields.find((f) => f.id === selectedId) ?? null
   // form-route-branching: jump rule 有無 (DesignPanel 逆ガード警告の入力)。
   const hasJumpRule = logic.some((r) => r.action === 'jump')
+  // route-terminal-submit (T-B2): lint(a)なだれ込み/(b)送信不能/(d)データ損失 の非ブロッキング警告。
+  //   純 show/hide フォームは空 = 誤警告 0 (computeRouteTerminalWarnings が保証)。
+  const routeTerminalWarnings = computeRouteTerminalWarnings(fields, logic, formType)
   const onFormTypeSwitch = (t: FormDisplayType) => { setFormType(t); setFormTypeNotice(null) }
   // プレビューは pending 画像 (dataUrl) を即時反映する (upload 前でも見た目を確認できる)。
   const previewDesign: FormDesign = {
@@ -842,6 +921,12 @@ export default function FormBuilder(props: BuilderProps) {
       {saveWarnings.length > 0 && (
         <div data-testid="save-warnings" role="alert" className="mb-2 rounded-md bg-amber-50 border border-amber-300 px-3 py-2 text-xs text-amber-800 space-y-1">
           {saveWarnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
+        </div>
+      )}
+      {/* route-terminal-submit (T-B2): なだれ込み/送信不能/データ損失 の live 非ブロッキング警告。 */}
+      {routeTerminalWarnings.length > 0 && (
+        <div data-testid="route-terminal-warnings" role="alert" className="mb-2 rounded-md bg-amber-50 border border-amber-300 px-3 py-2 text-xs text-amber-800 space-y-1">
+          {routeTerminalWarnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
         </div>
       )}
 
