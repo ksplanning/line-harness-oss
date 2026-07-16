@@ -89,15 +89,15 @@ export async function pushDefinitionToFormaloo(
     slug = form?.slug ?? null;
     publicAddress = form?.full_form_address ?? form?.address ?? null;
     if (!slug) return { ok: false, error: 'form create: slug missing' };
-    // ⑤(a) 公開アドレス正本化: create 応答に full_form_address が欠落する account (address_is_universal:false /
-    //   専用サブドメイン) では、GET /v3.0/forms/{slug}/ を 1 回だけ叩いて正本 full_form_address を取り込む。
+    // ⑤(a) 公開アドレス正本化: create 応答の full_form_address 欠落を直接判定し (bare address の有無に関係なく)、
+    //   GET /v3.0/forms/{slug}/ を 1 回だけ叩いて正本 full_form_address を取り込む。
     //   host 推測補完 (o.formaloo.co) は soft-200 エラーページに着地する (実測 2026-07-17) ため一切しない。
-    //   取得失敗は fail-soft: address 未確定のまま (form 作成自体は成功。次回 pull/save で確定)。
-    if (!publicAddress) {
+    //   取得失敗/正本欠落は fail-soft: create 応答由来の address を保持する。
+    if (!form?.full_form_address) {
       const fetched = await client.request<FormCreateResp>('GET', `/v3.0/forms/${slug}/`);
       if (fetched.ok) {
         const f = fetched.data?.data?.form;
-        publicAddress = f?.full_form_address ?? f?.address ?? null;
+        publicAddress = f?.full_form_address ?? f?.address ?? publicAddress;
       }
     }
   }

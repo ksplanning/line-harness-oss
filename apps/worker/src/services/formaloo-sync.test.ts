@@ -113,6 +113,23 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
     expect(gets).toHaveLength(1);
   });
 
+  test('⑤(a): create 応答に bare address はあるが full_form_address 欠落 → GET が発火し正本 full_form_address を採用', async () => {
+    const { client, calls } = mockClient({
+      post: [
+        () => ({ ok: true, status: 201, data: { data: { form: { slug: 'FORMSLUG', address: 'BAREADDR' } } } }),
+      ],
+      request: [
+        () => ({ ok: true, status: 200, data: { data: { form: { slug: 'FORMSLUG', full_form_address: 'https://demo-forms.formaloo.me/f/FORMSLUG' } } } }),
+      ],
+    });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: null, title: 't', fields: [], logic: [] });
+    expect(r.ok).toBe(true);
+    // bare address ではなく GET 由来の正本 full_form_address を採用
+    expect(r.publicAddress).toBe('https://demo-forms.formaloo.me/f/FORMSLUG');
+    const gets = calls.filter((c) => c.method === 'GET' && c.path === '/v3.0/forms/FORMSLUG/');
+    expect(gets).toHaveLength(1);
+  });
+
   test('⑤(a): create 応答に full_form_address があれば追加 GET を叩かない (余分な往復なし)', async () => {
     const { client, calls } = mockClient({
       post: [
