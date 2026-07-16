@@ -498,7 +498,7 @@ CREATE TABLE formaloo_forms (
   folder_id             TEXT,                            -- migration 096: ハーネス側フォルダ分類 (NULL=未分類 / F6-3 本柱③)
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, allow_post_edit INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE formaloo_saved_filters (
   id          TEXT PRIMARY KEY,
