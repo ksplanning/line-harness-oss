@@ -1,6 +1,6 @@
 'use client'
 
-import type { HarnessField } from '@line-crm/shared'
+import type { HarnessField, FormDesign } from '@line-crm/shared'
 import { fieldTypeIcon, isDecoration } from './field-types'
 
 const LINE_GREEN = '#06C755'
@@ -9,6 +9,8 @@ export interface FormPreviewProps {
   title: string
   description?: string | null
   fields: HarnessField[]
+  /** form-design (Batch D): テーマ色/ロゴ/カバーを反映 (未指定は従来の LINE green 既定)。 */
+  design?: FormDesign
 }
 
 const controlClassName = 'w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500 disabled:cursor-not-allowed disabled:opacity-100'
@@ -80,7 +82,7 @@ function PreviewControl({ field }: { field: HarnessField }) {
   }
 }
 
-function PreviewField({ field }: { field: HarnessField }) {
+function PreviewField({ field, themeColor }: { field: HarnessField; themeColor: string }) {
   if (isDecoration(field.type)) {
     if (field.type === 'section') {
       return (
@@ -106,7 +108,7 @@ function PreviewField({ field }: { field: HarnessField }) {
         <span aria-hidden>{fieldTypeIcon(field.type)}</span>
         <label htmlFor={`preview-control-${field.id}`} className="text-sm font-medium text-gray-800">{field.label}</label>
         {field.required && (
-          <span className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white" style={{ backgroundColor: LINE_GREEN }}>
+          <span className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white" style={{ backgroundColor: themeColor }}>
             必須
           </span>
         )}
@@ -116,27 +118,51 @@ function PreviewField({ field }: { field: HarnessField }) {
   )
 }
 
-export default function FormPreview({ title, description, fields }: FormPreviewProps) {
+export default function FormPreview({ title, description, fields, design }: FormPreviewProps) {
+  // form-design (Batch D): テーマ色/ロゴ/カバーを反映。未指定は従来の LINE green 既定 (後方互換)。
+  const themeColor = design?.themeColor || LINE_GREEN
+  const buttonColor = design?.buttonColor || LINE_GREEN
+  const submitTextColor = design?.submitTextColor || '#FFFFFF'
+  const bgColor = design?.backgroundColor || '#FFFFFF'
+  const textColor = design?.textColor || undefined
+  const logoUrl = design?.logoUrl || null
+  const coverUrl = design?.backgroundImageUrl || null
+  // 視覚に効く design key があれば fidelity note を「反映しています」に更新 (無ければ従来 note)。
+  const hasVisualDesign = Boolean(
+    design && (design.themeColor || design.backgroundColor || design.buttonColor || design.textColor || design.logoUrl || design.backgroundImageUrl),
+  )
+
   return (
     <div data-testid="form-preview" className="w-full">
       <div
         data-testid="preview-frame"
-        className="mx-auto w-full overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm"
-        style={{ maxWidth: 375 }}
+        className="mx-auto w-full overflow-hidden rounded-2xl border border-gray-200 shadow-sm"
+        style={{ maxWidth: 375, backgroundColor: bgColor }}
       >
-        <header className="border-t-4 border-[#06C755] px-5 pb-4 pt-5">
-          <h2 className="text-xl font-bold text-gray-900">{title}</h2>
-          {description && <p className="mt-2 whitespace-pre-wrap text-sm text-gray-600">{description}</p>}
+        <header
+          className="border-t-4 px-5 pb-4 pt-5"
+          style={{
+            borderTopColor: themeColor,
+            ...(coverUrl ? { backgroundImage: `url(${coverUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}),
+          }}
+          {...(coverUrl ? { 'data-testid': 'preview-cover' } : {})}
+        >
+          {logoUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img data-testid="preview-logo" src={logoUrl} alt="ロゴ" className="mb-2 h-10 w-auto object-contain" />
+          )}
+          <h2 className="text-xl font-bold" style={{ color: textColor ?? '#111827' }}>{title}</h2>
+          {description && <p className="mt-2 whitespace-pre-wrap text-sm" style={{ color: textColor ?? '#4B5563' }}>{description}</p>}
         </header>
 
-        <div className="space-y-5 border-t border-gray-100 px-5 py-5">
-          {fields.map((field) => <PreviewField key={field.id} field={field} />)}
+        <div className="space-y-5 border-t border-gray-100 px-5 py-5" style={textColor ? { color: textColor } : undefined}>
+          {fields.map((field) => <PreviewField key={field.id} field={field} themeColor={themeColor} />)}
 
           <button
             type="button"
             disabled
-            className="w-full rounded-lg px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
-            style={{ backgroundColor: LINE_GREEN }}
+            className="w-full rounded-lg px-4 py-2.5 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-60"
+            style={{ backgroundColor: buttonColor, color: submitTextColor }}
           >
             送信
           </button>
@@ -144,7 +170,11 @@ export default function FormPreview({ title, description, fields }: FormPreviewP
 
         <div data-testid="preview-fidelity-note" className="space-y-1.5 border-t border-gray-200 bg-gray-50 px-5 py-4 text-[11px] leading-relaxed text-gray-500">
           <p>見出しや説明文も公開フォームに表示されます。</p>
-          <p>色・フォント・ロゴは公開時に Formaloo 側のテーマで決まります。</p>
+          {hasVisualDesign ? (
+            <p>設定したテーマ色・ロゴ/カバーを反映しています。細かなフォント・余白は公開時に Formaloo 側で微調整されます。</p>
+          ) : (
+            <p>色・フォント・ロゴは公開時に Formaloo 側のテーマで決まります。</p>
+          )}
           <p>これは見た目の確認用のプレビューです（read-only）。入力・条件分岐・送信などの実際の動作は公開フォームで動きます。</p>
         </div>
       </div>

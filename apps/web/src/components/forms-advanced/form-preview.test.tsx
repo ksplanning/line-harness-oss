@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
-import type { HarnessField } from '@line-crm/shared'
+import type { HarnessField, FormDesign } from '@line-crm/shared'
 import FormPreview from './form-preview'
 
 afterEach(() => cleanup())
+
+function hexToRgb(hex: string): string {
+  const h = hex.replace('#', '')
+  return `rgb(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(h.slice(4, 6), 16)})`
+}
+function colorMatches(actual: string, hex: string): boolean {
+  return actual.toLowerCase() === hex.toLowerCase() || actual === hexToRgb(hex)
+}
 
 const inputFields: HarnessField[] = [
   { id: 'text', type: 'text', label: 'お名前', required: true, position: 0, config: {} },
@@ -100,6 +108,50 @@ describe('FormPreview — header と装飾 (T-C2)', () => {
   it('空の説明は header に余分な paragraph を描画しない', () => {
     render(<FormPreview title="説明なし" description="" fields={[]} />)
     expect(screen.getByTestId('preview-frame').querySelector('header p')).toBeNull()
+  })
+})
+
+describe('FormPreview — form-design 反映 (Batch D)', () => {
+  const design: FormDesign = {
+    themeColor: '#285C66',
+    backgroundColor: '#EEF5F4',
+    buttonColor: '#327682',
+    textColor: '#183A40',
+    submitTextColor: '#FFFFFF',
+    logoUrl: 'https://s3/logo.png',
+    backgroundImageUrl: 'https://s3/cover.png',
+  }
+
+  it('テーマ色を header/背景/送信ボタンに反映する', () => {
+    render(<FormPreview title="ブランド" fields={[]} design={design} />)
+    const frame = screen.getByTestId('preview-frame')
+    const header = frame.querySelector('header') as HTMLElement
+    expect(colorMatches(header.style.borderTopColor, '#285C66')).toBe(true)
+    const send = within(frame).getByText('送信') as HTMLButtonElement
+    expect(colorMatches(send.style.backgroundColor, '#327682')).toBe(true)
+    expect(colorMatches(frame.style.backgroundColor, '#EEF5F4')).toBe(true)
+  })
+
+  it('ロゴとカバー画像を描画する', () => {
+    render(<FormPreview title="ブランド" fields={[]} design={design} />)
+    const logo = screen.getByTestId('preview-logo') as HTMLImageElement
+    expect(logo.getAttribute('src')).toBe('https://s3/logo.png')
+    const cover = screen.getByTestId('preview-cover')
+    expect(cover.style.backgroundImage).toContain('https://s3/cover.png')
+  })
+
+  it('design 反映時は fidelity note を「反映しています」に更新する', () => {
+    render(<FormPreview title="ブランド" fields={[]} design={design} />)
+    const note = screen.getByTestId('preview-fidelity-note')
+    expect(note.textContent).toContain('設定したテーマ色')
+    expect(note.textContent).toContain('公開時に Formaloo')
+  })
+
+  it('design 無しは従来の note (後方互換)', () => {
+    render(<FormPreview title="無地" fields={[]} />)
+    const note = screen.getByTestId('preview-fidelity-note')
+    expect(note.textContent).toContain('色・フォント・ロゴは公開時に Formaloo 側のテーマで決まります。')
+    expect(screen.queryByTestId('preview-logo')).toBeNull()
   })
 })
 
