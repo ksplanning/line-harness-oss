@@ -264,3 +264,70 @@ describe('T-C4 — pull filter action-aware + success_page 防御', () => {
     expect(data.logic.some((r) => r.action === 'submit' && r.sourceFieldId === 'A2')).toBe(true);
   });
 });
+
+describe('F-CRIT-1 — mixed(show+submit) raw の編集は refuse (非expandable item の silent 消失を封じる)', () => {
+  const B2f = { id: 'B2', type: 'text', label: 'B2', required: false, position: 1, config: {} };
+  // raw に非expandable(show item)と expandable(submit item)が混在。show は display から落ちる。
+  const mixedRaw = [
+    { type: 'field', identifier: 'q1', actions: [{ action: 'show', args: [{ type: 'field', identifier: 'B2' }], when: { operation: 'is', args: [{ type: 'field', value: 'q1' }, { type: 'choice', value: 'c' }] } }] },
+    { type: 'field', identifier: 'A2', actions: [{ action: 'submit', args: [], when: { operation: 'is_answered', args: [{ type: 'field', value: 'A2' }] } }] },
+  ];
+
+  test('raw=[show, submit] を編集 → refuse (複合警告・logic PATCH 送らない = show 保持)', async () => {
+    seedForm('f1', 'SLUG', JSON.stringify({
+      fields: [A2, B2f, { id: 'q1', type: 'text', label: 'Q1', required: false, position: 2, config: {} }],
+      logic: [{ id: 's1', sourceFieldId: 'A2', operator: 'equals', value: '', action: 'submit', targetFieldId: '', terminalTrigger: 'on_answered' }],
+      rawLogic: mixedRaw, logicFingerprint: 'PREV',
+    }));
+    stubFormaloo();
+    fetchCalls = [];
+    // 編集 (fingerprint 不一致)。display には submit のみ = body.logic は submit のみ (show は非表示ゆえ欠落)。
+    const res = await call('PUT', '/api/forms-advanced/f1', {
+      fields: [A2, B2f, { id: 'q1', type: 'text', label: 'Q1', required: false, position: 2, config: {} }],
+      logic: [{ id: 's1', sourceFieldId: 'A2', operator: 'equals', value: '', action: 'submit', targetFieldId: '', terminalTrigger: 'on_answered' }],
+      rawLogic: mixedRaw, logicFingerprint: 'STALE', formType: 'multi_step',
+    });
+    const data = (await res.json() as { data: { syncError: string | null } }).data;
+    // 非expandable(show)混在 → refuse (regenerate で show を silent 消失させない)
+    expect(data.syncError ?? '').toContain('複合ロジックを編集');
+    expect(fetchCalls.some(isLogicPatch)).toBe(false); // remote 未変更 = show 保持
+  });
+});
+
+describe('F-HIGH-1 — fresh-pull 後の最後の submit 削除で remote logic をクリア (carriedRawLogic を prevHadLogic に算入)', () => {
+  test('D1 空フォーム fresh pull(body.rawLogic=submit) → submit 削除 → PATCH {logic:[]} 送出', async () => {
+    const submitRaw = [
+      { type: 'field', identifier: 'A2', actions: [{ action: 'submit', args: [], when: { operation: 'is_answered', args: [{ type: 'field', value: 'A2' }] } }] },
+    ];
+    // D1 定義は空 (logic 無し・rawLogic 無し) — fresh pull で body に submit raw を carry する経路。
+    seedForm('f1', 'SLUG', JSON.stringify({ fields: [A2], logic: [] }));
+    stubFormaloo();
+    fetchCalls = [];
+    // submit 削除 (logic=[]) を body.rawLogic=submitRaw 付きで保存 (fresh pull carry)。fingerprint 不一致 = 編集。
+    const res = await call('PUT', '/api/forms-advanced/f1', { fields: [A2], logic: [], rawLogic: submitRaw, logicFingerprint: 'STALE', formType: 'multi_step' });
+    expect(res.status).toBe(200);
+    const emptyPatch = fetchCalls.find((c) => isLogicPatch(c) && Array.isArray((c.body as { logic: unknown[] }).logic) && (c.body as { logic: unknown[] }).logic.length === 0);
+    expect(emptyPatch).toBeDefined(); // remote 早期送信を消す
+  });
+});
+
+describe('F-MED-2 — Phase1 は submit の通常 field target を受理せず (target を空へ正規化)', () => {
+  const B2f = { id: 'B2', type: 'text', label: 'B2', required: false, position: 1, config: {} };
+  test('直接 API で submit target=通常field → target を空へ正規化・push に jump_to_success_page を出さない', async () => {
+    seedForm('f1', 'SLUG');
+    stubFormaloo();
+    fetchCalls = [];
+    // 直接 API PUT で submit の target に通常 field B2 を指定 (builder は '' 固定・API 濫用想定)。
+    const logic = [{ id: 's1', sourceFieldId: 'A2', operator: 'equals', value: '', action: 'submit', targetFieldId: 'B2', terminalTrigger: 'on_answered' }];
+    const res = await call('PUT', '/api/forms-advanced/f1', { fields: [A2, B2f], logic, formType: 'multi_step' });
+    expect(res.status).toBe(200);
+    // definition_json の submit rule target は '' へ正規化
+    const def = readDef('f1');
+    const submit = (def.logic as Array<{ action: string; targetFieldId: string }>).find((r) => r.action === 'submit');
+    expect(submit?.targetFieldId).toBe('');
+    // push した logic に jump_to_success_page が含まれない (不正 SP remote logic を作らない)
+    const logicPatch = fetchCalls.find(isLogicPatch);
+    const pushedJson = JSON.stringify(logicPatch?.body ?? {});
+    expect(pushedJson.includes('jump_to_success_page')).toBe(false);
+  });
+});
