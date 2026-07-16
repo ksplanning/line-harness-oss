@@ -106,6 +106,32 @@ owner 要望（2026-07-12）:「線で繋ぐストーリーメッセージの構
 
 ---
 
+## form-builder-ux — 高機能フォーム / フォームビルダー（DnD・装飾・プレビュー）
+
+🎯 目的: owner（非エンジニア・スマホ多用）が高機能フォームのフォームビルダーで、部品を確実にドラッグで並べ、見出し/説明文で見栄えを整え、作りながらプレビューで見え方を確認して、迷わず公開できる。
+
+計画正本: `.plans/2026-07-16-form-builder-ux/{spec,plan,tasks,BACKLOG-DRAFT}.md`
+
+owner 発注（2026-07-16 08:0x 原文）:「フォームビルダー　ドラッグアンドドロップが出来ない動かない／フォームの装飾がない／プレビューが欲しい」の3症状は forms-advanced/builder.tsx に帰着。
+
+### 進捗チェックリスト
+
+- [x] ① DnD 信頼性（Batch A / T-A1..T-A5）: activationConstraint（マウス distance:8 / タッチ delay:200+tolerance:8）+ 純 resolveDragEnd + DragOverlay（指/カーソル追従）+ ドロップ先ハイライト+挿入プレースホルダ + canvas 外リリースフィードバック / tap-to-add・既存並べ替え・keyboard a11y 非退行。**reviewer PASS (code) — status: pending_owner_confirmation（R-3 owner スマホ実機スモーク待ちで completed 未昇格）**。closer 統合: main commit `6e943b6`（origin+piecemaker 両 push・SHA一致確認済み）・ks/piecemaker 両 admin 再デプロイ済み・両 /login+/forms-advanced 200 実証済み。
+- [ ] ② 装飾ブロック（Batch B / T-B1..T-B12）: 見出し+説明文（Formaloo meta/section 正規 mapping）+ 改ページ（page_break）+ フォームタイトル/説明のビルダー内編集（Formaloo PATCH）
+- [ ] ③ プレビューペイン（Batch C / T-C1..T-C7）: 編集中 HarnessField 列 → 回答フォーム忠実 self-render・スマホ幅既定・正直な忠実度注記・新規 dep ゼロ
+- [ ] 横断（D-1..D-7）: 後方互換100%・全test非退行・static export遵守・preserve-raw非破壊・A→B→C累積統合順
+- [x] 両テナント適用（dual-push: ks + piecemaker 両 admin 再デプロイ）— Batch A land 分のみ完了。Batch B/C は各 land 時に同様実施要。
+
+### 🎯 次の必須（required backlog）
+- [ ] **[REQUIRED-BACKLOG] owner スマホ実機スモーク（R-3）**: 375px タッチで「部品を長押し→ドラッグで追加／並べ替え／掴んだ部品が指に追従／置き場所が光る+挿入位置表示／枠外リリースでメッセージ／タップ追加が従来どおり／縦スクロールが死んでいない」を実機確認 → 完了後 Batch A を completed に昇格。
+- [ ] [REQUIRED-BACKLOG] Batch B（装飾+タイトル/説明編集）着工 — Batch A land 後の main から。
+- [ ] [REQUIRED-BACKLOG] Batch C（プレビュー）着工 — Batch B 完了後（装飾型に依存）。
+
+### 💡 任意磨き込み（後回し可・自動着手禁止）
+- [ ] [OPTIONAL-POLISH] sort drag 中に DropPlaceholder が二重表示（cosmetic・機能退行なし・R-3 owner スモークで併せて確認）
+
+---
+
 ## piecemaker-line-harness — 第 2 テナント（Sukedachi 顧客提供 1 号）+ 双方向伝播体制
 
 🎯 目的: ks と**同一システムをそのまま** Piecemaker (Sukedachi の顧客) 専用インフラで第 2 テナント稼働させ、以後の修正/機能が ks ⇄ Piecemaker で**双方向伝播**する体制を作る。repo/forum は Sukedachi 経路（ks は Ksplanning のまま）。
