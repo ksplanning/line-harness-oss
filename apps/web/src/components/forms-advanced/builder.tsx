@@ -24,7 +24,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages } from '@line-crm/shared'
+import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
   FIELD_CATEGORIES,
@@ -72,14 +72,16 @@ export interface BuilderProps {
   initialLogicFingerprint?: string | null
   /** form-design (Batch D): 初期デザイン (色/画像テーマ)。未設定は空。 */
   initialDesign?: FormDesign
+  /** form-route-branching (R2): 初期表示形式 (simple/multi_step)。未設定は simple 扱い表示。 */
+  initialFormType?: FormDisplayType
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
-  //     void 返却 (throw/legacy) は「未確定」= pending 画像 intent を保持する。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages }) => Promise<{ ok: boolean; design?: FormDesign } | void> | void
+  //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
-  /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。design も復元 (F2)。 */
-  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null; design?: FormDesign } | null>
+  /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。design/formType も復元 (F2)。 */
+  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null; design?: FormDesign; formType?: FormDisplayType } | null>
   publicUrl?: string | null
   embedCode?: string | null
   syncStatus?: string
@@ -317,12 +319,18 @@ function SettingsPanel({
   logic,
   onChange,
   onLogicChange,
+  formType,
+  onEnsureMultiStep,
 }: {
   field: HarnessField
   allFields: HarnessField[]
   logic: HarnessLogicRule[]
   onChange: (f: HarnessField) => void
   onLogicChange: (rules: HarnessLogicRule[]) => void
+  /** 表示形式 (form-route-branching R2)。jump は multi_step でのみ発火 → simple での警告/自動切替に使う。 */
+  formType?: FormDisplayType
+  /** jump アクション選択時に simple なら multi_step へ自動切替 (可視通知) させる親コールバック。 */
+  onEnsureMultiStep?: () => void
 }) {
   const cfg = field.config
   const set = (patch: Partial<HarnessField>) => onChange({ ...field, ...patch })
@@ -432,25 +440,80 @@ function SettingsPanel({
         </div>
       )}
 
-      {/* 条件分岐 (R1 / T-B2 GUI) */}
+      {/* 条件分岐 (R1 / T-B2 GUI + form-route-branching jump) */}
       <div className="pt-2 border-t border-gray-100">
         <div className="text-xs text-gray-500 mb-1">条件分岐（この項目の回答で他項目を出し分け）</div>
-        {rulesForField.map((rule) => (
-          <div key={rule.id} className="flex flex-wrap items-center gap-1 text-xs mb-1">
-            <span>もし「</span>
-            <input aria-label="分岐の値" value={rule.value} onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, value: e.target.value } : r)))} className="border border-gray-300 rounded px-1 w-20" />
-            <span>」なら</span>
-            <select aria-label="分岐アクション" value={rule.action} onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, action: e.target.value as HarnessLogicRule['action'] } : r)))} className="border border-gray-300 rounded px-1">
-              <option value="show">表示</option>
-              <option value="hide">隠す</option>
-              <option value="skip">スキップ</option>
-            </select>
-            <select aria-label="分岐対象" value={rule.targetFieldId} onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, targetFieldId: e.target.value } : r)))} className="border border-gray-300 rounded px-1">
-              {allFields.filter((f) => f.id !== field.id && !isDecoration(f.type)).map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
-            </select>
-            <button type="button" aria-label="分岐を削除" onClick={() => onLogicChange(logic.filter((r) => r.id !== rule.id))} className="text-gray-400 hover:text-red-600">✕</button>
-          </div>
-        ))}
+        {/* R3: 既存 show/hide の実質ルート活用案内 (文言のみ・機能追加なし)。 */}
+        <div className="text-[10px] text-gray-400 mb-1 leading-snug">
+          「表示/隠す」でも回答ごとに出す項目を変えられます。ページ単位で丸ごと分けたい時は「ページへ飛ぶ」（1問ずつ表示）を使います。
+        </div>
+        {rulesForField.map((rule) => {
+          const isJump = rule.action === 'jump'
+          // choice source は選択肢 select 化 (title 表示・値は title を送出 → 生成側で slug へ写像)。
+          // pull 由来 (rule.value=slug) は choiceItems から title へ解決して選択表示。
+          const choiceItems = cfg.choiceItems
+          const choiceTitles = cfg.choices ?? []
+          const selectedChoiceTitle = choiceItems?.find((ci) => ci.slug === rule.value)?.title ?? rule.value
+          const isChoiceSource = hasChoices(field.type) && choiceTitles.length > 0
+          // jump 飛び先は page_break (改ページ) / show・hide・skip は非装飾 field。
+          const targetOptions = isJump
+            ? allFields.filter((f) => f.type === 'page_break')
+            : allFields.filter((f) => f.id !== field.id && !isDecoration(f.type))
+          return (
+            <div key={rule.id} className="flex flex-wrap items-center gap-1 text-xs mb-1">
+              <span>もし「</span>
+              {isChoiceSource ? (
+                <select
+                  aria-label="分岐の値"
+                  value={selectedChoiceTitle}
+                  onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, value: e.target.value } : r)))}
+                  className="border border-gray-300 rounded px-1"
+                >
+                  {/* pull 由来で choices に無い値も選択維持できるよう現値を先頭に補完 */}
+                  {!choiceTitles.includes(selectedChoiceTitle) && selectedChoiceTitle ? <option value={selectedChoiceTitle}>{selectedChoiceTitle}</option> : null}
+                  {choiceTitles.map((t, i) => <option key={i} value={t}>{t}</option>)}
+                </select>
+              ) : (
+                <input aria-label="分岐の値" value={rule.value} onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, value: e.target.value } : r)))} className="border border-gray-300 rounded px-1 w-20" />
+              )}
+              <span>」なら</span>
+              <select
+                aria-label="分岐アクション"
+                value={rule.action}
+                onChange={(e) => {
+                  const nextAction = e.target.value as HarnessLogicRule['action']
+                  // jump 選択時: 飛び先を page_break へ切替 (現 target が page_break でなければ最初の改ページへ)。
+                  const firstPage = allFields.find((f) => f.type === 'page_break')
+                  onLogicChange(logic.map((r) => {
+                    if (r.id !== rule.id) return r
+                    const next = { ...r, action: nextAction }
+                    if (nextAction === 'jump' && field.type !== 'page_break') {
+                      const curIsPage = allFields.some((f) => f.id === r.targetFieldId && f.type === 'page_break')
+                      if (!curIsPage && firstPage) next.targetFieldId = firstPage.id
+                    }
+                    return next
+                  }))
+                  // 多層防御 (主機構): jump 選択で simple なら multi_step へ自動切替 (可視通知は親が表示)。
+                  if (nextAction === 'jump' && formType !== 'multi_step') onEnsureMultiStep?.()
+                }}
+                className="border border-gray-300 rounded px-1"
+              >
+                <option value="show">表示</option>
+                <option value="hide">隠す</option>
+                <option value="jump">ページへ飛ぶ</option>
+                <option value="skip">（旧）スキップ</option>
+              </select>
+              <select aria-label="分岐対象" value={rule.targetFieldId} onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, targetFieldId: e.target.value } : r)))} className="border border-gray-300 rounded px-1">
+                {targetOptions.map((f) => <option key={f.id} value={f.id}>{f.type === 'page_break' ? (f.label || 'ページ区切り') : f.label}</option>)}
+              </select>
+              <button type="button" aria-label="分岐を削除" onClick={() => onLogicChange(logic.filter((r) => r.id !== rule.id))} className="text-gray-400 hover:text-red-600">✕</button>
+              {/* case-b 注記: choice source だが choice_slug 未取得 (新規フォーム) → 保存後 再取り込みで有効化。 */}
+              {isJump && isChoiceSource && !cfg.choiceItems ? (
+                <div className="w-full text-[10px] text-amber-600">この選択肢での分岐は「保存」後に有効になります（保存で選択肢が Formaloo に登録されます）。</div>
+              ) : null}
+            </div>
+          )
+        })}
         <button type="button" onClick={addRule} disabled={allFields.filter((f) => f.id !== field.id && !isDecoration(f.type)).length < 1} className="text-xs disabled:opacity-40" style={{ color: LINE_GREEN }}>＋ 分岐を追加</button>
       </div>
     </div>
@@ -489,6 +552,15 @@ export default function FormBuilder(props: BuilderProps) {
   // form-design (Batch D): 色/画像テーマ + 画像 upload intent (keep/replace/remove)。
   const [design, setDesign] = useState<FormDesign>(props.initialDesign ?? {})
   const [designImages, setDesignImages] = useState<FormDesignImages>({})
+  // form-route-branching (R2): 表示形式 (simple/multi_step) + 自動切替の可視通知 + save 警告。
+  const [formType, setFormType] = useState<FormDisplayType | undefined>(props.initialFormType)
+  const [formTypeNotice, setFormTypeNotice] = useState<string | null>(null)
+  const [saveWarnings, setSaveWarnings] = useState<string[]>([])
+  // jump 追加時: simple なら multi_step へ自動切替 + 可視通知 (多層防御の主機構)。
+  const ensureMultiStep = () => {
+    setFormType('multi_step')
+    setFormTypeNotice('ページ移動には「1問ずつ表示」が必要なため、表示形式を切り替えました。')
+  }
   const [selectedId, setSelectedId] = useState<string | null>(props.initialFields[0]?.id ?? null)
   const [saving, setSaving] = useState(false)
   const [confirmPublish, setConfirmPublish] = useState(false)
@@ -588,12 +660,14 @@ export default function FormBuilder(props: BuilderProps) {
     try {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages })
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
         // 画像 intent の消費は「完全同期(ok)」時のみ。soft-fail(out_of_sync)/throw は pending file を保持し再試行可能に。
         if (result.ok) setDesignImages({})
+        // form-route-branching: jump+simple backstop 等の非ブロッキング警告を surface。
+        setSaveWarnings(Array.isArray(result.warnings) ? result.warnings : [])
       }
     } finally {
       setSaving(false)
@@ -617,6 +691,9 @@ export default function FormBuilder(props: BuilderProps) {
         // F2: pull した design を復元し、pending 画像 intent を破棄 (再取り込み後に stale design で上書きしない)。
         setDesign(d.design ?? {})
         setDesignImages({})
+        // form-route-branching: pull した表示形式を復元 (未設定は undefined = simple 表示)。
+        setFormType(d.formType)
+        setFormTypeNotice(null)
       }
     } finally {
       setReimporting(false)
@@ -703,6 +780,19 @@ export default function FormBuilder(props: BuilderProps) {
         )}
       </div>
 
+      {/* form-route-branching: 表示形式 自動切替の可視通知 (jump 追加時) + save 時の非ブロッキング警告 (backstop)。 */}
+      {formTypeNotice && (
+        <div data-testid="formtype-notice" role="status" className="mb-2 rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800 flex items-start gap-2">
+          <span>ⓘ {formTypeNotice}</span>
+          <button type="button" aria-label="通知を閉じる" onClick={() => setFormTypeNotice(null)} className="ml-auto text-blue-400 hover:text-blue-700">✕</button>
+        </div>
+      )}
+      {saveWarnings.length > 0 && (
+        <div data-testid="save-warnings" role="alert" className="mb-2 rounded-md bg-amber-50 border border-amber-300 px-3 py-2 text-xs text-amber-800 space-y-1">
+          {saveWarnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
+        </div>
+      )}
+
       {mode === 'mobile' && (
         <div className="mb-3 grid grid-cols-3 rounded-lg bg-gray-100 p-1" aria-label="ビルダー表示切替">
           <button
@@ -769,7 +859,7 @@ export default function FormBuilder(props: BuilderProps) {
             <div className="md:w-64 md:shrink-0" data-testid="settings">
               <div className="text-xs font-bold text-gray-500 mb-2">項目の設定</div>
               {selected ? (
-                <SettingsPanel field={selected} allFields={fields} logic={logic} onChange={updateField} onLogicChange={setLogic} />
+                <SettingsPanel field={selected} allFields={fields} logic={logic} onChange={updateField} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} />
               ) : (
                 <div className="text-xs text-gray-400">項目を選ぶと設定が表示されます</div>
               )}
