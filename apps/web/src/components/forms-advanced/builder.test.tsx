@@ -201,7 +201,8 @@ describe('FormBuilder — 設定パネル', () => {
     render(<FormBuilder {...base()} />)
     fireEvent.click(screen.getByLabelText('1行テキストを追加'))
     fireEvent.click(screen.getByLabelText('必須'))
-    expect(screen.getByText('必須')).toBeTruthy()
+    // preview ペインも 必須 バッジを描くため canvas に scope（既存 card バッジの意図を保つ）
+    expect(within(screen.getByTestId('canvas')).getByText('必須')).toBeTruthy()
   })
 
   it('テキストは最大文字数、選択は選択肢、ファイルは拡張子の設定が出る', () => {
@@ -517,5 +518,164 @@ describe('FormBuilder — Formaloo 再取り込み (pull / N-8 / B2/B3)', () => 
   it('onReimport 未指定なら再取り込みボタンは出ない', () => {
     render(<FormBuilder {...base()} />)
     expect(screen.queryByText('Formaloo から再取り込み')).toBeNull()
+  })
+})
+
+describe('FormBuilder — realtime preview (T-C3)', () => {
+  const section: HarnessField = {
+    id: 'section-preview',
+    type: 'section',
+    label: '最初の案内',
+    required: false,
+    position: 0,
+    config: { text: '最初の説明' },
+  }
+  const choice: HarnessField = {
+    id: 'choice-preview',
+    type: 'choice',
+    label: '連絡方法',
+    required: false,
+    position: 1,
+    config: { choices: ['メール', '電話'] },
+  }
+
+  it('タイトル・説明・装飾本文・ラベル・必須・選択肢・追加・削除を desktop preview に即時反映する', () => {
+    render(<FormBuilder {...base({
+      layoutMode: 'desktop',
+      formTitle: '旧タイトル',
+      formDescription: '旧フォーム説明',
+      initialFields: [section, choice],
+    })} />)
+
+    const pane = screen.getByTestId('preview-pane')
+    expect(within(pane).getByText('旧タイトル')).toBeTruthy()
+    expect(within(pane).getByText('旧フォーム説明')).toBeTruthy()
+    expect(within(pane).getByText('最初の案内')).toBeTruthy()
+    expect(within(pane).getByText('最初の説明')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('フォームタイトル'), { target: { value: '新タイトル' } })
+    fireEvent.change(screen.getByLabelText('フォーム説明'), { target: { value: '新フォーム説明' } })
+    fireEvent.change(screen.getByLabelText('見出し'), { target: { value: '更新した案内' } })
+    fireEvent.change(screen.getByLabelText('説明文'), { target: { value: '更新した装飾本文' } })
+    expect(within(pane).getByText('新タイトル')).toBeTruthy()
+    expect(within(pane).getByText('新フォーム説明')).toBeTruthy()
+    expect(within(pane).getByText('更新した案内')).toBeTruthy()
+    expect(within(pane).getByText('更新した装飾本文')).toBeTruthy()
+
+    fireEvent.click(within(screen.getByTestId('canvas')).getByText('連絡方法'))
+    fireEvent.change(screen.getByLabelText('ラベル'), { target: { value: 'ご希望の連絡方法' } })
+    fireEvent.click(screen.getByLabelText('必須'))
+    fireEvent.change(screen.getByLabelText('選択肢1'), { target: { value: 'SMS' } })
+    expect(within(pane).getByText('ご希望の連絡方法')).toBeTruthy()
+    expect(within(pane).getByText('必須')).toBeTruthy()
+    expect(within(pane).getByText('SMS')).toBeTruthy()
+    expect(within(pane).getByText('電話')).toBeTruthy()
+
+    fireEvent.click(screen.getByLabelText('数値を追加'))
+    expect(within(pane).getByText('数値')).toBeTruthy()
+    const deleteButtons = within(screen.getByTestId('canvas')).getAllByLabelText('削除')
+    fireEvent.click(deleteButtons[deleteButtons.length - 1])
+    fireEvent.click(within(screen.getByTestId('canvas')).getByText('はい'))
+    expect(within(pane).queryByText('数値')).toBeNull()
+  })
+
+  it('canvas の並べ替えを preview の given order に即時反映する', async () => {
+    const first: HarnessField = { id: 'first-preview', type: 'text', label: '先頭項目', required: false, position: 0, config: {} }
+    const second: HarnessField = { id: 'second-preview', type: 'email', label: '末尾項目', required: false, position: 1, config: {} }
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+      const top = this.textContent?.includes('末尾項目') ? 100 : 0
+      return { x: 0, y: top, top, left: 0, right: 200, bottom: top + 40, width: 200, height: 40, toJSON: () => ({}) }
+    })
+
+    try {
+      render(<FormBuilder {...base({ layoutMode: 'desktop', initialFields: [first, second] })} />)
+
+      const pane = screen.getByTestId('preview-pane')
+      expect(within(pane).getAllByTestId('preview-field').map((node) => node.textContent)).toEqual([
+        expect.stringContaining('先頭項目'),
+        expect.stringContaining('末尾項目'),
+      ])
+
+      const firstHandle = within(screen.getByTestId('canvas')).getAllByLabelText('ドラッグして並べ替え')[0]
+      fireEvent.keyDown(firstHandle, { key: ' ', code: 'Space' })
+      await screen.findByTestId('drag-ghost')
+      fireEvent.keyDown(document, { key: 'ArrowDown', code: 'ArrowDown' })
+      fireEvent.keyDown(document, { key: ' ', code: 'Space' })
+
+      await waitFor(() => expect(within(pane).getAllByTestId('preview-field').map((node) => node.textContent)).toEqual([
+        expect.stringContaining('末尾項目'),
+        expect.stringContaining('先頭項目'),
+      ]))
+    } finally {
+      rectSpy.mockRestore()
+    }
+  })
+
+  it('Formaloo 再取り込み後の追加・削除・順序を preview にまとめて反映する', async () => {
+    const onReimport = vi.fn(async () => ({
+      ok: true,
+      fields: [
+        { id: 'reimport-section', type: 'section' as const, label: '再取込の案内', required: false, position: 7, config: { text: '再取込の本文' } },
+        { id: 'reimport-email', type: 'email' as const, label: '再取込メール', required: true, position: 8, config: {} },
+      ],
+      logic: [],
+    }))
+    render(<FormBuilder {...base({ layoutMode: 'desktop', initialFields: [choice], onReimport })} />)
+
+    const pane = screen.getByTestId('preview-pane')
+    expect(within(pane).getByText('連絡方法')).toBeTruthy()
+    fireEvent.click(screen.getByText('Formaloo から再取り込み'))
+    fireEvent.click(within(screen.getByTestId('reimport-confirm')).getByText('はい'))
+
+    expect(await within(pane).findByText('再取込の案内')).toBeTruthy()
+    expect(within(pane).getByText('再取込の本文')).toBeTruthy()
+    expect(within(pane).getByText('再取込メール')).toBeTruthy()
+    expect(within(pane).getByText('必須')).toBeTruthy()
+    expect(within(pane).queryByText('連絡方法')).toBeNull()
+    const orderedBlocks = Array.from(pane.querySelectorAll('[data-testid="preview-section"], [data-testid="preview-field"]'))
+    expect(orderedBlocks.map((node) => node.textContent)).toEqual([
+      expect.stringContaining('再取込の案内'),
+      expect.stringContaining('再取込メール'),
+    ])
+  })
+})
+
+describe('FormBuilder — preview layout mode (T-C4)', () => {
+  const field: HarnessField = { id: 'layout-field', type: 'text', label: '表示確認', required: false, position: 0, config: {} }
+
+  it('desktop は 3 ペインと 375px preview side-pane を既定表示する', () => {
+    render(<FormBuilder {...base({ layoutMode: 'desktop', initialFields: [field] })} />)
+
+    expect(screen.queryByTestId('preview-tab-edit')).toBeNull()
+    expect(screen.queryByTestId('preview-tab-preview')).toBeNull()
+    expect(screen.getByTestId('palette')).toBeTruthy()
+    expect(screen.getByTestId('canvas')).toBeTruthy()
+    expect(screen.getByTestId('settings')).toBeTruthy()
+    const pane = screen.getByTestId('preview-pane')
+    expect(within(pane).getByText('表示確認')).toBeTruthy()
+    expect((within(pane).getByTestId('preview-frame') as HTMLElement).style.maxWidth).toBe('375px')
+  })
+
+  it('mobile は 編集 tab が既定で、プレビュー tab と相互に表示を切り替える', () => {
+    render(<FormBuilder {...base({ layoutMode: 'mobile', initialFields: [field] })} />)
+
+    const editTab = screen.getByTestId('preview-tab-edit')
+    const previewTab = screen.getByTestId('preview-tab-preview')
+    expect(editTab.getAttribute('aria-pressed')).toBe('true')
+    expect(previewTab.getAttribute('aria-pressed')).toBe('false')
+    expect(screen.getByTestId('palette')).toBeTruthy()
+    expect(screen.queryByTestId('preview-pane')).toBeNull()
+
+    fireEvent.click(previewTab)
+    expect(editTab.getAttribute('aria-pressed')).toBe('false')
+    expect(previewTab.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.queryByTestId('palette')).toBeNull()
+    const pane = screen.getByTestId('preview-pane')
+    expect(within(pane).getByText('表示確認')).toBeTruthy()
+    expect((within(pane).getByTestId('preview-frame') as HTMLElement).style.maxWidth).toBe('375px')
+
+    fireEvent.click(editTab)
+    expect(screen.getByTestId('palette')).toBeTruthy()
+    expect(screen.queryByTestId('preview-pane')).toBeNull()
   })
 })

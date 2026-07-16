@@ -34,6 +34,7 @@ import {
   hasLength,
   isDecoration,
 } from './field-types'
+import FormPreview from './form-preview'
 import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 
@@ -79,6 +80,7 @@ export interface BuilderProps {
   syncStatus?: string
   /** formaloo-auto-pull: Formaloo 側定義変更 (drift) の状態 (none/detected/conflict/applied)。 */
   driftStatus?: string
+  layoutMode?: 'mobile' | 'desktop'
 }
 
 function newField(type: HarnessFieldType): HarnessField {
@@ -441,7 +443,26 @@ function SettingsPanel({
   )
 }
 
+function useAutoLayoutMode(): 'mobile' | 'desktop' {
+  const [autoMode, setAutoMode] = useState<'mobile' | 'desktop'>('desktop')
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+
+    const mediaQuery = window.matchMedia('(min-width: 1024px)')
+    const updateMode = () => setAutoMode(mediaQuery.matches ? 'desktop' : 'mobile')
+    updateMode()
+    mediaQuery.addEventListener('change', updateMode)
+    return () => mediaQuery.removeEventListener('change', updateMode)
+  }, [])
+
+  return autoMode
+}
+
 export default function FormBuilder(props: BuilderProps) {
+  const autoMode = useAutoLayoutMode()
+  const mode = props.layoutMode ?? autoMode
+  const [mobileTab, setMobileTab] = useState<'edit' | 'preview'>('edit')
   const [fields, setFields] = useState<HarnessField[]>(props.initialFields)
   const [logic, setLogic] = useState<HarnessLogicRule[]>(props.initialLogic)
   const [title, setTitle] = useState(props.formTitle)
@@ -647,43 +668,79 @@ export default function FormBuilder(props: BuilderProps) {
         )}
       </div>
 
-      {/* 3 ペイン (375px: 縦 1 カラム / md 以上: 横 3 カラム) */}
-      <div className="flex flex-col md:flex-row gap-3">
-        {/* 左: パレット */}
-        <div className="md:w-48 md:shrink-0" data-testid="palette">
-          <div className="text-xs font-bold text-gray-500 mb-2">項目を追加</div>
-          {FIELD_CATEGORIES.map((cat) => (
-            <div key={cat} className="mb-2">
-              <div className="text-[10px] text-gray-400 mb-1">{cat}</div>
-              <div className="grid grid-cols-2 md:grid-cols-1 gap-1">
-                {FIELD_TYPE_META.filter((m) => m.category === cat).map((m) => (
-                  <PaletteItem key={m.type} type={m.type} label={m.label} icon={m.icon} onAdd={() => addField(m.type)} />
-                ))}
-              </div>
+      {mode === 'mobile' && (
+        <div className="mb-3 grid grid-cols-2 rounded-lg bg-gray-100 p-1" aria-label="ビルダー表示切替">
+          <button
+            type="button"
+            data-testid="preview-tab-edit"
+            aria-pressed={mobileTab === 'edit'}
+            onClick={() => setMobileTab('edit')}
+            className={`rounded-md px-3 py-2 text-sm font-medium ${mobileTab === 'edit' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
+          >
+            編集
+          </button>
+          <button
+            type="button"
+            data-testid="preview-tab-preview"
+            aria-pressed={mobileTab === 'preview'}
+            onClick={() => setMobileTab('preview')}
+            className={`rounded-md px-3 py-2 text-sm font-medium ${mobileTab === 'preview' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
+          >
+            プレビュー
+          </button>
+        </div>
+      )}
+
+      <div className={mode === 'desktop' ? 'flex items-start gap-4' : ''}>
+        {(mode === 'desktop' || mobileTab === 'edit') && (
+          /* 3 ペイン (375px: 縦 1 カラム / md 以上: 横 3 カラム) */
+          <div className={`flex min-w-0 flex-col gap-3 md:flex-row ${mode === 'desktop' ? 'flex-1' : ''}`}>
+            {/* 左: パレット */}
+            <div className="md:w-48 md:shrink-0" data-testid="palette">
+              <div className="text-xs font-bold text-gray-500 mb-2">項目を追加</div>
+              {FIELD_CATEGORIES.map((cat) => (
+                <div key={cat} className="mb-2">
+                  <div className="text-[10px] text-gray-400 mb-1">{cat}</div>
+                  <div className="grid grid-cols-2 md:grid-cols-1 gap-1">
+                    {FIELD_TYPE_META.filter((m) => m.category === cat).map((m) => (
+                      <PaletteItem key={m.type} type={m.type} label={m.label} icon={m.icon} onAdd={() => addField(m.type)} />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
 
-        {/* 中央: キャンバス */}
-        <BuilderCanvas
-          fields={fields}
-          selectedId={selectedId}
-          activeDragId={activeDragId}
-          overId={overId}
-          dropFeedback={dropFeedback}
-          onSelect={setSelectedId}
-          onDelete={deleteField}
-        />
+            {/* 中央: キャンバス */}
+            <BuilderCanvas
+              fields={fields}
+              selectedId={selectedId}
+              activeDragId={activeDragId}
+              overId={overId}
+              dropFeedback={dropFeedback}
+              onSelect={setSelectedId}
+              onDelete={deleteField}
+            />
 
-        {/* 右: 設定 */}
-        <div className="md:w-64 md:shrink-0" data-testid="settings">
-          <div className="text-xs font-bold text-gray-500 mb-2">項目の設定</div>
-          {selected ? (
-            <SettingsPanel field={selected} allFields={fields} logic={logic} onChange={updateField} onLogicChange={setLogic} />
-          ) : (
-            <div className="text-xs text-gray-400">項目を選ぶと設定が表示されます</div>
-          )}
-        </div>
+            {/* 右: 設定 */}
+            <div className="md:w-64 md:shrink-0" data-testid="settings">
+              <div className="text-xs font-bold text-gray-500 mb-2">項目の設定</div>
+              {selected ? (
+                <SettingsPanel field={selected} allFields={fields} logic={logic} onChange={updateField} onLogicChange={setLogic} />
+              ) : (
+                <div className="text-xs text-gray-400">項目を選ぶと設定が表示されます</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {(mode === 'desktop' || mobileTab === 'preview') && (
+          <div
+            data-testid="preview-pane"
+            className={mode === 'desktop' ? 'w-[399px] shrink-0 rounded-xl bg-gray-50 p-3' : 'w-full rounded-xl bg-gray-50 p-3'}
+          >
+            <FormPreview title={title} description={description} fields={fields} />
+          </div>
+        )}
       </div>
 
       <div data-testid="drag-overlay">
