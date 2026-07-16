@@ -212,6 +212,53 @@ describe('POST /api/forms-advanced — §3.4 workspace 解決 (server 権威)', 
     const id = (await res.json() as { data: { id: string } }).data.id;
     expect(readForm(id).workspace_id).toBe('fw_1');
   });
+
+  // ④ workspace 自動紐付け: 明示選択も binding 解決も無く workspace_id が NULL のまま孤立する UX 穴の恒久修正。
+  //   active workspace が正確に 1 件だけなら自動採用 (0 件 or 2 件以上は曖昧 → NULL 維持 = env fallback)。
+  test('④ 明示無 + binding 無 + active workspace が正確に 1 件 → 自動採用 (孤立させない)', async () => {
+    seedWorkspace('fw_solo', 1);
+    const res = await call('POST', '/api/forms-advanced', { title: '共通' });
+    expect(res.status).toBe(201);
+    const id = (await res.json() as { data: { id: string } }).data.id;
+    expect(readForm(id).workspace_id).toBe('fw_solo');
+  });
+
+  test('④ active workspace が 2 件以上 → 曖昧なので NULL 維持 (自動採用しない)', async () => {
+    seedWorkspace('fw_a', 1);
+    seedWorkspace('fw_b', 1);
+    const res = await call('POST', '/api/forms-advanced', { title: '共通' });
+    const id = (await res.json() as { data: { id: string } }).data.id;
+    expect(readForm(id).workspace_id).toBeNull();
+  });
+
+  test('④ active workspace が 0 件 (無効化のみ) → NULL 維持', async () => {
+    seedWorkspace('fw_off', 0);
+    const res = await call('POST', '/api/forms-advanced', { title: '共通' });
+    const id = (await res.json() as { data: { id: string } }).data.id;
+    expect(readForm(id).workspace_id).toBeNull();
+  });
+
+  test('④ 保存時 re-bind: workspace_id=NULL の既存 form を保存 → active 1 件なら再バインド (env→登録鍵へ昇格)', async () => {
+    // key 登録前に作られた孤立 form (workspace_id NULL)
+    const res = await call('POST', '/api/forms-advanced', { title: '孤立フォーム' });
+    const id = (await res.json() as { data: { id: string } }).data.id;
+    expect(readForm(id).workspace_id).toBeNull();
+    // その後 workspace を 1 件登録 (sole active) → 次の保存で再バインドされる
+    seedWorkspace('fw_late', 1);
+    const put = await call('PUT', `/api/forms-advanced/${id}`, { fields: [], logic: [] });
+    expect(put.status).toBe(200);
+    expect(readForm(id).workspace_id).toBe('fw_late');
+  });
+
+  test('④ 保存時 re-bind: active が 2 件以上 → 曖昧なので NULL 維持 (勝手に選ばない)', async () => {
+    const res = await call('POST', '/api/forms-advanced', { title: '孤立フォーム2' });
+    const id = (await res.json() as { data: { id: string } }).data.id;
+    seedWorkspace('fw_x', 1);
+    seedWorkspace('fw_y', 1);
+    const put = await call('PUT', `/api/forms-advanced/${id}`, { fields: [], logic: [] });
+    expect(put.status).toBe(200);
+    expect(readForm(id).workspace_id).toBeNull();
+  });
 });
 
 describe('account_binding route — owner-gated CRUD (Codex M#6)', () => {

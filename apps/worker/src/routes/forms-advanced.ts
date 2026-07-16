@@ -20,6 +20,8 @@ import {
   getFormalooFieldMap,
   isActiveFormalooWorkspace,
   resolveDefaultWorkspace,
+  resolveSoleActiveWorkspace,
+  setFormalooFormWorkspace,
   setFormalooFormFolder,
   FolderError,
   type FormalooForm,
@@ -207,7 +209,11 @@ formsAdvanced.post('/api/forms-advanced', async (c) => {
       // 明示無 + account 有 → account_binding の既定 (active のみ / 無効・未 binding は NULL で孤立させない)。
       workspaceId = await resolveDefaultWorkspace(c.env.DB, lineAccountId);
     }
-    // 両方無 → workspace_id=NULL (env 単一鍵 fallback)。
+    // ④ workspace 自動紐付け: 明示選択も binding 解決も無く workspace_id が NULL のまま孤立する UX 穴の恒久修正。
+    //   active workspace が正確に 1 件だけなら自動採用 (0 件 / 2 件以上は曖昧 → NULL 維持 = env 単一鍵 fallback)。
+    if (workspaceId === null) {
+      workspaceId = await resolveSoleActiveWorkspace(c.env.DB);
+    }
 
     const form = await createFormalooForm(c.env.DB, {
       title: body.title.trim(),
@@ -392,10 +398,20 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       description: newDescription,
     });
 
+    // ④ 保存時 re-bind: key 登録前に作られた孤立 form (workspace_id=NULL) は、保存のたびに active workspace が
+    //   1 件だけなら自動採用して恒久修正 (env fallback から登録鍵へ昇格)。曖昧 (0 / 2 件以上) は NULL 維持。
+    let effectiveWorkspaceId = form.workspace_id;
+    if (effectiveWorkspaceId == null) {
+      const sole = await resolveSoleActiveWorkspace(c.env.DB);
+      if (sole) {
+        await setFormalooFormWorkspace(c.env.DB, id, sole);
+        effectiveWorkspaceId = sole;
+      }
+    }
     // Formaloo へ push (fail-soft): secret 未配備 (dev) や失敗は out_of_sync でローカル保存を維持
-    // F6-2: form.workspace_id で多鍵解決。NULL(legacy) → env 単一鍵 fallback (byte-equivalent) /
+    // F6-2: effectiveWorkspaceId で多鍵解決。NULL(legacy) → env 単一鍵 fallback (byte-equivalent) /
     // 登録 active → 暗号文鍵 / 未登録・無効化・復号失敗 → null (env silent fallback しない = 誤送信防止)。fail-soft 契約不変。
-    const client = await resolveFormalooClient(c.env, form.workspace_id);
+    const client = await resolveFormalooClient(c.env, effectiveWorkspaceId);
     if (!client) {
       await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: 'Formaloo credentials 未設定 (S-1 待ち)' });
       syncSettled = true;

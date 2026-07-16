@@ -196,6 +196,26 @@ export async function resolveDefaultWorkspace(
   return row?.wid ?? null;
 }
 
+/**
+ * ④ workspace 自動紐付け: active workspace が正確に 1 件だけならその id を返す (0 件 or 2 件以上は NULL)。
+ * キー登録前に作られた form (workspace_id=NULL) を「唯一の active workspace」へ曖昧さ無く自動採用するための解決。
+ * 2 件以上は「どれに送るべきか」曖昧なので採用せず NULL (env fallback 維持 / 誤送信防止)。
+ */
+export async function resolveSoleActiveWorkspace(db: D1Database): Promise<string | null> {
+  const r = await db
+    .prepare('SELECT id FROM formaloo_workspaces WHERE is_active = 1 LIMIT 2')
+    .all<{ id: string }>();
+  return r.results.length === 1 ? r.results[0].id : null;
+}
+
+/** ④ form の作成先 workspace を再バインド (save 時 auto-adopt で NULL→唯一 active を D1 に確定)。 */
+export async function setFormalooFormWorkspace(db: D1Database, id: string, workspaceId: string): Promise<void> {
+  await db
+    .prepare('UPDATE formaloo_forms SET workspace_id = ?, updated_at = ? WHERE id = ?')
+    .bind(workspaceId, jstNow(), id)
+    .run();
+}
+
 /** 未分類 (folder_id IS NULL) を絞る sentinel。実 folder id (`ff_*`) と衝突しない予約語 (F6-3 §3.3b / Codex M#4)。 */
 export const FORM_FOLDER_UNFILED = 'none';
 
