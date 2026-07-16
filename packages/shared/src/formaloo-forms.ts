@@ -432,7 +432,13 @@ export function toFormalooRawLogic(
   resolveSlug: (harnessFieldId: string) => string | undefined,
   fieldById?: (harnessFieldId: string) => HarnessField | undefined,
 ): unknown[] {
-  const out: unknown[] = [];
+  // form-route-branching compound-fix (2026-07-16 closer O-1 実機再現): 同一 source field の複数ルールを
+  // **別々の top-level item として push すると Formaloo は 2 番目以降の item の when を無視し常に最初を適用**する
+  // (A/B/C 多岐分岐が黙って誤動作)。同一 source を **1 つの item にまとめ actions 配列に複数** {action,args,when} を
+  // 格納する compound 形にすると 3 ルート正しく分岐する (spike 実機実証)。→ source slug でグルーピングして生成。
+  // 単一ルールは 1 item・1 action = 従来と byte 一致 (回帰なし)。source 出現順・action 順は builder 順を保持。
+  const order: string[] = [];
+  const actionsBySrc = new Map<string, unknown[]>();
   for (const r of rules) {
     const srcSlug = resolveSlug(r.sourceFieldId);
     const tgtSlug = resolveSlug(r.targetFieldId);
@@ -440,19 +446,18 @@ export function toFormalooRawLogic(
     const verb: FormalooActionVerb = r.action === 'skip' ? 'jump' : r.action; // レガシー skip→jump 動詞変換
     const operation: FormalooConditionOperator = r.operator === 'not_equals' ? 'is_not' : 'is';
     const valueOperand = resolveWhenValueOperand(r, fieldById?.(r.sourceFieldId));
-    out.push({
-      type: 'field',
-      identifier: srcSlug,
-      actions: [
-        {
-          action: verb,
-          args: [{ type: 'field', identifier: tgtSlug }],
-          when: { operation, args: [{ type: 'field', value: srcSlug }, valueOperand] },
-        },
-      ],
-    });
+    const action = {
+      action: verb,
+      args: [{ type: 'field', identifier: tgtSlug }],
+      when: { operation, args: [{ type: 'field', value: srcSlug }, valueOperand] },
+    };
+    if (!actionsBySrc.has(srcSlug)) {
+      actionsBySrc.set(srcSlug, []);
+      order.push(srcSlug);
+    }
+    actionsBySrc.get(srcSlug)!.push(action);
   }
-  return out;
+  return order.map((srcSlug) => ({ type: 'field', identifier: srcSlug, actions: actionsBySrc.get(srcSlug) }));
 }
 
 /**
@@ -503,7 +508,9 @@ export function fromFormalooLogic(
 export function countWeakenedFormalooRules(obj: FormalooLogicObject | readonly unknown[]): number {
   // R0 実測: bare array (実 Formaloo logic) は harness flat model に射影しきれない item を数える
   // = 「ハーネス表示に映らない部分の点数」。legacy synthetic `{rules}` 形は従来の条件/アクション複数を数える。
-  if (Array.isArray(obj)) return obj.filter((it) => isCompoundRawLogicItem(it)).length;
+  // form-route-branching compound-fix: 展開可能な multi-jump item は N 本の flat rule に逐語展開され欠けが無いため
+  // 弱化として数えない (isExpandableMultiJumpItem を除外)。show/hide 複数・AND/OR compound は従来どおり数える。
+  if (Array.isArray(obj)) return obj.filter((it) => isCompoundRawLogicItem(it) && !isExpandableMultiJumpItem(it)).length;
   const rulesIn = Array.isArray((obj as FormalooLogicObject)?.rules) ? (obj as FormalooLogicObject).rules : [];
   return rulesIn.filter(
     (r) =>
@@ -571,6 +578,29 @@ export function isCompoundRawLogicItem(item: unknown): boolean {
 }
 
 /**
+ * 「同一 source field への複数 jump ルールを 1 item にまとめた compound-fix 形」= N 本の独立 flat jump rule に
+ * 逐語展開できる item か (form-route-branching compound-fix / pull 対称)。判定:
+ *  - actions 2 本以上 かつ 全 action が route verb (jump / jump_to_success_page)
+ *  - 各 action の when が単一 leaf (and/or 結合なし・単一条件・operator is/is_not)
+ * show/hide 複数アクション (matrix fixture item2) や AND/OR compound は非該当 = 従来の弱化射影のまま (回帰なし)。
+ */
+export function isExpandableMultiJumpItem(item: unknown): boolean {
+  if (!item || typeof item !== 'object') return false;
+  const it = item as Record<string, unknown>;
+  const rawActions = Array.isArray(it.actions) ? it.actions : [];
+  if (rawActions.length < 2) return false; // 単一 action は従来経路 (byte 一致)
+  return rawActions.every((a) => {
+    const ao = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
+    if (ao.action !== 'jump' && ao.action !== 'jump_to_success_page') return false; // route verb のみ
+    const flat = flattenRawWhen(ao.when, (s) => s);
+    if (flat.join) return false; // and/or 結合は展開しない
+    if (flat.conditions.length !== 1) return false; // 単一 leaf のみ
+    const op = flat.conditions[0].operator;
+    return op === 'is' || op === 'is_not';
+  });
+}
+
+/**
  * 実 Formaloo logic (bare array) → harness rule 射影。simple item は従来同型の flat 弱化射影、
  * compound item (isCompoundRawLogicItem) のみ additive フィールド (conditions/conditionJoin/actions/raw) を付与 (R2)。
  * source/target slug は resolveFieldId で harness id へ (未解決は slug fallback)。弱化不能 item は drop。
@@ -586,6 +616,34 @@ export function fromFormalooRawLogic(
     const it = item as Record<string, unknown>;
     const rawActions = Array.isArray(it.actions) ? it.actions : [];
     if (rawActions.length === 0) continue;
+
+    // form-route-branching compound-fix (pull 対称): 同一 source への複数 jump を 1 item にまとめた compound 形は
+    // N 本の独立 flat jump rule に逐語展開する (builder が全ルートを編集可能に表示)。additive は付けない
+    // (各 action = 独立した単一条件単一アクション)。preserve-raw (未編集 verbatim 再送) は route 側で別途担保。
+    if (isExpandableMultiJumpItem(item)) {
+      for (const a of rawActions) {
+        const ao = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
+        const aArgs = Array.isArray(ao.args) ? ao.args : [];
+        const tgt = aArgs
+          .map((x) => (x && typeof x === 'object' ? (x as Record<string, unknown>) : {}))
+          .find((x) => typeof x.identifier === 'string');
+        const tgtSlug = typeof tgt?.identifier === 'string' ? (tgt.identifier as string) : '';
+        const targetFieldId = tgtSlug ? resolveFieldId(tgtSlug) ?? tgtSlug : '';
+        const flat = flattenRawWhen(ao.when, resolveFieldId);
+        const c0 = flat.conditions[0];
+        if (!c0 || !c0.sourceFieldId || !targetFieldId) continue; // 孤立参照 → drop
+        n += 1;
+        out.push({
+          id: `r${n}`,
+          sourceFieldId: c0.sourceFieldId,
+          operator: c0.operator === 'is_not' || c0.operator === 'not_equals' ? 'not_equals' : 'equals',
+          value: c0.value,
+          action: 'jump',
+          targetFieldId,
+        });
+      }
+      continue; // 展開済 → 従来の弱化射影経路はスキップ
+    }
 
     const actionRefs: HarnessLogicActionRef[] = [];
     for (const a of rawActions) {
