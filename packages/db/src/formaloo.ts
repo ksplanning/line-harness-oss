@@ -28,6 +28,9 @@ export interface FormalooForm {
   workspace_id: string | null;     // NULL=既定=env 単一鍵 fallback (作成先 workspace 鍵)
   // migration 096 (F6-3): ハーネス側フォルダ分類 (NULL=未分類)。
   folder_id: string | null;
+  // migration 099 (form-media-limits ③): 回答者による後編集を許可するか (0=不可 / 1=可)。既定 0=現状挙動。
+  //   Formaloo 対応プロパティ不在 (soft-200 実証) ゆえ harness 側保存のみ・push しない。実効化は弾M。
+  allow_post_edit: number;
   created_at: string;
   updated_at: string;
 }
@@ -288,6 +291,8 @@ export async function saveFormalooDefinition(
     formalooSlug?: string | null;
     title?: string;
     description?: string | null;
+    // form-media-limits ③: 回答者による後編集を許可するか (0|1)。present-key 更新 (未指定は変えない)。
+    allowPostEdit?: number;
   },
 ): Promise<void> {
   const now = jstNow();
@@ -315,6 +320,11 @@ export async function saveFormalooDefinition(
   if (params.description !== undefined) {
     sets.push('description = ?');
     vals.push(params.description);
+  }
+  // form-media-limits ③: allow_post_edit を present-key 更新 (title/description と同型 / 未指定は変えない)。
+  if (params.allowPostEdit !== undefined) {
+    sets.push('allow_post_edit = ?');
+    vals.push(params.allowPostEdit);
   }
   vals.push(id);
   await db.prepare(`UPDATE formaloo_forms SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();

@@ -1,0 +1,14 @@
+-- Migration 099: formaloo_forms に allow_post_edit 列を additive 追加 (form-media-limits ③ / 弾M 前提スイッチ)
+--
+-- WHY: 管理者がフォーム単位で「回答のあと編集を許可しない」を決められる土台を作る。Formaloo 側に
+--   「回答後の編集可否」を制御するプロパティは実在しない (live spike で editable_responses/
+--   allow_edit_response/is_answer_editable = PATCH 200 だが persist=absent の soft-200 を実証) ため、
+--   harness 側 additive 列に保存のみ (Formaloo へ push しない)。実行時 enforcement は弾M (あと編集本体)。
+--
+-- 設計:
+--   - allow_post_edit = 回答者による後編集を許可するか (0=不可 / 1=可)。既定 0 = 現状 hosted 挙動と一致
+--     (公開フォームは Formaloo hosted で回答者後編集 UI が無く実質すでに編集不可)。弾S では inert (保存のみ)。
+--
+-- additive のみ (ALTER TABLE ADD COLUMN INTEGER NOT NULL DEFAULT 0 = 定数 DEFAULT)。
+--   DROP/RENAME/CHECK 拡張なし = check-migrations (POLICY_CUTOFF=041) 準拠 / 079 の additive 規律継承。
+ALTER TABLE formaloo_forms ADD COLUMN allow_post_edit INTEGER NOT NULL DEFAULT 0;
