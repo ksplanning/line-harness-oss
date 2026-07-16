@@ -57,7 +57,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
     }
   }
 
-  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType }) => {
+  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; allowPostEdit?: number }) => {
     try {
       // preserve-raw: builder が carry した rawLogic + logicFingerprint をそのまま save body へ渡す。
       // form-design: design(色) + designImages(画像 intent) / form-route-branching: formType も同梱される。
@@ -135,6 +135,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialLogicFingerprint={form.logicFingerprint}
             initialDesign={form.design ?? undefined}
             initialFormType={form.formType ?? undefined}
+            initialAllowPostEdit={form.allowPostEdit}
             syncStatus={form.syncStatus}
             syncError={form.syncError}
             driftStatus={form.driftStatus}

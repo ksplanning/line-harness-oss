@@ -45,6 +45,8 @@ export interface ProjectedField {
   min_length?: number;
   allow_multiple_files?: boolean;
   allowed_extensions?: string[];
+  /** file: 最大サイズ (Formaloo max_size / KB)。既定 2048 は射影しない (既存 file-field の false-drift 回避 / form-media-limits)。 */
+  max_size?: number;
   /** choice/dropdown/multiple_select の選択肢 title (position 昇順・その他行除外)。fromFormalooField 出力と同型。 */
   choices?: string[];
 }
@@ -79,6 +81,9 @@ function projectField(el: unknown): ProjectedField | null {
   if (Array.isArray(o.allowed_extensions) && o.allowed_extensions.every((e) => typeof e === 'string')) {
     proj.allowed_extensions = [...(o.allowed_extensions as string[])];
   }
+  // form-media-limits ①: max_size を射影。既定 2048 は落とす (既存 file-field フォームの fingerprint byte 不変 =
+  // cron 全件 false-drift 回避 / RK-1)。description 非空ガード (S-2) と同型の後方互換ガード。
+  if (typeof o.max_size === 'number' && Number.isFinite(o.max_size) && o.max_size !== 2048) proj.max_size = o.max_size;
   if (harnessType === 'choice' || harnessType === 'dropdown' || harnessType === 'multiple_select') {
     const rawItems = Array.isArray(o.choice_items) ? (o.choice_items as unknown[]) : [];
     proj.choices = rawItems
