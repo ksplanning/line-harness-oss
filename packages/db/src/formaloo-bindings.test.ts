@@ -14,6 +14,7 @@ import { describe, expect, test, beforeEach } from 'vitest';
 import {
   createFormalooForm,
   getFormalooForm,
+  saveFormalooDefinition,
   isActiveFormalooWorkspace,
   upsertFormalooAccountBinding,
   getFormalooAccountBinding,
@@ -80,6 +81,41 @@ describe('createFormalooForm — lineAccountId/workspaceId 記録', () => {
     const fetched = await getFormalooForm(DB, form.id);
     expect(fetched?.line_account_id).toBeNull();
     expect(fetched?.workspace_id).toBeNull();
+  });
+});
+
+describe('saveFormalooDefinition — title/description present-key 更新 (T-B7)', () => {
+  test('指定時だけ title/description を更新し、description:null は明示 clear になる', async () => {
+    const form = await createFormalooForm(DB, { title: '旧タイトル', description: '旧説明' });
+    await saveFormalooDefinition(DB, form.id, {
+      definitionJson: '{"fields":[],"logic":[]}',
+      fields: [],
+      title: '新タイトル',
+      description: '新説明',
+    });
+    let saved = await getFormalooForm(DB, form.id);
+    expect(saved?.title).toBe('新タイトル');
+    expect(saved?.description).toBe('新説明');
+
+    await saveFormalooDefinition(DB, form.id, {
+      definitionJson: '{"fields":[],"logic":[]}',
+      fields: [],
+      description: null,
+    });
+    saved = await getFormalooForm(DB, form.id);
+    expect(saved?.title).toBe('新タイトル');
+    expect(saved?.description).toBeNull();
+  });
+
+  test('title/description 未指定の既存呼出は値を変更しない', async () => {
+    const form = await createFormalooForm(DB, { title: '保持タイトル', description: '保持説明' });
+    await saveFormalooDefinition(DB, form.id, {
+      definitionJson: '{"fields":[],"logic":[]}',
+      fields: [],
+    });
+    const saved = await getFormalooForm(DB, form.id);
+    expect(saved?.title).toBe('保持タイトル');
+    expect(saved?.description).toBe('保持説明');
   });
 });
 

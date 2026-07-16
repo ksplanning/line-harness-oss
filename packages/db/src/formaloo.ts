@@ -262,7 +262,13 @@ export interface SaveDefinitionField {
 export async function saveFormalooDefinition(
   db: D1Database,
   id: string,
-  params: { definitionJson: string; fields: SaveDefinitionField[]; formalooSlug?: string | null },
+  params: {
+    definitionJson: string;
+    fields: SaveDefinitionField[];
+    formalooSlug?: string | null;
+    title?: string;
+    description?: string | null;
+  },
 ): Promise<void> {
   const now = jstNow();
   await db.prepare('DELETE FROM formaloo_field_map WHERE form_id = ?').bind(id).run();
@@ -281,6 +287,14 @@ export async function saveFormalooDefinition(
   if (params.formalooSlug !== undefined) {
     sets.push('formaloo_slug = ?');
     vals.push(params.formalooSlug);
+  }
+  if (params.title !== undefined) {
+    sets.push('title = ?');
+    vals.push(params.title);
+  }
+  if (params.description !== undefined) {
+    sets.push('description = ?');
+    vals.push(params.description);
   }
   vals.push(id);
   await db.prepare(`UPDATE formaloo_forms SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();

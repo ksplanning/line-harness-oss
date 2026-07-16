@@ -200,6 +200,45 @@ describe('runFormalooDriftCheck — 3. drift clean + autoApply ON → auto_appli
     expect(sum2.inSync).toBe(1);
     expect((await listFormalooDriftEvents(DB, 'f1')).length).toBe(1); // auto_applied 1 件のみ
   });
+
+  it('meta section/page_break を definition_json と field_map slug に残し config.text も保持する (T-B4/T-B8)', async () => {
+    await seedForm('f1', 's_form1');
+    const v1 = body('s_form1', [rawField('s_q1')]);
+    const v2 = body('s_form1', [
+      rawField('s_q1', { title: '氏名（Formaloo 更新）' }),
+      {
+        slug: 's_section', type: 'meta', sub_type: 'section', title: 'ご案内', description: 'セクション本文',
+        required: false, admin_only: false, position: 1,
+      },
+      {
+        slug: 's_page', type: 'meta', sub_type: 'page_break', title: '改ページ', description: null,
+        required: false, admin_only: false, position: 2,
+      },
+    ]);
+    await setFormalooSyncState(DB, 'f1', {
+      syncStatus: 'idle', remoteDefinitionHash: await fpOf(v1), driftStatus: 'none',
+    });
+    const { client } = spyClient(() => v2);
+
+    const summary = await runFormalooDriftCheck({
+      db: DB, resolveClient: async () => client, autoApplyEnabled: true,
+    });
+
+    expect(summary.autoApplied).toBe(1);
+    const definition = JSON.parse((await getFormalooForm(DB, 'f1'))!.definition_json) as {
+      fields: Array<{ id: string; type: string; label: string; config: { text?: string } }>;
+    };
+    expect(definition.fields).toEqual([
+      expect.objectContaining({ id: 'f1_q1', type: 'text' }),
+      expect.objectContaining({ id: 's_section', type: 'section', label: 'ご案内', config: { text: 'セクション本文' } }),
+      expect.objectContaining({ id: 's_page', type: 'page_break', label: '改ページ', config: {} }),
+    ]);
+    const map = await getFormalooFieldMap(DB, 'f1');
+    expect(Object.fromEntries(map.map((entry) => [entry.id, entry.formaloo_field_slug]))).toMatchObject({
+      f1_q1: 's_q1', s_section: 's_section', s_page: 's_page',
+    });
+    expect(JSON.parse(map.find((entry) => entry.id === 's_section')!.config_json)).toEqual({ text: 'セクション本文' });
+  });
 });
 
 describe('runFormalooDriftCheck — 4. drift clean + autoApply OFF → notified only', () => {

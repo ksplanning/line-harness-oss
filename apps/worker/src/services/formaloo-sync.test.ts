@@ -56,6 +56,7 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
 
     // form 作成呼び出し
     expect(calls[0]).toMatchObject({ method: 'POST', path: '/v3.0/forms/', body: { title: 'テスト' } });
+    expect(calls[0].body).toEqual({ title: 'テスト' }); // description 未指定の既存 caller は byte-equivalent
     // field 作成は top-level /v3.0/fields/ へ POST し、form slug は URL でなく body で紐づく。
     // 旧実装 /v3.0/forms/{slug}/fields/ は本番 Formaloo API に存在せず HTTP 404 だった (本番 404 回帰ガード)。
     expect(calls[1].path).toBe('/v3.0/fields/');
@@ -70,6 +71,27 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
     const body = putCall.body as { logic: { rules: Array<{ conditions: Array<{ field: string }>; actions: Array<{ field: string }> }> } };
     expect(body.logic.rules[0].conditions[0].field).toBe('FS2');
     expect(body.logic.rules[0].actions[0].field).toBe('FS1');
+  });
+
+  test('description が明示された初回保存は form POST に title+description を送る (T-B12)', async () => {
+    const { client, calls } = mockClient({
+      post: [
+        () => ({ ok: true, status: 201, data: { data: { form: { slug: 'FORM_WITH_DESCRIPTION' } } } }),
+      ],
+    });
+
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: null,
+      title: '現在タイトル',
+      description: '現在説明',
+      fields: [],
+      logic: [],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls[0]).toEqual({
+      method: 'POST', path: '/v3.0/forms/', body: { title: '現在タイトル', description: '現在説明' },
+    });
   });
 });
 
@@ -137,6 +159,65 @@ function upsertMock(handler: (call: { method: string; path: string; body?: unkno
 
 const textField: HarnessField = { id: 'h1', type: 'text', label: '名前', required: true, position: 0, config: { maxLength: 30 } };
 const choiceField: HarnessField = { id: 'h2', type: 'choice', label: '性別', required: true, position: 1, config: { choices: ['男', '女'] } };
+const sectionField = {
+  id: 'decor_section', type: 'section', label: 'ご案内', required: false, position: 0, config: { text: '本文です' },
+} as unknown as HarnessField;
+const pageBreakField = {
+  id: 'decor_page', type: 'page_break', label: '改ページ', required: false, position: 1, config: {},
+} as unknown as HarnessField;
+
+describe('pushDefinitionToFormaloo — decoration meta (T-B3)', () => {
+  test('section/page_break を通常 field と同じ POST /v3.0/fields/ 経路で meta/sub_type として作成する', async () => {
+    let fieldNo = 0;
+    const { client, calls } = upsertMock(({ method, path }) => {
+      if (method === 'POST' && path === '/v3.0/forms/') {
+        return { ok: true, status: 201, data: { data: { form: { slug: 'DECOR_FORM' } } } };
+      }
+      if (method === 'POST' && path === '/v3.0/fields/') {
+        fieldNo += 1;
+        return { ok: true, status: 201, data: { data: { field: { slug: `META_${fieldNo}` } } } };
+      }
+      return { ok: true, status: 200, data: {} };
+    });
+
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: null, title: '装飾フォーム', fields: [sectionField, pageBreakField], logic: [],
+    });
+
+    expect(result.ok).toBe(true);
+    const posts = calls.filter((call) => call.method === 'POST' && call.path === '/v3.0/fields/');
+    expect(posts).toHaveLength(2);
+    expect(posts[0].body).toMatchObject({
+      form: 'DECOR_FORM', type: 'meta', sub_type: 'section', title: 'ご案内', description: '本文です', position: 0,
+    });
+    expect(posts[1].body).toMatchObject({
+      form: 'DECOR_FORM', type: 'meta', sub_type: 'page_break', position: 1,
+    });
+    expect(posts.some((call) => ['section', 'page_break'].includes(String((call.body as { type?: unknown }).type)))).toBe(false);
+  });
+
+  test('slug 既知の decoration は既存 PATCH /v3.0/fields/{slug}/ 経路で meta のまま更新する', async () => {
+    const { client, calls } = upsertMock(() => ({ ok: true, status: 200, data: {} }));
+
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'DECOR_FORM', title: '装飾フォーム', fields: [sectionField, pageBreakField], logic: [],
+      existingFieldSlugs: { decor_section: 'SECTION_SLUG', decor_page: 'PAGE_SLUG' },
+    });
+
+    expect(result.ok).toBe(true);
+    const patches = calls.filter((call) => call.method === 'PATCH');
+    expect(patches).toHaveLength(2);
+    expect(patches[0]).toMatchObject({
+      path: '/v3.0/fields/SECTION_SLUG/',
+      body: { type: 'meta', sub_type: 'section', title: 'ご案内', description: '本文です' },
+    });
+    expect(patches[1]).toMatchObject({
+      path: '/v3.0/fields/PAGE_SLUG/',
+      body: { type: 'meta', sub_type: 'page_break' },
+    });
+    expect(calls.some((call) => call.method === 'POST' && call.path === '/v3.0/fields/')).toBe(false);
+  });
+});
 
 describe('pushDefinitionToFormaloo — upsert 冪等化 (T-A1)', () => {
   test('(a) existingFieldSlugs にある field は PATCH /v3.0/fields/{slug}/ で更新・choice_items を含まない・POST を叩かない', async () => {

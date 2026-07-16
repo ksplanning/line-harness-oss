@@ -27,6 +27,7 @@ import {
 } from '@line-crm/db';
 import {
   validateHarnessField,
+  isDecorationType,
   toCsv,
   parseCsv,
   logicFingerprint,
@@ -219,14 +220,24 @@ formsAdvanced.get('/api/forms-advanced/:id', async (c) => {
 
 // PUT /api/forms-advanced/:id — 定義保存 (validate → 永続化 → fail-soft push-sync)
 formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
+  const id = c.req.param('id')!;
+  let syncStarted = false;
+  let syncSettled = false;
   try {
-    const id = c.req.param('id')!;
     const form = await getFormalooForm(c.env.DB, id);
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown });
+    if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
+      return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
+    }
+    const newTitle = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : form.title;
+    const descProvided = body.description !== undefined;
+    const newDescription = descProvided
+      ? (typeof body.description === 'string' && body.description.trim() ? body.description : null)
+      : form.description;
     const rawFields = Array.isArray(body.fields) ? body.fields : [];
     const rawLogicRules = Array.isArray(body.logic) ? body.logic : [];
 
@@ -241,10 +252,19 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     // compound rule (additive actions[]) は flat target だけでなく **全アクション target** を idSet 照合し、
     // 存在 field を参照する compound は保持・dangling ref を作る rule のみ除去 (R-4/L-9/D-12)。
     const fieldIds = new Set(fields.map((f) => f.id));
+    const decorationIds = new Set(fields.filter((f) => isDecorationType(f.type)).map((f) => f.id));
     const logic: HarnessLogicRule[] = (rawLogicRules as HarnessLogicRule[]).filter((r) => {
       if (!r || !fieldIds.has(r.sourceFieldId) || !fieldIds.has(r.targetFieldId)) return false;
+      if (decorationIds.has(r.sourceFieldId) || decorationIds.has(r.targetFieldId)) return false;
+      if (Array.isArray(r.conditions)) {
+        for (const condition of r.conditions) {
+          if (condition && decorationIds.has(condition.sourceFieldId)) return false;
+        }
+      }
       if (Array.isArray(r.actions)) {
-        for (const a of r.actions) if (a && !fieldIds.has(a.targetFieldId)) return false;
+        for (const a of r.actions) {
+          if (a && (!fieldIds.has(a.targetFieldId) || decorationIds.has(a.targetFieldId))) return false;
+        }
       }
       return true;
     });
@@ -295,6 +315,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     // せず conflict_held に落ちる (ローカル編集の silent 上書き防止)。窓終了時に下の終端 setSyncState が
     // idle/out_of_sync へ確定させる。baseline/drift 列はここでは触らない (終端の T-C2 無効化に委ねる)。
     await setFormalooSyncState(c.env.DB, id, { syncStatus: 'pushing' });
+    syncStarted = true;
     // まず D1 に保存 (SoT キャッシュ / fail-soft の土台)。field_map の slug は既存分を carry する
     // (現状は無 carry = slug wipe の欠陥。push 失敗時に喪失し次回保存で重複 POST になっていた / B3)。
     // preserve-raw: rawLogic (逐語) + logicFingerprint を additive JSON key で同梱 (migration 不要 / L-10)。
@@ -311,6 +332,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     await saveFormalooDefinition(c.env.DB, id, {
       definitionJson: buildDefinitionJson(prevDef.formalooAddress ?? null),
       fields: fieldRows((fid) => existingFieldSlugs[fid] ?? null),
+      title: newTitle,
+      description: newDescription,
     });
 
     // Formaloo へ push (fail-soft): secret 未配備 (dev) や失敗は out_of_sync でローカル保存を維持
@@ -319,6 +342,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const client = await resolveFormalooClient(c.env, form.workspace_id);
     if (!client) {
       await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: 'Formaloo credentials 未設定 (S-1 待ち)' });
+      syncSettled = true;
     } else {
       // legacy backfill (R6): 未編集 かつ preserve 元 raw 未取得 かつ formaloo_slug あり → push 前に re-pull で
       // 現行 Formaloo raw を取得し、射影 fingerprint が未編集 logic と一致すれば preserve 経路へ。
@@ -337,7 +361,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       }
       const pushed = await pushDefinitionToFormaloo(client, {
         formalooSlug: form.formaloo_slug,
-        title: form.title,
+        title: newTitle,
+        description: newDescription,
         fields,
         logic: logicToPush,
         existingFieldSlugs,
@@ -349,30 +374,53 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           definitionJson: buildDefinitionJson(pushed.publicAddress ?? prevDef.formalooAddress ?? null),
           fields: fieldRows((fid) => pushed.fieldSlugs?.[fid] ?? null),
           formalooSlug: pushed.formalooSlug ?? null,
+          title: newTitle,
+          description: newDescription,
         });
+        const slug = pushed.formalooSlug ?? form.formaloo_slug;
+        const metaRes = slug
+          ? await client.request('PATCH', `/v3.0/forms/${slug}/`, { title: newTitle, description: newDescription ?? '' })
+          : { ok: false as const, status: 0 };
+        if (!metaRes.ok) {
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync', lastError: 'フォーム情報の同期に失敗しました',
+          });
+          syncSettled = true;
         // push 成功で Formaloo 側 = harness が今送った内容 → 旧 baseline は stale。
         // remote_definition_hash=NULL で無効化し次 tick で silent re-bootstrap (自分の push を drift 誤検知しない
         // / formaloo-auto-pull R6)。drift 状態 (badge/pending) も掃除 (remote drift は解消 = harness と一致)。
         // compound を builder 編集した場合は push 成功でも未同期 + 明示警告 (複合は簡略化せず Formaloo に残す)。
-        if (compoundEditWarning) {
+        } else if (compoundEditWarning) {
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: compoundEditWarning,
             remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
           });
+          syncSettled = true;
         } else {
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'idle', lastError: null, lastPushedAt: new Date().toISOString(),
             remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
           });
+          syncSettled = true;
         }
       } else {
         await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: pushed.error ?? 'push failed' });
+        syncSettled = true;
       }
     }
 
     const updated = await getFormalooForm(c.env.DB, id);
     return c.json({ success: true, data: await serializeForm(c.env.DB, updated!, isOwnerCtx(c)) });
   } catch (err) {
+    if (syncStarted && !syncSettled) {
+      try {
+        await setFormalooSyncState(c.env.DB, id, {
+          syncStatus: 'out_of_sync', lastError: 'フォームの保存処理に失敗しました',
+        });
+      } catch {
+        // D1 自体が利用不能な場合は outer 500 に任せる。
+      }
+    }
     console.error('PUT /api/forms-advanced/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }

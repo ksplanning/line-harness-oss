@@ -117,6 +117,16 @@ function stubFormaloo(opts: StubOpts = {}) {
   }));
 }
 
+/** metadata PATCH ({title,description}) を除き、logic を書き換える form request だけ判定。 */
+function isLogicWrite(call: { method: string; url: string; body: unknown }): boolean {
+  if (!/\/v3\.0\/forms\/[^/]+\/$/.test(call.url)) return false;
+  if (call.method === 'PUT') return true;
+  return call.method === 'PATCH'
+    && !!call.body
+    && typeof call.body === 'object'
+    && Object.prototype.hasOwnProperty.call(call.body, 'logic');
+}
+
 beforeEach(() => {
   raw = new Database(':memory:');
   replayAll(raw);
@@ -166,7 +176,7 @@ describe('D-8 — edit-detection', () => {
     const pull = (await (await call('GET', '/api/forms-advanced/f1/pull')).json() as { data: { rawLogic: unknown; logicFingerprint: string; logic: unknown[] } }).data;
     fetchCalls = [];
     await call('PUT', '/api/forms-advanced/f1', { fields: [], logic: pull.logic, rawLogic: pull.rawLogic, logicFingerprint: pull.logicFingerprint });
-    expect(fetchCalls.some((c) => c.method === 'PATCH' && /\/forms\/SPIKE\/$/.test(c.url))).toBe(true);
+    expect(fetchCalls.some(isLogicWrite)).toBe(true);
   });
 
   test('fingerprint 不一致 (compound を編集) → 破壊 push せず未同期 + 明示警告 (silent 消失なし)', async () => {
@@ -180,7 +190,7 @@ describe('D-8 — edit-detection', () => {
     expect(data.syncStatus).toBe('out_of_sync');
     expect(data.syncError).toContain('複合ロジックを編集');
     // Formaloo の複合を上書きしない (logic の PATCH も PUT も送らない)
-    expect(fetchCalls.some((c) => (c.method === 'PATCH' || c.method === 'PUT') && /\/forms\/SPIKE\/$/.test(c.url))).toBe(false);
+    expect(fetchCalls.some(isLogicWrite)).toBe(false);
   });
 
   test('fingerprint 不在 (レガシー/非 pull 保存) + raw あり → fail-safe で破壊 push せず (silent 消失なし)', async () => {
@@ -190,7 +200,7 @@ describe('D-8 — edit-detection', () => {
     const res = await call('PUT', '/api/forms-advanced/f1', { fields: [], logic: [], rawLogic: rawLogicArray });
     const data = (await res.json() as { data: { syncStatus: string } }).data;
     expect(data.syncStatus).toBe('out_of_sync'); // 編集扱い (fail-safe) → compound-edit 警告経路
-    expect(fetchCalls.some((c) => (c.method === 'PATCH' || c.method === 'PUT') && /\/forms\/SPIKE\/$/.test(c.url))).toBe(false);
+    expect(fetchCalls.some(isLogicWrite)).toBe(false);
   });
 });
 
@@ -217,7 +227,7 @@ describe('D-9 — legacy backfill (rawLogic 無しフォーム救済)', () => {
     const res = await call('PUT', '/api/forms-advanced/f1', { fields: [], logic: [], logicFingerprint: '[]' });
     expect(res.status).toBe(200);
     // logic push (PATCH/PUT forms) は起きない (logic 空 + preserve 不成立) = Formaloo の compound を触らない
-    expect(fetchCalls.some((c) => (c.method === 'PATCH' || c.method === 'PUT') && /\/forms\/SPIKE\/$/.test(c.url))).toBe(false);
+    expect(fetchCalls.some(isLogicWrite)).toBe(false);
   });
 });
 

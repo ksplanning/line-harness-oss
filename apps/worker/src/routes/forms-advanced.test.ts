@@ -256,6 +256,9 @@ describe('forms-advanced PUT /:id idempotent push (T-A3 / push-idempotency / B3)
       if (method === 'PATCH' && url.includes('/v3.0/fields/')) {
         return new Response(JSON.stringify({ data: {} }), { status: opts.patchStatus ?? 200, headers: { 'Content-Type': 'application/json' } });
       }
+      if (method === 'PATCH' && url.includes('/v3.0/forms/')) {
+        return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       if (method === 'POST' && url.includes('/v3.0/fields/')) {
         return new Response(JSON.stringify({ data: { field: { slug: 'SHOULD_NOT_CREATE' } } }), { status: 201, headers: { 'Content-Type': 'application/json' } });
       }
@@ -294,7 +297,7 @@ describe('forms-advanced PUT /:id idempotent push (T-A3 / push-idempotency / B3)
     expect(res.status).toBe(200);
     expect((await res.json() as { data: { syncStatus: string } }).data.syncStatus).toBe('idle'); // push 成功
 
-    const patches = recorded.filter((r) => r.method === 'PATCH');
+    const patches = recorded.filter((r) => r.method === 'PATCH' && r.url.includes('/v3.0/fields/'));
     expect(patches).toHaveLength(2); // field 数ぶん
     expect(patches.some((p) => p.url.endsWith('/v3.0/fields/s_one/'))).toBe(true); // exact path (W1)
     expect(patches.some((p) => p.url.endsWith('/v3.0/fields/s_two/'))).toBe(true);
@@ -359,7 +362,7 @@ describe('forms-advanced PUT /:id idempotent push (T-A3 / push-idempotency / B3)
       logic: [],
     });
     expect((await res2.json() as { data: { syncStatus: string } }).data.syncStatus).toBe('idle');
-    expect(recorded2.filter((r) => r.method === 'PATCH').length).toBe(1);
+    expect(recorded2.filter((r) => r.method === 'PATCH' && r.url.includes('/v3.0/fields/')).length).toBe(1);
     expect(recorded2.filter((r) => r.method === 'POST' && r.url.includes('/v3.0/fields/')).length).toBe(0);
   });
 

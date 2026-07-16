@@ -45,6 +45,7 @@ export async function pushDefinitionToFormaloo(
   params: {
     formalooSlug: string | null;
     title: string;
+    description?: string | null;
     fields: HarnessField[];
     logic: HarnessLogicRule[];
     /**
@@ -71,7 +72,10 @@ export async function pushDefinitionToFormaloo(
   let slug = params.formalooSlug;
   let publicAddress: string | null = null;
   if (!slug) {
-    const created = await client.post<FormCreateResp>('/v3.0/forms/', { title: params.title });
+    const createBody = params.description === undefined
+      ? { title: params.title }
+      : { title: params.title, description: params.description ?? '' };
+    const created = await client.post<FormCreateResp>('/v3.0/forms/', createBody);
     if (!created.ok) return { ok: false, error: `form create failed: HTTP ${created.status}` };
     const form = created.data?.data?.form;
     slug = form?.slug ?? null;
