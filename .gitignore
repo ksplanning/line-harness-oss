@@ -16,6 +16,7 @@ dist/
 **/.dev.vars
 apps/web/out/
 apps/worker/dist/
+*.tsbuildinfo
 .worktrees/
 .claude/worktrees/
 
