@@ -180,7 +180,7 @@ export interface ScenarioStep {
   messageType: MessageType;
   /** メッセージ内容 (テキスト or JSONシリアライズ済みFlexメッセージ等) */
   messageContent: string;
-  /** 分岐条件の種別 (null/未指定 = 常に実行) — tag_exists / tag_not_exists / metadata_equals / metadata_not_equals */
+  /** 分岐条件の種別 (null/未指定 = 常に実行) — tag_exists / tag_not_exists / metadata_equals / metadata_not_equals / metadata_contains / metadata_not_contains / tag_name_contains / tag_name_not_contains */
   conditionType?: string | null;
   /** 分岐条件値 — tag 条件: tag_id / metadata 条件: JSON {"key","value"} */
   conditionValue?: string | null;
