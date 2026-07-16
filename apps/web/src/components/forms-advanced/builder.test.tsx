@@ -525,6 +525,56 @@ describe('FormBuilder — drift badge (T-D2 / formaloo-auto-pull)', () => {
   })
 })
 
+describe('FormBuilder — 今すぐ同期リカバリ (① out_of_sync)', () => {
+  it('out_of_sync のとき「今すぐ同期」ボタン + 原因 + 再送ヘルプを目立つ位置に出す', () => {
+    render(<FormBuilder {...base({ syncStatus: 'out_of_sync', syncError: 'Formaloo credentials 未設定' })} />)
+    const rec = screen.getByTestId('sync-recovery')
+    expect(within(rec).getByTestId('sync-now')).toBeTruthy()
+    expect(within(rec).getByTestId('sync-recovery-cause').textContent).toContain('Formaloo credentials 未設定')
+    expect(rec.textContent).toContain('保存し直すと再送されます')
+  })
+
+  it('「今すぐ同期」は既存の保存/push 経路 (onSave) を再実行する (新経路を作らない)', async () => {
+    const onSave = vi.fn(async () => ({ ok: true }))
+    render(<FormBuilder {...base({ syncStatus: 'out_of_sync', onSave })} />)
+    fireEvent.click(screen.getByTestId('sync-now'))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+  })
+
+  it('原因 (syncError) が無くても再送ヘルプは出す', () => {
+    render(<FormBuilder {...base({ syncStatus: 'out_of_sync' })} />)
+    const rec = screen.getByTestId('sync-recovery')
+    expect(rec.textContent).toContain('保存し直すと再送されます')
+    expect(within(rec).queryByTestId('sync-recovery-cause')).toBeNull()
+  })
+
+  it('idle (同期済み) のときは同期リカバリを出さない', () => {
+    render(<FormBuilder {...base({ syncStatus: 'idle' })} />)
+    expect(screen.queryByTestId('sync-recovery')).toBeNull()
+  })
+})
+
+describe('FormBuilder — 公開ページを開いてテスト導線 (③)', () => {
+  it('公開済み + publicUrl → 「公開ページを開いてテスト」リンク (新規タブ)', () => {
+    render(<FormBuilder {...base({ status: 'published', publicUrl: 'https://demo-forms.formaloo.me/f/abc' })} />)
+    const link = screen.getByTestId('open-public-page') as HTMLAnchorElement
+    expect(link.getAttribute('href')).toBe('https://demo-forms.formaloo.me/f/abc')
+    expect(link.getAttribute('target')).toBe('_blank')
+  })
+
+  it('未公開 → 公開すると回答者用ページが作られる案内 (リンクは出さない)', () => {
+    render(<FormBuilder {...base({ status: 'draft' })} />)
+    expect(screen.getByTestId('public-test-hint').textContent).toContain('公開すると')
+    expect(screen.queryByTestId('open-public-page')).toBeNull()
+  })
+
+  it('公開済みだが publicUrl 未確定 → URL 準備中の案内 (リンクは出さない)', () => {
+    render(<FormBuilder {...base({ status: 'published', publicUrl: null })} />)
+    expect(screen.getByTestId('public-url-pending')).toBeTruthy()
+    expect(screen.queryByTestId('open-public-page')).toBeNull()
+  })
+})
+
 describe('FormBuilder — Formaloo 再取り込み (pull / N-8 / B2/B3)', () => {
   const existing: HarnessField = { id: 'ex1', type: 'text', label: '既存項目', required: false, position: 0, config: {} }
 
