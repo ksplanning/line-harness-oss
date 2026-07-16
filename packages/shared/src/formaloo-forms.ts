@@ -23,7 +23,14 @@ export const FORMALOO_FIELD_TYPES = [
   'file',
 ] as const;
 
-export type HarnessFieldType = (typeof FORMALOO_FIELD_TYPES)[number];
+export const DECORATION_FIELD_TYPES = ['section', 'page_break'] as const;
+export type HarnessDecorationType = (typeof DECORATION_FIELD_TYPES)[number];
+
+export type HarnessFieldType = (typeof FORMALOO_FIELD_TYPES)[number] | HarnessDecorationType;
+
+export function isDecorationType(t: string): t is HarnessDecorationType {
+  return (DECORATION_FIELD_TYPES as readonly string[]).includes(t);
+}
 
 /** harness 種別 → Formaloo field type 名 (実 API 名 / R10)。 */
 export const HARNESS_TO_FORMALOO_TYPE: Record<HarnessFieldType, string> = {
@@ -37,11 +44,13 @@ export const HARNESS_TO_FORMALOO_TYPE: Record<HarnessFieldType, string> = {
   phone: 'phone',
   date: 'date',
   file: 'file',
+  section: 'meta',
+  page_break: 'meta',
 };
 
 /** 逆引き (Formaloo type 名 → harness 種別 / pull 用)。 */
 export const FORMALOO_TO_HARNESS_TYPE: Record<string, HarnessFieldType> = Object.fromEntries(
-  (Object.entries(HARNESS_TO_FORMALOO_TYPE) as [HarnessFieldType, string][]).map(([h, f]) => [f, h]),
+  FORMALOO_FIELD_TYPES.map((h) => [HARNESS_TO_FORMALOO_TYPE[h], h]),
 ) as Record<string, HarnessFieldType>;
 
 export interface HarnessFieldConfig {
@@ -55,6 +64,8 @@ export interface HarnessFieldConfig {
   allowMultipleFiles?: boolean;
   /** file: 許可拡張子 (R3 / 拡張子文字列の配列)。 */
   allowedExtensions?: string[];
+  /** section の本文=description */
+  text?: string;
 }
 
 export interface HarnessField {
@@ -140,7 +151,10 @@ export interface FormalooLogicObject {
 }
 
 function isFieldType(v: unknown): v is HarnessFieldType {
-  return typeof v === 'string' && (FORMALOO_FIELD_TYPES as readonly string[]).includes(v);
+  return typeof v === 'string' && (
+    (FORMALOO_FIELD_TYPES as readonly string[]).includes(v)
+    || (DECORATION_FIELD_TYPES as readonly string[]).includes(v)
+  );
 }
 
 /**
@@ -177,6 +191,10 @@ export function validateHarnessField(
     if (!Array.isArray(rawCfg.allowedExtensions) || !rawCfg.allowedExtensions.every((c) => typeof c === 'string')) return { ok: false, error: 'config.allowedExtensions must be string[]' };
     config.allowedExtensions = [...rawCfg.allowedExtensions];
   }
+  if (rawCfg.text !== undefined) {
+    if (typeof rawCfg.text !== 'string') return { ok: false, error: 'config.text must be string' };
+    config.text = rawCfg.text;
+  }
 
   return {
     ok: true,
@@ -184,7 +202,7 @@ export function validateHarnessField(
       id: o.id,
       type: o.type,
       label: o.label,
-      required: o.required === true,
+      required: isDecorationType(o.type) ? false : o.required === true,
       position: typeof o.position === 'number' ? o.position : 0,
       config,
     },
@@ -193,6 +211,22 @@ export function validateHarnessField(
 
 /** harness field → Formaloo field POST payload (未知プロパティを持たない明示形 / M-8)。 */
 export function toFormalooFieldPayload(field: HarnessField): Record<string, unknown> {
+  if (field.type === 'section') {
+    return {
+      type: 'meta',
+      sub_type: 'section',
+      title: field.label,
+      description: field.config.text ?? '',
+      position: field.position,
+    };
+  }
+  if (field.type === 'page_break') {
+    return {
+      type: 'meta',
+      sub_type: 'page_break',
+      position: field.position,
+    };
+  }
   const p: Record<string, unknown> = {
     type: HARNESS_TO_FORMALOO_TYPE[field.type],
     title: field.label,
@@ -227,11 +261,36 @@ export function fromFormalooField(
   if (typeof input !== 'object' || input === null) return null;
   const o = input as Record<string, unknown>;
   const formalooType = typeof o.type === 'string' ? o.type : '';
-  const type = FORMALOO_TO_HARNESS_TYPE[formalooType];
-  if (!type) return null; // MVP subset 外 = 復元しない (M-21)
-
   const slug = typeof o.slug === 'string' ? o.slug : '';
   const id = (slug ? resolveId?.(slug) : undefined) ?? slug;
+
+  if (formalooType === 'meta') {
+    const subType = typeof o.sub_type === 'string' ? o.sub_type : '';
+    if (subType === 'section') {
+      return {
+        id,
+        type: 'section',
+        label: typeof o.title === 'string' ? o.title : '',
+        required: false,
+        position: typeof o.position === 'number' ? o.position : 0,
+        config: { text: typeof o.description === 'string' ? o.description : '' },
+      };
+    }
+    if (subType === 'page_break') {
+      return {
+        id,
+        type: 'page_break',
+        label: typeof o.title === 'string' ? o.title : '',
+        required: false,
+        position: typeof o.position === 'number' ? o.position : 0,
+        config: {},
+      };
+    }
+    return null;
+  }
+
+  const type = FORMALOO_TO_HARNESS_TYPE[formalooType];
+  if (!type) return null; // MVP subset 外 = 復元しない (M-21)
 
   const config: HarnessFieldConfig = {};
   if (typeof o.max_length === 'number' && Number.isFinite(o.max_length)) config.maxLength = o.max_length;

@@ -6,9 +6,11 @@
  */
 import { describe, test, expect } from 'vitest';
 import {
+  DECORATION_FIELD_TYPES,
   FORMALOO_FIELD_TYPES,
   HARNESS_TO_FORMALOO_TYPE,
   FORMALOO_TO_HARNESS_TYPE,
+  isDecorationType,
   toFormalooFieldPayload,
   fromFormalooField,
   toFormalooLogic,
@@ -37,6 +39,17 @@ describe('formaloo-forms — field 種別 MVP subset (N-13)', () => {
       expect(FORMALOO_TO_HARNESS_TYPE[HARNESS_TO_FORMALOO_TYPE[t]]).toBe(t);
     }
   });
+
+  test('装飾型は additive に定義し、meta の逆引きは input 型マップへ混入させない (T-B2)', () => {
+    expect(DECORATION_FIELD_TYPES).toEqual(['section', 'page_break']);
+    expect(HARNESS_TO_FORMALOO_TYPE.section).toBe('meta');
+    expect(HARNESS_TO_FORMALOO_TYPE.page_break).toBe('meta');
+    expect(FORMALOO_TO_HARNESS_TYPE.meta).toBeUndefined();
+    expect(isDecorationType('section')).toBe(true);
+    expect(isDecorationType('page_break')).toBe(true);
+    expect(isDecorationType('text')).toBe(false);
+    expect(isDecorationType('video')).toBe(false);
+  });
 });
 
 describe('formaloo-forms — validateHarnessField (M-21 明示 reject)', () => {
@@ -59,6 +72,72 @@ describe('formaloo-forms — validateHarnessField (M-21 明示 reject)', () => {
   test('maxLength 非数値は弾く', () => {
     const r = validateHarnessField({ id: 'f1', type: 'text', label: 'x', required: false, position: 0, config: { maxLength: 'abc' } } as unknown);
     expect(r.ok).toBe(false);
+  });
+
+  test('section は config.text を保持し、page_break も受理する (T-B1)', () => {
+    const section = validateHarnessField({
+      id: 'decoration-section',
+      type: 'section',
+      label: '見出し',
+      required: false,
+      position: 1,
+      config: { text: '本文' },
+    });
+    expect(section).toEqual({
+      ok: true,
+      field: {
+        id: 'decoration-section',
+        type: 'section',
+        label: '見出し',
+        required: false,
+        position: 1,
+        config: { text: '本文' },
+      },
+    });
+
+    const pageBreak = validateHarnessField({
+      id: 'decoration-page-break',
+      type: 'page_break',
+      label: '改ページ',
+      required: false,
+      position: 2,
+      config: {},
+    });
+    expect(pageBreak.ok).toBe(true);
+  });
+
+  test('装飾 field の required=true は false に正規化する (T-B1)', () => {
+    for (const type of ['section', 'page_break'] as const) {
+      const result = validateHarnessField({
+        id: `decoration-${type}`,
+        type,
+        label: '装飾',
+        required: true,
+        position: 0,
+        config: type === 'section' ? { text: '本文' } : {},
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.field.required).toBe(false);
+    }
+  });
+
+  test('config.text は文字列だけを受理し、未知型は引き続き拒否する (T-B1 / M-21)', () => {
+    expect(validateHarnessField({
+      id: 'bad-section',
+      type: 'section',
+      label: '見出し',
+      required: false,
+      position: 0,
+      config: { text: 123 },
+    }).ok).toBe(false);
+    expect(validateHarnessField({
+      id: 'unknown',
+      type: 'video',
+      label: '動画',
+      required: false,
+      position: 0,
+      config: {},
+    }).ok).toBe(false);
   });
 });
 
@@ -97,6 +176,38 @@ describe('formaloo-forms — toFormalooFieldPayload', () => {
       expect(p.choice_items).toEqual([{ title: 'A' }, { title: 'B' }]);
       expect(p.choices).toBeUndefined();
     }
+  });
+
+  test('section / page_break を Formaloo meta + sub_type payload に変換する (T-B2)', () => {
+    const section: HarnessField = {
+      id: 'section-1',
+      type: 'section',
+      label: 'ご案内',
+      required: false,
+      position: 4,
+      config: { text: '回答前にお読みください' },
+    };
+    expect(toFormalooFieldPayload(section)).toEqual(expect.objectContaining({
+      type: 'meta',
+      sub_type: 'section',
+      title: 'ご案内',
+      description: '回答前にお読みください',
+      position: 4,
+    }));
+
+    const pageBreak: HarnessField = {
+      id: 'page-break-1',
+      type: 'page_break',
+      label: '改ページ',
+      required: false,
+      position: 5,
+      config: {},
+    };
+    expect(toFormalooFieldPayload(pageBreak)).toEqual(expect.objectContaining({
+      type: 'meta',
+      sub_type: 'page_break',
+      position: 5,
+    }));
   });
 });
 
@@ -172,6 +283,80 @@ describe('formaloo-forms — fromFormalooField (builder pull / N-8 選択肢読�
     };
     const back = fromFormalooField(asRead, () => 'h1');
     expect(back).toEqual(original); // id/type/label/required/position/config.choices まで完全一致
+  });
+
+  test('meta section/page_break を sub_type に従って復元し、未知 sub_type は捨てる (T-B4)', () => {
+    expect(fromFormalooField({
+      slug: 'FS_SECTION',
+      type: 'meta',
+      sub_type: 'section',
+      title: '注意事項',
+      description: '必ず確認してください',
+      required: true,
+      position: 6,
+      admin_only: false,
+    }, (slug) => (slug === 'FS_SECTION' ? 'section-id' : undefined))).toEqual({
+      id: 'section-id',
+      type: 'section',
+      label: '注意事項',
+      required: false,
+      position: 6,
+      config: { text: '必ず確認してください' },
+    });
+
+    expect(fromFormalooField({
+      slug: 'FS_PAGE_BREAK',
+      type: 'meta',
+      sub_type: 'page_break',
+      title: '改ページ',
+      description: null,
+      position: 7,
+    })).toEqual({
+      id: 'FS_PAGE_BREAK',
+      type: 'page_break',
+      label: '改ページ',
+      required: false,
+      position: 7,
+      config: {},
+    });
+
+    expect(fromFormalooField({
+      slug: 'FS_VIDEO',
+      type: 'meta',
+      sub_type: 'video',
+      title: '動画',
+      position: 8,
+    })).toBeNull();
+  });
+
+  test('装飾 field は push→pull で sub_type/title/description を保つ (T-B8)', () => {
+    const originals: HarnessField[] = [
+      {
+        id: 'section-id',
+        type: 'section',
+        label: 'このフォームについて',
+        required: false,
+        position: 2,
+        config: { text: '説明本文' },
+      },
+      {
+        id: 'page-break-id',
+        type: 'page_break',
+        label: '',
+        required: false,
+        position: 3,
+        config: {},
+      },
+    ];
+
+    for (const original of originals) {
+      const pushed = toFormalooFieldPayload(original);
+      const asRead = {
+        slug: `FS_${original.id}`,
+        ...pushed,
+      };
+      expect(fromFormalooField(asRead, () => original.id)).toEqual(original);
+    }
   });
 });
 
