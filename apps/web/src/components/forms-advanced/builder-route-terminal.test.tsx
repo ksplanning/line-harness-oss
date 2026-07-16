@@ -88,6 +88,40 @@ describe('T-B3 — submit 追加で host 自動 required 化 / 削除で復元',
   })
 })
 
+describe('F-MED-1 — submit 状態の一元化 (required 復元 / 有効 target / 重複 submit 禁止)', () => {
+  it('submit → 表示 へ action 変更で required を復元し、有効 target を設定 (save filter で消えない)', () => {
+    // submit で auto-required 化された状態を再現: host A2 は required=true・元値 terminalHostWasRequired=false。
+    const A2req: HarnessField = { id: 'A2', type: 'text', label: 'A2', required: true, position: 0, config: {} }
+    render(<FormBuilder {...base({ initialFields: [A2req, B2], initialLogic: [
+      { id: 's1', sourceFieldId: 'A2', operator: 'equals', value: '', action: 'submit', targetFieldId: '', terminalTrigger: 'on_answered', terminalHostWasRequired: false },
+    ], initialFormType: 'multi_step' })} />)
+    selectField('A2')
+    // submit 状態: host 必須 (auto=true)。
+    expect((screen.getByLabelText('必須') as HTMLInputElement).checked).toBe(true)
+    const actionSel = screen.getByLabelText('分岐アクション') as HTMLSelectElement
+    // submit → 表示(show) へ変更
+    fireEvent.change(actionSel, { target: { value: 'show' } })
+    // required は元の false へ復元
+    expect((screen.getByLabelText('必須') as HTMLInputElement).checked).toBe(false)
+    // 分岐対象 (show の target) は有効 field (空でない = save filter で消えない)
+    const tgt = screen.getByLabelText('分岐対象') as HTMLSelectElement
+    expect(tgt.value).not.toBe('')
+    expect(tgt.value).toBe('B2')
+  })
+
+  it('同一 host に 2 個目の submit を追加できない (先頭勝ち・重複禁止)', () => {
+    render(<FormBuilder {...base({ initialFields: [A2], initialLogic: [
+      { id: 's1', sourceFieldId: 'A2', operator: 'equals', value: '', action: 'submit', targetFieldId: '', terminalTrigger: 'on_answered', terminalHostWasRequired: false },
+    ], initialFormType: 'multi_step' })} />)
+    selectField('A2')
+    // 既に submit が 1 個 → 追加ボタンを押しても 2 個目は増えない
+    fireEvent.click(screen.getByText('＋「ここで送信」を追加'))
+    const actionSels = screen.getAllByLabelText('分岐アクション') as HTMLSelectElement[]
+    const submitRows = actionSels.filter((s) => s.value === 'submit')
+    expect(submitRows.length).toBe(1)
+  })
+})
+
 describe('T-B2 — lint(a/b/d) 上部 surface + 誤警告なし', () => {
   it('jump ルートを submit で閉じていない → なだれ込み警告が上部 notice に出る', () => {
     render(<FormBuilder {...base({ initialFields: abcFields, initialLogic: abcJumps, initialFormType: 'multi_step' })} />)

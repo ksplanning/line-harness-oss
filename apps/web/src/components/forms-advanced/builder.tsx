@@ -366,45 +366,62 @@ function SettingsPanel({
       { id: `r_${Math.random().toString(36).slice(2, 8)}`, sourceFieldId: field.id, operator: 'equals', value: '', action: 'show', targetFieldId: other.id },
     ])
   }
-  // route-terminal-submit (S-1 案A): 「ここで送信」rule を追加。target 空 (既定完了ページ / Phase1)。
-  //   host を自動 required 化し (元値を terminalHostWasRequired に保存)、simple なら multi_step へ切替。
-  //   入力1項目のみでも追加可能 (addRule の other-field 前提に依らない = T-B1 addRule affordance 緩和)。
+  // route-terminal-submit (F-MED-1): submit 状態遷移を一元化。
+  //   host required は「残存 submit があれば true / 無ければ元値 (terminalHostWasRequired) へ復元」で再計算する。
+  const hostHasSubmit = (list: HarnessLogicRule[]) => list.some((r) => r.sourceFieldId === field.id && r.action === 'submit')
+  const firstPageId = () => allFields.find((f) => f.type === 'page_break')?.id ?? ''
+  const firstOtherFieldId = () => allFields.find((f) => f.id !== field.id && !isDecoration(f.type))?.id ?? ''
+  // logic 差替 + required 再計算。restoreRequired = submit が host から消えた時に戻す元値。
+  const applyLogic = (nextLogic: HarnessLogicRule[], restoreRequired?: boolean) => {
+    onLogicChange(nextLogic)
+    if (hostHasSubmit(nextLogic)) { if (!field.required) set({ required: true }) }
+    else if (restoreRequired !== undefined) set({ required: restoreRequired })
+  }
+  // 「ここで送信」rule 追加 (target 空=既定完了ページ / Phase1)。**同一 host に既に submit があれば追加しない (先頭勝ち)**。
   const addSubmitRule = () => {
-    onLogicChange([
+    if (hostHasSubmit(logic)) return // 重複 submit 禁止 (F-MED-1 / T-B3 先頭勝ち)
+    applyLogic([
       ...logic,
       { id: `r_${Math.random().toString(36).slice(2, 8)}`, sourceFieldId: field.id, operator: 'equals', value: '', action: 'submit', targetFieldId: '', terminalTrigger: 'on_answered', terminalHostWasRequired: field.required },
     ])
-    if (!field.required) set({ required: true })
     if (formType !== 'multi_step') onEnsureMultiStep?.()
   }
-  // action select 変更。submit 選択時は target 空 + terminalTrigger + host required 化 (元値保存) + multi_step。
+  // action select 変更。submit 入場=正規化(空値/空target/terminalTrigger/元 required 保存)・submit 退場=terminal metadata 除去 + 有効 target 設定。
   const onActionChange = (rule: HarnessLogicRule, nextAction: HarnessLogicRule['action']) => {
-    const firstPage = allFields.find((f) => f.type === 'page_break')
+    if (nextAction === rule.action) return
+    // 重複 submit 禁止: 別 rule が既に host を submit で閉じている状態で submit へ変更しない (先頭勝ち)。
+    if (nextAction === 'submit' && logic.some((r) => r.id !== rule.id && r.sourceFieldId === field.id && r.action === 'submit')) return
     const wasRequired = field.required
-    onLogicChange(logic.map((r) => {
+    const leavingSubmit = rule.action === 'submit' && nextAction !== 'submit'
+    const nextLogic = logic.map((r) => {
       if (r.id !== rule.id) return r
       const next: HarnessLogicRule = { ...r, action: nextAction }
-      if (nextAction === 'jump' && field.type !== 'page_break') {
-        const curIsPage = allFields.some((f) => f.id === r.targetFieldId && f.type === 'page_break')
-        if (!curIsPage && firstPage) next.targetFieldId = firstPage.id
-      }
       if (nextAction === 'submit') {
         next.targetFieldId = '' // Phase1: 既定完了ページ (target 空)
         next.terminalTrigger = 'on_answered'
         if (next.terminalHostWasRequired === undefined) next.terminalHostWasRequired = wasRequired
       } else {
+        // submit / 他 action からの離脱: terminal metadata を除去し **有効 target** を設定 (target 空だと save filter で消える)。
         delete next.terminalTrigger
+        delete next.terminalHostWasRequired
+        if (nextAction === 'jump') {
+          const curIsPage = allFields.some((f) => f.id === r.targetFieldId && f.type === 'page_break')
+          next.targetFieldId = curIsPage ? r.targetFieldId : firstPageId()
+        } else {
+          const curValid = allFields.some((f) => f.id === r.targetFieldId && f.id !== field.id && !isDecoration(f.type))
+          next.targetFieldId = curValid ? r.targetFieldId : firstOtherFieldId()
+        }
       }
       return next
-    }))
+    })
     // 多層防御 (主機構): jump/submit 選択で simple なら multi_step へ自動切替 (可視通知は親が表示)。
     if ((nextAction === 'jump' || nextAction === 'submit') && formType !== 'multi_step') onEnsureMultiStep?.()
-    if (nextAction === 'submit' && !field.required) set({ required: true })
+    // required 再計算: submit 離脱時は元値復元 (残存 submit があれば applyLogic 内で true 維持)。
+    applyLogic(nextLogic, leavingSubmit ? (rule.terminalHostWasRequired ?? false) : undefined)
   }
-  // rule 削除。submit rule は host の required を元値 (terminalHostWasRequired) へ復元 (S-1 案A)。
+  // rule 削除。submit rule 削除は host の required を再計算 (残存 submit 無ければ元値へ復元)。
   const onDeleteRule = (rule: HarnessLogicRule) => {
-    onLogicChange(logic.filter((r) => r.id !== rule.id))
-    if (rule.action === 'submit' && rule.terminalHostWasRequired !== undefined) set({ required: rule.terminalHostWasRequired })
+    applyLogic(logic.filter((r) => r.id !== rule.id), rule.action === 'submit' ? (rule.terminalHostWasRequired ?? false) : undefined)
   }
 
   return (
