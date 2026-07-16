@@ -166,6 +166,49 @@ export class FormalooClient {
     }
   }
 
+  /**
+   * multipart/form-data リクエスト (form-design のカバー/ロゴ画像 upload)。既存 request と同じ
+   * bounded ガード (401 → token 1 回再取得 / 429 → backoff / 例外 → fail-soft) を持つ **additive** 経路。
+   * Content-Type は設定しない (fetch が multipart/form-data boundary を自動付与する)。
+   * 既存 JSON 経路 (request/doFetch/get/post/put/delete) は byte 不変。
+   */
+  async requestForm<T = unknown>(
+    method: string,
+    path: string,
+    form: FormData,
+  ): Promise<FormalooResult<T>> {
+    try {
+      let token = await this.getToken();
+      let res = await this.doFetchForm(method, path, token, form);
+      let did401Retry = false;
+      let rateAttempts = 0;
+
+      while (true) {
+        if (res.status === 401 && !did401Retry) {
+          did401Retry = true;
+          token = await this.getToken(true);
+          res = await this.doFetchForm(method, path, token, form);
+          continue;
+        }
+        if (res.status === 429 && rateAttempts < FORMALOO_MAX_RATE_LIMIT_RETRIES) {
+          await this.sleep(this.backoffMs(rateAttempts, res.headers.get('retry-after')));
+          rateAttempts += 1;
+          res = await this.doFetchForm(method, path, token, form);
+          continue;
+        }
+        break;
+      }
+
+      if (res.ok) {
+        const data = (await this.safeJson(res)) as T;
+        return { ok: true, status: res.status, data };
+      }
+      return { ok: false, status: res.status, error: await this.safeError(res) };
+    } catch (e) {
+      return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   private async doFetch(
     method: string,
     path: string,
@@ -180,6 +223,23 @@ export class FormalooClient {
         Authorization: `JWT ${token}`,
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  }
+
+  private async doFetchForm(
+    method: string,
+    path: string,
+    token: string,
+    form: FormData,
+  ): Promise<Response> {
+    // Content-Type は付けない (fetch が multipart/form-data の boundary を自動設定する)。
+    return this.fetchImpl(`${this.baseUrl}${path}`, {
+      method,
+      headers: {
+        'x-api-key': this.apiKey,
+        Authorization: `JWT ${token}`,
+      },
+      body: form,
     });
   }
 

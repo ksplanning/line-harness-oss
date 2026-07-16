@@ -195,3 +195,39 @@ describe('FormalooClient — token 永続化しない (M-23)', () => {
     expect([...cache.values()][0].token).toBeTruthy();
   });
 });
+
+describe('FormalooClient — requestForm (multipart / form-design 画像 upload)', () => {
+  test('FormData body を送り Content-Type: application/json を付けない (boundary は fetch 任せ)', async () => {
+    const { client, calls } = makeClient({ api: [() => jsonRes({ status: true, data: { form: { logo: 'https://s3/x.png' } } })] });
+    const form = new FormData();
+    form.append('logo', new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }), 'l.png');
+    const r = await client.requestForm('PATCH', '/v3.0/forms/abc/', form);
+    expect(r.ok).toBe(true);
+    expect(r.ok === true && (r.data as { data: { form: { logo: string } } }).data.form.logo).toBe('https://s3/x.png');
+    expect(calls.api[0].init.body).toBeInstanceOf(FormData); // JSON.stringify されていない
+    const h = new Headers(calls.api[0].init.headers);
+    expect(h.get('content-type')).toBeNull(); // multipart boundary を潰さない
+    expect(h.get('authorization')).toBe('JWT TKN');
+    expect(h.get('x-api-key')).toBe(KEY);
+  });
+
+  test('401 で token を 1 回再取得しリトライ (既存 JSON 経路と同じ bounded ガード)', async () => {
+    const { client, calls } = makeClient({
+      token: [() => tokenRes('OLD'), () => tokenRes('NEW')],
+      api: [() => jsonRes({}, 401), () => jsonRes({ status: true, data: { form: {} } })],
+    });
+    const form = new FormData();
+    form.append('background_image', new Blob([new Uint8Array([9])], { type: 'image/png' }), 'b.png');
+    const r = await client.requestForm('PATCH', '/v3.0/forms/abc/', form);
+    expect(r.ok).toBe(true);
+    expect(calls.token.length).toBe(2);
+    expect(new Headers(calls.api[1].init.headers).get('authorization')).toBe('JWT NEW');
+  });
+
+  test('ネットワーク例外は fail-soft (throw しない / N-6)', async () => {
+    const { client } = makeClient({ api: [async () => { throw new Error('mp boom'); }] });
+    const r = await client.requestForm('PATCH', '/v3.0/forms/abc/', new FormData());
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(0);
+  });
+});
