@@ -9,14 +9,14 @@ import { describe, it, expect } from 'vitest';
 import { logicFingerprint, serializeRawLogicForPush, type HarnessLogicRule } from './formaloo-forms';
 
 const rules: HarnessLogicRule[] = [
-  { id: 'r1', sourceFieldId: 'q1', operator: 'is', value: 'A', action: 'show', targetFieldId: 'q2' },
-  { id: 'r2', sourceFieldId: 'q1', operator: 'is', value: 'B', action: 'jump', targetFieldId: 'p2' },
+  { id: 'r1', sourceFieldId: 'q1', operator: 'equals', value: 'A', action: 'show', targetFieldId: 'q2' },
+  { id: 'r2', sourceFieldId: 'q1', operator: 'not_equals', value: 'B', action: 'jump', targetFieldId: 'p2' },
 ];
 const raw = [{ identifier: 'L1', title: 't', actions: [{ type: 'show', field: 'q2' }] }];
 
 describe('form-media-limits R-1 — preserve-raw / logic byte pin', () => {
   it('logicFingerprint は golden byte で不変 (① field-config 追加後も perturbation 無し)', () => {
-    expect(logicFingerprint(rules)).toMatchInlineSnapshot(`"[{"action":"show","id":"r1","operator":"is","sourceFieldId":"q1","targetFieldId":"q2","value":"A"},{"action":"jump","id":"r2","operator":"is","sourceFieldId":"q1","targetFieldId":"p2","value":"B"}]"`);
+    expect(logicFingerprint(rules)).toMatchInlineSnapshot(`"[{"action":"show","id":"r1","operator":"equals","sourceFieldId":"q1","targetFieldId":"q2","value":"A"},{"action":"jump","id":"r2","operator":"not_equals","sourceFieldId":"q1","targetFieldId":"p2","value":"B"}]"`);
   });
 
   it('serializeRawLogicForPush は raw 配列を無変換で返す (byte 保持)', () => {
