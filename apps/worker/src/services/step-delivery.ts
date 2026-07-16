@@ -287,11 +287,19 @@ async function processSingleDelivery(
   return true;
 }
 
+export function normalizeForContains(s: string): string {
+  return s.normalize('NFKC').toLowerCase();
+}
+
 export const SUPPORTED_CONDITION_TYPES = [
   'tag_exists',
   'tag_not_exists',
   'metadata_equals',
   'metadata_not_equals',
+  'metadata_contains',
+  'metadata_not_contains',
+  'tag_name_contains',
+  'tag_name_not_contains',
 ] as const;
 
 export function isSupportedConditionType(value: unknown): value is (typeof SUPPORTED_CONDITION_TYPES)[number] {
@@ -348,6 +356,49 @@ export async function evaluateCondition(
         }
         const matches = metadata[parsed.key] === parsed.value;
         return step.condition_type === 'metadata_equals' ? matches : !matches;
+      }
+      case 'metadata_contains':
+      case 'metadata_not_contains': {
+        const parsed = JSON.parse(step.condition_value) as { key?: unknown; value?: unknown };
+        if (typeof parsed.key !== 'string' || typeof parsed.value !== 'string') {
+          console.error('[scenario] malformed metadata contains condition_value');
+          return false;
+        }
+        const needleNorm = normalizeForContains(parsed.value).trim();
+        if (needleNorm === '') {
+          console.error(`[scenario] empty contains needle for condition_type: ${step.condition_type}`);
+          return false;
+        }
+        const friend = await db
+          .prepare('SELECT metadata FROM friends WHERE id = ?')
+          .bind(friendId)
+          .first<{ metadata: string }>();
+        let metadata: Record<string, unknown> = {};
+        try {
+          metadata = JSON.parse(friend?.metadata || '{}') as Record<string, unknown>;
+        } catch {
+          metadata = {};
+        }
+        const haystackValue = Object.prototype.hasOwnProperty.call(metadata, parsed.key)
+          ? metadata[parsed.key]
+          : '';
+        const haystackNorm = normalizeForContains(haystackValue === undefined ? '' : String(haystackValue));
+        const matches = haystackNorm.includes(needleNorm);
+        return step.condition_type === 'metadata_contains' ? matches : !matches;
+      }
+      case 'tag_name_contains':
+      case 'tag_name_not_contains': {
+        const needleNorm = normalizeForContains(step.condition_value).trim();
+        if (needleNorm === '') {
+          console.error(`[scenario] empty contains needle for condition_type: ${step.condition_type}`);
+          return false;
+        }
+        const tags = await db
+          .prepare('SELECT t.name AS name FROM friend_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.friend_id = ?')
+          .bind(friendId)
+          .all<{ name: string }>();
+        const matches = tags.results.some((tag) => normalizeForContains(tag.name).includes(needleNorm));
+        return step.condition_type === 'tag_name_contains' ? matches : !matches;
       }
     }
   } catch (err) {
