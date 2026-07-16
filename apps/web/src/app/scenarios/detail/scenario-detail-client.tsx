@@ -43,25 +43,36 @@ const modeBadgeStyle: Record<DeliveryMode, { bg: string; text: string; label: st
   absolute_time: { bg: 'bg-amber-50', text: 'text-amber-700', label: '時刻指定' },
 }
 
-// 分岐条件の種別。null = 条件なし（常に配信）。owner の 2 ユースケースは
-// タグ (tag_exists/tag_not_exists) と 回答 (metadata_equals/metadata_not_equals) で表現できる（spec §2.4）。
+// 分岐条件の種別。null = 条件なし（常に配信）。タグ ID の有無／タグ名の部分一致と、
+// 回答値の完全一致／部分一致をそれぞれ正負ペアで表現する（spec §2.4）。
 type BranchConditionType =
   | 'tag_exists'
   | 'tag_not_exists'
   | 'metadata_equals'
   | 'metadata_not_equals'
+  | 'tag_name_contains'
+  | 'tag_name_not_contains'
+  | 'metadata_contains'
+  | 'metadata_not_contains'
 
 const branchConditionOptions: { value: BranchConditionType; label: string }[] = [
   { value: 'tag_exists', label: 'このタグを持っている' },
   { value: 'tag_not_exists', label: 'このタグを持っていない' },
   { value: 'metadata_equals', label: '回答が次の値と一致する' },
   { value: 'metadata_not_equals', label: '回答が次の値と一致しない' },
+  { value: 'tag_name_contains', label: 'タグ名に次の文字を含む' },
+  { value: 'tag_name_not_contains', label: 'タグ名に次の文字を含まない' },
+  { value: 'metadata_contains', label: '回答・カスタム項目に次の文字を含む' },
+  { value: 'metadata_not_contains', label: '回答・カスタム項目に次の文字を含まない' },
 ]
 
 const isTagCondition = (t: BranchConditionType | null): boolean =>
   t === 'tag_exists' || t === 'tag_not_exists'
+const isTagNameContainsCondition = (t: BranchConditionType | null): boolean =>
+  t === 'tag_name_contains' || t === 'tag_name_not_contains'
 const isMetaCondition = (t: BranchConditionType | null): boolean =>
-  t === 'metadata_equals' || t === 'metadata_not_equals'
+  t === 'metadata_equals' || t === 'metadata_not_equals' ||
+  t === 'metadata_contains' || t === 'metadata_not_contains'
 
 interface StepFormState {
   stepOrder: number
@@ -74,6 +85,7 @@ interface StepFormState {
   // --- 分岐条件（slice-1）: 条件不成立時に「飛び先 step_order」へ分岐 ---
   conditionType: BranchConditionType | null
   conditionTagId: string | null        // tag 条件のとき condition_value = tag_id
+  conditionTagNameQuery: string         // tag_name_* 条件のとき condition_value = 生 needle
   conditionMetaKey: string             // metadata 条件のとき {"key","value"} の key
   conditionMetaValue: string           // metadata 条件のとき {"key","value"} の value
   nextStepOnFalse: number | null       // 不成立時のジャンプ先 step_order（前方のみ・null=順次スキップ）
@@ -90,6 +102,7 @@ function emptyStepForm(stepOrder: number): StepFormState {
     inputMode: 'direct',
     conditionType: null,
     conditionTagId: null,
+    conditionTagNameQuery: '',
     conditionMetaKey: '',
     conditionMetaValue: '',
     nextStepOnFalse: null,
@@ -303,13 +316,16 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
 
   const openEditStep = (step: ScenarioStep) => {
     const ui = uiFromOffsetMinutes(step.offsetMinutes)
-    // 分岐条件を UI 状態へ復元（condition_value を tag_id または {"key","value"} に読み解く）。
+    // 分岐条件を UI 状態へ復元（condition_value を tag_id／生 needle／{"key","value"} に読み解く）。
     const ct = (step.conditionType ?? null) as BranchConditionType | null
     let conditionTagId: string | null = null
+    let conditionTagNameQuery = ''
     let conditionMetaKey = ''
     let conditionMetaValue = ''
     if (isTagCondition(ct)) {
       conditionTagId = step.conditionValue ?? null
+    } else if (isTagNameContainsCondition(ct)) {
+      conditionTagNameQuery = step.conditionValue ?? ''
     } else if (isMetaCondition(ct)) {
       try {
         const parsed = JSON.parse(step.conditionValue ?? '{}') as { key?: unknown; value?: unknown }
@@ -333,6 +349,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       inputMode: step.templateId ? 'template' : 'direct',
       conditionType: ct,
       conditionTagId,
+      conditionTagNameQuery,
       conditionMetaKey,
       conditionMetaValue,
       nextStepOnFalse: step.nextStepOnFalse ?? null,
@@ -373,6 +390,10 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         setStepError('分岐条件の対象タグを選択してください')
         return
       }
+      if (isTagNameContainsCondition(stepForm.conditionType) && !stepForm.conditionTagNameQuery.trim()) {
+        setStepError('分岐条件のタグ名（含める文字）を入力してください')
+        return
+      }
       if (isMetaCondition(stepForm.conditionType) && !stepForm.conditionMetaKey.trim()) {
         setStepError('分岐条件の項目名（設問キー）を入力してください')
         return
@@ -399,7 +420,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
           payloadMessageContent = tpl.messageContent || ' '
         }
       }
-      // 分岐条件を DB 表現へ変換（tag → tag_id / metadata → {"key","value"} JSON）。
+      // 分岐条件を DB 表現へ変換（tag → tag_id / tag_name → 生 needle / metadata → {"key","value"} JSON）。
       // 種別なしのときは 3 列とも null を送り、既存の条件を解除する。
       let conditionType: string | null = null
       let conditionValue: string | null = null
@@ -408,7 +429,9 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         conditionType = stepForm.conditionType
         conditionValue = isTagCondition(stepForm.conditionType)
           ? stepForm.conditionTagId
-          : JSON.stringify({ key: stepForm.conditionMetaKey.trim(), value: stepForm.conditionMetaValue })
+          : isTagNameContainsCondition(stepForm.conditionType)
+            ? stepForm.conditionTagNameQuery
+            : JSON.stringify({ key: stepForm.conditionMetaKey.trim(), value: stepForm.conditionMetaValue })
         nextStepOnFalse = stepForm.nextStepOnFalse
       }
       const payload = {
@@ -1012,6 +1035,20 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                         <option key={t.id} value={t.id}>{t.name}</option>
                       ))}
                     </select>
+                  </div>
+                )}
+
+                {isTagNameContainsCondition(stepForm.conditionType) && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">タグ名に含める文字</label>
+                    <input
+                      type="text"
+                      aria-label="タグ名に含める文字"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                      placeholder="例: 購入済"
+                      value={stepForm.conditionTagNameQuery}
+                      onChange={(e) => setStepForm({ ...stepForm, conditionTagNameQuery: e.target.value })}
+                    />
                   </div>
                 )}
 

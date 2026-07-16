@@ -89,3 +89,65 @@ describe('T-A5 ステップ編集フォームの分岐欄', () => {
     )
   })
 })
+
+describe('contains 条件の分岐欄', () => {
+  it('contains 4 型が日本語で並び、tag_name_contains はテキスト入力から生文字列を保存する', async () => {
+    await openFirstStepEditor()
+
+    const typeSelect = await screen.findByLabelText('分岐条件の種類')
+    expect(within(typeSelect).getByRole('option', { name: 'タグ名に次の文字を含む' })).toHaveProperty('value', 'tag_name_contains')
+    expect(within(typeSelect).getByRole('option', { name: 'タグ名に次の文字を含まない' })).toHaveProperty('value', 'tag_name_not_contains')
+    expect(within(typeSelect).getByRole('option', { name: '回答・カスタム項目に次の文字を含む' })).toHaveProperty('value', 'metadata_contains')
+    expect(within(typeSelect).getByRole('option', { name: '回答・カスタム項目に次の文字を含まない' })).toHaveProperty('value', 'metadata_not_contains')
+
+    fireEvent.change(typeSelect, { target: { value: 'tag_name_contains' } })
+
+    const queryInput = await screen.findByLabelText('タグ名に含める文字')
+    expect(screen.queryByLabelText('分岐条件の対象タグ')).toBeNull()
+    fireEvent.change(queryInput, { target: { value: '購入済' } })
+    fireEvent.click(screen.getByRole('button', { name: '更新' }))
+
+    await waitFor(() => expect(updateStep).toHaveBeenCalled())
+    expect(updateStep).toHaveBeenCalledWith(
+      's1',
+      'st1',
+      expect.objectContaining({
+        conditionType: 'tag_name_contains',
+        conditionValue: '購入済',
+      }),
+    )
+  })
+
+  it('tag_name_contains の入力が空なら保存しない', async () => {
+    await openFirstStepEditor()
+
+    fireEvent.change(await screen.findByLabelText('分岐条件の種類'), {
+      target: { value: 'tag_name_contains' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '更新' }))
+
+    expect(await screen.findByText('分岐条件のタグ名（含める文字）を入力してください')).toBeTruthy()
+    expect(updateStep).not.toHaveBeenCalled()
+  })
+
+  it('metadata_contains は既存の項目名と値を JSON で保存する', async () => {
+    await openFirstStepEditor()
+
+    fireEvent.change(await screen.findByLabelText('分岐条件の種類'), {
+      target: { value: 'metadata_contains' },
+    })
+    fireEvent.change(await screen.findByLabelText('回答の項目名'), { target: { value: 'answer' } })
+    fireEvent.change(await screen.findByLabelText('回答の値'), { target: { value: '購入' } })
+    fireEvent.click(screen.getByRole('button', { name: '更新' }))
+
+    await waitFor(() => expect(updateStep).toHaveBeenCalled())
+    expect(updateStep).toHaveBeenCalledWith(
+      's1',
+      'st1',
+      expect.objectContaining({
+        conditionType: 'metadata_contains',
+        conditionValue: JSON.stringify({ key: 'answer', value: '購入' }),
+      }),
+    )
+  })
+})
