@@ -113,7 +113,16 @@ function PreviewField({ field, themeColor }: { field: HarnessField; themeColor: 
           </span>
         )}
       </div>
+      {/* 補足説明 (Help text) をラベル直下に表示。公開フォームでも項目の Help text として出る。 */}
+      {field.config.description && (
+        <p data-testid="preview-field-description" className="whitespace-pre-wrap text-xs text-gray-500">{field.config.description}</p>
+      )}
       <PreviewControl field={field} />
+      {/* 一行テキストの最大文字数は Formaloo 公開フォームが「N文字まで」の静的注記+超過エラーで実効する (spike 実測)。
+          入力しながら減るライブカウンターは hosted 非対応ゆえ出さない (プレビュー嘘を作らない / OD-1)。 */}
+      {field.type === 'text' && typeof field.config.maxLength === 'number' && (
+        <p className="text-xs text-gray-400">最大 {field.config.maxLength} 文字</p>
+      )}
     </div>
   )
 }
@@ -175,6 +184,7 @@ export default function FormPreview({ title, description, fields, design }: Form
           ) : (
             <p>色・フォント・ロゴは公開時に Formaloo 側のテーマで決まります。</p>
           )}
+          <p>一行テキストに最大文字数を設定すると、公開フォームには「N文字まで」の注記と超過時のエラーが出ます。入力しながら減る残り文字数カウンターは Formaloo 公開フォームには表示されません。</p>
           <p>これは見た目の確認用のプレビューです（read-only）。入力・条件分岐・送信などの実際の動作は公開フォームで動きます。</p>
         </div>
       </div>

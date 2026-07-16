@@ -155,6 +155,45 @@ describe('FormPreview — form-design 反映 (Batch D)', () => {
   })
 })
 
+describe('FormPreview — 補足説明 + 最大文字数ヒント + 縮退カウンター注記 (field-help-charlimit T-A5)', () => {
+  it('補足説明をラベルの直下に描画する', () => {
+    const fields: HarnessField[] = [
+      { id: 'phone', type: 'text', label: '電話番号', required: false, position: 0, config: { description: '例: 日中つながる番号をご記入ください' } },
+    ]
+    render(<FormPreview title="確認" fields={fields} />)
+    const node = screen.getByTestId('preview-field')
+    expect(within(node).getByText('例: 日中つながる番号をご記入ください')).toBeTruthy()
+    // ラベル (電話番号) より後・control より前に位置する (ラベル直下)
+    const text = node.textContent ?? ''
+    expect(text.indexOf('電話番号')).toBeLessThan(text.indexOf('例: 日中つながる番号'))
+  })
+
+  it('補足説明が未設定の field には説明の段落を描画しない', () => {
+    render(<FormPreview title="確認" fields={[{ id: 't', type: 'text', label: '名前', required: false, position: 0, config: {} }]} />)
+    const node = screen.getByTestId('preview-field')
+    expect(node.querySelector('[data-testid="preview-field-description"]')).toBeNull()
+  })
+
+  it('一行テキストに最大文字数を設定すると「最大 N 文字」の静的ヒントを入力欄下に描画する', () => {
+    render(<FormPreview title="確認" fields={[{ id: 't', type: 'text', label: 'お名前', required: false, position: 0, config: { maxLength: 8 } }]} />)
+    const node = screen.getByTestId('preview-field')
+    expect(within(node).getByText(/最大\s*8\s*文字/)).toBeTruthy()
+  })
+
+  it('複数行テキストは最大文字数を設定してもヒントを出さない (OD-2: hosted 非対応)', () => {
+    render(<FormPreview title="確認" fields={[{ id: 'ta', type: 'textarea', label: 'ご要望', required: false, position: 0, config: { maxLength: 8 } }]} />)
+    const node = screen.getByTestId('preview-field')
+    expect(within(node).queryByText(/最大\s*8\s*文字/)).toBeNull()
+  })
+
+  it('忠実性注記が公開フォームの実挙動 (静的注記+超過エラー / ライブカウンター無し) を正しく説明する', () => {
+    render(<FormPreview title="確認" fields={[]} />)
+    const note = screen.getByTestId('preview-fidelity-note')
+    expect(note.textContent).toContain('残り文字数')
+    expect(note.textContent).toContain('表示されません')
+  })
+})
+
 describe('FormPreview — fidelity disclosure と read-only regression (T-C5/T-C7/R-4)', () => {
   it('公開フォームとの差分を 3 点とも正直に開示する', () => {
     render(<FormPreview title="確認" fields={[]} />)
