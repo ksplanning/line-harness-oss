@@ -9,6 +9,7 @@ import {
   type FormDesignColorKey,
   type FormDesignImages,
   type FormDesignImageUpload,
+  type FormDisplayType,
 } from '@line-crm/shared'
 
 // =============================================================================
@@ -38,6 +39,11 @@ export interface DesignPanelProps {
   images: FormDesignImages
   onChange: (design: FormDesign) => void
   onImagesChange: (images: FormDesignImages) => void
+  // form-route-branching (R2): 表示形式スイッチ (simple/multi_step)。未接続 (undefined) の呼び出しでは非表示 = 後方互換。
+  formType?: FormDisplayType
+  onFormTypeChange?: (t: FormDisplayType) => void
+  /** jump rule 存在フラグ。simple へ戻す時の逆ガード警告に使う。 */
+  hasJumpRule?: boolean
 }
 
 /** 表示中の画像プレビュー URL: pending replace(dataUrl) > 既存 URL (remove 指定なら null)。 */
@@ -52,8 +58,9 @@ function colorInputValue(v: string | null | undefined): string {
   return typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v : '#FFFFFF'
 }
 
-export default function DesignPanel({ design, images, onChange, onImagesChange }: DesignPanelProps) {
+export default function DesignPanel({ design, images, onChange, onImagesChange, formType, onFormTypeChange, hasJumpRule }: DesignPanelProps) {
   const [imageError, setImageError] = useState<string | null>(null)
+  const effectiveFormType: FormDisplayType = formType ?? 'simple'
   const setColor = (key: FormDesignColorKey, value: string) => {
     // 手動で色を変えたら preset との一致は崩れる → presetId を外す。
     onChange({ ...design, [key]: value.toUpperCase(), presetId: undefined })
@@ -81,6 +88,34 @@ export default function DesignPanel({ design, images, onChange, onImagesChange }
 
   return (
     <div data-testid="design-panel" className="space-y-4 text-sm">
+      {/* form-route-branching (R2): フォーム表示形式スイッチ (先頭・色設定と区切る)。onFormTypeChange 未接続なら非表示。 */}
+      {onFormTypeChange && (
+        <div data-testid="formtype-switch" className="rounded-lg border border-gray-200 p-2.5">
+          <div className="mb-1.5 text-xs font-bold text-gray-500">フォームの表示形式</div>
+          <div className="grid grid-cols-2 gap-1 rounded-lg bg-gray-100 p-1">
+            {([['multi_step', '1問ずつ表示'], ['simple', '1画面表示']] as [FormDisplayType, string][]).map(([val, label]) => (
+              <button
+                key={val}
+                type="button"
+                data-testid={`formtype-${val}`}
+                aria-pressed={effectiveFormType === val}
+                onClick={() => onFormTypeChange(val)}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium ${effectiveFormType === val ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-gray-400">「1問ずつ表示」にすると「ページへ飛ぶ」分岐が使えます。</p>
+          {/* 逆ガード: jump rule があるのに simple を選んでいる → 動かない旨を警告 (許可はする=owner 自律尊重)。 */}
+          {hasJumpRule && effectiveFormType === 'simple' && (
+            <p data-testid="formtype-reverse-guard" role="alert" className="mt-1 text-[11px] leading-relaxed text-amber-600">
+              ⚠️ ページ移動の分岐があります。「1画面表示」ではページ移動は動作しません。
+            </p>
+          )}
+        </div>
+      )}
+
       {/* 配色プリセット (anti-generic) */}
       <div>
         <div className="mb-1.5 text-xs font-bold text-gray-500">配色プリセット</div>

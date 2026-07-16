@@ -1,6 +1,6 @@
 'use client'
 
-import type { HarnessField, FormDesign } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDisplayType } from '@line-crm/shared'
 import { fieldTypeIcon, isDecoration } from './field-types'
 
 const LINE_GREEN = '#06C755'
@@ -11,6 +11,10 @@ export interface FormPreviewProps {
   fields: HarnessField[]
   /** form-design (Batch D): テーマ色/ロゴ/カバーを反映 (未指定は従来の LINE green 既定)。 */
   design?: FormDesign
+  /** form-route-branching (R2/R5): 表示形式。multi_step 時「1問ずつ表示」注記 (Batch C 整合)。 */
+  formType?: FormDisplayType
+  /** logic (jump 注記用)。jump rule があれば「ページへ飛ぶ分岐は1問ずつ表示で動作」注記。 */
+  logic?: HarnessLogicRule[]
 }
 
 const controlClassName = 'w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500 disabled:cursor-not-allowed disabled:opacity-100'
@@ -127,7 +131,9 @@ function PreviewField({ field, themeColor }: { field: HarnessField; themeColor: 
   )
 }
 
-export default function FormPreview({ title, description, fields, design }: FormPreviewProps) {
+export default function FormPreview({ title, description, fields, design, formType, logic }: FormPreviewProps) {
+  const isMultiStep = formType === 'multi_step'
+  const hasJump = Array.isArray(logic) && logic.some((r) => r.action === 'jump')
   // form-design (Batch D): テーマ色/ロゴ/カバーを反映。未指定は従来の LINE green 既定 (後方互換)。
   const themeColor = design?.themeColor || LINE_GREEN
   const buttonColor = design?.buttonColor || LINE_GREEN
@@ -179,6 +185,13 @@ export default function FormPreview({ title, description, fields, design }: Form
 
         <div data-testid="preview-fidelity-note" className="space-y-1.5 border-t border-gray-200 bg-gray-50 px-5 py-4 text-[11px] leading-relaxed text-gray-500">
           <p>見出しや説明文も公開フォームに表示されます。</p>
+          {/* form-route-branching (R5 / Batch C 整合): 表示形式と jump の注記。 */}
+          {isMultiStep && (
+            <p data-testid="preview-multistep-note">このフォームは「1問ずつ表示」です。公開フォームでは1問ずつ順に表示されます。</p>
+          )}
+          {hasJump && (
+            <p data-testid="preview-jump-note">「ページへ飛ぶ」分岐は、公開フォーム（1問ずつ表示）でのみ動作します。</p>
+          )}
           {hasVisualDesign ? (
             <p>設定したテーマ色・ロゴ/カバーを反映しています。細かなフォント・余白は公開時に Formaloo 側で微調整されます。</p>
           ) : (

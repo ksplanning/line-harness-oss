@@ -701,6 +701,9 @@ export default function FormBuilder(props: BuilderProps) {
   }
 
   const selected = fields.find((f) => f.id === selectedId) ?? null
+  // form-route-branching: jump rule 有無 (DesignPanel 逆ガード警告の入力)。
+  const hasJumpRule = logic.some((r) => r.action === 'jump')
+  const onFormTypeSwitch = (t: FormDisplayType) => { setFormType(t); setFormTypeNotice(null) }
   // プレビューは pending 画像 (dataUrl) を即時反映する (upload 前でも見た目を確認できる)。
   const previewDesign: FormDesign = {
     ...design,
@@ -869,7 +872,7 @@ export default function FormBuilder(props: BuilderProps) {
 
         {mode !== 'desktop' && mobileTab === 'design' && (
           <div data-testid="design-pane" className="w-full rounded-xl bg-gray-50 p-3">
-            <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} />
+            <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={hasJumpRule} />
           </div>
         )}
 
@@ -882,11 +885,11 @@ export default function FormBuilder(props: BuilderProps) {
               <details data-testid="design-pane" className="rounded-lg border border-gray-200 bg-white p-3" open>
                 <summary className="cursor-pointer text-xs font-bold text-gray-500">デザイン</summary>
                 <div className="mt-3">
-                  <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} />
+                  <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={hasJumpRule} />
                 </div>
               </details>
             )}
-            <FormPreview title={title} description={description} fields={fields} design={previewDesign} />
+            <FormPreview title={title} description={description} fields={fields} design={previewDesign} formType={formType} logic={logic} />
           </div>
         )}
       </div>
