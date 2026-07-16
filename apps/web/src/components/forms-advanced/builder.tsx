@@ -24,7 +24,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { HarnessField, HarnessFieldType, HarnessLogicRule } from '@line-crm/shared'
+import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
   FIELD_CATEGORIES,
@@ -35,6 +35,7 @@ import {
   isDecoration,
 } from './field-types'
 import FormPreview from './form-preview'
+import DesignPanel from './design-panel'
 import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 
@@ -69,7 +70,9 @@ export interface BuilderProps {
   initialLogic: HarnessLogicRule[]
   /** preserve-raw: 初期 logic の fingerprint (reload→save の未編集判定用に carry / Batch 1)。 */
   initialLogicFingerprint?: string | null
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null }) => Promise<void> | void
+  /** form-design (Batch D): 初期デザイン (色/画像テーマ)。未設定は空。 */
+  initialDesign?: FormDesign
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages }) => Promise<void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
@@ -462,7 +465,7 @@ function useAutoLayoutMode(): 'mobile' | 'desktop' {
 export default function FormBuilder(props: BuilderProps) {
   const autoMode = useAutoLayoutMode()
   const mode = props.layoutMode ?? autoMode
-  const [mobileTab, setMobileTab] = useState<'edit' | 'preview'>('edit')
+  const [mobileTab, setMobileTab] = useState<'edit' | 'design' | 'preview'>('edit')
   const [fields, setFields] = useState<HarnessField[]>(props.initialFields)
   const [logic, setLogic] = useState<HarnessLogicRule[]>(props.initialLogic)
   const [title, setTitle] = useState(props.formTitle)
@@ -472,6 +475,9 @@ export default function FormBuilder(props: BuilderProps) {
   // (server-side D1 が持つ) → save で fingerprint のみ carry し route が D1 rawLogic を使う。
   const [rawLogic, setRawLogic] = useState<unknown>(undefined)
   const [logicFingerprint, setLogicFingerprint] = useState<string | null>(props.initialLogicFingerprint ?? null)
+  // form-design (Batch D): 色/画像テーマ + 画像 upload intent (keep/replace/remove)。
+  const [design, setDesign] = useState<FormDesign>(props.initialDesign ?? {})
+  const [designImages, setDesignImages] = useState<FormDesignImages>({})
   const [selectedId, setSelectedId] = useState<string | null>(props.initialFields[0]?.id ?? null)
   const [saving, setSaving] = useState(false)
   const [confirmPublish, setConfirmPublish] = useState(false)
@@ -570,7 +576,10 @@ export default function FormBuilder(props: BuilderProps) {
     setSaving(true)
     try {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
-      await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description })
+      // form-design: design(色) + designImages(画像 intent) を同梱。
+      await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages })
+      // 画像 intent は 1 回の保存で消費する (再保存で再 upload しない)。色/画像 URL は design 側に残す。
+      setDesignImages({})
     } finally {
       setSaving(false)
     }
@@ -597,6 +606,14 @@ export default function FormBuilder(props: BuilderProps) {
   }
 
   const selected = fields.find((f) => f.id === selectedId) ?? null
+  // プレビューは pending 画像 (dataUrl) を即時反映する (upload 前でも見た目を確認できる)。
+  const previewDesign: FormDesign = {
+    ...design,
+    ...(designImages.logo?.intent === 'replace' && designImages.logo.dataUrl ? { logoUrl: designImages.logo.dataUrl } : {}),
+    ...(designImages.logo?.intent === 'remove' ? { logoUrl: undefined } : {}),
+    ...(designImages.cover?.intent === 'replace' && designImages.cover.dataUrl ? { backgroundImageUrl: designImages.cover.dataUrl } : {}),
+    ...(designImages.cover?.intent === 'remove' ? { backgroundImageUrl: undefined } : {}),
+  }
   const statusLabel = props.status === 'published' ? '公開中' : props.status === 'in_review' ? 'レビュー中' : '下書き'
   const statusColor = props.status === 'published' ? LINE_GREEN : props.status === 'in_review' ? '#F59E0B' : '#9CA3AF'
 
@@ -669,7 +686,7 @@ export default function FormBuilder(props: BuilderProps) {
       </div>
 
       {mode === 'mobile' && (
-        <div className="mb-3 grid grid-cols-2 rounded-lg bg-gray-100 p-1" aria-label="ビルダー表示切替">
+        <div className="mb-3 grid grid-cols-3 rounded-lg bg-gray-100 p-1" aria-label="ビルダー表示切替">
           <button
             type="button"
             data-testid="preview-tab-edit"
@@ -678,6 +695,15 @@ export default function FormBuilder(props: BuilderProps) {
             className={`rounded-md px-3 py-2 text-sm font-medium ${mobileTab === 'edit' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
           >
             編集
+          </button>
+          <button
+            type="button"
+            data-testid="preview-tab-design"
+            aria-pressed={mobileTab === 'design'}
+            onClick={() => setMobileTab('design')}
+            className={`rounded-md px-3 py-2 text-sm font-medium ${mobileTab === 'design' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
+          >
+            デザイン
           </button>
           <button
             type="button"
@@ -733,12 +759,26 @@ export default function FormBuilder(props: BuilderProps) {
           </div>
         )}
 
+        {mode !== 'desktop' && mobileTab === 'design' && (
+          <div data-testid="design-pane" className="w-full rounded-xl bg-gray-50 p-3">
+            <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} />
+          </div>
+        )}
+
         {(mode === 'desktop' || mobileTab === 'preview') && (
           <div
             data-testid="preview-pane"
-            className={mode === 'desktop' ? 'w-[399px] shrink-0 rounded-xl bg-gray-50 p-3' : 'w-full rounded-xl bg-gray-50 p-3'}
+            className={mode === 'desktop' ? 'w-[399px] shrink-0 space-y-3 rounded-xl bg-gray-50 p-3' : 'w-full rounded-xl bg-gray-50 p-3'}
           >
-            <FormPreview title={title} description={description} fields={fields} />
+            {mode === 'desktop' && (
+              <details data-testid="design-pane" className="rounded-lg border border-gray-200 bg-white p-3" open>
+                <summary className="cursor-pointer text-xs font-bold text-gray-500">デザイン</summary>
+                <div className="mt-3">
+                  <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} />
+                </div>
+              </details>
+            )}
+            <FormPreview title={title} description={description} fields={fields} design={previewDesign} />
           </div>
         )}
       </div>

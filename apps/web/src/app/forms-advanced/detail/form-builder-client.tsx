@@ -8,7 +8,7 @@ import SharePanel from '@/components/forms-advanced/share-panel'
 import { formsAdvancedApi, type AdvancedForm, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
-import type { HarnessField, HarnessLogicRule } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages } from '@line-crm/shared'
 
 // F-2/F-5 フォームビルダー本体。id は detail/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
 export default function FormBuilderClient({ id }: { id: string }) {
@@ -57,9 +57,10 @@ export default function FormBuilderClient({ id }: { id: string }) {
     }
   }
 
-  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null }) => {
+  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages }) => {
     try {
       // preserve-raw: builder が carry した rawLogic + logicFingerprint をそのまま save body へ渡す。
+      // form-design: design(色) + designImages(画像 intent) も同梱される。
       const updated = await formsAdvancedApi.saveDefinition(id, def)
       setForm(updated)
       await loadShare()
@@ -126,6 +127,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialFields={form.fields}
             initialLogic={form.logic}
             initialLogicFingerprint={form.logicFingerprint}
+            initialDesign={form.design ?? undefined}
             syncStatus={form.syncStatus}
             driftStatus={form.driftStatus}
             publicUrl={form.publicUrl}

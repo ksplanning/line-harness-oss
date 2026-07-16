@@ -679,3 +679,45 @@ describe('FormBuilder — preview layout mode (T-C4)', () => {
     expect(screen.queryByTestId('preview-pane')).toBeNull()
   })
 })
+
+describe('FormBuilder — form-design (Batch D)', () => {
+  it('mobile は 編集/デザイン/プレビュー の 3 タブで、デザインタブでパネルを出す', () => {
+    render(<FormBuilder {...base({ layoutMode: 'mobile' })} />)
+    expect(screen.getByTestId('preview-tab-edit')).toBeTruthy()
+    expect(screen.getByTestId('preview-tab-design')).toBeTruthy()
+    expect(screen.getByTestId('preview-tab-preview')).toBeTruthy()
+    // 初期は編集タブ (design pane 非表示)
+    expect(screen.queryByTestId('design-pane')).toBeNull()
+    fireEvent.click(screen.getByTestId('preview-tab-design'))
+    expect(screen.getByTestId('design-pane')).toBeTruthy()
+    expect(screen.getByTestId('design-panel')).toBeTruthy()
+  })
+
+  it('desktop はデザインパネルを常設し、initialDesign を保存で carry する', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ layoutMode: 'desktop', initialDesign: { themeColor: '#06C755', presetId: 'line-green' }, onSave })} />)
+    expect(screen.getByTestId('design-panel')).toBeTruthy()
+    fireEvent.click(screen.getByText('保存'))
+    const saved = onSave.mock.calls[0][0] as { design?: { themeColor?: string }; designImages?: unknown }
+    expect(saved.design?.themeColor).toBe('#06C755')
+  })
+
+  it('プリセット適用 → 保存で preset の配色を design に載せる', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ layoutMode: 'desktop', onSave })} />)
+    fireEvent.click(screen.getByTestId('preset-deep-tide'))
+    fireEvent.click(screen.getByText('保存'))
+    const saved = onSave.mock.calls[0][0] as { design?: { presetId?: string; themeColor?: string } }
+    expect(saved.design?.presetId).toBe('deep-tide')
+    expect(saved.design?.themeColor).toBe('#285C66')
+  })
+
+  it('プレビューが design の色を反映する (desktop)', () => {
+    render(<FormBuilder {...base({ layoutMode: 'desktop', formTitle: '色確認', initialDesign: { themeColor: '#285C66', buttonColor: '#327682' } })} />)
+    const pane = screen.getByTestId('preview-pane')
+    const header = within(pane).getByTestId('preview-frame').querySelector('header') as HTMLElement
+    // themeColor が header の border-top に反映 (hex or rgb)
+    const rgb = 'rgb(40, 92, 102)'
+    expect(header.style.borderTopColor === '#285C66' || header.style.borderTopColor === rgb).toBe(true)
+  })
+})
