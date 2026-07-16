@@ -1,5 +1,5 @@
 import { fetchApi, downloadCsv } from './api'
-import type { HarnessField, HarnessLogicRule } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages } from '@line-crm/shared'
 
 // =============================================================================
 // 高機能フォーム (Formaloo-backed) API クライアント (F-2 / T-B1)。fetchApi 経由 (cookie 認証 + CSRF)。
@@ -29,6 +29,8 @@ export interface AdvancedForm {
   // preserve-raw (formaloo-logic-fidelity Batch 1): 未編集判定用 fingerprint。rawLogic 逐語は server-side 保持
   // (reload→save は route が D1 の rawLogic を使う)。builder は save で fingerprint を carry する。
   logicFingerprint?: string | null
+  // form-design (Batch D): 色/画像テーマ (builder の initialDesign / プレビュー反映用)。未設定は null。
+  design?: FormDesign | null
   // F6-2 表示スコープ: lineAccountId は全 role 露出 / workspaceId は owner 応答のみ (非 owner は不在)。
   lineAccountId: string | null
   workspaceId?: string | null
@@ -52,6 +54,8 @@ export interface PulledDefinition {
   // preserve-raw: builder が opaque 保持し save で carry する (未編集 push で欠けなく再送)。
   rawLogic?: unknown
   logicFingerprint?: string | null
+  // form-design (Batch D): Formaloo 側の色/画像テーマを builder へ復元。
+  design?: FormDesign
 }
 
 // preserve-raw: save body に carry する logic メタ (未編集判定 + verbatim 再送素材)。
@@ -62,6 +66,9 @@ export interface SaveDefinitionBody {
   logicFingerprint?: string | null
   title?: string
   description?: string | null
+  // form-design (Batch D): 色 (canonical hex) + 画像 upload intent (keep/replace/remove)。
+  design?: FormDesign
+  designImages?: FormDesignImages
 }
 
 export const formsAdvancedApi = {
