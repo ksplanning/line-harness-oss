@@ -64,6 +64,12 @@ export interface HarnessFieldConfig {
   allowMultipleFiles?: boolean;
   /** file: 許可拡張子 (R3 / 拡張子文字列の配列)。 */
   allowedExtensions?: string[];
+  /**
+   * file: 最大アップロードサイズ (Formaloo `max_size` / KB 単位・form-media-limits ①)。
+   * 既定 2048(=2MB) は「未設定」扱い: pull/push/fingerprint で 2048 を落とし既存フォームの byte 不変を保つ
+   * (後方互換の要 / RK-1)。validate で [256,102400]KB にクランプ (spike 実測 API 受理上限 102400KB=100MB)。
+   */
+  maxSizeKb?: number;
   /** section の本文=description */
   text?: string;
   /** 入力項目の補足説明 (Help text / Formaloo field description)。全入力型で表示。section 本文(text)とは別欄。 */
@@ -240,6 +246,12 @@ export function validateHarnessField(
     if (!Array.isArray(rawCfg.allowedExtensions) || !rawCfg.allowedExtensions.every((c) => typeof c === 'string')) return { ok: false, error: 'config.allowedExtensions must be string[]' };
     config.allowedExtensions = [...rawCfg.allowedExtensions];
   }
+  if (rawCfg.maxSizeKb !== undefined) {
+    // form-media-limits ①: 非 number/非有限は reject (M-21 未知プロパティ素通し禁止)。範囲外は clamp (owner 誤入力で
+    // 保存を壊さない / reject でなく丸め)。下限 256KB・上限 102400KB (spike 実測 API 受理上限 100MB)。
+    if (typeof rawCfg.maxSizeKb !== 'number' || !Number.isFinite(rawCfg.maxSizeKb)) return { ok: false, error: 'config.maxSizeKb must be a number' };
+    config.maxSizeKb = Math.min(102400, Math.max(256, Math.round(rawCfg.maxSizeKb)));
+  }
   if (rawCfg.text !== undefined) {
     if (typeof rawCfg.text !== 'string') return { ok: false, error: 'config.text must be string' };
     config.text = rawCfg.text;
@@ -299,6 +311,8 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
   if (c.choices !== undefined) p.choice_items = c.choices.map((title) => ({ title }));
   if (c.allowMultipleFiles !== undefined) p.allow_multiple_files = c.allowMultipleFiles;
   if (c.allowedExtensions !== undefined) p.allowed_extensions = [...c.allowedExtensions];
+  // form-media-limits ①: max_size は設定時のみ送る (未設定は既存 push byte 不変 / idempotent-push 整合 = RK-2)。
+  if (c.maxSizeKb !== undefined) p.max_size = c.maxSizeKb;
   return p;
 }
 
@@ -357,6 +371,8 @@ export function fromFormalooField(
   if (Array.isArray(o.allowed_extensions) && o.allowed_extensions.every((e) => typeof e === 'string')) {
     config.allowedExtensions = [...(o.allowed_extensions as string[])];
   }
+  // form-media-limits ①: max_size を pull。既定 2048(=2MB) と未載は set しない (既存フォーム pull 不変 = 後方互換ガード / RK-1)。
+  if (typeof o.max_size === 'number' && Number.isFinite(o.max_size) && o.max_size !== 2048) config.maxSizeKb = o.max_size;
   if (type === 'choice' || type === 'dropdown' || type === 'multiple_select') {
     const rawItems = Array.isArray(o.choice_items) ? (o.choice_items as unknown[]) : [];
     const sorted = rawItems
