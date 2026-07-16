@@ -79,8 +79,11 @@ export interface HarnessField {
   config: HarnessFieldConfig;
 }
 
-/** 条件分岐アクション (R1)。 */
-export type LogicAction = 'show' | 'hide' | 'skip';
+/** 条件分岐アクション (R1)。
+ * 'jump' = 指定ページ (page_break) へ丸ごと飛ぶ真のルート分岐 (form-route-branching / multi_step でのみ発火)。
+ * 'skip' = レガシー射影名 (旧 UI で jump/jump_to_success_page を 'skip' に丸めていた) / 後方互換で残置。
+ */
+export type LogicAction = 'show' | 'hide' | 'jump' | 'skip';
 export type LogicOperator = 'equals' | 'not_equals';
 
 // ─── R0 実測: Formaloo logic の実 operator / action 語彙 (formaloo-logic-fidelity Batch 0 spike) ───
@@ -505,12 +508,16 @@ export function fromFormalooRawLogic(
     n += 1;
     const flatOperator: LogicOperator =
       cond0.operator === 'is_not' || cond0.operator === 'not_equals' ? 'not_equals' : 'equals';
+    // 射影 (form-route-branching R1): jump/jump_to_success_page → 'jump' 正規表示。
+    // 'skip' は旧射影名としてレガシー互換で残す (未知動詞→'show')。
     const flatAction: LogicAction =
       act0.action === 'hide'
         ? 'hide'
-        : act0.action === 'jump' || act0.action === 'jump_to_success_page' || act0.action === 'skip'
-          ? 'skip'
-          : 'show';
+        : act0.action === 'jump' || act0.action === 'jump_to_success_page'
+          ? 'jump'
+          : act0.action === 'skip'
+            ? 'skip'
+            : 'show';
     const rule: HarnessLogicRule = {
       id: `r${n}`,
       sourceFieldId: cond0.sourceFieldId,
