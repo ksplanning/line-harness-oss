@@ -8,7 +8,7 @@ import SharePanel from '@/components/forms-advanced/share-panel'
 import { formsAdvancedApi, type AdvancedForm, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
-import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType } from '@line-crm/shared'
 
 // F-2/F-5 フォームビルダー本体。id は detail/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
 export default function FormBuilderClient({ id }: { id: string }) {
@@ -57,10 +57,10 @@ export default function FormBuilderClient({ id }: { id: string }) {
     }
   }
 
-  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages }) => {
+  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType }) => {
     try {
       // preserve-raw: builder が carry した rawLogic + logicFingerprint をそのまま save body へ渡す。
-      // form-design: design(色) + designImages(画像 intent) も同梱される。
+      // form-design: design(色) + designImages(画像 intent) / form-route-branching: formType も同梱される。
       const updated = await formsAdvancedApi.saveDefinition(id, def)
       setForm(updated)
       await loadShare()
@@ -68,7 +68,8 @@ export default function FormBuilderClient({ id }: { id: string }) {
       // F1: 画像同期失敗など out_of_sync 時は syncError を honest に表示 (silent success にしない)。
       setNotice(synced ? '保存しました' : (updated.syncError ?? '保存しました（Formaloo 未接続のためローカル保存）'))
       // F3: builder に確定結果を返す (ok=完全同期時のみ pending 画像 intent を消費 / design=新 S3 URL 含む)。
-      return { ok: synced, design: updated.design ?? undefined }
+      //     form-route-branching: jump+simple backstop 等の非ブロッキング警告も返す。
+      return { ok: synced, design: updated.design ?? undefined, warnings: updated.warnings }
     } catch (e) {
       const body = (e as { body?: { error?: string } })?.body
       setNotice(body?.error ?? '保存に失敗しました')
@@ -133,6 +134,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialLogic={form.logic}
             initialLogicFingerprint={form.logicFingerprint}
             initialDesign={form.design ?? undefined}
+            initialFormType={form.formType ?? undefined}
             syncStatus={form.syncStatus}
             driftStatus={form.driftStatus}
             publicUrl={form.publicUrl}

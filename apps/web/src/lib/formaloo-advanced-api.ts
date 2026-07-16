@@ -1,5 +1,5 @@
 import { fetchApi, downloadCsv } from './api'
-import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType } from '@line-crm/shared'
 
 // =============================================================================
 // 高機能フォーム (Formaloo-backed) API クライアント (F-2 / T-B1)。fetchApi 経由 (cookie 認証 + CSRF)。
@@ -31,6 +31,10 @@ export interface AdvancedForm {
   logicFingerprint?: string | null
   // form-design (Batch D): 色/画像テーマ (builder の initialDesign / プレビュー反映用)。未設定は null。
   design?: FormDesign | null
+  // form-route-branching (R2): 表示形式 (builder の initialFormType)。未設定は null。
+  formType?: FormDisplayType | null
+  // form-route-branching: save 応答の非ブロッキング警告 (jump+simple backstop 等)。envelope top-level から搬送。
+  warnings?: string[]
   // F6-2 表示スコープ: lineAccountId は全 role 露出 / workspaceId は owner 応答のみ (非 owner は不在)。
   lineAccountId: string | null
   workspaceId?: string | null
@@ -43,6 +47,8 @@ interface Envelope<T> {
   success: boolean
   data: T
   error?: string
+  // form-route-branching: 非ブロッキング警告 (save 応答の top-level)。
+  warnings?: string[]
 }
 
 // N-8 pull: 再取り込み結果。ok は「builder に適用してよいか」の判別子 (ok:false は note のみ表示 / B2)。
@@ -56,6 +62,8 @@ export interface PulledDefinition {
   logicFingerprint?: string | null
   // form-design (Batch D): Formaloo 側の色/画像テーマを builder へ復元。
   design?: FormDesign
+  // form-route-branching (R2): Formaloo 側の表示形式を builder へ復元。
+  formType?: FormDisplayType
 }
 
 // preserve-raw: save body に carry する logic メタ (未編集判定 + verbatim 再送素材)。
@@ -69,6 +77,8 @@ export interface SaveDefinitionBody {
   // form-design (Batch D): 色 (canonical hex) + 画像 upload intent (keep/replace/remove)。
   design?: FormDesign
   designImages?: FormDesignImages
+  // form-route-branching (R2): 表示形式 (simple/multi_step)。
+  formType?: FormDisplayType
 }
 
 export const formsAdvancedApi = {
@@ -95,12 +105,12 @@ export const formsAdvancedApi = {
     ).data
   },
   async saveDefinition(id: string, def: SaveDefinitionBody): Promise<AdvancedForm> {
-    return (
-      await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(def),
-      })
-    ).data
+    const env = await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(def),
+    })
+    // form-route-branching: envelope top-level の warnings (jump+simple backstop 等) を form に搬送 (builder が surface)。
+    return env.warnings && env.warnings.length ? { ...env.data, warnings: env.warnings } : env.data
   },
   // N-8: Formaloo から定義を再取り込み (pull / 非破壊)。ok===true の時だけ builder に反映する。
   async reimport(id: string): Promise<PulledDefinition> {
