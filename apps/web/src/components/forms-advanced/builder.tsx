@@ -72,12 +72,14 @@ export interface BuilderProps {
   initialLogicFingerprint?: string | null
   /** form-design (Batch D): 初期デザイン (色/画像テーマ)。未設定は空。 */
   initialDesign?: FormDesign
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages }) => Promise<void> | void
+  // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
+  //     void 返却 (throw/legacy) は「未確定」= pending 画像 intent を保持する。
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages }) => Promise<{ ok: boolean; design?: FormDesign } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
-  /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。 */
-  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null } | null>
+  /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。design も復元 (F2)。 */
+  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null; design?: FormDesign } | null>
   publicUrl?: string | null
   embedCode?: string | null
   syncStatus?: string
@@ -577,9 +579,13 @@ export default function FormBuilder(props: BuilderProps) {
     try {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
-      await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages })
-      // 画像 intent は 1 回の保存で消費する (再保存で再 upload しない)。色/画像 URL は design 側に残す。
-      setDesignImages({})
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages })
+      // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
+      if (result && typeof result === 'object') {
+        if (result.design) setDesign(result.design)
+        // 画像 intent の消費は「完全同期(ok)」時のみ。soft-fail(out_of_sync)/throw は pending file を保持し再試行可能に。
+        if (result.ok) setDesignImages({})
+      }
     } finally {
       setSaving(false)
     }
@@ -599,6 +605,9 @@ export default function FormBuilder(props: BuilderProps) {
         // preserve-raw: pull の rawLogic + fingerprint を保持 (次の save で未編集なら verbatim 再送)。
         setRawLogic(d.rawLogic)
         setLogicFingerprint(d.logicFingerprint ?? null)
+        // F2: pull した design を復元し、pending 画像 intent を破棄 (再取り込み後に stale design で上書きしない)。
+        setDesign(d.design ?? {})
+        setDesignImages({})
       }
     } finally {
       setReimporting(false)

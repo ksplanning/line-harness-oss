@@ -720,4 +720,42 @@ describe('FormBuilder — form-design (Batch D)', () => {
     const rgb = 'rgb(40, 92, 102)'
     expect(header.style.borderTopColor === '#285C66' || header.style.borderTopColor === rgb).toBe(true)
   })
+
+  it('F2: 再取り込みが pull design を復元し、次 save で pull design を送る', async () => {
+    const onSave = vi.fn(async () => ({ ok: true }))
+    const onReimport = vi.fn(async () => ({ ok: true, fields: [], logic: [], design: { themeColor: '#7D4E72', presetId: 'soft-plum' } }))
+    render(<FormBuilder {...base({ layoutMode: 'desktop', onSave, onReimport, initialDesign: { themeColor: '#06C755', presetId: 'line-green' } })} />)
+    fireEvent.click(screen.getByText('Formaloo から再取り込み'))
+    fireEvent.click(screen.getByText('はい'))
+    await waitFor(() => expect(onReimport).toHaveBeenCalled())
+    fireEvent.click(screen.getByText('保存'))
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    const saved = onSave.mock.calls[0][0] as { design?: { themeColor?: string } }
+    expect(saved.design?.themeColor).toBe('#7D4E72') // stale #06C755 でなく pull 値
+  })
+
+  it('F3: soft-fail(out_of_sync) 後も pending 画像 intent を保持し再送する', async () => {
+    const onSave = vi.fn(async () => ({ ok: false })) // soft-fail
+    render(<FormBuilder {...base({ layoutMode: 'desktop', onSave })} />)
+    const file = new File([new Uint8Array([1, 2, 3])], 'l.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText('ロゴを選ぶ'), { target: { files: [file] } })
+    await waitFor(() => expect(screen.getByTestId('image-preview-logo')).toBeTruthy())
+    fireEvent.click(screen.getByText('保存'))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect((onSave.mock.calls[0][0] as { designImages?: { logo?: { intent?: string } } }).designImages?.logo?.intent).toBe('replace')
+    // soft-fail なので pending は消費されず 2 回目 save でも再送される
+    fireEvent.click(screen.getByText('保存'))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    expect((onSave.mock.calls[1][0] as { designImages?: { logo?: { intent?: string } } }).designImages?.logo?.intent).toBe('replace')
+  })
+
+  it('F3: 成功 save は返却 design(新 S3 URL)を adopt し 2 連続 save で旧値へ revert しない', async () => {
+    const onSave = vi.fn(async () => ({ ok: true, design: { logoUrl: 'https://s3/NEW.png' } }))
+    render(<FormBuilder {...base({ layoutMode: 'desktop', initialDesign: { logoUrl: 'https://s3/OLD.png' }, onSave })} />)
+    fireEvent.click(screen.getByText('保存'))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByText('保存'))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    expect((onSave.mock.calls[1][0] as { design?: { logoUrl?: string } }).design?.logoUrl).toBe('https://s3/NEW.png')
+  })
 })

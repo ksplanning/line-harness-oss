@@ -64,10 +64,15 @@ export default function FormBuilderClient({ id }: { id: string }) {
       const updated = await formsAdvancedApi.saveDefinition(id, def)
       setForm(updated)
       await loadShare()
-      setNotice(updated.syncStatus === 'out_of_sync' ? '保存しました（Formaloo 未接続のためローカル保存）' : '保存しました')
+      const synced = updated.syncStatus !== 'out_of_sync'
+      // F1: 画像同期失敗など out_of_sync 時は syncError を honest に表示 (silent success にしない)。
+      setNotice(synced ? '保存しました' : (updated.syncError ?? '保存しました（Formaloo 未接続のためローカル保存）'))
+      // F3: builder に確定結果を返す (ok=完全同期時のみ pending 画像 intent を消費 / design=新 S3 URL 含む)。
+      return { ok: synced, design: updated.design ?? undefined }
     } catch (e) {
       const body = (e as { body?: { error?: string } })?.body
       setNotice(body?.error ?? '保存に失敗しました')
+      // throw 経路は void 返却 = builder は pending 画像 intent を保持し再試行可能。
     }
   }
 
