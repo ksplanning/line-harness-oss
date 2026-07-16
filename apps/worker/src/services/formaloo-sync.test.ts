@@ -13,6 +13,7 @@ import type { HarnessField, HarnessLogicRule } from '@line-crm/shared';
 function mockClient(script: {
   post?: Array<() => FormalooResult>;
   put?: Array<() => FormalooResult>;
+  request?: Array<() => FormalooResult>;
 }) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
   const client = {
@@ -24,6 +25,12 @@ function mockClient(script: {
     async put<T>(path: string, body?: unknown): Promise<FormalooResult<T>> {
       calls.push({ method: 'PUT', path, body });
       const next = script.put?.shift();
+      return (next ? next() : { ok: true, status: 200, data: {} }) as FormalooResult<T>;
+    },
+    // form-route-branching T-C1: logic push は client.request('PATCH', ...) 経由 (bare-array)。
+    async request<T>(method: string, path: string, body?: unknown): Promise<FormalooResult<T>> {
+      calls.push({ method, path, body });
+      const next = script.request?.shift();
       return (next ? next() : { ok: true, status: 200, data: {} }) as FormalooResult<T>;
     },
   } as unknown as import('./formaloo-client').FormalooClient;
@@ -66,11 +73,47 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
     // 旧 `choices: string[]` は実 API に無視され選択肢が落ちていた (silent data loss / latent defect 回帰ガード)。
     expect(calls[2].body).toMatchObject({ form: 'FORMSLUG', type: 'choice', title: '性別', choice_items: [{ title: '男' }, { title: '女' }] });
     expect((calls[2].body as Record<string, unknown>).choices).toBeUndefined();
-    // logic は Formaloo slug ベース (harness id でなく FS1/FS2)
-    const putCall = calls.find((c) => c.method === 'PUT')!;
-    const body = putCall.body as { logic: { rules: Array<{ conditions: Array<{ field: string }>; actions: Array<{ field: string }> }> } };
-    expect(body.logic.rules[0].conditions[0].field).toBe('FS2');
-    expect(body.logic.rules[0].actions[0].field).toBe('FS1');
+    // form-route-branching T-C1: 編集 logic は R0 bare-array を PATCH で送る (旧 PUT {logic:{rules}} は本番 500)。
+    expect(calls.some((c) => c.method === 'PUT' && c.path === '/v3.0/forms/FORMSLUG/')).toBe(false);
+    const patchCall = calls.find((c) => c.method === 'PATCH' && c.path === '/v3.0/forms/FORMSLUG/')!;
+    const arr = (patchCall.body as { logic: unknown[] }).logic;
+    // R0 item: source(FS2) identifier / actions.args identifier=target(FS1) / when.args value=source(FS2)
+    expect(arr).toEqual([
+      {
+        type: 'field', identifier: 'FS2',
+        actions: [
+          {
+            action: 'show',
+            args: [{ type: 'field', identifier: 'FS1' }],
+            // h2 は choice だが新規 form で choiceItems 無 (case-b) → constant 近似
+            when: { operation: 'is', args: [{ type: 'field', value: 'FS2' }, { type: 'constant', value: '男' }] },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test('T-C1: choice source が choiceItems を持つ既存 form → PATCH bare-array の when を {type:choice,value:slug} で生成 (fieldby 経由 / hosted 発火)', async () => {
+    const choiceSrc: HarnessField = {
+      id: 'q1', type: 'choice', label: 'ルート', required: true, position: 0,
+      config: { choices: ['A', 'C'], choiceItems: [{ title: 'A', slug: 'ciA' }, { title: 'C', slug: 'ciC' }] },
+    };
+    const pageC: HarnessField = { id: 'p3', type: 'page_break', label: '', required: false, position: 1, config: {} };
+    const jumpLogic: HarnessLogicRule[] = [
+      { id: 'r1', sourceFieldId: 'q1', operator: 'equals', value: 'C', action: 'jump', targetFieldId: 'p3' },
+    ];
+    const { client, calls } = mockClient({});
+    const r = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'EXIST', title: 't', fields: [choiceSrc, pageC], logic: jumpLogic,
+      existingFieldSlugs: { q1: 'FSq1', p3: 'FSp3' },
+    });
+    expect(r.ok).toBe(true);
+    const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/v3.0/forms/EXIST/')!;
+    const arr = (patch.body as { logic: any[] }).logic;
+    expect(arr[0].actions[0].action).toBe('jump');
+    expect(arr[0].actions[0].args).toEqual([{ type: 'field', identifier: 'FSp3' }]);
+    // rule.value 'C' → choiceItems の slug 'ciC' に写像され choice operand で発火
+    expect(arr[0].actions[0].when.args[1]).toEqual({ type: 'choice', value: 'ciC' });
   });
 
   test('description が明示された初回保存は form POST に title+description を送る (T-B12)', async () => {

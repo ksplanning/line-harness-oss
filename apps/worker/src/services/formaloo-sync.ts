@@ -1,6 +1,6 @@
 import {
   toFormalooFieldPayload,
-  toFormalooLogic,
+  toFormalooRawLogic,
   serializeRawLogicForPush,
   type HarnessField,
   type HarnessLogicRule,
@@ -141,14 +141,17 @@ export async function pushDefinitionToFormaloo(
   // 3) logic を保存。field upsert (step1-2) は不可侵 (冪等 push / L-1)。ここだけ logic 経路。
   //    (a) preserve-raw (未編集の実 Formaloo logic) あり → R0 実測の PATCH で bare array を verbatim 再送
   //        (compound/calc/variable/jump を欠けなく保持。往復不変の芯)。
-  //    (b) 無し + ハーネス発案 logic あり → 従来の PUT {logic:{rules}} (byte 不変 / 既存テスト green)。
+  //    (b) 無し + ハーネス発案/編集 logic あり → form-route-branching T-C1: R0 bare-array を PATCH で送る
+  //        (旧 PUT {logic:{rules}} は spike T-A0 実測で本番 500 = latent-500。jump 有効化の前提)。
   const preserveArray = serializeRawLogicForPush(params.preserveRawLogic);
   if (preserveArray) {
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: preserveArray });
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic push failed: HTTP ${res.status}` };
   } else if (params.logic.length > 0) {
-    const logicObj = toFormalooLogic(params.logic, (hid) => fieldSlugs[hid]);
-    const res = await client.put(`/v3.0/forms/${slug}/`, { logic: logicObj });
+    // choice source の choice_slug 解決のため fieldById (params.fields) を渡す。src/tgt slug は fieldSlugs で解決。
+    const fieldById = (hid: string): HarnessField | undefined => params.fields.find((f) => f.id === hid);
+    const logicArray = toFormalooRawLogic(params.logic, (hid) => fieldSlugs[hid], fieldById);
+    const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: logicArray });
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic push failed: HTTP ${res.status}` };
   }
 

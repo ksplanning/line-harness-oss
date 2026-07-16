@@ -64,7 +64,7 @@ describe('pushDefinitionToFormaloo — preserve-raw (D-5 push)', () => {
     expect((logicCall!.body as { logic: unknown[] }).logic).toEqual([]);
   });
 
-  test('preserveRawLogic 無し + ハーネス発案 logic → 従来 PUT {logic:{rules}} (byte 不変)', async () => {
+  test('preserveRawLogic 無し + ハーネス編集 logic → R0 bare-array PATCH (T-C1 latent-500 是正 / 旧 PUT 廃止)', async () => {
     const { client, calls } = mock(({ method, path }) => {
       if (method === 'POST' && path === '/v3.0/forms/') return { ok: true, status: 201, data: { data: { form: { slug: 'NF' } } } };
       if (method === 'POST' && path === '/v3.0/fields/') return { ok: true, status: 201, data: { data: { field: { slug: 'FSx' } } } };
@@ -72,10 +72,13 @@ describe('pushDefinitionToFormaloo — preserve-raw (D-5 push)', () => {
     });
     const r = await pushDefinitionToFormaloo(client, { formalooSlug: null, title: 't', fields: [textField], logic: harnessLogic });
     expect(r.ok).toBe(true);
-    const put = calls.find((c) => c.method === 'PUT' && c.path === '/v3.0/forms/NF/');
-    expect(put).toBeDefined();
-    expect((put!.body as { logic: { rules: unknown[] } }).logic.rules).toHaveLength(1); // 従来 {rules} 形
-    expect(calls.some((c) => c.method === 'PATCH' && c.path === '/v3.0/forms/NF/')).toBe(false);
+    // 旧 PUT {logic:{rules}} は使わない (R0: 本番 500)
+    expect(calls.some((c) => c.method === 'PUT' && c.path === '/v3.0/forms/NF/')).toBe(false);
+    const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/v3.0/forms/NF/');
+    expect(patch).toBeDefined();
+    const arr = (patch!.body as { logic: unknown[] }).logic;
+    expect(Array.isArray(arr)).toBe(true); // bare array 形
+    expect(arr).toHaveLength(1);
   });
 
   test('preserve でも field upsert (step1-2) は不可侵: 既存 slug は PATCH /v3.0/fields/{slug}/ + choice_items 除外', async () => {
