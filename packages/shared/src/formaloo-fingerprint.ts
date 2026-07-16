@@ -39,6 +39,8 @@ export interface ProjectedField {
   title: string;
   required: boolean;
   position: number;
+  /** 入力項目の補足説明 (Help text)。非空時のみ射影 (既存 field は description 無/空 → 射影不変 = false-drift 回避)。 */
+  description?: string;
   max_length?: number;
   min_length?: number;
   allow_multiple_files?: boolean;
@@ -68,6 +70,9 @@ function projectField(el: unknown): ProjectedField | null {
     required: o.required === true,
     position: typeof o.position === 'number' ? o.position : 0,
   };
+  // 入力項目の補足説明を射影に含める (変換器 fromFormalooField の読取集合と一致)。
+  // 非空ガード: description 無/空の既存 field は key を持たず fingerprint byte 不変 (false-drift 回避 / S-2)。
+  if (typeof o.description === 'string' && o.description) proj.description = o.description;
   if (typeof o.max_length === 'number' && Number.isFinite(o.max_length)) proj.max_length = o.max_length;
   if (typeof o.min_length === 'number' && Number.isFinite(o.min_length)) proj.min_length = o.min_length;
   if (typeof o.allow_multiple_files === 'boolean') proj.allow_multiple_files = o.allow_multiple_files;

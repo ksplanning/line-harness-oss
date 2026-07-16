@@ -153,6 +153,25 @@ describe('formalooDefinitionFingerprint — (d) logic 側 drift 検知', () => {
   });
 });
 
+describe('formalooDefinitionFingerprint — 入力項目 description 射影 (field-help-charlimit T-A2)', () => {
+  // T-A1 land 前に現行コードで計測した description-less short_text field の baseline hash。
+  // description 射影を非空ガード付きで追加しても、この既存 field の fingerprint は byte 不変であること (後方互換の要 / S-2)。
+  const BASELINE_NODESC = 'f8797375fbbd9f552cfc08be06d39183c065f2e1498ceebdd60736a85276515c';
+
+  it('description 設定 field で hash が変わる (drift 検知)', async () => {
+    expect(await fp([rawField({ description: '補足説明あり' })])).not.toBe(await fp([rawField()]));
+  });
+  it('description 未設定の既存 field は fingerprint が本変更前と byte 不変 (S-2 後方互換)', async () => {
+    expect(await fp([rawField()])).toBe(BASELINE_NODESC);
+  });
+  it('空文字 description は射影に入れない (非空ガード) → 未設定と同一 hash (false-drift 回避)', async () => {
+    expect(await fp([rawField({ description: '' })])).toBe(BASELINE_NODESC);
+  });
+  it('description 変更で hash が変わる (異なる補足説明 = 別 fingerprint)', async () => {
+    expect(await fp([rawField({ description: 'A' })])).not.toBe(await fp([rawField({ description: 'B' })]));
+  });
+});
+
 describe('canonicalDefinitionProjection — (e) field_map 非依存 (raw slug のみ)', () => {
   it('射影は raw Formaloo slug をキーに使い harness id を含まない', () => {
     const canon = canonicalDefinitionProjection([rawField({ slug: 'q1' })], null);
