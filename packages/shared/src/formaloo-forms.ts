@@ -68,6 +68,14 @@ export interface HarnessFieldConfig {
   text?: string;
   /** 入力項目の補足説明 (Help text / Formaloo field description)。全入力型で表示。section 本文(text)とは別欄。 */
   description?: string;
+  /**
+   * choice/dropdown/multiple_select の選択肢を title+slug で additive 保持 (form-route-branching)。
+   * pull 時に Formaloo `choice_items[].slug` を取り込む (全項目が slug を持つ完全形の時のみ)。既存 `choices`(title のみ) は不変。
+   * 用途 = choice source の jump/show/hide を hosted で発火させるため `when` を `{type:'choice',value:<slug>}` 生成する
+   * (spike T-A0 実測: choice source は choice_slug のみ発火・constant(title) は API 200 だが hosted 不発)。
+   * push 由来の `[{title}]`(slug 無し) では未設定 = 新規未 push field は case-b (保存後 再 pull で解決)。
+   */
+  choiceItems?: { title: string; slug: string }[];
 }
 
 export interface HarnessField {
@@ -187,6 +195,15 @@ export function validateHarnessField(
   if (rawCfg.choices !== undefined) {
     if (!Array.isArray(rawCfg.choices) || !rawCfg.choices.every((c) => typeof c === 'string')) return { ok: false, error: 'config.choices must be string[]' };
     config.choices = [...rawCfg.choices];
+  }
+  if (rawCfg.choiceItems !== undefined) {
+    // form-route-branching: choice_slug 保持 (additive)。{title,slug}[] を whitelist で通す。
+    const items = rawCfg.choiceItems;
+    const valid = Array.isArray(items) && items.every(
+      (c) => c !== null && typeof c === 'object' && typeof (c as Record<string, unknown>).title === 'string' && typeof (c as Record<string, unknown>).slug === 'string',
+    );
+    if (!valid) return { ok: false, error: 'config.choiceItems must be {title,slug}[]' };
+    config.choiceItems = (items as { title: string; slug: string }[]).map((c) => ({ title: c.title, slug: c.slug }));
   }
   if (rawCfg.allowMultipleFiles !== undefined) {
     if (typeof rawCfg.allowMultipleFiles !== 'boolean') return { ok: false, error: 'config.allowMultipleFiles must be boolean' };
@@ -315,12 +332,21 @@ export function fromFormalooField(
   }
   if (type === 'choice' || type === 'dropdown' || type === 'multiple_select') {
     const rawItems = Array.isArray(o.choice_items) ? (o.choice_items as unknown[]) : [];
-    config.choices = rawItems
+    const sorted = rawItems
       .map((it) => (it && typeof it === 'object' ? (it as Record<string, unknown>) : {}))
       .filter((it) => typeof it.title === 'string' && it.is_other_choice !== true)
-      .map((it, i) => ({ title: it.title as string, pos: typeof it.position === 'number' ? it.position : i }))
-      .sort((a, b) => a.pos - b.pos)
-      .map((it) => it.title);
+      .map((it, i) => ({
+        title: it.title as string,
+        slug: typeof it.slug === 'string' ? it.slug : '',
+        pos: typeof it.position === 'number' ? it.position : i,
+      }))
+      .sort((a, b) => a.pos - b.pos);
+    config.choices = sorted.map((it) => it.title);
+    // form-route-branching: 全項目が slug を持つ pull 完全形の時のみ choiceItems を additive 保持
+    // (push 由来 `[{title}]` は slug 空 → 非保持 = 後方互換 / choice_slug は jump 発火の前提)。
+    if (sorted.length > 0 && sorted.every((it) => it.slug)) {
+      config.choiceItems = sorted.map((it) => ({ title: it.title, slug: it.slug }));
+    }
   }
 
   return {
@@ -352,6 +378,69 @@ export function toFormalooLogic(
     });
   }
   return { rules: out };
+}
+
+// ─── form-route-branching: R0 bare-array 生成 (edited-push 是正 + jump 有効化) ───
+// spike T-A0 実測: 書込は `PATCH /v3.0/forms/{slug}/ {logic:<bare array>}`。旧 `PUT {logic:{rules}}` は
+// method(full-replace)/shape(object container) 双方誤りで本番 500。本関数は R0 item 形を生成する:
+//   { type:'field', identifier:<src_slug>,
+//     actions:[ { action:<verb>, args:[{type:'field', identifier:<tgt_slug>}],
+//                 when:{ operation:<op>, args:[ {type:'field', value:<src_slug>}, <valueOperand> ] } } ] }
+// args 混在型 (取り違え 400 地雷): actions[].args=identifier キー / when.args=value キー。
+
+/** when 第2オペランド (比較値) を生成。choice source は choice_slug で発火 (spike T-A0)・非 choice は constant。 */
+function resolveWhenValueOperand(
+  rule: HarnessLogicRule,
+  srcField: HarnessField | undefined,
+): { type: 'choice'; value: string } | { type: 'constant'; value: string } {
+  const isChoice =
+    srcField !== undefined &&
+    (srcField.type === 'choice' || srcField.type === 'dropdown' || srcField.type === 'multiple_select');
+  if (isChoice && srcField) {
+    const items = srcField.config.choiceItems ?? [];
+    // rule.value が既に slug (pull 由来) ならそのまま / title (builder select) なら slug へ写像。
+    const bySlug = items.find((it) => it.slug === rule.value);
+    if (bySlug) return { type: 'choice', value: bySlug.slug };
+    const byTitle = items.find((it) => it.title === rule.value);
+    if (byTitle) return { type: 'choice', value: byTitle.slug };
+    // choice source だが slug 未解決 (choiceItems 無 = 新規未 push field / case-b BACKLOG) →
+    // constant 近似で構造保持 (hosted 不発だが保存後 再 pull→再編集で解決)。
+  }
+  return { type: 'constant', value: rule.value };
+}
+
+/**
+ * harness logic rules → Formaloo R0 bare-array logic (edited-push の是正生成形)。
+ * field は harness id → Formaloo slug に解決。resolveSlug が undefined を返す rule は捨てる (孤立参照防止)。
+ * fieldById (任意) を渡すと source field の型を見て choice/constant のオペランド型を判定する (choice_slug 発火)。
+ * action: show/hide/jump はそのまま・レガシー 'skip' → Formaloo 'jump' に動詞変換。
+ */
+export function toFormalooRawLogic(
+  rules: HarnessLogicRule[],
+  resolveSlug: (harnessFieldId: string) => string | undefined,
+  fieldById?: (harnessFieldId: string) => HarnessField | undefined,
+): unknown[] {
+  const out: unknown[] = [];
+  for (const r of rules) {
+    const srcSlug = resolveSlug(r.sourceFieldId);
+    const tgtSlug = resolveSlug(r.targetFieldId);
+    if (!srcSlug || !tgtSlug) continue; // 未 push field 等の孤立参照は Formaloo に送らない
+    const verb: FormalooActionVerb = r.action === 'skip' ? 'jump' : r.action; // レガシー skip→jump 動詞変換
+    const operation: FormalooConditionOperator = r.operator === 'not_equals' ? 'is_not' : 'is';
+    const valueOperand = resolveWhenValueOperand(r, fieldById?.(r.sourceFieldId));
+    out.push({
+      type: 'field',
+      identifier: srcSlug,
+      actions: [
+        {
+          action: verb,
+          args: [{ type: 'field', identifier: tgtSlug }],
+          when: { operation, args: [{ type: 'field', value: srcSlug }, valueOperand] },
+        },
+      ],
+    });
+  }
+  return out;
 }
 
 /**

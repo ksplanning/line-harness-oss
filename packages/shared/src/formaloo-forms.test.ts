@@ -282,7 +282,13 @@ describe('formaloo-forms — fromFormalooField (builder pull / N-8 選択肢読�
       })),
     };
     const back = fromFormalooField(asRead, () => 'h1');
-    expect(back).toEqual(original); // id/type/label/required/position/config.choices まで完全一致
+    // form-route-branching: pull は choice_item.slug を choiceItems に additive 保持する (choices=title は不変)。
+    expect(back!.config.choices).toEqual(original.config.choices);
+    expect(back!.config.choiceItems).toEqual([
+      { title: '旅行', slug: 's0' }, { title: '料理', slug: 's1' }, { title: '音楽', slug: 's2' },
+    ]);
+    // choiceItems 以外は完全一致 (id/type/label/required/position)
+    expect({ ...back, config: { choices: back!.config.choices } }).toEqual(original);
   });
 
   test('meta section/page_break を sub_type に従って復元し、未知 sub_type は捨てる (T-B4)', () => {

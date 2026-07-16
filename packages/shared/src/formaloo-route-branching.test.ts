@@ -12,11 +12,16 @@
 import { describe, test, expect } from 'vitest';
 import {
   fromFormalooRawLogic,
+  toFormalooRawLogic,
+  fromFormalooField,
+  validateHarnessField,
+  type HarnessField,
   type HarnessLogicRule,
   type LogicAction,
 } from './formaloo-forms';
 
 const identity = (s: string) => s;
+const slugId = (id: string) => id; // harness id == Formaloo slug の簡易 map
 
 // 単一 jump item を作るヘルパ (R0 bare-array 形)。
 function jumpItem(srcSlug: string, tgtSlug: string, verb: string, whenVal: unknown) {
@@ -73,5 +78,110 @@ describe('T-B1 — pull 射影 skip→jump (LogicAction additive)', () => {
     // set は未モデル動詞 → flat では 'show' に落ちる (compound additive 側で verb 保持)
     const _r: HarnessLogicRule = unknown[0];
     expect(_r.action).toBe('show');
+  });
+});
+
+// ── T-B2 helpers ──
+const choiceField = (id: string, items: { title: string; slug: string }[]): HarnessField => ({
+  id, type: 'choice', label: 'Q', required: true, position: 1, config: { choices: items.map((i) => i.title), choiceItems: items },
+});
+const textField = (id: string): HarnessField => ({ id, type: 'text', label: 'T', required: false, position: 1, config: {} });
+const rule = (over: Partial<HarnessLogicRule>): HarnessLogicRule => ({
+  id: 'r1', sourceFieldId: 'src', operator: 'equals', value: 'C', action: 'show', targetFieldId: 'tgt', ...over,
+});
+
+describe('T-B2 — toFormalooRawLogic (R0 bare-array / args 混在型 / choice_slug)', () => {
+  test('show/hide/jump 各々で actions[].args=identifier / when.args=value (取り違え 400 の番人)', () => {
+    for (const action of ['show', 'hide', 'jump'] as LogicAction[]) {
+      const out = toFormalooRawLogic([rule({ action })], slugId) as any[];
+      expect(out).toHaveLength(1);
+      const item = out[0];
+      expect(item).toMatchObject({ type: 'field', identifier: 'src' });
+      const act = item.actions[0];
+      expect(act.action).toBe(action);
+      // actions[].args は identifier キー (取り違え禁止)
+      expect(act.args).toEqual([{ type: 'field', identifier: 'tgt' }]);
+      // when.args は value キー (取り違え禁止)
+      expect(act.when.args[0]).toEqual({ type: 'field', value: 'src' });
+      expect(act.when.args[1]).toHaveProperty('value');
+      expect(act.when.args[1]).not.toHaveProperty('identifier');
+    }
+  });
+
+  test("operator: equals→'is' / not_equals→'is_not'", () => {
+    const isOut = toFormalooRawLogic([rule({ operator: 'equals' })], slugId) as any[];
+    const notOut = toFormalooRawLogic([rule({ operator: 'not_equals' })], slugId) as any[];
+    expect(isOut[0].actions[0].when.operation).toBe('is');
+    expect(notOut[0].actions[0].when.operation).toBe('is_not');
+  });
+
+  test("レガシー 'skip' action は Formaloo 'jump' に動詞変換される", () => {
+    const out = toFormalooRawLogic([rule({ action: 'skip' })], slugId) as any[];
+    expect(out[0].actions[0].action).toBe('jump');
+  });
+
+  test('choice source: rule.value(title) を choice_slug へ写像し {type:choice,value:slug} 生成 (hosted 発火)', () => {
+    const src = choiceField('src', [{ title: 'A', slug: 'slugA' }, { title: 'C', slug: 'slugC' }]);
+    const fieldById = (id: string) => (id === 'src' ? src : undefined);
+    const out = toFormalooRawLogic([rule({ action: 'jump', value: 'C' })], slugId, fieldById) as any[];
+    expect(out[0].actions[0].when.args[1]).toEqual({ type: 'choice', value: 'slugC' });
+  });
+
+  test('choice source: rule.value が既に slug の時もそのまま choice で通す (pull 由来往復)', () => {
+    const src = choiceField('src', [{ title: 'C', slug: 'slugC' }]);
+    const out = toFormalooRawLogic([rule({ value: 'slugC' })], slugId, (id) => (id === 'src' ? src : undefined)) as any[];
+    expect(out[0].actions[0].when.args[1]).toEqual({ type: 'choice', value: 'slugC' });
+  });
+
+  test('非 choice source (text): {type:constant,value} を生成', () => {
+    const out = toFormalooRawLogic([rule({ value: 'はい' })], slugId, (id) => (id === 'src' ? textField('src') : undefined)) as any[];
+    expect(out[0].actions[0].when.args[1]).toEqual({ type: 'constant', value: 'はい' });
+  });
+
+  test('choice source だが slug 未解決 (choiceItems 無 = case-b) → constant 近似で構造保持', () => {
+    const newChoice: HarnessField = { id: 'src', type: 'choice', label: 'Q', required: true, position: 1, config: { choices: ['C'] } };
+    const out = toFormalooRawLogic([rule({ value: 'C' })], slugId, (id) => (id === 'src' ? newChoice : undefined)) as any[];
+    expect(out[0].actions[0].when.args[1]).toEqual({ type: 'constant', value: 'C' });
+  });
+
+  test('fieldById 未指定 (worker が渡さない時) は全 constant にフォールバック', () => {
+    const out = toFormalooRawLogic([rule({ value: 'C' })], slugId) as any[];
+    expect(out[0].actions[0].when.args[1]).toEqual({ type: 'constant', value: 'C' });
+  });
+
+  test('孤立参照 (src/tgt slug 未解決) の rule は drop', () => {
+    const out = toFormalooRawLogic([rule({ targetFieldId: 'missing' })], (id) => (id === 'missing' ? undefined : id)) as any[];
+    expect(out).toHaveLength(0);
+  });
+});
+
+describe('T-B2 — fromFormalooField が choice_item slug を choiceItems に additive 保持', () => {
+  test('pull 完全形 (全 item に slug) → choiceItems=title+slug / choices=title は不変', () => {
+    const f = fromFormalooField({
+      slug: 'q1', type: 'choice', title: 'ルート', required: true, position: 1,
+      choice_items: [
+        { title: 'A', slug: 'sA', position: 1, is_other_choice: false },
+        { title: 'B', slug: 'sB', position: 2, is_other_choice: false },
+      ],
+    }, identity);
+    expect(f!.config.choices).toEqual(['A', 'B']);
+    expect(f!.config.choiceItems).toEqual([{ title: 'A', slug: 'sA' }, { title: 'B', slug: 'sB' }]);
+  });
+
+  test('push 由来 [{title}] (slug 無し) → choiceItems 非設定 (後方互換)', () => {
+    const f = fromFormalooField({ slug: 's', type: 'choice', title: 'x', choice_items: [{ title: 'A' }, { title: 'B' }] });
+    expect(f!.config.choices).toEqual(['A', 'B']);
+    expect(f!.config.choiceItems).toBeUndefined();
+  });
+
+  test('validateHarnessField は choiceItems を whitelist で通す ({title,slug}[])', () => {
+    const r = validateHarnessField({ id: 'f', type: 'choice', label: 'x', config: { choices: ['A'], choiceItems: [{ title: 'A', slug: 'sA' }] } });
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.field.config.choiceItems).toEqual([{ title: 'A', slug: 'sA' }]);
+  });
+
+  test('validateHarnessField は不正 choiceItems を reject', () => {
+    const r = validateHarnessField({ id: 'f', type: 'choice', label: 'x', config: { choiceItems: [{ title: 'A' }] } });
+    expect(r.ok).toBe(false);
   });
 });
