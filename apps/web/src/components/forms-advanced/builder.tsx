@@ -316,6 +316,14 @@ function BuilderCanvas({
 }
 
 // ── 選択 field の設定パネル ──
+// form-media-limits ②: 「動画を許可」checkbox が allowedExtensions へ射影する curated 動画拡張子。
+// checkbox は allowedExtensions の派生状態 (含む/空) を都度計算し、拡張子 input と単一 source を共有する (RK-7)。
+const VIDEO_EXTS = ['mp4', 'mov', 'm4v', 'webm']
+// form-media-limits ①: 最大サイズの保守的プリセット (KB)。動画許可時のみ 50MB(51200) を追加露出 (RK-8)。
+// API clamp は 102400 だが UI は巨大 upload/プラン超過リスク回避で保守的に留める。
+const MAX_SIZE_PRESETS_KB = [2048, 5120, 10240, 20480]
+const maxSizeLabel = (kb: number): string => (kb === 2048 ? '2MB（標準）' : `${Math.round(kb / 1024)}MB`)
+
 function SettingsPanel({
   field,
   allFields,
@@ -481,12 +489,55 @@ function SettingsPanel({
         </div>
       )}
 
-      {field.type === 'file' && (
+      {field.type === 'file' && (() => {
+        // form-media-limits: 動画許可 = allowedExtensions が空(=all で全許可) または curated 動画拡張子を含む。
+        const exts = cfg.allowedExtensions ?? []
+        const videoAllowed = exts.length === 0 || VIDEO_EXTS.some((v) => exts.includes(v))
+        const currentMax = cfg.maxSizeKb ?? 2048
+        // 動画許可時のみ 50MB を露出。pull 由来の非プリセット値 (例 15MB) は現値を追加露出して save 時の silent 消失を防ぐ。
+        const presets = videoAllowed ? [...MAX_SIZE_PRESETS_KB, 51200] : [...MAX_SIZE_PRESETS_KB]
+        const options = presets.includes(currentMax) ? presets : [currentMax, ...presets].sort((a, b) => a - b)
+        return (
         <div className="space-y-2">
           <label className="flex items-center gap-2">
             <input type="checkbox" aria-label="複数ファイル許可" checked={cfg.allowMultipleFiles ?? false} onChange={(e) => setCfg({ allowMultipleFiles: e.target.checked })} />
             <span>複数ファイルを許可</span>
           </label>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">最大サイズ</label>
+            <select
+              aria-label="最大サイズ"
+              value={String(currentMax)}
+              onChange={(e) => {
+                const kb = Number(e.target.value)
+                // 2MB(標準) は既定 → 未設定へ戻す (push しない = 後方互換)。それ以外は maxSizeKb を設定。
+                setCfg({ maxSizeKb: kb === 2048 ? undefined : kb })
+              }}
+              className="w-full border border-gray-300 rounded px-2 py-1"
+            >
+              {options.map((kb) => <option key={kb} value={String(kb)}>{maxSizeLabel(kb)}</option>)}
+            </select>
+          </div>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              aria-label="動画を許可"
+              checked={videoAllowed}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  // ON: 空(=all)は既に動画許可 → 変更なし / 非空は curated 動画拡張子を union (既存拡張子は保持)。
+                  if (exts.length > 0) setCfg({ allowedExtensions: [...exts, ...VIDEO_EXTS.filter((v) => !exts.includes(v))] })
+                } else {
+                  // OFF: curated 動画拡張子のみ除去 (他拡張子は保持)。
+                  setCfg({ allowedExtensions: exts.filter((x) => !VIDEO_EXTS.includes(x)) })
+                }
+              }}
+            />
+            <span>動画も受け取れるようにする（mp4 / mov 等）</span>
+          </label>
+          <p className="text-[10px] text-gray-400 leading-snug">
+            動画は容量が大きいので「最大サイズ」も上げてください。実際に添付できるかは公開フォームでの実アップロードで確認します。
+          </p>
           <div>
             <label className="block text-xs text-gray-500 mb-1">許可する拡張子 (カンマ区切り)</label>
             <input
@@ -498,7 +549,8 @@ function SettingsPanel({
             />
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* 条件分岐 (R1 / T-B2 GUI + form-route-branching jump) */}
       <div className="pt-2 border-t border-gray-100">
