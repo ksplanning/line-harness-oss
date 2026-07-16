@@ -4,6 +4,7 @@ import {
   serializeRawLogicForPush,
   type HarnessField,
   type HarnessLogicRule,
+  type FormDisplayType,
 } from '@line-crm/shared';
 import type { FormalooClient } from './formaloo-client';
 
@@ -61,6 +62,13 @@ export async function pushDefinitionToFormaloo(
      * 未渡し (default) は従来の PUT {logic:{rules}} へ縮退 (ハーネス発案 logic / byte 不変)。
      */
     preserveRawLogic?: unknown;
+    /**
+     * form-route-branching (R2): フォーム表示形式。pull baseline (prevFormType) から変化した時のみ
+     * `PATCH /v3.0/forms/{slug}/ {form_type}` を送る (未変化 / 未渡しは送らない = 既存フォームを勝手に変えない)。
+     */
+    formType?: FormDisplayType;
+    /** pull 時点の form_type (baseline)。formType との差分判定に使う。 */
+    prevFormType?: FormDisplayType;
   },
 ): Promise<PushResult> {
   const existingFieldSlugs = params.existingFieldSlugs ?? {};
@@ -153,6 +161,13 @@ export async function pushDefinitionToFormaloo(
     const logicArray = toFormalooRawLogic(params.logic, (hid) => fieldSlugs[hid], fieldById);
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: logicArray });
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic push failed: HTTP ${res.status}` };
+  }
+
+  // 4) form-route-branching R2: form_type を pull baseline から変化した時のみ PATCH (idempotent / 勝手に変えない)。
+  //    未渡し (design 側だけの save 等) や未変化フォームは byte 不変 = 後方互換 (failure_observable 防御)。
+  if (params.formType !== undefined && params.formType !== params.prevFormType) {
+    const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { form_type: params.formType });
+    if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `form_type push failed: HTTP ${res.status}` };
   }
 
   return { ok: true, formalooSlug: slug, fieldSlugs, publicAddress };

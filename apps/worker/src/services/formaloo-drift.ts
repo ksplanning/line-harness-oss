@@ -24,7 +24,7 @@ import {
   recordFormalooDriftEvent,
   type FormalooForm,
 } from '@line-crm/db';
-import { formalooDefinitionFingerprint, countWeakenedFormalooRules, normalizeFormDesign, type FormDesign } from '@line-crm/shared';
+import { formalooDefinitionFingerprint, countWeakenedFormalooRules, normalizeFormDesign, type FormDesign, type FormDisplayType } from '@line-crm/shared';
 import { buildPullResult, extractFieldsList, extractRawLogic, extractLogic } from './formaloo-pull.js';
 import type { FormalooClient } from './formaloo-client.js';
 
@@ -113,6 +113,16 @@ function parseStoredDesign(definitionJson: string): FormDesign | undefined {
   }
 }
 
+/** definition_json から保存済み formType を取り出す (form-route-branching: auto-apply で form_type を carry)。 */
+function parseStoredFormType(definitionJson: string): FormDisplayType | undefined {
+  try {
+    const d = JSON.parse(definitionJson) as { formType?: unknown };
+    return d?.formType === 'simple' || d?.formType === 'multi_step' ? d.formType : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * auto-apply: pull 結果を D1 のみに反映 (push しない)。field_map の formaloo_field_slug は
  * `existingMap[id] ?? fieldSlugById[id]` で carry (slug wipe → 重複 push 回帰を防ぐ / T-B3)。
@@ -141,6 +151,9 @@ async function applyDriftToD1(
   const localDesign = parseStoredDesign(form.definition_json);
   const design = pull.design && Object.keys(pull.design).length ? pull.design : localDesign;
 
+  // form-route-branching: formType carry (remote pull 優先・無ければ保存済みを保つ = 無関係 drift で消えない)。
+  const formType = pull.formType ?? parseStoredFormType(form.definition_json);
+
   const definitionJson = JSON.stringify({
     fields: pull.fields,
     logic: pull.logic,
@@ -148,6 +161,7 @@ async function applyDriftToD1(
     ...(pull.rawLogic != null ? { rawLogic: pull.rawLogic } : {}),
     logicFingerprint: pull.logicFingerprint,
     ...(design && Object.keys(design).length ? { design } : {}),
+    ...(formType ? { formType } : {}),
   });
   const fieldRows = pull.fields.map((f) => ({
     id: f.id,

@@ -11,6 +11,7 @@ import {
   type HarnessLogicRule,
   type FormalooLogicObject,
   type FormDesign,
+  type FormDisplayType,
 } from '@line-crm/shared';
 import type { FormalooClient } from './formaloo-client';
 
@@ -50,6 +51,12 @@ export type PullResult =
        * 色は formalooColorToHex で多相吸収 (JSON-string RGBA / hex 両対応)。design が無いフォームは空 {}。
        */
       design?: FormDesign;
+      /**
+       * form-route-branching (R2): Formaloo `form_type` を harness canonical へ復元 (spike T-A0: simple|multi_step)。
+       * design と同じく builder の initialFormType へ、drift auto-apply が definition_json へ carry。
+       * 未知/欠落は undefined = 従来と byte 一致 (後方互換)。
+       */
+      formType?: FormDisplayType;
       /**
        * 各 harness field id → 元の Formaloo field slug (drift auto-apply の field_map slug carry 用 / T-B3)。
        * auto-apply が saveFormalooDefinition へ渡す field_map の formaloo_field_slug を `existingMap[id] ?? fieldSlugById[id]`
@@ -160,6 +167,17 @@ export function extractDesign(root: unknown): FormDesign {
 }
 
 /**
+ * Formaloo GET body から `form_type` を harness FormDisplayType へ復元 (form-route-branching R2)。
+ * spike T-A0 実測: top-level `form_type` は 'simple'|'multi_step' の 2 値のみ。未知/欠落は undefined
+ * (= 従来と byte 一致 / 後方互換 = drift 誤検知しない)。
+ */
+export function extractFormType(root: unknown): FormDisplayType | undefined {
+  const f = extractFormObject(root);
+  const v = f.form_type;
+  return v === 'simple' || v === 'multi_step' ? v : undefined;
+}
+
+/**
  * 既に GET 済みの form-detail body (res.data) を harness 定義へ変換 (GET を含まない純粋変換)。
  * pull route (下記 pullDefinitionFromFormaloo) と drift-check の auto-apply が同一 body から再利用する
  * (drift-check は fingerprint 用に 1 回だけ GET し、その body を本関数へ渡す = 二重 GET 回避)。
@@ -220,6 +238,8 @@ export function buildPullResult(
     fieldSlugById,
     // form-design (Batch D): 色/画像テーマを復元 (design 無しは空 {})。
     design: extractDesign(body),
+    // form-route-branching (R2): 表示形式 form_type を復元 (未設定は undefined = 従来不変)。
+    ...(extractFormType(body) !== undefined ? { formType: extractFormType(body) } : {}),
   };
 }
 
