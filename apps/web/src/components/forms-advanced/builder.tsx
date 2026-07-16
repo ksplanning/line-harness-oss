@@ -367,6 +367,18 @@ function SettingsPanel({
         <span>必須項目にする</span>
       </label>
 
+      {/* 補足説明 (Help text / 全入力型)。ラベルの下に記入例・注意書きを添える。section 本文(config.text)とは別欄。 */}
+      <div>
+        <label className="block text-xs text-gray-500 mb-1">補足説明</label>
+        <textarea
+          aria-label="補足説明"
+          value={cfg.description ?? ''}
+          onChange={(e) => setCfg({ description: e.target.value || undefined })}
+          placeholder="例: 日中つながる番号をご記入ください"
+          className="w-full border border-gray-300 rounded px-2 py-1"
+        />
+      </div>
+
       {hasLength(field.type) && (
         <div className="flex gap-2">
           <div className="flex-1">

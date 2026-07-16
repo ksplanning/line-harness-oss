@@ -220,6 +220,47 @@ describe('FormBuilder — 設定パネル', () => {
   })
 })
 
+describe('FormBuilder — 入力項目の補足説明 (field-help-charlimit T-A3)', () => {
+  const addLabels: Array<[string, string]> = [
+    ['1行テキストを追加', 'text'],
+    ['複数行テキストを追加', 'textarea'],
+    ['数値を追加', 'number'],
+    ['メールを追加', 'email'],
+    ['電話番号を追加', 'phone'],
+    ['日付を追加', 'date'],
+    ['単一選択を追加', 'choice'],
+    ['ドロップダウンを追加', 'dropdown'],
+    ['複数選択を追加', 'multiple_select'],
+    ['ファイル添付を追加', 'file'],
+  ]
+
+  it('全入力型の設定パネルに「補足説明」textarea が描画される', () => {
+    for (const [addLabel] of addLabels) {
+      render(<FormBuilder {...base()} />)
+      fireEvent.click(screen.getByLabelText(addLabel))
+      expect(screen.getByLabelText('補足説明')).toBeTruthy()
+      cleanup()
+    }
+  })
+
+  it('補足説明を入力すると field.config.description に反映される (保存 payload で確認)', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave })} />)
+    fireEvent.click(screen.getByLabelText('1行テキストを追加'))
+    fireEvent.change(screen.getByLabelText('補足説明'), { target: { value: '例: 日中つながる番号をご記入ください' } })
+    fireEvent.click(screen.getByText('保存'))
+    const saved = onSave.mock.calls[0][0] as { fields: HarnessField[] }
+    expect(saved.fields[0].config.description).toBe('例: 日中つながる番号をご記入ください')
+  })
+
+  it('section の設定は従来の「説明文」(config.text) のみで「補足説明」欄は出さない (別物)', () => {
+    render(<FormBuilder {...base()} />)
+    fireEvent.click(screen.getByLabelText('見出し＋説明を追加'))
+    expect(screen.getByLabelText('説明文')).toBeTruthy()
+    expect(screen.queryByLabelText('補足説明')).toBeNull()
+  })
+})
+
 describe('FormBuilder — 装飾ブロック (T-B5/T-B10)', () => {
   it('見出し＋説明を追加し、見出しと説明だけを編集してカードへ反映できる', () => {
     render(<FormBuilder {...base()} />)
