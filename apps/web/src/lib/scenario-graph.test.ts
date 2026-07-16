@@ -152,6 +152,13 @@ describe('conditionBadgeLabel', () => {
     expect(conditionBadgeLabel(null)).toBeNull()
     expect(conditionBadgeLabel('unknown_type')).toBeNull()
   })
+
+  it('4 種の部分一致条件を日本語ラベルにする', () => {
+    expect(conditionBadgeLabel('tag_name_contains')).toBe('タグ名に指定文字を含む場合のみ')
+    expect(conditionBadgeLabel('tag_name_not_contains')).toBe('タグ名に指定文字を含まない場合のみ')
+    expect(conditionBadgeLabel('metadata_contains')).toBe('回答に指定文字を含む場合のみ')
+    expect(conditionBadgeLabel('metadata_not_contains')).toBe('回答に指定文字を含まない場合のみ')
+  })
 })
 
 describe('stepContentSummary', () => {

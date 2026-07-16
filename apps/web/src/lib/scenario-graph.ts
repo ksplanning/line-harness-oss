@@ -21,6 +21,10 @@ export type ConditionType =
   | 'tag_not_exists'
   | 'metadata_equals'
   | 'metadata_not_equals'
+  | 'metadata_contains'
+  | 'metadata_not_contains'
+  | 'tag_name_contains'
+  | 'tag_name_not_contains'
 
 /**
  * shared `ScenarioStep` に serializeStep が返す分岐 3 列を additive 拡張したローカル型。
@@ -157,6 +161,14 @@ export function conditionBadgeLabel(conditionType: string | null | undefined): s
       return '属性が一致する場合のみ'
     case 'metadata_not_equals':
       return '属性が一致しない場合のみ'
+    case 'tag_name_contains':
+      return 'タグ名に指定文字を含む場合のみ'
+    case 'tag_name_not_contains':
+      return 'タグ名に指定文字を含まない場合のみ'
+    case 'metadata_contains':
+      return '回答に指定文字を含む場合のみ'
+    case 'metadata_not_contains':
+      return '回答に指定文字を含まない場合のみ'
     default:
       return null
   }
