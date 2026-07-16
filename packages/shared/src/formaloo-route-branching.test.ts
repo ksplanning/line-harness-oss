@@ -15,9 +15,13 @@ import {
   toFormalooRawLogic,
   fromFormalooField,
   validateHarnessField,
+  serializeRawLogicForPush,
+  semanticLogicEqual,
   type HarnessField,
+  type HarnessFormDefinition,
   type HarnessLogicRule,
   type LogicAction,
+  type FormDisplayType,
 } from './formaloo-forms';
 
 const identity = (s: string) => s;
@@ -183,5 +187,44 @@ describe('T-B2 — fromFormalooField が choice_item slug を choiceItems に ad
   test('validateHarnessField は不正 choiceItems を reject', () => {
     const r = validateHarnessField({ id: 'f', type: 'choice', label: 'x', config: { choiceItems: [{ title: 'A' }] } });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('T-B3 — FormDisplayType モデル + jump preserve 往復不変 (preserve 経路 不可侵)', () => {
+  test('FormDisplayType は simple/multi_step の 2 値 (tsc) + HarnessFormDefinition.formType additive', () => {
+    const s: FormDisplayType = 'simple';
+    const m: FormDisplayType = 'multi_step';
+    expect([s, m]).toEqual(['simple', 'multi_step']);
+    const def: HarnessFormDefinition = { fields: [], logic: [] };
+    expect(def.formType).toBeUndefined(); // additive optional = 後方互換
+    const def2: HarnessFormDefinition = { fields: [], logic: [], formType: 'multi_step' };
+    expect(def2.formType).toBe('multi_step');
+  });
+
+  test('jump を含む rawLogic の serializeRawLogicForPush 出力が入力と逐語一致 (preserve 不可侵)', () => {
+    const rawWithJump = [
+      {
+        type: 'field', identifier: 'q1',
+        actions: [
+          { action: 'jump', args: [{ type: 'field', identifier: 'pageC' }],
+            when: { operation: 'is', args: [{ type: 'field', value: 'q1' }, { type: 'choice', value: 'slugC' }] } },
+        ],
+      },
+      {
+        type: 'field', identifier: 'q1',
+        actions: [
+          { action: 'jump_to_success_page', args: [{ type: 'field', identifier: 'end' }],
+            when: { operation: 'is_not', args: [{ type: 'field', value: 'q1' }, { type: 'constant', value: 'A' }] } },
+        ],
+      },
+    ];
+    const resent = serializeRawLogicForPush(rawWithJump);
+    expect(resent).not.toBeNull();
+    // 逐語一致 (変換せず再送 = jump/未モデル構造を欠けなく保持)
+    expect(resent).toEqual(rawWithJump);
+    expect(semanticLogicEqual(resent, rawWithJump)).toBe(true);
+    // jump 動詞が保持されている (射影で 'skip' に丸められていない)
+    expect((resent as any[])[0].actions[0].action).toBe('jump');
+    expect((resent as any[])[1].actions[0].action).toBe('jump_to_success_page');
   });
 });

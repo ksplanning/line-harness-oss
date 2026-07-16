@@ -94,6 +94,13 @@ export interface HarnessField {
 export type LogicAction = 'show' | 'hide' | 'jump' | 'skip';
 export type LogicOperator = 'equals' | 'not_equals';
 
+/**
+ * フォーム表示形式 (form-route-branching R2)。Formaloo `form_type` top-level キーに対応 (spike T-A0 確定)。
+ *  - 'simple' = 1 画面複数問 (既定) / 'multi_step' = 1 問ずつ表示 (jump ルート分岐はこの形式でのみ hosted 発火)。
+ * enum は spike 実測でこの 2 値のみ (`"multistep"` 等は Formaloo が 400)。
+ */
+export type FormDisplayType = 'simple' | 'multi_step';
+
 // ─── R0 実測: Formaloo logic の実 operator / action 語彙 (formaloo-logic-fidelity Batch 0 spike) ───
 // harness の LogicOperator(equals/not_equals) / LogicAction(show/hide/skip) は Formaloo の真部分集合。
 // 複合ルールの additive 保持 (下記 HarnessLogicCondition/ActionRef) では実語彙をそのまま持つ。
@@ -143,6 +150,11 @@ export interface HarnessLogicRule {
 export interface HarnessFormDefinition {
   fields: HarnessField[];
   logic: HarnessLogicRule[];
+  /**
+   * フォーム表示形式 (form-route-branching R2 / additive optional)。design と同じく値があるときだけ persist。
+   * 未設定フォームは definition_json に載らない = 後方互換 (byte 不変)。
+   */
+  formType?: FormDisplayType;
 }
 
 // ─── Formaloo logic object 形 (push-sync 形式 / conditions + actions) ─────────
