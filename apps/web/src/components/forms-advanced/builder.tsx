@@ -1,16 +1,20 @@
 'use client'
 
-import { useState } from 'react'
+import { Children, Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   DndContext,
+  DragOverlay,
   closestCenter,
-  PointerSensor,
   KeyboardSensor,
+  MouseSensor,
+  TouchSensor,
   useSensor,
   useSensors,
   useDraggable,
   useDroppable,
   type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core'
 import {
   SortableContext,
@@ -33,6 +37,27 @@ import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 
 const LINE_GREEN = '#06C755'
+
+export const MOUSE_ACTIVATION = { distance: 8 } as const
+export const TOUCH_ACTIVATION = { delay: 200, tolerance: 8 } as const
+
+export type DragEndResult =
+  | { kind: 'add'; type: HarnessFieldType; index: number | null }
+  | { kind: 'sort'; from: string; to: string }
+  | { kind: 'outside' }
+  | { kind: 'noop' }
+
+export function resolveDragEnd(activeId: string, overId: string | null, fieldIds: string[]): DragEndResult {
+  if (activeId.startsWith('palette:')) {
+    const type = activeId.slice('palette:'.length) as HarnessFieldType
+    if (overId == null) return { kind: 'outside' }
+    if (overId === 'canvas') return { kind: 'add', type, index: null }
+    const idx = fieldIds.indexOf(overId)
+    return { kind: 'add', type, index: idx >= 0 ? idx : null }
+  }
+  if (overId == null || overId === activeId) return { kind: 'noop' }
+  return { kind: 'sort', from: activeId, to: overId }
+}
 
 export interface BuilderProps {
   formTitle: string
@@ -63,6 +88,89 @@ function newField(type: HarnessFieldType): HarnessField {
     position: 0,
     config: hasChoices(type) ? { choices: ['選択肢1', '選択肢2'] } : {},
   }
+}
+
+export function DragGhost({ activeDragId, fields }: { activeDragId: string; fields: HarnessField[] }) {
+  const paletteDrag = activeDragId.startsWith('palette:')
+  const field = fields.find((item) => item.id === activeDragId)
+  const type = paletteDrag
+    ? activeDragId.slice('palette:'.length) as HarnessFieldType
+    : (field?.type ?? 'text')
+  const label = paletteDrag ? fieldTypeLabel(type) : (field?.label ?? '')
+
+  return (
+    <div
+      data-testid="drag-ghost"
+      className="flex items-center gap-2 rounded-lg border-2 bg-white px-3 py-2 text-sm font-medium shadow-lg"
+      style={{ borderColor: LINE_GREEN, color: '#374151' }}
+    >
+      <span aria-hidden>{fieldTypeIcon(type)}</span>
+      <span>{label}</span>
+    </div>
+  )
+}
+
+export function DropFeedback({ message }: { message: string | null }) {
+  if (!message) return null
+  return (
+    <div
+      data-testid="drop-feedback"
+      role="status"
+      className="mb-2 rounded-lg border px-3 py-2 text-xs"
+      style={{ borderColor: LINE_GREEN, backgroundColor: '#F0FFF6', color: '#166534' }}
+    >
+      {message}
+    </div>
+  )
+}
+
+function DropPlaceholder() {
+  return (
+    <div
+      data-testid="drop-placeholder"
+      aria-hidden
+      className="flex h-9 items-center justify-center rounded-lg border-2 border-dashed text-xs font-medium"
+      style={{ borderColor: LINE_GREEN, backgroundColor: '#F0FFF6', color: LINE_GREEN }}
+    >
+      ここに追加
+    </div>
+  )
+}
+
+export function CanvasDropLayout({
+  activeDragId,
+  overId,
+  fieldIds,
+  children,
+}: {
+  activeDragId: string | null
+  overId: string | null
+  fieldIds: string[]
+  children: ReactNode
+}) {
+  const items = Children.toArray(children)
+  const placeholderIndex = activeDragId
+    ? overId === 'canvas'
+      ? fieldIds.length
+      : fieldIds.indexOf(overId ?? '')
+    : -1
+  const paletteDragActive = activeDragId?.startsWith('palette:') ?? false
+
+  return (
+    <div
+      data-testid="canvas-drop-layout"
+      data-canvas-active={paletteDragActive ? 'true' : 'false'}
+      className={fieldIds.length === 0 ? 'mt-2' : 'space-y-2'}
+    >
+      {items.map((child, index) => (
+        <Fragment key={fieldIds[index] ?? index}>
+          {placeholderIndex === index && <DropPlaceholder />}
+          {child}
+        </Fragment>
+      ))}
+      {placeholderIndex === fieldIds.length && <DropPlaceholder />}
+    </div>
+  )
 }
 
 // ── パレット項目 (click-to-add = 素人/375px 向け + drag = desktop) ──
@@ -127,6 +235,51 @@ function FieldCard({
           </span>
         )}
       </div>
+    </div>
+  )
+}
+
+function BuilderCanvas({
+  fields,
+  selectedId,
+  activeDragId,
+  overId,
+  dropFeedback,
+  onSelect,
+  onDelete,
+}: {
+  fields: HarnessField[]
+  selectedId: string | null
+  activeDragId: string | null
+  overId: string | null
+  dropFeedback: string | null
+  onSelect: (id: string) => void
+  onDelete: (id: string) => void
+}) {
+  const { setNodeRef: setCanvasRef, isOver: isCanvasOver } = useDroppable({ id: 'canvas' })
+  const paletteDragActive = activeDragId?.startsWith('palette:') ?? false
+  const canvasActive = isCanvasOver || paletteDragActive
+
+  return (
+    <div
+      ref={setCanvasRef}
+      className={`flex-1 min-w-0 rounded-lg transition-shadow ${canvasActive ? 'ring-2 ring-[#06C755] ring-offset-2' : ''}`}
+      data-testid="canvas"
+      data-canvas-active={canvasActive ? 'true' : 'false'}
+    >
+      <DropFeedback message={dropFeedback} />
+      {fields.length === 0 && (
+        <div className="border-2 border-dashed border-gray-200 rounded-lg p-8 text-center text-sm text-gray-400">
+          左のパレットから項目をドラッグ、またはタップして追加してください
+        </div>
+      )}
+      <SortableContext items={fields.map((f) => f.id)} strategy={verticalListSortingStrategy}>
+        <CanvasDropLayout activeDragId={activeDragId} overId={overId} fieldIds={fields.map((field) => field.id)}>
+          {fields.map((f) => (
+            <FieldCard key={f.id} field={f} selected={f.id === selectedId} onSelect={() => onSelect(f.id)} onDelete={() => onDelete(f.id)} />
+          ))}
+        </CanvasDropLayout>
+      </SortableContext>
     </div>
   )
 }
@@ -264,37 +417,79 @@ export default function FormBuilder(props: BuilderProps) {
   const [confirmPublish, setConfirmPublish] = useState(false)
   const [reimportConfirm, setReimportConfirm] = useState(false)
   const [reimporting, setReimporting] = useState(false)
+  const [activeDragId, setActiveDragId] = useState<string | null>(null)
+  const [overId, setOverId] = useState<string | null>(null)
+  const [dropFeedback, setDropFeedback] = useState<string | null>(null)
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (feedbackTimerRef.current !== null) clearTimeout(feedbackTimerRef.current)
+  }, [])
 
   const sensors = useSensors(
-    useSensor(PointerSensor),
+    useSensor(MouseSensor, { activationConstraint: MOUSE_ACTIVATION }),
+    useSensor(TouchSensor, { activationConstraint: TOUCH_ACTIVATION }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
-  const { setNodeRef: setCanvasRef } = useDroppable({ id: 'canvas' })
 
   const reposition = (list: HarnessField[]) => list.map((f, i) => ({ ...f, position: i }))
 
-  const addField = (type: HarnessFieldType) => {
+  const addField = (type: HarnessFieldType, index?: number) => {
     const f = newField(type)
-    setFields((cur) => reposition([...cur, f]))
+    setFields((cur) => {
+      const next = [...cur]
+      if (typeof index === 'number') next.splice(index, 0, f)
+      else next.push(f)
+      return reposition(next)
+    })
     setSelectedId(f.id)
+  }
+
+  const handleDragStart = (e: DragStartEvent) => {
+    if (feedbackTimerRef.current !== null) {
+      clearTimeout(feedbackTimerRef.current)
+      feedbackTimerRef.current = null
+    }
+    setDropFeedback(null)
+    setActiveDragId(String(e.active.id))
+    setOverId(null)
+  }
+
+  const handleDragOver = (e: DragOverEvent) => {
+    setOverId(e.over ? String(e.over.id) : null)
+  }
+
+  const handleDragCancel = () => {
+    setActiveDragId(null)
+    setOverId(null)
   }
 
   const handleDragEnd = (e: DragEndEvent) => {
     const activeId = String(e.active.id)
-    // パレットからのドロップ → 新規追加
-    if (activeId.startsWith('palette:')) {
-      if (e.over) addField(activeId.slice('palette:'.length) as HarnessFieldType)
-      return
+    const eventOverId = e.over ? String(e.over.id) : null
+    const result = resolveDragEnd(activeId, eventOverId, fields.map((field) => field.id))
+
+    if (result.kind === 'add') {
+      addField(result.type, result.index ?? undefined)
+    } else if (result.kind === 'sort') {
+      // キャンバス内の並べ替え (既存挙動を維持)
+      setFields((cur) => {
+        const oldIndex = cur.findIndex((f) => f.id === result.from)
+        const newIndex = cur.findIndex((f) => f.id === result.to)
+        if (oldIndex < 0 || newIndex < 0) return cur
+        return reposition(arrayMove(cur, oldIndex, newIndex))
+      })
+    } else if (result.kind === 'outside') {
+      setDropFeedback('ここには置けません。キャンバスの上でカードを離してください')
+      if (feedbackTimerRef.current !== null) clearTimeout(feedbackTimerRef.current)
+      feedbackTimerRef.current = setTimeout(() => {
+        setDropFeedback(null)
+        feedbackTimerRef.current = null
+      }, 2500)
     }
-    // キャンバス内の並べ替え
-    const overId = e.over ? String(e.over.id) : null
-    if (!overId || activeId === overId) return
-    setFields((cur) => {
-      const oldIndex = cur.findIndex((f) => f.id === activeId)
-      const newIndex = cur.findIndex((f) => f.id === overId)
-      if (oldIndex < 0 || newIndex < 0) return cur
-      return reposition(arrayMove(cur, oldIndex, newIndex))
-    })
+
+    setActiveDragId(null)
+    setOverId(null)
   }
 
   const updateField = (f: HarnessField) => setFields((cur) => cur.map((x) => (x.id === f.id ? f : x)))
@@ -339,7 +534,14 @@ export default function FormBuilder(props: BuilderProps) {
   const statusColor = props.status === 'published' ? LINE_GREEN : props.status === 'in_review' ? '#F59E0B' : '#9CA3AF'
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
       {/* 上部バー */}
       <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-gray-200">
         <span className="text-xs text-white px-2 py-0.5 rounded" style={{ backgroundColor: statusColor }}>{statusLabel}</span>
@@ -409,21 +611,15 @@ export default function FormBuilder(props: BuilderProps) {
         </div>
 
         {/* 中央: キャンバス */}
-        <div ref={setCanvasRef} className="flex-1 min-w-0" data-testid="canvas">
-          {fields.length === 0 ? (
-            <div className="border-2 border-dashed border-gray-200 rounded-lg p-8 text-center text-sm text-gray-400">
-              左のパレットから項目をドラッグ、またはタップして追加してください
-            </div>
-          ) : (
-            <SortableContext items={fields.map((f) => f.id)} strategy={verticalListSortingStrategy}>
-              <div className="space-y-2">
-                {fields.map((f) => (
-                  <FieldCard key={f.id} field={f} selected={f.id === selectedId} onSelect={() => setSelectedId(f.id)} onDelete={() => deleteField(f.id)} />
-                ))}
-              </div>
-            </SortableContext>
-          )}
-        </div>
+        <BuilderCanvas
+          fields={fields}
+          selectedId={selectedId}
+          activeDragId={activeDragId}
+          overId={overId}
+          dropFeedback={dropFeedback}
+          onSelect={setSelectedId}
+          onDelete={deleteField}
+        />
 
         {/* 右: 設定 */}
         <div className="md:w-64 md:shrink-0" data-testid="settings">
@@ -434,6 +630,12 @@ export default function FormBuilder(props: BuilderProps) {
             <div className="text-xs text-gray-400">項目を選ぶと設定が表示されます</div>
           )}
         </div>
+      </div>
+
+      <div data-testid="drag-overlay">
+        <DragOverlay>
+          {activeDragId ? <DragGhost activeDragId={activeDragId} fields={fields} /> : null}
+        </DragOverlay>
       </div>
     </DndContext>
   )

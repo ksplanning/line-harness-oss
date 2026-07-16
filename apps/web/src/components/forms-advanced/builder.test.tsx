@@ -9,8 +9,15 @@
  * (実 D&D drag は jsdom 非対応 → click-to-add で機能を担保。drag は browser-evaluator が実機確認。)
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
-import FormBuilder from './builder'
+import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react'
+import FormBuilder, {
+  CanvasDropLayout,
+  DragGhost,
+  DropFeedback,
+  MOUSE_ACTIVATION,
+  TOUCH_ACTIVATION,
+  resolveDragEnd,
+} from './builder'
 import type { HarnessField } from '@line-crm/shared'
 
 afterEach(() => cleanup())
@@ -47,6 +54,132 @@ describe('FormBuilder — パレット & 追加 (T-B1)', () => {
   it('空状態のガイドが出る', () => {
     render(<FormBuilder {...base()} />)
     expect(screen.getByText(/パレットから項目を/)).toBeTruthy()
+  })
+
+  it('タップ追加は末尾へ追加し、position を 0 から再採番する (T-A5)', () => {
+    const onSave = vi.fn()
+    const first: HarnessField = { id: 'a', type: 'email', label: '先頭', required: false, position: 9, config: {} }
+    render(<FormBuilder {...base({ initialFields: [first], onSave })} />)
+    fireEvent.click(screen.getByLabelText('数値を追加'))
+    fireEvent.click(screen.getByText('保存'))
+    const saved = onSave.mock.calls[0][0] as { fields: HarnessField[] }
+    expect(saved.fields.map((field) => field.type)).toEqual(['email', 'number'])
+    expect(saved.fields.map((field) => field.position)).toEqual([0, 1])
+  })
+})
+
+describe('FormBuilder — DnD activation と resolver (T-A1/T-A2)', () => {
+  it('マウスは 8px、タッチは delay+tolerance で起動する', () => {
+    expect(MOUSE_ACTIVATION.distance).toBe(8)
+    expect(TOUCH_ACTIVATION.delay).toBeGreaterThan(0)
+    expect(TOUCH_ACTIVATION.tolerance).toBeGreaterThan(0)
+    expect('distance' in TOUCH_ACTIVATION).toBe(false)
+  })
+
+  it('drag end の全分岐を決定的に解決する', () => {
+    expect(resolveDragEnd('palette:text', 'canvas', ['a', 'b'])).toEqual({ kind: 'add', type: 'text', index: null })
+    expect(resolveDragEnd('palette:text', 'a', ['a', 'b'])).toEqual({ kind: 'add', type: 'text', index: 0 })
+    expect(resolveDragEnd('palette:text', 'b', ['a', 'b'])).toEqual({ kind: 'add', type: 'text', index: 1 })
+    expect(resolveDragEnd('palette:text', null, ['a', 'b'])).toEqual({ kind: 'outside' })
+    expect(resolveDragEnd('a', 'b', ['a', 'b'])).toEqual({ kind: 'sort', from: 'a', to: 'b' })
+    expect(resolveDragEnd('a', 'a', ['a', 'b'])).toEqual({ kind: 'noop' })
+    expect(resolveDragEnd('a', null, ['a', 'b'])).toEqual({ kind: 'noop' })
+  })
+})
+
+describe('FormBuilder — drag visual feedback (T-A3/T-A4)', () => {
+  const fields: HarnessField[] = [
+    { id: 'a', type: 'text', label: 'お名前', required: false, position: 0, config: {} },
+    { id: 'b', type: 'email', label: 'メール欄', required: false, position: 1, config: {} },
+  ]
+
+  it('パレット drag ghost は日本語ラベルを表示する', () => {
+    render(<DragGhost activeDragId="palette:text" fields={[]} />)
+    expect(screen.getByTestId('drag-ghost').textContent).toContain('1行テキスト')
+  })
+
+  it('既存 field の drag ghost は field ラベルを表示する', () => {
+    render(<DragGhost activeDragId="b" fields={fields} />)
+    expect(screen.getByTestId('drag-ghost').textContent).toContain('メール欄')
+  })
+
+  it('palette-over-field は対象 field の直前に placeholder を置き、canvas を active にする', () => {
+    render(
+      <CanvasDropLayout activeDragId="palette:text" overId="b" fieldIds={['a', 'b']}>
+        <div data-testid="field-a">A</div>
+        <div data-testid="field-b">B</div>
+      </CanvasDropLayout>,
+    )
+    const layout = screen.getByTestId('canvas-drop-layout')
+    expect(layout.getAttribute('data-canvas-active')).toBe('true')
+    expect(Array.from(layout.children).map((node) => node.getAttribute('data-testid'))).toEqual([
+      'field-a',
+      'drop-placeholder',
+      'field-b',
+    ])
+  })
+
+  it('canvas 上では placeholder を field 一覧の末尾に置く', () => {
+    render(
+      <CanvasDropLayout activeDragId="palette:text" overId="canvas" fieldIds={['a', 'b']}>
+        <div data-testid="field-a">A</div>
+        <div data-testid="field-b">B</div>
+      </CanvasDropLayout>,
+    )
+    const layout = screen.getByTestId('canvas-drop-layout')
+    expect(Array.from(layout.children).map((node) => node.getAttribute('data-testid'))).toEqual([
+      'field-a',
+      'field-b',
+      'drop-placeholder',
+    ])
+  })
+
+  it('outside feedback は初期状態ではなく、message がある時だけ表示する', () => {
+    const { rerender } = render(<DropFeedback message={null} />)
+    expect(screen.queryByTestId('drop-feedback')).toBeNull()
+    rerender(<DropFeedback message="ここには置けません。キャンバスの上でカードを離してください" />)
+    expect(screen.getByTestId('drop-feedback').textContent).toContain('ここには置けません')
+  })
+
+  it('builder の DragOverlay は drag 前には空である', () => {
+    render(<FormBuilder {...base()} />)
+    expect(screen.getByTestId('drag-overlay').childElementCount).toBe(0)
+    expect(screen.queryByTestId('drag-ghost')).toBeNull()
+    expect(screen.queryByTestId('drop-feedback')).toBeNull()
+  })
+
+  it('KeyboardSensor で palette drag を開始し、Escape で ghost と highlight を消す', async () => {
+    render(<FormBuilder {...base()} />)
+    const paletteItem = screen.getByLabelText('1行テキストを追加')
+    fireEvent.keyDown(paletteItem, { key: ' ', code: 'Space' })
+
+    expect(await screen.findByTestId('drag-ghost')).toBeTruthy()
+    expect(screen.getByTestId('canvas').getAttribute('data-canvas-active')).toBe('true')
+
+    await waitFor(() => expect(screen.getByTestId('drag-overlay').childElementCount).toBeGreaterThan(0))
+    fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByTestId('drag-ghost')).toBeNull())
+    expect(screen.getByTestId('drag-overlay').childElementCount).toBe(0)
+    expect(screen.getByTestId('canvas').getAttribute('data-canvas-active')).toBe('false')
+  })
+
+  it('KeyboardSensor で空 canvas へ drop すると field を追加する', async () => {
+    render(<FormBuilder {...base()} />)
+    fireEvent.keyDown(screen.getByLabelText('1行テキストを追加'), { key: ' ', code: 'Space' })
+    await screen.findByTestId('drag-ghost')
+
+    fireEvent.keyDown(document, { key: ' ', code: 'Space' })
+
+    expect(await within(screen.getByTestId('canvas')).findByText('1行テキスト')).toBeTruthy()
+    expect(screen.queryByTestId('drop-feedback')).toBeNull()
+  })
+
+  it('field card の drag handle はキーボード操作できる', () => {
+    render(<FormBuilder {...base({ initialFields: [fields[0]] })} />)
+    const handle = screen.getByLabelText('ドラッグして並べ替え')
+    expect(handle.getAttribute('role')).toBe('button')
+    expect(handle.getAttribute('tabindex')).toBe('0')
   })
 })
 
