@@ -124,3 +124,49 @@ describe('T-D1 — show/hide ルート活用ヘルプ (R3)', () => {
     expect(screen.getByText(/ページ単位で丸ごと分けたい時は/)).toBeTruthy()
   })
 })
+
+describe('compound-fix — 同一 source に複数 jump ルール (A/B/C) の builder UX', () => {
+  // 現実的な A/B/C フォーム: 各ページに内容 field を持つ (質問+改ページ+内容)。
+  const threePages: HarnessField[] = [
+    { id: 'q1', type: 'choice', label: 'ルート', required: true, position: 0, config: { choices: ['A', 'B', 'C'], choiceItems: [{ title: 'A', slug: 'ciA' }, { title: 'B', slug: 'ciB' }, { title: 'C', slug: 'ciC' }] } },
+    { id: 'pA', type: 'page_break', label: 'Aページ', required: false, position: 1, config: {} },
+    { id: 'cA', type: 'text', label: 'A内容', required: false, position: 2, config: {} },
+    { id: 'pB', type: 'page_break', label: 'Bページ', required: false, position: 3, config: {} },
+    { id: 'cB', type: 'text', label: 'B内容', required: false, position: 4, config: {} },
+    { id: 'pC', type: 'page_break', label: 'Cページ', required: false, position: 5, config: {} },
+    { id: 'cC', type: 'text', label: 'C内容', required: false, position: 6, config: {} },
+  ]
+  const abcLogic: HarnessLogicRule[] = [
+    { id: 'r1', sourceFieldId: 'q1', operator: 'equals', value: 'A', action: 'jump', targetFieldId: 'pA' },
+    { id: 'r2', sourceFieldId: 'q1', operator: 'equals', value: 'B', action: 'jump', targetFieldId: 'pB' },
+    { id: 'r3', sourceFieldId: 'q1', operator: 'equals', value: 'C', action: 'jump', targetFieldId: 'pC' },
+  ]
+
+  it('同一 source field に 3 つの jump ルールが独立行として表示され、それぞれ飛び先 page を選べる', () => {
+    render(<FormBuilder {...base({ initialFields: threePages, initialFormType: 'multi_step', initialLogic: abcLogic })} />)
+    selectField('ルート')
+    const targets = screen.getAllByLabelText('分岐対象') as HTMLSelectElement[]
+    expect(targets).toHaveLength(3)
+    expect(targets.map((t) => t.value)).toEqual(['pA', 'pB', 'pC'])
+    // 全て page_break を飛び先候補に持つ
+    for (const t of targets) expect(Array.from(t.options).map((o) => o.value)).toEqual(expect.arrayContaining(['pA', 'pB', 'pC']))
+  })
+
+  it('3 ルールをそのまま save すると 3 つの flat rule が onSave に渡る (グルーピングは server 側)', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave, initialFields: threePages, initialFormType: 'multi_step', initialLogic: abcLogic })} />)
+    fireEvent.click(screen.getByText('保存'))
+    const savedLogic = (onSave.mock.calls[0][0] as { logic: HarnessLogicRule[] }).logic
+    expect(savedLogic).toHaveLength(3)
+    expect(savedLogic.every((r) => r.action === 'jump' && r.sourceFieldId === 'q1')).toBe(true)
+    expect(savedLogic.map((r) => r.targetFieldId)).toEqual(['pA', 'pB', 'pC'])
+  })
+
+  it('分岐を追加ボタンで同一 source に 2 つ目の jump ルールを増やせる', () => {
+    render(<FormBuilder {...base({ initialFields: threePages, initialFormType: 'multi_step', initialLogic: [abcLogic[0]] })} />)
+    selectField('ルート')
+    expect(screen.getAllByLabelText('分岐アクション')).toHaveLength(1)
+    fireEvent.click(screen.getByText('＋ 分岐を追加'))
+    expect(screen.getAllByLabelText('分岐アクション')).toHaveLength(2)
+  })
+})
