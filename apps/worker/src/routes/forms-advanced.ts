@@ -36,6 +36,7 @@ import {
   type HarnessLogicRule,
   type FormDesign,
   type FormDesignImages,
+  type FormDisplayType,
 } from '@line-crm/shared';
 import {
   canTransition,
@@ -74,6 +75,8 @@ interface StoredDefinition {
   logicFingerprint?: string | null;
   // form-design (Batch D): 色/画像テーマ (additive JSON key / migration 不要)。design 無しフォームは undefined。
   design?: FormDesign;
+  // form-route-branching (R2): 表示形式 (additive JSON key)。未設定フォームは undefined = 後方互換 (byte 不変)。
+  formType?: FormDisplayType;
 }
 
 function parseDefinition(json: string): StoredDefinition {
@@ -89,9 +92,11 @@ function parseDefinition(json: string): StoredDefinition {
       design: d.design && typeof d.design === 'object' && !Array.isArray(d.design)
         ? normalizeFormDesign(d.design)
         : undefined,
+      // form-route-branching: whitelist 2 値のみ。未設定は undefined = 後方互換。
+      formType: d.formType === 'simple' || d.formType === 'multi_step' ? d.formType : undefined,
     };
   } catch {
-    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined };
+    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined };
   }
 }
 
@@ -134,6 +139,8 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     logicFingerprint: def.logicFingerprint ?? null,
     // form-design (Batch D): 色/画像テーマ (builder の initialDesign / プレビュー反映用)。未設定は null。
     design: def.design ?? null,
+    // form-route-branching (R2): 表示形式 (builder の initialFormType)。未設定は null (builder が simple 既定表示)。
+    formType: def.formType ?? null,
     // N-7: publish 前は null (公開/埋め込み URL 発行不可)
     publicUrl,
     embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
@@ -240,8 +247,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -267,7 +274,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const decorationIds = new Set(fields.filter((f) => isDecorationType(f.type)).map((f) => f.id));
     const logic: HarnessLogicRule[] = (rawLogicRules as HarnessLogicRule[]).filter((r) => {
       if (!r || !fieldIds.has(r.sourceFieldId) || !fieldIds.has(r.targetFieldId)) return false;
-      if (decorationIds.has(r.sourceFieldId) || decorationIds.has(r.targetFieldId)) return false;
+      // 条件源 (source) は常に実入力 field (decoration を条件源にしない)。
+      if (decorationIds.has(r.sourceFieldId)) return false;
+      // target: form-route-branching — jump は page_break(改ページ=decoration)へ飛ぶのが正。
+      //   show/hide/skip は従来通り非 decoration field のみ (decoration を表示/隠す対象にしない)。
+      if (r.action !== 'jump' && decorationIds.has(r.targetFieldId)) return false;
       if (Array.isArray(r.conditions)) {
         for (const condition of r.conditions) {
           if (condition && decorationIds.has(condition.sourceFieldId)) return false;
@@ -275,7 +286,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       }
       if (Array.isArray(r.actions)) {
         for (const a of r.actions) {
-          if (a && (!fieldIds.has(a.targetFieldId) || decorationIds.has(a.targetFieldId))) return false;
+          if (!a || !fieldIds.has(a.targetFieldId)) return false;
+          if (a.action !== 'jump' && decorationIds.has(a.targetFieldId)) return false;
         }
       }
       return true;
@@ -343,6 +355,21 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       ? { ...(prevDef.design ?? {}), ...incomingDesign }
       : prevDef.design;
 
+    // ── form-route-branching (R2): form_type ──
+    // body.formType が有効値なら採用、無ければ prev を carry (未提供 save で勝手に変えない = byte 不変)。
+    const incomingFormType: FormDisplayType | undefined =
+      body.formType === 'simple' || body.formType === 'multi_step' ? body.formType : undefined;
+    const formTypeToPersist: FormDisplayType | undefined = incomingFormType ?? prevDef.formType;
+    // jump+simple backstop (最後の砦): jump rule があるのに表示形式が multi_step でない → 非ブロッキング警告。
+    // (builder の自動切替=主機構が働けば発火しない。API 直叩き/手動戻しの取りこぼしを save レスポンスで surface。)
+    const hasJumpRule = logic.some((r) => r.action === 'jump');
+    const saveWarnings: string[] = [];
+    if (hasJumpRule && formTypeToPersist !== 'multi_step') {
+      saveWarnings.push(
+        '「ページへ飛ぶ」分岐がありますが、表示形式が「1問ずつ表示」ではありません。ページ移動は「1問ずつ表示（multi_step）」でのみ動作します。表示形式を切り替えてください。',
+      );
+    }
+
     // preserve-raw: rawLogic (逐語) + logicFingerprint を additive JSON key で同梱 (migration 不要 / L-10)。
     const buildDefinitionJson = (address: string | null): string =>
       JSON.stringify({
@@ -353,6 +380,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         logicFingerprint: currentFingerprint,
         // form-design: design が非空のときだけ載せる (未設定フォームは従来と byte 一致 = 後方互換)。
         ...(designToPersist && Object.keys(designToPersist).length ? { design: designToPersist } : {}),
+        // form-route-branching: formType が有効なときだけ載せる (未設定フォームは byte 一致 = 後方互換)。
+        ...(formTypeToPersist ? { formType: formTypeToPersist } : {}),
       });
     const fieldRows = (slugFor: (fid: string) => string | null) =>
       fields.map((f) => ({ id: f.id, formalooFieldSlug: slugFor(f.id), fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) }));
@@ -394,6 +423,9 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         logic: logicToPush,
         existingFieldSlugs,
         preserveRawLogic,
+        // form-route-branching R2: baseline 差分時のみ form_type PATCH (勝手に変えない)。
+        formType: formTypeToPersist,
+        prevFormType: prevDef.formType,
       });
       if (pushed.ok) {
         // slug + address + (backfill 後の) rawLogic + design(色) を反映
@@ -473,7 +505,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     }
 
     const updated = await getFormalooForm(c.env.DB, id);
-    return c.json({ success: true, data: await serializeForm(c.env.DB, updated!, isOwnerCtx(c)) });
+    // form-route-branching: jump+simple backstop 等の非ブロッキング警告を builder へ surface (success は維持)。
+    return c.json({ success: true, data: await serializeForm(c.env.DB, updated!, isOwnerCtx(c)), ...(saveWarnings.length ? { warnings: saveWarnings } : {}) });
   } catch (err) {
     if (syncStarted && !syncSettled) {
       try {
@@ -560,6 +593,8 @@ formsAdvanced.get('/api/forms-advanced/:id/pull', async (c) => {
         logicFingerprint: r.logicFingerprint,
         // form-design (Batch D): Formaloo 側の色/画像テーマを builder に復元させる (非空のときのみ)。
         ...(r.design && Object.keys(r.design).length ? { design: r.design } : {}),
+        // form-route-branching (R2): Formaloo の表示形式を builder に復元させる (未設定は載せない)。
+        ...(r.formType ? { formType: r.formType } : {}),
       },
     });
   } catch (err) {
