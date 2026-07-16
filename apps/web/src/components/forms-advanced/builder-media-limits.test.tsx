@@ -110,3 +110,40 @@ describe('form-media-limits — 正直注記 + 既存 file UI 非退行 (T-B4)',
     expect(screen.getByLabelText('許可拡張子')).toBeTruthy()
   })
 })
+
+describe('form-media-limits — フォーム単位「後編集を許可しない」トグル + inert 注記 (T-C5)', () => {
+  it('フォーム設定にトグルが出て既定 ON (allow_post_edit 0 = 編集不可 = 現状挙動)', () => {
+    render(<FormBuilder {...base()} />)
+    const box = screen.getByLabelText('後編集を許可しない') as HTMLInputElement
+    expect(box.checked).toBe(true)
+  })
+
+  it('inert 注記（いまは保存のみ・実効化は「あと編集」機能=次の弾）が表示される', () => {
+    render(<FormBuilder {...base()} />)
+    expect(screen.getByText(/いまは保存のみ/)).toBeTruthy()
+    expect(screen.getByText(/あと編集/)).toBeTruthy()
+  })
+
+  it('既定 (未操作) の保存では PUT body allowPostEdit=0 が載る', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave })} />)
+    fireEvent.click(screen.getByText('保存'))
+    const saved = onSave.mock.calls[0][0] as { allowPostEdit?: number }
+    expect(saved.allowPostEdit).toBe(0)
+  })
+
+  it('トグルを外す (後編集を許可する) と保存で allowPostEdit=1 が載る', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave })} />)
+    fireEvent.click(screen.getByLabelText('後編集を許可しない')) // ON→OFF = 編集を許可
+    fireEvent.click(screen.getByText('保存'))
+    const saved = onSave.mock.calls[0][0] as { allowPostEdit?: number }
+    expect(saved.allowPostEdit).toBe(1)
+  })
+
+  it('initialAllowPostEdit=1 で初期化するとトグルは OFF (許可済) 表示', () => {
+    render(<FormBuilder {...base({ initialAllowPostEdit: 1 })} />)
+    const box = screen.getByLabelText('後編集を許可しない') as HTMLInputElement
+    expect(box.checked).toBe(false)
+  })
+})

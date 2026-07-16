@@ -75,9 +75,11 @@ export interface BuilderProps {
   initialDesign?: FormDesign
   /** form-route-branching (R2): 初期表示形式 (simple/multi_step)。未設定は simple 扱い表示。 */
   initialFormType?: FormDisplayType
+  /** form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。未設定は 0 (=編集不可=現状挙動)。弾S は inert。 */
+  initialAllowPostEdit?: number
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; allowPostEdit?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
@@ -686,6 +688,8 @@ export default function FormBuilder(props: BuilderProps) {
   const [formType, setFormType] = useState<FormDisplayType | undefined>(props.initialFormType)
   const [formTypeNotice, setFormTypeNotice] = useState<string | null>(null)
   const [saveWarnings, setSaveWarnings] = useState<string[]>([])
+  // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。弾S は inert (保存のみ・実効化は弾M)。
+  const [allowPostEdit, setAllowPostEdit] = useState<number>(props.initialAllowPostEdit ?? 0)
   // jump 追加時: simple なら multi_step へ自動切替 + 可視通知 (多層防御の主機構)。
   const ensureMultiStep = () => {
     setFormType('multi_step')
@@ -790,7 +794,7 @@ export default function FormBuilder(props: BuilderProps) {
     try {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType })
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, allowPostEdit })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
@@ -914,6 +918,23 @@ export default function FormBuilder(props: BuilderProps) {
         {props.status === 'published' && props.onUnpublish && (
           <button type="button" onClick={props.onUnpublish} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200">非公開に戻す</button>
         )}
+      </div>
+
+      {/* form-media-limits ③: フォーム単位「後編集を許可しない」トグル (弾M あと編集の前提スイッチ)。
+          弾S は inert = 保存のみ (実効化は弾M)。既定 ON=allow_post_edit 0 = 現状の hosted 挙動と一致。 */}
+      <div className="mb-2 flex flex-wrap items-start gap-x-2 gap-y-1 rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
+        <label className="flex items-center gap-2 text-xs text-gray-600">
+          <input
+            type="checkbox"
+            aria-label="後編集を許可しない"
+            checked={allowPostEdit === 0}
+            onChange={(e) => setAllowPostEdit(e.target.checked ? 0 : 1)}
+          />
+          <span>回答者による後からの編集を許可しない（フォーム単位）</span>
+        </label>
+        <span className="basis-full text-[10px] text-gray-400 leading-snug">
+          ※ この設定はいまは保存のみで、実際に効き始めるのは「あと編集」機能（次の弾）を作ってからです。
+        </span>
       </div>
 
       {/* ① 今すぐ同期リカバリ: sync_status=out_of_sync のとき、原因 (syncError) + 再送ヘルプ + 「今すぐ同期」を
