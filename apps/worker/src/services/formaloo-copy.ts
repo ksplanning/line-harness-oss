@@ -50,6 +50,24 @@ function extractForm(data: unknown): Record<string, unknown> {
 }
 
 /**
+ * 反映確認の比較専用正規化 (form-copy-sync-warning-fix / evidence/spike-normalization-matrix.md §2+§4)。
+ * Formaloo はサーバ側で文言を保存時に正規化する (実測):
+ *   - **full NFKC**: 全角！→半角! / ？→? / （）→() / 全角英数→半角 / 丸数字①→1 / ㈱→(株) /
+ *     半角カナ→全角 / ローマ数字Ⅳ→IV / 単位㎏→kg / 濁点合成 が→が / NBSP→space。
+ *   - NFKC 非対象の追加 fold: 制御空白 \r \t → space / 連続スペース → 単一 space。
+ * harness は owner が打った全角値をそのまま送るため、strict 等値だと恒久不一致 → out_of_sync 誤警告になる。
+ * 比較の両辺に本正規化を掛けることで Formaloo の fold と **exact mirror** し誤警告を消す (over-fold なし)。
+ *
+ * fail-closed 温存 (最重要): \n は保持・lowercase/trim は追加しない (copy は大小区別・sent は既に trim 済)。
+ *   英語既定 'Thanks! submitted successfully' や旧異文言など **真の未反映** は本正規化後も日本語 copy と
+ *   不一致のまま → 依然 out_of_sync (確認を殺さない)。**送信経路 (formCopyFields/PATCH body) は 1 バイトも
+ *   変えない** = 比較専用 (comparison-only)。owner 入力の全角値は Formaloo にそのまま渡し続ける。
+ */
+function normalizeForCompare(s: string): string {
+  return s.normalize('NFKC').replace(/[\r\t]/g, ' ').replace(/ +/g, ' ');
+}
+
+/**
  * meta PATCH 後に GET-after-PATCH で「送った文言が本当に反映されたか」を確認する (soft-200 対策)。
  * 送った各文言 (formCopyFields で Formaloo 直キー + 値へ) を remote GET の値と厳密一致で比較し、
  * eventual consistency 用に bounded retry する。全一致で ok / 不一致・GET 失敗は ok:false (route が out_of_sync)。
@@ -73,7 +91,12 @@ export async function confirmFormCopyReflected(
       const form = extractForm(g.data);
       let allMatch = true;
       for (const [field, value] of wanted) {
-        if (form[field] !== value) { allMatch = false; lastMiss = field; break; }
+        // form-copy-sync-warning-fix: Formaloo の server-side 正規化 (全角→半角 等) に耐性を持たせる比較。
+        //   非 string (欠落/null = soft-200 無言無視の兆候) は従来通り不一致扱い (fail-closed 温存)。
+        const got = form[field];
+        if (typeof got !== 'string' || normalizeForCompare(got) !== normalizeForCompare(value)) {
+          allMatch = false; lastMiss = field; break;
+        }
       }
       if (allMatch) return { ok: true };
     }
