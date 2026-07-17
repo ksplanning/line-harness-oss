@@ -14,14 +14,32 @@ function setup(design: FormDesign = {}, images: FormDesignImages = {}) {
 }
 
 describe('DesignPanel — 配色プリセット', () => {
-  it('4 案のプリセットを描画し、クリックで配色 + presetId を適用する', () => {
+  it('全 12 プリセット (現行4 + OD-1 追加8) を描画し、クリックで配色 + presetId を適用する', () => {
     const { onChange } = setup()
-    expect(LINE_PRESET_PALETTES.length).toBe(4)
+    expect(LINE_PRESET_PALETTES.length).toBe(12)
     for (const p of LINE_PRESET_PALETTES) expect(screen.getByTestId(`preset-${p.id}`)).toBeTruthy()
 
     fireEvent.click(screen.getByTestId('preset-line-green'))
     const green = LINE_PRESET_PALETTES.find((p) => p.id === 'line-green')!
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ ...green.colors, presetId: 'line-green' }))
+  })
+
+  it('OD-1 追加候補 (dark-sumi) もデータ駆動で描画され click で {...colors, presetId} を渡す', () => {
+    const { onChange } = setup()
+    const sumi = LINE_PRESET_PALETTES.find((p) => p.id === 'dark-sumi')!
+    fireEvent.click(screen.getByTestId('preset-dark-sumi'))
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ ...sumi.colors, presetId: 'dark-sumi' }))
+  })
+
+  it('ダーク採用に伴い 明るい系 / ダーク系 の 2 グループ見出しで区切る (12種で縦が伸びる対策)', () => {
+    setup()
+    expect(screen.getByTestId('preset-group-light')).toBeTruthy()
+    expect(screen.getByTestId('preset-group-dark')).toBeTruthy()
+    // ダーク系グループには 3 種の dark preset が入る。
+    const darkIds = LINE_PRESET_PALETTES.filter((p) => p.tone === 'dark').map((p) => p.id)
+    expect(darkIds).toEqual(['dark-sumi', 'dark-indigo', 'dark-tokiwa'])
+    const darkGroup = screen.getByTestId('preset-group-dark')
+    for (const id of darkIds) expect(darkGroup.querySelector(`[data-testid="preset-${id}"]`)).toBeTruthy()
   })
 })
 
