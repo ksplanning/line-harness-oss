@@ -10,8 +10,8 @@
 // =============================================================================
 
 import type { FormCopy } from './form-copy';
-import { buildImageDescriptionHtml, parseImageDescription, type ImageWidth } from './form-image';
-import type { FormDesignImageUpload } from './form-design';
+import { buildImageDescriptionHtml, parseImageDescription, isImageWidth, isSafeImageUrl, type ImageWidth } from './form-image';
+import { validateImageUpload, type FormDesignImageUpload } from './form-design';
 
 /** harness 側 field 種別 (MVP subset / 素人向け日本語ラベルは web が付与)。 */
 export const FORMALOO_FIELD_TYPES = [
@@ -354,6 +354,33 @@ export function validateHarnessField(
       return { ok: false, error: 'config.videoHeight must match /^\\d{2,4}(px|vw)$/' };
     }
     config.videoHeight = rawCfg.videoHeight;
+  }
+  // form-image-decoration: 差し込み画像 config を whitelist 検証 (M-21 未知素通し禁止)。
+  //   imageUrl は http(s) のみ (javascript:/data: 拒否 = R-4 XSS)。空は許容 (imageUpload 解決待ち)。
+  if (rawCfg.imageUrl !== undefined) {
+    if (typeof rawCfg.imageUrl !== 'string') return { ok: false, error: 'config.imageUrl must be string' };
+    if (rawCfg.imageUrl && !isSafeImageUrl(rawCfg.imageUrl)) return { ok: false, error: '画像URLは http(s) のみ受理します' };
+    config.imageUrl = rawCfg.imageUrl;
+  }
+  if (rawCfg.imageAlt !== undefined) {
+    if (typeof rawCfg.imageAlt !== 'string') return { ok: false, error: 'config.imageAlt must be string' };
+    config.imageAlt = rawCfg.imageAlt;
+  }
+  // imageWidth は small/medium/full enum whitelist (不正は reject / render に効く値ゆえ既定丸めでなく明示)。
+  if (rawCfg.imageWidth !== undefined) {
+    if (!isImageWidth(rawCfg.imageWidth)) return { ok: false, error: 'config.imageWidth must be small/medium/full' };
+    config.imageWidth = rawCfg.imageWidth;
+  }
+  // imageUpload は form-design の validateImageUpload を再利用 (intent/10MB/MIME allowlist)。whitelist copy で載せる。
+  if (rawCfg.imageUpload !== undefined) {
+    const v = validateImageUpload(rawCfg.imageUpload);
+    if (!v.ok) return { ok: false, error: v.reason ?? '画像が不正です' };
+    const up = rawCfg.imageUpload as Record<string, unknown>;
+    const copy: FormDesignImageUpload = { intent: up.intent as FormDesignImageUpload['intent'] };
+    if (typeof up.dataUrl === 'string') copy.dataUrl = up.dataUrl;
+    if (typeof up.mimeType === 'string') copy.mimeType = up.mimeType;
+    if (typeof up.filename === 'string') copy.filename = up.filename;
+    config.imageUpload = copy;
   }
   // treasure-b1-palette: video (oembed) は url 必須 = 空/未設定は保存 hold (reject)。
   //   空 url の oembed PATCH は 500 になるため、空 url を push 経路へ通さない (spike 実測 / honest surface)。

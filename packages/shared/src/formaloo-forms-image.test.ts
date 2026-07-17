@@ -5,9 +5,13 @@ import {
   isDecorationType,
   toFormalooFieldPayload,
   fromFormalooField,
+  validateHarnessField,
   type HarnessField,
 } from './formaloo-forms';
 import { buildImageDescriptionHtml } from './form-image';
+
+const okField = (config: Record<string, unknown>) =>
+  validateHarnessField({ id: 'f_img', type: 'image', label: '差し込み画像', required: false, position: 3, config });
 
 const imgField = (config: Record<string, unknown>): HarnessField => ({
   id: 'f_img',
@@ -77,5 +81,42 @@ describe('T-A1 fromFormalooField meta→image 判別', () => {
     const back = fromFormalooField({ ...payload, slug: 'sec_r' });
     expect(back?.type).toBe('image');
     expect(back?.config).toEqual({ imageUrl: 'https://cdn.test/r.png', imageAlt: 'alt値', imageWidth: 'small' });
+  });
+});
+
+describe('T-A3 validateHarnessField image ケース (M-21)', () => {
+  it('http(s) imageUrl + enum imageWidth + alt を受理 (required は装飾ゆえ false 強制)', () => {
+    const r = okField({ imageUrl: 'https://cdn.test/a.png', imageAlt: '写真', imageWidth: 'full' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.field.type).toBe('image');
+      expect(r.field.required).toBe(false);
+      expect(r.field.config).toEqual({ imageUrl: 'https://cdn.test/a.png', imageAlt: '写真', imageWidth: 'full' });
+    }
+  });
+
+  it('javascript:/data: imageUrl を reject (XSS / R-4)', () => {
+    expect(okField({ imageUrl: 'javascript:alert(1)' }).ok).toBe(false);
+    expect(okField({ imageUrl: 'data:text/html,<script>' }).ok).toBe(false);
+  });
+
+  it('不正 imageWidth enum を reject', () => {
+    expect(okField({ imageUrl: 'https://cdn.test/a.png', imageWidth: 'huge' }).ok).toBe(false);
+  });
+
+  it('pending imageUpload (replace/10MB内) を受理し imageUrl 空を許容', () => {
+    const r = okField({ imageUpload: { intent: 'replace', dataUrl: 'data:image/png;base64,AAAA' } });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.field.config.imageUpload).toEqual({ intent: 'replace', dataUrl: 'data:image/png;base64,AAAA' });
+  });
+
+  it('不正 imageUpload (非画像 dataUrl) を reject', () => {
+    expect(okField({ imageUpload: { intent: 'replace', dataUrl: 'data:text/plain;base64,AAAA' } }).ok).toBe(false);
+  });
+
+  it('unknown config key は drop する (M-21 未知素通し禁止)', () => {
+    const r = okField({ imageUrl: 'https://cdn.test/a.png', imageWidth: 'medium', bogusKey: 'x' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.field.config).not.toHaveProperty('bogusKey');
   });
 });
