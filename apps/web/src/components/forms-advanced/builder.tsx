@@ -40,6 +40,7 @@ import {
 } from './field-types'
 import FormPreview from './form-preview'
 import DesignPanel from './design-panel'
+import ImageFieldPanel from './image-field-panel'
 import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 
@@ -109,7 +110,7 @@ function newField(type: HarnessFieldType): HarnessField {
     label: fieldTypeLabel(type),
     required: false,
     position: 0,
-    config: hasChoices(type) ? { choices: ['選択肢1', '選択肢2'] } : type === 'section' ? { text: '' } : type === 'video' ? { videoUrl: '' } : {},
+    config: hasChoices(type) ? { choices: ['選択肢1', '選択肢2'] } : type === 'section' ? { text: '' } : type === 'video' ? { videoUrl: '' } : type === 'image' ? { imageWidth: 'medium' } : {},
   }
 }
 
@@ -247,6 +248,15 @@ function FieldCard({
               <span className="block">
                 <span className="block font-bold text-gray-800">{field.label}</span>
                 {field.config.text && <span className="block mt-1 text-xs text-gray-500">{field.config.text}</span>}
+              </span>
+            ) : field.type === 'image' ? (
+              // form-image-decoration: 差し込み画像はサムネ + ラベルで canvas 表示。
+              <span className="flex items-center gap-2 text-xs text-gray-600">
+                <span aria-hidden>🖼️</span>
+                {(field.config.imageUpload?.dataUrl || field.config.imageUrl) ? (
+                  <img src={field.config.imageUpload?.dataUrl || field.config.imageUrl} alt="" style={{ height: 24, borderRadius: 4, objectFit: 'cover' }} />
+                ) : null}
+                <span>{field.label || '画像'}</span>
               </span>
             ) : (
               <span className="flex items-center gap-2 text-xs text-gray-500">
@@ -407,6 +417,8 @@ function SettingsPanel({
             </div>
           </>
         )}
+        {/* form-image-decoration: 差し込み画像 (upload / URL / alt / 表示幅)。先頭に置けば帯ヘッダーにもなる。 */}
+        {field.type === 'image' && <ImageFieldPanel config={cfg} onChange={setCfg} />}
       </div>
     )
   }
