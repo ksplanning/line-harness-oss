@@ -38,6 +38,16 @@ export const RATING_SUB_TYPES = ['star', 'like_dislike', 'nps', 'score', 'embede
 export type RatingSubType = (typeof RATING_SUB_TYPES)[number];
 export type HarnessDecorationType = (typeof DECORATION_FIELD_TYPES)[number];
 
+/**
+ * b1-field-polish: video(oembed) の既定表示高さ (単一正本)。spike 実測: oembed 既定 config.height=100px の
+ * 薄帯 (441×100) は再生不能。250px で 441×250 = 再生可能 (OD-3)。push は videoHeight 未設定時この値を補完し
+ * url と常時同送する (既存 video も次回保存で拡大 / OD-4)。pull はこの既定値を drop して false-drift を防ぐ。
+ */
+export const DEFAULT_VIDEO_HEIGHT = '250px';
+
+/** videoHeight の受理形式 (CSS 注入防止で自由文字列を通さない / 2〜4 桁 px|vw のみ)。 */
+const VIDEO_HEIGHT_PATTERN = /^\d{2,4}(px|vw)$/;
+
 export type HarnessFieldType = (typeof FORMALOO_FIELD_TYPES)[number] | HarnessDecorationType;
 
 export function isDecorationType(t: string): t is HarnessDecorationType {
@@ -108,6 +118,12 @@ export interface HarnessFieldConfig {
    * 空/未設定は保存 hold (validate reject) — 空 url の oembed PATCH は 500 になるため常に非空を push (spike 実測)。
    */
   videoUrl?: string;
+  /**
+   * b1-field-polish: video(oembed) の表示高さ (CSS 長さ・例 "350px")。既定 (DEFAULT_VIDEO_HEIGHT) と一致 or
+   * 未設定は「未設定」扱いで pull/fingerprint から drop (既存 video の byte 不変ガード = maxSizeKb=2048 と同型)。
+   * push は videoHeight ?? DEFAULT を config.height として url と常時同送する (薄帯拡大)。validate は px|vw whitelist。
+   */
+  videoHeight?: string;
 }
 
 export interface HarnessField {
@@ -299,6 +315,14 @@ export function validateHarnessField(
     if (typeof rawCfg.videoUrl !== 'string') return { ok: false, error: 'config.videoUrl must be string' };
     config.videoUrl = rawCfg.videoUrl;
   }
+  // b1-field-polish: video の表示高さは px|vw whitelist で正規化 (CSS 注入防止・自由文字列 reject / M-21)。
+  //   未定義は許容 (push が既定高さを補完)。既存 videoUrl ガードは不変。
+  if (rawCfg.videoHeight !== undefined) {
+    if (typeof rawCfg.videoHeight !== 'string' || !VIDEO_HEIGHT_PATTERN.test(rawCfg.videoHeight)) {
+      return { ok: false, error: 'config.videoHeight must match /^\\d{2,4}(px|vw)$/' };
+    }
+    config.videoHeight = rawCfg.videoHeight;
+  }
   // treasure-b1-palette: video (oembed) は url 必須 = 空/未設定は保存 hold (reject)。
   //   空 url の oembed PATCH は 500 になるため、空 url を push 経路へ通さない (spike 実測 / honest surface)。
   if (o.type === 'video' && !config.videoUrl) {
@@ -338,12 +362,15 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
   }
   // treasure-b1-palette: video は装飾だが Formaloo type=oembed (meta ではない = explicit 分岐)。
   //   url は常に emit する (無いと oembed PATCH=500・spike 実測)。validate が空 url を保存 hold で弾く。
+  //   b1-field-polish: config.height を url と常時同送 (videoHeight 未設定は既定を補完 = 薄帯拡大 / OD-3・OD-4)。
+  //   config 単独 PATCH は 500 ゆえ url と同じ payload に載せる (spike 実測)。
   if (field.type === 'video') {
     return {
       type: 'oembed',
       title: field.label,
       url: field.config.videoUrl ?? '',
       position: field.position,
+      config: { height: field.config.videoHeight ?? DEFAULT_VIDEO_HEIGHT },
     };
   }
   const p: Record<string, unknown> = {
@@ -417,13 +444,18 @@ export function fromFormalooField(
 
   // treasure-b1-palette: oembed(video) は装飾ゆえ FORMALOO_TO_HARNESS_TYPE 逆引きに載らない → meta と同様 explicit 分岐。
   if (formalooType === 'oembed') {
+    const videoConfig: HarnessFieldConfig = { videoUrl: typeof o.url === 'string' ? o.url : '' };
+    // b1-field-polish: config.height を pull。既定値 (DEFAULT_VIDEO_HEIGHT) と未載は set しない
+    //   (既存 video の byte 不変ガード = maxSizeKb=2048 と同型・非既定のみ videoHeight に載せる)。
+    const rawHeight = (o.config && typeof o.config === 'object' ? (o.config as Record<string, unknown>).height : undefined);
+    if (typeof rawHeight === 'string' && rawHeight && rawHeight !== DEFAULT_VIDEO_HEIGHT) videoConfig.videoHeight = rawHeight;
     return {
       id,
       type: 'video',
       label: typeof o.title === 'string' ? o.title : '',
       required: false,
       position: typeof o.position === 'number' ? o.position : 0,
-      config: { videoUrl: typeof o.url === 'string' ? o.url : '' },
+      config: videoConfig,
     };
   }
 

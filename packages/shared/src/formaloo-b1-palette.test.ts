@@ -204,9 +204,10 @@ describe('B1 signature — push/pull round-trip (T-B2 / 固有 config なし)', 
 });
 
 describe('B1 video — push oembed url 常時 emit (T-C3)', () => {
-  test('{type:video,config:{videoUrl:X}} → {type:oembed,url:X,title,position} (url 常時)', () => {
+  test('{type:video,config:{videoUrl:X}} → {type:oembed,url:X,title,position,config:{height}} (url 常時)', () => {
+    // b1-field-polish: push は config.height を url と常時同送 (videoHeight 未設定は既定 250px 補完 = 薄帯拡大)。
     const p = toFormalooFieldPayload(field('video', { videoUrl: 'https://youtu.be/x' }, { label: '説明動画', position: 2 }));
-    expect(p).toEqual({ type: 'oembed', title: '説明動画', url: 'https://youtu.be/x', position: 2 });
+    expect(p).toEqual({ type: 'oembed', title: '説明動画', url: 'https://youtu.be/x', position: 2, config: { height: '250px' } });
     expect('url' in p).toBe(true); // 無いと PATCH 500 (spike 実測)
   });
 });
