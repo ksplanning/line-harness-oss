@@ -155,6 +155,81 @@ describe('FormPreview — form-design 反映 (Batch D)', () => {
   })
 })
 
+// form-design-presets (F-HIGH-1): ダーク preset 選択時、プレビューのラベル類が固定 text-gray-* のまま
+//   暗背景で不可視 (≈1.1:1) になる欠陥の回帰防止。ラベルは preset の textColor に従い、section box は
+//   fieldColor へ追随する。light preset / design 無しは従来見た目の非退行を担保する。
+describe('FormPreview — ダーク preset ラベル可読性 (F-HIGH-1)', () => {
+  function relLum(hex: string): number {
+    const h = hex.replace('#', '')
+    const ch = [0, 2, 4].map((i) => {
+      const c = parseInt(h.slice(i, i + 2), 16) / 255
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+    })
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+  }
+  function contrast(a: string, b: string): number {
+    const l1 = relLum(a), l2 = relLum(b)
+    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+  }
+  // dark-sumi (spec §3.3): bg #1A1917 / text #F2EFE9 / field #262523。
+  const darkSumi: FormDesign = {
+    themeColor: '#06C755', backgroundColor: '#1A1917', buttonColor: '#06C755', textColor: '#F2EFE9',
+    fieldColor: '#262523', borderColor: '#3A3835', submitTextColor: '#0A1F14', presetId: 'dark-sumi',
+  }
+  const fields: HarnessField[] = [
+    { id: 'sec', type: 'section', label: 'ご案内', required: true, position: 0, config: { text: '注意事項' } },
+    { id: 'name', type: 'text', label: 'お名前', required: true, position: 1, config: { description: '本名でご記入ください' } },
+  ]
+
+  it('ダーク preset: フィールドラベルが textColor で描画され、暗背景とのコントラスト >= 4.5', () => {
+    render(<FormPreview title="ダーク" fields={fields} design={darkSumi} />)
+    const fieldNode = screen.getByTestId('preview-field')
+    const label = within(fieldNode).getByText('お名前')
+    // ラベルは固定 gray でなく preset textColor に従う。
+    expect(colorMatches(label.style.color, '#F2EFE9')).toBe(true)
+    // 実効コントラスト (ラベル textColor ↔ フォーム背景) が可読域。
+    expect(contrast('#F2EFE9', '#1A1917')).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('ダーク preset: フィールド補足説明も textColor に従う (暗背景で不可視にならない)', () => {
+    render(<FormPreview title="ダーク" fields={fields} design={darkSumi} />)
+    const desc = screen.getByTestId('preview-field-description')
+    expect(colorMatches(desc.style.color, '#F2EFE9')).toBe(true)
+  })
+
+  it('ダーク preset: section box が fieldColor へ追随し、見出し/本文が textColor で可読 (fieldColor↔textColor>=4.5)', () => {
+    render(<FormPreview title="ダーク" fields={fields} design={darkSumi} />)
+    const section = screen.getByTestId('preview-section')
+    expect(colorMatches(section.style.backgroundColor, '#262523')).toBe(true)
+    const heading = within(section).getByText('ご案内')
+    expect(colorMatches(heading.style.color, '#F2EFE9')).toBe(true)
+    // 番人テストと同じ field↔text の可読保証をプレビューでも満たす。
+    expect(contrast('#262523', '#F2EFE9')).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('light preset (line-green): ラベルは on-brand textColor に従い可読 = 非退行 (実質同等)', () => {
+    // line-green textColor #17352A on field #FFFFFF / bg #F4FBF7 = 従来同様に濃色で読める。
+    const lineGreen: FormDesign = {
+      themeColor: '#06C755', backgroundColor: '#F4FBF7', buttonColor: '#06C755', textColor: '#17352A',
+      fieldColor: '#FFFFFF', borderColor: '#B7DCC8', submitTextColor: '#FFFFFF', presetId: 'line-green',
+    }
+    render(<FormPreview title="ライト" fields={fields} design={lineGreen} />)
+    const label = within(screen.getByTestId('preview-field')).getByText('お名前')
+    expect(colorMatches(label.style.color, '#17352A')).toBe(true)
+    expect(contrast('#17352A', '#F4FBF7')).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('design 無し: ラベル/section に inline color を付けず従来の gray クラスのまま (完全非退行)', () => {
+    render(<FormPreview title="無地" fields={fields} />)
+    const label = within(screen.getByTestId('preview-field')).getByText('お名前')
+    // textColor 未設定 → inline style 無し = 従来 text-gray-800 クラスが支配。
+    expect(label.style.color).toBe('')
+    const section = screen.getByTestId('preview-section')
+    expect(section.style.backgroundColor).toBe('')
+    expect(within(section).getByText('ご案内').style.color).toBe('')
+  })
+})
+
 describe('FormPreview — 補足説明 + 残り文字数ライブカウンター (② プレビュー入力可能化)', () => {
   it('補足説明をラベルの直下に描画する', () => {
     const fields: HarnessField[] = [

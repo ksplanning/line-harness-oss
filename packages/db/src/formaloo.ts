@@ -94,6 +94,12 @@ export interface CreateFormalooFormInput {
   // (client body を無条件採用しない = server 権威 / Codex B#1)。未指定は両 NULL (env 鍵 / 共通表示)。
   lineAccountId?: string | null;
   workspaceId?: string | null;
+  // form-design-presets ② (create-time seed): 新規フォームの definition_json に埋める初期 design。
+  //   デザイン未設定フォームが Formaloo 暗色デフォルト (#37352F 同色 = 入力欄不可視) に落ちる罠の根絶。
+  //   ⚠️ shared の FormDesign 型を import しない (packages/db は dependencies 空 = shared 非依存を維持 / BLOCKING2)。
+  //   DAO は「渡された object を JSON へ直列化するだけ」に留め、canonical 型は route/web 側が保持する。
+  //   未指定 / 空 object は旧リテラルを byte 維持 (既存 caller 後方互換)。
+  design?: Record<string, string | null | undefined>;
 }
 
 export async function createFormalooForm(
@@ -102,17 +108,23 @@ export async function createFormalooForm(
 ): Promise<FormalooForm> {
   const id = `fa_${crypto.randomUUID()}`;
   const now = jstNow();
+  // design が非空のときだけ definition に seed する。未指定 / 空 object は旧リテラルと byte 完全一致
+  // (既存 caller = POST route + db test 群は無改変で従来挙動 / 既存 design=null フォーム不可触)。
+  const definitionJson = input.design && Object.keys(input.design).length > 0
+    ? JSON.stringify({ fields: [], logic: [], design: input.design })
+    : '{"fields":[],"logic":[]}';
   await db
     .prepare(
       `INSERT INTO formaloo_forms
          (id, title, description, definition_json, on_submit_tag_id, on_submit_scenario_id, submit_message,
           submit_count, deleted, builder_status, line_account_id, workspace_id, created_at, updated_at)
-       VALUES (?, ?, ?, '{"fields":[],"logic":[]}', ?, ?, ?, 0, 0, 'draft', ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'draft', ?, ?, ?, ?)`,
     )
     .bind(
       id,
       input.title,
       input.description ?? null,
+      definitionJson,
       input.onSubmitTagId ?? null,
       input.onSubmitScenarioId ?? null,
       input.submitMessage ?? null,

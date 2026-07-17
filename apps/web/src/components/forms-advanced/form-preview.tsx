@@ -151,13 +151,23 @@ function PreviewControl({ field }: { field: HarnessField }) {
   }
 }
 
-function PreviewField({ field, themeColor }: { field: HarnessField; themeColor: string }) {
+// form-design-presets (F-HIGH-1): ダーク preset 選択時、ラベル類が Tailwind 固定 text-gray-* のままだと
+//   暗背景に near-black で描画され不可視 (≈1.1:1)。preset の textColor に従わせて可読性を確保する。
+//   非退行: textColor 未設定 (design 無し / 未指定) は inline style を付けず従来 gray クラスのまま。
+//   section は自前の固定 light box (bg-[#F0FFF6]) を持つため、box を fieldColor へ追随させて
+//   textColor(=light) を載せる (fieldColor↔textColor は番人テストで >=4.5 保証ゆえ常に可読)。
+function PreviewField({ field, themeColor, textColor, fieldColor }: { field: HarnessField; themeColor: string; textColor?: string; fieldColor?: string }) {
+  const textStyle = textColor ? { color: textColor } : undefined
   if (isDecoration(field.type)) {
     if (field.type === 'section') {
       return (
-        <div data-testid="preview-section" className="rounded-lg bg-[#F0FFF6] px-4 py-3">
-          <h3 className="font-bold text-gray-900">{field.label}</h3>
-          {field.config.text && <p className="mt-1 whitespace-pre-wrap text-sm text-gray-600">{field.config.text}</p>}
+        <div
+          data-testid="preview-section"
+          className="rounded-lg bg-[#F0FFF6] px-4 py-3"
+          style={fieldColor ? { backgroundColor: fieldColor } : undefined}
+        >
+          <h3 className="font-bold text-gray-900" style={textStyle}>{field.label}</h3>
+          {field.config.text && <p className="mt-1 whitespace-pre-wrap text-sm text-gray-600" style={textStyle}>{field.config.text}</p>}
         </div>
       )
     }
@@ -197,7 +207,7 @@ function PreviewField({ field, themeColor }: { field: HarnessField; themeColor: 
     <div data-testid="preview-field" className="space-y-2">
       <div className="flex items-center gap-2">
         <span aria-hidden>{fieldTypeIcon(field.type)}</span>
-        <label htmlFor={`preview-control-${field.id}`} className="text-sm font-medium text-gray-800">{field.label}</label>
+        <label htmlFor={`preview-control-${field.id}`} className="text-sm font-medium text-gray-800" style={textStyle}>{field.label}</label>
         {field.required && (
           <span className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white" style={{ backgroundColor: themeColor }}>
             必須
@@ -206,7 +216,7 @@ function PreviewField({ field, themeColor }: { field: HarnessField; themeColor: 
       </div>
       {/* 補足説明 (Help text) をラベル直下に表示。公開フォームでも項目の Help text として出る。 */}
       {field.config.description && (
-        <p data-testid="preview-field-description" className="whitespace-pre-wrap text-xs text-gray-500">{field.config.description}</p>
+        <p data-testid="preview-field-description" className="whitespace-pre-wrap text-xs text-gray-500" style={textStyle}>{field.config.description}</p>
       )}
       {/* ② 一行テキストの maxLength は入力に実際に効かせ、「残り N 文字」ライブカウンターを PreviewControl 内に表示。
           hosted 公開フォームは「N文字まで」静的注記+超過エラーで実効 (下の忠実性注記で開示)。 */}
@@ -227,6 +237,8 @@ export default function FormPreview({ title, description, fields, design, formTy
   const submitTextColor = design?.submitTextColor || '#FFFFFF'
   const bgColor = design?.backgroundColor || '#FFFFFF'
   const textColor = design?.textColor || undefined
+  // form-design-presets (F-HIGH-1): section の light box をダーク preset で追随させ、textColor(=light) を可読にする。
+  const fieldColor = design?.fieldColor || undefined
   const logoUrl = design?.logoUrl || null
   const coverUrl = design?.backgroundImageUrl || null
   // 視覚に効く design key があれば fidelity note を「反映しています」に更新 (無ければ従来 note)。
@@ -258,7 +270,7 @@ export default function FormPreview({ title, description, fields, design, formTy
         </header>
 
         <div className="space-y-5 border-t border-gray-100 px-5 py-5" style={textColor ? { color: textColor } : undefined}>
-          {fields.map((field) => <PreviewField key={field.id} field={field} themeColor={themeColor} />)}
+          {fields.map((field) => <PreviewField key={field.id} field={field} themeColor={themeColor} textColor={textColor} fieldColor={fieldColor} />)}
 
           <button
             type="button"

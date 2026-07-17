@@ -29,6 +29,13 @@ const COLOR_LABELS: Record<FormDesignColorKey, string> = {
   submitTextColor: '送信ボタンの文字色',
 }
 
+// form-design-presets: プリセットを温度感で 2 グループに分ける (見出し表示 + 縦伸び対策)。
+//   tone 未指定 (現行 4 種) は 'light' 扱い。カタログ順を各グループ内で維持する。
+const PRESET_GROUPS: { tone: 'light' | 'dark'; label: string; presets: typeof LINE_PRESET_PALETTES }[] = [
+  { tone: 'light', label: '明るい系', presets: LINE_PRESET_PALETTES.filter((p) => (p.tone ?? 'light') === 'light') },
+  { tone: 'dark', label: 'ダーク系', presets: LINE_PRESET_PALETTES.filter((p) => p.tone === 'dark') },
+]
+
 const ALLOWED_IMAGE_MIME = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 
 type ImageSlot = 'logo' | 'cover'
@@ -116,28 +123,38 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
         </div>
       )}
 
-      {/* 配色プリセット (anti-generic) */}
+      {/* 配色プリセット (anti-generic)。form-design-presets: 12 種に増えたので 明るい系/ダーク系 で
+          グルーピングし、side panel が縦に伸びすぎないよう max-height + スクロール枠に入れる。 */}
       <div>
         <div className="mb-1.5 text-xs font-bold text-gray-500">配色プリセット</div>
-        <div className="grid grid-cols-2 gap-2">
-          {LINE_PRESET_PALETTES.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              data-testid={`preset-${p.id}`}
-              onClick={() => applyPreset(p.id)}
-              aria-pressed={design.presetId === p.id}
-              className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left ${design.presetId === p.id ? 'border-2' : 'border border-gray-200'}`}
-              style={design.presetId === p.id ? { borderColor: p.colors.themeColor } : undefined}
-            >
-              <span className="flex -space-x-1" aria-hidden>
-                {[p.colors.themeColor, p.colors.buttonColor, p.colors.backgroundColor].map((c, i) => (
-                  <span key={i} className="h-4 w-4 rounded-full border border-white" style={{ backgroundColor: c }} />
-                ))}
-              </span>
-              <span className="text-xs">{p.label}</span>
-            </button>
-          ))}
+        <div className="max-h-72 space-y-2 overflow-y-auto pr-0.5">
+          {PRESET_GROUPS.map(({ tone, label, presets }) =>
+            presets.length === 0 ? null : (
+              <div key={tone} data-testid={`preset-group-${tone}`}>
+                <div className="mb-1 text-[11px] font-medium text-gray-400">{label}</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {presets.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      data-testid={`preset-${p.id}`}
+                      onClick={() => applyPreset(p.id)}
+                      aria-pressed={design.presetId === p.id}
+                      className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left ${design.presetId === p.id ? 'border-2' : 'border border-gray-200'}`}
+                      style={design.presetId === p.id ? { borderColor: p.colors.themeColor } : undefined}
+                    >
+                      <span className="flex -space-x-1" aria-hidden>
+                        {[p.colors.themeColor, p.colors.buttonColor, p.colors.backgroundColor].map((c, i) => (
+                          <span key={i} className="h-4 w-4 rounded-full border border-white" style={{ backgroundColor: c }} />
+                        ))}
+                      </span>
+                      <span className="text-xs">{p.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ),
+          )}
         </div>
       </div>
 

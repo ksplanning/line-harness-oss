@@ -7,6 +7,7 @@
  */
 import { describe, test, expect, vi } from 'vitest';
 import { designColorFields, applyDesignImages } from './formaloo-design';
+import { defaultFormDesign, FORM_DESIGN_TO_FORMALOO, FORM_DESIGN_COLOR_KEYS } from '@line-crm/shared';
 import type { FormDesign, FormDesignImages } from '@line-crm/shared';
 import type { FormalooClient } from './formaloo-client';
 
@@ -41,6 +42,24 @@ describe('designColorFields (色 push body / update 意味論)', () => {
       theme_color: '#111111', background_color: '#222222', button_color: '#333333', text_color: '#444444',
       field_color: '#555555', border_color: '#666666', submit_text_color: '#777777',
     });
+  });
+
+  // form-design-presets (T-B3 / BLOCKING1・BLOCKING3): create-seed した既定 design が実際に
+  // Formaloo hosted へ色を運ぶこと (7 field 非空 hex) を unit で封鎖し、逆に既存 null 経路 (design:{})
+  // は色 0 push であることを固定する (seed→push 到達 + 既存 null 不可触の unit 証明)。
+  test('T-B3 designColorFields(defaultFormDesign()) は 7 Formaloo field を全て非空 hex で返す (seed→push 到達)', () => {
+    const out = designColorFields(defaultFormDesign());
+    const expectedFields = FORM_DESIGN_COLOR_KEYS.map((k) => FORM_DESIGN_TO_FORMALOO[k]);
+    // 7 色 field が全て存在。
+    for (const field of expectedFields) {
+      expect(out[field]).toMatch(/^#[0-9A-F]{6}$/);
+    }
+    // theme_name / presetId は色 field でないので混ざらない (色 field はちょうど 7 個)。
+    expect(Object.keys(out).sort()).toEqual([...expectedFields].sort());
+  });
+
+  test('T-B3 designColorFields({}) は {} (既存 design=null 経路は色 push 0 = 不可触)', () => {
+    expect(designColorFields({})).toEqual({});
   });
 });
 

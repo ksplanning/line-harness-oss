@@ -246,9 +246,18 @@ export interface DesignPreset {
   id: string;
   label: string;
   colors: Record<FormDesignColorKey, string>;
+  /**
+   * form-design-presets (OD-1 2026-07-17): UI のグルーピング表示用の温度感。
+   * additive optional。未指定は 'light' 扱い（現行 4 種は byte 不変のため tone を付けない）。
+   */
+  tone?: 'light' | 'dark';
 }
 
-/** LINE green と調和しつつ、用途ごとに温度感を変えた anti-generic palette。 */
+/**
+ * LINE green と調和しつつ、用途ごとに温度感を変えた anti-generic palette。
+ * 全プリセットは 入力欄背景↔文字色 と 背景↔文字色 のコントラストが 4.5:1 以上
+ * （form-design.test.ts の番人テストで機械 assert = #37352F 同色不可視の構造的 re-trap 防止）。
+ */
 export const LINE_PRESET_PALETTES: DesignPreset[] = [
   {
     id: 'line-green',
@@ -302,4 +311,139 @@ export const LINE_PRESET_PALETTES: DesignPreset[] = [
       submitTextColor: '#FFFFFF',
     },
   },
+  // ── form-design-presets (OD-1 2026-07-17): owner 選定の追加 8 候補 (ダーク 3 + 明るい系/和/ポップ 5)。
+  //    全候補は spec §3.3 の実値。入力欄↔文字・背景↔文字 4.5:1 以上を機械検証済み (contrast-report.json)。
+  {
+    id: 'dark-sumi',
+    label: 'ダーク墨',
+    tone: 'dark',
+    colors: {
+      themeColor: '#06C755',
+      backgroundColor: '#1A1917',
+      buttonColor: '#06C755',
+      textColor: '#F2EFE9',
+      fieldColor: '#262523',
+      borderColor: '#3A3835',
+      submitTextColor: '#0A1F14',
+    },
+  },
+  {
+    id: 'dark-indigo',
+    label: 'ミッドナイト藍',
+    tone: 'dark',
+    colors: {
+      themeColor: '#C9A15A',
+      backgroundColor: '#131A2A',
+      buttonColor: '#C9A15A',
+      textColor: '#EAEFF7',
+      fieldColor: '#1E2740',
+      borderColor: '#33405C',
+      submitTextColor: '#1A1305',
+    },
+  },
+  {
+    id: 'dark-tokiwa',
+    label: 'ダーク常磐',
+    tone: 'dark',
+    colors: {
+      themeColor: '#06C755',
+      backgroundColor: '#10201A',
+      buttonColor: '#34C97B',
+      textColor: '#E6F2EC',
+      fieldColor: '#182B23',
+      borderColor: '#2C463B',
+      submitTextColor: '#06231A',
+    },
+  },
+  {
+    id: 'sand-washi',
+    label: 'サンド和紙',
+    tone: 'light',
+    colors: {
+      themeColor: '#B07A4E',
+      backgroundColor: '#F5F0E6',
+      buttonColor: '#96603C',
+      textColor: '#3A2F26',
+      fieldColor: '#FFFDF8',
+      borderColor: '#D8C7B2',
+      submitTextColor: '#FFFFFF',
+    },
+  },
+  {
+    id: 'mono-ink',
+    label: 'モノトーン墨白',
+    tone: 'light',
+    colors: {
+      themeColor: '#18181B',
+      backgroundColor: '#F4F4F5',
+      buttonColor: '#18181B',
+      textColor: '#18181B',
+      fieldColor: '#FFFFFF',
+      borderColor: '#D4D4D8',
+      submitTextColor: '#FFFFFF',
+    },
+  },
+  {
+    id: 'fresh-mint',
+    label: 'フレッシュミント',
+    tone: 'light',
+    colors: {
+      themeColor: '#10B981',
+      backgroundColor: '#ECFBF4',
+      buttonColor: '#047857',
+      textColor: '#123A2E',
+      fieldColor: '#FFFFFF',
+      borderColor: '#B3E5D1',
+      submitTextColor: '#FFFFFF',
+    },
+  },
+  {
+    id: 'coral-pop',
+    label: 'コーラル珊瑚',
+    tone: 'light',
+    colors: {
+      themeColor: '#F26A54',
+      backgroundColor: '#FFF3F0',
+      buttonColor: '#C23F29',
+      textColor: '#4A211C',
+      fieldColor: '#FFFFFF',
+      borderColor: '#F3C9BF',
+      submitTextColor: '#FFFFFF',
+    },
+  },
+  {
+    id: 'matcha-wa',
+    label: '抹茶白練',
+    tone: 'light',
+    colors: {
+      themeColor: '#7A8B4F',
+      backgroundColor: '#F3F1E7',
+      buttonColor: '#5F7038',
+      textColor: '#2B3320',
+      fieldColor: '#FCFBF5',
+      borderColor: '#CFCDAF',
+      submitTextColor: '#FFFFFF',
+    },
+  },
 ];
+
+/**
+ * form-design-presets ② (OD-2 2026-07-17): デザイン未設定の新規フォームに自動適用する既定 preset id。
+ * planner 推奨 = line-green（明るく on-brand・入力欄↔文字 13.3・新規ブランクが暗色に落ちる罠を根絶）。
+ * web / worker はこの単一正本を参照し、既定色を複数箇所へハードコピーしない（drift 防止 / plan §grep4）。
+ */
+export const DEFAULT_FORM_DESIGN_PRESET_ID = 'line-green';
+
+/**
+ * 既定 preset の 7 色 hex + presetId を持つ FormDesign を新規に生成する（単一正本）。
+ * create-time seed（DAO は構造型で受ける）と builder 初期表示が同じ既定を参照するために使う。
+ * 毎回新しい object を返す（呼び出し側で mutate されても preset カタログを破壊しない）。
+ */
+export function defaultFormDesign(): FormDesign {
+  const preset = LINE_PRESET_PALETTES.find((p) => p.id === DEFAULT_FORM_DESIGN_PRESET_ID);
+  if (!preset) {
+    // カタログから既定 preset が消えた場合の防御（本来到達しない）。
+    throw new Error(`DEFAULT_FORM_DESIGN_PRESET_ID "${DEFAULT_FORM_DESIGN_PRESET_ID}" not found in LINE_PRESET_PALETTES`);
+  }
+  return { ...preset.colors, presetId: preset.id };
+}
