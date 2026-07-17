@@ -80,7 +80,7 @@ import { resolveFormalooClient } from '../services/formaloo-client.js';
 import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
 import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/form-image-upload.js';
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
-import { designColorFields, confirmDesignReflected, applyDesignImages } from '../services/formaloo-design.js';
+import { designColorFields, confirmDesignReflected, confirmBackgroundReflected, applyDesignImages } from '../services/formaloo-design.js';
 import { resolveRatingStarCustomCss } from '../services/formaloo-rating-css.js';
 import { formCopyFields, confirmFormCopyReflected } from '../services/formaloo-copy.js';
 import { redirectFields, confirmRedirectReflected, validateFormRedirectInput } from '../services/formaloo-redirect.js';
@@ -712,6 +712,25 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           const reflected = await confirmRedirectReflected(client, slug, formRedirectToPersist);
           if (!reflected.ok) redirectReflectError = reflected.error ?? '飛び先 URL が公開ページに反映されませんでした';
         }
+        // bg-fullpage-render-fix (R4/T-A1): 画像 replace/remove の反映も soft-200 対策で GET-after-PATCH 確認
+        //   (色/文言/redirect と同型・別 helper で file-disjoint)。期待は **intent ベース**で組む: replace=set /
+        //   remove=cleared。applyDesignImages が ok を返しても multipart PATCH 200+URL 未永続の soft-200 があり得るため
+        //   独立 GET で描画 location (top-level background_image/logo) の反映を確認する。apply 自体が失敗した経路
+        //   (imageSyncError) は二重報告しないよう素通り。keep/未指定は期待ゼロで GET せず素通り (既存挙動 byte 不変)。
+        let backgroundReflectError: string | null = null;
+        if (metaRes.ok && slug && designImages && !imageSyncError) {
+          const bgExpected: { backgroundImage?: 'set' | 'cleared'; logo?: 'set' | 'cleared' } = {};
+          const coverIntent = designImages.cover?.intent;
+          const logoIntent = designImages.logo?.intent;
+          if (coverIntent === 'replace') bgExpected.backgroundImage = 'set';
+          else if (coverIntent === 'remove') bgExpected.backgroundImage = 'cleared';
+          if (logoIntent === 'replace') bgExpected.logo = 'set';
+          else if (logoIntent === 'remove') bgExpected.logo = 'cleared';
+          if (bgExpected.backgroundImage || bgExpected.logo) {
+            const reflected = await confirmBackgroundReflected(client, slug, bgExpected);
+            if (!reflected.ok) backgroundReflectError = reflected.error ?? '画像が公開ページに反映されませんでした';
+          }
+        }
         if (!metaRes.ok) {
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: 'フォーム情報の同期に失敗しました',
@@ -732,6 +751,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           //     (meta PATCH 失敗と同じ経路)。owner が「ロゴ設定済」と誤認しないための honest state。
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: imageSyncError,
+          });
+          syncSettled = true;
+        } else if (backgroundReflectError) {
+          // bg-fullpage-render-fix (R4): 画像 upload は 200 だが背景/ロゴが hosted に永続していない (soft-200)
+          //   → out_of_sync。「保存済に見えて背景が出ない」failure_observable を honest surface する。
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync', lastError: backgroundReflectError,
           });
           syncSettled = true;
         } else if (designReflectError) {
