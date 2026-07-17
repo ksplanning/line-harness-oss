@@ -42,4 +42,14 @@ describe('isNavVisible', () => {
     expect(NAV_FEATURE['/health']).toBe('system_update')
     expect(NAV_FEATURE['/staff']).toBe('staff_admin')
   })
+
+  it('harness-lp-hosting: /lp は analytics 再利用 (T-E2 / permission-map と feature 一致)', () => {
+    // 既存 feature_key 'analytics' を再利用 = FEATURE_KEYS 不変。worker permission-map の
+    // prefix('lp')→'analytics' と一致させ 2 箇所 drift を防ぐ。
+    expect(NAV_FEATURE['/lp']).toBe('analytics')
+    // analytics を持たない custom role では隠れる
+    expect(isNavVisible('/lp', { permissions: ['chat', 'friend'], hasCustomRole: true })).toBe(false)
+    // analytics を持てば見える
+    expect(isNavVisible('/lp', { permissions: ['analytics'], hasCustomRole: true })).toBe(true)
+  })
 })

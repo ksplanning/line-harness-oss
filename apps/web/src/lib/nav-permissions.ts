@@ -24,6 +24,7 @@ export const NAV_FEATURE: Record<string, string> = {
   '/reminders': 'booking',
   '/inflow-links': 'analytics',
   '/tracked-links': 'analytics',
+  '/lp': 'analytics',
   '/tags': 'friend',
   '/conversions': 'analytics',
   '/ad-conversions': 'analytics',
