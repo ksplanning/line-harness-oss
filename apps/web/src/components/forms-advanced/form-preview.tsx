@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { DEFAULT_RATING_STAR_COLOR, DEFAULT_VIDEO_HEIGHT } from '@line-crm/shared'
 import type { HarnessField, HarnessLogicRule, FormDesign, FormDisplayType } from '@line-crm/shared'
 import { fieldTypeIcon, isDecoration } from './field-types'
 
@@ -23,7 +24,7 @@ const inputClassName = 'w-full rounded-lg border border-gray-300 bg-white px-3 p
 // file は type 対象でない (実選択は公開フォーム) ため read-only 表示のまま。
 const disabledClassName = 'w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500 disabled:cursor-not-allowed disabled:opacity-100'
 
-function PreviewControl({ field }: { field: HarnessField }) {
+function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratingStarColor?: string }) {
   const controlId = `preview-control-${field.id}`
   const choices = field.config.choices ?? []
   // ② プレビュー入力可能化: 入力値は local state のみ (どこにも送信しない = form/submit 無し)。
@@ -133,8 +134,9 @@ function PreviewControl({ field }: { field: HarnessField }) {
         return <input data-testid="preview-rating" id={controlId} aria-label={field.label} type="number" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
       }
       // star / embeded → 星 5 個 (embeded は顔アイコン等だが最小描画は星で代表)。
+      // b1-field-polish: form-level design.ratingStarColor を反映 (未設定=既定黄)。hosted は custom_css で着色ゆえ近似。
       return (
-        <div data-testid="preview-rating" className="flex gap-1 text-2xl" style={{ color: '#FBBF24' }} role="group" aria-label={field.label}>
+        <div data-testid="preview-rating" className="flex gap-1 text-2xl" style={{ color: ratingStarColor ?? DEFAULT_RATING_STAR_COLOR }} role="group" aria-label={field.label}>
           {Array.from({ length: 5 }, (_, i) => <span key={i} aria-hidden>★</span>)}
         </div>
       )
@@ -156,7 +158,7 @@ function PreviewControl({ field }: { field: HarnessField }) {
 //   非退行: textColor 未設定 (design 無し / 未指定) は inline style を付けず従来 gray クラスのまま。
 //   section は自前の固定 light box (bg-[#F0FFF6]) を持つため、box を fieldColor へ追随させて
 //   textColor(=light) を載せる (fieldColor↔textColor は番人テストで >=4.5 保証ゆえ常に可読)。
-function PreviewField({ field, themeColor, textColor, fieldColor }: { field: HarnessField; themeColor: string; textColor?: string; fieldColor?: string }) {
+function PreviewField({ field, themeColor, textColor, fieldColor, ratingStarColor }: { field: HarnessField; themeColor: string; textColor?: string; fieldColor?: string; ratingStarColor?: string }) {
   const textStyle = textColor ? { color: textColor } : undefined
   if (isDecoration(field.type)) {
     if (field.type === 'section') {
@@ -174,13 +176,18 @@ function PreviewField({ field, themeColor, textColor, fieldColor }: { field: Har
 
     if (field.type === 'video') {
       // treasure-b1-palette: video(oembed) の埋め込み枠 (自前描画・最小)。hosted は Formaloo の oembed iframe で実再生。
+      // b1-field-polish: 枠を videoHeight (未設定=既定 250px) 反映の再生可能サイズで描画 (既定 100px 薄帯の是正確認用)。
       const url = field.config.videoUrl
       return (
         <div data-testid="preview-video" className="space-y-1">
           {url ? (
-            <div className="flex items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-6 text-sm text-gray-600">
-              <span aria-hidden className="text-2xl">▶</span>
-              <span className="min-w-0 flex-1 truncate">{url}</span>
+            <div
+              data-testid="preview-video-frame"
+              className="flex flex-col items-center justify-center gap-2 overflow-hidden rounded-lg border border-gray-800 bg-gray-900 px-4 text-gray-200"
+              style={{ height: field.config.videoHeight ?? DEFAULT_VIDEO_HEIGHT }}
+            >
+              <span aria-hidden className="text-3xl">▶</span>
+              <span className="min-w-0 max-w-full truncate text-xs text-gray-400">{url}</span>
             </div>
           ) : (
             <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center text-xs text-gray-400">
@@ -188,7 +195,7 @@ function PreviewField({ field, themeColor, textColor, fieldColor }: { field: Har
             </div>
           )}
           <p data-testid="preview-video-note" className="text-[10px] text-gray-400 leading-snug">
-            公開フォームでは Formaloo が動画を埋め込み再生します（YouTube/Vimeo 等）。このプレビューは枠の確認用です。
+            公開フォームでは Formaloo が動画を埋め込み再生します（YouTube/Vimeo 等）。このプレビューは枠の大きさの確認用です。
           </p>
         </div>
       )
@@ -220,7 +227,7 @@ function PreviewField({ field, themeColor, textColor, fieldColor }: { field: Har
       )}
       {/* ② 一行テキストの maxLength は入力に実際に効かせ、「残り N 文字」ライブカウンターを PreviewControl 内に表示。
           hosted 公開フォームは「N文字まで」静的注記+超過エラーで実効 (下の忠実性注記で開示)。 */}
-      <PreviewControl field={field} />
+      <PreviewControl field={field} ratingStarColor={ratingStarColor} />
     </div>
   )
 }
@@ -241,6 +248,8 @@ export default function FormPreview({ title, description, fields, design, formTy
   const fieldColor = design?.fieldColor || undefined
   const logoUrl = design?.logoUrl || null
   const coverUrl = design?.backgroundImageUrl || null
+  // b1-field-polish: 星色 (form-level・未設定は PreviewControl が既定黄で描画)。
+  const ratingStarColor = design?.ratingStarColor || undefined
   // 視覚に効く design key があれば fidelity note を「反映しています」に更新 (無ければ従来 note)。
   const hasVisualDesign = Boolean(
     design && (design.themeColor || design.backgroundColor || design.buttonColor || design.textColor || design.logoUrl || design.backgroundImageUrl),
@@ -270,7 +279,7 @@ export default function FormPreview({ title, description, fields, design, formTy
         </header>
 
         <div className="space-y-5 border-t border-gray-100 px-5 py-5" style={textColor ? { color: textColor } : undefined}>
-          {fields.map((field) => <PreviewField key={field.id} field={field} themeColor={themeColor} textColor={textColor} fieldColor={fieldColor} />)}
+          {fields.map((field) => <PreviewField key={field.id} field={field} themeColor={themeColor} textColor={textColor} fieldColor={fieldColor} ratingStarColor={ratingStarColor} />)}
 
           <button
             type="button"
