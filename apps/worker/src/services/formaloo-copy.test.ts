@@ -130,4 +130,86 @@ describe('confirmFormCopyReflected — Formaloo 正規化 耐性 (form-copy-sync
     );
     expect(r.ok).toBe(true);
   });
+
+  // ── AC-2 / fail-closed 負テスト①: 真の未反映 (soft-200 無言無視で英語既定のまま) は依然 ok:false ──
+  //   確認を殺して常に green にする殻修理でないことの機械証明 (failure_observable 直結)。
+  test('AC-2/fail-closed①: sent 受付完了！ × remote 英語既定 Thanks! submitted successfully → ok:false + error に success_message を含む', async () => {
+    const c = getClient({ success_message: 'Thanks! submitted successfully' }); // 送信文言が反映されず既定のまま
+    const r = await confirmFormCopyReflected(
+      c,
+      'slugCopy2',
+      { successMessage: '受付完了！' },
+      { retries: 0, sleep: noSleep },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('success_message');
+  });
+
+  // ── AC-2 系 / T-A4 fail-closed 負テスト② (Codex FINDING-1 応答): 正規化衝突しない別文言は ok:false ──
+  //   normalizeForCompare が NFKC over-fold で異なる文言を green にしないことの駄目押し証明。
+  test('T-A4/fail-closed②: sent 受付完了 × remote 別の文言です (正規化衝突しない異文言) → ok:false', async () => {
+    const c = getClient({ success_message: '別の文言です' });
+    const r = await confirmFormCopyReflected(
+      c,
+      'slugCopy3',
+      { successMessage: '受付完了' },
+      { retries: 0, sleep: noSleep },
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  // ── AC-3 正規化マトリクス (evidence §2+§4 全網羅) ──
+  // Formaloo が fold する文字クラス: sent = owner が打った値 / remote = Formaloo 正規化後値。
+  //   3 フィールド (button_text/success_message/error_message) 全てに同値を載せて 1 test で uniform(field 非依存) を assert。
+  const FIELD_LABELS = 'button_text/success_message/error_message';
+  const foldCases: Array<{ label: string; sent: string; remote: string }> = [
+    { label: '全角！(U+FF01)→!(U+0021)', sent: '受付完了！', remote: '受付完了!' },
+    { label: '全角？(U+FF1F)→?(U+003F)', sent: 'よろしいですか？', remote: 'よろしいですか?' },
+    { label: '全角（）→()', sent: '受付（完了）', remote: '受付(完了)' },
+    { label: 'NBSP(U+00A0)→space', sent: '受付 完了', remote: '受付 完了' },
+    { label: 'TAB(U+0009)→space', sent: '受付\t完了', remote: '受付 完了' },
+    { label: 'CR(U+000D)→space', sent: '完了。\r担当', remote: '完了。 担当' },
+    { label: '丸数字①→1', sent: '第①希望', remote: '第1希望' },
+    { label: '㈱→(株)', sent: '㈱テスト', remote: '(株)テスト' },
+    { label: '半角カナ→全角', sent: 'ｶﾀｶﾅ', remote: 'カタカナ' },
+    { label: 'ローマ数字Ⅳ→IV', sent: 'レベルⅣ', remote: 'レベルIV' },
+    { label: '単位㎏→kg', sent: '重さ㎏', remote: '重さkg' },
+    { label: '濁点合成 か+U+3099→が(U+304C)', sent: 'が', remote: 'が' },
+    { label: '連続スペース→単一', sent: '受付  完了', remote: '受付 完了' },
+    { label: '全角内部スペース(U+3000)→space', sent: '受付　完了', remote: '受付 完了' },
+  ];
+  for (const fc of foldCases) {
+    test(`AC-3 fold ${fc.label} → ok:true (${FIELD_LABELS} uniform)`, async () => {
+      const c = getClient({ button_text: fc.remote, success_message: fc.remote, error_message: fc.remote });
+      const r = await confirmFormCopyReflected(
+        c,
+        'slugMatrix',
+        { buttonText: fc.sent, successMessage: fc.sent, errorMessage: fc.sent },
+        { retries: 0, sleep: noSleep },
+      );
+      expect(r.ok).toBe(true);
+    });
+  }
+
+  // Formaloo が fold しない文字クラス: sent === remote で挙動不変 (ok:true・既存挙動非退行)。
+  const preserveCases: Array<{ label: string; value: string }> = [
+    { label: '\\n 保持 (multiline 完了メッセージ)', value: '完了しました\n担当より連絡します' },
+    { label: 'emoji 保持', value: 'ありがとうございました🙏' },
+    { label: '& 保持', value: 'ありがとう & 感謝' },
+    { label: '<> 保持 (HTML escape なし)', value: 'ありがとう <重要> です' },
+    { label: '波ダッシュ〜(U+301C) 保持', value: '完了しました〜' },
+    { label: 'ZWSP(U+200B) 保持', value: '受付​完了' },
+  ];
+  for (const pc of preserveCases) {
+    test(`AC-3 preserve ${pc.label} → 挙動不変 ok:true (${FIELD_LABELS} uniform)`, async () => {
+      const c = getClient({ button_text: pc.value, success_message: pc.value, error_message: pc.value });
+      const r = await confirmFormCopyReflected(
+        c,
+        'slugPreserve',
+        { buttonText: pc.value, successMessage: pc.value, errorMessage: pc.value },
+        { retries: 0, sleep: noSleep },
+      );
+      expect(r.ok).toBe(true);
+    });
+  }
 });
