@@ -41,14 +41,16 @@ describe('formaloo-forms — field 種別 MVP subset (N-13)', () => {
   });
 
   test('装飾型は additive に定義し、meta の逆引きは input 型マップへ混入させない (T-B2)', () => {
-    expect(DECORATION_FIELD_TYPES).toEqual(['section', 'page_break', 'video']); // treasure-b1: video additive (oembed)
+    expect(DECORATION_FIELD_TYPES).toEqual(['section', 'page_break', 'video', 'image']); // treasure-b1: video / form-image-decoration: image additive
     expect(HARNESS_TO_FORMALOO_TYPE.section).toBe('meta');
     expect(HARNESS_TO_FORMALOO_TYPE.page_break).toBe('meta');
+    expect(HARNESS_TO_FORMALOO_TYPE.image).toBe('meta'); // form-image-decoration: 差し込み画像も meta (description=canonical <img>)
     expect(FORMALOO_TO_HARNESS_TYPE.meta).toBeUndefined();
     expect(isDecorationType('section')).toBe(true);
     expect(isDecorationType('page_break')).toBe(true);
     expect(isDecorationType('text')).toBe(false);
     expect(isDecorationType('video')).toBe(true); // treasure-b1: video は装飾 (oembed / 回答なし)
+    expect(isDecorationType('image')).toBe(true); // form-image-decoration: image は装飾 (差し込み画像)
   });
 });
 

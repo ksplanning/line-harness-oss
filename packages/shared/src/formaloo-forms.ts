@@ -10,6 +10,8 @@
 // =============================================================================
 
 import type { FormCopy } from './form-copy';
+import { buildImageDescriptionHtml, parseImageDescription, type ImageWidth } from './form-image';
+import type { FormDesignImageUpload } from './form-design';
 
 /** harness 側 field 種別 (MVP subset / 素人向け日本語ラベルは web が付与)。 */
 export const FORMALOO_FIELD_TYPES = [
@@ -29,7 +31,9 @@ export const FORMALOO_FIELD_TYPES = [
 ] as const;
 
 // treasure-b1-palette: video は装飾 (回答なし・required 常時 false) だが Formaloo type は oembed (下 HARNESS_TO_FORMALOO_TYPE)。
-export const DECORATION_FIELD_TYPES = ['section', 'page_break', 'video'] as const;
+// form-image-decoration: image は装飾 (差し込み画像)。Formaloo type=meta/section で description に canonical <img>
+//   (spike S-1 実証: files/=401・field 直添付黙殺ゆえ section description の <img> だけが hosted 描画)。
+export const DECORATION_FIELD_TYPES = ['section', 'page_break', 'video', 'image'] as const;
 
 /**
  * rating (Formaloo type=rating) の sub_type 実値 (spike 実測: OPTIONS /v3.0/fields/rating/ choices)。
@@ -74,6 +78,9 @@ export const HARNESS_TO_FORMALOO_TYPE: Record<HarnessFieldType, string> = {
   section: 'meta',
   page_break: 'meta',
   video: 'oembed',
+  // form-image-decoration: 差し込み画像は section と同じ meta。逆引きは fromFormalooField で
+  //   description(canonical <img>)の有無により meta→image / meta→section を explicit 分岐する。
+  image: 'meta',
 };
 
 /** 逆引き (Formaloo type 名 → harness 種別 / pull 用)。 */
@@ -126,6 +133,23 @@ export interface HarnessFieldConfig {
    * push は videoHeight ?? DEFAULT を config.height として url と常時同送する (薄帯拡大)。validate は px|vw whitelist。
    */
   videoHeight?: string;
+  /**
+   * form-image-decoration: 差し込み画像の hosted URL (harness R2 / http(s) のみ)。push で canonical <img> の
+   * src になる。空/未設定は imageUpload 解決待ち (worker が R2 upload → imageUrl 確定 → push)。
+   */
+  imageUrl?: string;
+  /** 差し込み画像の代替テキスト (alt)。canonical <img> の alt に escape して載る。 */
+  imageAlt?: string;
+  /**
+   * 差し込み画像の表示幅プリセット (small=40%/medium=70%/full=100% / owner ②)。canonical <img> の
+   * max-width % に射影 = 表示領域制御そのもの。render に効くため fingerprint 射影に含める (video height と逆扱い)。
+   */
+  imageWidth?: ImageWidth;
+  /**
+   * 差し込み画像の upload intent (file→dataURL・10MB / form-design の FormDesignImageUpload を再利用)。
+   * harness 側 intent = Formaloo payload には載せない。worker が R2 へ upload し imageUrl を確定してから push。
+   */
+  imageUpload?: FormDesignImageUpload;
 }
 
 export interface HarnessField {
@@ -381,6 +405,17 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
       config: { height: field.config.videoHeight ?? DEFAULT_VIDEO_HEIGHT },
     };
   }
+  // form-image-decoration: 差し込み画像は meta/section で description=canonical <img> (spike S-1/T-C3 実証)。
+  //   imageUpload (harness 側 intent) は payload に載せない。imageUrl 空は build が '' を返す (worker が R2 解決後 push)。
+  if (field.type === 'image') {
+    return {
+      type: 'meta',
+      sub_type: 'section',
+      title: field.label,
+      description: buildImageDescriptionHtml(field.config.imageUrl ?? '', field.config.imageAlt ?? '', field.config.imageWidth ?? 'medium'),
+      position: field.position,
+    };
+  }
   const p: Record<string, unknown> = {
     type: HARNESS_TO_FORMALOO_TYPE[field.type],
     title: field.label,
@@ -428,13 +463,27 @@ export function fromFormalooField(
   if (formalooType === 'meta') {
     const subType = typeof o.sub_type === 'string' ? o.sub_type : '';
     if (subType === 'section') {
+      const desc = typeof o.description === 'string' ? o.description : '';
+      // form-image-decoration: description が canonical <img> なら差し込み画像 field へ (parse 済み値射影)。
+      //   散文 section は従来どおり section (image に誤分類しない = 後方互換)。
+      const parsedImg = parseImageDescription(desc);
+      if (parsedImg) {
+        return {
+          id,
+          type: 'image',
+          label: typeof o.title === 'string' ? o.title : '',
+          required: false,
+          position: typeof o.position === 'number' ? o.position : 0,
+          config: { imageUrl: parsedImg.url, imageAlt: parsedImg.alt, imageWidth: parsedImg.width },
+        };
+      }
       return {
         id,
         type: 'section',
         label: typeof o.title === 'string' ? o.title : '',
         required: false,
         position: typeof o.position === 'number' ? o.position : 0,
-        config: { text: typeof o.description === 'string' ? o.description : '' },
+        config: { text: desc },
       };
     }
     if (subType === 'page_break') {
