@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { DEFAULT_RATING_STAR_COLOR, DEFAULT_VIDEO_HEIGHT } from '@line-crm/shared'
+import { DEFAULT_RATING_STAR_COLOR, DEFAULT_VIDEO_HEIGHT, IMAGE_WIDTH_TO_MAXWIDTH } from '@line-crm/shared'
 import type { HarnessField, HarnessLogicRule, FormDesign, FormDisplayType } from '@line-crm/shared'
 import { fieldTypeIcon, isDecoration } from './field-types'
 
@@ -170,6 +170,27 @@ function PreviewField({ field, themeColor, textColor, fieldColor, ratingStarColo
         >
           <h3 className="font-bold text-gray-900" style={textStyle}>{field.label}</h3>
           {field.config.text && <p className="mt-1 whitespace-pre-wrap text-sm text-gray-600" style={textStyle}>{field.config.text}</p>}
+        </div>
+      )
+    }
+
+    if (field.type === 'image') {
+      // form-image-decoration: 差し込み画像を当該位置にインライン表示 (幅プリセットを max-width % で反映)。
+      //   dataURL(upload pending) / URL 両対応。hosted は section description の canonical <img> で実描画 (spike S-1)。
+      const src = field.config.imageUpload?.dataUrl || field.config.imageUrl || ''
+      return (
+        <div data-testid="preview-image" className="text-center">
+          {src ? (
+            <img
+              src={src}
+              alt={field.config.imageAlt || ''}
+              style={{ maxWidth: IMAGE_WIDTH_TO_MAXWIDTH[field.config.imageWidth ?? 'medium'], borderRadius: 8, display: 'inline-block' }}
+            />
+          ) : (
+            <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center text-xs text-gray-400">
+              画像未設定
+            </div>
+          )}
         </div>
       )
     }
