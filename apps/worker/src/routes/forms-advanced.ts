@@ -205,6 +205,9 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     // route-terminal-phase2 (Track 1 / CX-3): 送信後リダイレクト設定 (builder の initialFormRedirect)。
     //   未設定は null。保存済 redirect を reload で復元し編集/解除できるようにする (design/formType と同型の露出)。
     formRedirect: def.formRedirect ?? null,
+    // route-terminal-phase2 (Track 2 / T-E5): ルート別完了ページ (builder の initialSuccessPages)。未設定は null。
+    //   保存済 SP (割当 slug 込み) を reload で復元し編集/削除できるようにする。
+    successPages: def.successPages ?? null,
     // N-7: publish 前は null (公開/埋め込み URL 発行不可)
     publicUrl,
     embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),

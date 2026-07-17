@@ -112,4 +112,26 @@ describe('詳細画面 redirect load/relay 配線', () => {
     const body = saveDefinitionMock.mock.calls[0][1] as Record<string, unknown>
     expect('formRedirect' in body).toBe(false)
   })
+
+  it('T-E5 load: GET の successPages を builder の initialSuccessPages へ渡す (完了ページの復元)', async () => {
+    getMock.mockResolvedValue(form({ successPages: [{ id: 'sp1', slug: 'SP_A', title: 'A完了' }] }))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+    expect(builderProps.current?.initialSuccessPages).toEqual([{ id: 'sp1', slug: 'SP_A', title: 'A完了' }])
+  })
+
+  it('T-F2 relay: onSave の successPages を saveDefinition body へ欠落なく転送する', async () => {
+    getMock.mockResolvedValue(form())
+    saveDefinitionMock.mockResolvedValue(form({ syncStatus: 'idle' }))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+    await act(async () => {
+      await (builderProps.current?.onSave as (def: Record<string, unknown>) => Promise<void>)({
+        fields: [], logic: [], title: 'F', successPages: [{ id: 'sp1', title: 'A完了' }],
+      })
+    })
+    expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', expect.objectContaining({
+      successPages: [{ id: 'sp1', title: 'A完了' }],
+    }))
+  })
 })

@@ -24,7 +24,7 @@ import {
   recordFormalooDriftEvent,
   type FormalooForm,
 } from '@line-crm/db';
-import { formalooDefinitionFingerprint, countWeakenedFormalooRules, normalizeFormDesign, type FormDesign, type FormDisplayType } from '@line-crm/shared';
+import { formalooDefinitionFingerprint, countWeakenedFormalooRules, normalizeFormDesign, normalizeSuccessPages, type FormDesign, type FormDisplayType, type SuccessPageSpec } from '@line-crm/shared';
 import { buildPullResult, extractFieldsList, extractRawLogic, extractLogic } from './formaloo-pull.js';
 import type { FormalooClient } from './formaloo-client.js';
 
@@ -123,6 +123,41 @@ function parseStoredFormType(definitionJson: string): FormDisplayType | undefine
   }
 }
 
+/** definition_json から保存済み successPages を取り出す (route-terminal-phase2: drift auto-apply で carry)。 */
+function parseStoredSuccessPages(definitionJson: string): SuccessPageSpec[] {
+  try {
+    const d = JSON.parse(definitionJson) as { successPages?: unknown };
+    return normalizeSuccessPages(d?.successPages);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * drift carry: local の harness id/slug を保ちつつ remote pull の title/description を **slug で** 反映する
+ *   (route-terminal-phase2 T-E5 / CX-1: SP 本文変更は fingerprint に映らない → drift carry 側で検知する方針)。
+ *   - local SP を slug で remote に照合し、remote があれば本文 (title/description) を remote 値へ更新
+ *     (submit rule が参照する harness id は保つ = dangling 参照を作らない)。remote に無い local は保守的に保持。
+ *   - remote-only (外部で追加された SP) は id=slug で追記。
+ */
+export function mergeDriftSuccessPages(local: SuccessPageSpec[], remote: SuccessPageSpec[]): SuccessPageSpec[] {
+  const remoteBySlug = new Map<string, SuccessPageSpec>();
+  for (const r of remote) if (r.slug) remoteBySlug.set(r.slug, r);
+  const out: SuccessPageSpec[] = [];
+  const usedSlugs = new Set<string>();
+  for (const l of local) {
+    const r = l.slug ? remoteBySlug.get(l.slug) : undefined;
+    if (r) {
+      usedSlugs.add(l.slug!);
+      out.push({ id: l.id, slug: l.slug, title: r.title, ...(r.description ? { description: r.description } : {}) });
+    } else {
+      out.push(l); // remote 未確認 (未 push / 抽出漏れ) は local を保守的に保持
+    }
+  }
+  for (const r of remote) if (r.slug && !usedSlugs.has(r.slug)) out.push(r); // 外部追加 SP
+  return out;
+}
+
 /**
  * auto-apply: pull 結果を D1 のみに反映 (push しない)。field_map の formaloo_field_slug は
  * `existingMap[id] ?? fieldSlugById[id]` で carry (slug wipe → 重複 push 回帰を防ぐ / T-B3)。
@@ -154,6 +189,10 @@ async function applyDriftToD1(
   // form-route-branching: formType carry (remote pull 優先・無ければ保存済みを保つ = 無関係 drift で消えない)。
   const formType = pull.formType ?? parseStoredFormType(form.definition_json);
 
+  // route-terminal-phase2 (T-E5): successPages carry。local harness id を保ちつつ remote 本文 (title/description)
+  //   を slug で反映 (完了ページ本文変更を検知)。remote 抽出無しは local を保持 (無関係 drift で消えない)。
+  const successPages = mergeDriftSuccessPages(parseStoredSuccessPages(form.definition_json), pull.successPages ?? []);
+
   const definitionJson = JSON.stringify({
     fields: pull.fields,
     logic: pull.logic,
@@ -162,6 +201,7 @@ async function applyDriftToD1(
     logicFingerprint: pull.logicFingerprint,
     ...(design && Object.keys(design).length ? { design } : {}),
     ...(formType ? { formType } : {}),
+    ...(successPages.length ? { successPages } : {}),
   });
   const fieldRows = pull.fields.map((f) => ({
     id: f.id,
