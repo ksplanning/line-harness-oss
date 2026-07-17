@@ -443,3 +443,60 @@ describe('runFormalooDriftCheck — cap / 全走査', () => {
     expect(sum.bootstrapped).toBe(1); // 1 form のみ処理
   });
 });
+
+// ── route-terminal-phase2 (fix / T-E5 gap): SP title/description の別建て drift 検知 ──
+// success_page は fingerprint 非包含 (fields+logic 設計を維持) ゆえ fp は不変でも SP 本文変更を
+//   drift checker が別建て比較で検知する (design/copy confirm と同族)。
+function spRawField(slug: string, title: string, description = ''): Record<string, unknown> {
+  return { slug, type: 'success_page', title, description, position: 1 };
+}
+const defWithSp = (title: string, description = '') =>
+  JSON.stringify({ fields: [{ id: 'sp-q1', type: 'text', label: '氏名', required: false, position: 0, config: {} }], logic: [], successPages: [{ id: 'sp-h1', slug: 'SP_A', title, description }] });
+
+describe('runFormalooDriftCheck — SP 本文 drift (fingerprint 非包含・別建て検知)', () => {
+  it('fp 一致でも SP title/description が Formaloo 側で変われば detected を surface する', async () => {
+    await seedForm('fsp1', 's_sp1', defWithSp('旧完了', '旧本文'));
+    // remote は fields/logic 同一 (fp 不変) だが success_page の title/description が変化。
+    const remote = body('s_sp1', [rawField('s_q1'), spRawField('SP_A', '新完了', '新本文')]);
+    // baseline = remote の fp (success_page は projection で drop → q1 のみ = fp 一致 = action 'none')。
+    await setFormalooSyncState(DB, 'fsp1', { syncStatus: 'idle', remoteDefinitionHash: await fpOf(remote), driftStatus: 'none' });
+    const { client, post, put, request } = spyClient(() => remote);
+
+    const sum = await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: false });
+
+    expect(sum.notified).toBe(1); // SP 本文変更を検知
+    expect(sum.inSync).toBe(0);
+    const sync = await getFormalooSyncState(DB, 'fsp1');
+    expect(sync?.drift_status).toBe('detected');
+    expect((await listFormalooDriftEvents(DB, 'fsp1')).map((e) => e.action)).toEqual(['notified']);
+    // 逆方向 push は一切しない (D1/通知のみ)。
+    expect(post).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('SP 本文が一致すれば fp 一致で inSync (SP 有りでも false-drift しない)', async () => {
+    await seedForm('fsp2', 's_sp2', defWithSp('完了', '本文'));
+    const remote = body('s_sp2', [rawField('s_q1'), spRawField('SP_A', '完了', '本文')]);
+    await setFormalooSyncState(DB, 'fsp2', { syncStatus: 'idle', remoteDefinitionHash: await fpOf(remote), driftStatus: 'none' });
+    const { client } = spyClient(() => remote);
+
+    const sum = await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: false });
+
+    expect(sum.inSync).toBe(1);
+    expect(sum.notified).toBe(0);
+    expect(await listFormalooDriftEvents(DB, 'fsp2')).toEqual([]);
+  });
+
+  it('SP dedup: 同一 SP 本文変更で 2 tick → 履歴 notified 1 件のみ (badge 固着せず重複記録しない)', async () => {
+    await seedForm('fsp3', 's_sp3', defWithSp('旧', '旧'));
+    const remote = body('s_sp3', [rawField('s_q1'), spRawField('SP_A', '新', '新')]);
+    await setFormalooSyncState(DB, 'fsp3', { syncStatus: 'idle', remoteDefinitionHash: await fpOf(remote), driftStatus: 'none' });
+    const { client } = spyClient(() => remote);
+
+    await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: false });
+    await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: false });
+
+    expect((await listFormalooDriftEvents(DB, 'fsp3')).filter((e) => e.action === 'notified')).toHaveLength(1);
+  });
+});

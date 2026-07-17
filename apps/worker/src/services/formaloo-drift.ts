@@ -25,7 +25,7 @@ import {
   type FormalooForm,
 } from '@line-crm/db';
 import { formalooDefinitionFingerprint, countWeakenedFormalooRules, normalizeFormDesign, normalizeSuccessPages, type FormDesign, type FormDisplayType, type SuccessPageSpec } from '@line-crm/shared';
-import { buildPullResult, extractFieldsList, extractRawLogic, extractLogic } from './formaloo-pull.js';
+import { buildPullResult, extractFieldsList, extractRawLogic, extractLogic, extractSuccessPages } from './formaloo-pull.js';
 import type { FormalooClient } from './formaloo-client.js';
 
 /** drift 判定の 5 分岐 (+ bootstrap)。副作用なしの純関数が返す action。 */
@@ -158,6 +158,38 @@ export function mergeDriftSuccessPages(local: SuccessPageSpec[], remote: Success
   return out;
 }
 
+// crypto.subtle / TextEncoder は Node18+ / Workers 双方の runtime global (formaloo-fingerprint.ts と同型 ambient)。
+declare const crypto: { subtle: { digest(algorithm: string, data: ArrayBufferView | ArrayBuffer): Promise<ArrayBuffer> } };
+declare class TextEncoder { encode(input?: string): Uint8Array }
+
+/**
+ * route-terminal-phase2 (fix / T-E5 gap): SP 本文 (title/description) の安定シグネチャ。
+ *   slug を持つ SP だけを対象に slug 昇順で (slug,title,description) を連結する (順序無依存)。
+ *   SP を持たない (または未 push の) フォームは '' を返す = 既存フォームと signature 不変 (false-drift ゼロ)。
+ *   description は parse 時 (normalizeSuccessPages) / pull 時 (extractSuccessPages) 双方で plain-text 化済 =
+ *   両辺が同じ正規化ゆえ apples-to-apples 比較。
+ */
+export function successPagesSignature(sps: SuccessPageSpec[]): string {
+  return sps
+    .filter((s) => !!s.slug)
+    .map((s) => ({ slug: s.slug as string, title: s.title, description: s.description ?? '' }))
+    .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
+    .map((s) => `${s.slug}${s.title}${s.description}`)
+    .join('');
+}
+
+/** SP 本文 (title/description) が等価か (slug で照合・fingerprint 非包含の別建て比較 / design/copy confirm 同族)。 */
+export function successPagesContentEqual(a: SuccessPageSpec[], b: SuccessPageSpec[]): boolean {
+  return successPagesSignature(a) === successPagesSignature(b);
+}
+
+/** 文字列の SHA-256 hex (SP drift の dedup キーを固定長・不透明化する。fingerprint とは別軸の pending キー)。 */
+async function sha256Hex(s: string): Promise<string> {
+  const bytes = new TextEncoder().encode(s);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * auto-apply: pull 結果を D1 のみに反映 (push しない)。field_map の formaloo_field_slug は
  * `existingMap[id] ?? fieldSlugById[id]` で carry (slug wipe → 重複 push 回帰を防ぐ / T-B3)。
@@ -253,6 +285,27 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
         const nowIso = now().toISOString();
 
         const action = decideDriftAction({ baseline, fingerprint: fp, weakened, syncStatus, autoApplyEnabled: deps.autoApplyEnabled });
+
+        // route-terminal-phase2 (fix / T-E5 gap): SP title/description は fingerprint 非包含 (fields+logic 設計を
+        //   維持 = false-drift 再発防止) ゆえ、**別建て**で remote SP 本文 vs 保存済 SP 本文を直接比較する
+        //   (design/copy confirm と同族の additive comparison)。fp が一致 (action='none') でも SP 本文が Formaloo
+        //   側で変われば detected を surface する。SP 無しフォームは両 signature '' で常に一致 = 既存挙動不変。
+        if (action === 'none') {
+          const remoteSp = extractSuccessPages(res.data);
+          if (!successPagesContentEqual(parseStoredSuccessPages(form.definition_json), remoteSp)) {
+            const spPending = await sha256Hex(`sp:${successPagesSignature(remoteSp)}`);
+            const isNew = sync?.pending_remote_hash !== spPending;
+            const transitioned = (sync?.drift_status ?? 'none') !== 'detected';
+            if (isNew || transitioned) {
+              await setFormalooSyncState(deps.db, form.id, { syncStatus, driftStatus: 'detected', pendingRemoteHash: spPending, driftDetectedAt: nowIso });
+              await recordFormalooDriftEvent(deps.db, { formId: form.id, action: 'notified', detectedAt: nowIso, remoteHash: fp, prevHash: baseline, hasWarnings: weakened, syncStatusAt: syncStatus });
+              summary.notified += 1;
+            } else {
+              summary.inSync += 1; // 既に detected 済 = 重複記録しない (badge 固着防止)
+            }
+            return; // SP 本文 drift 専用経路 (通常 switch を回さない = 二重処理しない)
+          }
+        }
 
         switch (action) {
           case 'bootstrapped': {
