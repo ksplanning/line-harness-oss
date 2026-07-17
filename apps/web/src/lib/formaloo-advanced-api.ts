@@ -1,5 +1,5 @@
 import { fetchApi, downloadCsv } from './api'
-import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy } from '@line-crm/shared'
 
 // =============================================================================
 // 高機能フォーム (Formaloo-backed) API クライアント (F-2 / T-B1)。fetchApi 経由 (cookie 認証 + CSRF)。
@@ -83,6 +83,8 @@ export interface SaveDefinitionBody {
   designImages?: FormDesignImages
   // form-route-branching (R2): 表示形式 (simple/multi_step)。
   formType?: FormDisplayType
+  // form-jp-localization: 公開ページ文言 (送信ボタン/完了/送信エラー)。builder が触ったときだけ載る (present-key)。
+  formCopy?: FormCopy
   // form-media-limits ③: 回答者後編集の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。
   allowPostEdit?: number
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。
