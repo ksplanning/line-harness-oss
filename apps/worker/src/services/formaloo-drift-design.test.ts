@@ -109,3 +109,26 @@ describe('drift auto-apply は form-design を消さない (gap-check #2)', () =
     expect(def2.design.logoUrl).toBe('https://s3/remote-logo.png');
   });
 });
+
+describe('D-2 反映キー (theme/色) は fingerprint に入らない (cron false-drift ゼロ)', () => {
+  const JR = (hex: string) => { const h = hex.replace('#', ''); return JSON.stringify({ r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: 1 }); };
+
+  it('同一 fields/logic で top-level theme + 7 色 (JSON-string RGBA) だけ異なる 2 body → fingerprint 不変', async () => {
+    const fields = [rawField('s_q1', { title: '氏名' }), rawField('s_q2', { title: 'メール', type: 'email', position: 1 })];
+    // v1: 反映キーなし。v2: 本案件が push する theme string + 7 色 JSON-string RGBA + system_theme。fields/logic は同一。
+    const v1 = body('s_form', fields);
+    const v2 = body('s_form', fields, {
+      theme: '9Qprc7Tn', system_theme: true,
+      theme_color: JR('#06C755'), background_color: JR('#F4FBF7'), button_color: JR('#06C755'),
+      text_color: JR('#17352A'), field_color: JR('#FFFFFF'), border_color: JR('#B7DCC8'), submit_text_color: JR('#FFFFFF'),
+    });
+    expect(await fpOf(v2)).toBe(await fpOf(v1)); // 反映キー追加は drift を起こさない
+  });
+
+  it('hex → JSON-string RGBA の色形式変更だけでも fingerprint 不変 (format 移行で誤 drift しない)', async () => {
+    const fields = [rawField('s_q1', { title: '氏名' })];
+    const vHex = body('s_form', fields, { button_color: '#06C755', text_color: '#17352A' });
+    const vRgba = body('s_form', fields, { button_color: JR('#06C755'), text_color: JR('#17352A') });
+    expect(await fpOf(vRgba)).toBe(await fpOf(vHex));
+  });
+});
