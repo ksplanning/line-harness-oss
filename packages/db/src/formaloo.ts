@@ -916,3 +916,18 @@ export async function bulkDeleteFormalooSubmissions(db: D1Database, formId: stri
     .run();
   return (res as { meta?: { changes?: number } }).meta?.changes ?? 0;
 }
+
+/**
+ * form 単位のミラー回答件数 (COUNT のみ・rows 非 fetch / forms-list-count-fix T-A1)。
+ * 高機能フォーム一覧の回答数表示源。submit_count は harness-public 投稿の verified+published だけを +1 する
+ * harness-only カウンタで、Formaloo ネイティブ投稿/reconcile 取込みでは増えない (0 のまま = 症状)。
+ * ミラー formaloo_submissions は全 public 投稿を無条件 upsert する完全上位集合ゆえ、行数採用で回答を失わず正確。
+ * Formaloo API 呼出なし・local D1 1 クエリ。単一 form ゆえ IN-list 変数上限の懸念なし。
+ */
+export async function countFormalooSubmissionsForForm(db: D1Database, formId: string): Promise<number> {
+  const row = await db
+    .prepare('SELECT COUNT(*) AS n FROM formaloo_submissions WHERE form_id = ?')
+    .bind(formId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}

@@ -10,6 +10,7 @@ import {
   getFormalooSyncState,
   listFormalooDriftEvents,
   queryFormalooSubmissions,
+  countFormalooSubmissionsForForm,
   upsertFormalooSubmission,
   getFormalooSubmission,
   listFormalooSavedFilters,
@@ -135,6 +136,10 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
   const def = parseDefinition(form.definition_json);
   const status = (isBuilderStatus(form.builder_status) ? form.builder_status : 'draft') as BuilderStatus;
   const sync = await getFormalooSyncState(db, form.id);
+  // forms-list-count-fix: 回答数表示源を submit_count(harness-only カウンタ = reconcile/native 投稿を落とす)
+  // から D1 ミラー行数へ切替 (formaloo_submissions の form 別 COUNT)。ミラーは全 public 投稿の完全上位集合ゆえ
+  // 回答を失わず正確。**local D1 のみ・Formaloo 呼出なし** (一覧描画の暴走設計を作らない = failure_observable)。
+  const mirrorCount = await countFormalooSubmissionsForForm(db, form.id);
   const publicUrl = buildPublicUrl(status, def.formalooAddress ?? null);
   // formaloo-auto-pull: drift 露出 (badge 用)。driftHasWarnings は drift 未解決時のみ最新 event を引く
   // (drift_status='none' の一般ケースは追加 query なし = N+1 回避)。
@@ -151,7 +156,7 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     formalooSlug: form.formaloo_slug,
     builderStatus: status,
     publishedAt: form.published_at,
-    submitCount: form.submit_count,
+    submitCount: mirrorCount,
     onSubmitTagId: form.on_submit_tag_id,
     onSubmitScenarioId: form.on_submit_scenario_id,
     submitMessage: form.submit_message,
