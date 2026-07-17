@@ -272,24 +272,25 @@ formalooPublic.get('/fo/:id', async (c) => {
   // 「どの LINE アカウントか」が出る。secret 未設定 / friend 未解決 (HP 経由相当) は付与しない (生 URL へ degrade)。
   let redirectUrl = url;
   if (friendId) {
-    // 弾M (T-C1): allow_post_edit=1 かつ env 有効時のみ、本人の**最新 row** answers を field-slug query prefill
-    //   で付与 (②本人再入場)。OFF/env 未設定 = このブロックを skip = 現状 (fr_id/fr_name のみ) と byte 同等。
-    //   friendId は解決済 (実在検証済) ゆえ getFriendLatestSubmission が friend 厳密一致で本人 row のみ引く
-    //   (他 friend の row を絶対に出さない = 取り違え防止)。
-    const postEditPrefill =
-      form.allow_post_edit === 1 && isPostEditEnabled(c.env.FORM_POST_EDIT_ENABLED)
-        ? await buildFriendPrefillParams(c.env.DB, id, friendId)
-        : null;
     const signed = await signFriendToken(friendId, c.env.FORMALOO_FRIEND_TOKEN_SECRET);
-    if (signed || (postEditPrefill && Object.keys(postEditPrefill).length > 0)) {
+    // 弾M (T-C1 / F-H1): 回答 answer prefill は **署名 (signed) と同一の fail-closed 条件** に gate する。
+    //   署名不可 (FORMALOO_FRIEND_TOKEN_SECRET 未設定 / 署名失敗) = friend identity を署名できない = PII を
+    //   redirect URL に載せない (生 URL へ degrade・prefill 一切無し)。署名 fr_id が付かない経路で回答 PII だけ
+    //   漏らす fail-open を塞ぐ (done_condition T-C1『署名 fr_id 検証失敗は prefill を付与しない』)。
+    if (signed) {
+      // allow_post_edit=1 かつ env 有効時のみ、本人の**最新 row** answers を field-slug query prefill で付与
+      //   (②本人再入場)。OFF/env 未設定 = null = 現状 (fr_id/fr_name のみ) と byte 同等。friendId は解決済
+      //   (実在検証済) ゆえ getFriendLatestSubmission が friend 厳密一致で本人 row のみ引く (取り違え防止)。
+      const postEditPrefill =
+        form.allow_post_edit === 1 && isPostEditEnabled(c.env.FORM_POST_EDIT_ENABLED)
+          ? await buildFriendPrefillParams(c.env.DB, id, friendId)
+          : null;
       try {
         const u = new URL(url);
         // answer prefill を先に付与 → 署名 fr_id/fr_name を後で set (予約 param を answer が上書きしない)。
         if (postEditPrefill) for (const [slug, val] of Object.entries(postEditPrefill)) u.searchParams.set(slug, val);
-        if (signed) {
-          u.searchParams.set('fr_id', signed);
-          if (friendName) u.searchParams.set('fr_name', friendName);
-        }
+        u.searchParams.set('fr_id', signed);
+        if (friendName) u.searchParams.set('fr_name', friendName);
         redirectUrl = u.toString();
       } catch (err) {
         // 転送先 address が不正 URL の場合は prefill を諦めて生 url へ (fail-soft / 誤 404 を出さない)。
