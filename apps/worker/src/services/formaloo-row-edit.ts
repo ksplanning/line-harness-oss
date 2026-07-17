@@ -24,6 +24,11 @@ export function isEditableFieldType(fieldType: string): boolean {
   return FREE_VALUE_FIELD_TYPES.has(fieldType);
 }
 
+/** あと編集 (①管理者編集 + ②本人再入場) の全体 kill-switch 判定 (未設定=無効 fail-closed / 単一正本)。 */
+export function isPostEditEnabled(flag: string | undefined | null): boolean {
+  return flag === 'true' || flag === '1';
+}
+
 /** 編集判定に要る最小 field メタ (formaloo_field_map + definition から endpoint が組む)。 */
 export interface EditFieldMeta {
   /** harness field id。 */

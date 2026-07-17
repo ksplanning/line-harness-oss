@@ -37,6 +37,7 @@ import {
   findEmptyRequired,
   resolveRowSlug,
   makeRowsListRowSlugResolver,
+  isPostEditEnabled,
 } from '../services/formaloo-row-edit.js';
 import {
   validateHarnessField,
@@ -855,11 +856,6 @@ formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
   }
 });
 
-/** 弾M (form-post-edit): あと編集の全体 kill-switch (未設定=無効 fail-closed / allow_post_edit と AND)。 */
-function isPostEditFeatureEnabled(env: Env['Bindings']): boolean {
-  return env.FORM_POST_EDIT_ENABLED === 'true' || env.FORM_POST_EDIT_ENABLED === '1';
-}
-
 // PATCH /api/forms-advanced/:id/rows/:rowId — ①管理者編集 (弾M form-post-edit / T-B2)。
 //   gate(allow_post_edit AND FORM_POST_EDIT_ENABLED) 403 → mirror → row_slug 解決 → Formaloo flat PATCH →
 //   **persist 確認 (FRESH GET で編集後値照合)** 成功のみ D1 mirror 更新 + edit 記録。反映されない編集を
@@ -872,7 +868,7 @@ formsAdvanced.patch('/api/forms-advanced/:id/rows/:rowId', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     // gate: allow_post_edit=1 かつ env 有効。OFF/未設定は 403 (現状挙動 byte 同等・編集経路を残さない)。
-    if (form.allow_post_edit !== 1 || !isPostEditFeatureEnabled(c.env)) {
+    if (form.allow_post_edit !== 1 || !isPostEditEnabled(c.env.FORM_POST_EDIT_ENABLED)) {
       return c.json({ success: false, error: 'このフォームは回答の後編集が許可されていません' }, 403);
     }
 
