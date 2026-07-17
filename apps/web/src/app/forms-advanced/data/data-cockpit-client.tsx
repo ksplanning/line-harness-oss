@@ -237,13 +237,24 @@ export default function DataCockpitClient({ id }: { id: string }) {
                       {!f.editable && <span className="ml-1 text-[10px] text-gray-400">（この項目は編集できません）</span>}
                     </label>
                     {f.editable ? (
-                      <input
-                        data-testid={`edit-input-${f.slug}`}
-                        type={f.type === 'number' ? 'number' : f.type === 'email' ? 'email' : f.type === 'date' ? 'date' : 'text'}
-                        value={editValues[f.slug] ?? ''}
-                        onChange={(e) => setEditValues((prev) => ({ ...prev, [f.slug]: e.target.value }))}
-                        className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
-                      />
+                      // F-I4: textarea 型は複数行を保つため <textarea> で描画 (input だと改行 flatten = データ毀損)。
+                      f.type === 'textarea' ? (
+                        <textarea
+                          data-testid={`edit-input-${f.slug}`}
+                          rows={3}
+                          value={editValues[f.slug] ?? ''}
+                          onChange={(e) => setEditValues((prev) => ({ ...prev, [f.slug]: e.target.value }))}
+                          className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                        />
+                      ) : (
+                        <input
+                          data-testid={`edit-input-${f.slug}`}
+                          type={f.type === 'number' ? 'number' : f.type === 'email' ? 'email' : f.type === 'date' ? 'date' : 'text'}
+                          value={editValues[f.slug] ?? ''}
+                          onChange={(e) => setEditValues((prev) => ({ ...prev, [f.slug]: e.target.value }))}
+                          className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                        />
+                      )
                     ) : (
                       <div className="mt-0.5 text-sm text-gray-500">{String(detail.answers[f.slug] ?? '—')}</div>
                     )}

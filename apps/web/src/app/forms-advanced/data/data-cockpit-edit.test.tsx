@@ -92,6 +92,19 @@ describe('T-D2 回答詳細 編集モード', () => {
     expect(screen.queryByTestId('edit-input-pickSlug')).toBeNull()
   })
 
+  it('F-I4: textarea 型は <textarea> 要素で描画し改行を保つ (input flatten を避ける)', async () => {
+    rowMock.mockResolvedValue(detailFor(1))
+    editRowMock.mockResolvedValue({ id: 'row1', source: 'formaloo', submittedAt: '2026-07-17T00:00:00+09:00', answers: { nameSlug: '田中', noteSlug: '行1\n行2', pickSlug: 'A' }, lastEdit: null })
+    await openDetail()
+    fireEvent.click(screen.getByTestId('edit-answer'))
+    const note = screen.getByTestId('edit-input-noteSlug')
+    expect(note.tagName).toBe('TEXTAREA') // input でなく textarea
+    // 改行を含む値を編集して保存 → 改行が保たれて editRow に渡る (flatten されない)
+    fireEvent.change(note, { target: { value: '行1\n行2' } })
+    fireEvent.click(screen.getByTestId('edit-save'))
+    await waitFor(() => expect(editRowMock).toHaveBeenCalledWith('fa1', 'row1', expect.objectContaining({ noteSlug: '行1\n行2' })))
+  })
+
   it('allow_post_edit=0 → 編集ボタンが出ない', async () => {
     rowMock.mockResolvedValue(detailFor(0))
     await openDetail()
