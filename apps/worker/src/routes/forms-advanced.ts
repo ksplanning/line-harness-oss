@@ -51,6 +51,7 @@ import {
   parseCsv,
   logicFingerprint,
   normalizeFormDesign,
+  normalizeFormCopy,
   defaultFormDesign,
   serializeRawLogicForPush,
   computeRouteTerminalWarnings,
@@ -61,6 +62,7 @@ import {
   type FormDesign,
   type FormDesignImages,
   type FormDisplayType,
+  type FormCopy,
 } from '@line-crm/shared';
 import {
   canTransition,
@@ -75,6 +77,7 @@ import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
 import { designColorFields, confirmDesignReflected, applyDesignImages } from '../services/formaloo-design.js';
 import { resolveRatingStarCustomCss } from '../services/formaloo-rating-css.js';
+import { formCopyFields, confirmFormCopyReflected } from '../services/formaloo-copy.js';
 import { ownerGate } from '../lib/owner-gate.js';
 import type { Env } from '../index.js';
 
@@ -102,6 +105,8 @@ interface StoredDefinition {
   design?: FormDesign;
   // form-route-branching (R2): 表示形式 (additive JSON key)。未設定フォームは undefined = 後方互換 (byte 不変)。
   formType?: FormDisplayType;
+  // form-jp-localization: 公開ページ文言 (additive JSON key)。未設定フォームは undefined = 後方互換 (byte 不変)。
+  formCopy?: FormCopy;
 }
 
 function parseDefinition(json: string): StoredDefinition {
@@ -119,9 +124,13 @@ function parseDefinition(json: string): StoredDefinition {
         : undefined,
       // form-route-branching: whitelist 2 値のみ。未設定は undefined = 後方互換。
       formType: d.formType === 'simple' || d.formType === 'multi_step' ? d.formType : undefined,
+      // form-jp-localization: 文言 whitelist 正規化 (M-21)。文言が無ければ undefined = 後方互換。
+      formCopy: d.formCopy && typeof d.formCopy === 'object' && !Array.isArray(d.formCopy)
+        ? normalizeFormCopy(d.formCopy)
+        : undefined,
     };
   } catch {
-    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined };
+    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined };
   }
 }
 
@@ -290,8 +299,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -448,6 +457,17 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const incomingFormType: FormDisplayType | undefined =
       body.formType === 'simple' || body.formType === 'multi_step' ? body.formType : undefined;
     const formTypeToPersist: FormDisplayType | undefined = incomingFormType ?? prevDef.formType;
+
+    // ── form-jp-localization: 公開ページ文言 (button_text/success_message/error_message) ──
+    // update 意味論: formCopy 未提供 (body に formCopy key 無し) は Formaloo に文言を送らず prev を carry
+    //   (既存フォームの文言を勝手に変えない = failure_observable 直対応)。提供時は normalizeFormCopy
+    //   (whitelist / 非空 trim) を prev に merge (set/absent MVP: 空欄=未指定=触らない = 誤消去しない・
+    //   clear=既定戻しは backlog / plan §4)。design/formType と同型の additive-optional。
+    const formCopyProvided = body.formCopy !== undefined;
+    const incomingFormCopy = formCopyProvided ? normalizeFormCopy(body.formCopy) : undefined;
+    const formCopyToPersist: FormCopy | undefined = formCopyProvided
+      ? { ...(prevDef.formCopy ?? {}), ...incomingFormCopy }
+      : prevDef.formCopy;
     // jump+simple backstop (最後の砦): jump rule があるのに表示形式が multi_step でない → 非ブロッキング警告。
     // (builder の自動切替=主機構が働けば発火しない。API 直叩き/手動戻しの取りこぼしを save レスポンスで surface。)
     const hasJumpRule = logic.some((r) => r.action === 'jump');
@@ -473,6 +493,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         ...(designToPersist && Object.keys(designToPersist).length ? { design: designToPersist } : {}),
         // form-route-branching: formType が有効なときだけ載せる (未設定フォームは byte 一致 = 後方互換)。
         ...(formTypeToPersist ? { formType: formTypeToPersist } : {}),
+        // form-jp-localization: 文言が非空のときだけ載せる (未設定フォームは byte 一致 = 後方互換)。
+        ...(formCopyToPersist && Object.keys(formCopyToPersist).length ? { formCopy: formCopyToPersist } : {}),
       });
     const fieldRows = (slugFor: (fid: string) => string | null) =>
       fields.map((f) => ({ id: f.id, formalooFieldSlug: slugFor(f.id), fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) }));
@@ -558,6 +580,9 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
               description: newDescription ?? '',
               ...(designProvided ? designColorFields(designToPersist) : {}),
               ...ratingStarCssFields,
+              // form-jp-localization: 文言も同一 meta PATCH に additive 合流 (present-key only)。
+              //   未提供は載せない (prev 文言を Formaloo 側で誤って潰さない = update 意味論)。
+              ...(formCopyProvided ? formCopyFields(formCopyToPersist) : {}),
             })
           : { ok: false as const, status: 0 };
         // form-design 画像: meta 成功後に replace(multipart)/remove(JSON null) を反映し、確定 S3 URL を再永続。
@@ -593,6 +618,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           const reflected = await confirmDesignReflected(client, slug, designToPersist);
           if (!reflected.ok) designReflectError = reflected.error ?? '配色が公開ページに反映されませんでした';
         }
+        // form-jp-localization: 文言も soft-200 対策の GET-after-PATCH 確認 (design と同型・別 helper で file-disjoint)。
+        //   送った文言が hosted に反映されない (soft-200 無言無視) を honest surface する。文言を送らない経路は GET せず素通り。
+        let formCopyReflectError: string | null = null;
+        if (metaRes.ok && slug && formCopyProvided && formCopyToPersist) {
+          const reflected = await confirmFormCopyReflected(client, slug, formCopyToPersist);
+          if (!reflected.ok) formCopyReflectError = reflected.error ?? '文言が公開ページに反映されませんでした';
+        }
         if (!metaRes.ok) {
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: 'フォーム情報の同期に失敗しました',
@@ -620,6 +652,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           //   「保存されるが公開ページに配色が出ない」failure_observable を honest に surface する。
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: designReflectError,
+          });
+          syncSettled = true;
+        } else if (formCopyReflectError) {
+          // form-jp-localization: meta PATCH は 200 だが送った文言が hosted に反映されなかった (soft-200) → out_of_sync。
+          //   「設定は保存されるが hosted に反映されない」failure_observable を honest に surface する。
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync', lastError: formCopyReflectError,
           });
           syncSettled = true;
         } else {
