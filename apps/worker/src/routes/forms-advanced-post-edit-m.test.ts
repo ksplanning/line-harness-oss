@@ -205,6 +205,18 @@ describe('T-B2 正常系: flat PATCH + persist 確認 + mirror 更新 + edit 記
     expect(data.lastEdit.editorName).toBe('Owner');        // env-owner
   });
 
+  test('F-M6: mirror は persist確認の FRESH remote を採り Formaloo 側の他フィールド変更も反映 (D1 drift 防止)', async () => {
+    seedForm('f1', 'form_abc', 1);
+    seedSub('s1', 'f1', { nameSlug: '田中' }, 'ROW1'); // harness 既知は nameSlug のみ
+    // remote は harness が知らない noteSlug='REMOTE-CHANGE' を持つ (別経路の編集など)
+    stubFormaloo({ ROW1: { nameSlug: '田中', noteSlug: 'REMOTE-CHANGE' } });
+    const res = await call('PATCH', '/api/forms-advanced/f1/rows/s1', { answers: { nameSlug: '山田' } });
+    expect(res.status).toBe(200);
+    // stale prevAnswers+patchBody 再構築なら noteSlug は消える → FRESH remote 採用で保持されるのが正
+    expect(answersOf('s1').nameSlug).toBe('山田');
+    expect(answersOf('s1').noteSlug).toBe('REMOTE-CHANGE');
+  });
+
   test('legacy row_slug=NULL は rows-list submit_code 照合で解決し backfill する', async () => {
     seedForm('f1', 'form_abc', 1);
     seedSub('legrow', 'f1', { nameSlug: '田中' }, null); // row_slug 未 capture

@@ -980,10 +980,13 @@ formsAdvanced.patch('/api/forms-advanced/:id/rows/:rowId', async (c) => {
       return c.json({ success: false, error: 'Formaloo への反映が確認できませんでした（保存していません）' }, 502);
     }
 
-    // 成功: D1 mirror 更新 (merge) + row_slug backfill (legacy のみ) + edit 記録 (変更フィールドのみ)。
+    // 成功: D1 mirror 更新 + row_slug backfill (legacy のみ) + edit 記録 (変更フィールドのみ)。
     const prevRaw = safeParseJson(mirror.answers_json);
     const prevAnswers = prevRaw && typeof prevRaw === 'object' && !Array.isArray(prevRaw) ? (prevRaw as Record<string, unknown>) : {};
-    const mergedAnswers = { ...prevAnswers, ...patchBody };
+    // F-M6: mirror は persist 確認で取得済の **FRESH remote (persisted)** を正とし、そこに patchBody を上書き
+    //   (persisted は既に patchBody を含むが、Formaloo 側の他フィールド最新変更も反映して D1 drift を防ぐ)。
+    //   remote に無い harness 既知フィールドは prevAnswers で補完 (欠落防止)。stale prevAnswers 単独再構築を避ける。
+    const mergedAnswers = { ...prevAnswers, ...persisted, ...patchBody };
     await c.env.DB
       .prepare('UPDATE formaloo_submissions SET answers_json = ?, synced_at = ? WHERE id = ?')
       .bind(JSON.stringify(mergedAnswers), jstNow(), rowId)
