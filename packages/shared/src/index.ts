@@ -8,6 +8,7 @@ export * from "./business-hours";
 export * from "./permissions";
 export * from "./formaloo-forms";
 export * from "./formaloo-fingerprint";
+export * from "./form-image";
 export * from "./form-design";
 export * from "./formaloo-rating-style";
 export * from "./form-copy";

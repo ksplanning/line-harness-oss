@@ -41,7 +41,9 @@ const PRESET_GROUPS: { tone: 'light' | 'dark'; label: string; presets: typeof LI
 const ALLOWED_IMAGE_MIME = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 
 type ImageSlot = 'logo' | 'cover'
-const IMAGE_LABELS: Record<ImageSlot, string> = { logo: 'ロゴ', cover: 'カバー画像（ヘッダー背景）' }
+// form-image-decoration: cover は Formaloo background_image = 公開ページ「全面」背景 (spike S-2 実測)。
+//   旧ラベル「ヘッダー背景」は語義誤り (帯にはならない) だったため「背景画像（全面）」に是正。
+const IMAGE_LABELS: Record<ImageSlot, string> = { logo: 'ロゴ', cover: '背景画像（全面）' }
 
 export interface DesignPanelProps {
   design: FormDesign
@@ -243,6 +245,13 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
                   </button>
                 )}
               </div>
+              {slot === 'cover' && (
+                // form-image-decoration (S-3 honest surface): 全面背景は Formaloo が可読性 scrim を自動付与しない。
+                //   文字が写真に直接乗るため読みにくくなり得る旨を明示し、帯にしたい場合の代替(差し込み画像)を案内する。
+                <p data-testid="cover-readability-note" className="mt-1.5 text-[11px] leading-relaxed text-amber-600">
+                  背景画像は公開ページの<strong>全面</strong>に敷かれます。文字が写真の上に直接乗るため、明るい・淡い写真を選ぶか、読みやすさを優先する場合は「装飾 ＞ 画像」をフォームの先頭に置いて<strong>帯（ヘッダー画像）</strong>にするのがおすすめです。
+                </p>
+              )}
             </div>
           )
         })}
