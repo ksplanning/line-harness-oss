@@ -80,7 +80,7 @@ import { resolveFormalooClient } from '../services/formaloo-client.js';
 import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
 import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/form-image-upload.js';
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
-import { designColorFields, confirmDesignReflected, confirmBackgroundReflected, applyDesignImages } from '../services/formaloo-design.js';
+import { designColorFields, confirmDesignReflected, confirmBackgroundReflected, applyDesignImages, type BackgroundReflectionExpected } from '../services/formaloo-design.js';
 import { resolveRatingStarCustomCss } from '../services/formaloo-rating-css.js';
 import { formCopyFields, confirmFormCopyReflected } from '../services/formaloo-copy.js';
 import { redirectFields, confirmRedirectReflected, validateFormRedirectInput } from '../services/formaloo-redirect.js';
@@ -669,9 +669,15 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         // F1: applyDesignImages 失敗 (replace/remove の非 ok・不正 payload) は imageSyncError に集約し、
         //     下の sync 判定で out_of_sync へ合流させる (silent success 禁止)。成功 slot のみ URL を確定。
         let imageSyncError: string | null = null;
+        // bg-fullpage-render-fix (FAIL-1): applyDesignImages が確定した URL を confirm の期待値に thread する
+        //   (差し替えで旧 URL が残る soft-200 を「非空」だけでは検知できないため applied URL と一致照合する)。
+        let appliedBgUrl: string | null | undefined;
+        let appliedLogoUrl: string | null | undefined;
         if (metaRes.ok && slug && designImages) {
           const applied = await applyDesignImages(client, slug, designImages);
           if (!applied.ok) imageSyncError = applied.error ?? '画像の同期に失敗しました';
+          if ('backgroundImageUrl' in applied) appliedBgUrl = applied.backgroundImageUrl;
+          if ('logoUrl' in applied) appliedLogoUrl = applied.logoUrl;
           designToPersist = { ...(designToPersist ?? {}) };
           if ('logoUrl' in applied) {
             if (applied.logoUrl == null) delete designToPersist.logoUrl;
@@ -719,13 +725,14 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         //   (imageSyncError) は二重報告しないよう素通り。keep/未指定は期待ゼロで GET せず素通り (既存挙動 byte 不変)。
         let backgroundReflectError: string | null = null;
         if (metaRes.ok && slug && designImages && !imageSyncError) {
-          const bgExpected: { backgroundImage?: 'set' | 'cleared'; logo?: 'set' | 'cleared' } = {};
+          const bgExpected: BackgroundReflectionExpected = {};
           const coverIntent = designImages.cover?.intent;
           const logoIntent = designImages.logo?.intent;
-          if (coverIntent === 'replace') bgExpected.backgroundImage = 'set';
-          else if (coverIntent === 'remove') bgExpected.backgroundImage = 'cleared';
-          if (logoIntent === 'replace') bgExpected.logo = 'set';
-          else if (logoIntent === 'remove') bgExpected.logo = 'cleared';
+          // replace=applied URL 一致を要求 (旧 URL 残存 soft-200 を検知) / remove=cleared。
+          if (coverIntent === 'replace') bgExpected.backgroundImage = { state: 'set', url: appliedBgUrl ?? '' };
+          else if (coverIntent === 'remove') bgExpected.backgroundImage = { state: 'cleared' };
+          if (logoIntent === 'replace') bgExpected.logo = { state: 'set', url: appliedLogoUrl ?? '' };
+          else if (logoIntent === 'remove') bgExpected.logo = { state: 'cleared' };
           if (bgExpected.backgroundImage || bgExpected.logo) {
             const reflected = await confirmBackgroundReflected(client, slug, bgExpected);
             if (!reflected.ok) backgroundReflectError = reflected.error ?? '画像が公開ページに反映されませんでした';

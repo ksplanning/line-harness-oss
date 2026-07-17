@@ -120,12 +120,23 @@ export async function confirmDesignReflected(
   return { ok: false, error: `配色が公開ページに反映されませんでした（${lastMiss || '確認に失敗しました'}）` };
 }
 
-/** confirmBackgroundReflected の期待状態 (slot ごとに set=非空 URL 永続 / cleared=null・空 を要求)。 */
+/**
+ * confirmBackgroundReflected の slot ごとの期待。
+ *  - `{ state: 'set', url }`: replace = GET-after-PATCH の field が **applied URL(PATCH が返した確定 S3 URL)と一致**
+ *    することを要求。非空だけでは既存画像の差し替え soft-200 で旧 URL が残っても誤 ok になるため、色版
+ *    confirmDesignReflected と同じ「期待値一致」水準にする (FAIL-1 修正)。
+ *  - `{ state: 'cleared' }`: remove = field が null/空 になることを要求。
+ */
+export type BackgroundReflectionCheck =
+  | { state: 'set'; url: string }
+  | { state: 'cleared' };
+
+/** confirmBackgroundReflected の期待状態 (slot ごとに set(applied URL 一致) / cleared(null・空) を要求)。 */
 export interface BackgroundReflectionExpected {
-  /** cover(=Formaloo `background_image`) の期待: 'set'=replace で URL 永続 / 'cleared'=remove で null。 */
-  backgroundImage?: 'set' | 'cleared';
-  /** logo(=Formaloo `logo`) の期待: 同上。 */
-  logo?: 'set' | 'cleared';
+  /** cover(=Formaloo `background_image`) の期待。 */
+  backgroundImage?: BackgroundReflectionCheck;
+  /** logo(=Formaloo `logo`) の期待。 */
+  logo?: BackgroundReflectionCheck;
 }
 
 /**
@@ -139,7 +150,8 @@ export interface BackgroundReflectionExpected {
  *   **確認対象にしない** (色バグ由来の「入れ子 theme_config 仮説 H1」は spike で REFUTED)。証跡:
  *   .plans/2026-07-18-bg-fullpage-render-fix/evidence/spike-conclusions.md。
  *
- * 'set' は remote field が非空 string(=S3 URL 永続)、'cleared' は null/空 を要求。eventual consistency 用に bounded retry。
+ * 'set' は remote field が **applied URL と一致** (非空 かつ PATCH が返した確定 URL に等しい = 差し替え soft-200 で
+ * 旧 URL が残るケースを検知)、'cleared' は null/空 を要求。eventual consistency 用に bounded retry。
  * 全一致で ok / 不一致・GET 失敗は ok:false (route が out_of_sync)。期待が 1 つも無ければ GET せず ok:true
  * (replace/remove 無しの経路は素通り = 既存 keep/未指定挙動 byte 不変)。
  */
@@ -149,8 +161,8 @@ export async function confirmBackgroundReflected(
   expected: BackgroundReflectionExpected,
   opts?: { retries?: number; sleep?: (ms: number) => Promise<void> },
 ): Promise<DesignReflectionResult> {
-  // 確認対象 = present な期待のみ (Formaloo field 名 → 'set'|'cleared')。
-  const wanted: Array<[string, 'set' | 'cleared']> = [];
+  // 確認対象 = present な期待のみ (Formaloo field 名 → check)。
+  const wanted: Array<[string, BackgroundReflectionCheck]> = [];
   if (expected.backgroundImage) wanted.push([IMAGE_SLOT_TO_FORMALOO.cover, expected.backgroundImage]);
   if (expected.logo) wanted.push([IMAGE_SLOT_TO_FORMALOO.logo, expected.logo]);
   if (wanted.length === 0) return { ok: true }; // 確認対象なし (GET しない)
@@ -164,8 +176,10 @@ export async function confirmBackgroundReflected(
     if (g.ok) {
       const form = extractForm(g.data);
       let allMatch = true;
-      for (const [field, want] of wanted) {
-        const ok = want === 'set' ? isSet(form[field]) : !isSet(form[field]);
+      for (const [field, check] of wanted) {
+        const v = form[field];
+        // 'set' は「非空 かつ applied URL 一致」= 旧 URL 残存 soft-200 を検知 (色版と同じ期待値一致水準)。
+        const ok = check.state === 'set' ? (isSet(v) && v === check.url) : !isSet(v);
         if (!ok) { allMatch = false; lastMiss = field; break; }
       }
       if (allMatch) return { ok: true };

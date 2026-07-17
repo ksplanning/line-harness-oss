@@ -360,6 +360,22 @@ describe('PUT /api/forms-advanced/:id — form-design 画像', () => {
     expect(data.syncError).toEqual(expect.any(String));
   });
 
+  // 🚨 FAIL-1 回帰: 既存背景あり → 別 URL に差し替え → soft-200 で旧 URL が残る → out_of_sync
+  //   (upload は 200・新 URL を返すが GET は旧 URL のまま = owner が差し替え成功と誤認する殻完了を防ぐ)。
+  test('T-A1 背景 replace で既存画像を別 URL に差し替え・soft-200 で旧 URL 残存 → out_of_sync (差し替え誤認防止)', async () => {
+    seedForm('bg5', 'SLUGBG5', JSON.stringify({ fields: [], logic: [], design: { backgroundImageUrl: 'https://s3/OLD-bg.png' } }));
+    // GET(state) は旧 URL のまま (imageSoftIgnore=multipart 200 だが永続せず)。multipart 応答の新 URL(applied)と不一致。
+    stubFormaloo({ getForm: { background_image: 'https://s3/OLD-bg.png' }, imageSoftIgnore: true });
+    const res = await call('PUT', '/api/forms-advanced/bg5', {
+      fields: [], logic: [], design: { backgroundImageUrl: 'https://s3/OLD-bg.png' },
+      designImages: { cover: { intent: 'replace', dataUrl: DATA_URL, mimeType: 'image/png' } },
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string; syncError: string | null } }).data;
+    expect(data.syncStatus).toBe('out_of_sync'); // applied 新 URL ≠ GET 旧 URL = 差し替え未反映を honest surface
+    expect(data.syncError).toEqual(expect.any(String));
+  });
+
   test('T-A1 背景 remove が反映 (GET-after-PATCH で background_image が cleared) → out_of_sync でない', async () => {
     seedForm('bg3', 'SLUGBG3', JSON.stringify({ fields: [], logic: [], design: { backgroundImageUrl: 'https://s3/old-bg.png' } }));
     stubFormaloo({ getForm: { background_image: 'https://s3/old-bg.png' } });

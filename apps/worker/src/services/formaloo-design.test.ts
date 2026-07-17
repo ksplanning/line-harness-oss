@@ -143,16 +143,25 @@ describe('confirmBackgroundReflected (画像 soft-200 対策 GET-after-PATCH / �
   }
   const noSleep = () => Promise.resolve();
 
-  test('background set + remote に background_image URL 存在 → ok:true (GET は top-level を照合)', async () => {
+  test('background set + remote が applied URL に一致 → ok:true (GET は top-level を照合)', async () => {
     const c = getClient({ background_image: 'https://s3/new-bg.png' });
-    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: 'set' }, { retries: 0, sleep: noSleep });
+    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: { state: 'set', url: 'https://s3/new-bg.png' } }, { retries: 0, sleep: noSleep });
     expect(r.ok).toBe(true);
     expect(c.request).toHaveBeenCalledWith('GET', '/v3.0/forms/slugBG/');
   });
 
   test('background set だが remote が空 (真の soft-200 非永続) → ok:false + error', async () => {
     const c = getClient({ background_image: null });
-    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: 'set' }, { retries: 1, sleep: noSleep });
+    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: { state: 'set', url: 'https://s3/new-bg.png' } }, { retries: 1, sleep: noSleep });
+    expect(r.ok).toBe(false);
+    expect(r.error).toEqual(expect.any(String));
+  });
+
+  // 🚨 FAIL-1 回帰: 既存画像を別 URL に差し替え → soft-200 で旧 URL が残る (remote=旧 URL ≠ applied 新 URL) → ok:false。
+  //   非空チェックのみだと旧 URL が非空ゆえ誤 ok になり、owner が差し替え成功と誤認 (hosted は旧画像配信)。
+  test('background replace: 既存画像あり soft-200 で旧 URL 残存 (applied ≠ GET) → ok:false (差し替え誤認防止)', async () => {
+    const c = getClient({ background_image: 'https://s3/OLD-bg.png' }); // GET は旧 URL のまま (非空だが古い)
+    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: { state: 'set', url: 'https://s3/NEW-bg.png' } }, { retries: 1, sleep: noSleep });
     expect(r.ok).toBe(false);
     expect(r.error).toEqual(expect.any(String));
   });
@@ -166,44 +175,44 @@ describe('confirmBackgroundReflected (画像 soft-200 対策 GET-after-PATCH / �
 
   test('background cleared + remote が null/空 → ok:true (remove 反映確認)', async () => {
     const c = getClient({ background_image: null });
-    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: 'cleared' }, { retries: 0, sleep: noSleep });
+    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: { state: 'cleared' } }, { retries: 0, sleep: noSleep });
     expect(r.ok).toBe(true);
   });
 
   test('background cleared だが remote に URL が残存 → ok:false (削除が反映されていない)', async () => {
     const c = getClient({ background_image: 'https://s3/still-here.png' });
-    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: 'cleared' }, { retries: 0, sleep: noSleep });
+    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: { state: 'cleared' } }, { retries: 0, sleep: noSleep });
     expect(r.ok).toBe(false);
   });
 
-  test('logo + background 両方 set → 両方 remote 存在で ok:true', async () => {
+  test('logo + background 両方 set → 両方 remote が applied URL に一致で ok:true', async () => {
     const c = getClient({ logo: 'https://s3/l.png', background_image: 'https://s3/b.png' });
-    const r = await confirmBackgroundReflected(c, 'slugBG', { logo: 'set', backgroundImage: 'set' }, { retries: 0, sleep: noSleep });
+    const r = await confirmBackgroundReflected(c, 'slugBG', { logo: { state: 'set', url: 'https://s3/l.png' }, backgroundImage: { state: 'set', url: 'https://s3/b.png' } }, { retries: 0, sleep: noSleep });
     expect(r.ok).toBe(true);
   });
 
-  test('logo set だが remote に無い → ok:false (background は存在でも logo 欠落で false)', async () => {
+  test('logo set だが remote に無い → ok:false (background は一致でも logo 欠落で false)', async () => {
     const c = getClient({ background_image: 'https://s3/b.png', logo: '' });
-    const r = await confirmBackgroundReflected(c, 'slugBG', { logo: 'set', backgroundImage: 'set' }, { retries: 0, sleep: noSleep });
+    const r = await confirmBackgroundReflected(c, 'slugBG', { logo: { state: 'set', url: 'https://s3/l.png' }, backgroundImage: { state: 'set', url: 'https://s3/b.png' } }, { retries: 0, sleep: noSleep });
     expect(r.ok).toBe(false);
   });
 
-  test('bounded retry: 初回空 → 2 回目 URL で ok:true', async () => {
+  test('bounded retry: 初回旧 URL → 2 回目 applied URL で ok:true (eventual consistency)', async () => {
     let call = 0;
     const request = vi.fn(async (method: string) => {
       if (method !== 'GET') return okForm({});
       call += 1;
-      return call < 2 ? okForm({ background_image: null }) : okForm({ background_image: 'https://s3/b.png' });
+      return call < 2 ? okForm({ background_image: 'https://s3/OLD-bg.png' }) : okForm({ background_image: 'https://s3/NEW-bg.png' });
     });
     const c = { request } as unknown as FormalooClient & { request: ReturnType<typeof vi.fn> };
-    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: 'set' }, { retries: 2, sleep: noSleep });
+    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: { state: 'set', url: 'https://s3/NEW-bg.png' } }, { retries: 2, sleep: noSleep });
     expect(r.ok).toBe(true);
     expect(call).toBe(2);
   });
 
   test('GET 失敗 (500) → ok:false (silent success にしない)', async () => {
     const c = getClient({ background_image: 'https://s3/b.png' }, true);
-    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: 'set' }, { retries: 1, sleep: noSleep });
+    const r = await confirmBackgroundReflected(c, 'slugBG', { backgroundImage: { state: 'set', url: 'https://s3/b.png' } }, { retries: 1, sleep: noSleep });
     expect(r.ok).toBe(false);
   });
 });
