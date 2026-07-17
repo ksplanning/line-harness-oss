@@ -1,5 +1,5 @@
 import { fetchApi, downloadCsv } from './api'
-import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec } from '@line-crm/shared'
 
 // =============================================================================
 // 高機能フォーム (Formaloo-backed) API クライアント (F-2 / T-B1)。fetchApi 経由 (cookie 認証 + CSRF)。
@@ -33,6 +33,11 @@ export interface AdvancedForm {
   design?: FormDesign | null
   // form-route-branching (R2): 表示形式 (builder の initialFormType)。未設定は null。
   formType?: FormDisplayType | null
+  // route-terminal-phase2 (Track 1): 送信後リダイレクト設定 (builder の initialFormRedirect)。未設定は null。
+  //   保存済 redirect を reload で復元し編集/解除できるようにする (CX-3)。
+  formRedirect?: FormRedirect | null
+  // route-terminal-phase2 (Track 2 / T-E5): ルート別完了ページ (builder の initialSuccessPages)。未設定は null。
+  successPages?: SuccessPageSpec[] | null
   // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。既定 0=現状挙動。弾S は inert (実効化は弾M)。
   allowPostEdit?: number
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。
@@ -68,6 +73,8 @@ export interface PulledDefinition {
   design?: FormDesign
   // form-route-branching (R2): Formaloo 側の表示形式を builder へ復元。
   formType?: FormDisplayType
+  // route-terminal-phase2 (Track 2 / T-E5): Formaloo 側の完了ページ (success_page 分離抽出) を builder へ復元。
+  successPages?: SuccessPageSpec[]
 }
 
 // preserve-raw: save body に carry する logic メタ (未編集判定 + verbatim 再送素材)。
@@ -85,6 +92,11 @@ export interface SaveDefinitionBody {
   formType?: FormDisplayType
   // form-jp-localization: 公開ページ文言 (送信ボタン/完了/送信エラー)。builder が触ったときだけ載る (present-key)。
   formCopy?: FormCopy
+  // route-terminal-phase2 (Track 1): 送信後リダイレクト設定。builder が触ったときだけ載る (present-key)。
+  //   url 空 + present = clear 意図 (route が form_redirects_after_submit:null で解除)。
+  formRedirect?: FormRedirect
+  // route-terminal-phase2 (Track 2 / T-E5): ルート別完了ページ。builder が触ったときだけ載る (present-key)。
+  successPages?: SuccessPageSpec[]
   // form-media-limits ③: 回答者後編集の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。
   allowPostEdit?: number
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。

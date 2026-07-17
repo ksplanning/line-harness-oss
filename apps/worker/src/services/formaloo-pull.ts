@@ -10,11 +10,13 @@ import {
   normalizeFormDesign,
   FORM_DESIGN_COLOR_KEYS,
   FORM_DESIGN_TO_FORMALOO,
+  normalizeSuccessPages,
   type HarnessField,
   type HarnessLogicRule,
   type FormalooLogicObject,
   type FormDesign,
   type FormDisplayType,
+  type SuccessPageSpec,
 } from '@line-crm/shared';
 import type { FormalooClient } from './formaloo-client';
 
@@ -66,6 +68,12 @@ export type PullResult =
        * で埋めることで slug wipe → 次回手動保存 push の重複作成 (idempotency B3 回帰) を防ぐ。route は無視 (後方互換)。
        */
       fieldSlugById?: Record<string, string>;
+      /**
+       * route-terminal-phase2 (T-E5): fields_list の success_page 要素を分離抽出した完了ページ (id=slug)。
+       * drift 再構築 / reimport が builder の successPages へ carry し、完了ページ本文 (title/description) の
+       * 変更を検知する。SP が無いフォームは未載 (後方互換)。
+       */
+      successPages?: SuccessPageSpec[];
     }
   | { ok: false; error: string };
 
@@ -181,6 +189,27 @@ export function extractFormType(root: unknown): FormDisplayType | undefined {
 }
 
 /**
+ * route-terminal-phase2 (T-E5/T-H1): fields_list の `type:"success_page"` 要素を successPages へ **分離抽出**する
+ *   (通常 field と混同しない / S-1 §5a)。fromFormalooField は success_page を null-drop するため fields には
+ *   混入しない (T-H1: crash しない)。SP は Formaloo-native ゆえ harness id を持たない → **slug を id に採用**
+ *   (round-trip で reconcile が slug 既知 = 再 POST しない・非冪等安全)。description は plain text 化 (CX-8)。
+ */
+export function extractSuccessPages(root: unknown): SuccessPageSpec[] {
+  const fieldsArr = extractFieldsList(root);
+  if (!fieldsArr) return [];
+  const raw: unknown[] = [];
+  for (const el of fieldsArr) {
+    if (!el || typeof el !== 'object' || Array.isArray(el)) continue;
+    const o = el as Record<string, unknown>;
+    if (o.type !== 'success_page') continue;
+    const slug = typeof o.slug === 'string' ? o.slug : '';
+    if (!slug) continue;
+    raw.push({ id: slug, slug, title: o.title, description: o.description });
+  }
+  return normalizeSuccessPages(raw); // whitelist + id/title 必須 + description plain-text 化
+}
+
+/**
  * 既に GET 済みの form-detail body (res.data) を harness 定義へ変換 (GET を含まない純粋変換)。
  * pull route (下記 pullDefinitionFromFormaloo) と drift-check の auto-apply が同一 body から再利用する
  * (drift-check は fingerprint 用に 1 回だけ GET し、その body を本関数へ渡す = 二重 GET 回避)。
@@ -261,6 +290,8 @@ export function buildPullResult(
     design: extractDesign(body),
     // form-route-branching (R2): 表示形式 form_type を復元 (未設定は undefined = 従来不変)。
     ...(extractFormType(body) !== undefined ? { formType: extractFormType(body) } : {}),
+    // route-terminal-phase2 (T-E5): success_page 要素を successPages へ分離抽出 (SP 無しは未載 = 後方互換)。
+    ...((): { successPages?: SuccessPageSpec[] } => { const sp = extractSuccessPages(body); return sp.length ? { successPages: sp } : {}; })(),
   };
 }
 

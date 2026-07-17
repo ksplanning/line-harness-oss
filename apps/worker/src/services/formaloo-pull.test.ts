@@ -82,6 +82,40 @@ describe('pullDefinitionFromFormaloo — mapping (T-A1)', () => {
     expect(r.fields).toHaveLength(1);
     expect(r.fields[0].id).toBe('s_new'); // slug fallback
   });
+
+  // route-terminal-phase2 (T-H1 / T-E5)
+  it('T-H1: fields_list に success_page が混在しても crash せず fields から除外 (通常 field は回帰しない)', async () => {
+    const body = detail([
+      { slug: 's_name', type: 'short_text', title: '名前', required: true, position: 0 },
+      { slug: 'sp_a', type: 'success_page', title: 'A完了', description: 'ありがとう', position: 1 },
+      { slug: 's_age', type: 'number', title: '年齢', required: false, position: 2 },
+    ]);
+    const resolve = (s: string) => ({ s_name: 'h_name', s_age: 'h_age' } as Record<string, string>)[s];
+    const r = await pullDefinitionFromFormaloo(mockClient(body), { formalooSlug: 'form_slug', resolveId: resolve });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.fields.map((f) => f.id)).toEqual(['h_name', 'h_age']); // success_page は fields に混入しない
+    expect(r.fields.some((f) => f.type === ('success_page' as never))).toBe(false);
+  });
+
+  it('T-E5: success_page を successPages へ分離抽出する (id=slug・description は plain text 化)', async () => {
+    const body = detail([
+      { slug: 's_name', type: 'short_text', title: '名前', required: true, position: 0 },
+      { slug: 'sp_a', type: 'success_page', title: 'A完了', description: '<b>ありがとう</b>', position: 1 },
+    ]);
+    const r = await pullDefinitionFromFormaloo(mockClient(body), { formalooSlug: 'form_slug', resolveId: (s) => s });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.successPages).toEqual([{ id: 'sp_a', slug: 'sp_a', title: 'A完了', description: 'ありがとう' }]);
+  });
+
+  it('T-E5: success_page が無いフォームは successPages を未載 (後方互換)', async () => {
+    const body = detail([{ slug: 's_name', type: 'short_text', title: '名前', required: false, position: 0 }]);
+    const r = await pullDefinitionFromFormaloo(mockClient(body), { formalooSlug: 'form_slug', resolveId: (s) => s });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect('successPages' in r).toBe(false);
+  });
 });
 
 describe('pullDefinitionFromFormaloo — choice_items round-trip zero-loss (T-A2)', () => {

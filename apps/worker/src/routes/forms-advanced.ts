@@ -52,6 +52,8 @@ import {
   logicFingerprint,
   normalizeFormDesign,
   normalizeFormCopy,
+  normalizeFormRedirect,
+  normalizeSuccessPages,
   defaultFormDesign,
   serializeRawLogicForPush,
   computeRouteTerminalWarnings,
@@ -63,6 +65,8 @@ import {
   type FormDesignImages,
   type FormDisplayType,
   type FormCopy,
+  type FormRedirect,
+  type SuccessPageSpec,
 } from '@line-crm/shared';
 import {
   canTransition,
@@ -79,6 +83,8 @@ import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
 import { designColorFields, confirmDesignReflected, applyDesignImages } from '../services/formaloo-design.js';
 import { resolveRatingStarCustomCss } from '../services/formaloo-rating-css.js';
 import { formCopyFields, confirmFormCopyReflected } from '../services/formaloo-copy.js';
+import { redirectFields, confirmRedirectReflected, validateFormRedirectInput } from '../services/formaloo-redirect.js';
+import { deleteSuccessPages } from '../services/formaloo-success-page.js';
 import { ownerGate } from '../lib/owner-gate.js';
 import type { Env } from '../index.js';
 
@@ -108,6 +114,10 @@ interface StoredDefinition {
   formType?: FormDisplayType;
   // form-jp-localization: 公開ページ文言 (additive JSON key)。未設定フォームは undefined = 後方互換 (byte 不変)。
   formCopy?: FormCopy;
+  // route-terminal-phase2 (Track 1): 送信後リダイレクト設定 (additive JSON key)。未設定は undefined = 後方互換 (byte 不変)。
+  formRedirect?: FormRedirect;
+  // route-terminal-phase2 (Track 2): ルート別完了ページ + 割当 slug (additive JSON key)。未設定は undefined = 後方互換。
+  successPages?: SuccessPageSpec[];
 }
 
 function parseDefinition(json: string): StoredDefinition {
@@ -129,9 +139,17 @@ function parseDefinition(json: string): StoredDefinition {
       formCopy: d.formCopy && typeof d.formCopy === 'object' && !Array.isArray(d.formCopy)
         ? normalizeFormCopy(d.formCopy)
         : undefined,
+      // route-terminal-phase2: redirect whitelist 正規化。redirect が無ければ undefined = 後方互換 (byte 不変)。
+      formRedirect: d.formRedirect && typeof d.formRedirect === 'object' && !Array.isArray(d.formRedirect)
+        ? normalizeFormRedirect(d.formRedirect)
+        : undefined,
+      // route-terminal-phase2 (Track 2): successPages whitelist 正規化。無ければ undefined = 後方互換 (byte 不変)。
+      successPages: Array.isArray(d.successPages) && d.successPages.length
+        ? normalizeSuccessPages(d.successPages)
+        : undefined,
     };
   } catch {
-    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined };
+    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined, formRedirect: undefined, successPages: undefined };
   }
 }
 
@@ -184,6 +202,12 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     design: def.design ?? null,
     // form-route-branching (R2): 表示形式 (builder の initialFormType)。未設定は null (builder が simple 既定表示)。
     formType: def.formType ?? null,
+    // route-terminal-phase2 (Track 1 / CX-3): 送信後リダイレクト設定 (builder の initialFormRedirect)。
+    //   未設定は null。保存済 redirect を reload で復元し編集/解除できるようにする (design/formType と同型の露出)。
+    formRedirect: def.formRedirect ?? null,
+    // route-terminal-phase2 (Track 2 / T-E5): ルート別完了ページ (builder の initialSuccessPages)。未設定は null。
+    //   保存済 SP (割当 slug 込み) を reload で復元し編集/削除できるようにする。
+    successPages: def.successPages ?? null,
     // N-7: publish 前は null (公開/埋め込み URL 発行不可)
     publicUrl,
     embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
@@ -300,8 +324,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -320,6 +344,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const allowEditMail = body.allowEditMail === undefined
       ? undefined
       : (body.allowEditMail === 1 || body.allowEditMail === true || body.allowEditMail === '1' ? 1 : 0);
+    // route-terminal-phase2 (T-B2 / CI-4/CX-7): redirect URL は Formaloo server が無検証 STORE する (spike M7)
+    //   → worker authoritative gate で raw body.formRedirect を厳格検証し、危険 URL/非 string を push 前に 400
+    //   で明示 reject する (normalize の silent drop に頼らない = builder バイパスの直 API 濫用も塞ぐ)。
+    const redirectInputCheck = validateFormRedirectInput(body.formRedirect);
+    if (!redirectInputCheck.ok) return c.json({ success: false, error: redirectInputCheck.error }, 400);
     const rawFields = Array.isArray(body.fields) ? body.fields : [];
     const rawLogicRules = Array.isArray(body.logic) ? body.logic : [];
 
@@ -341,6 +370,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     // 存在 field を参照する compound は保持・dangling ref を作る rule のみ除去 (R-4/L-9/D-12)。
     const fieldIds = new Set(fields.map((f) => f.id));
     const decorationIds = new Set(fields.filter((f) => isDecorationType(f.type)).map((f) => f.id));
+    const prevDef = parseDefinition(form.definition_json);
+    // route-terminal-phase2 (Track 2 / T-D1): 有効な success-page 集合を先に確定する。
+    //   successPages 提供時は incoming、未提供は prev を carry (submit rule が既存 SP を参照し続けられる)。
+    const successPagesProvided = body.successPages !== undefined;
+    const incomingSuccessPages = successPagesProvided ? normalizeSuccessPages(body.successPages) : undefined;
+    const successPagesForValidation = incomingSuccessPages ?? prevDef.successPages ?? [];
+    const successPageIds = new Set(successPagesForValidation.map((sp) => sp.id));
     const logic: HarnessLogicRule[] = (rawLogicRules as HarnessLogicRule[]).filter((r) => {
       if (!r || !fieldIds.has(r.sourceFieldId)) return false;
       // route-terminal-submit (T-C3/F-MED-2): submit rule は target を idSet 照合しない (下段で Phase1 '' 正規化)。
@@ -364,11 +400,14 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       }
       return true;
     })
-    // F-MED-2: Phase1 は submit の success-page target 非対応 → 通常 field/decoration を target 指定されても '' へ正規化
-    //   (直接 API 濫用で jump_to_success_page が不正 remote logic として送出されるのを防ぐ)。Phase2 で SP 集合対応。
-    .map((r) => (r.action === 'submit' && r.targetFieldId !== '' ? { ...r, targetFieldId: '' } : r));
-
-    const prevDef = parseDefinition(form.definition_json);
+    // route-terminal-phase2 (T-D1 / F-MED-2 解除): submit rule の target が有効 SP (successPageIds) を指すなら
+    //   保持する (push で resolve 済 slug が jump_to_success_page.args.identifier に載る)。無効/未選択/通常 field を
+    //   指す target は '' へ縮退 (既定完了ページ) — 直接 API 濫用で不正 SP 参照が remote logic に載るのを防ぐ。
+    .map((r) => {
+      if (r.action !== 'submit') return r;
+      if (r.targetFieldId && successPageIds.has(r.targetFieldId)) return r; // 有効 SP を保持
+      return r.targetFieldId !== '' ? { ...r, targetFieldId: '' } : r; // 無効は既定完了ページへ縮退
+    });
 
     // ── preserve-raw edit-detection (R7) ──
     // pull 時 fingerprint (body 経由) と save 対象 logic の canonical hash を突合。一致=未編集。
@@ -475,6 +514,25 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const formCopyToPersist: FormCopy | undefined = formCopyProvided
       ? { ...(prevDef.formCopy ?? {}), ...incomingFormCopy }
       : prevDef.formCopy;
+
+    // ── route-terminal-phase2 (Track 1): 送信後リダイレクト設定 ──
+    // update 意味論 (**replace**・formCopy の merge とは異なる): formRedirect は url+toggle が 1 論理単位ゆえ
+    //   提供時は normalize 済で **全置換** (merge すると url クリア時に prev url が残る CX-4 バグ)。未提供は prev carry
+    //   (未提供 save で勝手に消さない = byte 不変)。CX-4 clear: 提供かつ url 空/検証落ち かつ prev に url あり →
+    //   form_redirects_after_submit:null を送って remote redirect を解除する (空を silent drop で不能にしない)。
+    const formRedirectProvided = body.formRedirect !== undefined;
+    const incomingFormRedirect = formRedirectProvided ? normalizeFormRedirect(body.formRedirect) : undefined;
+    const formRedirectToPersist: FormRedirect | undefined = formRedirectProvided
+      ? incomingFormRedirect
+      : prevDef.formRedirect;
+    const redirectCleared = formRedirectProvided && !incomingFormRedirect?.url && !!prevDef.formRedirect?.url;
+
+    // ── route-terminal-phase2 (Track 2): ルート別完了ページ (successPages) ──
+    // update 意味論: 未提供は prev を carry (SP を触らない = byte 不変)。提供時は incoming を desired として
+    //   reconcile (push が create/update + 削除除外分の DELETE を実行)。reconcile 後の割当 slug を push が返し
+    //   successPagesToPersist を更新 → definition_json へ slug を永続 (非冪等 POST の重複作成防止 / CI-3)。
+    let successPagesToPersist: SuccessPageSpec[] | undefined = successPagesProvided ? incomingSuccessPages : prevDef.successPages;
+
     // jump+simple backstop (最後の砦): jump rule があるのに表示形式が multi_step でない → 非ブロッキング警告。
     // (builder の自動切替=主機構が働けば発火しない。API 直叩き/手動戻しの取りこぼしを save レスポンスで surface。)
     const hasJumpRule = logic.some((r) => r.action === 'jump');
@@ -502,6 +560,10 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         ...(formTypeToPersist ? { formType: formTypeToPersist } : {}),
         // form-jp-localization: 文言が非空のときだけ載せる (未設定フォームは byte 一致 = 後方互換)。
         ...(formCopyToPersist && Object.keys(formCopyToPersist).length ? { formCopy: formCopyToPersist } : {}),
+        // route-terminal-phase2: redirect が非空のときだけ載せる (未設定/クリア後は byte 一致 = 後方互換)。
+        ...(formRedirectToPersist && Object.keys(formRedirectToPersist).length ? { formRedirect: formRedirectToPersist } : {}),
+        // route-terminal-phase2 (Track 2): successPages が非空のときだけ載せる (割当 slug 込み・未設定は byte 一致)。
+        ...(successPagesToPersist && successPagesToPersist.length ? { successPages: successPagesToPersist } : {}),
       });
     const fieldRows = (slugFor: (fid: string) => string | null) =>
       fields.map((f) => ({ id: f.id, formalooFieldSlug: slugFor(f.id), fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) }));
@@ -562,7 +624,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         // form-route-branching R2: baseline 差分時のみ form_type PATCH (勝手に変えない)。
         formType: formTypeToPersist,
         prevFormType: prevDef.formType,
+        // route-terminal-phase2 (Track 2): successPages を reconcile (提供時のみ)。prev で slug carry + 削除検出。
+        successPages: successPagesProvided ? incomingSuccessPages : undefined,
+        prevSuccessPages: prevDef.successPages,
       });
+      // route-terminal-phase2 (Track 2): reconcile 後の割当 slug 付き successPages を永続対象へ反映
+      //   (POST 成功後の slug を definition_json に残し次回保存で再 POST しない = 非冪等重複作成の根絶)。
+      if (pushed.successPages) successPagesToPersist = pushed.successPages;
       if (pushed.ok) {
         // slug + address + (backfill 後の) rawLogic + design(色) を反映
         await saveFormalooDefinition(c.env.DB, id, {
@@ -590,6 +658,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
               // form-jp-localization: 文言も同一 meta PATCH に additive 合流 (present-key only)。
               //   未提供は載せない (prev 文言を Formaloo 側で誤って潰さない = update 意味論)。
               ...(formCopyProvided ? formCopyFields(formCopyToPersist) : {}),
+              // route-terminal-phase2: redirect も同一 meta PATCH に additive 合流。CX-4 clear は明示 null で解除。
+              //   未提供は載せない (prev redirect を誤って潰さない)。design/formCopy と別 key で byte disjoint。
+              ...(formRedirectProvided
+                ? (redirectCleared ? { form_redirects_after_submit: null } : redirectFields(formRedirectToPersist))
+                : {}),
             })
           : { ok: false as const, status: 0 };
         // form-design 画像: meta 成功後に replace(multipart)/remove(JSON null) を反映し、確定 S3 URL を再永続。
@@ -632,6 +705,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           const reflected = await confirmFormCopyReflected(client, slug, formCopyToPersist);
           if (!reflected.ok) formCopyReflectError = reflected.error ?? '文言が公開ページに反映されませんでした';
         }
+        // route-terminal-phase2: redirect も soft-200 対策の GET-after-PATCH 確認 (design/formCopy と同型・別 helper)。
+        //   送った URL が hosted に反映されない (soft-200 無言無視) を honest surface。clear(null)/未提供は GET せず素通り。
+        let redirectReflectError: string | null = null;
+        if (metaRes.ok && slug && formRedirectProvided && !redirectCleared && formRedirectToPersist) {
+          const reflected = await confirmRedirectReflected(client, slug, formRedirectToPersist);
+          if (!reflected.ok) redirectReflectError = reflected.error ?? '飛び先 URL が公開ページに反映されませんでした';
+        }
         if (!metaRes.ok) {
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: 'フォーム情報の同期に失敗しました',
@@ -668,6 +748,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
             syncStatus: 'out_of_sync', lastError: formCopyReflectError,
           });
           syncSettled = true;
+        } else if (redirectReflectError) {
+          // route-terminal-phase2: meta PATCH は 200 だが送った redirect URL が hosted に反映されなかった (soft-200)
+          //   → out_of_sync。「保存されるが送信後に飛ばない」failure_observable を honest に surface する。
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync', lastError: redirectReflectError,
+          });
+          syncSettled = true;
         } else {
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'idle', lastError: null, lastPushedAt: new Date().toISOString(),
@@ -676,6 +763,15 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           syncSettled = true;
         }
       } else {
+        // route-terminal-phase2 (Track 2): push 失敗でも POST 成功済 SP の割当 slug は definition_json に永続する
+        //   (successPagesToPersist は pushed.successPages で partial slug を carry 済) → 次回リトライで再 POST しない
+        //   = 非冪等重複作成の根絶 (失敗注入耐性)。formalooSlug/field slug は変えない (既存挙動維持)。
+        if (successPagesProvided && pushed.successPages) {
+          await saveFormalooDefinition(c.env.DB, id, {
+            definitionJson: buildDefinitionJson(pushed.publicAddress ?? prevDef.formalooAddress ?? null),
+            fields: fieldRows((fid) => pushed.fieldSlugs?.[fid] ?? existingFieldSlugs[fid] ?? null),
+          });
+        }
         await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: pushed.error ?? 'push failed' });
         syncSettled = true;
       }
@@ -860,6 +956,20 @@ formsAdvanced.delete('/api/forms-advanced/:id', async (c) => {
     const id = c.req.param('id')!;
     const form = await getFormalooForm(c.env.DB, id);
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    // route-terminal-phase2 (T-E4 / CX-2): form 削除で紐づく success-page (完了ページ) を明示 DELETE で回収する。
+    //   Formaloo は form DELETE で SP を cascade しない (S-1 §5c) ゆえ、harness が abandon する form の SP resource
+    //   が孤児として残る。remote form の削除有無と独立に SP slug を明示 DELETE (404 は成功扱い・fail-soft で
+    //   本削除をブロックしない = 部分失敗は log で残余記録)。
+    const spSlugs = (parseDefinition(form.definition_json).successPages ?? [])
+      .map((sp) => sp.slug)
+      .filter((s): s is string => typeof s === 'string' && s.length > 0);
+    if (spSlugs.length) {
+      const spClient = await resolveFormalooClient(c.env, form.workspace_id);
+      if (spClient) {
+        const del = await deleteSuccessPages(spClient, spSlugs);
+        if (!del.ok) console.error('DELETE /api/forms-advanced/:id — SP 孤児回収の一部失敗:', id, del.failed);
+      }
+    }
     await softDeleteFormalooForm(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
