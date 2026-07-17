@@ -8,7 +8,7 @@
  * builder-form-copy.test.tsx を写経元にした専用 harness。
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
 import FormBuilder from './builder'
 import type { HarnessField } from '@line-crm/shared'
 
@@ -95,5 +95,24 @@ describe('FormBuilder — 送信後リダイレクトセクション (route-term
     fireEvent.click(screen.getByText('保存'))
     const saved = onSave.mock.calls[0][0] as { formRedirect?: { url: string } }
     expect(saved.formRedirect).toEqual({ url: '', openExternalBrowser: false })
+  })
+
+  // fix round (defect 1 / T-C3 gap): reimport 後もリダイレクト URL が画面に残る回帰。
+  it('Formaloo 再取り込み後は redirect state をリセットする (未保存編集の破棄・formCopy と同型)', async () => {
+    const onSave = vi.fn()
+    const onReimport = vi.fn().mockResolvedValue({ ok: true, fields: [], logic: [], note: '取り込みました' })
+    render(<FormBuilder {...base({ onSave, onReimport, initialFormRedirect: { url: 'https://saved.example.com/lp', openExternalBrowser: true } })} />)
+    // 復元済の redirect が表示されている。
+    expect((screen.getByLabelText('送信後の飛び先 URL') as HTMLInputElement).value).toBe('https://saved.example.com/lp')
+    // 再取り込み → 確認 → はい。
+    fireEvent.click(screen.getByText('Formaloo から再取り込み'))
+    await act(async () => { fireEvent.click(screen.getByText('はい')) })
+    // reimport 後は redirect が空 (完了ページ/文言と同じく未保存編集を破棄) = 画面にリダイレクト URL が残らない。
+    expect((screen.getByLabelText('送信後の飛び先 URL') as HTMLInputElement).value).toBe('')
+    expect((screen.getByLabelText('飛び先の開き方') as HTMLSelectElement).value).toBe('line')
+    // reimport 後の未編集保存は formRedirect を送らない (touched=false = 既存 redirect を誤クリアしない)。
+    fireEvent.click(screen.getByText('保存'))
+    const saved = onSave.mock.calls[0][0] as { formRedirect?: unknown }
+    expect('formRedirect' in saved).toBe(false)
   })
 })

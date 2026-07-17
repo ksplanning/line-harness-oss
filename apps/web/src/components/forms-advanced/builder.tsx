@@ -979,6 +979,11 @@ export default function FormBuilder(props: BuilderProps) {
         //   (design/formType と同型・reimport は未保存編集を破棄する契約と一貫)。
         setSuccessPages(d.successPages ?? [])
         setSuccessPagesTouched(false)
+        // route-terminal-phase2 (fix / T-C3 gap): 送信後リダイレクトは pull 非対応 (form-meta) ゆえ formCopy と
+        //   同様に初期 (空・未編集) にリセットする。これを欠くと再取り込み後も画面に旧 redirect URL が残る退行。
+        //   touched=false ゆえ直後の未編集保存では formRedirect を送らず、サーバ保存済 redirect を誤クリアしない。
+        setFormRedirect({ url: '', openExternalBrowser: false })
+        setFormRedirectTouched(false)
       }
     } finally {
       setReimporting(false)
