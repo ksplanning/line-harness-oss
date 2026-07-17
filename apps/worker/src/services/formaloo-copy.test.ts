@@ -99,3 +99,35 @@ describe('confirmFormCopyReflected (soft-200 対策 GET-after-PATCH)', () => {
     expect(call).toBe(2);
   });
 });
+
+// =============================================================================
+// form-copy-sync-warning-fix — Formaloo server-side 正規化 耐性 (evidence/spike-normalization-matrix.md)
+// -----------------------------------------------------------------------------
+// 真因: Formaloo は保存時に success_message 等を server-side 正規化する (full NFKC + \r\t→space +
+//   連続スペース畳み込み)。harness は owner が打った全角値 (受付完了！) をそのまま送るが Formaloo は
+//   受付完了! (半角) を保存/返却 → strict 等値比較が恒久不一致 → out_of_sync 誤警告 (owner 実症状)。
+// 修正: 比較の両辺に normalizeForCompare を適用 (comparison-only・送信経路は byte 不変)。
+// =============================================================================
+describe('confirmFormCopyReflected — Formaloo 正規化 耐性 (form-copy-sync-warning-fix)', () => {
+  function getClient(remote: Record<string, unknown>, fail = false) {
+    const request = vi.fn(async (method: string) => {
+      if (method === 'GET') return fail ? failRes(500) : okForm(remote);
+      return okForm({});
+    });
+    return { request } as unknown as FormalooClient & { request: ReturnType<typeof vi.fn> };
+  }
+  const noSleep = () => Promise.resolve();
+
+  // BUG-1 / AC-1: owner 実症状の機械的再現。sent = 全角！(U+FF01) / remote = 半角!(U+0021・Formaloo 正規化後)。
+  //   修正前は strict 不一致 → ok:false (RED)。修正後は normalizeForCompare で一致 → ok:true。
+  test('BUG-1/AC-1: sent 受付完了！(全角！U+FF01) × remote 受付完了!(半角!U+0021) → ok:true (誤警告解消)', async () => {
+    const c = getClient({ success_message: '受付完了!' }); // Formaloo が保存した半角! (U+0021)
+    const r = await confirmFormCopyReflected(
+      c,
+      'slugCopy1',
+      { successMessage: '受付完了！' }, // owner が打った全角！ (U+FF01)
+      { retries: 0, sleep: noSleep },
+    );
+    expect(r.ok).toBe(true);
+  });
+});
