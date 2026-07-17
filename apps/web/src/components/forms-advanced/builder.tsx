@@ -24,7 +24,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType } from '@line-crm/shared'
+import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy } from '@line-crm/shared'
 import { computeRouteTerminalWarnings } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
@@ -78,13 +78,15 @@ export interface BuilderProps {
   initialDesign?: FormDesign
   /** form-route-branching (R2): 初期表示形式 (simple/multi_step)。未設定は simple 扱い表示。 */
   initialFormType?: FormDisplayType
+  /** form-jp-localization: 初期の公開ページ文言 (送信ボタン/完了/送信エラー)。未設定は空 = 既定英語表示。 */
+  initialFormCopy?: FormCopy
   /** form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。未設定は 0 (=編集不可=現状挙動)。弾S は inert。 */
   initialAllowPostEdit?: number
   /** form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。 */
   initialAllowEditMail?: number
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
@@ -747,6 +749,18 @@ export default function FormBuilder(props: BuilderProps) {
   // form-route-branching (R2): 表示形式 (simple/multi_step) + 自動切替の可視通知 + save 警告。
   const [formType, setFormType] = useState<FormDisplayType | undefined>(props.initialFormType)
   const [formTypeNotice, setFormTypeNotice] = useState<string | null>(null)
+  // form-jp-localization: 公開ページ文言 (送信ボタン/完了/送信エラー)。現在値を完全 object で保持し、
+  //   触ったときだけ onSave に載せる (formCopyTouched)。初期未編集は送らない = 既存フォーム不干渉 (absent)。
+  const [formCopy, setFormCopy] = useState<{ buttonText: string; successMessage: string; errorMessage: string }>({
+    buttonText: props.initialFormCopy?.buttonText ?? '',
+    successMessage: props.initialFormCopy?.successMessage ?? '',
+    errorMessage: props.initialFormCopy?.errorMessage ?? '',
+  })
+  const [formCopyTouched, setFormCopyTouched] = useState(false)
+  const updateFormCopy = (key: 'buttonText' | 'successMessage' | 'errorMessage', value: string) => {
+    setFormCopy((c) => ({ ...c, [key]: value }))
+    setFormCopyTouched(true)
+  }
   const [saveWarnings, setSaveWarnings] = useState<string[]>([])
   // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。弾S は inert (保存のみ・実効化は弾M)。
   const [allowPostEdit, setAllowPostEdit] = useState<number>(props.initialAllowPostEdit ?? 0)
@@ -856,7 +870,8 @@ export default function FormBuilder(props: BuilderProps) {
     try {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, allowPostEdit, allowEditMail })
+      // form-jp-localization: 文言を触ったときだけ完全 object で載せる (初期未編集は absent = 既存不干渉)。
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), allowPostEdit, allowEditMail })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
@@ -1017,6 +1032,48 @@ export default function FormBuilder(props: BuilderProps) {
         <span className="basis-full text-[10px] text-gray-400 leading-snug">
           ※ 「回答者による後からの編集」を許可したフォームでのみ設定できます。メール送信の実際の有効化は運用側の設定が必要です。
         </span>
+      </div>
+
+      {/* form-jp-localization: 公開ページ文言 (送信ボタン/完了/送信エラー) を日本語で個別指定。
+          未入力は Formaloo 既定 (英語) のまま。空欄=未指定=触らない (既存文言を消さない)。 */}
+      <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="form-copy-section">
+        <div className="text-xs font-medium text-gray-600 mb-1">公開ページの文言（日本語）</div>
+        <div className="flex flex-col gap-2">
+          <label className="block text-[11px] text-gray-500">
+            送信ボタンの文言
+            <input
+              aria-label="送信ボタンの文言"
+              value={formCopy.buttonText}
+              onChange={(e) => updateFormCopy('buttonText', e.target.value)}
+              placeholder="Submit（未入力なら英語の既定）"
+              className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+            />
+          </label>
+          <label className="block text-[11px] text-gray-500">
+            送信完了メッセージ
+            <input
+              aria-label="送信完了メッセージ"
+              value={formCopy.successMessage}
+              onChange={(e) => updateFormCopy('successMessage', e.target.value)}
+              placeholder="Thanks! submitted successfully（未入力なら英語の既定）"
+              className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+            />
+          </label>
+          <label className="block text-[11px] text-gray-500">
+            送信エラー時の文言
+            <input
+              aria-label="送信エラー時の文言"
+              value={formCopy.errorMessage}
+              onChange={(e) => updateFormCopy('errorMessage', e.target.value)}
+              placeholder="送信に失敗したときのメッセージ"
+              className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+            />
+          </label>
+        </div>
+        {/* AC-6 制約注記: ①文字数オーバー/必須 等は Formaloo 側固定で変更不可 (できない事をできる風に見せない)。 */}
+        <p className="mt-2 text-[10px] text-gray-400 leading-snug" data-testid="form-copy-constraint-note">
+          ※ 文字数オーバー時のエラー（例: the answer should be less than 10 characters）や「必須です」等の入力チェック文言・入力欄の案内文は、Formaloo 側で固定のため変更できません。日本語にできるのは上の 3 つ（送信ボタン／完了メッセージ／送信エラー）です。
+        </p>
       </div>
 
       {/* ① 今すぐ同期リカバリ: sync_status=out_of_sync のとき、原因 (syncError) + 再送ヘルプ + 「今すぐ同期」を
