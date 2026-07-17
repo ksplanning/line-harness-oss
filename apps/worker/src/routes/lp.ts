@@ -1,8 +1,15 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import {
+  createLpPage,
   getLpPageBySlug,
+  listLpPages,
+  updateLpPageStatus,
+  setLpPageEntryKey,
+  deleteLpPage,
   recordLpView,
+  getLpViews,
+  countLpViews,
   getFriendById,
 } from '@line-crm/db';
 import { verifyLpViewToken } from '../services/lp-view-token.js';
@@ -86,6 +93,16 @@ export function contentTypeForKey(key: string, fallback = 'application/octet-str
   return EXT_CONTENT_TYPE[ext] ?? fallback;
 }
 
+/** upload 許可拡張子 (LP に必要な静的アセットのみ / 実行系・任意 binary を拒否 / GAP-4)。 */
+export const ALLOWED_UPLOAD_EXT = new Set([
+  'html', 'htm', 'css', 'js', 'mjs', 'json', 'map', 'txt',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico',
+  'woff', 'woff2', 'ttf', 'otf',
+]);
+
+/** 1 ファイル上限 (images.ts の 10MB より厳しめ・LP アセット想定)。 */
+export const MAX_LP_FILE_BYTES = 5 * 1024 * 1024;
+
 /** R2 object を LP 用 CSP ヘッダ付きで配信する Response を組む。 */
 function serveObject(object: R2ObjectBody, contentType: string): Response {
   const headers = new Headers();
@@ -165,6 +182,146 @@ lp.get('/lp/:slug', async (c) => {
   }
 
   return serveObject(object as R2ObjectBody, 'text/html; charset=utf-8');
+});
+
+// =============================================================================
+// admin CRUD (認証必須 / permissionMiddleware で 'analytics' gate / T-A2/A3/A5/A6/A9・T-C3)
+// =============================================================================
+
+/** 公開 URL (owner がコピーして配布する) = worker origin + /lp/<slug>。 */
+function lpPublicUrl(c: { env: Env['Bindings']; req: { url: string } }, slug: string): string {
+  const origin = c.env.WORKER_URL || new URL(c.req.url).origin;
+  return `${origin}/lp/${slug}`;
+}
+
+/** R2 prefix の全 object を cursor pagination で削除 (1000 件 cutoff を跨いで orphan bytes を残さない / T-A6・GAP-3)。 */
+async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const listed = await bucket.list({ prefix, cursor });
+    if (listed.objects.length > 0) {
+      await bucket.delete(listed.objects.map((o) => o.key));
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+}
+
+// POST /api/lp — LP を登録 (slug + title)。公開 URL を返す。
+lp.post('/api/lp', async (c) => {
+  const body = await c.req.json<{ slug?: string; title?: string }>().catch(() => ({}));
+  const slug = (body.slug ?? '').trim().toLowerCase();
+  const title = (body.title ?? '').trim();
+  if (!isValidLpSlug(slug)) {
+    return c.json({ success: false, error: 'slug は英小文字・数字・ハイフンのみ (先頭は英数字・64 文字以内)' }, 400);
+  }
+  if (!title) return c.json({ success: false, error: 'title は必須です' }, 400);
+  if (await getLpPageBySlug(c.env.DB, slug)) {
+    return c.json({ success: false, error: 'この slug は既に使われています' }, 409);
+  }
+  const page = await createLpPage(c.env.DB, { slug, title });
+  return c.json({ success: true, data: { ...page, url: lpPublicUrl(c, slug) } }, 201);
+});
+
+// GET /api/lp — 一覧 (?status=active で公開中のみ = route-phase2 picker が消費する形 / T-B1)。
+//   各行に公開 URL + 閲覧数 (総数/紐付き) を含める (admin 最小ビュー / T-C3・K)。
+lp.get('/api/lp', async (c) => {
+  const statusFilter = c.req.query('status');
+  const pages = await listLpPages(c.env.DB);
+  const filtered = statusFilter ? pages.filter((p) => p.status === statusFilter) : pages;
+  const items = await Promise.all(
+    filtered.map(async (p) => ({
+      slug: p.slug,
+      title: p.title,
+      status: p.status,
+      entry_key: p.entry_key,
+      created_at: p.created_at,
+      updated_at: p.updated_at,
+      url: lpPublicUrl(c, p.slug),
+      views: await countLpViews(c.env.DB, p.slug),
+    })),
+  );
+  return c.json({ success: true, data: { items } });
+});
+
+// GET /api/lp/:slug — 単体 (+ 閲覧数)。
+lp.get('/api/lp/:slug', async (c) => {
+  const slug = c.req.param('slug');
+  const page = await getLpPageBySlug(c.env.DB, slug);
+  if (!page) return c.json({ success: false, error: '見つかりません' }, 404);
+  return c.json({
+    success: true,
+    data: { ...page, url: lpPublicUrl(c, slug), views: await countLpViews(c.env.DB, slug) },
+  });
+});
+
+// GET /api/lp/:slug/views — 直近閲覧 (friend 名/時刻) + count (総数/紐付き)。admin 詳細ビュー (T-C3)。
+lp.get('/api/lp/:slug/views', async (c) => {
+  const slug = c.req.param('slug');
+  const page = await getLpPageBySlug(c.env.DB, slug);
+  if (!page) return c.json({ success: false, error: '見つかりません' }, 404);
+  const views = await getLpViews(c.env.DB, slug);
+  const counts = await countLpViews(c.env.DB, slug);
+  return c.json({ success: true, data: { views, counts } });
+});
+
+// PATCH /api/lp/:slug — 公開停止/再開 (status flip が serve を制御 / T-A5)。
+lp.patch('/api/lp/:slug', async (c) => {
+  const slug = c.req.param('slug');
+  const body = await c.req.json<{ status?: string }>().catch(() => ({}));
+  const page = await getLpPageBySlug(c.env.DB, slug);
+  if (!page) return c.json({ success: false, error: '見つかりません' }, 404);
+  if (body.status !== 'active' && body.status !== 'stopped') {
+    return c.json({ success: false, error: 'status は active か stopped です' }, 400);
+  }
+  const updated = await updateLpPageStatus(c.env.DB, slug, body.status);
+  return c.json({ success: true, data: { ...updated, url: lpPublicUrl(c, slug) } });
+});
+
+// DELETE /api/lp/:slug — registry 削除 + R2 prefix 実体を全削除 (dangling bytes を残さない / T-A6)。
+lp.delete('/api/lp/:slug', async (c) => {
+  const slug = c.req.param('slug');
+  if (!isValidLpSlug(slug)) return c.json({ success: false, error: '不正な slug' }, 400);
+  await deleteR2Prefix(c.env.IMAGES, lpPrefix(slug));
+  await deleteLpPage(c.env.DB, slug);
+  return c.json({ success: true, data: null });
+});
+
+// POST /api/lp/:slug/files — LP ファイルを R2 lp/<slug>/ prefix に upload (multipart form-data)。
+//   size 上限 + 拡張子 allowlist gate (任意巨大/実行系 binary を拒否 / T-A3・GAP-4)。
+//   index.html は entry_key に記録 (公開 serve が参照)。path フィールドでネスト配置可 (img/hero.png)。
+lp.post('/api/lp/:slug/files', async (c) => {
+  const slug = c.req.param('slug');
+  if (!isValidLpSlug(slug)) return c.json({ success: false, error: '不正な slug' }, 400);
+  const page = await getLpPageBySlug(c.env.DB, slug);
+  if (!page) return c.json({ success: false, error: '先に LP を登録してください' }, 404);
+
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return c.json({ success: false, error: 'multipart form-data が必要です' }, 400);
+  }
+  const file = form.get('file');
+  if (!(file instanceof File)) return c.json({ success: false, error: 'file フィールドが必要です' }, 400);
+
+  const relPath = (typeof form.get('path') === 'string' ? (form.get('path') as string) : '') || file.name;
+  const key = safeAssetKey(slug, relPath);
+  if (!key) return c.json({ success: false, error: '不正なファイル名 (traversal 不可)' }, 400);
+
+  const ext = key.includes('.') ? key.slice(key.lastIndexOf('.') + 1).toLowerCase() : '';
+  if (!ALLOWED_UPLOAD_EXT.has(ext)) {
+    return c.json({ success: false, error: `許可されていない拡張子: .${ext}` }, 400);
+  }
+  const buf = await file.arrayBuffer();
+  if (buf.byteLength > MAX_LP_FILE_BYTES) {
+    return c.json({ success: false, error: 'ファイルが大きすぎます (上限 5MB)' }, 400);
+  }
+
+  await c.env.IMAGES.put(key, buf, { httpMetadata: { contentType: contentTypeForKey(key) } });
+  if (key === `${lpPrefix(slug)}index.html`) {
+    await setLpPageEntryKey(c.env.DB, slug, key);
+  }
+  return c.json({ success: true, data: { key, size: buf.byteLength } }, 201);
 });
 
 export { lp };

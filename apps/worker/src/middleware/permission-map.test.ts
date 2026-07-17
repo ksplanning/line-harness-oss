@@ -61,6 +61,11 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/api/account-settings/test-recipients')).toBe('broadcast_settings');
     // H-3: /api/accounts/* は health.ts のシステム操作 = system_update (旧 account から是正)
     expect(mapPathToFeature('/api/accounts/x/health')).toBe('system_update');
+    // harness-lp-hosting (T-A9): /api/lp/* = analytics 再利用。'links'/'line-accounts' に bleed しない。
+    expect(mapPathToFeature('/api/lp')).toBe('analytics');
+    expect(mapPathToFeature('/api/lp/summer/files')).toBe('analytics');
+    expect(mapPathToFeature('/api/links')).toBe('analytics');
+    expect(mapPathToFeature('/api/line-accounts')).toBe('account'); // lp が line-accounts を飲まない
   });
 
   test('代表 feature の対応', () => {

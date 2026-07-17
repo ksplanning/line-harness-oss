@@ -66,6 +66,11 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('scoring-rules'), feature: 'analytics' },
   { test: prefix('entry-routes'), feature: 'analytics' },
   { test: prefix('links'), feature: 'analytics' },
+  // harness-lp-hosting (T-A9): /api/lp/* (LP 置き場 admin CRUD + 閲覧計測)。LP 計測は
+  //   tracked-links/conversions/entry-routes と同族 = 既存 analytics を再利用 (新 feature_key を
+  //   足さない = FEATURE_KEYS 20→21 の連鎖破壊を回避 / GAP-2)。prefix('lp')=^/api/lp(?:/|$) は
+  //   'links'/'line-accounts' 等と非衝突 ('lp' の次が / or 終端)。
+  { test: prefix('lp'), feature: 'analytics' },
 
   // ── リッチメニュー (rich_menu) ──
   { test: prefix('rich-menu-groups'), feature: 'rich_menu' },

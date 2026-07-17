@@ -15,7 +15,13 @@ import { Hono } from 'hono';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { lp } from './lp.js';
-import { createLpPage } from '@line-crm/db';
+import {
+  createLpPage,
+  createRole,
+  setRolePermissions,
+  createStaffMember,
+  setStaffRoleId,
+} from '@line-crm/db';
 import { signLpViewToken } from '../services/lp-view-token.js';
 import type { Env } from '../index.js';
 
@@ -257,5 +263,180 @@ describe('閲覧記録 (soft-200 禁止・D1 実測 / T-C1 / T-C2 / D-5)', () =>
     await seedLp('v', { assets: { 'x.css': { body: 'a', type: 'text/css' } } });
     await app().request('/lp/v/x.css');
     expect(viewRows('v')).toHaveLength(0);
+  });
+});
+
+// ── C4: admin CRUD + 権限 gate ────────────────────────────────────────────────
+
+function authJson(method: string, path: string, apiKey?: string, body?: unknown) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  return app().request(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+}
+
+const OWNER = 'env-owner-key'; // env.API_KEY = break-glass owner
+
+describe('admin CRUD — 登録/一覧/取得 (T-A2)', () => {
+  test('POST /api/lp {slug,title} → 201 + 公開 URL', async () => {
+    const res = await authJson('POST', '/api/lp', OWNER, { slug: 'promo1', title: '夏' });
+    expect(res.status).toBe(201);
+    const b = (await res.json()) as { data: { slug: string; url: string; status: string } };
+    expect(b.data.slug).toBe('promo1');
+    expect(b.data.status).toBe('active');
+    expect(b.data.url).toBe('https://api.example.com/lp/promo1');
+    // registry に残る (D1 実測)
+    expect(raw.prepare(`SELECT slug FROM lp_pages WHERE slug='promo1'`).get()).toBeTruthy();
+  });
+
+  test('不正 slug / 空 title は 400、重複 slug は 409', async () => {
+    expect((await authJson('POST', '/api/lp', OWNER, { slug: 'Bad Slug', title: 'x' })).status).toBe(400);
+    expect((await authJson('POST', '/api/lp', OWNER, { slug: 'ok1', title: '' })).status).toBe(400);
+    expect((await authJson('POST', '/api/lp', OWNER, { slug: 'dup', title: 'A' })).status).toBe(201);
+    expect((await authJson('POST', '/api/lp', OWNER, { slug: 'dup', title: 'B' })).status).toBe(409);
+  });
+
+  test('GET /api/lp 一覧 (url + 閲覧数) / GET /api/lp/:slug 単体', async () => {
+    await seedLp('one', { title: 'One' });
+    await seedLp('two', { title: 'Two' });
+    await recordViaServe('one'); // 匿名 1 件
+    const list = (await (await authJson('GET', '/api/lp', OWNER)).json()) as { data: { items: Array<{ slug: string; url: string; views: { total: number; friendBound: number } }> } };
+    expect(list.data.items.map((i) => i.slug).sort()).toEqual(['one', 'two']);
+    const one = list.data.items.find((i) => i.slug === 'one')!;
+    expect(one.url).toBe('https://api.example.com/lp/one');
+    expect(one.views.total).toBe(1);
+
+    const single = (await (await authJson('GET', '/api/lp/one', OWNER)).json()) as { data: { slug: string; views: { total: number } } };
+    expect(single.data.slug).toBe('one');
+    expect(single.data.views.total).toBe(1);
+    expect((await authJson('GET', '/api/lp/nope', OWNER)).status).toBe(404);
+  });
+});
+
+async function recordViaServe(slug: string, token?: string) {
+  await app().request(token ? `/lp/${slug}?v=${encodeURIComponent(token)}` : `/lp/${slug}`);
+}
+
+describe('admin 最小ビュー — 直近閲覧 + 総数/紐付き分離 (T-C3)', () => {
+  test('GET /api/lp/:slug/views が直近閲覧 (friend 名/時刻) と count を返す', async () => {
+    await seedLp('vw', { title: 'V' });
+    seedFriend('fr-9', 'ゆい');
+    const token = await signLpViewToken('fr-9', 'vw', Date.now() + 3600_000, SECRET);
+    await recordViaServe('vw', token!); // friend 紐付き
+    await recordViaServe('vw'); // 匿名
+    const res = await authJson('GET', '/api/lp/vw/views', OWNER);
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as { data: { views: Array<{ friend_id: string | null; friend_name: string | null; viewed_at: string }>; counts: { total: number; friendBound: number } } };
+    expect(b.data.counts.total).toBe(2);
+    expect(b.data.counts.friendBound).toBe(1);
+    expect(b.data.views.some((v) => v.friend_id === 'fr-9' && v.friend_name === 'ゆい' && typeof v.viewed_at === 'string')).toBe(true);
+  });
+});
+
+describe('admin CRUD — 公開停止/再開 が serve を制御 (T-A5)', () => {
+  test('PATCH status=stopped → /lp 404 / active → 200', async () => {
+    await seedLp('flip');
+    expect((await app().request('/lp/flip')).status).toBe(200);
+    expect((await authJson('PATCH', '/api/lp/flip', OWNER, { status: 'stopped' })).status).toBe(200);
+    expect((await app().request('/lp/flip')).status).toBe(404);
+    expect((await authJson('PATCH', '/api/lp/flip', OWNER, { status: 'active' })).status).toBe(200);
+    expect((await app().request('/lp/flip')).status).toBe(200);
+  });
+
+  test('不正 status は 400 / 未登録 slug は 404', async () => {
+    await seedLp('s1');
+    expect((await authJson('PATCH', '/api/lp/s1', OWNER, { status: 'bogus' })).status).toBe(400);
+    expect((await authJson('PATCH', '/api/lp/none', OWNER, { status: 'stopped' })).status).toBe(404);
+  });
+});
+
+describe('admin CRUD — 削除が registry と R2 を両方消す (T-A6)', () => {
+  test('DELETE → registry 消 + R2 prefix 全 object 消 + /lp 404', async () => {
+    await seedLp('gone', { assets: { 'a.css': { body: 'x', type: 'text/css' }, 'img/b.png': { body: 'y', type: 'image/png' } } });
+    expect(store.has('lp/gone/index.html')).toBe(true);
+    const res = await authJson('DELETE', '/api/lp/gone', OWNER);
+    expect(res.status).toBe(200);
+    // registry 消
+    expect(raw.prepare(`SELECT slug FROM lp_pages WHERE slug='gone'`).get()).toBeUndefined();
+    // R2 prefix objects 全消
+    expect([...store.keys()].filter((k) => k.startsWith('lp/gone/'))).toEqual([]);
+    expect((await app().request('/lp/gone')).status).toBe(404);
+  });
+
+  test('1000 超の object も cursor 全周で消す (orphan bytes を残さない / GAP-3)', async () => {
+    await createLpPage(DB, { slug: 'big', title: 'B', entryKey: 'lp/big/index.html' });
+    for (let i = 0; i < 1005; i++) await R2.put(`lp/big/f${String(i).padStart(5, '0')}.txt`, 'x', { httpMetadata: { contentType: 'text/plain' } });
+    expect([...store.keys()].filter((k) => k.startsWith('lp/big/')).length).toBe(1005);
+    await authJson('DELETE', '/api/lp/big', OWNER);
+    expect([...store.keys()].filter((k) => k.startsWith('lp/big/'))).toEqual([]);
+  });
+
+  test('別 prefix (media/ 等) は削除で巻き込まない', async () => {
+    await seedLp('scoped');
+    await R2.put('media/keep.png', 'k', { httpMetadata: { contentType: 'image/png' } });
+    await authJson('DELETE', '/api/lp/scoped', OWNER);
+    expect(store.has('media/keep.png')).toBe(true);
+  });
+});
+
+describe('admin CRUD — ファイル upload (prefix scope + size/type gate / T-A3)', () => {
+  function upload(slug: string, filename: string, body: string, type = 'text/html', apiKey = OWNER, path?: string) {
+    const fd = new FormData();
+    fd.append('file', new File([body], filename, { type }));
+    if (path) fd.append('path', path);
+    const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}` };
+    return app().request(`/api/lp/${slug}/files`, { method: 'POST', headers, body: fd });
+  }
+
+  test('upload → R2 lp/<slug>/ に put ・index.html は entry_key に記録', async () => {
+    await authJson('POST', '/api/lp', OWNER, { slug: 'up', title: 'U' });
+    const res = await upload('up', 'index.html', '<html></html>');
+    expect(res.status).toBe(201);
+    expect(store.has('lp/up/index.html')).toBe(true);
+    expect(raw.prepare(`SELECT entry_key FROM lp_pages WHERE slug='up'`).get()).toMatchObject({ entry_key: 'lp/up/index.html' });
+    // nested asset は path で指定
+    const res2 = await upload('up', 'hero.png', 'PNG', 'image/png', OWNER, 'img/hero.png');
+    expect(res2.status).toBe(201);
+    expect(store.has('lp/up/img/hero.png')).toBe(true);
+  });
+
+  test('拡張子 allowlist 外 (.php) と size 上限超過は 400 reject', async () => {
+    await authJson('POST', '/api/lp', OWNER, { slug: 'g', title: 'G' });
+    expect((await upload('g', 'shell.php', '<?php ?>', 'application/x-php')).status).toBe(400);
+    const big = 'a'.repeat(5 * 1024 * 1024 + 1);
+    expect((await upload('g', 'big.js', big, 'text/javascript')).status).toBe(400);
+  });
+
+  test('traversal filename は 400 / 未登録 LP への upload は 404', async () => {
+    await authJson('POST', '/api/lp', OWNER, { slug: 'tr', title: 'T' });
+    expect((await upload('tr', 'x.css', 'a', 'text/css', OWNER, '../../media/evil.css')).status).toBe(400);
+    expect((await upload('none', 'index.html', '<html>', 'text/html')).status).toBe(404);
+  });
+});
+
+describe('権限 gate + 認証境界 (T-A9 / D-3 / D-4)', () => {
+  async function seedStaffWith(features: Array<{ feature_key: string; allowed: boolean }>): Promise<string> {
+    const role = await createRole(DB, { name: 'r-' + crypto.randomUUID().slice(0, 6) });
+    await setRolePermissions(DB, role.id, features);
+    const staff = await createStaffMember(DB, { name: 's', role: 'staff' });
+    await setStaffRoleId(DB, staff.id, role.id);
+    return staff.api_key;
+  }
+
+  test('analytics を持たない custom role は /api/lp で 403、持つと 200 (T-A9)', async () => {
+    const noAnalytics = await seedStaffWith([{ feature_key: 'chat', allowed: true }, { feature_key: 'analytics', allowed: false }]);
+    const withAnalytics = await seedStaffWith([{ feature_key: 'analytics', allowed: true }]);
+    expect((await authJson('GET', '/api/lp', noAnalytics)).status).toBe(403);
+    expect((await authJson('GET', '/api/lp', withAnalytics)).status).toBe(200);
+  });
+
+  test('built-in role は /api/lp で通過 (byte-identical) / 未認証は 401 (D-3)', async () => {
+    const builtin = await createStaffMember(DB, { name: '社員', role: 'staff' });
+    expect((await authJson('GET', '/api/lp', builtin.api_key)).status).toBe(200);
+    expect((await authJson('GET', '/api/lp')).status).toBe(401); // 認証なし
+  });
+
+  test('/api/lp レスポンスに LP 用 CSP は付かない (LP 限定 / D-4)', async () => {
+    const res = await authJson('GET', '/api/lp', OWNER);
+    expect(res.headers.get('Content-Security-Policy')).toBeNull();
   });
 });
