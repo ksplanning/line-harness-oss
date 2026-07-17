@@ -35,6 +35,7 @@ import {
   hasMaxLength,
   hasRatingSubType,
   RATING_SUB_TYPE_OPTIONS,
+  VIDEO_SIZE_PRESETS,
   isDecoration,
 } from './field-types'
 import FormPreview from './form-preview'
@@ -369,19 +370,40 @@ function SettingsPanel({
         )}
         {/* treasure-b1-palette: video(oembed) の埋め込み URL。空だと保存 hold (空 url oembed PATCH=500 回避)。 */}
         {field.type === 'video' && (
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">動画URL</label>
-            <input
-              aria-label="動画URL"
-              value={cfg.videoUrl ?? ''}
-              onChange={(e) => setCfg({ videoUrl: e.target.value })}
-              placeholder="https://www.youtube.com/watch?v=..."
-              className="w-full border border-gray-300 rounded px-2 py-1"
-            />
-            <p className="mt-1 text-[10px] text-gray-400 leading-snug">
-              YouTube / Vimeo などの埋め込み対応 URL を入力してください。URL 未入力のままでは保存できません（対応外の URL は保存時にエラーになります）。
-            </p>
-          </div>
+          <>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">動画URL</label>
+              <input
+                aria-label="動画URL"
+                value={cfg.videoUrl ?? ''}
+                onChange={(e) => setCfg({ videoUrl: e.target.value })}
+                placeholder="https://www.youtube.com/watch?v=..."
+                className="w-full border border-gray-300 rounded px-2 py-1"
+              />
+              <p className="mt-1 text-[10px] text-gray-400 leading-snug">
+                YouTube / Vimeo などの埋め込み対応 URL を入力してください。URL 未入力のままでは保存できません（対応外の URL は保存時にエラーになります）。
+              </p>
+            </div>
+            {/* b1-field-polish: 動画の表示サイズ (空=既定 250px)。既定薄帯 (100px) で再生できない問題の修理。 */}
+            <div>
+              <label className="block text-xs text-gray-500 mb-1" htmlFor={`video-size-${field.id}`}>表示サイズ</label>
+              <select
+                id={`video-size-${field.id}`}
+                aria-label="表示サイズ"
+                value={cfg.videoHeight ?? ''}
+                onChange={(e) => setCfg({ videoHeight: e.target.value ? e.target.value : undefined })}
+                className="w-full border border-gray-300 rounded px-2 py-1"
+              >
+                <option value="">（既定）</option>
+                {VIDEO_SIZE_PRESETS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+              <p className="mt-1 text-[10px] text-gray-400 leading-snug">
+                公開フォームでの動画の高さです。「（既定）」は再生しやすい標準サイズになります。
+              </p>
+            </div>
+          </>
         )}
       </div>
     )
