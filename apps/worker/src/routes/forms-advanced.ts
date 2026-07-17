@@ -24,9 +24,22 @@ import {
   setFormalooFormWorkspace,
   setFormalooFormFolder,
   FolderError,
+  recordSubmissionEdit,
+  getLatestEdit,
+  updateSubmissionRowSlug,
+  getStaffById,
+  jstNow,
   type FormalooForm,
   type FormalooSubmissionRow,
 } from '@line-crm/db';
+import {
+  buildFlatRowPatchBody,
+  findEmptyRequired,
+  resolveRowSlug,
+  makeRowsListRowSlugResolver,
+  isPostEditEnabled,
+  isEditableFieldType,
+} from '../services/formaloo-row-edit.js';
 import {
   validateHarnessField,
   isDecorationType,
@@ -817,7 +830,49 @@ formsAdvanced.get('/api/forms-advanced/:id/rows', async (c) => {
   }
 });
 
+/** 編集者 staff の表示名を解決 (env-owner は 'Owner' / 不明は null)。 */
+async function resolveEditorName(db: D1Database, editorStaffId: string | null | undefined): Promise<string | null> {
+  if (!editorStaffId) return null;
+  if (editorStaffId === 'env-owner') return 'Owner';
+  const st = await getStaffById(db, editorStaffId);
+  return st?.name ?? null;
+}
+
+/**
+ * 弾M (form-post-edit / T-D2): 回答詳細の編集コンテキスト (additive・回答詳細画面の編集モード用)。
+ *   allowPostEdit (編集ボタン gate) + 編集対象 field メタ (slug/label/type/required/editable) + ④最終編集。
+ *   field メタは definition の required/type + field_map の slug を harness id で join (装飾/未 push slug は除外)。
+ *   F-I3: allowPostEdit は **実効 gate** (form.allow_post_edit===1 かつ env kill-switch 有効) を返す。
+ *   env-OFF (rollback) では 0 = web が編集ボタンを出さない (spec R3『OFF=編集ボタン非表示』・endpoint 403 と整合)。
+ */
+async function buildRowEditContext(db: D1Database, form: FormalooForm, rowId: string, featureEnabled: boolean) {
+  const def = parseDefinition(form.definition_json);
+  const fieldMap = await getFormalooFieldMap(db, form.id);
+  const slugById = new Map<string, string | null>();
+  for (const r of fieldMap) slugById.set(r.id, r.formaloo_field_slug);
+  const fields = def.fields
+    .filter((f) => !isDecorationType(f.type))
+    .map((f) => ({
+      slug: (slugById.get(f.id) ?? null) as string | null,
+      label: f.label,
+      type: f.type as string,
+      required: f.required === true,
+      editable: isEditableFieldType(f.type),
+    }))
+    .filter((f) => f.slug != null) as Array<{ slug: string; label: string; type: string; required: boolean; editable: boolean }>;
+  const latest = await getLatestEdit(db, rowId);
+  return {
+    // 実効 gate (form.allow_post_edit===1 AND env 有効)。env-OFF は 0 = 編集ボタン非表示 (spec R3)。
+    allowPostEdit: form.allow_post_edit === 1 && featureEnabled ? 1 : 0,
+    fields,
+    lastEdit: latest
+      ? { editorStaffId: latest.editor_staff_id, editorName: await resolveEditorName(db, latest.editor_staff_id), editedAt: latest.edited_at }
+      : null,
+  };
+}
+
 // GET /api/forms-advanced/:id/rows/:rowId — Formaloo rows API ドリルスルー (fail-soft = mirror / N-6)
+//   弾M (T-D2): 編集モード用に editContext (allowPostEdit / editable fields / lastEdit) を additive 付与。
 formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
   try {
     const id = c.req.param('id')!;
@@ -827,6 +882,8 @@ formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
     const mirror = await getFormalooSubmission(c.env.DB, rowId);
     if (!mirror || mirror.form_id !== id) return c.json({ success: false, error: '回答が見つかりません' }, 404);
 
+    const editContext = await buildRowEditContext(c.env.DB, form, rowId, isPostEditEnabled(c.env.FORM_POST_EDIT_ENABLED));
+
     // Formaloo 側の最新をドリルスルー。client 未配備 (dev) / 失敗は mirror を返す (fail-soft)。
     // F6-2: form.workspace_id で多鍵解決。NULL(legacy) → env 単一鍵 fallback (byte-equivalent) /
     // 登録 active → 暗号文鍵 / 未登録・無効化・復号失敗 → null (env silent fallback しない = 誤送信防止)。fail-soft 契約不変。
@@ -834,12 +891,137 @@ formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
     if (client && form.formaloo_slug) {
       const r = await client.get<{ data?: unknown }>(`/v3.0/forms/${form.formaloo_slug}/rows/${rowId}/`);
       if (r.ok) {
-        return c.json({ success: true, data: { id: rowId, answers: r.data?.data ?? safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'formaloo' } });
+        return c.json({ success: true, data: { id: rowId, answers: r.data?.data ?? safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'formaloo', ...editContext } });
       }
     }
-    return c.json({ success: true, data: { id: rowId, answers: safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'mirror' } });
+    return c.json({ success: true, data: { id: rowId, answers: safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'mirror', ...editContext } });
   } catch (err) {
     console.error('GET /api/forms-advanced/:id/rows/:rowId error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PATCH /api/forms-advanced/:id/rows/:rowId — ①管理者編集 (弾M form-post-edit / T-B2)。
+//   gate(allow_post_edit AND FORM_POST_EDIT_ENABLED) 403 → mirror → row_slug 解決 → Formaloo flat PATCH →
+//   **persist 確認 (FRESH GET で編集後値照合)** 成功のみ D1 mirror 更新 + edit 記録。反映されない編集を
+//   成功と見せない (soft-200 教訓)。client null / row_slug 不能 / 非2xx / persist 未確認 は D1 を書かず正直エラー。
+formsAdvanced.patch('/api/forms-advanced/:id/rows/:rowId', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const rowId = c.req.param('rowId')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+
+    // gate: allow_post_edit=1 かつ env 有効。OFF/未設定は 403 (現状挙動 byte 同等・編集経路を残さない)。
+    if (form.allow_post_edit !== 1 || !isPostEditEnabled(c.env.FORM_POST_EDIT_ENABLED)) {
+      return c.json({ success: false, error: 'このフォームは回答の後編集が許可されていません' }, 403);
+    }
+
+    const mirror = await getFormalooSubmission(c.env.DB, rowId);
+    if (!mirror || mirror.form_id !== id) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+
+    const body = await c.req
+      .json<{ answers?: unknown }>()
+      .catch(() => ({} as { answers?: unknown }));
+    const answers =
+      body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers)
+        ? (body.answers as Record<string, unknown>)
+        : null;
+    if (!answers || Object.keys(answers).length === 0) {
+      return c.json({ success: false, error: '編集内容がありません' }, 400);
+    }
+
+    // field メタ: definition の required/type + field_map の slug (harness id で join)。
+    const def = parseDefinition(form.definition_json);
+    const fieldMap = await getFormalooFieldMap(c.env.DB, id);
+    const slugById = new Map<string, string | null>();
+    for (const r of fieldMap) slugById.set(r.id, r.formaloo_field_slug);
+    const editFields = def.fields.map((f) => ({
+      id: f.id,
+      slug: slugById.get(f.id) ?? null,
+      fieldType: f.type,
+      required: f.required === true,
+    }));
+
+    // flat top-level slug body (free-value 限定・data ラッパ無し = soft-200 回避)。
+    const patchBody = buildFlatRowPatchBody(answers, editFields);
+    if (Object.keys(patchBody).length === 0) {
+      return c.json({ success: false, error: '編集できる項目がありません（選択式・ファイルは対象外です）' }, 400);
+    }
+    const requiredSlugs = new Set(editFields.filter((f) => f.required && f.slug).map((f) => f.slug as string));
+    const missing = findEmptyRequired(patchBody, requiredSlugs);
+    if (missing.length > 0) {
+      return c.json({ success: false, error: '必須項目を空にできません' }, 400);
+    }
+
+    // Formaloo client (多鍵)。null (未登録/復号失敗/未接続) は誤送信防止契約継承 → D1 を書かず正直エラー。
+    const client = await resolveFormalooClient(c.env, form.workspace_id);
+    if (!client || !form.formaloo_slug) {
+      return c.json({ success: false, error: 'Formaloo 未接続のため編集を保存できません' }, 502);
+    }
+
+    // row_slug 解決 (stored → rows-list submit_code 照合)。不能は正直エラー (殻完了禁止)。
+    const rowSlug = await resolveRowSlug(mirror, makeRowsListRowSlugResolver(client, form.formaloo_slug));
+    if (!rowSlug) {
+      return c.json({ success: false, error: 'この回答は Formaloo 側の識別子が取得できず編集できません' }, 422);
+    }
+
+    // flat PATCH → **persist 確認** (FRESH GET で編集後値照合)。反映されない編集を成功と見せない。
+    const patchRes = await client.patch(`/v3.0/rows/${rowSlug}/`, patchBody);
+    if (!patchRes.ok) {
+      return c.json({ success: false, error: 'Formaloo への反映に失敗しました（保存していません）' }, 502);
+    }
+    const verifyRes = await client.get<{ data?: Record<string, unknown> }>(`/v3.0/rows/${rowSlug}/`);
+    const persisted = (verifyRes.ok ? verifyRes.data?.data : undefined) as Record<string, unknown> | undefined;
+    const confirmed =
+      persisted != null &&
+      Object.entries(patchBody).every(([slug, val]) => String(persisted[slug] ?? '') === String(val ?? ''));
+    if (!confirmed) {
+      return c.json({ success: false, error: 'Formaloo への反映が確認できませんでした（保存していません）' }, 502);
+    }
+
+    // 成功: D1 mirror 更新 + row_slug backfill (legacy のみ) + edit 記録 (変更フィールドのみ)。
+    const prevRaw = safeParseJson(mirror.answers_json);
+    const prevAnswers = prevRaw && typeof prevRaw === 'object' && !Array.isArray(prevRaw) ? (prevRaw as Record<string, unknown>) : {};
+    // F-M6: mirror は persist 確認で取得済の **FRESH remote (persisted)** を正とし、そこに patchBody を上書き
+    //   (persisted は既に patchBody を含むが、Formaloo 側の他フィールド最新変更も反映して D1 drift を防ぐ)。
+    //   remote に無い harness 既知フィールドは prevAnswers で補完 (欠落防止)。stale prevAnswers 単独再構築を避ける。
+    const mergedAnswers = { ...prevAnswers, ...persisted, ...patchBody };
+    await c.env.DB
+      .prepare('UPDATE formaloo_submissions SET answers_json = ?, synced_at = ? WHERE id = ?')
+      .bind(JSON.stringify(mergedAnswers), jstNow(), rowId)
+      .run();
+    if (!mirror.formaloo_row_slug) await updateSubmissionRowSlug(c.env.DB, rowId, rowSlug);
+
+    const editorStaffId = c.get('staff')?.id ?? null;
+    for (const [slug, val] of Object.entries(patchBody)) {
+      const oldVal = prevAnswers[slug];
+      if (String(oldVal ?? '') === String(val ?? '')) continue; // 変化なしは記録しない
+      await recordSubmissionEdit(c.env.DB, {
+        submissionId: rowId,
+        formId: id,
+        editorStaffId,
+        fieldSlug: slug,
+        oldValue: oldVal == null ? null : String(oldVal),
+        newValue: val == null ? null : String(val),
+      });
+    }
+
+    const latest = await getLatestEdit(c.env.DB, rowId);
+    return c.json({
+      success: true,
+      data: {
+        id: rowId,
+        answers: mergedAnswers,
+        submittedAt: mirror.submitted_at,
+        source: 'formaloo',
+        lastEdit: latest
+          ? { editorStaffId: latest.editor_staff_id, editorName: await resolveEditorName(c.env.DB, latest.editor_staff_id), editedAt: latest.edited_at }
+          : null,
+      },
+    });
+  } catch (err) {
+    console.error('PATCH /api/forms-advanced/:id/rows/:rowId error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

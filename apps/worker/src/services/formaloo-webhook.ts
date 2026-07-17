@@ -40,6 +40,13 @@ export interface ParsedWebhookSubmission {
   submittedAt: string;
   /** LINE friend id (hidden field 由来 / 解決できなければ null → LINE 後処理対象外)。 */
   friendId: string | null;
+  /**
+   * 弾M (form-post-edit / T-A3): Formaloo row 編集の addressable identifier (ROW slug)。
+   * real payload (live-confirm 2026-07-12) は top-level `slug` が ROW slug・top-level `form`(string) が form slug。
+   * ゆえ **submit_code present ∧ top-level slug が form slug と distinct** のときのみ root.slug を rowSlug に採る。
+   * fallback 形 (top-level slug が form-slug に消費される) / legacy (submit_code 不在) は null → rows-list resolver に委譲。
+   */
+  rowSlug: string | null;
 }
 
 function asObject(v: unknown): Record<string, unknown> | null {
@@ -162,7 +169,13 @@ export async function parseWebhookPayload(
     );
   }
 
-  return { submissionId, slug: slug ?? null, answers, submittedAt, friendId };
+  // 弾M (T-A3): ROW slug capture。real 形は top-level `slug`(=ROW slug) が resolved form slug と distinct。
+  //   fallback 形 (form キー無し) では slug 自身が root.slug 経由の form slug ゆえ両者一致 → row slug 不明 = null。
+  //   submit_code 不在 (legacy) も null。null は edit endpoint の rows-list submit_code resolver が救済する。
+  const rowSlugCandidate = firstString(root.slug);
+  const rowSlug = submitCode && rowSlugCandidate && rowSlugCandidate !== slug ? rowSlugCandidate : null;
+
+  return { submissionId, slug: slug ?? null, answers, submittedAt, friendId, rowSlug };
 }
 
 function hexToBytes(hex: string): Uint8Array | null {

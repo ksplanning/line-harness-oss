@@ -83,7 +83,8 @@
     "096_formaloo_folders.sql",
     "097_broadcasts_messages_column.sql",
     "098_formaloo_drift.sql",
-    "099_formaloo_post_edit.sql"
+    "099_formaloo_post_edit.sql",
+    "100_formaloo_row_slug_and_edits.sql"
   ],
-  "migrationCount": 84
+  "migrationCount": 85
 }

@@ -107,6 +107,16 @@ describe('FormalooClient — 認証レシピ (§15 実機 200)', () => {
   });
 });
 
+describe('FormalooClient — patch (弾M form-post-edit / row 部分更新)', () => {
+  test('patch は PATCH メソッド + JSON body で送る (flat slug body)', async () => {
+    const { client, calls } = makeClient({ api: [() => jsonRes({ status: true, data: { nameSlug: '山田' } })] });
+    const r = await client.patch('/v3.0/rows/ROW1/', { nameSlug: '山田' });
+    expect(r.ok).toBe(true);
+    expect(calls.api[0].init.method).toBe('PATCH');
+    expect(String(calls.api[0].init.body)).toBe(JSON.stringify({ nameSlug: '山田' }));
+  });
+});
+
 describe('FormalooClient — 401 リトライ (bounded)', () => {
   test('401 で token を 1 回だけ再取得しリトライ成功', async () => {
     const { client, calls } = makeClient({

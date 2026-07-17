@@ -120,6 +120,11 @@ export class FormalooClient {
     return this.request<T>('PUT', path, body);
   }
 
+  /** 弾M (form-post-edit): row 部分更新 = `PATCH /v3.0/rows/{row_slug}/` (flat top-level slug body / 実測1)。 */
+  async patch<T = unknown>(path: string, body?: unknown): Promise<FormalooResult<T>> {
+    return this.request<T>('PATCH', path, body);
+  }
+
   async delete<T = unknown>(path: string): Promise<FormalooResult<T>> {
     return this.request<T>('DELETE', path);
   }

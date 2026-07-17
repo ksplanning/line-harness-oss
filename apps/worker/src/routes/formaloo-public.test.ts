@@ -277,6 +277,38 @@ function openedFormMatches(cond: SegmentCondition): string[] {
   return rows.map((r) => r.id);
 }
 
+// 弾M (form-post-edit / T-A4): webhook upsert が rowSlug を渡す (回帰 0)。
+function rowSlugOf(subId: string): string | null {
+  return (raw.prepare(`SELECT formaloo_row_slug AS v FROM formaloo_submissions WHERE id=?`).get(subId) as { v: string | null } | undefined)?.v ?? null;
+}
+/** real payload 形 (top-level submit_code=row id / form=文字列 form slug / slug=ROW slug)。 */
+function realPayloadFor(submitCode: string, formSlug: string, rowSlug: string, friendId: string | null = 'fr_1') {
+  const data: Record<string, unknown> = { q1: '田中' };
+  if (friendId) data.friend_id = friendId;
+  return { submit_code: submitCode, form: formSlug, slug: rowSlug, data, created_at: '2026-07-10T08:59:00+09:00' };
+}
+
+describe('T-A4 webhook upsert が rowSlug を渡す (弾M / 回帰 0)', () => {
+  test('real 形 webhook → formaloo_row_slug が row slug で保存される', async () => {
+    seedFriend('fr_1');
+    seedForm('fa1', 'form_abc', 'published', null);
+    const res = await postWebhook(TOKEN, realPayloadFor('ROW_1', 'form_abc', 'ROWSLUG_1', 'fr_1'), { sign: true });
+    expect(res.status).toBe(200);
+    const s = sub('ROW_1')!;
+    expect(s.form_id).toBe('fa1'); // form slug (form 文字列) で台帳照合 = 回帰なし
+    expect(rowSlugOf('ROW_1')).toBe('ROWSLUG_1');
+  });
+
+  test('legacy 形 webhook → formaloo_row_slug は NULL (回帰: 既存フローに row slug 無し)', async () => {
+    seedFriend('fr_1');
+    seedForm('fa1', 'form_abc', 'published', null);
+    const res = await postWebhook(TOKEN, payloadFor('sub_leg', 'form_abc', 'fr_1'), { sign: true });
+    expect(res.status).toBe(200);
+    expect(sub('sub_leg')!.form_id).toBe('fa1');
+    expect(rowSlugOf('sub_leg')).toBeNull();
+  });
+});
+
 describe('T-C2 開封リダイレクト /fo/:id (G11 / 認証除外)', () => {
   test('published + ?f= → form_opens INSERT + 302 で Formaloo address へ (Authorization 不要)', async () => {
     seedFriend('fr_1');
@@ -358,6 +390,105 @@ describe('T-A3 /fo/:id prefill 合成 (順方向 fr_id/fr_name)', () => {
     const res = await app().request('/fo/fa1', { method: 'GET' }, envWithFriendSecret());
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe(ADDR);
+  });
+});
+
+// 弾M (form-post-edit / T-C1): ②本人再入場 = /fo/:id が本人最新 row を field-slug query prefill。
+function seedFormPostEdit(id: string, address: string, allowPostEdit: number) {
+  raw.prepare(
+    `INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status, definition_json, allow_post_edit) VALUES (?,?,?,?,?,?)`,
+  ).run(id, `slug_${id}`, 'テスト', 'published', JSON.stringify({ fields: [], logic: [], formalooAddress: address }), allowPostEdit);
+}
+function seedSubRow(id: string, formId: string, friendId: string | null, answers: Record<string, unknown>, submittedAt: string) {
+  raw.prepare(`INSERT INTO formaloo_submissions (id, form_id, friend_id, answers_json, submitted_at) VALUES (?,?,?,?,?)`)
+    .run(id, formId, friendId, JSON.stringify(answers), submittedAt);
+}
+function postEditEnv() {
+  return { ...envWithFriendSecret(), FORM_POST_EDIT_ENABLED: 'true' } as Env['Bindings'];
+}
+
+describe('T-C1 /fo/:id 本人再入場 prefill (allow_post_edit=1 / friend 厳密 / OFF byte 同等)', () => {
+  test('allow_post_edit=1 + friend A → A 自身の最新 row を field-slug prefill・friend B の row は絶対出さない', async () => {
+    seedFriend('frA'); seedFriend('frB');
+    seedFormPostEdit('fa1', ADDR, 1);
+    seedSubRow('a_old', 'fa1', 'frA', { nameSlug: 'A-OLD', ageSlug: '20' }, '2026-07-17T00:00:00+09:00');
+    seedSubRow('a_new', 'fa1', 'frA', { nameSlug: 'A-NEW', ageSlug: '30' }, '2026-07-17T05:00:00+09:00');
+    seedSubRow('b_row', 'fa1', 'frB', { nameSlug: 'B-VALUE' }, '2026-07-17T09:00:00+09:00');
+
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, postEditEnv());
+    expect(res.status).toBe(302);
+    const u = new URL(res.headers.get('location')!);
+    // A の**最新** row (a_new) を prefill
+    expect(u.searchParams.get('nameSlug')).toBe('A-NEW');
+    expect(u.searchParams.get('ageSlug')).toBe('30');
+    // 取り違え防止: B の値 (B-VALUE) を絶対に出さない
+    expect(u.searchParams.get('nameSlug')).not.toBe('B-VALUE');
+    // 署名 fr_id は従来どおり付く (answer prefill が上書きしない)
+    expect(await verifyFriendToken(u.searchParams.get('fr_id'), FRIEND_SECRET)).toBe('frA');
+  });
+
+  test('friend B 再入場は B 自身の row のみ prefill (A の row を出さない)', async () => {
+    seedFriend('frA'); seedFriend('frB');
+    seedFormPostEdit('fa1', ADDR, 1);
+    seedSubRow('a_new', 'fa1', 'frA', { nameSlug: 'A-NEW' }, '2026-07-17T05:00:00+09:00');
+    seedSubRow('b_row', 'fa1', 'frB', { nameSlug: 'B-VALUE' }, '2026-07-17T09:00:00+09:00');
+    const res = await app().request('/fo/fa1?f=frB', { method: 'GET' }, postEditEnv());
+    const u = new URL(res.headers.get('location')!);
+    expect(u.searchParams.get('nameSlug')).toBe('B-VALUE');
+  });
+
+  test('allow_post_edit=0 → answer prefill 無し (現状 fr_id/fr_name のみ = byte 同等)', async () => {
+    seedFriend('frA');
+    seedFormPostEdit('fa1', ADDR, 0);
+    seedSubRow('a_new', 'fa1', 'frA', { nameSlug: 'A-NEW' }, '2026-07-17T05:00:00+09:00');
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, postEditEnv());
+    const u = new URL(res.headers.get('location')!);
+    expect(u.searchParams.get('nameSlug')).toBeNull(); // answer prefill 無し
+    expect(await verifyFriendToken(u.searchParams.get('fr_id'), FRIEND_SECRET)).toBe('frA'); // fr_id は従来どおり
+  });
+
+  test('F-H1: FORMALOO_FRIEND_TOKEN_SECRET 未設定は署名不可 → 回答 prefill も fr_id も一切付かない (fail-closed)', async () => {
+    seedFriend('frA');
+    seedFormPostEdit('fa1', ADDR, 1);
+    seedSubRow('a_new', 'fa1', 'frA', { nameSlug: 'A-NEW', ageSlug: '30' }, '2026-07-17T05:00:00+09:00');
+    // env: allow_post_edit=1 + FORM_POST_EDIT_ENABLED=true だが FORMALOO_FRIEND_TOKEN_SECRET 無し (署名不可)
+    const e = { ...env(), FORM_POST_EDIT_ENABLED: 'true' } as Env['Bindings'];
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, e);
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc).toBe(ADDR); // 生 URL へ degrade = PII prefill 一切なし
+    const u = new URL(loc);
+    expect(u.searchParams.get('nameSlug')).toBeNull(); // 回答 PII を載せない
+    expect(u.searchParams.get('ageSlug')).toBeNull();
+    expect(u.searchParams.get('fr_id')).toBeNull();     // fr_id も付かない (署名不可)
+  });
+
+  test('FORM_POST_EDIT_ENABLED 未設定 → answer prefill 無し (allow_post_edit=1 でも / env AND gate)', async () => {
+    seedFriend('frA');
+    seedFormPostEdit('fa1', ADDR, 1);
+    seedSubRow('a_new', 'fa1', 'frA', { nameSlug: 'A-NEW' }, '2026-07-17T05:00:00+09:00');
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, envWithFriendSecret()); // env flag 無し
+    const u = new URL(res.headers.get('location')!);
+    expect(u.searchParams.get('nameSlug')).toBeNull();
+  });
+
+  test('OFF 経路は現状レスポンス byte 同等 (allow_post_edit=0 の Location が secret 有り現状挙動と一致)', async () => {
+    seedFriend('frA');
+    seedFormPostEdit('fa1', ADDR, 0);
+    seedSubRow('a_new', 'fa1', 'frA', { nameSlug: 'A-NEW' }, '2026-07-17T05:00:00+09:00');
+    // 現状挙動 (弾M 無関係の form) の Location を基準にして byte 同等を pin
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, postEditEnv());
+    const loc = res.headers.get('location')!;
+    // fr_id + fr_name のみ (answer slug は含まない)
+    expect(loc).toContain('fr_id=');
+    expect(loc).not.toContain('nameSlug=');
+  });
+
+  test('friend 未解決 (?f= 無し・非 in-app) は allow_post_edit=1 でも prefill 無し (取り違え防止の fail-closed)', async () => {
+    seedFormPostEdit('fa1', ADDR, 1);
+    seedSubRow('a_new', 'fa1', 'frA', { nameSlug: 'A-NEW' }, '2026-07-17T05:00:00+09:00');
+    const res = await app().request('/fo/fa1', { method: 'GET' }, postEditEnv());
+    expect(res.headers.get('location')).toBe(ADDR); // 生 address 直行 = prefill 一切なし
   });
 });
 

@@ -9,6 +9,7 @@ import {
   enrollFriendInScenario,
   getFriendById,
   getFriendByLineUserId,
+  getFriendLatestSubmission,
   getLineAccountById,
   jstNow,
   type FormalooForm,
@@ -16,7 +17,46 @@ import {
 import { isBuilderStatus, buildPublicUrl } from '../services/formaloo-publish-gate.js';
 import { verifyWebhookToken, verifyHmacSignature, parseWebhookPayload } from '../services/formaloo-webhook.js';
 import { signFriendToken } from '../services/formaloo-friend-token.js';
+import { isPostEditEnabled } from '../services/formaloo-row-edit.js';
 import type { Env } from '../index.js';
+
+// 弾M (form-post-edit / T-C1): ②本人再入場 prefill の上限 (URL 長制限対策 / R2)。
+const MAX_PREFILL_FIELDS = 20;
+const MAX_PREFILL_VALUE_LEN = 200;
+
+/**
+ * ②本人再入場: 解決済 friendId の**最新 row** answers を field-slug query prefill 用の map に射影する。
+ * 取り違え防止 = getFriendLatestSubmission (friend_id 完全一致) のみ引く。scalar (string/number) の非空・短値のみ
+ * (file/multi の配列は除外・URL 長制限で件数/長さを上限)。予約 param (fr_id/fr_name) は署名を守るため除外。
+ */
+async function buildFriendPrefillParams(
+  db: D1Database,
+  formId: string,
+  friendId: string,
+): Promise<Record<string, string>> {
+  const row = await getFriendLatestSubmission(db, formId, friendId);
+  if (!row) return {};
+  let answers: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(row.answers_json);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    answers = parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  let n = 0;
+  for (const [slug, val] of Object.entries(answers)) {
+    if (n >= MAX_PREFILL_FIELDS) break;
+    if (slug === 'fr_id' || slug === 'fr_name') continue; // 署名 fr_id/fr_name を answer が上書きしない
+    if (typeof val !== 'string' && typeof val !== 'number') continue; // scalar のみ (file/multi 除外)
+    const s = String(val);
+    if (!s || s.length > MAX_PREFILL_VALUE_LEN) continue; // 空/長文 除外
+    out[slug] = s;
+    n++;
+  }
+  return out;
+}
 
 /** definition_json から公開フォーム address を取り出す (表示用キャッシュ / forms-advanced と同源)。 */
 function formalooAddressOf(definitionJson: string): string | null {
@@ -83,7 +123,8 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
   const form = await getFormalooFormBySlug(c.env.DB, parsed.slug);
   if (!form) return c.json({ success: true });
 
-  // 6) 冪等 upsert (N-3 / 順序非依存)
+  // 6) 冪等 upsert (N-3 / 順序非依存)。弾M (T-A4): rowSlug を additive で渡す (COALESCE 保持 = 再送で
+  //    null が既存 row_slug を落とさない)。既存の submissionId/friendId/answers/verified 経路は byte 不変。
   await upsertFormalooSubmission(c.env.DB, {
     id: parsed.submissionId,
     formId: form.id,
@@ -92,6 +133,7 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
     answersJson: JSON.stringify(parsed.answers),
     submittedAt: parsed.submittedAt,
     verified,
+    rowSlug: parsed.rowSlug,
   });
 
   // 7) LINE 後処理 (T-C3): published + verified のときだけ、claim 成功で 1 回だけ発火 (N-7・N-3)。
@@ -231,9 +273,22 @@ formalooPublic.get('/fo/:id', async (c) => {
   let redirectUrl = url;
   if (friendId) {
     const signed = await signFriendToken(friendId, c.env.FORMALOO_FRIEND_TOKEN_SECRET);
+    // 弾M (T-C1 / F-H1): 回答 answer prefill は **署名 (signed) と同一の fail-closed 条件** に gate する。
+    //   署名不可 (FORMALOO_FRIEND_TOKEN_SECRET 未設定 / 署名失敗) = friend identity を署名できない = PII を
+    //   redirect URL に載せない (生 URL へ degrade・prefill 一切無し)。署名 fr_id が付かない経路で回答 PII だけ
+    //   漏らす fail-open を塞ぐ (done_condition T-C1『署名 fr_id 検証失敗は prefill を付与しない』)。
     if (signed) {
+      // allow_post_edit=1 かつ env 有効時のみ、本人の**最新 row** answers を field-slug query prefill で付与
+      //   (②本人再入場)。OFF/env 未設定 = null = 現状 (fr_id/fr_name のみ) と byte 同等。friendId は解決済
+      //   (実在検証済) ゆえ getFriendLatestSubmission が friend 厳密一致で本人 row のみ引く (取り違え防止)。
+      const postEditPrefill =
+        form.allow_post_edit === 1 && isPostEditEnabled(c.env.FORM_POST_EDIT_ENABLED)
+          ? await buildFriendPrefillParams(c.env.DB, id, friendId)
+          : null;
       try {
         const u = new URL(url);
+        // answer prefill を先に付与 → 署名 fr_id/fr_name を後で set (予約 param を answer が上書きしない)。
+        if (postEditPrefill) for (const [slug, val] of Object.entries(postEditPrefill)) u.searchParams.set(slug, val);
         u.searchParams.set('fr_id', signed);
         if (friendName) u.searchParams.set('fr_name', friendName);
         redirectUrl = u.toString();

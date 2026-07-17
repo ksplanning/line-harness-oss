@@ -192,6 +192,10 @@ export type Env = {
     //     owner が案 A を選んだら wrangler.toml で 'true' に flip するだけ (通知/バッジは OFF でも動く)。
     FORMALOO_DRIFT_ENABLED?: string;
     FORMALOO_DRIFT_AUTO_APPLY?: string;
+    // 弾M (form-post-edit): あと編集 (①管理者編集 + ②本人再入場 prefill) の全体 kill-switch。
+    //   未設定 = 無効 (fail-closed / rollback 経路)。allow_post_edit トグルと AND で gate する。
+    //   有効化は `wrangler secret put`/[vars] で 'true' 供給 (owner 立会後・repo に literal 置かない)。
+    FORM_POST_EDIT_ENABLED?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
