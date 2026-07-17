@@ -120,6 +120,62 @@ export async function confirmDesignReflected(
   return { ok: false, error: `配色が公開ページに反映されませんでした（${lastMiss || '確認に失敗しました'}）` };
 }
 
+/** confirmBackgroundReflected の期待状態 (slot ごとに set=非空 URL 永続 / cleared=null・空 を要求)。 */
+export interface BackgroundReflectionExpected {
+  /** cover(=Formaloo `background_image`) の期待: 'set'=replace で URL 永続 / 'cleared'=remove で null。 */
+  backgroundImage?: 'set' | 'cleared';
+  /** logo(=Formaloo `logo`) の期待: 同上。 */
+  logo?: 'set' | 'cleared';
+}
+
+/**
+ * 画像 replace/remove の反映を GET-after-PATCH で確認する (soft-200 対策・色版 confirmDesignReflected と同型 fail-soft)。
+ * multipart PATCH は 200 でも URL を実際に永続しない soft-200 があり得るため、`applied.ok` だけを idle 根拠にすると
+ * 「保存済に見えて背景が出ない」殻完了を再発させ得る (R4 盲点)。独立 GET-after-PATCH で描画 location の反映を確認する。
+ *
+ * 🚨 描画 location = **top-level `background_image` / `logo`** (bg-fullpage-render-fix spike 2026-07-18 CDP 実測):
+ *   hosted SPA は top-level `background_image` を `div.full-height` の background-image に **cover 適用**して描画する。
+ *   `theme_config.background_image` は描画する側も・しない側も等しく **空 `{}`** (= 描画に不使用) と実測されたため
+ *   **確認対象にしない** (色バグ由来の「入れ子 theme_config 仮説 H1」は spike で REFUTED)。証跡:
+ *   .plans/2026-07-18-bg-fullpage-render-fix/evidence/spike-conclusions.md。
+ *
+ * 'set' は remote field が非空 string(=S3 URL 永続)、'cleared' は null/空 を要求。eventual consistency 用に bounded retry。
+ * 全一致で ok / 不一致・GET 失敗は ok:false (route が out_of_sync)。期待が 1 つも無ければ GET せず ok:true
+ * (replace/remove 無しの経路は素通り = 既存 keep/未指定挙動 byte 不変)。
+ */
+export async function confirmBackgroundReflected(
+  client: FormalooClient,
+  formalooSlug: string,
+  expected: BackgroundReflectionExpected,
+  opts?: { retries?: number; sleep?: (ms: number) => Promise<void> },
+): Promise<DesignReflectionResult> {
+  // 確認対象 = present な期待のみ (Formaloo field 名 → 'set'|'cleared')。
+  const wanted: Array<[string, 'set' | 'cleared']> = [];
+  if (expected.backgroundImage) wanted.push([IMAGE_SLOT_TO_FORMALOO.cover, expected.backgroundImage]);
+  if (expected.logo) wanted.push([IMAGE_SLOT_TO_FORMALOO.logo, expected.logo]);
+  if (wanted.length === 0) return { ok: true }; // 確認対象なし (GET しない)
+
+  const retries = opts?.retries ?? 2;
+  const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const isSet = (v: unknown): boolean => typeof v === 'string' && v.trim().length > 0;
+  let lastMiss = '';
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const g = await client.request('GET', `/v3.0/forms/${formalooSlug}/`);
+    if (g.ok) {
+      const form = extractForm(g.data);
+      let allMatch = true;
+      for (const [field, want] of wanted) {
+        const ok = want === 'set' ? isSet(form[field]) : !isSet(form[field]);
+        if (!ok) { allMatch = false; lastMiss = field; break; }
+      }
+      if (allMatch) return { ok: true };
+    }
+    if (attempt < retries) await sleep(200 * (attempt + 1));
+  }
+  const label = lastMiss === IMAGE_SLOT_TO_FORMALOO.logo ? 'ロゴ' : '背景画像';
+  return { ok: false, error: `${label}が公開ページに反映されませんでした（${lastMiss || '確認に失敗しました'}）` };
+}
+
 /** data:image/...;base64,xxxx を binary bytes へ (Workers/Node 共通 atob)。不正は null。 */
 function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; mime: string } | null {
   const m = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
