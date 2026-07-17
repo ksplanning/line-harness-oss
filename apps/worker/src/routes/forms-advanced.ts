@@ -47,6 +47,7 @@ import {
   parseCsv,
   logicFingerprint,
   normalizeFormDesign,
+  defaultFormDesign,
   serializeRawLogicForPush,
   computeRouteTerminalWarnings,
   isExpandableMultiJumpItem,
@@ -244,6 +245,12 @@ formsAdvanced.post('/api/forms-advanced', async (c) => {
       submitMessage: body.submitMessage ?? null,
       lineAccountId,
       workspaceId,
+      // form-design-presets ② (create-time seed / OD-2): デザイン未設定フォームが Formaloo 暗色
+      //   デフォルト (#37352F 同色 = 入力欄不可視) に落ちる罠の根絶。既定パレット (line-green) を
+      //   definition_json に seed → builder 初期表示に流れ → 初回 save で色 PATCH が Formaloo hosted に届く。
+      //   defaultFormDesign() が単一正本。DAO は shared 非依存ゆえ FormDesign を import できず構造型で受ける
+      //   (BLOCKING2)。FormDesign の値は全て string|null|undefined ゆえ構造型への cast は健全 (境界越えの橋渡し)。
+      design: defaultFormDesign() as Record<string, string | null | undefined>,
     });
     return c.json({ success: true, data: await serializeForm(c.env.DB, form, isOwner) }, 201);
   } catch (err) {

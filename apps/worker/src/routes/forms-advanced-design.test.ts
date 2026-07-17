@@ -169,6 +169,33 @@ describe('PUT /api/forms-advanced/:id — form-design 色', () => {
     expect(res.status).toBe(200);
     expect('design' in definitionOf('c3')).toBe(false);
   });
+
+  // form-design-presets (D-4 / WARN6): 既存 design-present フォームの PUT で Formaloo に送る色 PATCH payload が
+  //   baseline snapshot と一致することを behavioral に固定 (git-diff 非依存)。create-seed 導入 (Option A) は
+  //   PUT 経路を触らないため、既存フォームの色 push 挙動は byte 不変 = 後方互換の直接証明。
+  test('D-4 既存 design-present フォームの PUT → 色 PATCH payload が baseline snapshot と一致 (後方互換 byte 不変)', async () => {
+    seedForm('c4', 'SLUG4', JSON.stringify({ fields: [], logic: [], design: { themeColor: '#285C66', presetId: 'deep-tide' } }));
+    const calls = stubFormaloo();
+    const fullDesign = {
+      themeColor: '#285C66', backgroundColor: '#EEF5F4', buttonColor: '#327682', textColor: '#183A40',
+      fieldColor: '#FFFFFF', borderColor: '#AFCAC8', submitTextColor: '#FFFFFF', presetId: 'deep-tide',
+    };
+    const res = await call('PUT', '/api/forms-advanced/c4', { fields: [], logic: [], title: 'T', description: 'D', design: fullDesign });
+    expect(res.status).toBe(200);
+    const patch = calls.find((e) => e.method === 'PATCH' && /\/forms\/SLUG4\/$/.test(e.url));
+    // meta PATCH body の完全 snapshot: title/description + 7 色 field (hex)。presetId は色 field でないので送らない。
+    expect(patch?.body).toEqual({
+      title: 'T',
+      description: 'D',
+      theme_color: '#285C66',
+      background_color: '#EEF5F4',
+      button_color: '#327682',
+      text_color: '#183A40',
+      field_color: '#FFFFFF',
+      border_color: '#AFCAC8',
+      submit_text_color: '#FFFFFF',
+    });
+  });
 });
 
 describe('PUT /api/forms-advanced/:id — form-design 画像', () => {
