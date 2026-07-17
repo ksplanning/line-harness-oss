@@ -296,7 +296,7 @@ footer code {
       <div class="meta">line-harness-ks (+ piecemaker — dual-push 両テナント適用) · REPORT_2026-07-18_080000_bg-fullpage-render-fix · <span class="badge completed">COMPLETED</span> · purpose_done: ?</div>
     </div>
     <div class="score-wrap">
-      <div class="score completed">5/5</div>
+      <div class="score completed">11/13 (2 non-applicable: BUG-1 skipped by design / O-4 skipped by design)</div>
       <div class="score-delta">?</div>
     </div>
   </header>
@@ -305,8 +305,8 @@ footer code {
     <header class="card-head"><h2>メタ情報</h2></header>
     <table class="meta-table">
       <tr><th>app</th><td>line-harness-ks (+ piecemaker — dual-push 両テナント適用)</td></tr>
-      <tr><th>Box (.md)</th><td><a href="https://app.box.com/file/pending">pending</a></td></tr>
-      <tr><th>Box (.html)</th><td><!-- BOX_FILE_ID_HTML --><span class="placeholder">未取得</span></td></tr>
+      <tr><th>Box (.md)</th><td><a href="https://app.box.com/file/2353980969544">2353980969544</a></td></tr>
+      <tr><th>Box (.html)</th><td><a href="https://app.box.com/file/2353979110878">2353979110878</a></td></tr>
       <tr><th>owner 発言原文</th><td>（非 UI 案件 / 記載なし）</td></tr>
       <tr><th>ui_case</th><td>false</td></tr>
       <tr><th>visual-qa-council</th><td>?</td></tr>
@@ -322,7 +322,7 @@ footer code {
 
   <section class="card" data-kind="verified">
     <header class="card-head"><h2>確認したこと</h2></header>
-    <div class="markdown-body">\n- **rebase/統合**: <code>case/bg-fullpage-render-fix</code>(base <code>3e51be2</code>)を main(<code>6dc99e5</code>)へ rebase → 衝突ゼロ → fast-forward。diff vs main = 4ファイルのみ(想定通り)。\n- **combined 全 pkg tests(統合後 再走)**: worker 2047/2047 green(185 files) / shared 404/404 green / db 400/400 green / web 1008/1008 green。\n- **tsc ×4**: worker/web/shared/db 全て rc0。\n- **web static export**: <code>NEXT_PUBLIC_API_URL</code> 設定の上で next build 成功(全ページ prerendered)。\n- **独立検証(必須ゲート)**: 実装者(Generator-LLM: claude)と別ベンダーの Codex に diff を渡し、5 done_conditions(BUG-2/T-A1/R-1無退行/R-2 fingerprint保全/FAIL-1)を判定させ、**全件 PASS** を確認(Codex 独自に対象テスト再実行・tsc・git diff --check 実施済み)。\n- **secret-scan(--range)**: push 対象コミット4件を gitleaks でスキャン、leak 0件。\n- **dep-scan(HIGH,CRITICAL)**: trivy fs でクリーン(package.json 変更なし=依存追加なし)。\n- **dual-push + SHA一致**: <code>git push origin main</code> / <code>git push piecemaker main</code> 完了 → <code>verify-tenant-sync.sh</code> で origin==piecemaker@main = <code>a437d33fe82d8f690d67c49da0828579ac9ea20b</code> を確認。\n- **デプロイ4点 + health**:\n  - ks worker(<code>line-harness-ks.web-8af.workers.dev</code>)再デプロイ(Version ID <code>e44ab365-4dc7-45db-9f5f-3cfcd78b4d5e</code>) → <code>/admin/version</code> 200\n  - piecemaker worker(<code>line-harness-piecemaker.piecemaker.workers.dev</code>)再デプロイ(Version ID <code>0c239852-56dc-44b4-8cbb-e189136f4798</code>・<code>VITE_LIFF_ID</code> 既存値を明示指定して LIFF 機能保護) → <code>/admin/version</code> 200\n  - ks admin(Pages)再デプロイ(<code>https://3c2a18e5.line-harness-ks-admin.pages.dev</code>) → <code>/login</code> 200\n  - piecemaker admin(Pages)再デプロイ(<code>https://41ff42cf.line-harness-piecemaker-admin.pages.dev</code>) → <code>/login</code> 200\n- **worktree/branch 掃除**: <code>case/bg-fullpage-render-fix</code> worktree削除・ローカルブランチ削除。並走中の <code>harness-lp-hosting</code> worktree(別ブランチ)は無傷。</div>
+    <div class="markdown-body">\n- **rebase/統合**: <code>case/bg-fullpage-render-fix</code>(base <code>3e51be2</code>)を main(<code>6dc99e5</code>)へ rebase → 衝突ゼロ → fast-forward。diff vs main = 4ファイルのみ(想定通り)。\n- **combined 全 pkg tests(統合後 再走)**: worker 2047/2047 green(185 files) / shared 404/404 green / db 400/400 green / web 1008/1008 green。\n- **tsc ×4**: worker/web/shared/db 全て rc0。\n- **web static export**: <code>NEXT_PUBLIC_API_URL</code> 設定の上で next build 成功(全ページ prerendered)。\n- **独立検証(必須ゲート)**: 実装者(Generator-LLM: claude)と別ベンダーの Codex に diff を渡し、5コード done_conditions(BUG-2/T-A1/R-1無退行/R-2 fingerprint保全/FAIL-1)を判定させ、**全件 PASS** を確認(Codex 独自に対象テスト再実行・tsc・git diff --check 実施済み)。\n- **secret-scan(--range)**: push 対象コミット4件を gitleaks でスキャン、leak 0件。\n- **dep-scan(HIGH,CRITICAL)**: trivy fs でクリーン(package.json 変更なし=依存追加なし)。\n- **dual-push + SHA一致**: <code>git push origin main</code> / <code>git push piecemaker main</code> 完了 → <code>verify-tenant-sync.sh</code> で origin==piecemaker@main = <code>3629b91adea0858be806cc8756c4b20edbd588bf</code> を確認(REPORT HTML commit含む)。\n- **デプロイ4点 + health**:\n  - ks worker(<code>line-harness-ks.web-8af.workers.dev</code>)再デプロイ(Version ID <code>e44ab365-4dc7-45db-9f5f-3cfcd78b4d5e</code>) → <code>/admin/version</code> 200\n  - piecemaker worker(<code>line-harness-piecemaker.piecemaker.workers.dev</code>)再デプロイ(Version ID <code>0c239852-56dc-44b4-8cbb-e189136f4798</code>・<code>VITE_LIFF_ID</code> 既存値を明示指定して LIFF 機能保護) → <code>/admin/version</code> 200\n  - ks admin(Pages)再デプロイ(<code>https://3c2a18e5.line-harness-ks-admin.pages.dev</code>) → <code>/login</code> 200\n  - piecemaker admin(Pages)再デプロイ(<code>https://41ff42cf.line-harness-piecemaker-admin.pages.dev</code>) → <code>/login</code> 200\n- **worktree/branch 掃除**: <code>case/bg-fullpage-render-fix</code> worktree削除・ローカルブランチ削除。並走中の <code>harness-lp-hosting</code> worktree(別ブランチ)は無傷。</div>
   </section>
 
 
@@ -343,7 +343,7 @@ footer code {
   </section>
 
   <footer>
-    生成: 2026-07-18 08:10 JST · commit <code>34675caefa</code> · workspace workspace
+    生成: 2026-07-18 08:16 JST · commit <code>5751915725</code> · workspace workspace
   </footer>
 </body>
 </html>
