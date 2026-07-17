@@ -72,7 +72,7 @@ describe('parseWebhookPayload (whitelist 抽出 / M-21)', () => {
   });
   test('未知プロパティは answers 以外に漏らさない (whitelist)', async () => {
     const p = (await parseWebhookPayload({ id: 's', evil: 'x', answers: { a: 1 } }, now))!;
-    expect(Object.keys(p).sort()).toEqual(['answers', 'friendId', 'slug', 'submissionId', 'submittedAt']);
+    expect(Object.keys(p).sort()).toEqual(['answers', 'friendId', 'rowSlug', 'slug', 'submissionId', 'submittedAt']);
   });
 });
 
@@ -95,7 +95,7 @@ describe('parseWebhookPayload — 署名 fr_id 復元 (T-A6 / 順方向)', () =>
     expect(p).not.toBeNull();
     expect(p!.friendId).toBe(FRIEND);
     // 出力 shape は不変 (whitelist / 5 キー) — event_type 等は 1a では出力に足さない
-    expect(Object.keys(p!).sort()).toEqual(['answers', 'friendId', 'slug', 'submissionId', 'submittedAt']);
+    expect(Object.keys(p!).sort()).toEqual(['answers', 'friendId', 'rowSlug', 'slug', 'submissionId', 'submittedAt']);
   });
 
   test('改ざんした fr_id は verify で reject され friendId=null (誤タグ防止 / R-F4)', async () => {
@@ -198,6 +198,47 @@ describe('parseWebhookPayload — 署名 fr_id 復元 (T-A6 / 順方向)', () =>
     // data.slug が submission に勝ち、form は data.form.slug。root.slug は form-slug に採られない。
     expect(p!.submissionId).toBe('sub_leg');
     expect(p!.slug).toBe('form_leg');
+    expect(p!.rowSlug).toBeNull(); // submit_code 不在 = rowSlug capture しない (rows-list resolver に委ねる)
+  });
+
+  // ── 弾M (form-post-edit / T-A3): rowSlug additive capture ────────────────────
+  describe('T-A3: rowSlug additive capture (root.slug = ROW slug の real 形のみ)', () => {
+    test('real 形 (top-level form=form slug / slug=row slug) は rowSlug=root.slug を capture', async () => {
+      // 実 Formaloo serialization (live-confirm 2026-07-12): `form` は文字列 form slug・top-level `slug` は ROW slug。
+      const p = await parseWebhookPayload(
+        {
+          submit_code: 'ROW_9x',
+          form: 'FORM_SLUG',          // 文字列 form slug (formObj でない = data.form/root.form 経路)
+          slug: 'ROWSLUG_20CHARS',    // top-level = ROW slug (form slug と distinct)
+          data: { field_1: 'A' },
+        },
+        now,
+      );
+      expect(p!.submissionId).toBe('ROW_9x');       // submit_code = harness stored id
+      expect(p!.slug).toBe('FORM_SLUG');            // form 文字列 = form slug (台帳照合)
+      expect(p!.rowSlug).toBe('ROWSLUG_20CHARS');   // top-level slug = addressable ROW slug (edit 用)
+      expect(p!.answers).toEqual({ field_1: 'A' });
+    });
+
+    test('fallback 形 (top-level slug が form-slug に消費される) は rowSlug=null', async () => {
+      // form キー無し = slug は `submitCode ? root.slug` 経由で form-slug に採られる → row slug 不明 → null。
+      const p = await parseWebhookPayload(
+        { submit_code: 'ROW_10', slug: 'form_only', data: { field_a: 'x' } },
+        now,
+      );
+      expect(p!.submissionId).toBe('ROW_10');
+      expect(p!.slug).toBe('form_only');
+      expect(p!.rowSlug).toBeNull(); // root.slug === form slug ゆえ ROW slug として採らない (rows-list resolver 委譲)
+    });
+
+    test('既存 real-payload fixture (form キー無し) は rowSlug=null で回帰しない', async () => {
+      const p = await parseWebhookPayload(
+        { submit_code: 'ROW_ABC123', slug: 'form_xyz', data: { field_1: '田中' } },
+        now,
+      );
+      expect(p!.slug).toBe('form_xyz');
+      expect(p!.rowSlug).toBeNull();
+    });
   });
 
   test('alias は上書き可 (friendTokenAlias)', async () => {
