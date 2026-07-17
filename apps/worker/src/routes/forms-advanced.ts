@@ -74,6 +74,7 @@ import {
 } from '../services/formaloo-publish-gate.js';
 import { resolveFormalooClient } from '../services/formaloo-client.js';
 import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
+import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/form-image-upload.js';
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
 import { designColorFields, confirmDesignReflected, applyDesignImages } from '../services/formaloo-design.js';
 import { resolveRatingStarCustomCss } from '../services/formaloo-rating-css.js';
@@ -329,6 +330,12 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       if (!r.ok) return c.json({ success: false, error: `フィールド ${i + 1}: ${r.error}` }, 400);
       fields.push(r.field);
     }
+    // form-image-decoration: 差し込み画像の upload intent (dataUrl) を R2 host へ解決し imageUrl を確定する
+    //   (validateHarnessField 済 = dataUrl は 10MB/MIME 検証済)。imageUpload は D1/push に残さない (巨大 base64 非永続)。
+    //   upload 失敗は 400 で止める (owner に「置いたのに出ない」を出さない honest surface)。image 無フォームは no-op。
+    const imgOrigin = new URL(c.req.url).origin;
+    const imgResolved = await resolveInBodyImageUploads(fields, (dataUrl) => uploadImageDataUrlToR2(c.env, dataUrl, id, imgOrigin));
+    if (!imgResolved.ok) return c.json({ success: false, error: `画像のアップロードに失敗しました：${imgResolved.error}` }, 400);
     // logic は既存 field id を参照する rule だけ残す (孤立参照防止 / N-11)。
     // compound rule (additive actions[]) は flat target だけでなく **全アクション target** を idSet 照合し、
     // 存在 field を参照する compound は保持・dangling ref を作る rule のみ除去 (R-4/L-9/D-12)。
