@@ -14,6 +14,7 @@ import { describe, expect, test, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
+import { rateLimitMiddleware } from '../middleware/rate-limit.js';
 import { lp } from './lp.js';
 import {
   createLpPage,
@@ -440,6 +441,40 @@ describe('権限 gate + 認証境界 (T-A9 / D-3 / D-4)', () => {
     expect(res.headers.get('Content-Security-Policy')).toBeNull();
   });
 });
+
+describe('公開 /lp の rate-limit パリティ (D-6 / 既存 /images と同等)', () => {
+  function rlApp() {
+    const a = new Hono<Env>()
+    a.use('*', async (c, next) => { c.env = env(); await next() })
+    a.use('*', rateLimitMiddleware)
+    a.use('*', authMiddleware)
+    a.use('*', permissionMiddleware)
+    a.route('/', lp)
+    return a
+  }
+
+  test('/lp は skip されず IP キー UNAUTHENTICATED_MAX(100/min) で計数 = /images パリティ', async () => {
+    await seedLp('rl')
+    const app = rlApp()
+    const headers = { 'cf-connecting-ip': '203.0.113.9' } // 専用 IP でバケット隔離
+    for (let i = 0; i < 100; i++) {
+      const r = await app.request('/lp/rl', { headers })
+      expect(r.status).toBe(200)
+    }
+    // 101 発目 = 100/min 到達 → 429 (/lp が limiter を通っている = skip リスト非該当・/images と同じ IP バケット)
+    const over = await app.request('/lp/rl', { headers })
+    expect(over.status).toBe(429)
+  })
+
+  test('通常ロード (index + asset 数件) は 429 にならない', async () => {
+    await seedLp('rl2', { assets: { 'a.css': { body: 'x', type: 'text/css' }, 'b.js': { body: 'y', type: 'text/javascript' } } })
+    const app = rlApp()
+    const headers = { 'cf-connecting-ip': '203.0.113.10' }
+    expect((await app.request('/lp/rl2', { headers })).status).toBe(200)
+    expect((await app.request('/lp/rl2/a.css', { headers })).status).toBe(200)
+    expect((await app.request('/lp/rl2/b.js', { headers })).status).toBe(200)
+  })
+})
 
 describe('LP ピッカー API — 公開中 LP 一覧 (route-phase2 接続 / T-B1)', () => {
   test('GET /api/lp?status=active が公開中のみ {slug,title,url} を返す', async () => {
