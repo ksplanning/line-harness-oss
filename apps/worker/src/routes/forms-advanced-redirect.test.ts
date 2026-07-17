@@ -124,6 +124,8 @@ function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: bo
     if (method === 'PATCH' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
       const b = (body ?? {}) as Record<string, unknown>;
       if (REDIRECT_KEY in b && !opts.softIgnore) state[REDIRECT_KEY] = b[REDIRECT_KEY];
+      // CX-10: formCopy キー (success_message 等) は round-trip 反映 (design/copy が pass する土台)。
+      for (const k of ['success_message', 'button_text', 'error_message']) if (k in b) state[k] = b[k];
       return new Response(JSON.stringify({ data: { form: body } }), { status: 200 });
     }
     return new Response(JSON.stringify({ data: {} }), { status: 200 });
@@ -245,5 +247,36 @@ describe('PUT /api/forms-advanced/:id — route-terminal-phase2 redirect (Track 
     await call('PUT', '/api/forms-advanced/r8', { fields: [], logic: [] });
     expect(rawDefinitionOf('r8')).toBe(before);
     expect('formRedirect' in definitionOf('r8')).toBe(false);
+  });
+
+  test('CX-10 all-key: design+formCopy+redirect を同一 save → 1 つの meta PATCH body に 3 系統の key が全て載る', async () => {
+    seedForm('rx1', 'SLUGRX1');
+    const calls = stubFormaloo();
+    const res = await call('PUT', '/api/forms-advanced/rx1', {
+      fields: [], logic: [],
+      design: { buttonColor: '#00ff00' },
+      formCopy: { successMessage: 'ありがとう' },
+      formRedirect: { url: 'https://example.com/lp' },
+    });
+    expect(res.status).toBe(200);
+    // redirect を運ぶ meta PATCH に copy + design の key も同居する (byte-disjoint 合流・後発が先発を消さない)。
+    const patch = redirectPatch(calls)?.body as Record<string, unknown>;
+    expect(patch.form_redirects_after_submit).toBe('https://example.com/lp');
+    expect(patch.success_message).toBe('ありがとう');
+    expect(Object.keys(patch).some((k) => /color/i.test(k))).toBe(true); // design 色 key 同居
+  });
+
+  test('CX-10 集約: copy は反映されるが redirect が soft-200 → out_of_sync (後発 redirect 失敗が copy 成功に隠れない)', async () => {
+    seedForm('rx2', 'SLUGRX2');
+    stubFormaloo({ softIgnore: true }); // redirect PATCH を無視 (copy は round-trip される)
+    const res = await call('PUT', '/api/forms-advanced/rx2', {
+      fields: [], logic: [],
+      formCopy: { successMessage: 'ありがとう' }, // 反映される (idle-worthy)
+      formRedirect: { url: 'https://example.com/lp' }, // 反映されない → out_of_sync
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string; syncError: string | null } }).data;
+    expect(data.syncStatus).toBe('out_of_sync');
+    expect(data.syncError).toEqual(expect.any(String));
   });
 });

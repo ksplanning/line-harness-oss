@@ -88,6 +88,9 @@ function readDef(id: string): Record<string, unknown> {
   const row = raw.prepare(`SELECT definition_json FROM formaloo_forms WHERE id=?`).get(id) as { definition_json: string };
   return JSON.parse(row.definition_json);
 }
+function rawDef(id: string): string {
+  return (raw.prepare(`SELECT definition_json FROM formaloo_forms WHERE id=?`).get(id) as { definition_json: string }).definition_json;
+}
 function formRow(id: string): { deleted: number } {
   return raw.prepare(`SELECT deleted FROM formaloo_forms WHERE id=?`).get(id) as { deleted: number };
 }
@@ -264,6 +267,19 @@ describe('T-E4 — form 削除で紐づく SP を明示 DELETE (孤児回収)', 
     expect(formRow('d2').deleted).toBe(1);
   });
 
+  test('D-1 後方互換: successPages 未提供 save は definition_json に successPages キー不在・byte 一致', async () => {
+    seedForm('bc1', 'SLUG');
+    stubFormaloo();
+    await call('PUT', '/api/forms-advanced/bc1', { fields: [NAME], logic: [] });
+    const before = rawDef('bc1');
+    const res = await call('PUT', '/api/forms-advanced/bc1', { fields: [NAME], logic: [] });
+    expect(res.status).toBe(200);
+    expect(rawDef('bc1')).toBe(before); // 生バイト一致
+    expect('successPages' in readDef('bc1')).toBe(false);
+  });
+});
+
+describe('T-E4 form 削除 — 追加', () => {
   test('一部 SP DELETE が失敗しても form 削除はブロックされない (fail-soft・残余は log)', async () => {
     seedForm('d3', 'SLUG', JSON.stringify({ fields: [NAME], logic: [], successPages: [{ id: 'sp1', slug: 'SP_BAD', title: 'A' }] }));
     // SP_BAD の DELETE を 500 にする stub。
