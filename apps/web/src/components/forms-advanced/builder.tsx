@@ -24,8 +24,8 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy } from '@line-crm/shared'
-import { computeRouteTerminalWarnings } from '@line-crm/shared'
+import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect } from '@line-crm/shared'
+import { computeRouteTerminalWarnings, validateRedirectUrl } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
   FIELD_CATEGORIES,
@@ -81,13 +81,15 @@ export interface BuilderProps {
   initialFormType?: FormDisplayType
   /** form-jp-localization: 初期の公開ページ文言 (送信ボタン/完了/送信エラー)。未設定は空 = 既定英語表示。 */
   initialFormCopy?: FormCopy
+  /** route-terminal-phase2: 初期の送信後リダイレクト設定 (url + 外部ブラウザ)。未設定は空 = redirect なし。 */
+  initialFormRedirect?: FormRedirect
   /** form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。未設定は 0 (=編集不可=現状挙動)。弾S は inert。 */
   initialAllowPostEdit?: number
   /** form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。 */
   initialAllowEditMail?: number
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
@@ -773,6 +775,24 @@ export default function FormBuilder(props: BuilderProps) {
     setFormCopy((c) => ({ ...c, [key]: value }))
     setFormCopyTouched(true)
   }
+  // route-terminal-phase2 (Track 1): 送信後リダイレクト設定 (url + 外部ブラウザ)。触ったときだけ onSave に載せる
+  //   (formRedirectTouched)。初期未編集は送らない = 既存フォーム不干渉 (absent)。空 url + touched = clear 意図
+  //   (route が form_redirects_after_submit:null で解除)。include-data toggle は MVP 非露出 (CI-1)。
+  const [formRedirect, setFormRedirect] = useState<{ url: string; openExternalBrowser: boolean }>({
+    url: props.initialFormRedirect?.url ?? '',
+    openExternalBrowser: props.initialFormRedirect?.openExternalBrowser ?? false,
+  })
+  const [formRedirectTouched, setFormRedirectTouched] = useState(false)
+  const updateFormRedirect = (patch: Partial<{ url: string; openExternalBrowser: boolean }>) => {
+    setFormRedirect((r) => ({ ...r, ...patch }))
+    setFormRedirectTouched(true)
+  }
+  // inline 検証 (worker authoritative gate と同じ validateRedirectUrl を UX 面で先出し)。空欄は解除意図でエラーにしない。
+  const redirectUrlTrimmed = formRedirect.url.trim()
+  const redirectValidation = redirectUrlTrimmed
+    ? validateRedirectUrl(redirectUrlTrimmed, { openExternalBrowser: formRedirect.openExternalBrowser })
+    : null
+  const redirectUrlError = redirectValidation && !redirectValidation.ok ? redirectValidation.error : null
   const [saveWarnings, setSaveWarnings] = useState<string[]>([])
   // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。弾S は inert (保存のみ・実効化は弾M)。
   const [allowPostEdit, setAllowPostEdit] = useState<number>(props.initialAllowPostEdit ?? 0)
@@ -878,12 +898,14 @@ export default function FormBuilder(props: BuilderProps) {
 
   const handleSave = async () => {
     if (!title.trim()) return
+    // route-terminal-phase2 (T-C1): 危険/不正な redirect URL は保存を阻む (inline error を先に直させる)。
+    if (redirectUrlError) return
     setSaving(true)
     try {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
       // form-jp-localization: 文言を触ったときだけ完全 object で載せる (初期未編集は absent = 既存不干渉)。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), allowPostEdit, allowEditMail })
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), allowPostEdit, allowEditMail })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
@@ -1089,6 +1111,43 @@ export default function FormBuilder(props: BuilderProps) {
         {/* AC-6 制約注記: ①文字数オーバー/必須 等は Formaloo 側固定で変更不可 (できない事をできる風に見せない)。 */}
         <p className="mt-2 text-[10px] text-gray-400 leading-snug" data-testid="form-copy-constraint-note">
           ※ 文字数オーバー時のエラー（例: the answer should be less than 10 characters）や「必須です」等の入力チェック文言・入力欄の案内文は、Formaloo 側で固定のため変更できません。日本語にできるのは上の 3 つ（送信ボタン／完了メッセージ／送信エラー）です。
+        </p>
+      </div>
+
+      {/* route-terminal-phase2 (Track 1): 送信後の飛び先 URL + LINE内/外部ブラウザ選択。
+          未入力は現行の完了メッセージ挙動のまま (後方互換)。危険 URL (https 以外) は inline error で保存を阻む。
+          include-data toggle は MVP 非露出 (CI-1)。 */}
+      <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="form-redirect-section">
+        <div className="text-xs font-medium text-gray-600 mb-1">送信後の飛び先（リダイレクト）</div>
+        <div className="flex flex-col gap-2">
+          <label className="block text-[11px] text-gray-500">
+            送信後の飛び先 URL
+            <input
+              aria-label="送信後の飛び先 URL"
+              value={formRedirect.url}
+              onChange={(e) => updateFormRedirect({ url: e.target.value })}
+              placeholder="https://example.com/lp（未入力なら完了メッセージのまま）"
+              className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+            />
+          </label>
+          <label className="block text-[11px] text-gray-500">
+            開き方
+            <select
+              aria-label="飛び先の開き方"
+              value={formRedirect.openExternalBrowser ? 'external' : 'line'}
+              onChange={(e) => updateFormRedirect({ openExternalBrowser: e.target.value === 'external' })}
+              className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+            >
+              <option value="line">LINE内のブラウザで開く</option>
+              <option value="external">外部ブラウザで開く</option>
+            </select>
+          </label>
+        </div>
+        {redirectUrlError && (
+          <p data-testid="redirect-url-error" role="alert" className="mt-1 text-[11px] text-red-600">{redirectUrlError}</p>
+        )}
+        <p className="mt-2 text-[10px] text-gray-400 leading-snug" data-testid="form-redirect-note">
+          ※ https:// で始まる URL のみ設定できます。空欄にすると飛び先を解除し、完了メッセージ表示に戻します。「外部ブラウザで開く」の LINE 実機動作は端末でご確認ください（LINE クライアント依存）。
         </p>
       </div>
 
