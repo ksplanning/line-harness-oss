@@ -208,7 +208,7 @@ async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<void> {
 
 // POST /api/lp — LP を登録 (slug + title)。公開 URL を返す。
 lp.post('/api/lp', async (c) => {
-  const body = await c.req.json<{ slug?: string; title?: string }>().catch(() => ({}));
+  const body = await c.req.json<{ slug?: string; title?: string }>().catch(() => ({}) as { slug?: string; title?: string });
   const slug = (body.slug ?? '').trim().toLowerCase();
   const title = (body.title ?? '').trim();
   if (!isValidLpSlug(slug)) {
@@ -267,7 +267,7 @@ lp.get('/api/lp/:slug/views', async (c) => {
 // PATCH /api/lp/:slug — 公開停止/再開 (status flip が serve を制御 / T-A5)。
 lp.patch('/api/lp/:slug', async (c) => {
   const slug = c.req.param('slug');
-  const body = await c.req.json<{ status?: string }>().catch(() => ({}));
+  const body = await c.req.json<{ status?: string }>().catch(() => ({}) as { status?: string });
   const page = await getLpPageBySlug(c.env.DB, slug);
   if (!page) return c.json({ success: false, error: '見つかりません' }, 404);
   if (body.status !== 'active' && body.status !== 'stopped') {
@@ -301,10 +301,16 @@ lp.post('/api/lp/:slug/files', async (c) => {
   } catch {
     return c.json({ success: false, error: 'multipart form-data が必要です' }, 400);
   }
-  const file = form.get('file');
-  if (!(file instanceof File)) return c.json({ success: false, error: 'file フィールドが必要です' }, 400);
+  // Workers 型では FormData.get() が File を union に含まないため unknown で受けて narrow する
+  // (runtime のアップロードは File = Blob サブクラスで name/arrayBuffer を持つ)。string/null は reject。
+  const entry: unknown = form.get('file');
+  if (!entry || typeof entry === 'string') {
+    return c.json({ success: false, error: 'file フィールドが必要です' }, 400);
+  }
+  const file = entry as { name: string; arrayBuffer(): Promise<ArrayBuffer> };
 
-  const relPath = (typeof form.get('path') === 'string' ? (form.get('path') as string) : '') || file.name;
+  const pathField = form.get('path');
+  const relPath = (typeof pathField === 'string' && pathField ? pathField : '') || file.name;
   const key = safeAssetKey(slug, relPath);
   if (!key) return c.json({ success: false, error: '不正なファイル名 (traversal 不可)' }, 400);
 
