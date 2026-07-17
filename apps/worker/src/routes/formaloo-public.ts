@@ -83,7 +83,8 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
   const form = await getFormalooFormBySlug(c.env.DB, parsed.slug);
   if (!form) return c.json({ success: true });
 
-  // 6) 冪等 upsert (N-3 / 順序非依存)
+  // 6) 冪等 upsert (N-3 / 順序非依存)。弾M (T-A4): rowSlug を additive で渡す (COALESCE 保持 = 再送で
+  //    null が既存 row_slug を落とさない)。既存の submissionId/friendId/answers/verified 経路は byte 不変。
   await upsertFormalooSubmission(c.env.DB, {
     id: parsed.submissionId,
     formId: form.id,
@@ -92,6 +93,7 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
     answersJson: JSON.stringify(parsed.answers),
     submittedAt: parsed.submittedAt,
     verified,
+    rowSlug: parsed.rowSlug,
   });
 
   // 7) LINE 後処理 (T-C3): published + verified のときだけ、claim 成功で 1 回だけ発火 (N-7・N-3)。

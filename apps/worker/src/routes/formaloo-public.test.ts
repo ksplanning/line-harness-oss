@@ -277,6 +277,38 @@ function openedFormMatches(cond: SegmentCondition): string[] {
   return rows.map((r) => r.id);
 }
 
+// 弾M (form-post-edit / T-A4): webhook upsert が rowSlug を渡す (回帰 0)。
+function rowSlugOf(subId: string): string | null {
+  return (raw.prepare(`SELECT formaloo_row_slug AS v FROM formaloo_submissions WHERE id=?`).get(subId) as { v: string | null } | undefined)?.v ?? null;
+}
+/** real payload 形 (top-level submit_code=row id / form=文字列 form slug / slug=ROW slug)。 */
+function realPayloadFor(submitCode: string, formSlug: string, rowSlug: string, friendId: string | null = 'fr_1') {
+  const data: Record<string, unknown> = { q1: '田中' };
+  if (friendId) data.friend_id = friendId;
+  return { submit_code: submitCode, form: formSlug, slug: rowSlug, data, created_at: '2026-07-10T08:59:00+09:00' };
+}
+
+describe('T-A4 webhook upsert が rowSlug を渡す (弾M / 回帰 0)', () => {
+  test('real 形 webhook → formaloo_row_slug が row slug で保存される', async () => {
+    seedFriend('fr_1');
+    seedForm('fa1', 'form_abc', 'published', null);
+    const res = await postWebhook(TOKEN, realPayloadFor('ROW_1', 'form_abc', 'ROWSLUG_1', 'fr_1'), { sign: true });
+    expect(res.status).toBe(200);
+    const s = sub('ROW_1')!;
+    expect(s.form_id).toBe('fa1'); // form slug (form 文字列) で台帳照合 = 回帰なし
+    expect(rowSlugOf('ROW_1')).toBe('ROWSLUG_1');
+  });
+
+  test('legacy 形 webhook → formaloo_row_slug は NULL (回帰: 既存フローに row slug 無し)', async () => {
+    seedFriend('fr_1');
+    seedForm('fa1', 'form_abc', 'published', null);
+    const res = await postWebhook(TOKEN, payloadFor('sub_leg', 'form_abc', 'fr_1'), { sign: true });
+    expect(res.status).toBe(200);
+    expect(sub('sub_leg')!.form_id).toBe('fa1');
+    expect(rowSlugOf('sub_leg')).toBeNull();
+  });
+});
+
 describe('T-C2 開封リダイレクト /fo/:id (G11 / 認証除外)', () => {
   test('published + ?f= → form_opens INSERT + 302 で Formaloo address へ (Authorization 不要)', async () => {
     seedFriend('fr_1');
