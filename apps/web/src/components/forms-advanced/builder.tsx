@@ -24,7 +24,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect } from '@line-crm/shared'
+import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect, SuccessPageSpec } from '@line-crm/shared'
 import { computeRouteTerminalWarnings, validateRedirectUrl } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
@@ -83,18 +83,20 @@ export interface BuilderProps {
   initialFormCopy?: FormCopy
   /** route-terminal-phase2: 初期の送信後リダイレクト設定 (url + 外部ブラウザ)。未設定は空 = redirect なし。 */
   initialFormRedirect?: FormRedirect
+  /** route-terminal-phase2 (Track 2): 初期のルート別完了ページ (割当 slug 込み)。未設定は空 = SP なし。 */
+  initialSuccessPages?: SuccessPageSpec[]
   /** form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。未設定は 0 (=編集不可=現状挙動)。弾S は inert。 */
   initialAllowPostEdit?: number
   /** form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。 */
   initialAllowEditMail?: number
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
-  /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。design/formType も復元 (F2)。 */
-  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null; design?: FormDesign; formType?: FormDisplayType } | null>
+  /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。design/formType/successPages も復元 (F2)。 */
+  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null; design?: FormDesign; formType?: FormDisplayType; successPages?: SuccessPageSpec[] } | null>
   publicUrl?: string | null
   embedCode?: string | null
   syncStatus?: string
@@ -353,6 +355,7 @@ function SettingsPanel({
   onLogicChange,
   formType,
   onEnsureMultiStep,
+  successPages = [],
 }: {
   field: HarnessField
   allFields: HarnessField[]
@@ -363,6 +366,8 @@ function SettingsPanel({
   formType?: FormDisplayType
   /** jump アクション選択時に simple なら multi_step へ自動切替 (可視通知) させる親コールバック。 */
   onEnsureMultiStep?: () => void
+  /** route-terminal-phase2 (Track 2 / T-F1): submit rule の per-route 完了ページ候補 (successPages)。 */
+  successPages?: SuccessPageSpec[]
 }) {
   const cfg = field.config
   const set = (patch: Partial<HarnessField>) => onChange({ ...field, ...patch })
@@ -675,9 +680,16 @@ function SettingsPanel({
                 <div className="flex flex-wrap items-center gap-1">
                   <span>この項目に回答したら</span>
                   {actionSelect}
-                  {/* Phase1: 完了ページは既定固定 (target 空)。Phase2 で success-page 候補を露出。 */}
-                  <select aria-label="送信先の完了ページ" value="" disabled className="border border-gray-300 rounded px-1 bg-gray-50 text-gray-500">
+                  {/* route-terminal-phase2 (T-F1): per-route 完了ページ選択。successPages 候補を露出し、
+                      submit rule の targetFieldId を SP id に設定 (未選択='' = 既定完了ページ)。 */}
+                  <select
+                    aria-label="送信先の完了ページ"
+                    value={successPages.some((sp) => sp.id === rule.targetFieldId) ? rule.targetFieldId : ''}
+                    onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, targetFieldId: e.target.value } : r)))}
+                    className="border border-gray-300 rounded px-1"
+                  >
                     <option value="">（既定の完了ページ）</option>
+                    {successPages.map((sp) => <option key={sp.id} value={sp.id}>{sp.title || '完了ページ'}</option>)}
                   </select>
                   {deleteBtn}
                 </div>
@@ -793,6 +805,26 @@ export default function FormBuilder(props: BuilderProps) {
     ? validateRedirectUrl(redirectUrlTrimmed, { openExternalBrowser: formRedirect.openExternalBrowser })
     : null
   const redirectUrlError = redirectValidation && !redirectValidation.ok ? redirectValidation.error : null
+  // route-terminal-phase2 (Track 2): ルート別完了ページ (success-page)。触ったときだけ onSave に載せる
+  //   (successPagesTouched)。初期未編集は送らない = 既存フォーム不干渉 (absent)。submit rule の SP 選択と連動。
+  const [successPages, setSuccessPages] = useState<SuccessPageSpec[]>(props.initialSuccessPages ?? [])
+  const [successPagesTouched, setSuccessPagesTouched] = useState(false)
+  const mutateSuccessPages = (next: SuccessPageSpec[]) => {
+    setSuccessPages(next)
+    setSuccessPagesTouched(true)
+  }
+  const addSuccessPage = () => {
+    const id = `sp_${(crypto.randomUUID?.() ?? String(Math.random())).slice(0, 8)}`
+    mutateSuccessPages([...successPages, { id, title: '完了ページ' }])
+  }
+  const updateSuccessPage = (id: string, patch: Partial<Pick<SuccessPageSpec, 'title' | 'description'>>) => {
+    mutateSuccessPages(successPages.map((sp) => (sp.id === id ? { ...sp, ...patch } : sp)))
+  }
+  const removeSuccessPage = (id: string) => {
+    mutateSuccessPages(successPages.filter((sp) => sp.id !== id))
+    // 削除 SP を参照していた submit rule は既定完了ページ ('') へ戻す (dangling 参照を作らない = CI-2 と整合)。
+    setLogic((cur) => cur.map((r) => (r.action === 'submit' && r.targetFieldId === id ? { ...r, targetFieldId: '' } : r)))
+  }
   const [saveWarnings, setSaveWarnings] = useState<string[]>([])
   // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。弾S は inert (保存のみ・実効化は弾M)。
   const [allowPostEdit, setAllowPostEdit] = useState<number>(props.initialAllowPostEdit ?? 0)
@@ -905,7 +937,7 @@ export default function FormBuilder(props: BuilderProps) {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
       // form-jp-localization: 文言を触ったときだけ完全 object で載せる (初期未編集は absent = 既存不干渉)。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), allowPostEdit, allowEditMail })
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), allowPostEdit, allowEditMail })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
@@ -943,6 +975,10 @@ export default function FormBuilder(props: BuilderProps) {
         //   初期 (空・未編集) にリセットし、未保存の文言編集を持ち越さない (reimport 契約と一貫)。
         setFormCopy({ buttonText: '', successMessage: '', errorMessage: '' })
         setFormCopyTouched(false)
+        // route-terminal-phase2 (T-E5): pull した完了ページ (success_page 分離抽出) を復元し未編集扱いに戻す
+        //   (design/formType と同型・reimport は未保存編集を破棄する契約と一貫)。
+        setSuccessPages(d.successPages ?? [])
+        setSuccessPagesTouched(false)
       }
     } finally {
       setReimporting(false)
@@ -1151,6 +1187,43 @@ export default function FormBuilder(props: BuilderProps) {
         </p>
       </div>
 
+      {/* route-terminal-phase2 (Track 2 / T-F1): ルート別完了ページ (success-page) の作成/命名/編集。
+          ABC 分岐の「ここで送信」で per-route に選択する (項目設定内)。本文は書式なし (リンク不可 = M5)。 */}
+      <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="success-page-section">
+        <div className="text-xs font-medium text-gray-600 mb-1">ルート別の完了ページ</div>
+        <div className="flex flex-col gap-2">
+          {successPages.length === 0 && (
+            <p className="text-[11px] text-gray-400">まだありません。「＋ 完了ページを追加」で作成し、各分岐の「ここで送信」で選びます。</p>
+          )}
+          {successPages.map((sp) => (
+            <div key={sp.id} className="rounded border border-gray-200 bg-white px-2 py-1.5" data-testid="success-page-item">
+              <div className="flex items-center gap-1">
+                <input
+                  aria-label="完了ページの見出し"
+                  value={sp.title}
+                  onChange={(e) => updateSuccessPage(sp.id, { title: e.target.value })}
+                  placeholder="完了ページの見出し"
+                  className="flex-1 rounded border border-gray-300 px-2 py-1 text-sm"
+                />
+                <button type="button" aria-label="完了ページを削除" onClick={() => removeSuccessPage(sp.id)} className="px-1 text-gray-400 hover:text-red-600">✕</button>
+              </div>
+              <textarea
+                aria-label="完了ページの説明"
+                value={sp.description ?? ''}
+                onChange={(e) => updateSuccessPage(sp.id, { description: e.target.value })}
+                placeholder="完了ページに表示する本文（書式なし）"
+                rows={2}
+                className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm"
+              />
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={addSuccessPage} className="mt-2 text-xs" style={{ color: LINE_GREEN }}>＋ 完了ページを追加</button>
+        <p className="mt-2 text-[10px] text-gray-400 leading-snug" data-testid="success-page-note">
+          ※ 完了ページの説明は書式なし（リンクや自動遷移は使えません）。外部の LP へ飛ばしたい場合は上の「送信後の飛び先」を使ってください。ルートごとの出し分けは各項目の「ここで送信」で完了ページを選びます。
+        </p>
+      </div>
+
       {/* ① 今すぐ同期リカバリ: sync_status=out_of_sync のとき、原因 (syncError) + 再送ヘルプ + 「今すぐ同期」を
           目立つ位置に出す。ボタンは既存の保存/push 経路 (handleSave) を再実行するだけ (新経路を作らず状態機械を壊さない)。 */}
       {props.syncStatus === 'out_of_sync' && (
@@ -1283,7 +1356,7 @@ export default function FormBuilder(props: BuilderProps) {
             <div className="md:w-64 md:shrink-0" data-testid="settings">
               <div className="text-xs font-bold text-gray-500 mb-2">項目の設定</div>
               {selected ? (
-                <SettingsPanel field={selected} allFields={fields} logic={logic} onChange={updateField} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} />
+                <SettingsPanel field={selected} allFields={fields} logic={logic} onChange={updateField} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} successPages={successPages} />
               ) : (
                 <div className="text-xs text-gray-400">項目を選ぶと設定が表示されます</div>
               )}
