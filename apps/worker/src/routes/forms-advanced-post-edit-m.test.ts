@@ -144,12 +144,16 @@ function stubFormaloo(rowStore: Record<string, Record<string, unknown>>, opts: {
       if (status < 300 && !opts.softFail) {
         rowStore[slug] = { ...(rowStore[slug] ?? {}), ...(body as Record<string, unknown>) };
       }
-      return new Response(JSON.stringify({ data: rowStore[slug] ?? {} }), { status });
+      const rowData = rowStore[slug] ?? {};
+      return new Response(JSON.stringify({ data: { row: { data: rowData, readable_data: rowData, rendered_data: [] } } }), { status });
     }
-    // row GET (persist 確認)
+    // row GET (persist 確認): 実 Formaloo GET /v3.0/rows/{slug}/ = { data: { row: { data: <flat slug map>, ... } } }
+    //   (closer live smoke 実測)。route は data.row.data を読む。旧 stub は { data: <flat> } と 1 階層浅く実 API と乖離
+    //   していたため persist 確認バグ (常に「保存できませんでした」) を検出できなかった (再発防止 pin)。
     if (method === 'GET' && patchMatch) {
       const slug = patchMatch[1];
-      return new Response(JSON.stringify({ data: rowStore[slug] ?? {} }), { status: 200 });
+      const rowData = rowStore[slug] ?? {};
+      return new Response(JSON.stringify({ data: { row: { data: rowData, readable_data: rowData, rendered_data: [] } } }), { status: 200 });
     }
     return new Response(JSON.stringify({ data: {} }), { status: 200 });
   }));
