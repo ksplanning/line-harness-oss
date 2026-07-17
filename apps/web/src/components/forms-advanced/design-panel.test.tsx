@@ -80,7 +80,7 @@ describe('DesignPanel — 画像 (ロゴ / カバー)', () => {
   it('許可外 mime (svg) は無視する', () => {
     const { onImagesChange } = setup()
     const file = new File([new Uint8Array([1])], 'x.svg', { type: 'image/svg+xml' })
-    fireEvent.change(screen.getByLabelText('カバー画像（ヘッダー背景）を選ぶ'), { target: { files: [file] } })
+    fireEvent.change(screen.getByLabelText('背景画像（全面）を選ぶ'), { target: { files: [file] } })
     expect(onImagesChange).not.toHaveBeenCalled()
   })
 
