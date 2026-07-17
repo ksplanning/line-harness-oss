@@ -546,7 +546,8 @@ export interface UpsertFormalooSubmissionInput {
   submittedAt: string;
   verified?: boolean;
   // migration 100 (form-post-edit 弾M): webhook root.slug 由来の row_slug。未取得 (legacy/fallback 形) は null。
-  //   COALESCE 保持 = 再送で null が来ても既存 row_slug を落とさない (forward-only)。
+  //   **write-once + null backfill**: 既存が非 null なら再送の異なる非 null でも上書きしない
+  //   (COALESCE(existing, excluded))。row_slug は Formaloo 側で不変ゆえ最初に capture した値を正とする。
   rowSlug?: string | null;
 }
 
@@ -571,7 +572,7 @@ export async function upsertFormalooSubmission(
          submitted_at      = excluded.submitted_at,
          synced_at         = excluded.synced_at,
          verified          = MAX(formaloo_submissions.verified, excluded.verified),
-         formaloo_row_slug = COALESCE(excluded.formaloo_row_slug, formaloo_submissions.formaloo_row_slug)`,
+         formaloo_row_slug = COALESCE(formaloo_submissions.formaloo_row_slug, excluded.formaloo_row_slug)`,
     )
     .bind(input.id, input.formId, input.formalooSlug ?? null, input.friendId ?? null, input.answersJson, input.submittedAt, now, v, input.rowSlug ?? null)
     .run();
@@ -610,8 +611,10 @@ export async function getFormalooSubmission(db: D1Database, id: string): Promise
 
 /**
  * ②本人再入場 prefill 用: 当該 friend の**最新** row を 1 件返す (取り違え防止の要)。
- * friend_id **完全一致** WHERE + form scope に閉じ、submitted_at DESC で最新。**別 friend の row を絶対に返さない**。
- * 呼び出し側は解決済 friendId のみ渡すこと (friend 未解決時は本関数を呼ばない = prefill 無し)。
+ * friend_id **完全一致** WHERE + form scope に閉じ、最新 row を返す。**別 friend の row を絶対に返さない**。
+ * 最新判定 (F-I5): submitted_at は ISO-8601 TEXT で tz offset 混在時 (Z vs +09:00) に lexical DESC が非時系列に
+ *   なる → `julianday(submitted_at)` で UTC 正規化してから DESC。同一 instant は rowid DESC (後挿入=新) で tie-break。
+ *   julianday が NULL (壊れた timestamp) の行は最後に落ち、rowid で決まる (fail-safe)。
  */
 export async function getFriendLatestSubmission(
   db: D1Database,
@@ -619,7 +622,9 @@ export async function getFriendLatestSubmission(
   friendId: string,
 ): Promise<FormalooSubmissionRow | null> {
   return db
-    .prepare('SELECT * FROM formaloo_submissions WHERE form_id = ? AND friend_id = ? ORDER BY submitted_at DESC LIMIT 1')
+    .prepare(
+      'SELECT * FROM formaloo_submissions WHERE form_id = ? AND friend_id = ? ORDER BY julianday(submitted_at) DESC, rowid DESC LIMIT 1',
+    )
     .bind(formId, friendId)
     .first<FormalooSubmissionRow>();
 }

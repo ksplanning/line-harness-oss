@@ -76,6 +76,21 @@ describe('form-post-edit — upsert rowSlug COALESCE 保持 (T-A2)', () => {
     const row = await getFormalooSubmission(DB, 's3');
     expect(row?.formaloo_row_slug).toBeNull();
   });
+
+  test('F-H2: 既存が非 null なら再送の異なる非 null でも上書きしない (write-once)', async () => {
+    await upsertFormalooSubmission(DB, { id: 's4', formId: 'f1', answersJson: '{}', submittedAt: '2026-07-17T00:00:00+09:00', rowSlug: 'ORIGINAL' });
+    // 同 submission id の再送が異なる非 null rowSlug を持っても既存 mapping を守る (row_slug は Formaloo 側不変)。
+    await upsertFormalooSubmission(DB, { id: 's4', formId: 'f1', answersJson: '{"x":1}', submittedAt: '2026-07-17T01:00:00+09:00', rowSlug: 'DIFFERENT' });
+    const row = await getFormalooSubmission(DB, 's4');
+    expect(row?.formaloo_row_slug).toBe('ORIGINAL'); // 上書きされない
+    expect(row?.answers_json).toBe('{"x":1}');        // 他フィールドは更新される
+  });
+
+  test('F-H2: NULL の legacy row は再送の非 null で backfill される (null→値は許可)', async () => {
+    await upsertFormalooSubmission(DB, { id: 's5', formId: 'f1', answersJson: '{}', submittedAt: '2026-07-17T00:00:00+09:00' }); // row_slug NULL
+    await upsertFormalooSubmission(DB, { id: 's5', formId: 'f1', answersJson: '{}', submittedAt: '2026-07-17T01:00:00+09:00', rowSlug: 'BACKFILLED' });
+    expect((await getFormalooSubmission(DB, 's5'))?.formaloo_row_slug).toBe('BACKFILLED');
+  });
 });
 
 describe('form-post-edit — getFriendLatestSubmission friend 厳密 (T-A2 / 取り違え防止)', () => {
@@ -101,6 +116,23 @@ describe('form-post-edit — getFriendLatestSubmission friend 厳密 (T-A2 / 取
   test('該当 friend の row が無ければ null', async () => {
     const latest = await getFriendLatestSubmission(DB, 'f1', 'ghost');
     expect(latest).toBeNull();
+  });
+
+  test('F-I5: tz offset 混在でも時系列で最新を返す (lexical 順の罠を避ける)', async () => {
+    // 実 instant: r_old=2026-07-16T20:00:00Z / r_new=2026-07-16T21:00:00Z (r_new が 1h 後 = 真の最新)。
+    // だが r_new の TEXT '2026-07-16T21:00:00Z' は r_old の '2026-07-17T05:00:00+09:00' より lexical に小さい
+    //   ('16'<'17') → 旧 lexical DESC は r_old を誤って最新に採る。julianday 正規化は r_new を正しく採る。
+    await upsertFormalooSubmission(DB, { id: 'r_old', formId: 'f1', friendId: 'frA', answersJson: '{"n":"OLD"}', submittedAt: '2026-07-17T05:00:00+09:00' });
+    await upsertFormalooSubmission(DB, { id: 'r_new', formId: 'f1', friendId: 'frA', answersJson: '{"n":"NEW"}', submittedAt: '2026-07-16T21:00:00Z' });
+    const latest = await getFriendLatestSubmission(DB, 'f1', 'frA');
+    expect(latest?.id).toBe('r_new'); // 真の最新 (21:00Z > 20:00Z)
+    expect(latest?.answers_json).toBe('{"n":"NEW"}');
+  });
+
+  test('F-I5: 同一 instant は後挿入 (rowid DESC) で tie-break', async () => {
+    await upsertFormalooSubmission(DB, { id: 't1', formId: 'f1', friendId: 'frB', answersJson: '{"n":"first"}', submittedAt: '2026-07-17T10:00:00+09:00' });
+    await upsertFormalooSubmission(DB, { id: 't2', formId: 'f1', friendId: 'frB', answersJson: '{"n":"second"}', submittedAt: '2026-07-17T10:00:00+09:00' });
+    expect((await getFriendLatestSubmission(DB, 'f1', 'frB'))?.id).toBe('t2');
   });
 });
 
