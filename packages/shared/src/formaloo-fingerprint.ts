@@ -49,6 +49,10 @@ export interface ProjectedField {
   max_size?: number;
   /** choice/dropdown/multiple_select の選択肢 title (position 昇順・その他行除外)。fromFormalooField 出力と同型。 */
   choices?: string[];
+  /** rating の sub_type (treasure-b1-palette)。既定 star は射影しない (既存 form の false-drift 回避 / 後方互換の要)。 */
+  subType?: string;
+  /** oembed(video) の埋め込み URL (treasure-b1-palette)。非空時のみ射影 (url 空/未載は false-drift 回避)。 */
+  videoUrl?: string;
 }
 
 export interface CanonicalDefinition {
@@ -62,6 +66,20 @@ function projectField(el: unknown): ProjectedField | null {
   if (typeof el !== 'object' || el === null) return null;
   const o = el as Record<string, unknown>;
   const formalooType = typeof o.type === 'string' ? o.type : '';
+  // treasure-b1-palette: oembed(video) は装飾ゆえ FORMALOO_TO_HARNESS_TYPE 逆引きに載らない → meta と異なり
+  //   fromFormalooField が oembed→video を保持するため fingerprint も explicit に射影する (drift 検知対象)。
+  //   url 非空時のみ videoUrl を載せる (url 空/未載の false-drift 回避 / max_size=2048 ガードと同型)。
+  if (formalooType === 'oembed') {
+    const proj: ProjectedField = {
+      slug: typeof o.slug === 'string' ? o.slug : '',
+      type: 'oembed',
+      title: typeof o.title === 'string' ? o.title : '',
+      required: false,
+      position: typeof o.position === 'number' ? o.position : 0,
+    };
+    if (typeof o.url === 'string' && o.url) proj.videoUrl = o.url;
+    return proj;
+  }
   const harnessType: HarnessFieldType | undefined = FORMALOO_TO_HARNESS_TYPE[formalooType];
   if (!harnessType) return null; // MVP subset 外 = harness に反映されない → 射影対象外
 
@@ -84,6 +102,8 @@ function projectField(el: unknown): ProjectedField | null {
   // form-media-limits ①: max_size を射影。既定 2048 は落とす (既存 file-field フォームの fingerprint byte 不変 =
   // cron 全件 false-drift 回避 / RK-1)。description 非空ガード (S-2) と同型の後方互換ガード。
   if (typeof o.max_size === 'number' && Number.isFinite(o.max_size) && o.max_size !== 2048) proj.max_size = o.max_size;
+  // treasure-b1-palette: rating の sub_type を射影。既定 star は落とす (star rating の false-drift 回避 = 後方互換ガード)。
+  if (harnessType === 'rating' && typeof o.sub_type === 'string' && o.sub_type !== 'star') proj.subType = o.sub_type;
   if (harnessType === 'choice' || harnessType === 'dropdown' || harnessType === 'multiple_select') {
     const rawItems = Array.isArray(o.choice_items) ? (o.choice_items as unknown[]) : [];
     proj.choices = rawItems
