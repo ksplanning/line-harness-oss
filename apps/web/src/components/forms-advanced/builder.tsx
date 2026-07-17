@@ -24,7 +24,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType } from '@line-crm/shared'
+import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType } from '@line-crm/shared'
 import { computeRouteTerminalWarnings } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
@@ -33,6 +33,8 @@ import {
   fieldTypeIcon,
   hasChoices,
   hasMaxLength,
+  hasRatingSubType,
+  RATING_SUB_TYPE_OPTIONS,
   isDecoration,
 } from './field-types'
 import FormPreview from './form-preview'
@@ -102,7 +104,7 @@ function newField(type: HarnessFieldType): HarnessField {
     label: fieldTypeLabel(type),
     required: false,
     position: 0,
-    config: hasChoices(type) ? { choices: ['選択肢1', '選択肢2'] } : type === 'section' ? { text: '' } : {},
+    config: hasChoices(type) ? { choices: ['選択肢1', '選択肢2'] } : type === 'section' ? { text: '' } : type === 'video' ? { videoUrl: '' } : {},
   }
 }
 
@@ -363,6 +365,22 @@ function SettingsPanel({
             <textarea aria-label="説明文" value={cfg.text ?? ''} onChange={(e) => setCfg({ text: e.target.value })} className="w-full border border-gray-300 rounded px-2 py-1" />
           </div>
         )}
+        {/* treasure-b1-palette: video(oembed) の埋め込み URL。空だと保存 hold (空 url oembed PATCH=500 回避)。 */}
+        {field.type === 'video' && (
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">動画URL</label>
+            <input
+              aria-label="動画URL"
+              value={cfg.videoUrl ?? ''}
+              onChange={(e) => setCfg({ videoUrl: e.target.value })}
+              placeholder="https://www.youtube.com/watch?v=..."
+              className="w-full border border-gray-300 rounded px-2 py-1"
+            />
+            <p className="mt-1 text-[10px] text-gray-400 leading-snug">
+              YouTube / Vimeo などの埋め込み対応 URL を入力してください。URL 未入力のままでは保存できません（対応外の URL は保存時にエラーになります）。
+            </p>
+          </div>
+        )}
       </div>
     )
   }
@@ -456,6 +474,24 @@ function SettingsPanel({
           className="w-full border border-gray-300 rounded px-2 py-1"
         />
       </div>
+
+      {/* treasure-b1-palette: rating の評価スタイル(sub_type)。星=既定は config.ratingSubType を未設定に写像(star drop)。 */}
+      {hasRatingSubType(field.type) && (
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">評価スタイル</label>
+          <select
+            aria-label="評価スタイル"
+            value={cfg.ratingSubType ?? 'star'}
+            onChange={(e) => {
+              const v = e.target.value as RatingSubType
+              setCfg({ ratingSubType: v === 'star' ? undefined : v })
+            }}
+            className="w-full border border-gray-300 rounded px-2 py-1"
+          >
+            {RATING_SUB_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+      )}
 
       {/* 最大文字数は一行テキストのみ (OD-2: Formaloo hosted が max_length を enforce する唯一の型)。
           複数行の最大文字数欄・全型の最小文字数欄は Formaloo 非対応の no-op ゆえ撤去 (OD-3)。
