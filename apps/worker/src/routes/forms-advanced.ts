@@ -153,6 +153,8 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     submitMessage: form.submit_message,
     // form-media-limits ③: 回答者後編集の許可フラグ (0|1)。builder 読込用。弾S では inert (実効化は弾M)。
     allowPostEdit: form.allow_post_edit,
+    // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。builder 読込用 (allow_post_edit=1 でのみ有効)。
+    allowEditMail: form.allow_edit_mail,
     fields: def.fields,
     logic: def.logic,
     // preserve-raw (Batch 1): 未編集判定用の fingerprint のみ露出 (builder が save で carry する)。
@@ -272,8 +274,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; allowPostEdit?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; allowPostEdit?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -287,6 +289,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const allowPostEdit = body.allowPostEdit === undefined
       ? undefined
       : (body.allowPostEdit === 1 || body.allowPostEdit === true || body.allowPostEdit === '1' ? 1 : 0);
+    // form-edit-mail-link (弾L): allowEditMail を 0|1 正規化 (present-key: 未指定は undefined = D1 値を変えない)。
+    //   Formaloo push には渡さない (harness 側 D1 保存のみ)。実効化は公開編集 route + Phase B のメール発火。
+    const allowEditMail = body.allowEditMail === undefined
+      ? undefined
+      : (body.allowEditMail === 1 || body.allowEditMail === true || body.allowEditMail === '1' ? 1 : 0);
     const rawFields = Array.isArray(body.fields) ? body.fields : [];
     const rawLogicRules = Array.isArray(body.logic) ? body.logic : [];
 
@@ -460,6 +467,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       description: newDescription,
       // form-media-limits ③: harness 側 D1 保存のみ (push しない)。present-key = 未指定は不変。
       allowPostEdit,
+      // form-edit-mail-link (弾L): 同上 harness 側 D1 保存のみ (Formaloo push しない)。present-key = 未指定は不変。
+      allowEditMail,
     });
 
     // ④ 保存時 re-bind: key 登録前に作られた孤立 form (workspace_id=NULL) は、保存のたびに active workspace が
