@@ -69,7 +69,7 @@ import {
 import { resolveFormalooClient } from '../services/formaloo-client.js';
 import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
-import { designColorFields, applyDesignImages } from '../services/formaloo-design.js';
+import { designColorFields, confirmDesignReflected, applyDesignImages } from '../services/formaloo-design.js';
 import { ownerGate } from '../lib/owner-gate.js';
 import type { Env } from '../index.js';
 
@@ -535,12 +535,14 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           description: newDescription,
         });
         const slug = pushed.formalooSlug ?? form.formaloo_slug;
-        // form-design (Batch D): 色は既存 meta PATCH に hex で合流 (update 意味論: design 未提供なら載せない)。
+        // form-design: 色は既存 meta PATCH に **JSON-string RGBA** で合流 (update 意味論: design 未提供なら載せない)。
+        //   partial update 破壊防止 (#9): incomingDesign でなく **merged designToPersist** を送り、単色変更でも
+        //   remote に残る 6 色が古い形式/欠落で残らないよう 7 色を原子送する。design 未提供は空 {} (design=null 不可触)。
         const metaRes = slug
           ? await client.request('PATCH', `/v3.0/forms/${slug}/`, {
               title: newTitle,
               description: newDescription ?? '',
-              ...(designProvided ? designColorFields(incomingDesign) : {}),
+              ...(designProvided ? designColorFields(designToPersist) : {}),
             })
           : { ok: false as const, status: 0 };
         // form-design 画像: meta 成功後に replace(multipart)/remove(JSON null) を反映し、確定 S3 URL を再永続。
@@ -567,6 +569,15 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
             description: newDescription,
           });
         }
+        // T-B2 soft-200 対策: meta PATCH は受理不能な色形式/存在しないキーを soft-200 で無言無視するため、
+        //   metaRes.ok だけを idle 根拠にすると「保存済に見えて hosted に出ない」殻完了を再発させる。
+        //   confirmed key の独立 GET-after-PATCH (bounded retry) で反映を確認し、不一致は out_of_sync に落とす
+        //   (applyDesignImages と同型の honest surface)。色を送らない経路 (design 未提供/色なし) は GET せず素通り。
+        let designReflectError: string | null = null;
+        if (metaRes.ok && slug && designProvided && designToPersist) {
+          const reflected = await confirmDesignReflected(client, slug, designToPersist);
+          if (!reflected.ok) designReflectError = reflected.error ?? '配色が公開ページに反映されませんでした';
+        }
         if (!metaRes.ok) {
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: 'フォーム情報の同期に失敗しました',
@@ -587,6 +598,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           //     (meta PATCH 失敗と同じ経路)。owner が「ロゴ設定済」と誤認しないための honest state。
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: imageSyncError,
+          });
+          syncSettled = true;
+        } else if (designReflectError) {
+          // T-B2: meta PATCH は 200 だが送った色が hosted に反映されなかった (soft-200 無言無視) → out_of_sync。
+          //   「保存されるが公開ページに配色が出ない」failure_observable を honest に surface する。
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync', lastError: designReflectError,
           });
           syncSettled = true;
         } else {

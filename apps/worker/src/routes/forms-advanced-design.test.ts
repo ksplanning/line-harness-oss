@@ -88,8 +88,26 @@ function definitionOf(id: string): Record<string, unknown> {
 
 interface ApiCall { method: string; url: string; body: unknown; multipartFields?: string[] }
 
-function stubFormaloo(opts: { getForm?: Record<string, unknown>; imageFails?: boolean } = {}) {
+/** spike 確定: hosted が描画する色形式 = JSON.stringify({r,g,b,a:1})。 */
+function jrgba(hex: string): string {
+  const h = hex.replace('#', '');
+  return JSON.stringify({ r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: 1 });
+}
+
+/**
+ * Formaloo API stub。色 PATCH は remote form state に round-trip 反映され、後続 GET (= confirmDesignReflected)
+ *   がそれを返す (実 Formaloo の GET-after-PATCH 挙動を模倣)。
+ *   - opts.softIgnore: 色 PATCH を soft-200 で無言無視 (state に merge しない = 反映されない地雷を再現)。
+ *   - opts.softIgnoreUntil: N 回目の confirm GET から反映される (bounded retry 収束を模倣)。
+ */
+function stubFormaloo(opts: {
+  getForm?: Record<string, unknown>; imageFails?: boolean;
+  softIgnore?: boolean; reflectAfterGet?: number;
+} = {}) {
   const calls: ApiCall[] = [];
+  const state: Record<string, unknown> = { fields_list: [], ...(opts.getForm ?? {}) };
+  let pendingColors: Record<string, unknown> | null = null;
+  let getCount = 0;
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -109,7 +127,12 @@ function stubFormaloo(opts: { getForm?: Record<string, unknown>; imageFails?: bo
       return new Response(JSON.stringify({ data: { form: { slug: 'CREATED' } } }), { status: 201 });
     }
     if (method === 'GET' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
-      return new Response(JSON.stringify({ data: { form: { fields_list: [], ...(opts.getForm ?? {}) } } }), { status: 200 });
+      getCount += 1;
+      // reflectAfterGet: N 回目以降の GET で pending 色を反映 (retry 収束模倣)。
+      if (pendingColors && opts.reflectAfterGet != null && getCount >= opts.reflectAfterGet) {
+        Object.assign(state, pendingColors); pendingColors = null;
+      }
+      return new Response(JSON.stringify({ data: { form: { ...state } } }), { status: 200 });
     }
     if (method === 'PATCH' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
       // multipart 画像 upload は S3 URL を返す (imageFails 指定時は 500)
@@ -119,6 +142,14 @@ function stubFormaloo(opts: { getForm?: Record<string, unknown>; imageFails?: bo
         if (multipartFields.includes('logo')) form.logo = 'https://s3/new-logo.png';
         if (multipartFields.includes('background_image')) form.background_image = 'https://s3/new-bg.png';
         return new Response(JSON.stringify({ data: { form } }), { status: 200 });
+      }
+      // 色キーを remote state に round-trip 反映 (soft-200 無視 / 遅延反映は opts で制御)。
+      const colors: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries((body ?? {}) as Record<string, unknown>)) if (/_color$/.test(k)) colors[k] = v;
+      if (Object.keys(colors).length) {
+        if (opts.softIgnore) { /* soft-200: 無言無視 = state に反映しない */ }
+        else if (opts.reflectAfterGet != null) pendingColors = { ...(pendingColors ?? {}), ...colors };
+        else Object.assign(state, colors);
       }
       return new Response(JSON.stringify({ data: { form: body } }), { status: 200 });
     }
@@ -133,7 +164,7 @@ beforeEach(() => { raw = new Database(':memory:'); replayAll(raw); DB = d1(raw);
 afterEach(() => vi.unstubAllGlobals());
 
 describe('PUT /api/forms-advanced/:id — form-design 色', () => {
-  test('design 色は meta PATCH に hex で合流し、definition_json に永続、response に露出', async () => {
+  test('T-B2 design 色は meta PATCH に JSON-string RGBA で合流し、definition_json に永続、response に露出', async () => {
     seedForm('c1', 'SLUG1');
     const calls = stubFormaloo();
     const res = await call('PUT', '/api/forms-advanced/c1', {
@@ -142,16 +173,19 @@ describe('PUT /api/forms-advanced/:id — form-design 色', () => {
     });
     expect(res.status).toBe(200);
     const patch = calls.find((e) => e.method === 'PATCH' && /\/forms\/SLUG1\/$/.test(e.url));
-    expect(patch?.body).toMatchObject({ theme_color: '#06C755', button_color: '#06C755', text_color: '#111111' });
-    // definition_json persist
+    // hosted が描画する唯一の形式 = JSON-string RGBA (hex ではない)。
+    expect(patch?.body).toMatchObject({ theme_color: jrgba('#06C755'), button_color: jrgba('#06C755'), text_color: jrgba('#111111') });
+    expect((patch?.body as Record<string, string>).theme_color).not.toMatch(/^#/);
+    // definition_json は canonical hex で永続 (D1 正本は harness canonical)。
     expect((definitionOf('c1').design as Record<string, unknown>).themeColor).toBe('#06C755');
-    // response 露出
-    const data = (await res.json() as { data: { design: Record<string, unknown> } }).data;
+    // response 露出 + 反映確認成功で out_of_sync でない。
+    const data = (await res.json() as { data: { design: Record<string, unknown>; syncStatus: string } }).data;
     expect(data.design.themeColor).toBe('#06C755');
     expect(data.design.presetId).toBe('line-green');
+    expect(data.syncStatus).not.toBe('out_of_sync');
   });
 
-  test('design 未提供の save は PATCH に色を載せず prev design を carry (update 意味論 / 後方互換)', async () => {
+  test('T-B2 design 未提供の save は PATCH に色を載せず prev design を carry (update 意味論 / 後方互換)', async () => {
     seedForm('c2', 'SLUG2', JSON.stringify({ fields: [], logic: [], design: { themeColor: '#285C66' } }));
     const calls = stubFormaloo();
     const res = await call('PUT', '/api/forms-advanced/c2', { fields: [], logic: [], title: '新題' });
@@ -162,18 +196,18 @@ describe('PUT /api/forms-advanced/:id — form-design 色', () => {
     expect((definitionOf('c2').design as Record<string, unknown>).themeColor).toBe('#285C66');
   });
 
-  test('design 無しフォームは従来通り (definition_json に design キー無し)', async () => {
+  test('design 無しフォームは従来通り (definition_json に design キー無し・meta PATCH に色ゼロ)', async () => {
     seedForm('c3', 'SLUG3');
-    stubFormaloo();
+    const calls = stubFormaloo();
     const res = await call('PUT', '/api/forms-advanced/c3', { fields: [], logic: [] });
     expect(res.status).toBe(200);
     expect('design' in definitionOf('c3')).toBe(false);
+    const patch = calls.find((e) => e.method === 'PATCH' && /\/forms\/SLUG3\/$/.test(e.url));
+    // design=null 経路: meta PATCH body に色 field が 1 つも無い (後方互換の直接証明)。
+    expect(patch?.body).toEqual({ title: 'タイトル', description: '説明' });
   });
 
-  // form-design-presets (D-4 / WARN6): 既存 design-present フォームの PUT で Formaloo に送る色 PATCH payload が
-  //   baseline snapshot と一致することを behavioral に固定 (git-diff 非依存)。create-seed 導入 (Option A) は
-  //   PUT 経路を触らないため、既存フォームの色 push 挙動は byte 不変 = 後方互換の直接証明。
-  test('D-4 既存 design-present フォームの PUT → 色 PATCH payload が baseline snapshot と一致 (後方互換 byte 不変)', async () => {
+  test('T-B2 design-present フォームの PUT → meta PATCH body が 7 色 JSON-string RGBA の完全 snapshot', async () => {
     seedForm('c4', 'SLUG4', JSON.stringify({ fields: [], logic: [], design: { themeColor: '#285C66', presetId: 'deep-tide' } }));
     const calls = stubFormaloo();
     const fullDesign = {
@@ -183,18 +217,58 @@ describe('PUT /api/forms-advanced/:id — form-design 色', () => {
     const res = await call('PUT', '/api/forms-advanced/c4', { fields: [], logic: [], title: 'T', description: 'D', design: fullDesign });
     expect(res.status).toBe(200);
     const patch = calls.find((e) => e.method === 'PATCH' && /\/forms\/SLUG4\/$/.test(e.url));
-    // meta PATCH body の完全 snapshot: title/description + 7 色 field (hex)。presetId は色 field でないので送らない。
+    // meta PATCH body の完全 snapshot: title/description + 7 色 field (JSON-string RGBA)。presetId は色 field でないので送らない。
     expect(patch?.body).toEqual({
       title: 'T',
       description: 'D',
-      theme_color: '#285C66',
-      background_color: '#EEF5F4',
-      button_color: '#327682',
-      text_color: '#183A40',
-      field_color: '#FFFFFF',
-      border_color: '#AFCAC8',
-      submit_text_color: '#FFFFFF',
+      theme_color: jrgba('#285C66'),
+      background_color: jrgba('#EEF5F4'),
+      button_color: jrgba('#327682'),
+      text_color: jrgba('#183A40'),
+      field_color: jrgba('#FFFFFF'),
+      border_color: jrgba('#AFCAC8'),
+      submit_text_color: jrgba('#FFFFFF'),
     });
+  });
+
+  test('T-B1/#9 partial design update は merged 7 色を原子送 (残色破壊防止・単色変更でも全色 push)', async () => {
+    // prev = 完全な deep-tide 7 色。incoming = buttonColor だけ変更。
+    seedForm('c5', 'SLUG5', JSON.stringify({ fields: [], logic: [], design: {
+      themeColor: '#285C66', backgroundColor: '#EEF5F4', buttonColor: '#327682', textColor: '#183A40',
+      fieldColor: '#FFFFFF', borderColor: '#AFCAC8', submitTextColor: '#FFFFFF', presetId: 'deep-tide',
+    } }));
+    const calls = stubFormaloo();
+    const res = await call('PUT', '/api/forms-advanced/c5', { fields: [], logic: [], title: 'T', description: 'D', design: { buttonColor: '#123456' } });
+    expect(res.status).toBe(200);
+    const patch = calls.find((e) => e.method === 'PATCH' && /\/forms\/SLUG5\/$/.test(e.url));
+    const body = patch?.body as Record<string, string>;
+    // 変えた色 + 残り 6 色すべてが JSON-string RGBA で乗る (残色が古い形式/欠落で残らない)。
+    expect(body.button_color).toBe(jrgba('#123456'));
+    expect(body.theme_color).toBe(jrgba('#285C66'));
+    expect(body.background_color).toBe(jrgba('#EEF5F4'));
+    expect(body.text_color).toBe(jrgba('#183A40'));
+    expect(body.field_color).toBe(jrgba('#FFFFFF'));
+    expect(body.border_color).toBe(jrgba('#AFCAC8'));
+    expect(body.submit_text_color).toBe(jrgba('#FFFFFF'));
+  });
+
+  test('T-B2 soft-200: 色 PATCH が無言無視され GET-after-PATCH で不一致 → out_of_sync (殻完了防止)', async () => {
+    seedForm('c6', 'SLUG6');
+    stubFormaloo({ softIgnore: true }); // PATCH は 200 だが remote に反映されない
+    const res = await call('PUT', '/api/forms-advanced/c6', { fields: [], logic: [], design: { buttonColor: '#06C755' } });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string; syncError: string | null } }).data;
+    expect(data.syncStatus).toBe('out_of_sync'); // 「保存済に見えて hosted に出ない」を honest surface
+    expect(data.syncError).toEqual(expect.any(String));
+  });
+
+  test('T-B2 反映が bounded retry で収束 → idle (eventual consistency)', async () => {
+    seedForm('c7', 'SLUG7');
+    stubFormaloo({ reflectAfterGet: 2 }); // 2 回目の confirm GET で反映される
+    const res = await call('PUT', '/api/forms-advanced/c7', { fields: [], logic: [], design: { buttonColor: '#06C755' } });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string } }).data;
+    expect(data.syncStatus).not.toBe('out_of_sync');
   });
 });
 
