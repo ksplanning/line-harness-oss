@@ -221,6 +221,22 @@ describe('PUT /api/forms-advanced/:id — route-terminal-phase2 redirect (Track 
     expect(data.syncError).toEqual(expect.any(String));
   });
 
+  test('T-C3 load: 保存後の応答 (serializeForm) が formRedirect を返す (reload 復元素材)', async () => {
+    seedForm('r9', 'SLUGR9');
+    stubFormaloo();
+    const res = await call('PUT', '/api/forms-advanced/r9', {
+      fields: [], logic: [], formRedirect: { url: 'https://example.com/lp', openExternalBrowser: true },
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { formRedirect?: unknown } }).data;
+    expect(data.formRedirect).toEqual({ url: 'https://example.com/lp', openExternalBrowser: true });
+    // redirect 無しフォームは formRedirect:null を返す (design/formType と同型)。
+    seedForm('r9b', 'SLUGR9B');
+    const res2 = await call('PUT', '/api/forms-advanced/r9b', { fields: [], logic: [] });
+    const data2 = (await res2.json() as { data: { formRedirect?: unknown } }).data;
+    expect(data2.formRedirect).toBeNull();
+  });
+
   test('D-1 idempotent: redirect 無しフォームへの redirect 無し save 前後で definition_json byte 一致', async () => {
     seedForm('r8', 'SLUGR8');
     stubFormaloo();

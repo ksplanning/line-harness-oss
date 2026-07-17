@@ -193,6 +193,9 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     design: def.design ?? null,
     // form-route-branching (R2): 表示形式 (builder の initialFormType)。未設定は null (builder が simple 既定表示)。
     formType: def.formType ?? null,
+    // route-terminal-phase2 (Track 1 / CX-3): 送信後リダイレクト設定 (builder の initialFormRedirect)。
+    //   未設定は null。保存済 redirect を reload で復元し編集/解除できるようにする (design/formType と同型の露出)。
+    formRedirect: def.formRedirect ?? null,
     // N-7: publish 前は null (公開/埋め込み URL 発行不可)
     publicUrl,
     embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
