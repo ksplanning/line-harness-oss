@@ -242,3 +242,44 @@ describe('T-E3 — SP reconcile 配線 + slug 永続 + jump_to_success_page', ()
     expect(readDef('e4').successPages).toBeUndefined();
   });
 });
+
+describe('T-E4 — form 削除で紐づく SP を明示 DELETE (孤児回収)', () => {
+  test('form DELETE 時にそのフォームの successPages 各 slug を DELETE /v3.0/fields/{slug}/ で回収する', async () => {
+    seedForm('d1', 'SLUG', JSON.stringify({ fields: [NAME], logic: [], successPages: [{ id: 'sp1', slug: 'SP_A', title: 'A' }, { id: 'sp2', slug: 'SP_B', title: 'B' }] }));
+    stubFormaloo();
+    const res = await call('DELETE', '/api/forms-advanced/d1');
+    expect(res.status).toBe(200);
+    const deleted = spDeletes();
+    expect(deleted.some((u) => /\/v3\.0\/fields\/SP_A\/$/.test(u))).toBe(true);
+    expect(deleted.some((u) => /\/v3\.0\/fields\/SP_B\/$/.test(u))).toBe(true);
+    // form は論理削除される (SP 回収と独立)。
+    expect(formRow('d1').deleted).toBe(1);
+  });
+
+  test('slug 無し SP のみ / SP 無しフォームの削除は SP DELETE を呼ばない (no-op)', async () => {
+    seedForm('d2', 'SLUG', JSON.stringify({ fields: [NAME], logic: [] }));
+    stubFormaloo();
+    await call('DELETE', '/api/forms-advanced/d2');
+    expect(spDeletes().length).toBe(0);
+    expect(formRow('d2').deleted).toBe(1);
+  });
+
+  test('一部 SP DELETE が失敗しても form 削除はブロックされない (fail-soft・残余は log)', async () => {
+    seedForm('d3', 'SLUG', JSON.stringify({ fields: [NAME], logic: [], successPages: [{ id: 'sp1', slug: 'SP_BAD', title: 'A' }] }));
+    // SP_BAD の DELETE を 500 にする stub。
+    let spI = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      fetchCalls.push({ method, url: u, body: undefined });
+      if (u.includes('/oauth2/authorization-token/')) return new Response(JSON.stringify({ authorization_token: 't' }), { status: 200 });
+      if (method === 'DELETE' && /\/v3\.0\/fields\/SP_BAD\/$/.test(u)) return new Response(JSON.stringify({ data: {} }), { status: 500 });
+      void spI;
+      return new Response(JSON.stringify({ data: {} }), { status: 200 });
+    }));
+    const res = await call('DELETE', '/api/forms-advanced/d3');
+    expect(res.status).toBe(200); // 削除自体は成功
+    expect(formRow('d3').deleted).toBe(1);
+    expect(spDeletes().some((u) => /\/v3\.0\/fields\/SP_BAD\/$/.test(u))).toBe(true); // 試行はした
+  });
+});

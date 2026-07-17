@@ -84,6 +84,7 @@ import { designColorFields, confirmDesignReflected, applyDesignImages } from '..
 import { resolveRatingStarCustomCss } from '../services/formaloo-rating-css.js';
 import { formCopyFields, confirmFormCopyReflected } from '../services/formaloo-copy.js';
 import { redirectFields, confirmRedirectReflected, validateFormRedirectInput } from '../services/formaloo-redirect.js';
+import { deleteSuccessPages } from '../services/formaloo-success-page.js';
 import { ownerGate } from '../lib/owner-gate.js';
 import type { Env } from '../index.js';
 
@@ -952,6 +953,20 @@ formsAdvanced.delete('/api/forms-advanced/:id', async (c) => {
     const id = c.req.param('id')!;
     const form = await getFormalooForm(c.env.DB, id);
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    // route-terminal-phase2 (T-E4 / CX-2): form 削除で紐づく success-page (完了ページ) を明示 DELETE で回収する。
+    //   Formaloo は form DELETE で SP を cascade しない (S-1 §5c) ゆえ、harness が abandon する form の SP resource
+    //   が孤児として残る。remote form の削除有無と独立に SP slug を明示 DELETE (404 は成功扱い・fail-soft で
+    //   本削除をブロックしない = 部分失敗は log で残余記録)。
+    const spSlugs = (parseDefinition(form.definition_json).successPages ?? [])
+      .map((sp) => sp.slug)
+      .filter((s): s is string => typeof s === 'string' && s.length > 0);
+    if (spSlugs.length) {
+      const spClient = await resolveFormalooClient(c.env, form.workspace_id);
+      if (spClient) {
+        const del = await deleteSuccessPages(spClient, spSlugs);
+        if (!del.ok) console.error('DELETE /api/forms-advanced/:id — SP 孤児回収の一部失敗:', id, del.failed);
+      }
+    }
     await softDeleteFormalooForm(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
