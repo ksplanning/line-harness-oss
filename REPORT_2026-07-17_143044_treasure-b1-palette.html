@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>REPORT: REPORT_2026-07-17_143044_treasure-b1-palette</title>
+<style id="ksplanning-tokens">
+:root {
+  --color-bg: #f7f8fa;
+  --color-card: #ffffff;
+  --color-fg: #14181f;
+  --color-fg-muted: #5b6573;
+  --color-fg-soft: #8893a4;
+  --color-border: #e3e7ee;
+  --color-border-strong: #c9d0db;
+  --color-ok: #1f9d55;
+  --color-ok-soft: #e3f6ec;
+  --color-warn: #d39200;
+  --color-warn-soft: #fcf3dc;
+  --color-alert: #c53030;
+  --color-alert-soft: #fbe5e5;
+  --color-accent: #1f3a8a;
+  --color-accent-soft: #e1e8fb;
+  --color-grid-line: rgba(31,58,138,0.18);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow-card: 0 1px 0 rgba(20,24,31,0.04), 0 8px 24px rgba(20,24,31,0.06);
+  --shadow-hero: 0 2px 4px rgba(20,24,31,0.04), 0 18px 40px rgba(31,58,138,0.10);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  padding: var(--space-6);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.hero {
+  background: linear-gradient(135deg, #ffffff 0%, #f0f3fb 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-6) var(--space-8);
+  margin-bottom: var(--space-6);
+  box-shadow: var(--shadow-hero);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: var(--space-6);
+}
+.hero .label {
+  color: var(--color-fg-soft);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.hero .title {
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin-top: var(--space-2);
+  color: var(--color-fg);
+}
+.hero .meta {
+  color: var(--color-fg-muted);
+  font-size: 13px;
+  margin-top: var(--space-2);
+}
+.hero .score-wrap {
+  text-align: right;
+}
+.score {
+  font-family: var(--font-mono);
+  font-size: 52px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.score.ok    { color: var(--color-ok); }
+.score.warn  { color: var(--color-warn); }
+.score.alert { color: var(--color-alert); }
+.score-delta {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-fg-muted);
+  margin-top: var(--space-2);
+}
+.score-delta.up   { color: var(--color-ok); }
+.score-delta.down { color: var(--color-alert); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.badge.ok    { background: var(--color-ok-soft);    color: var(--color-ok); }
+.badge.warn  { background: var(--color-warn-soft);  color: var(--color-warn); }
+.badge.alert { background: var(--color-alert-soft); color: var(--color-alert); }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: var(--space-4);
+}
+section.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+section.card header.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+section.card h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--color-fg-soft);
+  text-transform: uppercase;
+}
+section.card pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+section.card .empty {
+  color: var(--color-fg-soft);
+  font-style: italic;
+  font-size: 13px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table th, table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+table th {
+  color: var(--color-fg-soft);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+td.num { font-family: var(--font-mono); text-align: right; }
+
+.sparkline {
+  display: inline-block;
+  font-family: var(--font-mono);
+  letter-spacing: 1px;
+  color: var(--color-accent);
+}
+
+details {
+  margin-top: var(--space-4);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+details summary {
+  cursor: pointer;
+  color: var(--color-accent);
+  font-weight: 600;
+  font-size: 13px;
+  list-style: none;
+}
+details summary::-webkit-details-marker { display: none; }
+details summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  transition: transform 0.15s ease;
+}
+details[open] summary::before { transform: rotate(90deg); }
+details section { margin-top: var(--space-3); }
+
+footer {
+  margin-top: var(--space-8);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-fg-soft);
+  font-size: 12px;
+}
+footer code {
+  font-family: var(--font-mono);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+@media (max-width: 600px) {
+  body { padding: var(--space-3); font-size: 14px; }
+  .hero {
+    grid-template-columns: 1fr;
+    padding: var(--space-4);
+    gap: var(--space-3);
+  }
+  .hero .score-wrap { text-align: left; }
+  .hero .title { font-size: 22px; }
+  .score { font-size: 40px; }
+  .grid { grid-template-columns: 1fr; gap: var(--space-3); }
+  section.card { padding: var(--space-4); }
+  details { padding: var(--space-3) var(--space-4); }
+}
+</style>
+<style id="ksplanning-report-extra">
+  .meta-table th { width: 32%; vertical-align: top; }
+  .meta-table td { word-break: break-word; }
+  .meta-table td.placeholder { color: var(--color-fg-soft); font-style: italic; }
+  .commit-table th, .commit-table td { font-size: 12px; }
+  .commit-table td.hash code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+  ul.files {
+    margin: var(--space-3) 0 0 0;
+    padding-left: var(--space-5);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .markdown-body {
+    font-size: 14px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .markdown-body code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+  .badge.completed { background: var(--color-ok-soft);    color: var(--color-ok); }
+  .badge.partial   { background: var(--color-warn-soft);  color: var(--color-warn); }
+  .badge.pending_owner_confirmation { background: var(--color-warn-soft); color: var(--color-warn); }
+  .badge.blocked   { background: var(--color-alert-soft); color: var(--color-alert); }
+  .score.completed { color: var(--color-ok); }
+  .score.partial,
+  .score.pending_owner_confirmation { color: var(--color-warn); }
+  .score.blocked   { color: var(--color-alert); }
+  .grid.single { grid-template-columns: 1fr; }
+  section.card[data-kind="links"] ul { margin: 0; padding-left: var(--space-5); }
+  section.card[data-kind="links"] li { margin: var(--space-1) 0; font-size: 13px; }
+</style>
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <div class="label">CLOSE-OUT REPORT</div>
+      <div class="title">フォームビルダーのパレットに ⭐評価(rating) / ✍️手書きサイン(signature) / 🎬動画埋め込み(video-oembed) の3型を additive で追加し、hosted で実表示・実入力可能にする</div>
+      <div class="meta">line-harness-ks (+ piecemaker — dual-push 両テナント適用) · REPORT_2026-07-17_143044_treasure-b1-palette · <span class="badge pending_owner_confirmation">OWNER待ち</span> · purpose_done: false</div>
+    </div>
+    <div class="score-wrap">
+      <div class="score pending_owner_confirmation">true</div>
+      <div class="score-delta">owner 確認待ち</div>
+    </div>
+  </header>
+
+  <section class="card" data-kind="frontmatter">
+    <header class="card-head"><h2>メタ情報</h2></header>
+    <table class="meta-table">
+      <tr><th>app</th><td>line-harness-ks (+ piecemaker — dual-push 両テナント適用)</td></tr>
+      <tr><th>Box (.md)</th><td><a href="https://app.box.com/file/2352291611530">2352291611530</a></td></tr>
+      <tr><th>Box (.html)</th><td><a href="https://app.box.com/file/2352267928191">2352267928191</a></td></tr>
+      <tr><th>owner 発言原文</th><td>絶対です（お宝20件プログラム承認 2026-07-16）/ 弾LとB1も続けて進めて（2026-07-17 11:5x）</td></tr>
+      <tr><th>ui_case</th><td>true</td></tr>
+      <tr><th>visual-qa-council</th><td>false</td></tr>
+      <tr><th>browser-evaluator click 確認</th><td>true</td></tr>
+      <tr><th>skills_read</th><td>closer-workflow,harness-contracts arscontexta</td></tr>
+    </table>
+  </section>
+
+  <section class="card" data-kind="conclusion">
+    <header class="card-head"><h2>結論</h2></header>
+    <div class="markdown-body">\n案件 treasure-b1-palette（フォームビルダーのパレットに ⭐評価 / ✍️手書きサイン / 🎬動画埋め込み の3フィールド型を追加）を、reviewer PASS Round1（Critical0/High0/closer_allowed true）を受けて統合・両テナントデプロイまで完了した。\n\nコード面（4層対称・既存フォームの fingerprint byte 不変・region-disjoint・全pkg test green）は reviewer の独立検証で強く裏付け済み。ks admin <code>/forms-advanced</code> の実ビルダー画面で新3型がパレットに表示されることも本 closer が headless chrome の実レンダーで目視確認した。\n\nただし「hosted で実際にタップ／手書き／動画再生ができ、回答が Formaloo 側に到達する」という O-1 owner 立会スモークはコードだけでは断定できない（soft-200 回避のため）。よって **status: pending_owner_confirmation**（owner の実機確認を待って completed に昇格）。</div>
+  </section>
+  <section class="card" data-kind="changes">
+    <header class="card-head"><h2>変更内容</h2></header>
+    <details open>
+      <summary>0 commits / 4 files changed</summary>
+      
+      <ul class="files"><li>統合 SHA: `07d1f01fbfe560ce4bcc354e7f3b21fb7e928194`（merge commit・親 = 弾L Phase A `120237ba8cf40967cfec54247ac2ef42ef33dc42` + treasure-b1-palette `abd9990725d084a8242f976a64922158bb5695b7`）</li><li>11 files changed / 731 insertions / 8 deletions（reviewer 集計と一致確認済み）</li><li>merge 前に `git merge-tree --write-tree` で弾L Phase A との自動マージ clean を再確認（conflict marker 0）。実際の merge も `git merge --no-ff` でクリーンに完了（builder.tsx のみ Auto-merging）。</li><li>builder.tsx diff に form-settings region token（allowPostEdit / allow_edit_mail / allowEditMail）0 hit を再確認（region-disjoint 維持）。</li></ul>
+    </details>
+  </section>
+  <section class="card" data-kind="verified">
+    <header class="card-head"><h2>確認したこと</h2></header>
+    <div class="markdown-body">\n1. **統合**: <code>case/treasure-b1-palette</code>（6 commits・89e5852…abd9990）を main（120237b・弾L Phase A land 済）へ <code>--no-ff</code> merge。commit message に <code>Case: treasure-b1-palette</code> + <code>Reviewer-Verdict: PASS</code> trailer 付与。\n2. **push 前セキュリティゲート**: <code>secret-scan.sh --range</code> clean（gitleaks 8.30.1・6 commits scan・leak 0）。<code>dep-scan.sh HIGH,CRITICAL</code> clean（trivy・pnpm-lock.yaml 脆弱性0）。\n3. **dual-push**: <code>git push origin HEAD:main</code> + <code>git push piecemaker HEAD:main</code> 両成功。<code>scripts/verify-tenant-sync.sh</code> で <code>OK sync: origin == piecemaker @ main = 07d1f01...</code> 確認。unpushed commits = 0。\n4. **deploy 4点（全 health 200）**:\n   - ks worker: <code>pnpm build</code> → <code>wrangler deploy --config wrangler.ks.toml</code>（CLOUDFLARE_API_TOKEN/ACCOUNT_ID = /root/.openclaw/credentials/line-harness-ks-bootstrap-secrets.env）。Version ID <code>291c2d4a-2844-4e2b-9117-ed71a27cc44a</code>。<code>/admin/version</code> → 200\n   - ks admin: <code>packages/shared</code> を先に <code>tsc -p tsconfig.build.json</code> で build（<code>RatingSubType</code> export の型解決に必要）→ <code>pnpm build</code>（NEXT_PUBLIC_API_URL/ADMIN_API_KEY=BOLT file_id 2325863169221 から抽出）→ <code>wrangler pages deploy out --project-name=line-harness-ks-admin</code>。<code>/login</code> → 200\n   - piecemaker worker: <code>VITE_WORKER_ORIGIN</code>/<code>VITE_LIFF_ID</code>（app-profile記載値）で build → <code>wrangler deploy dist/line_harness/index.js --config wrangler.piecemaker.toml</code>（token=/root/.secrets/piecemaker/cloudflare-api-token.env + CLOUDFLARE_ACCOUNT_ID=9e4c603b3f47d4072f8a3a27759e8aff）。Version ID <code>12f0e94f-1b85-4520-80d2-dd251d7da130</code>。<code>/admin/version</code> → 200\n   - piecemaker admin: NEXT_PUBLIC_API_URL=piecemaker worker URL / ADMIN_API_KEY=BOLT file_id 2347969477279 で build → <code>wrangler pages deploy out --project-name=line-harness-piecemaker-admin</code>。<code>/login</code> → 200\n5. **spot-check（実機目視）**: ks worker の <code>API_KEY</code> env-owner bypass 経路（<code>authenticateApiToken</code>）ではなく、BOLT の <code>line-harness-ks-qa-login-key.txt</code>（QA用 apiKey）で <code>/api/auth/login</code> に POST → <code>lh_admin_session</code>/<code>lh_csrf</code> cookie 取得 → headless chrome (CDP <code>Network.setCookie</code> でセッション注入) で <code>https://line-harness-ks-admin.pages.dev/forms-advanced</code> → 「編集」クリックでビルダー画面（既存 spike フォーム <code>spike-formaloo-logic-b1-o1-1783800962</code>）に到達。スクリーンショットで **⭐評価**（入力セクション）・**署名**（高度セクション）・**動画**（装飾セクション）の3項目がパレットに表示されていることを目視確認（既存フォーム＝スパイク作成物・回答データへの書込は無し・確認後 <code>/api/auth/logout</code> でセッション破棄）。\n6. Batch C の自前プレビュー描画（form-preview.tsx）はコードレベル test（form-preview-b1-palette.test.tsx）で確認済み・実機プレビュー目視は今回未実施（owner スモークで代替可）。</div>
+  </section>
+  <section class="card" data-kind="owner-await">
+    <header class="card-head"><h2>owner 確認待ち項目</h2></header>
+    <div class="markdown-body">\n- O-1: rating（星タップ）/ signature（手書きサイン描画）/ video（動画再生）を hosted 公開フォームで実際に操作し、回答が Formaloo 側（rows / webhook）に到達することを owner が確認する。\n- 確認後 owner が「OK」と返答した時点で <code>docs/BACKLOG.md</code> の該当項目を <code>[x]</code> に更新し <code>status: completed</code> へ昇格。</div>
+  </section>
+
+  <section class="card" data-kind="open">
+    <header class="card-head"><h2>未解決</h2></header>
+    <div class="markdown-body">\n- videoUrl push の <code>?? ''</code> defense は現設計で妥当（reviewer OPTIONAL-POLISH・強化は任意）。\n- お宝プログラム バッチ2以降（計算/行列/繰り返し/choice_fetch/PDF/webhook 即時、決済JPY/lookup/分析、AIフォーム生成本体）は本案件のスコープ外（excluded_scope）。</div>
+  </section>
+  <section class="card" data-kind="next">
+    <header class="card-head"><h2>次の一手</h2></header>
+    <div class="markdown-body">\n1. owner に「rating/signature/video を hosted で実際にタップ・手書き・動画再生して回答が届くか確認してください」を依頼（本 closer は Discord 投稿しない = 司令塔が担当）。\n2. owner OK 後、docs/BACKLOG.md の 6.1 を <code>[x]</code> に更新し status: completed の closer 追い記録を残す。\n3. お宝バッチ2着手（owner 合図後）。</div>
+  </section>
+
+  <section class="card" data-kind="links">
+    <header class="card-head"><h2>関連リンク</h2></header>
+    <ul>
+      <li>handoff: <code>/root/.openclaw/workspace/.ars-state/handoff-20260717-115900-treasure-b1-palette.json</code></li><li>Box folder: <a href="https://app.box.com/folder/386663013201">386663013201</a></li>
+    </ul>
+  </section>
+
+  <footer>
+    生成: 2026-07-17 14:32 JST · commit <code>d73c4af35</code> · workspace workspace
+  </footer>
+</body>
+</html>
