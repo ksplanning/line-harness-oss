@@ -95,12 +95,22 @@ interface ApiCall { method: string; url: string; body: unknown }
 const COPY_KEYS = ['button_text', 'success_message', 'error_message'];
 
 /**
+ * form-copy-sync-warning-fix: Formaloo の server-side 文言正規化 (全角→半角 等) を模倣する fold
+ *   (evidence/spike-normalization-matrix.md §2+§4)。stub の PATCH がこの fold を掛けて state に保存する
+ *   ことで「owner が打った全角値を送っても Formaloo は半角値を保存/返却する」実挙動を route test で再現する。
+ */
+function formalooFold(s: string): string {
+  return s.normalize('NFKC').replace(/[\r\t]/g, ' ').replace(/ +/g, ' ');
+}
+
+/**
  * Formaloo API stub。文言 PATCH は remote form state に round-trip 反映され、後続 GET (= confirmFormCopyReflected)
  *   がそれを返す (実 Formaloo GET-after-PATCH 挙動を模倣)。
  *   - softIgnore: 文言 PATCH を soft-200 で無言無視 (state に反映しない = 反映されない地雷)。
  *   - reflectAfterGet: N 回目の confirm GET から反映 (bounded retry 収束模倣)。
+ *   - foldCopy: 文言 PATCH 値を formalooFold して保存 (Formaloo の server-side 正規化を模倣 = 全角→半角)。
  */
-function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: boolean; reflectAfterGet?: number } = {}) {
+function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: boolean; reflectAfterGet?: number; foldCopy?: boolean } = {}) {
   const calls: ApiCall[] = [];
   const state: Record<string, unknown> = { fields_list: [], ...(opts.getForm ?? {}) };
   let pending: Record<string, unknown> | null = null;
@@ -129,9 +139,13 @@ function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: bo
       const copy: Record<string, unknown> = {};
       for (const [k, v] of Object.entries((body ?? {}) as Record<string, unknown>)) if (COPY_KEYS.includes(k)) copy[k] = v;
       if (Object.keys(copy).length) {
+        // form-copy-sync-warning-fix: foldCopy 時は Formaloo の server-side 正規化を模して保存 (全角→半角 等)。
+        const stored = opts.foldCopy
+          ? Object.fromEntries(Object.entries(copy).map(([k, v]) => [k, typeof v === 'string' ? formalooFold(v) : v]))
+          : copy;
         if (opts.softIgnore) { /* soft-200: 無言無視 = state に反映しない */ }
-        else if (opts.reflectAfterGet != null) pending = { ...(pending ?? {}), ...copy };
-        else Object.assign(state, copy);
+        else if (opts.reflectAfterGet != null) pending = { ...(pending ?? {}), ...stored };
+        else Object.assign(state, stored);
       }
       return new Response(JSON.stringify({ data: { form: body } }), { status: 200 });
     }
@@ -240,5 +254,87 @@ describe('PUT /api/forms-advanced/:id — form-jp-localization 文言', () => {
     const res = await call('PUT', '/api/forms-advanced/k8', { fields: [], logic: [], formCopy: { errorMessage: 'エラー' } });
     const data = (await res.json() as { data: { syncStatus: string } }).data;
     expect(data.syncStatus).not.toBe('out_of_sync');
+  });
+});
+
+// =============================================================================
+// form-copy-sync-warning-fix (T-B1〜T-B4) — Formaloo server-side 正規化 × route sync 判定
+// -----------------------------------------------------------------------------
+// owner が打った全角値 (受付完了！) は Formaloo が半角 (受付完了!) に fold して保存する。従来の strict 等値だと
+//   恒久不一致で out_of_sync 誤警告になっていた。confirmFormCopyReflected の正規化耐性化により、正規化差だけの
+//   反映は idle に解消する (誤警告除去)。ただし真の未反映・design/画像の実失敗は依然 out_of_sync (fail-closed 温存)。
+// =============================================================================
+describe('PUT /api/forms-advanced/:id — form-copy-sync-warning-fix (正規化 × sync 判定)', () => {
+  test('T-B1/AC-4a: formCopy 全角値を保存 → Formaloo が fold した半角値を GET → 正規化一致で syncStatus:idle (誤警告除去)', async () => {
+    seedForm('kb1', 'SLUGKB1');
+    stubFormaloo({ foldCopy: true }); // Formaloo の全角→半角 fold を模倣
+    const res = await call('PUT', '/api/forms-advanced/kb1', {
+      fields: [], logic: [], formCopy: { successMessage: '受付完了！' }, // owner が打った全角！ (U+FF01)
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string } }).data;
+    expect(data.syncStatus).toBe('idle'); // 正規化差だけの反映を out_of_sync にしない
+  });
+
+  test('T-B2/AC-4b: mock GET が英語既定 Thanks! submitted successfully を返す (真の未反映) → out_of_sync + lastError (fail-closed 温存)', async () => {
+    seedForm('kb2', 'SLUGKB2');
+    // softIgnore: 送った文言が反映されず、GET は既定英語のまま返る = 真の未反映。
+    stubFormaloo({ getForm: { success_message: 'Thanks! submitted successfully' }, softIgnore: true });
+    const res = await call('PUT', '/api/forms-advanced/kb2', {
+      fields: [], logic: [], formCopy: { successMessage: '受付完了！' },
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string; syncError: string | null } }).data;
+    expect(data.syncStatus).toBe('out_of_sync');
+    expect(data.syncError).toEqual(expect.any(String));
+  });
+
+  test('T-B3 honest-idle: 今すぐ同期 (onSave 再実行=copy 再送) → confirm が実行され正規化一致で idle (confirm skip でない)', async () => {
+    seedForm('kb3', 'SLUGKB3');
+    const calls = stubFormaloo({ foldCopy: true });
+    const res = await call('PUT', '/api/forms-advanced/kb3', {
+      fields: [], logic: [], formCopy: { successMessage: '受付完了！' },
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string } }).data;
+    expect(data.syncStatus).toBe('idle');
+    // 「今すぐ同期」は既存 onSave 経路の再実行 (新 endpoint なし)。idle は confirm skip でなく
+    //   confirmFormCopyReflected の GET-after-PATCH が実行され一致した結果であることを証跡で assert。
+    const confirmGets = calls.filter((e) => e.method === 'GET' && /\/v3\.0\/forms\/[^/]+\/$/.test(e.url));
+    expect(confirmGets.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('T-B3 非退行: reload 後 formCopy 非載 (formCopyProvided=false) → confirm skip・idle (今日と挙動不変)', async () => {
+    // 画面 reload 後は builder が保存済 copy を pull しないため formCopy が payload に載らない (pull backlog の限界)。
+    //   本案件は「その経路の挙動を今日から変えない (非退行)」に留める。値は実反映済ゆえ実害なし。
+    const seeded = JSON.stringify({ fields: [], logic: [], formCopy: { successMessage: '受付完了！' } });
+    seedForm('kb3b', 'SLUGKB3B', seeded);
+    const calls = stubFormaloo({ foldCopy: true });
+    const res = await call('PUT', '/api/forms-advanced/kb3b', { fields: [], logic: [] }); // formCopy 非載
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string } }).data;
+    expect(data.syncStatus).toBe('idle');
+    // 文言 PATCH を 1 つも送らない = confirm 経路に触れない (skip) = 新規 hollow-clear を作らない。
+    expect(anyCopyPatch(calls)).toBeUndefined();
+  });
+
+  test('T-B4 複合失敗: copy 正規化差 (本来 idle) + design 実失敗 が同時 → out_of_sync (idle にならない・優先順位)', async () => {
+    seedForm('kb4', 'SLUGKB4');
+    // foldCopy=true: copy は Formaloo fold で正規化一致 (単独なら idle)。
+    // stub は design 色を state に round-trip しない → confirmDesignReflected が不一致 = design 実失敗。
+    const calls = stubFormaloo({ foldCopy: true });
+    const res = await call('PUT', '/api/forms-advanced/kb4', {
+      fields: [], logic: [],
+      formCopy: { successMessage: '受付完了！' }, // fold で一致 → copy 単独なら idle
+      design: { buttonColor: '#00ff00' },         // stub は反映しない → designReflectError
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string; syncError: string | null } }).data;
+    // 優先順位 (!metaRes.ok→compoundEditWarning→imageSyncError→designReflectError→formCopyReflectError→idle):
+    //   copy が idle-worthy でも design 失敗が勝ち out_of_sync (いずれか異常なら owner は警告を見る = 正しい非ブロッカー)。
+    expect(data.syncStatus).toBe('out_of_sync');
+    expect(data.syncError).toEqual(expect.any(String));
+    // copy 文言 PATCH は送られている (design と同一 meta PATCH に合流) = copy 経路も実行された証跡。
+    expect(copyPatch(calls)).toBeDefined();
   });
 });
