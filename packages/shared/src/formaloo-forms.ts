@@ -9,6 +9,8 @@
 // M-8: serialize whitelist round-trip (worker push / builder pull の双方で同一定義)。
 // =============================================================================
 
+import type { FormCopy } from './form-copy';
+
 /** harness 側 field 種別 (MVP subset / 素人向け日本語ラベルは web が付与)。 */
 export const FORMALOO_FIELD_TYPES = [
   'text',
@@ -218,6 +220,12 @@ export interface HarnessFormDefinition {
    * 未設定フォームは definition_json に載らない = 後方互換 (byte 不変)。
    */
   formType?: FormDisplayType;
+  /**
+   * 公開ページ system 文言 (form-jp-localization / additive optional)。design/formType と同列。
+   * 送信ボタン/完了/送信エラーの 3 文言のうち非空指定分だけ持つ。未設定フォームは definition_json に
+   * 載らない = 後方互換 (byte 不変)。fingerprint 非関与 (cron drift 誤検知に入らない)。
+   */
+  formCopy?: FormCopy;
 }
 
 // ─── Formaloo logic object 形 (push-sync 形式 / conditions + actions) ─────────
