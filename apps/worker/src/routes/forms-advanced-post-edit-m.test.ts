@@ -318,4 +318,13 @@ describe('T-D2 GET rows/:rowId editContext 付与 (allowPostEdit / editable fiel
     expect(d.allowPostEdit).toBe(0);
     expect(d.lastEdit).toBeNull();
   });
+
+  test('F-I3: env-OFF (FORM_POST_EDIT_ENABLED 未設定) は allow_post_edit=1 でも allowPostEdit=0 (実効 gate = 編集ボタン非表示)', async () => {
+    seedForm('f1', 'form_abc', 1);
+    seedSub('s1', 'f1', { nameSlug: '田中' }, 'ROW1');
+    stubFormaloo({});
+    const res = await call('GET', '/api/forms-advanced/f1/rows/s1', undefined, { FORMALOO_API_KEY: undefined, FORMALOO_API_SECRET: undefined, FORM_POST_EDIT_ENABLED: undefined });
+    const d = (await res.json() as { data: { allowPostEdit: number } }).data;
+    expect(d.allowPostEdit).toBe(0); // env-OFF = rollback = 編集ボタン非表示 (spec R3)
+  });
 });

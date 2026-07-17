@@ -842,8 +842,10 @@ async function resolveEditorName(db: D1Database, editorStaffId: string | null | 
  * 弾M (form-post-edit / T-D2): 回答詳細の編集コンテキスト (additive・回答詳細画面の編集モード用)。
  *   allowPostEdit (編集ボタン gate) + 編集対象 field メタ (slug/label/type/required/editable) + ④最終編集。
  *   field メタは definition の required/type + field_map の slug を harness id で join (装飾/未 push slug は除外)。
+ *   F-I3: allowPostEdit は **実効 gate** (form.allow_post_edit===1 かつ env kill-switch 有効) を返す。
+ *   env-OFF (rollback) では 0 = web が編集ボタンを出さない (spec R3『OFF=編集ボタン非表示』・endpoint 403 と整合)。
  */
-async function buildRowEditContext(db: D1Database, form: FormalooForm, rowId: string) {
+async function buildRowEditContext(db: D1Database, form: FormalooForm, rowId: string, featureEnabled: boolean) {
   const def = parseDefinition(form.definition_json);
   const fieldMap = await getFormalooFieldMap(db, form.id);
   const slugById = new Map<string, string | null>();
@@ -860,7 +862,8 @@ async function buildRowEditContext(db: D1Database, form: FormalooForm, rowId: st
     .filter((f) => f.slug != null) as Array<{ slug: string; label: string; type: string; required: boolean; editable: boolean }>;
   const latest = await getLatestEdit(db, rowId);
   return {
-    allowPostEdit: form.allow_post_edit,
+    // 実効 gate (form.allow_post_edit===1 AND env 有効)。env-OFF は 0 = 編集ボタン非表示 (spec R3)。
+    allowPostEdit: form.allow_post_edit === 1 && featureEnabled ? 1 : 0,
     fields,
     lastEdit: latest
       ? { editorStaffId: latest.editor_staff_id, editorName: await resolveEditorName(db, latest.editor_staff_id), editedAt: latest.edited_at }
@@ -879,7 +882,7 @@ formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
     const mirror = await getFormalooSubmission(c.env.DB, rowId);
     if (!mirror || mirror.form_id !== id) return c.json({ success: false, error: '回答が見つかりません' }, 404);
 
-    const editContext = await buildRowEditContext(c.env.DB, form, rowId);
+    const editContext = await buildRowEditContext(c.env.DB, form, rowId, isPostEditEnabled(c.env.FORM_POST_EDIT_ENABLED));
 
     // Formaloo 側の最新をドリルスルー。client 未配備 (dev) / 失敗は mirror を返す (fail-soft)。
     // F6-2: form.workspace_id で多鍵解決。NULL(legacy) → env 単一鍵 fallback (byte-equivalent) /
