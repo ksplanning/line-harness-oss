@@ -1,8 +1,11 @@
 import {
   FORM_DESIGN_COLOR_KEYS,
   FORM_DESIGN_TO_FORMALOO,
+  formalooColorToHex,
+  hexToFormalooRgba,
   validateImageUpload,
   type FormDesign,
+  type FormDesignColorKey,
   type FormDesignImages,
   type FormDesignImageUpload,
 } from '@line-crm/shared';
@@ -11,8 +14,13 @@ import type { FormalooClient } from './formaloo-client.js';
 // =============================================================================
 // form-design push helpers (F-2 Batch D / OFF-LANE) — harness FormDesign を Formaloo form へ反映。
 // -----------------------------------------------------------------------------
-// live-probe 実測 (2026-07-16 使い捨てフォーム):
-//   - 色は hex 文字列で `PATCH /v3.0/forms/{slug}/` 直フィールドに round-trip (公開ページも hex 描画)。
+// 🚨 反映条件 (design-hosted-apply-fix spike 2026-07-17・使い捨てフォーム before/after 実測):
+//   - hosted 公開ページの実レンダーは form 直下の flat 色フィールド (background_color/button_color/
+//     field_color/text_color/submit_text_color) を **JSON-string RGBA** ('{"r":..,"g":..,"b":..,"a":1}')
+//     で受けたときのみ描画する。**hex 文字列 (#RRGGBB) はデータ層に round-trip するが hosted app
+//     (formaloo.me static bundle) が parse できず既定色 (gray/pink) にフォールバックする** (= 従来の
+//     「保存されるが公開ページに反映されない」バグの真因)。theme resource (form.theme) は描画に不使用。
+//     証跡: .plans/2026-07-17-design-hosted-apply-fix/evidence/reflection-condition.md。
 //   - 画像は `logo` / `background_image` のみ書ける (cover_image は no-op)。カバー(=ヘッダー背景 spec②)
 //     は `background_image` に map。replace = multipart File PATCH / remove = JSON {field:null}
 //     (空文字 '' は 400) / keep = no-op。upload 成功で `logo`/`background_image` に S3 URL が返る。
@@ -40,8 +48,11 @@ export interface AppliedDesignImages {
 }
 
 /**
- * FormDesign の canonical 色役割を Formaloo form 直フィールド (hex) に変換する (present key のみ)。
+ * FormDesign の canonical 色役割を Formaloo form 直フィールド (**JSON-string RGBA**) に変換する (present key のみ)。
  * title/description の既存 meta PATCH body にこの object を merge する (新エンドポイント不要)。
+ * 値は `'{"r":..,"g":..,"b":..,"a":1}'` の**文字列** = hosted app が parse して描画できる唯一の形式
+ *   (spike 2026-07-17 実測。hex は round-trip するが hosted で反映されない)。戻り値は依然 string map なので
+ *   meta PATCH body への merge・戻り型は不変。不正 hex は skip (壊れた色を push しない)。
  * 未設定 (key 不在) の色は送らない = Formaloo 側を未変更のまま残す (誤クリア防止 / update 意味論)。
  */
 export function designColorFields(design: FormDesign | undefined | null): Record<string, string> {
@@ -49,10 +60,64 @@ export function designColorFields(design: FormDesign | undefined | null): Record
   if (!design || typeof design !== 'object') return out;
   for (const key of FORM_DESIGN_COLOR_KEYS) {
     const v = design[key];
-    if (typeof v === 'string' && v) out[FORM_DESIGN_TO_FORMALOO[key]] = v;
+    if (typeof v !== 'string' || !v) continue;
+    const rgba = hexToFormalooRgba(v); // {r,g,b,a:1} | null (不正 hex は null)
+    if (rgba) out[FORM_DESIGN_TO_FORMALOO[key]] = JSON.stringify(rgba);
   }
   if (typeof design.themeName === 'string' && design.themeName) out.theme_name = design.themeName;
   return out;
+}
+
+/** confirmDesignReflected の結果 (fail-soft: throw せず ok/error を返す)。 */
+export interface DesignReflectionResult {
+  /** 期待した全色役割が remote に反映されていれば true。色なし design は確認スキップで true。 */
+  ok: boolean;
+  /** 不一致 / GET 失敗時の owner 向け要約 (out_of_sync の lastError 用)。 */
+  error?: string;
+}
+
+/**
+ * meta PATCH 後に GET-after-PATCH で「送った色が本当に反映されたか」を確認する (soft-200 対策)。
+ * form PATCH は存在しないプロパティ / 受理不能な形式を **soft-200 で無言無視**する地雷があるため、
+ * `metaRes.ok` だけを根拠に idle にすると「保存済に見えて hosted に出ない」殻完了を再発させる。
+ * remote GET の色 (JSON-string RGBA / object / hex いずれも formalooColorToHex で正規化) を期待 hex と比較し、
+ * eventual consistency 用に bounded retry する。全一致で ok / 不一致・GET 失敗は ok:false (route が out_of_sync)。
+ * design に色役割が 1 つも無ければ確認対象なしとして GET せず ok:true。
+ */
+export async function confirmDesignReflected(
+  client: FormalooClient,
+  formalooSlug: string,
+  design: FormDesign | undefined | null,
+  opts?: { retries?: number; sleep?: (ms: number) => Promise<void> },
+): Promise<DesignReflectionResult> {
+  // 期待値 = 送った色役割の正規化 hex (Formaloo field 名 → 期待 hex)。
+  const wanted: Array<[string, string]> = [];
+  if (design && typeof design === 'object') {
+    for (const key of FORM_DESIGN_COLOR_KEYS) {
+      const v = design[key as FormDesignColorKey];
+      if (typeof v !== 'string' || !v) continue;
+      const hex = formalooColorToHex(v);
+      if (hex) wanted.push([FORM_DESIGN_TO_FORMALOO[key as FormDesignColorKey], hex]);
+    }
+  }
+  if (wanted.length === 0) return { ok: true }; // 色なし = 確認対象なし (GET しない)
+
+  const retries = opts?.retries ?? 2;
+  const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let lastMiss = '';
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const g = await client.request('GET', `/v3.0/forms/${formalooSlug}/`);
+    if (g.ok) {
+      const form = extractForm(g.data);
+      let allMatch = true;
+      for (const [field, hex] of wanted) {
+        if (formalooColorToHex(form[field] as never) !== hex) { allMatch = false; lastMiss = field; break; }
+      }
+      if (allMatch) return { ok: true };
+    }
+    if (attempt < retries) await sleep(200 * (attempt + 1));
+  }
+  return { ok: false, error: `配色が公開ページに反映されませんでした（${lastMiss || '確認に失敗しました'}）` };
 }
 
 /** data:image/...;base64,xxxx を binary bytes へ (Workers/Node 共通 atob)。不正は null。 */
