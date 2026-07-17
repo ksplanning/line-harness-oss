@@ -171,7 +171,16 @@ export default function FormSubmissionsPage() {
           <div className="text-sm text-gray-400">読み込み中...</div>
         ) : forms.length === 0 ? (
           <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">
-            フォームがまだありません
+            <p>フォームがまだありません</p>
+            {/* submissions-visibility-fix (T-B1): 旧レール /api/forms=0 は仕様どおり。高機能フォーム
+                (forms-advanced) の回答は「回答データ」で確認する導線を additive 提示 (旧レール読取は無改変)。 */}
+            <p className="mt-2 text-xs">
+              高機能フォームの回答は
+              <Link href="/forms-advanced" className="text-[#06C755] hover:underline mx-1" data-testid="forms-advanced-hint">
+                回答データ
+              </Link>
+              から確認できます。
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">

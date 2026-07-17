@@ -10,6 +10,7 @@ import {
   getFormalooSyncState,
   listFormalooDriftEvents,
   queryFormalooSubmissions,
+  upsertFormalooSubmission,
   getFormalooSubmission,
   listFormalooSavedFilters,
   createFormalooSavedFilter,
@@ -39,6 +40,8 @@ import {
   makeRowsListRowSlugResolver,
   isPostEditEnabled,
   isEditableFieldType,
+  extractRows,
+  mapFormalooListRowToUpsert,
 } from '../services/formaloo-row-edit.js';
 import {
   validateHarnessField,
@@ -821,12 +824,58 @@ function parseIntSafe(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// GET /api/forms-advanced/:id/rows — D1 ミラーの検索/フィルタ/ソート/ページング
+// submissions-visibility-fix (T-A4): read-path reconcile の bounded 上限。
+//   MAX_RECONCILE_PAGES × RECONCILE_PAGE_SIZE = 直近 ~400 行を上限 reconcile (Workers subrequest 上限保護)。
+//   超過フォームの古い行は lag (許容)。対象 piecemaker フォームは 4 行 = 完全被覆。
+const MAX_RECONCILE_PAGES = 8;
+const RECONCILE_PAGE_SIZE = 50;
+
+/**
+ * 回答一覧 read-path reconcile (submissions-visibility-fix / T-A1)。
+ * 兄弟 /stats・/rows/:rowId と同じ「Formaloo=SoT / ミラー=cache」モデルへ揃える:
+ *   Formaloo rows を bounded page で pull → extractRows で配列化 → mapFormalooListRowToUpsert で写像 →
+ *   既存 upsertFormalooSubmission でミラーへ idempotent 充填。呼び出し側が直後に queryFormalooSubmissions で返す。
+ * ミラー充填により詳細ドロワー・弾M 編集 (mirror 行前提・/rows/:rowId L899 の 404) も通る。
+ * !r.ok / rows 空でループ終了 (makeRowsListRowSlugResolver と同じ bounded 走査作法)。例外は上位 try/catch が拾う。
+ */
+async function reconcileFormalooRows(
+  db: D1Database,
+  form: FormalooForm,
+  client: { get<T = unknown>(path: string): Promise<{ ok: true; status: number; data: T } | { ok: false; status: number; error: string }> },
+): Promise<void> {
+  for (let page = 1; page <= MAX_RECONCILE_PAGES; page++) {
+    const r = await client.get(`/v3.0/forms/${form.formaloo_slug}/rows/?page=${page}&page_size=${RECONCILE_PAGE_SIZE}`);
+    if (!r.ok) break;
+    const rows = extractRows(r.data);
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      const input = mapFormalooListRowToUpsert(row, form);
+      if (input) await upsertFormalooSubmission(db, input);
+    }
+  }
+}
+
+// GET /api/forms-advanced/:id/rows — Formaloo reconcile (bounded pull → ミラー充填) → D1 ミラーの検索/フィルタ/ソート/ページング
+//   兄弟 /stats・/rows/:rowId と同じ SoT=Formaloo モデル。webhook 未配線でも可視化と弾M 検証を成立させる。
+//   fail-soft: client null / 非2xx / 空 / 例外は reconcile を skip しミラーをそのまま返す (dev/鍵無し無影響)。
+//   env FORMS_ADVANCED_ROWS_LIVE_RECONCILE_DISABLE='true' で mirror-only の旧挙動へ即 rollback。
 formsAdvanced.get('/api/forms-advanced/:id/rows', async (c) => {
   try {
     const id = c.req.param('id')!;
     const form = await getFormalooForm(c.env.DB, id);
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+
+    // read-path reconcile (既定 ON)。Formaloo 由来の失敗で一覧自体を落とさないよう全体を try/catch で包む。
+    if (c.env.FORMS_ADVANCED_ROWS_LIVE_RECONCILE_DISABLE !== 'true') {
+      try {
+        const client = await resolveFormalooClient(c.env, form.workspace_id);
+        if (client && form.formaloo_slug) {
+          await reconcileFormalooRows(c.env.DB, form, client);
+        }
+      } catch (reconcileErr) {
+        console.error('GET /api/forms-advanced/:id/rows reconcile failed (fail-soft, mirror を返す):', reconcileErr);
+      }
+    }
 
     const page = Math.max(1, parseIntSafe(c.req.query('page'), 1));
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, parseIntSafe(c.req.query('pageSize'), DEFAULT_PAGE_SIZE)));

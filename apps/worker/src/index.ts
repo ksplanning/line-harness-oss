@@ -201,6 +201,10 @@ export type Env = {
     //   webhook secret / auth API_KEY とは別鍵で分離 (編集トークンが署名/認証系の権限昇格に使えない境界)。
     //   未設定 dev は verifyEditToken が fail-closed (null) = 公開編集 route が全 token を拒否 (=機能到達不能)。
     FORMALOO_EDIT_TOKEN_SECRET?: string;
+    // submissions-visibility-fix: /api/forms-advanced/:id/rows の Formaloo live reconcile を無効化する
+    //   kill-switch。未設定/其他 = reconcile ON (既定・兄弟 /stats・/rows/:rowId と同じ SoT=Formaloo モデル)。
+    //   'true' = mirror-only の旧挙動へ即 rollback (Formaloo を一切叩かない)。
+    FORMS_ADVANCED_ROWS_LIVE_RECONCILE_DISABLE?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
