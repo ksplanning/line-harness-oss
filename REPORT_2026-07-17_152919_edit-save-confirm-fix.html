@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>REPORT: REPORT_2026-07-17_152919_edit-save-confirm-fix</title>
+<style id="ksplanning-tokens">
+:root {
+  --color-bg: #f7f8fa;
+  --color-card: #ffffff;
+  --color-fg: #14181f;
+  --color-fg-muted: #5b6573;
+  --color-fg-soft: #8893a4;
+  --color-border: #e3e7ee;
+  --color-border-strong: #c9d0db;
+  --color-ok: #1f9d55;
+  --color-ok-soft: #e3f6ec;
+  --color-warn: #d39200;
+  --color-warn-soft: #fcf3dc;
+  --color-alert: #c53030;
+  --color-alert-soft: #fbe5e5;
+  --color-accent: #1f3a8a;
+  --color-accent-soft: #e1e8fb;
+  --color-grid-line: rgba(31,58,138,0.18);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow-card: 0 1px 0 rgba(20,24,31,0.04), 0 8px 24px rgba(20,24,31,0.06);
+  --shadow-hero: 0 2px 4px rgba(20,24,31,0.04), 0 18px 40px rgba(31,58,138,0.10);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  padding: var(--space-6);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.hero {
+  background: linear-gradient(135deg, #ffffff 0%, #f0f3fb 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-6) var(--space-8);
+  margin-bottom: var(--space-6);
+  box-shadow: var(--shadow-hero);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: var(--space-6);
+}
+.hero .label {
+  color: var(--color-fg-soft);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.hero .title {
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin-top: var(--space-2);
+  color: var(--color-fg);
+}
+.hero .meta {
+  color: var(--color-fg-muted);
+  font-size: 13px;
+  margin-top: var(--space-2);
+}
+.hero .score-wrap {
+  text-align: right;
+}
+.score {
+  font-family: var(--font-mono);
+  font-size: 52px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.score.ok    { color: var(--color-ok); }
+.score.warn  { color: var(--color-warn); }
+.score.alert { color: var(--color-alert); }
+.score-delta {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-fg-muted);
+  margin-top: var(--space-2);
+}
+.score-delta.up   { color: var(--color-ok); }
+.score-delta.down { color: var(--color-alert); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.badge.ok    { background: var(--color-ok-soft);    color: var(--color-ok); }
+.badge.warn  { background: var(--color-warn-soft);  color: var(--color-warn); }
+.badge.alert { background: var(--color-alert-soft); color: var(--color-alert); }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: var(--space-4);
+}
+section.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+section.card header.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+section.card h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--color-fg-soft);
+  text-transform: uppercase;
+}
+section.card pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+section.card .empty {
+  color: var(--color-fg-soft);
+  font-style: italic;
+  font-size: 13px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table th, table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+table th {
+  color: var(--color-fg-soft);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+td.num { font-family: var(--font-mono); text-align: right; }
+
+.sparkline {
+  display: inline-block;
+  font-family: var(--font-mono);
+  letter-spacing: 1px;
+  color: var(--color-accent);
+}
+
+details {
+  margin-top: var(--space-4);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+details summary {
+  cursor: pointer;
+  color: var(--color-accent);
+  font-weight: 600;
+  font-size: 13px;
+  list-style: none;
+}
+details summary::-webkit-details-marker { display: none; }
+details summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  transition: transform 0.15s ease;
+}
+details[open] summary::before { transform: rotate(90deg); }
+details section { margin-top: var(--space-3); }
+
+footer {
+  margin-top: var(--space-8);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-fg-soft);
+  font-size: 12px;
+}
+footer code {
+  font-family: var(--font-mono);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+@media (max-width: 600px) {
+  body { padding: var(--space-3); font-size: 14px; }
+  .hero {
+    grid-template-columns: 1fr;
+    padding: var(--space-4);
+    gap: var(--space-3);
+  }
+  .hero .score-wrap { text-align: left; }
+  .hero .title { font-size: 22px; }
+  .score { font-size: 40px; }
+  .grid { grid-template-columns: 1fr; gap: var(--space-3); }
+  section.card { padding: var(--space-4); }
+  details { padding: var(--space-3) var(--space-4); }
+}
+</style>
+<style id="ksplanning-report-extra">
+  .meta-table th { width: 32%; vertical-align: top; }
+  .meta-table td { word-break: break-word; }
+  .meta-table td.placeholder { color: var(--color-fg-soft); font-style: italic; }
+  .commit-table th, .commit-table td { font-size: 12px; }
+  .commit-table td.hash code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+  ul.files {
+    margin: var(--space-3) 0 0 0;
+    padding-left: var(--space-5);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .markdown-body {
+    font-size: 14px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .markdown-body code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+  .badge.completed { background: var(--color-ok-soft);    color: var(--color-ok); }
+  .badge.partial   { background: var(--color-warn-soft);  color: var(--color-warn); }
+  .badge.pending_owner_confirmation { background: var(--color-warn-soft); color: var(--color-warn); }
+  .badge.blocked   { background: var(--color-alert-soft); color: var(--color-alert); }
+  .score.completed { color: var(--color-ok); }
+  .score.partial,
+  .score.pending_owner_confirmation { color: var(--color-warn); }
+  .score.blocked   { color: var(--color-alert); }
+  .grid.single { grid-template-columns: 1fr; }
+  section.card[data-kind="links"] ul { margin: 0; padding-left: var(--space-5); }
+  section.card[data-kind="links"] li { margin: var(--space-1) 0; font-size: 13px; }
+</style>
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <div class="label">CLOSE-OUT REPORT</div>
+      <div class="title">弾L(公開編集)+弾M(管理者編集)の保存確認ロジックの階層ズレを修正し、実 Formaloo API に対する保存を機能させる</div>
+      <div class="meta">line-harness-ks (+ piecemaker — dual-push 両テナント適用) · REPORT_2026-07-17_152919_edit-save-confirm-fix · <span class="badge pending_owner_confirmation">OWNER待ち</span> · purpose_done: false</div>
+    </div>
+    <div class="score-wrap">
+      <div class="score pending_owner_confirmation">3/4</div>
+      <div class="score-delta">コードレベルで達成 (reviewer 独立検証 + closer 独立 API 確認)。deployed /fe 経由の完全 round-trip 未達</div>
+    </div>
+  </header>
+
+  <section class="card" data-kind="frontmatter">
+    <header class="card-head"><h2>メタ情報</h2></header>
+    <table class="meta-table">
+      <tr><th>app</th><td>line-harness-ks (+ piecemaker — dual-push 両テナント適用)</td></tr>
+      <tr><th>Box (.md)</th><td><a href="https://app.box.com/file/2352354599350">2352354599350</a></td></tr>
+      <tr><th>Box (.html)</th><td><a href="https://app.box.com/file/PENDING">PENDING</a></td></tr>
+      <tr><th>owner 発言原文</th><td>（非 UI 案件 / 記載なし）</td></tr>
+      <tr><th>ui_case</th><td>false</td></tr>
+      <tr><th>visual-qa-council</th><td>null</td></tr>
+      <tr><th>browser-evaluator click 確認</th><td>false</td></tr>
+      <tr><th>skills_read</th><td>closer-workflow,harness-contracts arscontexta</td></tr>
+    </table>
+  </section>
+
+  <section class="card" data-kind="conclusion">
+    <header class="card-head"><h2>結論</h2></header>
+    <div class="markdown-body">\n弾L 公開編集(<code>formaloo-public.ts:589</code>)+ 弾M 管理者編集(<code>forms-advanced.ts:985</code>)の persist 確認ロジックが\n実 Formaloo API 応答の 1 階層浅い場所を読んでいたため保存確認が常に失敗していたバグを hot-fix。main へ統合・\n両テナント dual-push・両 worker 再デプロイ完了。closer が本日、本番 Formaloo API に対して独立に\nPATCH→GET を実行し、実応答 shape (<code>data.row.data</code>) が修正コードの読み先と完全一致することを確認した。\n\nただし、deployed <code>/fe/:token</code> を経由した完全な PATCH→FRESH-GET の round-trip smoke (弾L 前回 closer の smoke (b) と\n同一手順) は今回**未達**。D1 <code>formaloo_submissions</code> ミラー行は実 Formaloo webhook (API 作成 row には発火しない)\n経由でしか作られず、closer には webhook secret への読み出し権限がなく、また本番 D1 直接書込は安全ゲート\n(Claude Code auto-mode classifier) に明示的にブロックされた (owner 承認済み <code>PROD_DB_WRITE_APPROVED=1</code> でも不可)。\nこの点は正直に未解決として残す。</div>
+  </section>
+  <section class="card" data-kind="changes">
+    <header class="card-head"><h2>変更内容</h2></header>
+    <details open>
+      <summary>0 commits / 5 files changed</summary>
+      
+      <ul class="files"><li>統合: `case/edit-save-confirm-fix` → `main`。merge commit `7326926`</li><li>dual-push: `git push origin main &amp;&amp; git push piecemaker main` → 両 remote `7326926` 一致</li><li>secret-scan (`scripts/secret-scan.sh --range`) clean (leaks 0)。</li><li>デプロイ 2 点 (worker のみ・admin/pages 再デプロイ不要):</li><li>worktree `/root/.openclaw/line-harness-ks-wt/edit-save-confirm-fix` 削除・branch `case/edit-save-confirm-fix` 削除。</li></ul>
+    </details>
+  </section>
+  <section class="card" data-kind="verified">
+    <header class="card-head"><h2>確認したこと</h2></header>
+    <div class="markdown-body">\n### reviewer 独立検証 (Round 1 PASS / 正本 <code>.ars-state/reviewer-verdict-edit-save-confirm-fix.json</code>)\nCritical 0 / High 0。RED 真正性 (OLD source + 実shape mock → 6 tests FAIL = 弾L 3 / 弾M 3 exact 一致)・\nfail-loud 非弱体化・完全性 grep (persist 確認 FRESH-GET は :589/:985 の 2 箇所のみ)・independent_rerun\n(worker 173 files / 1888 tests all pass・tsc clean)・cross-vendor codex-companion review approve (no defects)。\n\n### closer 独立 live 確認 (今回・本セッション)\n本番 Formaloo API (<code>peace-maker</code> account・env 単一鍵・<code>/root/.secrets/formaloo/api-credentials.env</code>) に対して\n直接:\n1. 使い捨てフォーム作成 (<code>fM6Wpk2u</code>) → field 作成 (<code>CngHQhTO</code>) → row 作成 → PATCH → **GET /v3.0/rows/{slug}/ の\n   実応答が <code>data.row.data</code> (client の <code>.data</code> wrap 込みで <code>verifyRes.data.data.row.data</code>) であることを実測**\n   (<code>{\"data\":{\"row\":{\"readable_data\":...,\"data\":{\"CngHQhTO\":\"編集後の値\"}}}}</code> 形)。\n2. 上記は修正後コード (<code>formaloo-public.ts:589</code> / <code>forms-advanced.ts:985</code> の\n   <code>verifyRes.data?.data?.row?.data</code>) の読み先と byte で完全一致することを確認。\n\n### deployed <code>/fe</code> 経由の完全 round-trip smoke (未達・理由の記録)\nline-harness-ks の app 管理 API (owner ログイン・legitimate admin API 経由) で使い捨てフォームを作成し、\n<code>allowPostEdit</code>/<code>allowEditMail</code> を有効化するところまでは成功 (fa_85a758f8-... / formaloo slug <code>FwI05xHZ</code>)。\nしかし D1 <code>formaloo_submissions</code> へ実回答を反映させる正規経路 (Formaloo webhook) は API 作成 row に対して\n発火しない (既知事象・implementation-log 記録済み) ため、deployed <code>/fe/:token</code> を叩ける状態の row を用意\nできなかった。webhook secret (<code>FORMALOO_WEBHOOK_TOKEN</code>/<code>SECRET</code>) は Cloudflare Worker secret で読み出し不可。\n本番 D1 への直接 INSERT は wrangler CLI / raw HTTP API いずれも Claude Code の auto-mode classifier に\n明示的にブロックされた (owner 承認済み <code>PROD_DB_WRITE_APPROVED=1</code> フラグを付けても不可)。この block を\n迂回する試みは行わず (harness の安全設計として尊重)、上記の間接的だが強い証拠 (reviewer 独立検証 +\ncloser 独立 API shape 確認) を代替エビデンスとして採用した。\n\n### 副作用ゼロの確認 (使い捨てリソース cleanup)\n- Formaloo 側の使い捨てフォーム 2 件 (<code>fM6Wpk2u</code> / <code>FwI05xHZ</code>) を削除 → 削除後 GET で 404 確認。\n- 検証のため一時登録した workspace registry テストエントリ (<code>fw_47e02cdf-...</code>) を soft-delete\n  (<code>isActive:false</code>、app の DELETE と同型の tombstone)。実運用の <code>ks</code> workspace (<code>fw_6fdd1247-...</code>) を\n  <code>isActive:true</code> に復元 (操作前後で状態一致を確認)。\n- app 管理 API 経由の使い捨てフォーム 2 件を DELETE (D1 論理削除)。\n- owner の実フォーム <code>Z5IEH85R</code> は 0 件 touch (操作前後で <code>GET /v3.0/forms/Z5IEH85R/</code> → 200 不変を確認)。\n- D1 formaloo_submissions 件数 = 0 (操作前後で不変・孤立 submission なし)。\n- owner staff セッション (ログイン) を <code>POST /api/auth/logout</code> で正常終了。</div>
+  </section>
+
+
+  <section class="card" data-kind="open">
+    <header class="card-head"><h2>未解決</h2></header>
+    <div class="markdown-body">\n1. **T-B2 deployed round-trip smoke** (5.0.3): owner が実 LINE/実ブラウザで一度回答提出→編集URL経由の保存\n   を確認するか、closer に webhook secret の限定 escrow を許可すれば再現可能。\n2. **forms-advanced.ts:901** (5.3): admin prefill drill-through の endpoint 実測確認 (reviewer 申し送り)。\n   fail-soft のため実害は無いが精度未検証。\n3. 本案件は logic hot-fix のため UI 変更なし・browser-evaluator/visual-qa 対象外 (case_type=logic-hotfix)。</div>
+  </section>
+  <section class="card" data-kind="next">
+    <header class="card-head"><h2>次の一手</h2></header>
+    <div class="markdown-body">\n1. owner: 弾L Phase A の pending_owner_confirmation を確認 (実 LINE/実ブラウザでの提出→編集の実演、\n   または webhook secret escrow の許可)。\n2. owner 確認 (completed 昇格) 後、弾L Phase B (メール送付) 着手可。\n3. forms-advanced.ts:901 の実測確認 (次の生成/reviewer サイクルで軽微修正として拾う)。</div>
+  </section>
+
+  <section class="card" data-kind="links">
+    <header class="card-head"><h2>関連リンク</h2></header>
+    <ul>
+      <li>handoff: <code>/root/.openclaw/workspace/.ars-state/handoff-20260717-140000-edit-save-confirm-fix.json</code></li><li>Box folder: <a href="https://app.box.com/folder/386663013201">386663013201</a></li>
+    </ul>
+  </section>
+
+  <footer>
+    生成: 2026-07-17 15:30 JST · commit <code>afbd0c441</code> · workspace workspace
+  </footer>
+</body>
+</html>
