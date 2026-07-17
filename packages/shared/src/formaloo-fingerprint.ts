@@ -69,6 +69,8 @@ function projectField(el: unknown): ProjectedField | null {
   // treasure-b1-palette: oembed(video) は装飾ゆえ FORMALOO_TO_HARNESS_TYPE 逆引きに載らない → meta と異なり
   //   fromFormalooField が oembed→video を保持するため fingerprint も explicit に射影する (drift 検知対象)。
   //   url 非空時のみ videoUrl を載せる (url 空/未載の false-drift 回避 / max_size=2048 ガードと同型)。
+  //   b1-field-polish: config.height (videoHeight) は cosmetic ゆえ **射影しない** (色と同型で fingerprint 対象外)。
+  //   height 変更で drift を鳴らさない + 既存 video に config.height を push しても SHA 不変 (false-drift ゼロ)。
   if (formalooType === 'oembed') {
     const proj: ProjectedField = {
       slug: typeof o.slug === 'string' ? o.slug : '',

@@ -74,6 +74,7 @@ import { resolveFormalooClient } from '../services/formaloo-client.js';
 import { pushDefinitionToFormaloo } from '../services/formaloo-sync.js';
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
 import { designColorFields, confirmDesignReflected, applyDesignImages } from '../services/formaloo-design.js';
+import { resolveRatingStarCustomCss } from '../services/formaloo-rating-css.js';
 import { ownerGate } from '../lib/owner-gate.js';
 import type { Env } from '../index.js';
 
@@ -543,6 +544,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           description: newDescription,
         });
         const slug = pushed.formalooSlug ?? form.formaloo_slug;
+        // b1-field-polish: 星色 custom_css を rating-gated で meta PATCH body に合流 (別キー disjoint・designColorFields 不改変)。
+        //   rating field ≥1 → 現行 custom_css を GET し managed block を非破壊 merge。rating 無/明示クリア/GET 失敗は {} (byte 不変)。
+        const ratingStarCssFields = slug
+          ? await resolveRatingStarCustomCss(client, slug, fields, designToPersist)
+          : {};
         // form-design: 色は既存 meta PATCH に **JSON-string RGBA** で合流 (update 意味論: design 未提供なら載せない)。
         //   partial update 破壊防止 (#9): incomingDesign でなく **merged designToPersist** を送り、単色変更でも
         //   remote に残る 6 色が古い形式/欠落で残らないよう 7 色を原子送する。design 未提供は空 {} (design=null 不可触)。
@@ -551,6 +557,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
               title: newTitle,
               description: newDescription ?? '',
               ...(designProvided ? designColorFields(designToPersist) : {}),
+              ...ratingStarCssFields,
             })
           : { ok: false as const, status: 0 };
         // form-design 画像: meta 成功後に replace(multipart)/remove(JSON null) を反映し、確定 S3 URL を再永続。

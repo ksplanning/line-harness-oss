@@ -5,12 +5,14 @@ import {
   LINE_PRESET_PALETTES,
   FORM_DESIGN_COLOR_KEYS,
   MAX_IMAGE_UPLOAD_BYTES,
+  DEFAULT_RATING_STAR_COLOR,
   type FormDesign,
   type FormDesignColorKey,
   type FormDesignImages,
   type FormDesignImageUpload,
   type FormDisplayType,
 } from '@line-crm/shared'
+import { RATING_STAR_PALETTE } from './field-types'
 
 // =============================================================================
 // form-design (Batch D) — ビルダー内「デザイン」パネル。テーマ色プリセット + 個別カラー + ロゴ/カバー画像。
@@ -51,6 +53,8 @@ export interface DesignPanelProps {
   onFormTypeChange?: (t: FormDisplayType) => void
   /** jump rule 存在フラグ。simple へ戻す時の逆ガード警告に使う。 */
   hasJumpRule?: boolean
+  /** b1-field-polish: rating field 存在フラグ。true のとき form-level「評価スターの色」picker を出す。 */
+  hasRating?: boolean
 }
 
 /** 表示中の画像プレビュー URL: pending replace(dataUrl) > 既存 URL (remove 指定なら null)。 */
@@ -65,7 +69,7 @@ function colorInputValue(v: string | null | undefined): string {
   return typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v : '#FFFFFF'
 }
 
-export default function DesignPanel({ design, images, onChange, onImagesChange, formType, onFormTypeChange, hasJumpRule }: DesignPanelProps) {
+export default function DesignPanel({ design, images, onChange, onImagesChange, formType, onFormTypeChange, hasJumpRule, hasRating }: DesignPanelProps) {
   const [imageError, setImageError] = useState<string | null>(null)
   const effectiveFormType: FormDisplayType = formType ?? 'simple'
   const setColor = (key: FormDesignColorKey, value: string) => {
@@ -176,6 +180,36 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
           ))}
         </div>
       </div>
+
+      {/* b1-field-polish: 評価スターの色 (form-level・rating field 有時のみ)。本文色とは decouple = 星だけ着色。
+          form 単位ゆえ per-field settings でなく design region に置く (per-field 誤認防止 / spec §4)。 */}
+      {hasRating && (
+        <div data-testid="rating-star-color">
+          <div className="mb-1.5 text-xs font-bold text-gray-500">評価スターの色</div>
+          <div className="flex flex-wrap gap-2">
+            {RATING_STAR_PALETTE.map((c) => {
+              const current = (design.ratingStarColor ?? DEFAULT_RATING_STAR_COLOR).toUpperCase()
+              const selected = current === c.value.toUpperCase()
+              return (
+                <button
+                  key={c.value}
+                  type="button"
+                  aria-label={`スター色 ${c.label}`}
+                  aria-pressed={selected}
+                  onClick={() => onChange({ ...design, ratingStarColor: c.value })}
+                  className={`h-8 w-8 rounded-full ${selected ? 'border-2 border-gray-800 ring-1 ring-gray-300' : 'border border-gray-200'}`}
+                  style={{ backgroundColor: c.value }}
+                >
+                  <span className="sr-only">{c.label}</span>
+                </button>
+              )
+            })}
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-gray-400">
+            評価（星）の色です。既定は黄色。星だけに色がつき、本文の色は変わりません。公開ページに保存時に反映されます。
+          </p>
+        </div>
+      )}
 
       {/* ロゴ / カバー画像 */}
       <div>

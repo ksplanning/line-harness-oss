@@ -1,4 +1,4 @@
-import { isDecorationType, type HarnessFieldType, type RatingSubType } from '@line-crm/shared'
+import { isDecorationType, DEFAULT_RATING_STAR_COLOR, type HarnessFieldType, type RatingSubType } from '@line-crm/shared'
 
 // =============================================================================
 // パレット field 種別メタ (F-2 / T-B1) — 素人向け日本語ラベル (英語 type 名を見せない / ui-design)。
@@ -42,6 +42,32 @@ export const RATING_SUB_TYPE_OPTIONS: { value: RatingSubType; label: string }[] 
   { value: 'like_dislike', label: '良い / 悪い' },
   { value: 'nps', label: 'NPS（0〜10）' },
   { value: 'score', label: '点数' },
+]
+
+/**
+ * b1-field-polish: video(oembed) の表示サイズ preset (小/中/大→高さ px)。builder の per-field 動画サイズ select が参照。
+ * 全 preset が再生可能サイズ (既定 100px 薄帯より大)。値は videoHeight whitelist (/^\d{2,4}(px|vw)$/) を満たす。
+ * 未選択 (空) は push 時 DEFAULT_VIDEO_HEIGHT (250px) を補完 = builder は「（既定）」表示。
+ */
+export const VIDEO_SIZE_PRESETS: { value: string; label: string }[] = [
+  { value: '200px', label: '小' },
+  { value: '280px', label: '中' },
+  { value: '400px', label: '大' },
+]
+
+/**
+ * b1-field-polish: 評価スター色の curated パレット (form-level 星色 picker が参照)。先頭 = 既定黄 (単一正本)。
+ * 各色は白地/黒地の両方で視認可能なレンジに curated (相対輝度 40〜230 = コントラスト保証 / R3)。
+ */
+export const RATING_STAR_PALETTE: { value: string; label: string }[] = [
+  { value: DEFAULT_RATING_STAR_COLOR, label: '黄' }, // #F5B301 (既定)
+  { value: '#E39A00', label: '金' },
+  { value: '#FB8C00', label: '橙' },
+  { value: '#E53935', label: '赤' },
+  { value: '#EC407A', label: '桃' },
+  { value: '#3B82F6', label: '青' },
+  { value: '#22C55E', label: '緑' },
+  { value: '#8B5CF6', label: '紫' },
 ]
 
 export const FIELD_CATEGORIES: FieldCategory[] = ['入力', '選択', '高度', '装飾']

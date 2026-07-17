@@ -55,6 +55,12 @@ export interface FormDesign {
   coverImageUrl?: string | null;
   backgroundImageUrl?: string | null;
   presetId?: string | null;
+  /**
+   * b1-field-polish: 評価スター(rating 星)の色 (hex)。**本文 flat 7 色とは decouple** (form custom_css 経由で
+   * 星クラスのみ着色 = 黄星でも本文は不変)。key absent = 既定黄を使う / explicit null = 明示クリア(注入なし) /
+   * valid hex = その色。designColorFields (本文色 push) には **入らない** (別経路・二重実装回避 / D-2)。
+   */
+  ratingStarColor?: string | null;
 }
 
 /** UI が収集し、worker が multipart PATCH に変換する画像 upload intent。 */
@@ -75,6 +81,18 @@ export interface FormDesignImages {
 /** `#RGB` または `#RRGGBB` のみを受理する。 */
 export function isValidHexColor(s: unknown): s is string {
   return typeof s === 'string' && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(s);
+}
+
+/**
+ * b1-field-polish: 評価スターの既定色 (単一正本・OD-2 amber)。spike hosted 実測で黒星 #37352F を
+ * rgb(245,179,1)=#F5B301 に置換し「星のみ黄色・本文不変」を実証済 (evidence/hosted-yellow-star.png)。
+ * owner 未設定でも「映える黄色」で出す既定 (push 時 ratingStarColor absent → この値を使う)。
+ */
+export const DEFAULT_RATING_STAR_COLOR = '#F5B301';
+
+/** 評価スターの既定色を返す (web/worker がハードコピーせず参照する単一正本 helper)。 */
+export function defaultRatingStarColor(): string {
+  return DEFAULT_RATING_STAR_COLOR;
 }
 
 function normalizeHexColor(hex: string): string | null {
@@ -182,6 +200,16 @@ export function normalizeFormDesign(raw: unknown): FormDesign {
   }
   if (hasOwn(input, 'presetId') && typeof input.presetId === 'string') {
     design.presetId = input.presetId;
+  }
+  // b1-field-polish: ratingStarColor は decouple 星色 (本文 7 色とは別 key)。explicit null は「明示クリア(注入なし)」の
+  // signal ゆえ **保持** (7 色と異なり null を落とさない)。valid hex は正規化保持・不正/非 hex は key ごと drop。
+  if (hasOwn(input, 'ratingStarColor')) {
+    if (input.ratingStarColor === null) {
+      design.ratingStarColor = null;
+    } else {
+      const starHex = formalooColorToHex(input.ratingStarColor as FormalooColorValue);
+      if (starHex !== null) design.ratingStarColor = starHex;
+    }
   }
 
   return design;

@@ -9,3 +9,4 @@ export * from "./permissions";
 export * from "./formaloo-forms";
 export * from "./formaloo-fingerprint";
 export * from "./form-design";
+export * from "./formaloo-rating-style";
