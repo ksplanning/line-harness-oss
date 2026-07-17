@@ -109,6 +109,43 @@ function PreviewControl({ field }: { field: HarnessField }) {
           <p className="text-xs text-gray-500">ファイルを添付する項目です。実際の選択は公開フォームで行えます。</p>
         </div>
       )
+    case 'rating': {
+      // treasure-b1-palette: sub_type 別ウィジェット (自前描画・最小)。hosted は Formaloo の rating ウィジェットで実描画。
+      const sub = field.config.ratingSubType ?? 'star'
+      if (sub === 'like_dislike') {
+        return (
+          <div data-testid="preview-rating" className="flex gap-4 text-2xl" role="group" aria-label={field.label}>
+            <span aria-hidden>👍</span>
+            <span aria-hidden>👎</span>
+          </div>
+        )
+      }
+      if (sub === 'nps') {
+        return (
+          <div data-testid="preview-rating" className="flex flex-wrap gap-1" role="group" aria-label={field.label}>
+            {Array.from({ length: 11 }, (_, i) => (
+              <span key={i} className="inline-flex h-7 w-7 items-center justify-center rounded border border-gray-300 text-xs text-gray-600">{i}</span>
+            ))}
+          </div>
+        )
+      }
+      if (sub === 'score') {
+        return <input data-testid="preview-rating" id={controlId} aria-label={field.label} type="number" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      }
+      // star / embeded → 星 5 個 (embeded は顔アイコン等だが最小描画は星で代表)。
+      return (
+        <div data-testid="preview-rating" className="flex gap-1 text-2xl" style={{ color: '#FBBF24' }} role="group" aria-label={field.label}>
+          {Array.from({ length: 5 }, (_, i) => <span key={i} aria-hidden>★</span>)}
+        </div>
+      )
+    }
+    case 'signature':
+      // treasure-b1-palette: 署名パッド placeholder (プレビューは手書き不可 = 公開フォームで入力)。
+      return (
+        <div data-testid="preview-signature" className="flex h-24 items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 text-xs text-gray-400">
+          ここに署名（公開フォームで手書き入力できます）
+        </div>
+      )
     default:
       return null
   }
@@ -121,6 +158,28 @@ function PreviewField({ field, themeColor }: { field: HarnessField; themeColor: 
         <div data-testid="preview-section" className="rounded-lg bg-[#F0FFF6] px-4 py-3">
           <h3 className="font-bold text-gray-900">{field.label}</h3>
           {field.config.text && <p className="mt-1 whitespace-pre-wrap text-sm text-gray-600">{field.config.text}</p>}
+        </div>
+      )
+    }
+
+    if (field.type === 'video') {
+      // treasure-b1-palette: video(oembed) の埋め込み枠 (自前描画・最小)。hosted は Formaloo の oembed iframe で実再生。
+      const url = field.config.videoUrl
+      return (
+        <div data-testid="preview-video" className="space-y-1">
+          {url ? (
+            <div className="flex items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-6 text-sm text-gray-600">
+              <span aria-hidden className="text-2xl">▶</span>
+              <span className="min-w-0 flex-1 truncate">{url}</span>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center text-xs text-gray-400">
+              動画URL未設定
+            </div>
+          )}
+          <p data-testid="preview-video-note" className="text-[10px] text-gray-400 leading-snug">
+            公開フォームでは Formaloo が動画を埋め込み再生します（YouTube/Vimeo 等）。このプレビューは枠の確認用です。
+          </p>
         </div>
       )
     }
