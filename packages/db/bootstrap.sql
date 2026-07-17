@@ -718,6 +718,24 @@ CREATE TABLE link_clicks (
   clicked_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE lp_pages (
+  slug       TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'stopped')),
+  entry_key  TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE lp_views (
+  id          TEXT PRIMARY KEY,
+  lp_slug     TEXT NOT NULL,
+  friend_id   TEXT,
+  friend_name TEXT,
+  referrer    TEXT,
+  viewed_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE menus (
   id                    TEXT PRIMARY KEY,
   line_account_id       TEXT NOT NULL,
@@ -1295,6 +1313,10 @@ CREATE INDEX idx_line_accounts_display_order
 CREATE INDEX idx_link_clicks_friend ON link_clicks (friend_id);
 
 CREATE INDEX idx_link_clicks_link ON link_clicks (tracked_link_id);
+
+CREATE INDEX idx_lp_views_friend ON lp_views (friend_id);
+
+CREATE INDEX idx_lp_views_slug ON lp_views (lp_slug, viewed_at);
 
 CREATE INDEX idx_menus_account_sort ON menus (line_account_id, sort_order);
 

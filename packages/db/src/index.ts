@@ -42,6 +42,7 @@ export * from './canned-responses';
 export * from './campaigns';
 export * from './template-packs';
 export * from './rich-menu-analytics';
+export * from './lp-hosting';
 
 /**
  * Thin wrapper around D1Database.
