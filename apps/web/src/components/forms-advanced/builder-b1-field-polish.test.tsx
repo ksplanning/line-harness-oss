@@ -9,6 +9,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import FormBuilder from './builder'
 import { VIDEO_SIZE_PRESETS } from './field-types'
+import { DEFAULT_RATING_STAR_COLOR } from '@line-crm/shared'
 import type { HarnessField, FormDesign } from '@line-crm/shared'
 
 afterEach(() => cleanup())
@@ -66,5 +67,30 @@ describe('b1-field-polish T-D1 — builder video 表示サイズ select', () => 
     fireEvent.click(screen.getByText('保存'))
     const saved = onSave.mock.calls[0][0] as { fields: HarnessField[] }
     expect(saved.fields[0].config.videoUrl).toBe('https://youtu.be/abc')
+  })
+})
+
+describe('b1-field-polish T-D2 — builder 星色 picker (form-level)', () => {
+  it('rating field 有フォームで「評価スターの色」picker が出て、選択が design.ratingStarColor に反映', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ initialFields: [fld('rating')], onSave })} />)
+    const blue = screen.getByLabelText('スター色 青')
+    expect(blue).toBeTruthy()
+    fireEvent.click(blue)
+    fireEvent.click(screen.getByText('保存'))
+    const saved = onSave.mock.calls[0][0] as { design?: FormDesign }
+    expect(saved.design?.ratingStarColor).toBe('#3B82F6')
+  })
+
+  it('rating field 無しフォームでは星色 picker を出さない', () => {
+    render(<FormBuilder {...base({ initialFields: [fld('text')] })} />)
+    expect(screen.queryByLabelText('スター色 青')).toBeNull()
+  })
+
+  it('未設定時は既定黄が選択状態 (aria-pressed)', () => {
+    render(<FormBuilder {...base({ initialFields: [fld('rating')] })} />)
+    const yellow = screen.getByLabelText('スター色 黄')
+    expect(yellow.getAttribute('aria-pressed')).toBe('true')
+    expect(DEFAULT_RATING_STAR_COLOR).toBe('#F5B301')
   })
 })

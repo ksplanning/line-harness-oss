@@ -899,6 +899,8 @@ export default function FormBuilder(props: BuilderProps) {
   const selected = fields.find((f) => f.id === selectedId) ?? null
   // form-route-branching: jump rule 有無 (DesignPanel 逆ガード警告の入力)。
   const hasJumpRule = logic.some((r) => r.action === 'jump')
+  // b1-field-polish: rating field 有無 (DesignPanel の form-level 星色 picker 表示条件)。
+  const hasRating = fields.some((f) => f.type === 'rating')
   // route-terminal-submit (T-B2): lint(a)なだれ込み/(b)送信不能/(d)データ損失 の非ブロッキング警告。
   //   純 show/hide フォームは空 = 誤警告 0 (computeRouteTerminalWarnings が保証)。
   const routeTerminalWarnings = computeRouteTerminalWarnings(fields, logic, formType)
@@ -1159,7 +1161,7 @@ export default function FormBuilder(props: BuilderProps) {
 
         {mode !== 'desktop' && mobileTab === 'design' && (
           <div data-testid="design-pane" className="w-full rounded-xl bg-gray-50 p-3">
-            <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={hasJumpRule} />
+            <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={hasJumpRule} hasRating={hasRating} />
           </div>
         )}
 
@@ -1172,7 +1174,7 @@ export default function FormBuilder(props: BuilderProps) {
               <details data-testid="design-pane" className="rounded-lg border border-gray-200 bg-white p-3" open>
                 <summary className="cursor-pointer text-xs font-bold text-gray-500">デザイン</summary>
                 <div className="mt-3">
-                  <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={hasJumpRule} />
+                  <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={hasJumpRule} hasRating={hasRating} />
                 </div>
               </details>
             )}
