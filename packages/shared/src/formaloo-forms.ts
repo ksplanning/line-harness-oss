@@ -21,9 +21,21 @@ export const FORMALOO_FIELD_TYPES = [
   'phone',
   'date',
   'file',
+  // treasure-b1-palette: 入力型 additive (rating=星/良悪/NPS/点数・signature=手書きサイン)。逆引き自動生成。
+  'rating',
+  'signature',
 ] as const;
 
-export const DECORATION_FIELD_TYPES = ['section', 'page_break'] as const;
+// treasure-b1-palette: video は装飾 (回答なし・required 常時 false) だが Formaloo type は oembed (下 HARNESS_TO_FORMALOO_TYPE)。
+export const DECORATION_FIELD_TYPES = ['section', 'page_break', 'video'] as const;
+
+/**
+ * rating (Formaloo type=rating) の sub_type 実値 (spike 実測: OPTIONS /v3.0/fields/rating/ choices)。
+ * "embeded" は Formaloo の綴りママ。既定 star は「未設定」扱い (push/pull/fingerprint で drop = maxSizeKb=2048 と同型)。
+ * UI 露出は star/like_dislike/nps/score の 4 種 (embeded は pull 安全のため受理のみ) = field-types.ts RATING_SUB_TYPE_OPTIONS。
+ */
+export const RATING_SUB_TYPES = ['star', 'like_dislike', 'nps', 'score', 'embeded'] as const;
+export type RatingSubType = (typeof RATING_SUB_TYPES)[number];
 export type HarnessDecorationType = (typeof DECORATION_FIELD_TYPES)[number];
 
 export type HarnessFieldType = (typeof FORMALOO_FIELD_TYPES)[number] | HarnessDecorationType;
@@ -44,8 +56,12 @@ export const HARNESS_TO_FORMALOO_TYPE: Record<HarnessFieldType, string> = {
   phone: 'phone',
   date: 'date',
   file: 'file',
+  // treasure-b1-palette: rating/signature は同名。video は装飾だが Formaloo type=oembed (meta ではない = explicit)。
+  rating: 'rating',
+  signature: 'signature',
   section: 'meta',
   page_break: 'meta',
+  video: 'oembed',
 };
 
 /** 逆引き (Formaloo type 名 → harness 種別 / pull 用)。 */
@@ -82,6 +98,16 @@ export interface HarnessFieldConfig {
    * push 由来の `[{title}]`(slug 無し) では未設定 = 新規未 push field は case-b (保存後 再 pull で解決)。
    */
   choiceItems?: { title: string; slug: string }[];
+  /**
+   * rating (Formaloo sub_type) の評価スタイル (treasure-b1-palette)。既定 star は「未設定」扱いで
+   * push/pull/fingerprint から drop (既存フォーム byte 不変ガード = maxSizeKb=2048 と同型)。UI は star を undefined に写像。
+   */
+  ratingSubType?: RatingSubType;
+  /**
+   * video (Formaloo oembed) の埋め込み URL (YouTube/Vimeo 等 / treasure-b1-palette)。
+   * 空/未設定は保存 hold (validate reject) — 空 url の oembed PATCH は 500 になるため常に非空を push (spike 実測)。
+   */
+  videoUrl?: string;
 }
 
 export interface HarnessField {
@@ -260,6 +286,24 @@ export function validateHarnessField(
     if (typeof rawCfg.description !== 'string') return { ok: false, error: 'config.description must be string' };
     config.description = rawCfg.description;
   }
+  // treasure-b1-palette: rating の sub_type は 5 enum whitelist で正規化 (M-21 未知素通し禁止)。
+  //   未定義は既定 star 扱いで config に載せない (既存 form byte 不変 = maxSizeKb と同型)。
+  if (rawCfg.ratingSubType !== undefined) {
+    if (typeof rawCfg.ratingSubType !== 'string' || !(RATING_SUB_TYPES as readonly string[]).includes(rawCfg.ratingSubType)) {
+      return { ok: false, error: `config.ratingSubType must be one of ${RATING_SUB_TYPES.join('/')}` };
+    }
+    config.ratingSubType = rawCfg.ratingSubType as RatingSubType;
+  }
+  // treasure-b1-palette: video の埋め込み URL は string 必須 (非 string reject)。値は下の video-url ガードで非空を強制。
+  if (rawCfg.videoUrl !== undefined) {
+    if (typeof rawCfg.videoUrl !== 'string') return { ok: false, error: 'config.videoUrl must be string' };
+    config.videoUrl = rawCfg.videoUrl;
+  }
+  // treasure-b1-palette: video (oembed) は url 必須 = 空/未設定は保存 hold (reject)。
+  //   空 url の oembed PATCH は 500 になるため、空 url を push 経路へ通さない (spike 実測 / honest surface)。
+  if (o.type === 'video' && !config.videoUrl) {
+    return { ok: false, error: '動画の埋め込みURLを入力してください（YouTube/Vimeo 等）' };
+  }
 
   return {
     ok: true,
@@ -292,6 +336,16 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
       position: field.position,
     };
   }
+  // treasure-b1-palette: video は装飾だが Formaloo type=oembed (meta ではない = explicit 分岐)。
+  //   url は常に emit する (無いと oembed PATCH=500・spike 実測)。validate が空 url を保存 hold で弾く。
+  if (field.type === 'video') {
+    return {
+      type: 'oembed',
+      title: field.label,
+      url: field.config.videoUrl ?? '',
+      position: field.position,
+    };
+  }
   const p: Record<string, unknown> = {
     type: HARNESS_TO_FORMALOO_TYPE[field.type],
     title: field.label,
@@ -313,6 +367,8 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
   if (c.allowedExtensions !== undefined) p.allowed_extensions = [...c.allowedExtensions];
   // form-media-limits ①: max_size は設定時のみ送る (未設定は既存 push byte 不変 / idempotent-push 整合 = RK-2)。
   if (c.maxSizeKb !== undefined) p.max_size = c.maxSizeKb;
+  // treasure-b1-palette: rating の sub_type は設定時のみ送る (未設定=既定 star ゆえ送らない = 後方互換ガード)。signature は追加なし。
+  if (c.ratingSubType !== undefined) p.sub_type = c.ratingSubType;
   return p;
 }
 
@@ -359,6 +415,18 @@ export function fromFormalooField(
     return null;
   }
 
+  // treasure-b1-palette: oembed(video) は装飾ゆえ FORMALOO_TO_HARNESS_TYPE 逆引きに載らない → meta と同様 explicit 分岐。
+  if (formalooType === 'oembed') {
+    return {
+      id,
+      type: 'video',
+      label: typeof o.title === 'string' ? o.title : '',
+      required: false,
+      position: typeof o.position === 'number' ? o.position : 0,
+      config: { videoUrl: typeof o.url === 'string' ? o.url : '' },
+    };
+  }
+
   const type = FORMALOO_TO_HARNESS_TYPE[formalooType];
   if (!type) return null; // MVP subset 外 = 復元しない (M-21)
 
@@ -373,6 +441,8 @@ export function fromFormalooField(
   }
   // form-media-limits ①: max_size を pull。既定 2048(=2MB) と未載は set しない (既存フォーム pull 不変 = 後方互換ガード / RK-1)。
   if (typeof o.max_size === 'number' && Number.isFinite(o.max_size) && o.max_size !== 2048) config.maxSizeKb = o.max_size;
+  // treasure-b1-palette: rating の sub_type を pull。既定 star は drop (既存 form 不変ガード = maxSizeKb=2048 と同型)。
+  if (type === 'rating' && typeof o.sub_type === 'string' && o.sub_type !== 'star') config.ratingSubType = o.sub_type as RatingSubType;
   if (type === 'choice' || type === 'dropdown' || type === 'multiple_select') {
     const rawItems = Array.isArray(o.choice_items) ? (o.choice_items as unknown[]) : [];
     const sorted = rawItems
