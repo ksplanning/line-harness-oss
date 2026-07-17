@@ -336,6 +336,16 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
       position: field.position,
     };
   }
+  // treasure-b1-palette: video は装飾だが Formaloo type=oembed (meta ではない = explicit 分岐)。
+  //   url は常に emit する (無いと oembed PATCH=500・spike 実測)。validate が空 url を保存 hold で弾く。
+  if (field.type === 'video') {
+    return {
+      type: 'oembed',
+      title: field.label,
+      url: field.config.videoUrl ?? '',
+      position: field.position,
+    };
+  }
   const p: Record<string, unknown> = {
     type: HARNESS_TO_FORMALOO_TYPE[field.type],
     title: field.label,
@@ -357,6 +367,8 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
   if (c.allowedExtensions !== undefined) p.allowed_extensions = [...c.allowedExtensions];
   // form-media-limits ①: max_size は設定時のみ送る (未設定は既存 push byte 不変 / idempotent-push 整合 = RK-2)。
   if (c.maxSizeKb !== undefined) p.max_size = c.maxSizeKb;
+  // treasure-b1-palette: rating の sub_type は設定時のみ送る (未設定=既定 star ゆえ送らない = 後方互換ガード)。signature は追加なし。
+  if (c.ratingSubType !== undefined) p.sub_type = c.ratingSubType;
   return p;
 }
 
@@ -403,6 +415,18 @@ export function fromFormalooField(
     return null;
   }
 
+  // treasure-b1-palette: oembed(video) は装飾ゆえ FORMALOO_TO_HARNESS_TYPE 逆引きに載らない → meta と同様 explicit 分岐。
+  if (formalooType === 'oembed') {
+    return {
+      id,
+      type: 'video',
+      label: typeof o.title === 'string' ? o.title : '',
+      required: false,
+      position: typeof o.position === 'number' ? o.position : 0,
+      config: { videoUrl: typeof o.url === 'string' ? o.url : '' },
+    };
+  }
+
   const type = FORMALOO_TO_HARNESS_TYPE[formalooType];
   if (!type) return null; // MVP subset 外 = 復元しない (M-21)
 
@@ -417,6 +441,8 @@ export function fromFormalooField(
   }
   // form-media-limits ①: max_size を pull。既定 2048(=2MB) と未載は set しない (既存フォーム pull 不変 = 後方互換ガード / RK-1)。
   if (typeof o.max_size === 'number' && Number.isFinite(o.max_size) && o.max_size !== 2048) config.maxSizeKb = o.max_size;
+  // treasure-b1-palette: rating の sub_type を pull。既定 star は drop (既存 form 不変ガード = maxSizeKb=2048 と同型)。
+  if (type === 'rating' && typeof o.sub_type === 'string' && o.sub_type !== 'star') config.ratingSubType = o.sub_type as RatingSubType;
   if (type === 'choice' || type === 'dropdown' || type === 'multiple_select') {
     const rawItems = Array.isArray(o.choice_items) ? (o.choice_items as unknown[]) : [];
     const sorted = rawItems

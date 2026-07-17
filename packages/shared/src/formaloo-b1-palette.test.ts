@@ -21,6 +21,8 @@ import {
   FORMALOO_TO_HARNESS_TYPE,
   isDecorationType,
   validateHarnessField,
+  toFormalooFieldPayload,
+  fromFormalooField,
   computeRouteTerminalWarnings,
   type HarnessField,
   type HarnessLogicRule,
@@ -138,5 +140,86 @@ describe('B1 video — 装飾として page-segment/logic で skip (T-C5)', () =
     ];
     const warnings = computeRouteTerminalWarnings(fields, logic, 'multi_step');
     expect(warnings.some((w) => w.includes('なだれ込み'))).toBe(false);
+  });
+});
+
+// =============================================================================
+// push / pull round-trip (C2)
+// =============================================================================
+
+/** harness field → Formaloo read-shape (push payload + slug + サーバ既定) → harness field で読み戻す。 */
+function roundTrip(f: HarnessField, serverDefaults: Record<string, unknown> = {}): HarnessField | null {
+  const payload = toFormalooFieldPayload(f);
+  const readShape = { ...payload, slug: f.id, ...serverDefaults };
+  return fromFormalooField(readShape, (s) => s);
+}
+
+describe('B1 rating — push sub_type (T-A3)', () => {
+  test('ratingSubType=nps は sub_type:"nps" を emit', () => {
+    const p = toFormalooFieldPayload(field('rating', { ratingSubType: 'nps' }, { required: true }));
+    expect(p.type).toBe('rating');
+    expect(p.sub_type).toBe('nps');
+  });
+  test('ratingSubType 未設定は sub_type キーを含まない (既定 star)', () => {
+    const p = toFormalooFieldPayload(field('rating', {}));
+    expect('sub_type' in p).toBe(false);
+  });
+});
+
+describe('B1 rating — pull sub_type + star drop (T-A4)', () => {
+  test('sub_type=nps → config.ratingSubType=nps', () => {
+    const f = fromFormalooField({ slug: 'r1', type: 'rating', title: '評価', required: true, position: 0, sub_type: 'nps' });
+    expect(f?.type).toBe('rating');
+    expect(f?.config.ratingSubType).toBe('nps');
+  });
+  test('sub_type=star (既定) は config.ratingSubType を set しない (後方互換 drop)', () => {
+    const f = fromFormalooField({ slug: 'r1', type: 'rating', title: '評価', required: true, position: 0, sub_type: 'star' });
+    expect('ratingSubType' in (f?.config ?? {})).toBe(false);
+  });
+});
+
+describe('B1 rating — push→pull round-trip 対称 (T-A5 / 5 sub_type)', () => {
+  test('star (canonical=unset) は round-trip 対称 (star drop)', () => {
+    const original = field('rating', {}, { id: 'r1', required: true, label: '満足度' });
+    // Formaloo は未設定を star で保存 → server default sub_type:'star' を注入
+    const back = roundTrip(original, { sub_type: 'star' });
+    expect(back).toEqual(original);
+  });
+  test.each(['like_dislike', 'nps', 'score', 'embeded'] as const)('sub_type=%s は round-trip 対称', (sub) => {
+    const original = field('rating', { ratingSubType: sub }, { id: 'r1', required: true, label: '満足度' });
+    const back = roundTrip(original);
+    expect(back).toEqual(original);
+  });
+});
+
+describe('B1 signature — push/pull round-trip (T-B2 / 固有 config なし)', () => {
+  test('push は {type:signature,title,required,position} を emit', () => {
+    const p = toFormalooFieldPayload(field('signature', {}, { required: true, label: 'サイン' }));
+    expect(p).toEqual({ type: 'signature', title: 'サイン', required: true, position: 0 });
+  });
+  test('pull は {type:signature} を復元・round-trip 対称', () => {
+    const original = field('signature', {}, { id: 's1', required: true, label: 'サイン' });
+    expect(roundTrip(original)).toEqual(original);
+  });
+});
+
+describe('B1 video — push oembed url 常時 emit (T-C3)', () => {
+  test('{type:video,config:{videoUrl:X}} → {type:oembed,url:X,title,position} (url 常時)', () => {
+    const p = toFormalooFieldPayload(field('video', { videoUrl: 'https://youtu.be/x' }, { label: '説明動画', position: 2 }));
+    expect(p).toEqual({ type: 'oembed', title: '説明動画', url: 'https://youtu.be/x', position: 2 });
+    expect('url' in p).toBe(true); // 無いと PATCH 500 (spike 実測)
+  });
+});
+
+describe('B1 video — pull oembed→video round-trip (T-C4)', () => {
+  test('{type:oembed,url:X} → {type:video,config:{videoUrl:X},required:false}', () => {
+    const f = fromFormalooField({ slug: 'v1', type: 'oembed', title: '説明動画', position: 2, url: 'https://youtu.be/x' });
+    expect(f?.type).toBe('video');
+    expect(f?.required).toBe(false);
+    expect(f?.config.videoUrl).toBe('https://youtu.be/x');
+  });
+  test('video round-trip 対称', () => {
+    const original = field('video', { videoUrl: 'https://youtu.be/x' }, { id: 'v1', label: '説明動画', position: 2 });
+    expect(roundTrip(original)).toEqual(original);
   });
 });
