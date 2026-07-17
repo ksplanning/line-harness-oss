@@ -124,15 +124,18 @@ function stubFormaloo(opts: { persist?: boolean } = {}): { calls: ApiCall[] } {
     if (method === 'GET' && /\/v3\.0\/forms\/[^/]+\/rows\/\?/.test(url)) {
       return new Response(JSON.stringify({ data: { rows: [] } }), { status: 200 });
     }
-    // 単一 row PATCH/GET: client は HTTP body を .data に包む → route は .data.data を読む = body は { data: <values> } の単一ラッパ。
+    // 単一 row PATCH/GET: client は HTTP body を .data に包む。実 Formaloo GET /v3.0/rows/{slug}/ の実応答
+    // (closer live smoke 実測) は { data: { row: { data: <flat slug map>, readable_data, rendered_data } } }。
+    // route は verifyRes.data.data.row.data の flat slug map を読む。旧 stub は { data: <flat> } と 1 階層浅く、
+    // 実 API と乖離していたため persist 確認バグ (常に「保存できませんでした」) を検出できなかった (再発防止 pin)。
     const m = url.match(/\/v3\.0\/rows\/([^/]+)\/$/);
     if (m) {
       const slug = m[1];
-      if (method === 'PATCH') {
-        if (persist) store[slug] = { ...(store[slug] ?? {}), ...(body as Record<string, unknown>) };
-        return new Response(JSON.stringify({ data: store[slug] ?? {} }), { status: 200 });
+      if (method === 'PATCH' && persist) {
+        store[slug] = { ...(store[slug] ?? {}), ...(body as Record<string, unknown>) };
       }
-      return new Response(JSON.stringify({ data: store[slug] ?? {} }), { status: 200 });
+      const rowData = store[slug] ?? {};
+      return new Response(JSON.stringify({ data: { row: { data: rowData, readable_data: rowData, rendered_data: [] } } }), { status: 200 });
     }
     return new Response(JSON.stringify({ data: {} }), { status: 200 });
   }));
