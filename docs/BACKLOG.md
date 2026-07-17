@@ -367,3 +367,18 @@ owner 決定（D-0・2026-07-17）: OD-1 = 8候補すべて追加(dark-sumi/dark
 ### 💡 任意磨き込み（後回し可・自動着手禁止）
 - [ ] [OPTIONAL-POLISH] preset badge stale（builder setColor 明示 null 送信 or PUT merge を presetId クリア時 replace 化・reviewer round1/2 申し送り）
 - [ ] [OPTIONAL-POLISH] dark preset の入力欄（PreviewControl・builder内プレビューのみ）は白のまま=可読だが fieldColor 非追随（fidelity のみ・legibility 問題なし・reviewer round2 申し送り）
+
+---
+
+## forms-list-count-fix — 高機能フォーム一覧の回答数カウント修理（owner 判断待ち follow-up）
+
+計画正本: `.plans/2026-07-17-forms-list-count-fix/{spec,plan,tasks}.md`
+
+owner 実機報告（2026-07-17）「高機能フォーム一覧の　回答が０件」を修理（main merge `1b693fb`）。一覧の `submitCount` 読取源を `formaloo_forms.submit_count`（harness-only カウンタ）から D1 ミラー行数（`formaloo_submissions` の form 別 COUNT）へ切替え。deployed piecemaker 実機（headless chrome 実レンダー）で fa_5127eb98 の一覧カウント=4 を確認・ks/piecemaker 両テナントでミラー重複行なし（total==distinct_ids）を D1 直接確認。
+
+### O-2（owner 判断・自動着手禁止）
+- [ ] **未閲覧フォームの count 完全鮮度化** — 今回の修理は「一覧描画時、既に reconcile 済み（閲覧済み）のミラー行数」を表示する。**一度も回答データページを開いていない新規フォームは、実際に回答があっても一覧カウントが 0 のまま**（ミラーが reconcile-on-read でしか充填されないため）。恒久解は下記いずれか（owner 判断）:
+  - (a) 一覧描画時に bounded live count（フォームごとに Formaloo `/stats/` を軽量 drill）— レイテンシ/API 呼数とのトレードオフ
+  - (b) 定期 count-sync（cron で全フォームを巡回し reconcile）
+  - (c) O-1 webhook 恒久配線（`FORMALOO_WEBHOOK_TOKEN` 投入）が完了すれば新規回答はリアルタイムでミラーに入るため本問題は事実上解消（webhook 配線時は submissionId を `row.slug` へ寄せて reconcile と2重化しないこと必須）
+  - 本件は最小修理として意図的に対象外（spec §2.1 Risk 2 参照）。owner の実運用頻度次第で優先度を判断。
