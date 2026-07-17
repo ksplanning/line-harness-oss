@@ -53,6 +53,7 @@ import {
   normalizeFormDesign,
   normalizeFormCopy,
   normalizeFormRedirect,
+  normalizeSuccessPages,
   defaultFormDesign,
   serializeRawLogicForPush,
   computeRouteTerminalWarnings,
@@ -65,6 +66,7 @@ import {
   type FormDisplayType,
   type FormCopy,
   type FormRedirect,
+  type SuccessPageSpec,
 } from '@line-crm/shared';
 import {
   canTransition,
@@ -113,6 +115,8 @@ interface StoredDefinition {
   formCopy?: FormCopy;
   // route-terminal-phase2 (Track 1): 送信後リダイレクト設定 (additive JSON key)。未設定は undefined = 後方互換 (byte 不変)。
   formRedirect?: FormRedirect;
+  // route-terminal-phase2 (Track 2): ルート別完了ページ + 割当 slug (additive JSON key)。未設定は undefined = 後方互換。
+  successPages?: SuccessPageSpec[];
 }
 
 function parseDefinition(json: string): StoredDefinition {
@@ -138,9 +142,13 @@ function parseDefinition(json: string): StoredDefinition {
       formRedirect: d.formRedirect && typeof d.formRedirect === 'object' && !Array.isArray(d.formRedirect)
         ? normalizeFormRedirect(d.formRedirect)
         : undefined,
+      // route-terminal-phase2 (Track 2): successPages whitelist 正規化。無ければ undefined = 後方互換 (byte 不変)。
+      successPages: Array.isArray(d.successPages) && d.successPages.length
+        ? normalizeSuccessPages(d.successPages)
+        : undefined,
     };
   } catch {
-    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined, formRedirect: undefined };
+    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined, formRedirect: undefined, successPages: undefined };
   }
 }
 
@@ -312,8 +320,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; formRedirect?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; formRedirect?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -358,6 +366,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     // 存在 field を参照する compound は保持・dangling ref を作る rule のみ除去 (R-4/L-9/D-12)。
     const fieldIds = new Set(fields.map((f) => f.id));
     const decorationIds = new Set(fields.filter((f) => isDecorationType(f.type)).map((f) => f.id));
+    const prevDef = parseDefinition(form.definition_json);
+    // route-terminal-phase2 (Track 2 / T-D1): 有効な success-page 集合を先に確定する。
+    //   successPages 提供時は incoming、未提供は prev を carry (submit rule が既存 SP を参照し続けられる)。
+    const successPagesProvided = body.successPages !== undefined;
+    const incomingSuccessPages = successPagesProvided ? normalizeSuccessPages(body.successPages) : undefined;
+    const successPagesForValidation = incomingSuccessPages ?? prevDef.successPages ?? [];
+    const successPageIds = new Set(successPagesForValidation.map((sp) => sp.id));
     const logic: HarnessLogicRule[] = (rawLogicRules as HarnessLogicRule[]).filter((r) => {
       if (!r || !fieldIds.has(r.sourceFieldId)) return false;
       // route-terminal-submit (T-C3/F-MED-2): submit rule は target を idSet 照合しない (下段で Phase1 '' 正規化)。
@@ -381,11 +396,14 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       }
       return true;
     })
-    // F-MED-2: Phase1 は submit の success-page target 非対応 → 通常 field/decoration を target 指定されても '' へ正規化
-    //   (直接 API 濫用で jump_to_success_page が不正 remote logic として送出されるのを防ぐ)。Phase2 で SP 集合対応。
-    .map((r) => (r.action === 'submit' && r.targetFieldId !== '' ? { ...r, targetFieldId: '' } : r));
-
-    const prevDef = parseDefinition(form.definition_json);
+    // route-terminal-phase2 (T-D1 / F-MED-2 解除): submit rule の target が有効 SP (successPageIds) を指すなら
+    //   保持する (push で resolve 済 slug が jump_to_success_page.args.identifier に載る)。無効/未選択/通常 field を
+    //   指す target は '' へ縮退 (既定完了ページ) — 直接 API 濫用で不正 SP 参照が remote logic に載るのを防ぐ。
+    .map((r) => {
+      if (r.action !== 'submit') return r;
+      if (r.targetFieldId && successPageIds.has(r.targetFieldId)) return r; // 有効 SP を保持
+      return r.targetFieldId !== '' ? { ...r, targetFieldId: '' } : r; // 無効は既定完了ページへ縮退
+    });
 
     // ── preserve-raw edit-detection (R7) ──
     // pull 時 fingerprint (body 経由) と save 対象 logic の canonical hash を突合。一致=未編集。
