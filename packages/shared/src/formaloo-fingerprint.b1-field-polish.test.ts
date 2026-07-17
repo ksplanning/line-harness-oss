@@ -14,7 +14,7 @@ const fp = (fields: unknown[]) => formalooDefinitionFingerprint(fields, null);
 
 describe('b1-field-polish T-A2 — videoHeight は fingerprint 非射影', () => {
   it('射影 field に height / config が現れない (videoUrl のみ)', () => {
-    const proj = canonicalDefinitionProjection([oembed({ config: { height: '350px' } })], null).fields as Record<string, unknown>[];
+    const proj = canonicalDefinitionProjection([oembed({ config: { height: '350px' } })], null).fields as unknown as Record<string, unknown>[];
     expect(proj[0].videoUrl).toBe('https://youtu.be/x');
     expect('height' in proj[0]).toBe(false);
     expect('config' in proj[0]).toBe(false);
