@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>REPORT: REPORT_2026-07-18_072500_route-terminal-phase2-fix</title>
+<style id="ksplanning-tokens">
+:root {
+  --color-bg: #f7f8fa;
+  --color-card: #ffffff;
+  --color-fg: #14181f;
+  --color-fg-muted: #5b6573;
+  --color-fg-soft: #8893a4;
+  --color-border: #e3e7ee;
+  --color-border-strong: #c9d0db;
+  --color-ok: #1f9d55;
+  --color-ok-soft: #e3f6ec;
+  --color-warn: #d39200;
+  --color-warn-soft: #fcf3dc;
+  --color-alert: #c53030;
+  --color-alert-soft: #fbe5e5;
+  --color-accent: #1f3a8a;
+  --color-accent-soft: #e1e8fb;
+  --color-grid-line: rgba(31,58,138,0.18);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow-card: 0 1px 0 rgba(20,24,31,0.04), 0 8px 24px rgba(20,24,31,0.06);
+  --shadow-hero: 0 2px 4px rgba(20,24,31,0.04), 0 18px 40px rgba(31,58,138,0.10);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  padding: var(--space-6);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.hero {
+  background: linear-gradient(135deg, #ffffff 0%, #f0f3fb 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-6) var(--space-8);
+  margin-bottom: var(--space-6);
+  box-shadow: var(--shadow-hero);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: var(--space-6);
+}
+.hero .label {
+  color: var(--color-fg-soft);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.hero .title {
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin-top: var(--space-2);
+  color: var(--color-fg);
+}
+.hero .meta {
+  color: var(--color-fg-muted);
+  font-size: 13px;
+  margin-top: var(--space-2);
+}
+.hero .score-wrap {
+  text-align: right;
+}
+.score {
+  font-family: var(--font-mono);
+  font-size: 52px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.score.ok    { color: var(--color-ok); }
+.score.warn  { color: var(--color-warn); }
+.score.alert { color: var(--color-alert); }
+.score-delta {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-fg-muted);
+  margin-top: var(--space-2);
+}
+.score-delta.up   { color: var(--color-ok); }
+.score-delta.down { color: var(--color-alert); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.badge.ok    { background: var(--color-ok-soft);    color: var(--color-ok); }
+.badge.warn  { background: var(--color-warn-soft);  color: var(--color-warn); }
+.badge.alert { background: var(--color-alert-soft); color: var(--color-alert); }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: var(--space-4);
+}
+section.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+section.card header.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+section.card h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--color-fg-soft);
+  text-transform: uppercase;
+}
+section.card pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+section.card .empty {
+  color: var(--color-fg-soft);
+  font-style: italic;
+  font-size: 13px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table th, table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+table th {
+  color: var(--color-fg-soft);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+td.num { font-family: var(--font-mono); text-align: right; }
+
+.sparkline {
+  display: inline-block;
+  font-family: var(--font-mono);
+  letter-spacing: 1px;
+  color: var(--color-accent);
+}
+
+details {
+  margin-top: var(--space-4);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+details summary {
+  cursor: pointer;
+  color: var(--color-accent);
+  font-weight: 600;
+  font-size: 13px;
+  list-style: none;
+}
+details summary::-webkit-details-marker { display: none; }
+details summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  transition: transform 0.15s ease;
+}
+details[open] summary::before { transform: rotate(90deg); }
+details section { margin-top: var(--space-3); }
+
+footer {
+  margin-top: var(--space-8);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-fg-soft);
+  font-size: 12px;
+}
+footer code {
+  font-family: var(--font-mono);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+@media (max-width: 600px) {
+  body { padding: var(--space-3); font-size: 14px; }
+  .hero {
+    grid-template-columns: 1fr;
+    padding: var(--space-4);
+    gap: var(--space-3);
+  }
+  .hero .score-wrap { text-align: left; }
+  .hero .title { font-size: 22px; }
+  .score { font-size: 40px; }
+  .grid { grid-template-columns: 1fr; gap: var(--space-3); }
+  section.card { padding: var(--space-4); }
+  details { padding: var(--space-3) var(--space-4); }
+}
+</style>
+<style id="ksplanning-report-extra">
+  .meta-table th { width: 32%; vertical-align: top; }
+  .meta-table td { word-break: break-word; }
+  .meta-table td.placeholder { color: var(--color-fg-soft); font-style: italic; }
+  .commit-table th, .commit-table td { font-size: 12px; }
+  .commit-table td.hash code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+  ul.files {
+    margin: var(--space-3) 0 0 0;
+    padding-left: var(--space-5);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .markdown-body {
+    font-size: 14px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .markdown-body code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+  .badge.completed { background: var(--color-ok-soft);    color: var(--color-ok); }
+  .badge.partial   { background: var(--color-warn-soft);  color: var(--color-warn); }
+  .badge.pending_owner_confirmation { background: var(--color-warn-soft); color: var(--color-warn); }
+  .badge.blocked   { background: var(--color-alert-soft); color: var(--color-alert); }
+  .score.completed { color: var(--color-ok); }
+  .score.partial,
+  .score.pending_owner_confirmation { color: var(--color-warn); }
+  .score.blocked   { color: var(--color-alert); }
+  .grid.single { grid-template-columns: 1fr; }
+  section.card[data-kind="links"] ul { margin: 0; padding-left: var(--space-5); }
+  section.card[data-kind="links"] li { margin: var(--space-1) 0; font-size: 13px; }
+</style>
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <div class="label">CLOSE-OUT REPORT</div>
+      <div class="title">REPORT_2026-07-18_072500_route-terminal-phase2-fix</div>
+      <div class="meta">line-harness-ks (+ piecemaker — dual-push 両テナント適用) · REPORT_2026-07-18_072500_route-terminal-phase2-fix · <span class="badge completed">COMPLETED</span> · purpose_done: ?</div>
+    </div>
+    <div class="score-wrap">
+      <div class="score completed">true</div>
+      <div class="score-delta">?</div>
+    </div>
+  </header>
+
+  <section class="card" data-kind="frontmatter">
+    <header class="card-head"><h2>メタ情報</h2></header>
+    <table class="meta-table">
+      <tr><th>app</th><td>line-harness-ks (+ piecemaker — dual-push 両テナント適用)</td></tr>
+      <tr><th>Box (.md)</th><td><a href="https://app.box.com/file/pending">pending</a></td></tr>
+      <tr><th>Box (.html)</th><td><!-- BOX_FILE_ID_HTML --><span class="placeholder">未取得</span></td></tr>
+      <tr><th>owner 発言原文</th><td>（非 UI 案件 / 記載なし）</td></tr>
+      <tr><th>ui_case</th><td>false</td></tr>
+      <tr><th>visual-qa-council</th><td>?</td></tr>
+      <tr><th>browser-evaluator click 確認</th><td>?</td></tr>
+      <tr><th>skills_read</th><td>（記載なし）</td></tr>
+    </table>
+  </section>
+
+  <section class="card" data-kind="conclusion">
+    <header class="card-head"><h2>結論</h2></header>
+    <div class="markdown-body">reviewer PASS Round 1 の required backlog 修理（T-C3: 再取り込み時 formRedirect 未リセット退行 / T-E5: SP 本文のみの drift が6h cronで検知されない）を main へ統合・combined 再走・dual-push・4点デプロイ・deployed 実機確認まで完了。**status: completed**。O-2（LINE実機・外部ブラウザ起動確認）は owner 立会待ちのまま BACKLOG に残置。</div>
+  </section>
+
+  <section class="card" data-kind="verified">
+    <header class="card-head"><h2>確認したこと</h2></header>
+    <div class="markdown-body">1. **main へ統合**: 現 main（3e51be2 = origin/main と一致）へ case ブランチを fast-forward merge → 9ad9639。docs commit で <code>Reviewer-Verdict: PASS</code> + <code>Case-Slug: route-terminal-phase2-fix</code> trailer を追加（0cbcce4）。\n2. **combined 全再走（独立再現）**:\n   - shared build: rc0\n   - worker: <code>tsc --noEmit</code> rc0 + vitest 2032/2032 tests green（1件 <code>password.test.ts</code> の既知 flake が全体走で不発→isolated rerun で pass 確認・変更対象外ファイルにつき無関係と判断）\n   - web: vitest 1008/1008 tests green\n   - static export: rc0（<code>NEXT_PUBLIC_API_URL</code> 設定・<code>out/</code> 実ファイル数 205 = python標準 find で確認、reviewer申告値と一致）\n   - 計 3444 tests green（reviewer 独立再走の申告値と一致）\n3. **dual-push + tenant sync**: <code>git push origin main</code> / <code>git push piecemaker main</code> 両方 ok。<code>scripts/verify-tenant-sync.sh</code> → <code>OK sync: origin == piecemaker @ main = 0cbcce463b5fe710691b10bf46d7da88b0f93d35</code>。\n4. **4点デプロイ**:\n   - ks worker: <code>wrangler deploy</code> → Version ID <code>3942e20e-641b-4bf8-982f-c139b8b9abc3</code>\n   - ks admin (Pages): <code>wrangler pages deploy</code> → <code>https://3f0b3eb6.line-harness-ks-admin.pages.dev</code>\n   - piecemaker worker: <code>wrangler deploy</code> → Version ID <code>03b9c7f6-af36-4897-a95d-15f5138fee45</code>\n   - piecemaker admin (Pages): <code>wrangler pages deploy</code> → <code>https://9440870a.line-harness-piecemaker-admin.pages.dev</code>\n   - health 4点: <code>line-harness-ks.web-8af.workers.dev/admin/version</code>=200 / <code>line-harness-ks-admin.pages.dev/login</code>=200 / <code>line-harness-piecemaker.piecemaker.workers.dev/admin/version</code>=200 / <code>line-harness-piecemaker-admin.pages.dev/login</code>=200\n5. **deployed 実機確認（soft-200 禁止・headless Chrome + Playwright 経由・自作使い捨てフォームのみ・qa-login-key.txt スタッフ API キー使用＝owner-idpass 系不触）**:\n   - ks admin にログイン（API キーログイン fallback・200）→ admin フッタービルド表示 <code>0cbcce463b5f</code>（= 統合コミットの短縮SHA・デプロイ済みコードの実在を確認）。\n   - 新規使い捨てフォーム作成 → 「送信後の飛び先（リダイレクト）」に URL 入力 → 保存（PUT 200・server GET で <code>formRedirect.url</code> 保存確認・formalooSlug 自動発番確認）。\n   - **「Formaloo から再取り込み」クリック→確認バナー「はい」** → GET 200 → **UI の redirect 入力欄が空にリセットされることを <code>inputValue()</code> で実測（\"\" ・スクリーンショット証跡）＝ T-C3 修理の実挙動を hosted 実機で確認**。\n   - 再取り込み直後（未保存）はサーバ側 <code>formRedirect</code> は変化なし（GET で旧値保持を確認）→ その状態で保存 → サーバ側 <code>formRedirect</code> が**誤クリアされず保持される**ことを再度 GET で確認（<code>formRedirectTouched=false</code> ゆえ save payload から omit される設計どおり）。\n   - cleanup: 検証で作成した使い捨てフォーム計5件（fa_856e544f… / fa_300c79d5… / fa_fb60cb6a… / fa_9ed23211… / fa_fc365799…）を harness DELETE（CSRF token 付与要・<code>x-csrf-token</code> ヘッダで解消）→ 全件 GET 404 確認。Z5IEH85R/puw7lh 不可触・自作 slug のみ。\n   - T-E5（drift cron）は既に worker 独立テスト（drift 20 test green・SP drift 3/3 隔離実行）で機能確認済み・6h cron の実運用サイクル待ちは非ブロッカー（コード到達性・単体網羅は closer 独立確認済み）。</div>
+  </section>
+
+
+  <section class="card" data-kind="open">
+    <header class="card-head"><h2>未解決</h2></header>
+    <div class="markdown-body">- **O-2（owner 立会・LINE実機）**: 外部ブラウザ toggle=ON の redirect が LINE 公式アカウントのトーク内リンクから実際に外部ブラウザで開くかは owner 確認待ち（release go/no-go・不発時は「LINE内ブラウザ固定」へ縮退）。\n- **Codex 指摘の残り7件**（T-E2/T-E3/T-E4/T-F2/D-2/D-3/R-1）: テスト網羅性強化の任意項目・closer 未着手（required-backlog に残置）。\n- [OPTIONAL-POLISH] OBS-3（SP drift event の remoteHash cosmetic 冗長）: 非ブロッカー・実害なし。\n- 検証用使い捨てフォーム5件は harness 側 D1 は tombstone 済みだが、Formaloo 側実体は harness DELETE が論理削除のみのため残存の可能性あり（既知 pre-existing gap・本ケース起因ではない・BACKLOG 記載済み）。</div>
+  </section>
+  <section class="card" data-kind="next">
+    <header class="card-head"><h2>次の一手</h2></header>
+    <div class="markdown-body">- owner に O-2（LINE実機・外部ブラウザ起動確認）の立会を依頼。\n- Codex 残り7件のテスト網羅性強化は次の任意磨き込み案件として着手可（BACKLOG 参照）。</div>
+  </section>
+
+  <section class="card" data-kind="links">
+    <header class="card-head"><h2>関連リンク</h2></header>
+    <ul>
+      <li>Box folder: <a href="https://app.box.com/folder/386663013201">386663013201</a></li>
+    </ul>
+  </section>
+
+  <footer>
+    生成: 2026-07-18 07:26 JST · commit <code>d7f8355a6b</code> · workspace workspace
+  </footer>
+</body>
+</html>
