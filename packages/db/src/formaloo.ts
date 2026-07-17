@@ -31,6 +31,13 @@ export interface FormalooForm {
   // migration 099 (form-media-limits ③): 回答者による後編集を許可するか (0=不可 / 1=可)。既定 0=現状挙動。
   //   Formaloo 対応プロパティ不在 (soft-200 実証) ゆえ harness 側保存のみ・push しない。実効化は弾M。
   allow_post_edit: number;
+  // migration 101 (form-edit-mail-link 弾L): 編集 URL メール送付をこのフォームで有効化するか (0=送らない / 1=送る)。
+  //   既定 0=byte 同等 (機能 OFF)。allow_post_edit=1 と AND gate で発火 (メール発火は Phase B)。
+  allow_edit_mail: number;
+  // migration 101 (OD-3/G-1): 送付先 email 欄の明示指定 slug (代理入力/複数欄での第三者送信防止)。NULL=未指定。
+  edit_mail_field_slug: string | null;
+  // migration 101 (G-5): 編集 URL の失効世代。bump で当該 form の既発行 token を一括失効 (開封時 live gate が照合)。
+  edit_link_epoch: number;
   created_at: string;
   updated_at: string;
 }
@@ -293,6 +300,10 @@ export async function saveFormalooDefinition(
     description?: string | null;
     // form-media-limits ③: 回答者による後編集を許可するか (0|1)。present-key 更新 (未指定は変えない)。
     allowPostEdit?: number;
+    // form-edit-mail-link (弾L): 編集 URL メール送付の許可 (0|1)。present-key 更新 (未指定は変えない・allow_post_edit 同型)。
+    allowEditMail?: number;
+    // form-edit-mail-link (弾L / OD-3): 送付先 email 欄の明示指定 slug。present-key 更新 (未指定は変えない)。
+    editMailFieldSlug?: string | null;
   },
 ): Promise<void> {
   const now = jstNow();
@@ -325,6 +336,15 @@ export async function saveFormalooDefinition(
   if (params.allowPostEdit !== undefined) {
     sets.push('allow_post_edit = ?');
     vals.push(params.allowPostEdit);
+  }
+  // form-edit-mail-link (弾L): allow_edit_mail / edit_mail_field_slug を present-key 更新 (未指定は変えない)。
+  if (params.allowEditMail !== undefined) {
+    sets.push('allow_edit_mail = ?');
+    vals.push(params.allowEditMail);
+  }
+  if (params.editMailFieldSlug !== undefined) {
+    sets.push('edit_mail_field_slug = ?');
+    vals.push(params.editMailFieldSlug);
   }
   vals.push(id);
   await db.prepare(`UPDATE formaloo_forms SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
@@ -673,6 +693,101 @@ export async function updateSubmissionRowSlug(db: D1Database, submissionId: stri
   await db
     .prepare('UPDATE formaloo_submissions SET formaloo_row_slug = ? WHERE id = ? AND formaloo_row_slug IS NULL')
     .bind(rowSlug, submissionId)
+    .run();
+}
+
+// ─── 弾L 編集 URL メール (form-edit-mail-link / migration 101) ────────────────
+
+export interface FormalooEditMailSendRow {
+  id: string;
+  submission_id: string;
+  form_id: string;
+  recipient_hash: string;
+  requested_at: string;
+  status: string; // pending | sent | failed | skipped
+  attempt_count: number;
+  provider_idempotency_key: string | null;
+  last_attempt_at: string | null;
+  provider_message_id: string | null;
+  error: string | null;
+}
+
+export interface ClaimEditMailSendInput {
+  submissionId: string;
+  formId: string;
+  recipientHash: string;
+}
+
+/**
+ * 編集 URL メール送信の冪等 claim (Codex G-3/G-4 outbox)。
+ * submission_id UNIQUE への INSERT を **status=pending 予約** で行い、初回 (changes=1) のみ true。
+ * webhook 再配信/並行でも 1 回だけ true = 「1 submission=1 送信」(二重送信防止)。claim=pending ゆえ
+ * claim 直後にプロセスが落ちても行が残り、cron sweep が拾って再送できる (メール永久喪失を防ぐ)。
+ */
+export async function claimEditMailSend(db: D1Database, input: ClaimEditMailSendInput): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `INSERT INTO formaloo_edit_mail_sends (id, submission_id, form_id, recipient_hash, requested_at, status, attempt_count)
+       VALUES (?, ?, ?, ?, ?, 'pending', 0)
+       ON CONFLICT(submission_id) DO NOTHING`,
+    )
+    .bind(`fem_${crypto.randomUUID()}`, input.submissionId, input.formId, input.recipientHash, jstNow())
+    .run();
+  return ((res as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
+}
+
+export interface RecordEditMailResultInput {
+  submissionId: string;
+  status: 'sent' | 'failed' | 'skipped';
+  providerMessageId?: string | null;
+  providerIdempotencyKey?: string | null;
+  error?: string | null;
+}
+
+/**
+ * 送信結果を記録し状態遷移 (pending → sent/failed/skipped)。attempt_count を +1 (再送上限判定用)。
+ * provider ack (message id) / 失敗理由 (error) / provider 冪等キーを present-key で保存 (soft-200-safe 証跡)。
+ */
+export async function recordEditMailResult(db: D1Database, input: RecordEditMailResultInput): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE formaloo_edit_mail_sends
+         SET status = ?, attempt_count = attempt_count + 1, last_attempt_at = ?,
+             provider_message_id = COALESCE(?, provider_message_id),
+             provider_idempotency_key = COALESCE(?, provider_idempotency_key),
+             error = ?
+       WHERE submission_id = ?`,
+    )
+    .bind(input.status, jstNow(), input.providerMessageId ?? null, input.providerIdempotencyKey ?? null, input.error ?? null, input.submissionId)
+    .run();
+}
+
+/** outbox 1 行を submission_id で引く (冪等確認 / 送達証跡表示)。 */
+export async function getEditMailSend(db: D1Database, submissionId: string): Promise<FormalooEditMailSendRow | null> {
+  return db.prepare('SELECT * FROM formaloo_edit_mail_sends WHERE submission_id = ?').bind(submissionId).first<FormalooEditMailSendRow>();
+}
+
+/**
+ * 送付先 email 欄の slug を解決 (S-3 / OD-3)。formaloo_field_map の field_type='email' かつ slug 確定の先頭を返す。
+ * email 型が 0 個 or slug 未確定のみ = 宛先解決不能 → null (fire は skip)。複数欄の明示指定 enforce は Phase B fire 側。
+ */
+export async function resolveFormEmailFieldSlug(db: D1Database, formId: string): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT formaloo_field_slug AS slug FROM formaloo_field_map
+       WHERE form_id = ? AND field_type = 'email' AND formaloo_field_slug IS NOT NULL
+       ORDER BY position ASC LIMIT 1`,
+    )
+    .bind(formId)
+    .first<{ slug: string }>();
+  return row?.slug ?? null;
+}
+
+/** 失効世代 bump (Codex G-5): 当該 form の edit_link_epoch を +1 = 既発行の編集 URL を全失効させる。 */
+export async function bumpEditLinkEpoch(db: D1Database, formId: string): Promise<void> {
+  await db
+    .prepare('UPDATE formaloo_forms SET edit_link_epoch = edit_link_epoch + 1, updated_at = ? WHERE id = ?')
+    .bind(jstNow(), formId)
     .run();
 }
 

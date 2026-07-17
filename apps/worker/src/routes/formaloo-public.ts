@@ -2,6 +2,10 @@ import { Hono } from 'hono';
 import {
   getFormalooForm,
   getFormalooFormBySlug,
+  getFormalooSubmission,
+  getFormalooFieldMap,
+  updateSubmissionRowSlug,
+  recordSubmissionEdit,
   upsertFormalooSubmission,
   claimFormalooLineProcessing,
   incrementFormalooSubmitCount,
@@ -13,11 +17,22 @@ import {
   getLineAccountById,
   jstNow,
   type FormalooForm,
+  type FormalooSubmissionRow,
 } from '@line-crm/db';
+import { isDecorationType } from '@line-crm/shared';
 import { isBuilderStatus, buildPublicUrl } from '../services/formaloo-publish-gate.js';
 import { verifyWebhookToken, verifyHmacSignature, parseWebhookPayload } from '../services/formaloo-webhook.js';
 import { signFriendToken } from '../services/formaloo-friend-token.js';
-import { isPostEditEnabled } from '../services/formaloo-row-edit.js';
+import {
+  isPostEditEnabled,
+  isEditableFieldType,
+  buildFlatRowPatchBody,
+  findEmptyRequired,
+  resolveRowSlug,
+  makeRowsListRowSlugResolver,
+} from '../services/formaloo-row-edit.js';
+import { verifyEditToken, type EditTokenPayload } from '../services/formaloo-edit-token.js';
+import { resolveFormalooClient } from '../services/formaloo-client.js';
 import type { Env } from '../index.js';
 
 // 弾M (form-post-edit / T-C1): ②本人再入場 prefill の上限 (URL 長制限対策 / R2)。
@@ -301,3 +316,324 @@ formalooPublic.get('/fo/:id', async (c) => {
 
   return c.redirect(redirectUrl, 302);
 });
+
+// =============================================================================
+// 弾L 公開編集 route (form-edit-mail-link / T-B2·T-B3·T-B4·T-C2)
+// -----------------------------------------------------------------------------
+// GET  /fe/:token       署名付き編集トークンで開く公開編集ページ (worker-rendered HTML / 器=OD-5)。
+// PATCH /fe/:token/save 編集保存 (弾M 純関数流用 → flat PATCH → persist 確認 → mirror 更新)。
+// 最重要 = 「編集 URL が他人の回答を開けない」(AC-1)。token は 1 submission に束縛・enumeration 不能 (HMAC)。
+// static export 制約回避 + same-origin (外部 referer 漏洩なし) で web 側 dynamic route を持たない (S-2 確定)。
+// 認証除外 route (/api/ 配下でない = permissionMiddleware 対象外 / authMiddleware は index.ts 除外リストで skip)。
+// =============================================================================
+
+/** token を log/エラーに残さない redaction (path token 漏洩面の抑制 / T-B4b)。先頭 6 文字 + 省略記号のみ。 */
+function redactToken(token: string | undefined | null): string {
+  if (!token) return '(none)';
+  return `${token.slice(0, 6)}…(${token.length})`;
+}
+
+/** HTML エスケープ (回答値/ラベルの XSS 防止)。 */
+function escapeHtml(s: unknown): string {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** no-store + no-referrer 応答ヘッダ (token 漏洩面抑制 / T-B4b)。 */
+const FE_HEADERS: Record<string, string> = {
+  'Content-Type': 'text/html; charset=utf-8',
+  'Cache-Control': 'no-store, no-cache, must-revalidate',
+  'Referrer-Policy': 'no-referrer',
+};
+
+interface PublicEditField {
+  slug: string;
+  label: string;
+  type: string;
+  required: boolean;
+  editable: boolean;
+}
+
+/** definition_json から編集画面用の field メタ (id/type/label/required) を取り出す (装飾/壊れは除外)。 */
+function parsePublicDefFields(definitionJson: string): Array<{ id: string; type: string; label: string; required: boolean }> {
+  try {
+    const d = JSON.parse(definitionJson) as { fields?: unknown };
+    if (!Array.isArray(d.fields)) return [];
+    return d.fields
+      .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object')
+      .map((f) => ({ id: String(f.id ?? ''), type: String(f.type ?? ''), label: String(f.label ?? ''), required: f.required === true }))
+      .filter((f) => f.id && f.type);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 現行 form 定義 (編集時点 / T-B4d) から編集対象 field メタを組む。field_map の slug を harness id で join。
+ * 装飾 (section/page_break) と未 push (slug=null) は除外。free-value のみ editable = true。
+ * この list が **server-side allowlist の単一正本** (T-B3): 保存は本 list の free-value slug だけを PATCH する。
+ */
+async function buildPublicEditFields(db: D1Database, form: FormalooForm): Promise<PublicEditField[]> {
+  const defFields = parsePublicDefFields(form.definition_json);
+  const fieldMap = await getFormalooFieldMap(db, form.id);
+  const slugById = new Map<string, string | null>();
+  for (const r of fieldMap) slugById.set(r.id, r.formaloo_field_slug);
+  return defFields
+    .filter((f) => !isDecorationType(f.type))
+    .map((f) => ({
+      slug: (slugById.get(f.id) ?? null) as string | null,
+      label: f.label,
+      type: f.type,
+      required: f.required,
+      editable: isEditableFieldType(f.type),
+    }))
+    .filter((f): f is PublicEditField => f.slug != null);
+}
+
+type EditResolve =
+  | { ok: true; form: FormalooForm; mirror: FormalooSubmissionRow; payload: EditTokenPayload }
+  | { ok: false; status: number; reason: string };
+
+/**
+ * token 検証 + 開封時 live gate 再チェック (T-B4a) を 1 箇所に集約 (GET/save 共通)。
+ * (a) 署名/期限 (verifyEditToken) (b) form 存在 (c) allow_post_edit=1 ∧ allow_edit_mail=1 が今も真
+ * (d) 失効 epoch 一致 (bump 済なら無効) (e) row 存在 ∧ token の form に属する。
+ * いずれか欠ければ ok=false = 編集画面を出さない/保存しない (署名有効でも失効・他人の回答を絶対 load しない)。
+ */
+async function resolveEditContext(env: Env['Bindings'], token: string): Promise<EditResolve> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const payload = await verifyEditToken(token, env.FORMALOO_EDIT_TOKEN_SECRET, nowSec);
+  if (!payload) return { ok: false, status: 403, reason: 'invalid_or_expired' };
+  const form = await getFormalooForm(env.DB, payload.formId);
+  if (!form || form.deleted) return { ok: false, status: 404, reason: 'form_gone' };
+  // 開封時 live gate 再チェック (署名は stateless ゆえ失効できない → ここで現況を照合)。
+  if (form.allow_post_edit !== 1 || form.allow_edit_mail !== 1) return { ok: false, status: 403, reason: 'disabled' };
+  if (payload.epoch !== form.edit_link_epoch) return { ok: false, status: 403, reason: 'revoked' };
+  const mirror = await getFormalooSubmission(env.DB, payload.rowRef);
+  // token は 1 submission に束縛。form 不一致 (別 form の row) も拒否 = 他 submission を絶対 load しない。
+  if (!mirror || mirror.form_id !== payload.formId) return { ok: false, status: 404, reason: 'row_gone' };
+  return { ok: true, form, mirror, payload };
+}
+
+/** 正直なエラーページ (無効/期限切れ/失効)。回答値は一切載せない。 */
+function renderErrorPage(): string {
+  return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>リンクが無効です</title>
+<style>body{margin:0;font-family:-apple-system,'Hiragino Kaku Gothic ProN',Meiryo,sans-serif;background:#f6f7f9;color:#333}.wrap{max-width:520px;margin:0 auto;padding:56px 20px}.card{background:#fff;border-radius:14px;padding:32px 24px;box-shadow:0 1px 3px rgba(0,0,0,.06);text-align:center}h1{font-size:18px;margin:0 0 12px}p{font-size:14px;line-height:1.7;color:#666;margin:0}</style></head>
+<body><div class="wrap"><div class="card"><h1>このリンクは使用できません</h1><p>編集用リンクの有効期限が切れているか、無効になっています。<br>お手数ですが、フォームの管理者へお問い合わせください。</p></div></div></body></html>`;
+}
+
+/** 編集ページ (worker-rendered)。free-value は編集可・choice/file は read-only 表示。保存は fetch PATCH。 */
+function renderEditPage(form: FormalooForm, fields: PublicEditField[], answers: Record<string, unknown>, token: string, version: string): string {
+  const rows = fields
+    .map((f) => {
+      const cur = answers[f.slug];
+      if (f.editable) {
+        if (f.type === 'textarea') {
+          return `<label class="fld"><span class="lbl">${escapeHtml(f.label)}${f.required ? ' <em>*</em>' : ''}</span><textarea name="${escapeHtml(f.slug)}" rows="4" ${f.required ? 'data-required="1"' : ''}>${escapeHtml(cur)}</textarea></label>`;
+        }
+        const inputType = f.type === 'email' ? 'email' : f.type === 'number' ? 'number' : f.type === 'phone' ? 'tel' : f.type === 'date' ? 'date' : 'text';
+        return `<label class="fld"><span class="lbl">${escapeHtml(f.label)}${f.required ? ' <em>*</em>' : ''}</span><input type="${inputType}" name="${escapeHtml(f.slug)}" value="${escapeHtml(cur)}" ${f.required ? 'data-required="1"' : ''}></label>`;
+      }
+      // read-only (choice/dropdown/multiple_select/file)。編集対象にしない (name を持たない = 保存対象外)。
+      const shown = Array.isArray(cur) ? cur.join(', ') : String(cur ?? '');
+      return `<div class="fld"><span class="lbl">${escapeHtml(f.label)}</span><div class="ro">${escapeHtml(shown) || '<span class="empty">（変更できません）</span>'}</div></div>`;
+    })
+    .join('\n');
+
+  // token は URL path に既にあるため JS 変数に literal 埋め込みしない (save URL は現在の pathname から導出)。
+  return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>回答の編集</title>
+<style>
+body{margin:0;font-family:-apple-system,'Hiragino Kaku Gothic ProN',Meiryo,sans-serif;background:#f6f7f9;color:#1f2933}
+.wrap{max-width:560px;margin:0 auto;padding:32px 18px 64px}
+h1{font-size:19px;margin:0 0 4px}.sub{font-size:13px;color:#7b8794;margin:0 0 22px}
+.card{background:#fff;border-radius:14px;padding:22px 20px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.fld{display:block;margin-bottom:18px}
+.lbl{display:block;font-size:13px;font-weight:600;margin-bottom:6px}.lbl em{color:#e0245e;font-style:normal}
+input,textarea{width:100%;box-sizing:border-box;font-size:15px;padding:11px 12px;border:1px solid #d3dae0;border-radius:9px;background:#fff;font-family:inherit}
+input:focus,textarea:focus{outline:none;border-color:#4a7bd6;box-shadow:0 0 0 3px rgba(74,123,214,.15)}
+.ro{font-size:15px;padding:10px 12px;background:#f2f4f6;border-radius:9px;color:#52606d}.ro .empty{color:#9aa5b1}
+.actions{margin-top:8px;display:flex;gap:10px}
+button{flex:1;font-size:15px;font-weight:600;padding:12px;border-radius:10px;border:0;cursor:pointer}
+.save{background:#2f6fed;color:#fff}.save:disabled{opacity:.5;cursor:default}
+.msg{margin-top:14px;font-size:14px;text-align:center;min-height:20px}
+.msg.ok{color:#0f9d58}.msg.err{color:#e0245e}
+</style></head>
+<body><div class="wrap">
+<h1>回答の編集</h1>
+<p class="sub">${escapeHtml(form.title)}</p>
+<form id="fe-form" class="card" novalidate>
+${rows}
+<div class="actions"><button type="submit" class="save">保存する</button></div>
+<div id="fe-msg" class="msg" role="status"></div>
+</form>
+</div>
+<script>
+(function(){
+  var form=document.getElementById('fe-form'), msg=document.getElementById('fe-msg');
+  var version=${JSON.stringify(version)};
+  var saveUrl=location.pathname.replace(/\\/$/,'')+'/save';
+  form.addEventListener('submit',function(e){
+    e.preventDefault();
+    var answers={}, missing=false;
+    form.querySelectorAll('input[name],textarea[name]').forEach(function(el){
+      if(el.getAttribute('data-required')==='1' && !String(el.value).trim()) missing=true;
+      answers[el.name]=el.value;
+    });
+    if(missing){ msg.className='msg err'; msg.textContent='必須項目を入力してください。'; return; }
+    var btn=form.querySelector('button.save'); btn.disabled=true; msg.className='msg'; msg.textContent='保存中…';
+    fetch(saveUrl,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({answers:answers,version:version})})
+      .then(function(r){return r.json().then(function(j){return {status:r.status,json:j};});})
+      .then(function(res){
+        btn.disabled=false;
+        if(res.status===200 && res.json && res.json.success){ msg.className='msg ok'; msg.textContent='保存しました。'; if(res.json.version) version=res.json.version; }
+        else if(res.status===409){ msg.className='msg err'; msg.textContent='この回答は別の場所で更新されました。ページを再読み込みしてください。'; }
+        else { msg.className='msg err'; msg.textContent=(res.json&&res.json.error)||'保存できませんでした。'; }
+      })
+      .catch(function(){ btn.disabled=false; msg.className='msg err'; msg.textContent='通信に失敗しました。'; });
+  });
+})();
+</script>
+</body></html>`;
+}
+
+/** GET /fe/:token — 公開編集ページ (token 検証 + live gate → 編集画面 / 無効は正直エラー)。 */
+formalooPublic.get('/fe/:token', async (c) => {
+  const token = c.req.param('token');
+  try {
+    const ctx = await resolveEditContext(c.env, token);
+    if (!ctx.ok) {
+      return c.html(renderErrorPage(), ctx.status as 403 | 404, FE_HEADERS);
+    }
+    const fields = await buildPublicEditFields(c.env.DB, ctx.form);
+    let answers: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(ctx.mirror.answers_json);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) answers = parsed as Record<string, unknown>;
+    } catch { /* 壊れ answers は空で描画 (fail-soft) */ }
+    // 楽観的排他の version = mirror.synced_at (編集/管理者編集のたび更新される / T-B4c)。
+    return c.html(renderEditPage(ctx.form, fields, answers, token, ctx.mirror.synced_at), 200, FE_HEADERS);
+  } catch (err) {
+    console.error(`/fe GET failed token=${redactToken(token)}:`, err);
+    return c.html(renderErrorPage(), 500, FE_HEADERS);
+  }
+});
+
+/**
+ * PATCH /fe/:token/save — 公開編集の保存 (弾M form-post-edit の純関数を流用)。
+ *   token 再検証 + live gate → 楽観的排他 → server-side allowlist (現行 def 可視 free-value のみ) →
+ *   row_slug 解決 → Formaloo flat PATCH → **persist 確認** 成功時のみ D1 mirror 更新。
+ *   非 persist / row_slug 不能 / client null / 必須空 は D1 を書かず正直エラー (soft-200 で成功偽装しない)。
+ */
+formalooPublic.patch('/fe/:token/save', async (c) => {
+  const token = c.req.param('token');
+  try {
+    const ctx = await resolveEditContext(c.env, token);
+    if (!ctx.ok) return c.json({ success: false, error: 'このリンクは使用できません' }, ctx.status as 403 | 404);
+    const { form, mirror } = ctx;
+
+    const body = await c.req.json<{ answers?: unknown; version?: unknown }>().catch(() => ({} as { answers?: unknown; version?: unknown }));
+    const answers =
+      body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers)
+        ? (body.answers as Record<string, unknown>)
+        : null;
+    if (!answers || Object.keys(answers).length === 0) {
+      return c.json({ success: false, error: '編集内容がありません' }, 400);
+    }
+
+    // 楽観的排他 (T-B4c / G-7): load 時 version (synced_at) と現況を照合。不一致は上書きせず 409。
+    if (body.version !== undefined && String(body.version) !== String(mirror.synced_at)) {
+      return c.json({ success: false, error: 'この回答は別の場所で更新されました' }, 409);
+    }
+
+    // server-side allowlist = 現行 form 定義の可視 free-value slug のみ (T-B3 / T-B4d)。client 送信 field は信用しない。
+    const editFields = (await buildPublicEditFields(c.env.DB, form)).map((f) => ({
+      id: '', // buildFlatRowPatchBody は slug を第一に使う (id は harness-id keyed answer 用 / 公開編集は slug-keyed)
+      slug: f.slug,
+      fieldType: f.type,
+      required: f.required,
+    }));
+    // slug→id map は不要 (公開編集の answers は slug-keyed)。buildFlatRowPatchBody が知らない/非 free-value を drop。
+    const patchBody = buildFlatRowPatchBody(answers, editFields);
+    if (Object.keys(patchBody).length === 0) {
+      return c.json({ success: false, error: '編集できる項目がありません（選択式・ファイルは対象外です）' }, 400);
+    }
+    const requiredSlugs = new Set(editFields.filter((f) => f.required && f.slug).map((f) => f.slug as string));
+    const missing = findEmptyRequired(patchBody, requiredSlugs);
+    if (missing.length > 0) {
+      return c.json({ success: false, error: '必須項目を空にできません' }, 400);
+    }
+
+    // Formaloo client (多鍵)。null (未登録/復号失敗/未接続) は誤送信防止契約継承 → D1 を書かず正直エラー。
+    const client = await resolveFormalooClient(c.env, form.workspace_id);
+    if (!client || !form.formaloo_slug) {
+      return c.json({ success: false, error: '現在この回答は編集できません' }, 502);
+    }
+
+    // row_slug 解決 (stored → rows-list submit_code 照合)。不能は正直エラー (殻完了禁止)。
+    const rowSlug = await resolveRowSlug(mirror, makeRowsListRowSlugResolver(client, form.formaloo_slug));
+    if (!rowSlug) {
+      return c.json({ success: false, error: 'この回答は識別子が取得できず編集できません' }, 422);
+    }
+
+    // flat PATCH → **persist 確認** (FRESH GET で編集後値照合)。反映されない編集を成功と見せない (soft-200 禁止)。
+    const patchRes = await client.patch(`/v3.0/rows/${rowSlug}/`, patchBody);
+    if (!patchRes.ok) {
+      return c.json({ success: false, error: '反映に失敗しました（保存していません）' }, 502);
+    }
+    const verifyRes = await client.get<{ data?: Record<string, unknown> }>(`/v3.0/rows/${rowSlug}/`);
+    const persisted = (verifyRes.ok ? verifyRes.data?.data : undefined) as Record<string, unknown> | undefined;
+    const confirmed =
+      persisted != null &&
+      Object.entries(patchBody).every(([slug, val]) => String(persisted[slug] ?? '') === String(val ?? ''));
+    if (!confirmed) {
+      return c.json({ success: false, error: '反映が確認できませんでした（保存していません）' }, 502);
+    }
+
+    // 成功: D1 mirror 更新 (FRESH remote を正に patchBody を上書き) + row_slug backfill (legacy) + 最小監査。
+    const prevRaw = safeParseAnswers(mirror.answers_json);
+    const mergedAnswers = { ...prevRaw, ...persisted, ...patchBody };
+    const newSyncedAt = jstNow();
+    await c.env.DB
+      .prepare('UPDATE formaloo_submissions SET answers_json = ?, synced_at = ? WHERE id = ?')
+      .bind(JSON.stringify(mergedAnswers), newSyncedAt, mirror.id)
+      .run();
+    if (!mirror.formaloo_row_slug) await updateSubmissionRowSlug(c.env.DB, mirror.id, rowSlug);
+
+    // 最小監査 (respondent 編集 / editor_staff_id=null = 非 staff)。変更フィールドのみ・fail-soft。
+    for (const [slug, val] of Object.entries(patchBody)) {
+      const oldVal = prevRaw[slug];
+      if (String(oldVal ?? '') === String(val ?? '')) continue;
+      try {
+        await recordSubmissionEdit(c.env.DB, {
+          submissionId: mirror.id,
+          formId: form.id,
+          editorStaffId: null,
+          fieldSlug: slug,
+          oldValue: oldVal == null ? null : String(oldVal),
+          newValue: val == null ? null : String(val),
+        });
+      } catch (err) {
+        console.error(`/fe save audit failed token=${redactToken(token)}:`, err);
+      }
+    }
+
+    return c.json({ success: true, version: newSyncedAt });
+  } catch (err) {
+    console.error(`/fe save failed token=${redactToken(token)}:`, err);
+    return c.json({ success: false, error: '保存できませんでした' }, 500);
+  }
+});
+
+/** answers_json を安全に object へ (壊れ/配列は空 object)。 */
+function safeParseAnswers(json: string): Record<string, unknown> {
+  try {
+    const p = JSON.parse(json);
+    return p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}

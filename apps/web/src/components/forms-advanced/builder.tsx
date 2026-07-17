@@ -77,9 +77,11 @@ export interface BuilderProps {
   initialFormType?: FormDisplayType
   /** form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。未設定は 0 (=編集不可=現状挙動)。弾S は inert。 */
   initialAllowPostEdit?: number
+  /** form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。 */
+  initialAllowEditMail?: number
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; allowPostEdit?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
@@ -690,6 +692,8 @@ export default function FormBuilder(props: BuilderProps) {
   const [saveWarnings, setSaveWarnings] = useState<string[]>([])
   // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。弾S は inert (保存のみ・実効化は弾M)。
   const [allowPostEdit, setAllowPostEdit] = useState<number>(props.initialAllowPostEdit ?? 0)
+  // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。allow_post_edit=1 でのみ有効 (依存を UI で表現)。
+  const [allowEditMail, setAllowEditMail] = useState<number>(props.initialAllowEditMail ?? 0)
   // jump 追加時: simple なら multi_step へ自動切替 + 可視通知 (多層防御の主機構)。
   const ensureMultiStep = () => {
     setFormType('multi_step')
@@ -794,7 +798,7 @@ export default function FormBuilder(props: BuilderProps) {
     try {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, allowPostEdit })
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, allowPostEdit, allowEditMail })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
@@ -934,6 +938,24 @@ export default function FormBuilder(props: BuilderProps) {
         </label>
         <span className="basis-full text-[10px] text-gray-400 leading-snug">
           ※ この設定はいまは保存のみで、実際に効き始めるのは「あと編集」機能（次の弾）を作ってからです。
+        </span>
+      </div>
+
+      {/* form-edit-mail-link (弾L): フォーム単位「メールで編集 URL を送る」トグル。
+          「あと編集を許可する」(allow_post_edit=1) のときだけ有効 (依存を UI で表現・disabled で示す)。 */}
+      <div className="mb-2 flex flex-wrap items-start gap-x-2 gap-y-1 rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
+        <label className={`flex items-center gap-2 text-xs ${allowPostEdit === 1 ? 'text-gray-600' : 'text-gray-400'}`}>
+          <input
+            type="checkbox"
+            aria-label="メールで編集URLを送る"
+            disabled={allowPostEdit === 0}
+            checked={allowEditMail === 1}
+            onChange={(e) => setAllowEditMail(e.target.checked ? 1 : 0)}
+          />
+          <span>回答完了時に、入力されたメールアドレス宛へ「編集用リンク」を送る（フォーム単位）</span>
+        </label>
+        <span className="basis-full text-[10px] text-gray-400 leading-snug">
+          ※ 「回答者による後からの編集」を許可したフォームでのみ設定できます。メール送信の実際の有効化は運用側の設定が必要です。
         </span>
       </div>
 

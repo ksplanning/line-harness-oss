@@ -35,6 +35,8 @@ export interface AdvancedForm {
   formType?: FormDisplayType | null
   // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。既定 0=現状挙動。弾S は inert (実効化は弾M)。
   allowPostEdit?: number
+  // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。
+  allowEditMail?: number
   // form-route-branching: save 応答の非ブロッキング警告 (jump+simple backstop 等)。envelope top-level から搬送。
   warnings?: string[]
   // F6-2 表示スコープ: lineAccountId は全 role 露出 / workspaceId は owner 応答のみ (非 owner は不在)。
@@ -83,6 +85,8 @@ export interface SaveDefinitionBody {
   formType?: FormDisplayType
   // form-media-limits ③: 回答者後編集の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。
   allowPostEdit?: number
+  // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。
+  allowEditMail?: number
 }
 
 export const formsAdvancedApi = {

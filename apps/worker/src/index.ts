@@ -196,6 +196,11 @@ export type Env = {
     //   未設定 = 無効 (fail-closed / rollback 経路)。allow_post_edit トグルと AND で gate する。
     //   有効化は `wrangler secret put`/[vars] で 'true' 供給 (owner 立会後・repo に literal 置かない)。
     FORM_POST_EDIT_ENABLED?: string;
+    // 弾L (form-edit-mail-link): 署名付き編集トークンの専用鍵 (Phase A / 公開編集 route の token 検証)。
+    //   `wrangler secret put FORMALOO_EDIT_TOKEN_SECRET` で供給 (repo に生値を置かない / D-2)。既存 friend token /
+    //   webhook secret / auth API_KEY とは別鍵で分離 (編集トークンが署名/認証系の権限昇格に使えない境界)。
+    //   未設定 dev は verifyEditToken が fail-closed (null) = 公開編集 route が全 token を拒否 (=機能到達不能)。
+    FORMALOO_EDIT_TOKEN_SECRET?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
