@@ -1,4 +1,4 @@
-import { isDecorationType, DEFAULT_RATING_STAR_COLOR, type HarnessFieldType, type RatingSubType } from '@line-crm/shared'
+import { isDecorationType, DEFAULT_RATING_STAR_COLOR, type HarnessFieldType, type RatingSubType, type ImageWidth } from '@line-crm/shared'
 
 // =============================================================================
 // パレット field 種別メタ (F-2 / T-B1) — 素人向け日本語ラベル (英語 type 名を見せない / ui-design)。
@@ -31,6 +31,8 @@ export const FIELD_TYPE_META: FieldTypeMeta[] = [
   { type: 'section', label: '見出し＋説明', icon: '🔖', category: '装飾' },
   { type: 'page_break', label: '改ページ', icon: '➖', category: '装飾' },
   { type: 'video', label: '動画', icon: '🎬', category: '装飾' },
+  // form-image-decoration: 差し込み画像 (フォーム途中の画像 / 先頭に置けば帯ヘッダーにもなる)。additive。
+  { type: 'image', label: '画像', icon: '🖼️', category: '装飾' },
 ]
 
 /**
@@ -53,6 +55,17 @@ export const VIDEO_SIZE_PRESETS: { value: string; label: string }[] = [
   { value: '200px', label: '小' },
   { value: '280px', label: '中' },
   { value: '400px', label: '大' },
+]
+
+/**
+ * form-image-decoration: 差し込み画像の表示幅プリセット (小40%/中70%/全幅100% / owner ②「ストレス無く」)。
+ * image-field-panel の幅 picker が参照。値は shared ImageWidth enum → canonical <img> の max-width % に射影
+ * (spike S-1 実測: max-width % が hosted で効く = スマホでも親コンテナ相対で破綻しない)。既定 medium。
+ */
+export const IMAGE_WIDTH_OPTIONS: { value: ImageWidth; label: string }[] = [
+  { value: 'small', label: '小（40%）' },
+  { value: 'medium', label: '中（70%）' },
+  { value: 'full', label: '全幅（100%）' },
 ]
 
 /**
