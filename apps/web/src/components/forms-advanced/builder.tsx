@@ -905,6 +905,10 @@ export default function FormBuilder(props: BuilderProps) {
         // form-route-branching: pull した表示形式を復元 (未設定は undefined = simple 表示)。
         setFormType(d.formType)
         setFormTypeNotice(null)
+        // form-jp-localization: 再取り込みは「未保存の編集を破棄」。文言は pull 非対応 (backlog) のため
+        //   初期 (空・未編集) にリセットし、未保存の文言編集を持ち越さない (reimport 契約と一貫)。
+        setFormCopy({ buttonText: '', successMessage: '', errorMessage: '' })
+        setFormCopyTouched(false)
       }
     } finally {
       setReimporting(false)
