@@ -47,13 +47,18 @@ describe('signLpViewToken / verifyLpViewToken round-trip', () => {
 });
 
 describe('fail-closed (改ざん / 期限 / 別 secret / 欠落)', () => {
-  test('1bit 改ざんした token は null (AES-GCM auth tag が reject)', async () => {
-    const token = await signLpViewToken(FRIEND, SLUG, Date.now() + HOUR, SECRET);
-    // base64url の末尾文字を別文字に差し替える (auth tag 破壊)
-    const last = token!.slice(-1);
-    const swapped = last === 'A' ? 'B' : 'A';
-    const tampered = token!.slice(0, -1) + swapped;
-    expect(await verifyLpViewToken(tampered, SECRET)).toBeNull();
+  test('改ざんした token は null (AES-GCM auth tag が reject)', async () => {
+    const token = await signLpViewToken(FRIEND, SLUG, Date.now() + HOUR, SECRET)!;
+    // 中間文字 (ciphertext 領域 = 必ず有効ビット) を差し替える。末尾 base64url 文字は trailing
+    // padding ビットを含み得て「差し替えてもバイト不変」になり得るため、中間を狙う (決定的に改ざん)。
+    const chars = token!.split('');
+    const i = Math.floor(chars.length / 2);
+    chars[i] = chars[i] === 'A' ? 'B' : 'A';
+    expect(await verifyLpViewToken(chars.join(''), SECRET)).toBeNull();
+    // 追加: 先頭 (iv 領域) の改ざんも reject
+    const chars2 = token!.split('');
+    chars2[2] = chars2[2] === 'A' ? 'B' : 'A';
+    expect(await verifyLpViewToken(chars2.join(''), SECRET)).toBeNull();
   });
 
   test('期限切れ (exp 過去) は null', async () => {
