@@ -38,6 +38,7 @@ import {
   resolveRowSlug,
   makeRowsListRowSlugResolver,
   isPostEditEnabled,
+  isEditableFieldType,
 } from '../services/formaloo-row-edit.js';
 import {
   validateHarnessField,
@@ -829,7 +830,46 @@ formsAdvanced.get('/api/forms-advanced/:id/rows', async (c) => {
   }
 });
 
+/** 編集者 staff の表示名を解決 (env-owner は 'Owner' / 不明は null)。 */
+async function resolveEditorName(db: D1Database, editorStaffId: string | null | undefined): Promise<string | null> {
+  if (!editorStaffId) return null;
+  if (editorStaffId === 'env-owner') return 'Owner';
+  const st = await getStaffById(db, editorStaffId);
+  return st?.name ?? null;
+}
+
+/**
+ * 弾M (form-post-edit / T-D2): 回答詳細の編集コンテキスト (additive・回答詳細画面の編集モード用)。
+ *   allowPostEdit (編集ボタン gate) + 編集対象 field メタ (slug/label/type/required/editable) + ④最終編集。
+ *   field メタは definition の required/type + field_map の slug を harness id で join (装飾/未 push slug は除外)。
+ */
+async function buildRowEditContext(db: D1Database, form: FormalooForm, rowId: string) {
+  const def = parseDefinition(form.definition_json);
+  const fieldMap = await getFormalooFieldMap(db, form.id);
+  const slugById = new Map<string, string | null>();
+  for (const r of fieldMap) slugById.set(r.id, r.formaloo_field_slug);
+  const fields = def.fields
+    .filter((f) => !isDecorationType(f.type))
+    .map((f) => ({
+      slug: (slugById.get(f.id) ?? null) as string | null,
+      label: f.label,
+      type: f.type as string,
+      required: f.required === true,
+      editable: isEditableFieldType(f.type),
+    }))
+    .filter((f) => f.slug != null) as Array<{ slug: string; label: string; type: string; required: boolean; editable: boolean }>;
+  const latest = await getLatestEdit(db, rowId);
+  return {
+    allowPostEdit: form.allow_post_edit,
+    fields,
+    lastEdit: latest
+      ? { editorStaffId: latest.editor_staff_id, editorName: await resolveEditorName(db, latest.editor_staff_id), editedAt: latest.edited_at }
+      : null,
+  };
+}
+
 // GET /api/forms-advanced/:id/rows/:rowId — Formaloo rows API ドリルスルー (fail-soft = mirror / N-6)
+//   弾M (T-D2): 編集モード用に editContext (allowPostEdit / editable fields / lastEdit) を additive 付与。
 formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
   try {
     const id = c.req.param('id')!;
@@ -839,6 +879,8 @@ formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
     const mirror = await getFormalooSubmission(c.env.DB, rowId);
     if (!mirror || mirror.form_id !== id) return c.json({ success: false, error: '回答が見つかりません' }, 404);
 
+    const editContext = await buildRowEditContext(c.env.DB, form, rowId);
+
     // Formaloo 側の最新をドリルスルー。client 未配備 (dev) / 失敗は mirror を返す (fail-soft)。
     // F6-2: form.workspace_id で多鍵解決。NULL(legacy) → env 単一鍵 fallback (byte-equivalent) /
     // 登録 active → 暗号文鍵 / 未登録・無効化・復号失敗 → null (env silent fallback しない = 誤送信防止)。fail-soft 契約不変。
@@ -846,10 +888,10 @@ formsAdvanced.get('/api/forms-advanced/:id/rows/:rowId', async (c) => {
     if (client && form.formaloo_slug) {
       const r = await client.get<{ data?: unknown }>(`/v3.0/forms/${form.formaloo_slug}/rows/${rowId}/`);
       if (r.ok) {
-        return c.json({ success: true, data: { id: rowId, answers: r.data?.data ?? safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'formaloo' } });
+        return c.json({ success: true, data: { id: rowId, answers: r.data?.data ?? safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'formaloo', ...editContext } });
       }
     }
-    return c.json({ success: true, data: { id: rowId, answers: safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'mirror' } });
+    return c.json({ success: true, data: { id: rowId, answers: safeParseJson(mirror.answers_json), submittedAt: mirror.submitted_at, source: 'mirror', ...editContext } });
   } catch (err) {
     console.error('GET /api/forms-advanced/:id/rows/:rowId error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -960,13 +1002,6 @@ formsAdvanced.patch('/api/forms-advanced/:id/rows/:rowId', async (c) => {
     }
 
     const latest = await getLatestEdit(c.env.DB, rowId);
-    let editorName: string | null = null;
-    if (latest?.editor_staff_id === 'env-owner') {
-      editorName = 'Owner';
-    } else if (latest?.editor_staff_id) {
-      const st = await getStaffById(c.env.DB, latest.editor_staff_id);
-      editorName = st?.name ?? null;
-    }
     return c.json({
       success: true,
       data: {
@@ -975,7 +1010,7 @@ formsAdvanced.patch('/api/forms-advanced/:id/rows/:rowId', async (c) => {
         submittedAt: mirror.submitted_at,
         source: 'formaloo',
         lastEdit: latest
-          ? { editorStaffId: latest.editor_staff_id, editorName, editedAt: latest.edited_at }
+          ? { editorStaffId: latest.editor_staff_id, editorName: await resolveEditorName(c.env.DB, latest.editor_staff_id), editedAt: latest.edited_at }
           : null,
       },
     });

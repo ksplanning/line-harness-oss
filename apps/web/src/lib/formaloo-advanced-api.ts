@@ -178,6 +178,24 @@ export interface RowEditResult {
   source: string
   lastEdit: { editorStaffId: string | null; editorName: string | null; editedAt: string } | null
 }
+/** 弾M: 回答詳細の編集対象 field メタ (編集モードの入力欄生成 + required 検証用)。 */
+export interface RowEditFieldMeta {
+  slug: string
+  label: string
+  type: string
+  required: boolean
+  editable: boolean
+}
+/** 弾M: 回答詳細 (drill-through) + 編集コンテキスト (allowPostEdit / editable fields / ④lastEdit)。 */
+export interface RowDetail {
+  id: string
+  answers: Record<string, unknown>
+  submittedAt: string
+  source: string
+  allowPostEdit?: number
+  fields?: RowEditFieldMeta[]
+  lastEdit?: { editorStaffId: string | null; editorName: string | null; editedAt: string } | null
+}
 export interface FormStats {
   total: number
   verified: number
@@ -214,8 +232,8 @@ export const formalooDataApi = {
   async rows(id: string, q: RowsQuery = {}): Promise<RowsPage> {
     return (await fetchApi<Envelope<RowsPage>>(`/api/forms-advanced/${id}/rows${toQueryString(q)}`)).data
   },
-  async row(id: string, rowId: string): Promise<{ id: string; answers: Record<string, unknown>; submittedAt: string; source: string }> {
-    return (await fetchApi<Envelope<{ id: string; answers: Record<string, unknown>; submittedAt: string; source: string }>>(`/api/forms-advanced/${id}/rows/${rowId}`)).data
+  async row(id: string, rowId: string): Promise<RowDetail> {
+    return (await fetchApi<Envelope<RowDetail>>(`/api/forms-advanced/${id}/rows/${rowId}`)).data
   },
   /**
    * 弾M (form-post-edit / T-D1): ①管理者編集の保存。PATCH で編集後 answers を送る。

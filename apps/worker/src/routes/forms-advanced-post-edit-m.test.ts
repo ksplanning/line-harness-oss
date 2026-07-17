@@ -279,3 +279,43 @@ describe('T-B2 正直エラー (殻完了禁止・D1 を書かない)', () => {
     expect(editCount('s1')).toBe(0);
   });
 });
+
+describe('T-D2 GET rows/:rowId editContext 付与 (allowPostEdit / editable fields / lastEdit)', () => {
+  test('allowPostEdit + editable field メタ + lastEdit を additive で返す (既存 answers/source は不変)', async () => {
+    seedForm('f1', 'form_abc', 1);
+    seedSub('s1', 'f1', { nameSlug: '田中', pickSlug: 'A' }, 'ROW1');
+    // ④ 編集履歴 1 件 (最終編集表示用)
+    raw.prepare(
+      `INSERT INTO formaloo_submission_edits (id, submission_id, form_id, editor_staff_id, edited_at, field_slug, old_value, new_value)
+       VALUES ('e1','s1','f1','env-owner','2026-07-17T02:00:00+09:00','nameSlug','田中','山田')`,
+    ).run();
+    stubFormaloo({}); // client なし経路 (mirror source)。dev では FORMALOO_API_KEY 無しでも editContext は付く
+    const res = await call('GET', '/api/forms-advanced/f1/rows/s1', undefined, { FORMALOO_API_KEY: undefined, FORMALOO_API_SECRET: undefined });
+    expect(res.status).toBe(200);
+    const d = (await res.json() as {
+      data: {
+        answers: Record<string, unknown>; source: string; allowPostEdit: number;
+        fields: Array<{ slug: string; label: string; type: string; required: boolean; editable: boolean }>;
+        lastEdit: { editorName: string; editedAt: string } | null;
+      };
+    }).data;
+    expect(d.answers).toEqual({ nameSlug: '田中', pickSlug: 'A' }); // 既存 answers 不変
+    expect(d.allowPostEdit).toBe(1);
+    const byType = Object.fromEntries(d.fields.map((f) => [f.type, f]));
+    expect(byType.text.editable).toBe(true);     // free-value = 編集可
+    expect(byType.text.required).toBe(true);
+    expect(byType.textarea.editable).toBe(true);
+    expect(byType.choice.editable).toBe(false);   // 選択式 = 編集不可
+    expect(d.lastEdit?.editorName).toBe('Owner');
+  });
+
+  test('allow_post_edit=0 は allowPostEdit=0 を返す (web が編集ボタンを出さない)', async () => {
+    seedForm('f1', 'form_abc', 0);
+    seedSub('s1', 'f1', { nameSlug: '田中' }, 'ROW1');
+    stubFormaloo({});
+    const res = await call('GET', '/api/forms-advanced/f1/rows/s1', undefined, { FORMALOO_API_KEY: undefined, FORMALOO_API_SECRET: undefined });
+    const d = (await res.json() as { data: { allowPostEdit: number; lastEdit: unknown } }).data;
+    expect(d.allowPostEdit).toBe(0);
+    expect(d.lastEdit).toBeNull();
+  });
+});
