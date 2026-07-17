@@ -20,6 +20,7 @@
 // =============================================================================
 
 import { FORMALOO_TO_HARNESS_TYPE, type HarnessFieldType } from './formaloo-forms';
+import { parseImageDescription } from './form-image';
 
 // crypto.subtle / TextEncoder は Node18+ / Cloudflare Workers 双方の runtime global。
 // 本パッケージの tsconfig lib=ES2022 は Web Crypto / TextEncoder を型宣言しないため、
@@ -53,6 +54,15 @@ export interface ProjectedField {
   subType?: string;
   /** oembed(video) の埋め込み URL (treasure-b1-palette)。非空時のみ射影 (url 空/未載は false-drift 回避)。 */
   videoUrl?: string;
+  /**
+   * form-image-decoration: 差し込み画像 (meta/section で description=canonical <img>) の parse 済み値。
+   * raw description HTML でなく parse 済み値を射影する = Formaloo の遅延 HTML 再正規化 (data-* 属性や空白) での
+   * false-drift を回避する生命線 (spike T-C3 は byte 完全一致だが二重の安全)。imageWidth は表示領域=render に
+   * 効くため射影に含める (video height=cosmetic 非射影とは逆扱い / R-2)。散文 section は非射影 (projectField で null)。
+   */
+  imageUrl?: string;
+  imageAlt?: string;
+  imageWidth?: string;
 }
 
 export interface CanonicalDefinition {
@@ -66,6 +76,23 @@ function projectField(el: unknown): ProjectedField | null {
   if (typeof el !== 'object' || el === null) return null;
   const o = el as Record<string, unknown>;
   const formalooType = typeof o.type === 'string' ? o.type : '';
+  // form-image-decoration: meta/section で description が canonical <img> のものだけを差し込み画像として射影する。
+  //   parse 済み {imageUrl,imageAlt,imageWidth} を射影 (raw HTML 非依存 = 再正規化 false-drift 回避 / R-2)。
+  //   散文 section / page_break は従来どおり非射影 (return null) = 既存フォーム byte 不変 (R-1)。
+  if (formalooType === 'meta') {
+    const parsed = parseImageDescription(typeof o.description === 'string' ? o.description : '');
+    if (!parsed) return null;
+    return {
+      slug: typeof o.slug === 'string' ? o.slug : '',
+      type: 'meta',
+      title: typeof o.title === 'string' ? o.title : '',
+      required: false,
+      position: typeof o.position === 'number' ? o.position : 0,
+      imageUrl: parsed.url,
+      imageAlt: parsed.alt,
+      imageWidth: parsed.width,
+    };
+  }
   // treasure-b1-palette: oembed(video) は装飾ゆえ FORMALOO_TO_HARNESS_TYPE 逆引きに載らない → meta と異なり
   //   fromFormalooField が oembed→video を保持するため fingerprint も explicit に射影する (drift 検知対象)。
   //   url 非空時のみ videoUrl を載せる (url 空/未載の false-drift 回避 / max_size=2048 ガードと同型)。
