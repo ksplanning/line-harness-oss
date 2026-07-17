@@ -584,8 +584,10 @@ formalooPublic.patch('/fe/:token/save', async (c) => {
     if (!patchRes.ok) {
       return c.json({ success: false, error: '反映に失敗しました（保存していません）' }, 502);
     }
-    const verifyRes = await client.get<{ data?: Record<string, unknown> }>(`/v3.0/rows/${rowSlug}/`);
-    const persisted = (verifyRes.ok ? verifyRes.data?.data : undefined) as Record<string, unknown> | undefined;
+    // 実 Formaloo GET /v3.0/rows/{slug}/ の flat slug map は data.row.data に在る (client が HTTP body を .data に
+    // 包むため route からは verifyRes.data.data.row.data)。1 階層浅い data.data を読むと常に undefined → 誤 502。
+    const verifyRes = await client.get<{ data?: { row?: { data?: Record<string, unknown> } } }>(`/v3.0/rows/${rowSlug}/`);
+    const persisted = (verifyRes.ok ? verifyRes.data?.data?.row?.data : undefined) as Record<string, unknown> | undefined;
     const confirmed =
       persisted != null &&
       Object.entries(patchBody).every(([slug, val]) => String(persisted[slug] ?? '') === String(val ?? ''));
