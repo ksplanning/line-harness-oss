@@ -1,3 +1,5 @@
+import type { UpsertFormalooSubmissionInput } from '@line-crm/db';
+
 // =============================================================================
 // Formaloo row 編集 純関数群 (弾M form-post-edit / T-B1)
 // -----------------------------------------------------------------------------
@@ -115,7 +117,7 @@ interface RowsListResolverOptions {
   pageSize?: number;
 }
 
-function extractRows(data: unknown): Array<Record<string, unknown>> {
+export function extractRows(data: unknown): Array<Record<string, unknown>> {
   const d = data as Record<string, unknown> | null;
   if (!d || typeof d !== 'object') return [];
   const candidates: unknown[] = [
@@ -157,5 +159,39 @@ export function makeRowsListRowSlugResolver(
       }
     }
     return null;
+  };
+}
+
+/**
+ * rows-list の 1 row を回答ミラー upsert 入力へ写像する (submissions-visibility-fix / T-A6)。
+ * S-1 live 実測 shape (2026-07-17 / form GMOxoMtK) に基づく:
+ *   - answers  = `row.data` (field-slug キーの flat map)。
+ *   - addressable id = `row.slug` (20ch)。詳細 drill `/v3.0/rows/{slug}/` が 200 で解決する唯一の値
+ *     (submit_code は 404 / `/v3.0/forms/{slug}/rows/{slug}/` も 404 = S-1 実測)。ゆえ mirror id も row.slug。
+ *   - submittedAt = `row.created_at` (ISO)。
+ *   - friendId=null / verified=false: friend 解決・署名検証は webhook 専管 (read-path では付与しない)。
+ *   - rowSlug=row.slug: 弾M 編集 (PATCH /v3.0/rows/{row_slug}/) が要る addressable slug を write-once で入れる。
+ * slug 欠落 row は addressable でない (id にできない) ため null を返し呼び出し側が skip する。
+ */
+export function mapFormalooListRowToUpsert(
+  row: Record<string, unknown>,
+  form: { id: string; formaloo_slug: string | null },
+): UpsertFormalooSubmissionInput | null {
+  const slug = typeof row.slug === 'string' && row.slug ? row.slug : null;
+  if (!slug) return null;
+  const rawData = row.data;
+  const answers = rawData && typeof rawData === 'object' && !Array.isArray(rawData)
+    ? (rawData as Record<string, unknown>)
+    : {};
+  const createdAt = typeof row.created_at === 'string' && row.created_at ? row.created_at : new Date().toISOString();
+  return {
+    id: slug,
+    formId: form.id,
+    formalooSlug: form.formaloo_slug,
+    answersJson: JSON.stringify(answers),
+    submittedAt: createdAt,
+    rowSlug: slug,
+    friendId: null,
+    verified: false,
   };
 }
