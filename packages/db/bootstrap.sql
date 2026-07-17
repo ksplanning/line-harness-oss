@@ -456,6 +456,20 @@ CREATE TABLE formaloo_drift_events (
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE formaloo_edit_mail_sends (
+  id                       TEXT PRIMARY KEY,
+  submission_id            TEXT NOT NULL UNIQUE,   -- 冪等 claim (1 submission = 1 送信 / 再配信で 2 通目を出さない)
+  form_id                  TEXT NOT NULL,
+  recipient_hash           TEXT NOT NULL,          -- 宛先メールの hash のみ (平文非保存 = PII / PUBLIC repo)
+  requested_at             TEXT NOT NULL,          -- JST ISO8601 (claim/pending 予約時刻)
+  status                   TEXT NOT NULL,          -- pending | sent | failed | skipped
+  attempt_count            INTEGER NOT NULL DEFAULT 0,  -- 再送回数 (bounded 再送の上限判定 / Phase B)
+  provider_idempotency_key TEXT,                   -- provider 側冪等キー (再送で provider 二重送信しない / Phase B)
+  last_attempt_at          TEXT,                   -- 最終試行時刻 (JST ISO)
+  provider_message_id      TEXT,                   -- provider ack の message id (送達証跡)
+  error                    TEXT                    -- 失敗理由 (soft-200-safe 証跡)
+);
+
 CREATE TABLE formaloo_field_map (
   id                  TEXT PRIMARY KEY,
   form_id             TEXT NOT NULL,
@@ -498,7 +512,7 @@ CREATE TABLE formaloo_forms (
   folder_id             TEXT,                            -- migration 096: ハーネス側フォルダ分類 (NULL=未分類 / F6-3 本柱③)
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, allow_post_edit INTEGER NOT NULL DEFAULT 0);
+, allow_post_edit INTEGER NOT NULL DEFAULT 0, allow_edit_mail INTEGER NOT NULL DEFAULT 0, edit_mail_field_slug TEXT, edit_link_epoch INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE formaloo_saved_filters (
   id          TEXT PRIMARY KEY,
@@ -1212,6 +1226,10 @@ CREATE INDEX idx_form_submissions_form ON form_submissions (form_id);
 CREATE INDEX idx_form_submissions_friend ON form_submissions (friend_id);
 
 CREATE INDEX idx_formaloo_drift_events_form ON formaloo_drift_events (form_id, detected_at);
+
+CREATE INDEX idx_formaloo_edit_mail_sends_form ON formaloo_edit_mail_sends (form_id, requested_at);
+
+CREATE INDEX idx_formaloo_edit_mail_sends_status ON formaloo_edit_mail_sends (status, requested_at);
 
 CREATE INDEX idx_formaloo_field_map_form ON formaloo_field_map (form_id, position);
 
