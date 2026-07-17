@@ -12,3 +12,4 @@ export * from "./form-image";
 export * from "./form-design";
 export * from "./formaloo-rating-style";
 export * from "./form-copy";
+export * from "./form-redirect";

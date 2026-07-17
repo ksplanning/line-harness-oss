@@ -10,6 +10,7 @@
 // =============================================================================
 
 import type { FormCopy } from './form-copy';
+import type { FormRedirect } from './form-redirect';
 import { buildImageDescriptionHtml, parseImageDescription, isImageWidth, isSafeImageUrl, type ImageWidth } from './form-image';
 import { validateImageUpload, type FormDesignImageUpload } from './form-design';
 
@@ -250,6 +251,13 @@ export interface HarnessFormDefinition {
    * 載らない = 後方互換 (byte 不変)。fingerprint 非関与 (cron drift 誤検知に入らない)。
    */
   formCopy?: FormCopy;
+  /**
+   * 送信後リダイレクト設定 (route-terminal-phase2 Track 1 / additive optional)。design/formCopy と同列。
+   * url(https のみ)+ openExternalBrowser(LINE 外部起動)を非空指定時だけ持つ。未設定フォームは
+   * definition_json に載らない = 後方互換 (byte 不変)。fingerprint 非関与 (form 直下 meta ゆえ cron drift
+   * 誤検知に入らない = formCopy と同型)。
+   */
+  formRedirect?: FormRedirect;
 }
 
 // ─── Formaloo logic object 形 (push-sync 形式 / conditions + actions) ─────────
