@@ -527,6 +527,9 @@ export interface FormalooSubmissionRow {
   synced_at: string;
   line_processed: number;
   verified: number;
+  // migration 100 (form-post-edit 弾M): Formaloo row 編集の addressable identifier (row_slug)。
+  //   NULL=legacy (webhook root.slug 未 capture) → rows-list resolver で lazy backfill。
+  formaloo_row_slug: string | null;
 }
 
 /** webhook 経路: formaloo_slug から台帳を引く (回答をどの harness form に紐付けるか)。 */
@@ -542,6 +545,9 @@ export interface UpsertFormalooSubmissionInput {
   answersJson: string;
   submittedAt: string;
   verified?: boolean;
+  // migration 100 (form-post-edit 弾M): webhook root.slug 由来の row_slug。未取得 (legacy/fallback 形) は null。
+  //   COALESCE 保持 = 再送で null が来ても既存 row_slug を落とさない (forward-only)。
+  rowSlug?: string | null;
 }
 
 /**
@@ -557,16 +563,17 @@ export async function upsertFormalooSubmission(
   const v = input.verified ? 1 : 0;
   await db
     .prepare(
-      `INSERT INTO formaloo_submissions (id, form_id, formaloo_slug, friend_id, answers_json, submitted_at, synced_at, line_processed, verified)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+      `INSERT INTO formaloo_submissions (id, form_id, formaloo_slug, friend_id, answers_json, submitted_at, synced_at, line_processed, verified, formaloo_row_slug)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
-         answers_json = excluded.answers_json,
-         friend_id    = COALESCE(excluded.friend_id, formaloo_submissions.friend_id),
-         submitted_at = excluded.submitted_at,
-         synced_at    = excluded.synced_at,
-         verified     = MAX(formaloo_submissions.verified, excluded.verified)`,
+         answers_json      = excluded.answers_json,
+         friend_id         = COALESCE(excluded.friend_id, formaloo_submissions.friend_id),
+         submitted_at      = excluded.submitted_at,
+         synced_at         = excluded.synced_at,
+         verified          = MAX(formaloo_submissions.verified, excluded.verified),
+         formaloo_row_slug = COALESCE(excluded.formaloo_row_slug, formaloo_submissions.formaloo_row_slug)`,
     )
-    .bind(input.id, input.formId, input.formalooSlug ?? null, input.friendId ?? null, input.answersJson, input.submittedAt, now, v)
+    .bind(input.id, input.formId, input.formalooSlug ?? null, input.friendId ?? null, input.answersJson, input.submittedAt, now, v, input.rowSlug ?? null)
     .run();
 }
 
@@ -597,6 +604,71 @@ export async function incrementFormalooSubmitCount(db: D1Database, formId: strin
 
 export async function getFormalooSubmission(db: D1Database, id: string): Promise<FormalooSubmissionRow | null> {
   return db.prepare('SELECT * FROM formaloo_submissions WHERE id = ?').bind(id).first<FormalooSubmissionRow>();
+}
+
+// ─── 弾M あと編集 (form-post-edit / migration 100) ─────────────────────────────
+
+/**
+ * ②本人再入場 prefill 用: 当該 friend の**最新** row を 1 件返す (取り違え防止の要)。
+ * friend_id **完全一致** WHERE + form scope に閉じ、submitted_at DESC で最新。**別 friend の row を絶対に返さない**。
+ * 呼び出し側は解決済 friendId のみ渡すこと (friend 未解決時は本関数を呼ばない = prefill 無し)。
+ */
+export async function getFriendLatestSubmission(
+  db: D1Database,
+  formId: string,
+  friendId: string,
+): Promise<FormalooSubmissionRow | null> {
+  return db
+    .prepare('SELECT * FROM formaloo_submissions WHERE form_id = ? AND friend_id = ? ORDER BY submitted_at DESC LIMIT 1')
+    .bind(formId, friendId)
+    .first<FormalooSubmissionRow>();
+}
+
+export interface FormalooSubmissionEditRow {
+  id: string;
+  submission_id: string;
+  form_id: string;
+  editor_staff_id: string | null;
+  edited_at: string;
+  field_slug: string;
+  old_value: string | null;
+  new_value: string | null;
+}
+
+export interface RecordSubmissionEditInput {
+  submissionId: string;
+  formId: string;
+  editorStaffId: string | null;
+  fieldSlug: string;
+  oldValue: string | null;
+  newValue: string | null;
+}
+
+/** ④最小監査: ①管理者編集を formaloo_submission_edits に 1 行記録 (誰が いつ どの項目を 前値→後値)。 */
+export async function recordSubmissionEdit(db: D1Database, input: RecordSubmissionEditInput): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO formaloo_submission_edits (id, submission_id, form_id, editor_staff_id, edited_at, field_slug, old_value, new_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(`fse_${crypto.randomUUID()}`, input.submissionId, input.formId, input.editorStaffId, jstNow(), input.fieldSlug, input.oldValue, input.newValue)
+    .run();
+}
+
+/** 回答詳細の「最終編集: {staff} {日時}」表示用: 当該 submission の最新編集 1 行 (無ければ null)。 */
+export async function getLatestEdit(db: D1Database, submissionId: string): Promise<FormalooSubmissionEditRow | null> {
+  return db
+    .prepare('SELECT * FROM formaloo_submission_edits WHERE submission_id = ? ORDER BY edited_at DESC LIMIT 1')
+    .bind(submissionId)
+    .first<FormalooSubmissionEditRow>();
+}
+
+/** legacy row_slug の lazy backfill: 現在 NULL の行のみ後埋め (既に capture 済の値は上書きしない)。 */
+export async function updateSubmissionRowSlug(db: D1Database, submissionId: string, rowSlug: string): Promise<void> {
+  await db
+    .prepare('UPDATE formaloo_submissions SET formaloo_row_slug = ? WHERE id = ? AND formaloo_row_slug IS NULL')
+    .bind(rowSlug, submissionId)
+    .run();
 }
 
 // ─── F-4 データコックピット 保存フィルタ (migration 082) ──────────────────────
