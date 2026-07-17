@@ -52,7 +52,14 @@ export interface FormDesign {
   themeName?: string | null;
   /** Formaloo-hosted URL (http(s) only)。 */
   logoUrl?: string | null;
+  /**
+   * ⚠ form-image-decoration 棚卸し (2026-07-18): これは Formaloo の `cover_image_url` フィールドを **pull で
+   * surface するだけのレガシー alias** (formaloo-pull.ts の firstHttpUrl(f.cover_image_url))。harness の
+   * 「背景/カバー画像」の push 実体は **backgroundImageUrl** (UI cover slot → Formaloo `background_image` /
+   * applyDesignImages)。両者を混同しない (design-panel ラベルの語義曖昧の元)。書込経路は無く読取 surface のみ。
+   */
   coverImageUrl?: string | null;
+  /** 背景画像 (全面) の Formaloo-hosted URL。UI cover slot → Formaloo `background_image` の push/pull 実体。 */
   backgroundImageUrl?: string | null;
   presetId?: string | null;
   /**
