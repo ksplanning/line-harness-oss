@@ -22,9 +22,9 @@ import {
 } from './formaloo-forms';
 
 describe('formaloo-forms — field 種別 MVP subset (N-13)', () => {
-  test('MVP subset は 10 種 (matrix/repeating_section 等は含まない)', () => {
+  test('入力 subset は 12 種 (treasure-b1: rating/signature additive・matrix 等は含まない)', () => {
     expect([...FORMALOO_FIELD_TYPES].sort()).toEqual(
-      ['text', 'textarea', 'choice', 'dropdown', 'multiple_select', 'number', 'email', 'phone', 'date', 'file'].sort(),
+      ['text', 'textarea', 'choice', 'dropdown', 'multiple_select', 'number', 'email', 'phone', 'date', 'file', 'rating', 'signature'].sort(),
     );
     expect(FORMALOO_FIELD_TYPES).not.toContain('matrix');
     expect(FORMALOO_FIELD_TYPES).not.toContain('repeating_section');
@@ -41,14 +41,14 @@ describe('formaloo-forms — field 種別 MVP subset (N-13)', () => {
   });
 
   test('装飾型は additive に定義し、meta の逆引きは input 型マップへ混入させない (T-B2)', () => {
-    expect(DECORATION_FIELD_TYPES).toEqual(['section', 'page_break']);
+    expect(DECORATION_FIELD_TYPES).toEqual(['section', 'page_break', 'video']); // treasure-b1: video additive (oembed)
     expect(HARNESS_TO_FORMALOO_TYPE.section).toBe('meta');
     expect(HARNESS_TO_FORMALOO_TYPE.page_break).toBe('meta');
     expect(FORMALOO_TO_HARNESS_TYPE.meta).toBeUndefined();
     expect(isDecorationType('section')).toBe(true);
     expect(isDecorationType('page_break')).toBe(true);
     expect(isDecorationType('text')).toBe(false);
-    expect(isDecorationType('video')).toBe(false);
+    expect(isDecorationType('video')).toBe(true); // treasure-b1: video は装飾 (oembed / 回答なし)
   });
 });
 
