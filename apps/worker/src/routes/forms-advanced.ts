@@ -522,6 +522,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       ? incomingFormRedirect
       : prevDef.formRedirect;
     const redirectCleared = formRedirectProvided && !incomingFormRedirect?.url && !!prevDef.formRedirect?.url;
+
+    // ── route-terminal-phase2 (Track 2): ルート別完了ページ (successPages) ──
+    // update 意味論: 未提供は prev を carry (SP を触らない = byte 不変)。提供時は incoming を desired として
+    //   reconcile (push が create/update + 削除除外分の DELETE を実行)。reconcile 後の割当 slug を push が返し
+    //   successPagesToPersist を更新 → definition_json へ slug を永続 (非冪等 POST の重複作成防止 / CI-3)。
+    let successPagesToPersist: SuccessPageSpec[] | undefined = successPagesProvided ? incomingSuccessPages : prevDef.successPages;
+
     // jump+simple backstop (最後の砦): jump rule があるのに表示形式が multi_step でない → 非ブロッキング警告。
     // (builder の自動切替=主機構が働けば発火しない。API 直叩き/手動戻しの取りこぼしを save レスポンスで surface。)
     const hasJumpRule = logic.some((r) => r.action === 'jump');
@@ -551,6 +558,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         ...(formCopyToPersist && Object.keys(formCopyToPersist).length ? { formCopy: formCopyToPersist } : {}),
         // route-terminal-phase2: redirect が非空のときだけ載せる (未設定/クリア後は byte 一致 = 後方互換)。
         ...(formRedirectToPersist && Object.keys(formRedirectToPersist).length ? { formRedirect: formRedirectToPersist } : {}),
+        // route-terminal-phase2 (Track 2): successPages が非空のときだけ載せる (割当 slug 込み・未設定は byte 一致)。
+        ...(successPagesToPersist && successPagesToPersist.length ? { successPages: successPagesToPersist } : {}),
       });
     const fieldRows = (slugFor: (fid: string) => string | null) =>
       fields.map((f) => ({ id: f.id, formalooFieldSlug: slugFor(f.id), fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) }));
@@ -611,7 +620,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         // form-route-branching R2: baseline 差分時のみ form_type PATCH (勝手に変えない)。
         formType: formTypeToPersist,
         prevFormType: prevDef.formType,
+        // route-terminal-phase2 (Track 2): successPages を reconcile (提供時のみ)。prev で slug carry + 削除検出。
+        successPages: successPagesProvided ? incomingSuccessPages : undefined,
+        prevSuccessPages: prevDef.successPages,
       });
+      // route-terminal-phase2 (Track 2): reconcile 後の割当 slug 付き successPages を永続対象へ反映
+      //   (POST 成功後の slug を definition_json に残し次回保存で再 POST しない = 非冪等重複作成の根絶)。
+      if (pushed.successPages) successPagesToPersist = pushed.successPages;
       if (pushed.ok) {
         // slug + address + (backfill 後の) rawLogic + design(色) を反映
         await saveFormalooDefinition(c.env.DB, id, {
@@ -744,6 +759,15 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           syncSettled = true;
         }
       } else {
+        // route-terminal-phase2 (Track 2): push 失敗でも POST 成功済 SP の割当 slug は definition_json に永続する
+        //   (successPagesToPersist は pushed.successPages で partial slug を carry 済) → 次回リトライで再 POST しない
+        //   = 非冪等重複作成の根絶 (失敗注入耐性)。formalooSlug/field slug は変えない (既存挙動維持)。
+        if (successPagesProvided && pushed.successPages) {
+          await saveFormalooDefinition(c.env.DB, id, {
+            definitionJson: buildDefinitionJson(pushed.publicAddress ?? prevDef.formalooAddress ?? null),
+            fields: fieldRows((fid) => pushed.fieldSlugs?.[fid] ?? existingFieldSlugs[fid] ?? null),
+          });
+        }
         await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: pushed.error ?? 'push failed' });
         syncSettled = true;
       }

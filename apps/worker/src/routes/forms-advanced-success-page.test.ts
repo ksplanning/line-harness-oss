@@ -183,3 +183,62 @@ describe('T-D1 — F-MED-2 解除 (submit target を SP 集合で照合)', () =>
     expect(rule?.targetFieldId).toBe('sp1');
   });
 });
+
+describe('T-E3 — SP reconcile 配線 + slug 永続 + jump_to_success_page', () => {
+  test('新規 SP を POST で作成し slug を definition_json に永続・PushResult 経由で反映', async () => {
+    seedForm('e1', 'SLUG');
+    stubFormaloo({ spSlugSeq: ['SP_A'] });
+    const res = await call('PUT', '/api/forms-advanced/e1', {
+      fields: [NAME], logic: [submitRule('sp1')], formType: 'multi_step',
+      successPages: [{ id: 'sp1', title: 'Aルート完了', description: 'ありがとう' }],
+    });
+    expect(res.status).toBe(200);
+    expect(spCreates().length).toBe(1);
+    expect(spCreates()[0].body).toMatchObject({ form: 'SLUG', title: 'Aルート完了', description: 'ありがとう' });
+    const sp = (readDef('e1').successPages as Array<{ id: string; slug?: string }>).find((s) => s.id === 'sp1');
+    expect(sp?.slug).toBe('SP_A'); // 割当 slug が永続
+  });
+
+  test('submit→SP の logic PATCH に jump_to_success_page (identifier=SP slug) が resolve 済で載る', async () => {
+    seedForm('e2', 'SLUG');
+    stubFormaloo({ spSlugSeq: ['SP_A'] });
+    await call('PUT', '/api/forms-advanced/e2', {
+      fields: [NAME], logic: [submitRule('sp1')], formType: 'multi_step',
+      successPages: [{ id: 'sp1', title: 'A完了' }],
+    });
+    const body = JSON.stringify(logicPatch()?.body ?? {});
+    expect(body).toContain('jump_to_success_page');
+    expect(body).toContain('SP_A'); // resolve 済 slug が identifier に載る
+  });
+
+  test('非冪等: prev slug を持つ SP の再保存は PATCH 更新で再 POST しない (重複作成なし)', async () => {
+    seedForm('e3', 'SLUG', JSON.stringify({ fields: [NAME], logic: [], successPages: [{ id: 'sp1', slug: 'SP_A', title: '旧' }] }));
+    stubFormaloo();
+    await call('PUT', '/api/forms-advanced/e3', {
+      fields: [NAME], logic: [submitRule('sp1')], formType: 'multi_step',
+      successPages: [{ id: 'sp1', title: '新' }], // builder は slug を持たなくても prev slug で carry
+    });
+    expect(spCreates().length).toBe(0); // 再 POST しない
+    const patchSp = fetchCalls.find((c) => c.method === 'PATCH' && /\/v3\.0\/fields\/SP_A\/$/.test(c.url));
+    expect(patchSp).toBeDefined();
+    const sp = (readDef('e3').successPages as Array<{ id: string; slug?: string }>).find((s) => s.id === 'sp1');
+    expect(sp?.slug).toBe('SP_A'); // slug 維持
+  });
+
+  test('CI-2: SP を successPages から外す save は submit を空へ repoint 後に SP を DELETE (dangling なし)', async () => {
+    seedForm('e4', 'SLUG', JSON.stringify({ fields: [NAME], logic: [], successPages: [{ id: 'sp1', slug: 'SP_A', title: 'A' }] }));
+    stubFormaloo();
+    // submit は sp1 を指すが successPages から sp1 を削除 → sp1 は successPageIds に無い → submit target '' へ縮退。
+    await call('PUT', '/api/forms-advanced/e4', {
+      fields: [NAME], logic: [submitRule('sp1')], formType: 'multi_step',
+      successPages: [], // sp1 を削除
+    });
+    // logic PATCH には SP_A への jump_to_success_page が載らない (repoint 済)。
+    const body = JSON.stringify(logicPatch()?.body ?? {});
+    expect(body).not.toContain('jump_to_success_page');
+    // SP_A は明示 DELETE で回収される。
+    expect(spDeletes().some((u) => /\/v3\.0\/fields\/SP_A\/$/.test(u))).toBe(true);
+    // definition_json の successPages は空 (削除反映)。
+    expect(readDef('e4').successPages).toBeUndefined();
+  });
+});

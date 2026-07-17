@@ -5,8 +5,10 @@ import {
   type HarnessField,
   type HarnessLogicRule,
   type FormDisplayType,
+  type SuccessPageSpec,
 } from '@line-crm/shared';
 import type { FormalooClient } from './formaloo-client';
+import { pushSuccessPages, deleteSuccessPages } from './formaloo-success-page.js';
 
 // =============================================================================
 // Formaloo push-sync (F-2 / T-B2) — harness 定義を Formaloo へ push。
@@ -27,6 +29,10 @@ export interface PushResult {
   fieldSlugs?: Record<string, string>;
   /** 公開フォーム address (published 時の URL 素材)。 */
   publicAddress?: string | null;
+  /** route-terminal-phase2 (Track 2): reconcile 後の successPages (割当 slug 付き・definition_json へ永続)。 */
+  successPages?: SuccessPageSpec[];
+  /** route-terminal-phase2 (Track 2): harness SP id → Formaloo slug (logic resolver で使った写像)。 */
+  successPageSlugs?: Record<string, string>;
   error?: string;
 }
 
@@ -75,6 +81,13 @@ export async function pushDefinitionToFormaloo(
      * (design のみ save 等で remote logic を勝手に消さない = byte 不変)。最後の submit 削除で早期送信を消す用。
      */
     clearLogicIfEmpty?: boolean;
+    /**
+     * route-terminal-phase2 (Track 2): 反映したい successPages (desired state)。**提供時のみ** reconcile
+     * (create/update + 削除除外分の DELETE) する。未提供 (undefined) は SP を触らない (prev を維持)。
+     */
+    successPages?: SuccessPageSpec[];
+    /** pull baseline の successPages (slug carry + 削除検出 + logic resolver の SP slug 解決に使う)。 */
+    prevSuccessPages?: SuccessPageSpec[];
   },
 ): Promise<PushResult> {
   const existingFieldSlugs = params.existingFieldSlugs ?? {};
@@ -163,6 +176,19 @@ export async function pushDefinitionToFormaloo(
     }
   }
 
+  // 2.5) route-terminal-phase2 (Track 2): success-page を reconcile (logic push より前 = jump_to_success_page が
+  //   参照する slug を先に確定する)。prev slug は常に resolver に供給 (未変更 SP 参照も解決)。提供時のみ
+  //   create/update を実行し reconcile 後の successPages / slug 写像を確定する。削除は logic push 後 (CI-2)。
+  const spSlugById: Record<string, string> = {};
+  for (const sp of params.prevSuccessPages ?? []) if (sp.slug) spSlugById[sp.id] = sp.slug;
+  let reconciledSuccessPages: SuccessPageSpec[] | undefined;
+  if (params.successPages !== undefined) {
+    const spRes = await pushSuccessPages(client, slug, params.successPages, params.prevSuccessPages ?? []);
+    reconciledSuccessPages = spRes.successPages;
+    Object.assign(spSlugById, spRes.slugById); // reconcile 後の slug が prev を上書き
+    if (!spRes.ok) return { ok: false, formalooSlug: slug, fieldSlugs, successPages: reconciledSuccessPages, successPageSlugs: spSlugById, error: spRes.error };
+  }
+
   // 3) logic を保存。field upsert (step1-2) は不可侵 (冪等 push / L-1)。ここだけ logic 経路。
   //    (a) preserve-raw (未編集の実 Formaloo logic) あり → R0 実測の PATCH で bare array を verbatim 再送
   //        (compound/calc/variable/jump を欠けなく保持。往復不変の芯)。
@@ -174,14 +200,30 @@ export async function pushDefinitionToFormaloo(
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic push failed: HTTP ${res.status}` };
   } else if (params.logic.length > 0) {
     // choice source の choice_slug 解決のため fieldById (params.fields) を渡す。src/tgt slug は fieldSlugs で解決。
+    //   route-terminal-phase2 (Track 2): submit rule の target が SP を指す時は spSlugById で slug を解決する
+    //   (jump_to_success_page.args.identifier に載る = ルート別完了ページへの着地)。
     const fieldById = (hid: string): HarnessField | undefined => params.fields.find((f) => f.id === hid);
-    const logicArray = toFormalooRawLogic(params.logic, (hid) => fieldSlugs[hid], fieldById);
+    const logicArray = toFormalooRawLogic(params.logic, (hid) => fieldSlugs[hid] ?? spSlugById[hid], fieldById);
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: logicArray });
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic push failed: HTTP ${res.status}` };
   } else if (params.clearLogicIfEmpty) {
     // route-terminal-submit (T-C5): 編集で logic 空 → 明示クリア (最後の submit 削除で remote 早期送信を消す)。
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: [] });
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic clear failed: HTTP ${res.status}` };
+  }
+
+  // 3.5) route-terminal-phase2 (Track 2 / CI-2): desired から外れた SP を明示 DELETE (logic push **後** =
+  //   参照 submit rule を既に '' へ repoint 済ゆえ dangling 参照を作らない)。form DELETE 非cascade の孤児回収と
+  //   同経路。提供時 (desired 明示) のみ削除判定する (未提供は SP を触らない)。
+  if (params.successPages !== undefined) {
+    const desiredIds = new Set(params.successPages.map((sp) => sp.id));
+    const removedSlugs = (params.prevSuccessPages ?? [])
+      .filter((sp) => sp.slug && !desiredIds.has(sp.id))
+      .map((sp) => sp.slug!);
+    if (removedSlugs.length) {
+      const del = await deleteSuccessPages(client, removedSlugs);
+      if (!del.ok) return { ok: false, formalooSlug: slug, fieldSlugs, successPages: reconciledSuccessPages, successPageSlugs: spSlugById, error: del.error };
+    }
   }
 
   // 4) form-route-branching R2: form_type を pull baseline から変化した時のみ PATCH (idempotent / 勝手に変えない)。
@@ -191,5 +233,5 @@ export async function pushDefinitionToFormaloo(
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `form_type push failed: HTTP ${res.status}` };
   }
 
-  return { ok: true, formalooSlug: slug, fieldSlugs, publicAddress };
+  return { ok: true, formalooSlug: slug, fieldSlugs, publicAddress, successPages: reconciledSuccessPages, successPageSlugs: spSlugById };
 }
