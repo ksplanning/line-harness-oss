@@ -27,7 +27,7 @@ describe('form-jp-localization — 文言は fingerprint に非関与 (D-2 / fal
   });
 
   it('canonicalDefinitionProjection は fields/logic だけを返し文言キーを含めない', () => {
-    const proj = canonicalDefinitionProjection([rawField()], null) as Record<string, unknown>;
+    const proj = canonicalDefinitionProjection([rawField()], null) as unknown as Record<string, unknown>;
     expect(Object.keys(proj).sort()).toEqual(['fields', 'logic']);
     expect('button_text' in proj).toBe(false);
     expect('formCopy' in proj).toBe(false);
