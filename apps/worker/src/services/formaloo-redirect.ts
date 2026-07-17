@@ -1,4 +1,4 @@
-import { buildRedirectTargetUrl, type FormRedirect } from '@line-crm/shared';
+import { buildRedirectTargetUrl, validateRedirectUrl, type FormRedirect } from '@line-crm/shared';
 import type { FormalooClient } from './formaloo-client.js';
 
 // =============================================================================
@@ -31,6 +31,35 @@ export function redirectFields(r: FormRedirect | undefined | null): Record<strin
     out.include_data_on_redirect = r.includeData;
   }
   return out;
+}
+
+/**
+ * worker authoritative な raw body.formRedirect 厳格 schema 検証 (CI-4/CX-7 / push 前 gate)。
+ *   normalize の silent drop に頼らず、危険 URL / 非 string url を **明示 400 で reject** する
+ *   (非 string の `javascript:` が『URLなし』として 400 を迂回しないための厳格検証)。
+ *   - url present (非空) は string 必須 + validateRedirectUrl (openExternalBrowser 込み) 通過必須。
+ *   - url 空/absent は clear 意図として許容 (route が form_redirects_after_submit:null で解除)。
+ *   - openExternalBrowser は boolean のみ許容。
+ * 未提供 (undefined) は carry 経路ゆえ ok (route が別扱い)。builder バイパスの直 API 濫用もここで塞ぐ。
+ */
+export function validateFormRedirectInput(raw: unknown): { ok: true } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true };
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { ok: false, error: 'リダイレクト設定の形式が正しくありません' };
+  }
+  const o = raw as Record<string, unknown>;
+  if (o.openExternalBrowser !== undefined && typeof o.openExternalBrowser !== 'boolean') {
+    return { ok: false, error: '外部ブラウザ設定の形式が正しくありません' };
+  }
+  if ('url' in o && o.url !== undefined && o.url !== null && o.url !== '') {
+    if (typeof o.url !== 'string') return { ok: false, error: '飛び先 URL は文字列で入力してください' };
+    const trimmed = o.url.trim();
+    if (trimmed) {
+      const v = validateRedirectUrl(trimmed, { openExternalBrowser: o.openExternalBrowser === true });
+      if (!v.ok) return { ok: false, error: v.error };
+    }
+  }
+  return { ok: true };
 }
 
 /** confirmRedirectReflected の結果 (fail-soft: throw せず ok/error を返す・CopyReflectionResult と同型)。 */
