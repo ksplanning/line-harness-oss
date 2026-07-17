@@ -98,6 +98,7 @@ import { senderPresets } from './routes/sender-presets.js';
 import { abTests } from './routes/ab-tests.js';
 import { templatePacks } from './routes/template-packs.js';
 import { richMenuAnalytics } from './routes/rich-menu-analytics.js';
+import { lp } from './routes/lp.js';
 
 export type Env = {
   Bindings: {
@@ -302,6 +303,10 @@ app.route('/', senderPresets);
 app.route('/', abTests);
 app.route('/', templatePacks);
 app.route('/', richMenuAnalytics);
+// harness-lp-hosting: LP 置き場。公開 serve (/lp/:slug) は ASSETS catch-all (notFound) より前に
+// 登録されるため Hono 先勝ちで catch-all に食われない (T-A8)。admin (/api/lp/*) は authMiddleware +
+// permissionMiddleware ('analytics') で gate される。
+app.route('/', lp);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version

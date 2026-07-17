@@ -440,3 +440,20 @@ describe('権限 gate + 認証境界 (T-A9 / D-3 / D-4)', () => {
     expect(res.headers.get('Content-Security-Policy')).toBeNull();
   });
 });
+
+describe('LP ピッカー API — 公開中 LP 一覧 (route-phase2 接続 / T-B1)', () => {
+  test('GET /api/lp?status=active が公開中のみ {slug,title,url} を返す', async () => {
+    await seedLp('live1', { title: '公開1' });
+    await seedLp('live2', { title: '公開2' });
+    await seedLp('paused', { title: '停止' });
+    raw.prepare(`UPDATE lp_pages SET status='stopped' WHERE slug='paused'`).run();
+    const res = await authJson('GET', '/api/lp?status=active', OWNER);
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as { data: { items: Array<{ slug: string; title: string; url: string; status: string }> } };
+    expect(b.data.items.map((i) => i.slug).sort()).toEqual(['live1', 'live2']); // paused は出ない
+    const one = b.data.items.find((i) => i.slug === 'live1')!;
+    // picker が redirect URL フィールドに注入できる形
+    expect(one.url).toBe('https://api.example.com/lp/live1');
+    expect(one.title).toBe('公開1');
+  });
+});
