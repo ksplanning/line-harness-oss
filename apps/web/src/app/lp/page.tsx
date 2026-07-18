@@ -129,24 +129,40 @@ export default function LpHostingPage() {
     }
   }
 
+  // モバイル (375px) では縦積み (flex-col) にして、Header の shrink-0 action 内でも
+  // フォームの max-content が viewport を超えないようにする。固定幅入力が一行に並んで
+  // overflow → 「＋ LPを登録」ボタンが画面外(offRight)、を防ぐ。
+  // 広い画面 (sm:) では従来どおり横並び (flex-row wrap) に戻す (回帰なし)。
   const createForm = (
-    <div className="flex flex-wrap items-center gap-2">
-      <input
-        value={newSlug}
-        onChange={(e) => setNewSlug(e.target.value)}
-        placeholder="slug（英小文字・数字・ハイフン）"
-        className="px-3 py-2 min-h-[44px] text-sm border border-gray-300 rounded-lg"
-      />
+    <div
+      data-testid="lp-create-form"
+      className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-start"
+    >
+      <div className="flex flex-col gap-1">
+        <input
+          value={newSlug}
+          onChange={(e) => setNewSlug(e.target.value)}
+          placeholder="slug（例: summer2026）"
+          aria-label="slug（公開URLの最後の部分）"
+          aria-describedby="lp-slug-help"
+          className="w-64 sm:w-56 px-3 py-2 min-h-[44px] text-sm border border-gray-300 rounded-lg"
+        />
+        {/* slug は非エンジニア owner に伝わらない技術用語。意味・用途を日本語で 1 行補足する。 */}
+        <p id="lp-slug-help" className="w-64 sm:w-56 text-xs text-gray-500 leading-snug">
+          slug ＝ 公開URLの最後の部分です（例：/lp/summer2026 の「summer2026」）。英小文字・数字・ハイフンで指定します。
+        </p>
+      </div>
       <input
         value={newTitle}
         onChange={(e) => setNewTitle(e.target.value)}
         placeholder="LPの名前（タイトル）"
-        className="px-3 py-2 min-h-[44px] text-sm border border-gray-300 rounded-lg"
+        aria-label="LPの名前（タイトル）"
+        className="w-64 sm:w-56 px-3 py-2 min-h-[44px] text-sm border border-gray-300 rounded-lg"
       />
       <button
         onClick={handleCreate}
         disabled={creating}
-        className="px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50"
+        className="w-full sm:w-auto px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50"
         style={{ backgroundColor: '#06C755' }}
       >
         {creating ? '登録中...' : '＋ LPを登録'}
@@ -178,6 +194,10 @@ export default function LpHostingPage() {
           <p className="mt-2 text-sm text-gray-500 leading-relaxed">
             上の「LPを登録」からslugと名前を決めて登録し、<br />
             index.html などのファイルをアップロードすると公開できます。
+          </p>
+          {/* slug 技術用語の平易な補足 (別段落 = child element なしで単独に読める)。 */}
+          <p className="mt-2 text-xs text-gray-400">
+            「slug」は公開URLの末尾に使う文字です（例：/lp/campaign の campaign）。
           </p>
         </div>
       ) : (
