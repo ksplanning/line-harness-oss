@@ -58,6 +58,9 @@ function env(): Env['Bindings'] {
     LIFF_URL: 'https://liff.example.test', LINE_CHANNEL_ID: 'c', LINE_LOGIN_CHANNEL_ID: 'lc',
     LINE_LOGIN_CHANNEL_SECRET: 'ls', WORKER_URL: 'https://api.example.com',
     FORMALOO_API_KEY: 'rd-formaloo-key', FORMALOO_API_SECRET: 'rd-formaloo-secret',
+    // fr-id-capture-fix (T-C3): friend system field auto-push は本 test の関心外 (redirect)。
+    //   静的 GET mock は POST 後の field を反映しないため無効化 (専用検証 = formaloo-sync.system-fields.test.ts)。
+    FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE: '1',
   } as Env['Bindings'];
 }
 

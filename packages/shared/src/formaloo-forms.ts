@@ -58,6 +58,48 @@ const VIDEO_HEIGHT_PATTERN = /^\d{2,4}(px|vw)$/;
 
 export type HarnessFieldType = (typeof FORMALOO_FIELD_TYPES)[number] | HarnessDecorationType;
 
+// =============================================================================
+// fr-id-capture-fix (R3 / T-C1): LINE friend 識別のための system hidden field 単一正本。
+// -----------------------------------------------------------------------------
+// /fo は friend 解決時、転送先 Formaloo URL へ `?fr_id=<署名>` `?fr_name=<表示名>` を付与する。
+// Formaloo hosted prefill は **field の alias** でのみ URL param を捕捉する (planner LIVE spike F1/F2 実測:
+// field slug 名 param は無効・alias 一致のみ)。ゆえに対象 form に alias='fr_id'/'fr_name' の hidden field が
+// 実在しないと fr_id が row に載らず friend_id 復元 0 = 再入場 prefill 白紙になる。
+// 本 const は publish 経路 (ensureSystemHiddenFields) が冪等 auto-push する予約 field の単一正本。
+//   - type='hidden': spike F3=真の非表示 + alias 捕捉可 (invisible:true は F4=非表示化しないため使わない)。
+//   - fr_id は identity 復元に必須 (ownerGated:false)。
+//   - fr_name は氏名=PII (Google Sheets 帰属可読化 / codex#8) ゆえ owner-gate (ownerGated:true / env で切れる)。
+// pull/drift は isFriendSystemAlias で除外し harness 定義への逆流・false-drift を防ぐ (R4)。
+// =============================================================================
+
+/** 予約 system hidden field の 1 定義 (単一正本 = worker push / pull 除外 / drift 除外 が参照)。 */
+export interface FriendSystemFieldSpec {
+  /** Formaloo field alias (hosted URL prefill の突合キー / 予約語)。 */
+  readonly alias: string;
+  /** Formaloo field title (respondent には非表示だが管理上の識別名)。 */
+  readonly title: string;
+  /** 真の非表示。spike F3/F9: type='hidden' が有効値・invisible:true は使わない。 */
+  readonly type: 'hidden';
+  /** 回答必須にしない (system 付与値ゆえ)。 */
+  readonly required: false;
+  /** owner-gate 対象か (fr_name=PII は true・env で auto-push を切れる / codex#8)。 */
+  readonly ownerGated: boolean;
+}
+
+/** 予約 friend system field の単一正本 (fr_id=identity 必須 / fr_name=PII owner-gate)。 */
+export const FRIEND_SYSTEM_FIELDS: readonly FriendSystemFieldSpec[] = [
+  { alias: 'fr_id', title: 'LINE friend id (system)', type: 'hidden', required: false, ownerGated: false },
+  { alias: 'fr_name', title: 'LINE friend name (system)', type: 'hidden', required: false, ownerGated: true },
+] as const;
+
+/** 予約 alias 集合 (生 'fr_id'/'fr_name' のハードコピーを push/pull/drift 経路に散らさない単一正本)。 */
+export const FRIEND_SYSTEM_ALIASES: readonly string[] = FRIEND_SYSTEM_FIELDS.map((f) => f.alias);
+
+/** alias が friend system field の予約 alias か (pull 除外 / drift 除外 / admin 露出除外 の共通判定)。 */
+export function isFriendSystemAlias(alias: unknown): boolean {
+  return typeof alias === 'string' && FRIEND_SYSTEM_ALIASES.includes(alias);
+}
+
 export function isDecorationType(t: string): t is HarnessDecorationType {
   return (DECORATION_FIELD_TYPES as readonly string[]).includes(t);
 }

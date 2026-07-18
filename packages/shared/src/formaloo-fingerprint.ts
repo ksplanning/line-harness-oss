@@ -19,7 +19,7 @@
 //  - fields は (position, slug) 昇順に安定ソート (順序ノイズ排除 / 既存 pull の W2 と整合)。
 // =============================================================================
 
-import { FORMALOO_TO_HARNESS_TYPE, type HarnessFieldType } from './formaloo-forms';
+import { FORMALOO_TO_HARNESS_TYPE, isFriendSystemAlias, type HarnessFieldType } from './formaloo-forms';
 import { parseImageDescription } from './form-image';
 
 // crypto.subtle / TextEncoder は Node18+ / Cloudflare Workers 双方の runtime global。
@@ -75,6 +75,10 @@ export interface CanonicalDefinition {
 function projectField(el: unknown): ProjectedField | null {
   if (typeof el !== 'object' || el === null) return null;
   const o = el as Record<string, unknown>;
+  // fr-id-capture-fix (R4/T-C5): 予約 friend system field (alias fr_id/fr_name) を fingerprint に含めない。
+  //   type=hidden は下の subset 判定で既に null になるが、alias キーで明示除外し、system field の有無で
+  //   fingerprint byte が不変であること (false-drift ゼロ) を保証する (pull/drift と同一 helper = 共通 projection)。
+  if (isFriendSystemAlias(o.alias)) return null;
   const formalooType = typeof o.type === 'string' ? o.type : '';
   // form-image-decoration: meta/section で description が canonical <img> のものだけを差し込み画像として射影する。
   //   parse 済み {imageUrl,imageAlt,imageWidth} を射影 (raw HTML 非依存 = 再正規化 false-drift 回避 / R-2)。

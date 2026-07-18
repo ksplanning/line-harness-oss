@@ -9,6 +9,7 @@ import {
 } from '@line-crm/shared';
 import type { FormalooClient } from './formaloo-client';
 import { pushSuccessPages, deleteSuccessPages } from './formaloo-success-page.js';
+import { ensureSystemHiddenFields, type SystemFieldEnsureResult } from './formaloo-system-fields.js';
 
 // =============================================================================
 // Formaloo push-sync (F-2 / T-B2) — harness 定義を Formaloo へ push。
@@ -33,6 +34,16 @@ export interface PushResult {
   successPages?: SuccessPageSpec[];
   /** route-terminal-phase2 (Track 2): harness SP id → Formaloo slug (logic resolver で使った写像)。 */
   successPageSlugs?: Record<string, string>;
+  /**
+   * fr-id-capture-fix (T-C3): friend system hidden field (fr_id/fr_name) の冪等 ensure 結果。
+   *   ensureSystemFields=true を渡した時のみ載る。回答導線 (publish 本体) は落とさず、system field の
+   *   conflict/失敗は systemFieldsOutOfSync=true で surface して呼び出し側が再試行対象化する (silent success 禁止)。
+   */
+  systemFields?: SystemFieldEnsureResult;
+  /** system field が全て exactly-one hidden で確定したか (created|present)。 */
+  systemFieldsOk?: boolean;
+  /** system field に conflict/失敗があり再試行が要るか (skipped は false)。 */
+  systemFieldsOutOfSync?: boolean;
   error?: string;
 }
 
@@ -88,6 +99,15 @@ export async function pushDefinitionToFormaloo(
     successPages?: SuccessPageSpec[];
     /** pull baseline の successPages (slug carry + 削除検出 + logic resolver の SP slug 解決に使う)。 */
     prevSuccessPages?: SuccessPageSpec[];
+    /**
+     * fr-id-capture-fix (T-C3): friend system hidden field (fr_id/fr_name) を publish 経路で冪等 auto-push するか。
+     * default false = 従来 byte 不変 (既存の直接呼び出し/単体テストは影響なし)。両テナント共通 publish route が
+     * env `FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE!=='1'` から true を渡す。fail-soft: ensure は throw しない・
+     * fields_list を読めない/失敗は publish 本体を落とさず systemFields 結果に surface する。
+     */
+    ensureSystemFields?: boolean;
+    /** fr_name (PII owner-gate) も ensure するか。default true (env `FORMALOO_FR_NAME_AUTOPUSH_DISABLE` で切る / codex#8)。 */
+    includeOwnerGatedSystemFields?: boolean;
   },
 ): Promise<PushResult> {
   const existingFieldSlugs = params.existingFieldSlugs ?? {};
@@ -176,6 +196,22 @@ export async function pushDefinitionToFormaloo(
     }
   }
 
+  // 2.2) fr-id-capture-fix (T-C3): field upsert 直後に friend system hidden field (fr_id/fr_name) を冪等 auto-push。
+  //   両テナント共通経路 (この関数を通る全 publish)。fail-soft = 回答導線 (publish 本体) を落とさない: ensure は
+  //   throw せず、fields_list を読めない/失敗は systemFields 結果に surface して呼び出し側が再試行対象化する。
+  //   ensureSystemFields=false (default / env で無効化) は 1 byte も叩かない (byte 同等 / rollback = D-4)。
+  let systemFields: SystemFieldEnsureResult | undefined;
+  if (params.ensureSystemFields) {
+    try {
+      systemFields = await ensureSystemHiddenFields(client, slug, {
+        includeOwnerGated: params.includeOwnerGatedSystemFields ?? true,
+      });
+    } catch {
+      // 二重ガード: ensure 自体 fail-soft だが、万一の例外でも hot path を絶対落とさない (skipped 扱い)。
+      systemFields = { ok: false, outOfSync: false, skipped: true, logicConflict: false, outcomes: [] };
+    }
+  }
+
   // 2.5) route-terminal-phase2 (Track 2): success-page を reconcile (logic push より前 = jump_to_success_page が
   //   参照する slug を先に確定する)。prev slug は常に resolver に供給 (未変更 SP 参照も解決)。提供時のみ
   //   create/update を実行し reconcile 後の successPages / slug 写像を確定する。削除は logic push 後 (CI-2)。
@@ -233,5 +269,15 @@ export async function pushDefinitionToFormaloo(
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `form_type push failed: HTTP ${res.status}` };
   }
 
-  return { ok: true, formalooSlug: slug, fieldSlugs, publicAddress, successPages: reconciledSuccessPages, successPageSlugs: spSlugById };
+  return {
+    ok: true,
+    formalooSlug: slug,
+    fieldSlugs,
+    publicAddress,
+    successPages: reconciledSuccessPages,
+    successPageSlugs: spSlugById,
+    ...(systemFields
+      ? { systemFields, systemFieldsOk: systemFields.ok, systemFieldsOutOfSync: systemFields.outOfSync }
+      : {}),
+  };
 }
