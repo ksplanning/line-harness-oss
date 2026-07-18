@@ -13,7 +13,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { describe, expect, test, beforeEach } from 'vitest';
+import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
@@ -672,5 +672,126 @@ describe('BUG-1 /fo/:id one-shot loop-guard (_lfb=1)', () => {
     expect(loc.startsWith('https://liff.line.me/2000-XYZ')).toBe(true);
     expect(loc).toContain('liffId=2000-XYZ'); // per-account 解決は不変
     expect(new URL(loc).searchParams.get('redirect')).toContain('_lfb=1'); // マーカー同梱
+  });
+});
+
+// =============================================================================
+// line-reentry-prefill-fix (Layer A / C3 / T-A6·D-7) — /fo 再入場 targeted pull (CI-1 の解消)。
+//   reconcile は admin `/rows` GET でしか発火しないため、/fo 再入場の prefill lookup 直前に対象 form の
+//   直近 rows を bounded pull → 署名 fr_id を verify して friend_id 復元 → mirror を埋めてから引く。
+//   hot path 保護 (D-7): gate 全通過時のみ pull・失敗は prefill 無しで 302 (fail-soft)。
+// =============================================================================
+
+/** Formaloo API を stub する env (targeted pull が実 client を解決できるよう KEY/SECRET を供給)。 */
+function pullEnv() {
+  return { ...postEditEnv(), FORMALOO_API_KEY: 'k_test', FORMALOO_API_SECRET: 's_test' } as Env['Bindings'];
+}
+
+/**
+ * global.fetch を stub。auth (oauth2) は token を返し、rows GET は `rowsData` を返す。
+ * rowsGetSpy で rows GET が呼ばれたか観測できる (gate-off で pull しないことの検証に使う)。
+ */
+function stubFormalooFetch(rowsData: unknown, opts: { rowsStatus?: number } = {}) {
+  const rowsGetSpy = vi.fn();
+  const impl = async (input: RequestInfo | URL) => {
+    const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (urlStr.includes('/oauth2/authorization-token/')) {
+      return new Response(JSON.stringify({ authorization_token: 'tok_test' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (urlStr.includes('/rows/')) {
+      rowsGetSpy(urlStr);
+      const status = opts.rowsStatus ?? 200;
+      return new Response(JSON.stringify(rowsData), { status, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  vi.stubGlobal('fetch', vi.fn(impl));
+  return rowsGetSpy;
+}
+
+describe('T-A6/D-7 /fo/:id 再入場 targeted pull (CI-1 解消 / hot path fail-soft)', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  test('T-A5: mirror 未充填でも targeted pull が署名 fr_id を verify→friend_id 復元→本人 row を prefill', async () => {
+    seedFriend('frA');
+    seedFormPostEdit('fa1', ADDR, 1);
+    // mirror に friend row を **seed しない** (pull が埋めることを証明)。
+    const token = await import('../services/formaloo-friend-token.js').then((m) => m.signFriendToken('frA', FRIEND_SECRET));
+    const rowsData = { data: { rows: [
+      { slug: 'PULLEDROW', created_at: '2026-07-18T05:00:00+09:00', data: { q1: 'PULLED' }, rendered_data: [{ slug: 'x', alias: 'fr_id', value: token }] },
+    ] } };
+    stubFormalooFetch(rowsData);
+
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, pullEnv());
+    expect(res.status).toBe(302);
+    const u = new URL(res.headers.get('location')!);
+    expect(u.searchParams.get('q1')).toBe('PULLED'); // pull が friend_id を復元し本人 row を prefill
+    expect(await verifyFriendToken(u.searchParams.get('fr_id'), FRIEND_SECRET)).toBe('frA');
+    // mirror に friend_id=frA 行が実在 (pull が upsert したことの地面確認)
+    const row = raw.prepare(`SELECT friend_id, id FROM formaloo_submissions WHERE form_id='fa1' AND friend_id='frA'`).get() as { friend_id: string; id: string } | undefined;
+    expect(row?.friend_id).toBe('frA');
+    expect(row?.id).toBe('PULLEDROW');
+  });
+
+  test('D-7: 改ざん fr_id 行を pull しても friend_id 復元せず prefill 無し (PII fail-closed / mirror 汚染なし)', async () => {
+    seedFriend('frA');
+    seedFormPostEdit('fa1', ADDR, 1);
+    const token = (await import('../services/formaloo-friend-token.js').then((m) => m.signFriendToken('frA', FRIEND_SECRET)))!;
+    const tampered = token.slice(0, -1) + (token.slice(-1) === 'a' ? 'b' : 'a');
+    const rowsData = { data: { rows: [
+      { slug: 'BADROW', created_at: '2026-07-18T05:00:00+09:00', data: { q1: 'LEAK' }, rendered_data: [{ alias: 'fr_id', value: tampered }] },
+    ] } };
+    stubFormalooFetch(rowsData);
+
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, pullEnv());
+    expect(res.status).toBe(302);
+    const u = new URL(res.headers.get('location')!);
+    expect(u.searchParams.get('q1')).toBeNull(); // 他人/未検証の回答を絶対に prefill しない
+    // mirror 行は入るが friend_id は NULL (verify 失敗) = getFriendLatestSubmission が引かない
+    const linked = raw.prepare(`SELECT COUNT(*) n FROM formaloo_submissions WHERE form_id='fa1' AND friend_id='frA'`).get() as { n: number };
+    expect(linked.n).toBe(0);
+  });
+
+  test('D-7: gate OFF (allow_post_edit=0) では targeted pull を一切呼ばない (byte 同等・hot path 保護)', async () => {
+    seedFriend('frA');
+    seedFormPostEdit('fa1', ADDR, 0);
+    const rowsGetSpy = stubFormalooFetch({ data: { rows: [] } });
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, pullEnv());
+    expect(res.status).toBe(302);
+    expect(rowsGetSpy).not.toHaveBeenCalled(); // gate OFF = Formaloo を叩かない
+  });
+
+  test('D-7: rows GET が非2xx でも 302 で degrade (prefill 無し・crash しない)', async () => {
+    seedFriend('frA');
+    seedFormPostEdit('fa1', ADDR, 1);
+    stubFormalooFetch({ error: 'boom' }, { rowsStatus: 500 });
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, pullEnv());
+    expect(res.status).toBe(302); // fail-soft: pull 失敗でも 302
+    const u = new URL(res.headers.get('location')!);
+    expect(u.searchParams.get('q1')).toBeNull();
+    expect(await verifyFriendToken(u.searchParams.get('fr_id'), FRIEND_SECRET)).toBe('frA'); // fr_id は付く
+  });
+
+  test('D-6: FORMALOO_RECONCILE_FRIEND_LINK_DISABLE=true は pull しても friend_id 復元しない (prefill 無し)', async () => {
+    seedFriend('frA');
+    seedFormPostEdit('fa1', ADDR, 1);
+    const token = await import('../services/formaloo-friend-token.js').then((m) => m.signFriendToken('frA', FRIEND_SECRET));
+    stubFormalooFetch({ data: { rows: [
+      { slug: 'R1', created_at: '2026-07-18T05:00:00+09:00', data: { q1: 'PULLED' }, rendered_data: [{ alias: 'fr_id', value: token }] },
+    ] } });
+    const e = { ...pullEnv(), FORMALOO_RECONCILE_FRIEND_LINK_DISABLE: 'true' } as Env['Bindings'];
+    const res = await app().request('/fo/fa1?f=frA', { method: 'GET' }, e);
+    expect(res.status).toBe(302);
+    const u = new URL(res.headers.get('location')!);
+    expect(u.searchParams.get('q1')).toBeNull(); // 復元停止 = prefill 無し
+  });
+
+  test('D-2 回帰: in-app 未解決 (_lfb 無し) は pull せず LIFF へ 302 (loop-guard 経路 byte 不変)', async () => {
+    seedFormPostEdit('fa1', ADDR, 1);
+    const rowsGetSpy = stubFormalooFetch({ data: { rows: [] } });
+    const res = await app().request('/fo/fa1', { method: 'GET', headers: { 'user-agent': 'Line/13.0.0' } }, pullEnv());
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')!).toContain('liff'); // LIFF へ (friend 未解決)
+    expect(rowsGetSpy).not.toHaveBeenCalled(); // friend 未解決 = pull しない
   });
 });
