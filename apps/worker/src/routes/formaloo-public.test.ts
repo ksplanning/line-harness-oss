@@ -605,3 +605,72 @@ describe('F-4 /fo/:id friend 解決 throw 時の fail-closed', () => {
     expect(rows[0].friend_id).toBeNull();
   });
 });
+
+// ── BUG-1 /fo/:id one-shot loop-guard (_lfb マーカー / 無限リロード終端) ──
+// LIFF から lu/friendId 無しで戻った異常経路 (getFriendship throw = bot 未リンク等) を、
+// 復路マーカー `_lfb=1` で検知し「再 LIFF せず Formaloo へ直行 (匿名 degrade)」に落とす。
+// これで LIFF 誤配線でも「無限リロード」ではなく「フォームは開く」に degrade する。
+describe('BUG-1 /fo/:id one-shot loop-guard (_lfb=1)', () => {
+  test('T-A1(AC1): ?_lfb=1 + LINE UA + lu/f 無し → 再 LIFF せず Formaloo へ 302 (location に liff 無し = ループ終端)', async () => {
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1?_lfb=1', { method: 'GET', headers: { 'user-agent': 'Mozilla/5.0 Line/14.5.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc).toBe(ADDR); // 生 Formaloo address 直行 (匿名 degrade)
+    expect(loc).not.toContain('liff'); // 再 LIFF していない = 無限ループの芯を断つ
+    // 匿名 degrade は friend を解決せず form_opens を friend_id null で記録 (PII 非漏出・fr_id 無し)
+    const rows = opens('fa1');
+    expect(rows.length).toBe(1);
+    expect(rows[0].friend_id).toBeNull();
+    expect(new URL(loc).searchParams.get('fr_id')).toBeNull();
+  });
+
+  test('T-A2(AC2): bare /fo + LINE UA → LIFF へ 302・復路 redirect 値に _lfb=1 を含む (往路マーカー)', async () => {
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1', { method: 'GET', headers: { 'user-agent': 'Line/14.5.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc.startsWith('https://liff.example.test')).toBe(true);
+    // 復路 redirect param (decode 後) に one-shot マーカーが載る
+    const back = new URL(loc).searchParams.get('redirect')!;
+    expect(back).toContain('_lfb=1');
+    expect(back).toContain('https://api.example.com/fo/fa1'); // worker 復路経路
+    // 開封は friend 未特定段階では記録しない (既存 R-F2 挙動不変)
+    expect(opens('fa1').length).toBe(0);
+  });
+
+  test('T-A3(AC3): ?lu=<uid> + LINE UA → friend 解決 → Formaloo+fr_id へ 302・再 LIFF しない (F-1 round-trip 回帰)', async () => {
+    seedFriend('fr_1'); // line_user_id='U_fr_1'
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1?lu=U_fr_1', { method: 'GET', headers: { 'user-agent': 'Line/14.5.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc.startsWith(ADDR)).toBe(true);
+    expect(loc).not.toContain('liff'); // 成功系は再 LIFF しない (ループ終端)
+    expect(await verifyFriendToken(new URL(loc).searchParams.get('fr_id'), FRIEND_SECRET)).toBe('fr_1');
+    expect(opens('fa1').length).toBe(1);
+  });
+
+  test('T-A3b: ?lu=<uid>&_lfb=1 (LIFF が両 param を carry) でも lu 経路が勝ち friend 解決 → 再 LIFF しない (正常経路は _lfb に非依存)', async () => {
+    seedFriend('fr_1');
+    seedFormWithAddress('fa1', 'published', ADDR);
+    const res = await app().request('/fo/fa1?lu=U_fr_1&_lfb=1', { method: 'GET', headers: { 'user-agent': 'Line/14.5.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc.startsWith(ADDR)).toBe(true);
+    expect(loc).not.toContain('liff');
+    expect(await verifyFriendToken(new URL(loc).searchParams.get('fr_id'), FRIEND_SECRET)).toBe('fr_1');
+  });
+
+  test('T-A2b: per-account LIFF でも復路 redirect に _lfb=1 と &liffId= が両立 (CX-3 非退行)', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret, liff_id) VALUES ('acc-lfb','chlfb','B','t','s','2000-XYZ')`).run();
+    raw.prepare(`INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status, definition_json, line_account_id) VALUES ('fa_lfb','slug_fa_lfb','F','published',?,'acc-lfb')`)
+      .run(JSON.stringify({ fields: [], logic: [], formalooAddress: ADDR }));
+    const res = await app().request('/fo/fa_lfb', { method: 'GET', headers: { 'user-agent': 'Line/14.5.0' } }, envWithFriendSecret());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc.startsWith('https://liff.line.me/2000-XYZ')).toBe(true);
+    expect(loc).toContain('liffId=2000-XYZ'); // per-account 解決は不変
+    expect(new URL(loc).searchParams.get('redirect')).toContain('_lfb=1'); // マーカー同梱
+  });
+});
