@@ -376,6 +376,20 @@ describe('backfillFieldAliases (④: 既存フォームの alias=slug backfill)'
     expect(r.totalFieldsNeedingAlias).toBe(0);
     expect(r.totalPatched).toBe(0);
   });
+
+  // P1 [Important reviewer R1]: PII gate バイパス default の是正。includeOwnerGated 省略 (= PII opt-out テナント相当) で
+  //   execute しても fr_name (実名) field を gate 外で作らない (default false = 安全側)。fr_name を作ると /fo が必ず付与し
+  //   実名保存が始まる (親案件で fr_name = owner 要確認に昇格)。opt-in (includeOwnerGated:true) は既存 execute test が担保。
+  test('P1: includeOwnerGated 省略 (opt-out 相当) で execute しても fr_name field を作らない (PII 安全 default)', async () => {
+    const { client, calls } = backfillAliasClient(formASeed);
+    const r = await backfillFieldAliases(client, ['A'], { dryRun: false }); // includeOwnerGated 未指定 = false
+    // fr_name の POST が一切ない (gate 外の実名 field を作らない)
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/' && (c.body as { alias?: string }).alias === 'fr_name')).toBe(false);
+    expect(r.forms[0].systemFields?.outcomes.some((o) => o.alias === 'fr_name')).toBe(false);
+    // dry-run health も fr_name を issue に挙げない (opt-out ゆえ欠落を欠陥扱いしない)
+    const dry = await backfillFieldAliases(client, ['A'], { dryRun: true });
+    expect(dry.forms[0].systemFieldHealth.issues.some((i) => i.alias === 'fr_name')).toBe(false);
+  });
 });
 
 describe('T-C7: logic 有効フォームは hidden field 値が破棄される (fr_id 捕捉不能を surface)', () => {

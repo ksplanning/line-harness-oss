@@ -313,6 +313,10 @@ export interface FieldAliasBackfillResult {
  * ④ 既存フォームの全 answer field に alias=slug を冪等 backfill する (dry-run 既定)。
  * @param formSlugs テナント別稼働フォームの inventory (除外フォームは呼び出し側が外す)。
  * @param opts.dryRun 既定 true = 一切 mutate せず対象列挙のみ。false (owner GO) で PATCH/ensure を実行。
+ * @param opts.includeOwnerGated fr_name (氏名=PII) も付与するか。**既定 false (PII 安全側)**: bulk backfill で
+ *   PII opt-out テナント (FORMALOO_FR_NAME_AUTOPUSH_DISABLE=1) に対し fr_name (実名) field を gate 外で作ると、
+ *   /fo が fr_name を必ず付与し実名保存が始まってしまう。fr_name は親案件で owner 要確認に昇格したゆえ、呼び出し側が
+ *   明示 true を渡した時のみ ensure/health 対象にする (opt-in / codex#8 と整合)。
  */
 export async function backfillFieldAliases(
   client: SystemFieldClient,
@@ -320,7 +324,7 @@ export async function backfillFieldAliases(
   opts?: EnsureOptions & { dryRun?: boolean },
 ): Promise<FieldAliasBackfillResult> {
   const dryRun = opts?.dryRun ?? true; // 既定 dry-run: 本番一括実行は owner GO 後にのみ dryRun:false で呼ぶ
-  const includeOwnerGated = opts?.includeOwnerGated ?? true;
+  const includeOwnerGated = opts?.includeOwnerGated ?? false; // PII 安全側: fr_name は明示 opt-in の時のみ (P1 / codex#8)
   const forms: FieldAliasBackfillFormResult[] = [];
   let totalFieldsNeedingAlias = 0;
   let totalPatched = 0;
