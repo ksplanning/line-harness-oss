@@ -26,6 +26,7 @@ import {
 } from '@line-crm/db';
 import { formalooDefinitionFingerprint, countWeakenedFormalooRules, normalizeFormDesign, normalizeSuccessPages, type FormDesign, type FormDisplayType, type SuccessPageSpec } from '@line-crm/shared';
 import { buildPullResult, extractFieldsList, extractRawLogic, extractLogic, extractSuccessPages } from './formaloo-pull.js';
+import { checkSystemFieldHealth } from './formaloo-system-fields.js';
 import type { FormalooClient } from './formaloo-client.js';
 
 /** drift 判定の 5 分岐 (+ bootstrap)。副作用なしの純関数が返す action。 */
@@ -79,6 +80,15 @@ export interface RunDriftCheckDeps {
   now?: () => Date;
   /** 1 tick の走査上限 (既定 MAX_DRIFT_CHECKS_PER_TICK)。 */
   maxChecks?: number;
+  /**
+   * fr-id-hardening-round2 / T-C5 配線: friend system field 健全性チェック (fr_id/fr_name の削除/visible化/重複/
+   * logic 破棄) を drift 走行点で実行し、不健全なら既存 drift 通知経路で surface するか。default false = 既存挙動
+   * byte 不変 (既存 drift test は未指定ゆえ発火 0)。scheduler は `FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE!=='1'` を渡す
+   * (autopush 無効テナントでは fr_id 不在が正常ゆえ false alarm を出さない)。
+   */
+  systemFieldHealthCheck?: boolean;
+  /** fr_name (PII owner-gate) も健全性対象にするか。default true。scheduler は `FORMALOO_FR_NAME_AUTOPUSH_DISABLE!=='1'`。 */
+  includeOwnerGatedSystemFields?: boolean;
 }
 
 export interface DriftCheckSummary {
@@ -89,6 +99,7 @@ export interface DriftCheckSummary {
   conflicts: number;    // 新規/変化した競合
   inSync: number;
   skipped: number;      // client 無 / GET 失敗 / read-shape 不一致 / 例外 (fail-safe)
+  systemFieldUnhealthy: number; // T-C5: fr_id/fr_name の削除/visible化/重複/logic破棄を検知した form 数 (観測用・dedup 非依存)
 }
 
 /** definition_json から formalooAddress のみ取り出す (auto-apply で既存 address を保持)。 */
@@ -258,7 +269,7 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
   const cap = deps.maxChecks ?? MAX_DRIFT_CHECKS_PER_TICK;
   const forms = (await listLinkedFormalooForms(deps.db)).slice(0, cap);
   const summary: DriftCheckSummary = {
-    checked: 0, bootstrapped: 0, autoApplied: 0, notified: 0, conflicts: 0, inSync: 0, skipped: 0,
+    checked: 0, bootstrapped: 0, autoApplied: 0, notified: 0, conflicts: 0, inSync: 0, skipped: 0, systemFieldUnhealthy: 0,
   };
 
   await Promise.allSettled(
@@ -285,6 +296,36 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
         const nowIso = now().toISOString();
 
         const action = decideDriftAction({ baseline, fingerprint: fp, weakened, syncStatus, autoApplyEnabled: deps.autoApplyEnabled });
+
+        // fr-id-hardening-round2 / T-C5 配線: friend system field (fr_id/fr_name) の健全性を別建てで監査する。
+        //   fingerprint は system field を alias で除外する (false-drift ゼロ) ため、fr_id 削除/visible化/型変更/重複や
+        //   form logic による intake 破棄 (fr_id 捕捉不能) を fingerprint では検知できない = checkSystemFieldHealth が
+        //   その dead spot を埋める。不健全なら既存 drift 通知経路 (recordFormalooDriftEvent + drift_status detected) で
+        //   owner に surface する。定義 drift の baseline/fingerprint は一切触らない (SP 本文 drift と同型の additive 分岐・
+        //   専用 pending prefix `sysfield:` で dedup)。deps.systemFieldHealthCheck=false (default) は完全短絡 = 既存挙動不変。
+        //   定義 drift (action!=='none') がある form では本分岐に入らない = 定義 drift 通知を優先 (health は解消後の tick で surface)。
+        if (action === 'none' && deps.systemFieldHealthCheck) {
+          const health = checkSystemFieldHealth(fieldsArr, { includeOwnerGated: deps.includeOwnerGatedSystemFields ?? true }, rawLogic);
+          if (!health.ok) {
+            summary.systemFieldUnhealthy += 1; // 観測用 (dedup 非依存 = この tick で不健全だった form 数)
+            const warnings = [
+              ...health.issues.map((i) => `friend system field ${i.alias}: ${i.issue}`),
+              ...(health.logicConflict ? ['form logic が有効なため Formaloo が fr_id 値を intake で破棄します (再入場 prefill 不能)'] : []),
+            ];
+            const sfPending = await sha256Hex(`sysfield:${JSON.stringify({ issues: health.issues, logicConflict: health.logicConflict })}`);
+            const isNew = sync?.pending_remote_hash !== sfPending;
+            const transitioned = (sync?.drift_status ?? 'none') !== 'detected';
+            if (isNew || transitioned) {
+              await setFormalooSyncState(deps.db, form.id, { syncStatus, driftStatus: 'detected', pendingRemoteHash: sfPending, driftDetectedAt: nowIso });
+              await recordFormalooDriftEvent(deps.db, {
+                formId: form.id, action: 'notified', detectedAt: nowIso, remoteHash: fp, prevHash: baseline,
+                hasWarnings: true, warningsJson: JSON.stringify(warnings), syncStatusAt: syncStatus, detail: 'system_field_health',
+              });
+              summary.notified += 1;
+            }
+            return; // system-field health 専用経路 (通常 switch / SP 本文 drift を回さない = 二重処理しない)
+          }
+        }
 
         // route-terminal-phase2 (fix / T-E5 gap): SP title/description は fingerprint 非包含 (fields+logic 設計を
         //   維持 = false-drift 再発防止) ゆえ、**別建て**で remote SP 本文 vs 保存済 SP 本文を直接比較する

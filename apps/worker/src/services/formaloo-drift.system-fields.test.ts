@@ -1,7 +1,13 @@
-import { describe, expect, test } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { formalooDefinitionFingerprint } from '@line-crm/shared';
-import { decideDriftAction } from './formaloo-drift.js';
+import { saveFormalooDefinition, setFormalooSyncState, getFormalooSyncState, listFormalooDriftEvents } from '@line-crm/db';
+import { decideDriftAction, runFormalooDriftCheck } from './formaloo-drift.js';
 import { checkSystemFieldHealth } from './formaloo-system-fields.js';
+import type { FormalooClient } from './formaloo-client.js';
 
 // =============================================================================
 // fr-id-capture-fix / T-C5: drift/fingerprint は予約 friend system field を除外する (false-drift ゼロ)。
@@ -66,5 +72,150 @@ describe('system-field 健全性チェック (T-C5(3): drift とは別建て)', 
     expect(
       checkSystemFieldHealth([{ slug: 'h1', alias: 'fr_id', type: 'short_text' }], { includeOwnerGated: false }).issues.find((i) => i.alias === 'fr_id')?.issue,
     ).toBe('not_hidden');
+  });
+});
+
+// =============================================================================
+// fr-id-hardening-round2 / T-C5 配線: checkSystemFieldHealth を runFormalooDriftCheck の走行点に配線し、不健全なら
+//   既存 drift 通知経路 (recordFormalooDriftEvent + drift_status detected) で surface する (dead code 解消)。
+//   - systemFieldHealthCheck:true + fr_id 欠落 → summary.systemFieldUnhealthy>=1 + notified 1 件 + drift_status detected。
+//   - flag 無 (default) → 発火 0 (既存 drift 挙動 byte 不変)。healthy form → 発火 0。dedup: 同一不健全 2 tick で 1 件。
+// =============================================================================
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DB_ROOT = join(__dirname, '../../../../packages/db');
+const BENIGN = /duplicate column name|already exists/i;
+
+function d1(db: Database.Database): D1Database {
+  return {
+    prepare(sql: string) {
+      const s = db.prepare(sql);
+      let params: unknown[] = [];
+      const api = {
+        bind(...args: unknown[]) { params = args; return api; },
+        async first<T>() { return (s.get(...(params as never[])) as T) ?? null; },
+        async all<T>() { return { results: s.all(...(params as never[])) as T[] }; },
+        async run() { const info = s.run(...(params as never[])); return { meta: { changes: info.changes } }; },
+      };
+      return api;
+    },
+  } as unknown as D1Database;
+}
+function replayAll(db: Database.Database) {
+  db.exec(readFileSync(join(DB_ROOT, 'schema.sql'), 'utf8'));
+  for (const f of readdirSync(join(DB_ROOT, 'migrations')).filter((x) => x.endsWith('.sql')).sort()) {
+    for (const stmt of readFileSync(join(DB_ROOT, 'migrations', f), 'utf8').split(/;\s*(?:\r?\n|$)/).map((s) => s.trim()).filter(Boolean)) {
+      try { db.exec(stmt); } catch (e) { if (!BENIGN.test(e instanceof Error ? e.message : String(e))) throw e; }
+    }
+  }
+}
+function driftBody(slug: string, fieldsList: unknown[], logic: unknown[] = []): unknown {
+  return { data: { form: { slug, fields_list: fieldsList, logic } } };
+}
+/** get のみ本物 (書込 spy は 0 回想定)。fields_list は raw Formaloo field 要素。 */
+function getClient(bodyFor: (slug: string) => unknown) {
+  const get = vi.fn(async (path: string) => {
+    const slug = path.match(/forms\/([^/]+)\//)?.[1] ?? '';
+    return { ok: true, status: 200, data: bodyFor(slug) };
+  });
+  const noop = vi.fn(async () => ({ ok: true, status: 200, data: {} }));
+  return { get, post: noop, put: noop, request: noop, delete: noop } as unknown as FormalooClient;
+}
+
+let wRaw: Database.Database;
+let WDB: D1Database;
+async function seedLinked(id: string, slug: string) {
+  wRaw.prepare(
+    `INSERT INTO formaloo_forms (id, title, definition_json, formaloo_slug, workspace_id, deleted) VALUES (?, ?, '{"fields":[],"logic":[]}', ?, NULL, 0)`,
+  ).run(id, id, slug);
+  await saveFormalooDefinition(WDB, id, {
+    definitionJson: '{"fields":[],"logic":[]}',
+    fields: [{ id: `${id}_q1`, formalooFieldSlug: 's1', fieldType: 'text', label: '名前', position: 0, configJson: '{}' }],
+  });
+}
+
+const answerFields = [{ slug: 's1', type: 'short_text', title: '名前', position: 0, required: true }];
+const withSysFields = [
+  ...answerFields,
+  { slug: 'h1', type: 'hidden', alias: 'fr_id', title: 'sys id', position: 1 },
+  { slug: 'h2', type: 'hidden', alias: 'fr_name', title: 'sys name', position: 2 },
+];
+
+describe('T-C5 配線: runFormalooDriftCheck × checkSystemFieldHealth', () => {
+  beforeEach(() => {
+    wRaw = new Database(':memory:');
+    replayAll(wRaw);
+    WDB = d1(wRaw);
+  });
+
+  test('systemFieldHealthCheck:true + fr_id 欠落 → summary.systemFieldUnhealthy + notified event + drift_status detected', async () => {
+    await seedLinked('fh1', 's_form_h1');
+    const client = getClient(() => driftBody('s_form_h1', answerFields)); // fr_id/fr_name 無し
+    const deps = { db: WDB, resolveClient: async () => client, autoApplyEnabled: false, systemFieldHealthCheck: true, includeOwnerGatedSystemFields: true };
+    // tick1: baseline null → bootstrapped (health は action==='none' のみ発火ゆえ bootstrap では発火しない)
+    const s1 = await runFormalooDriftCheck(deps);
+    expect(s1.bootstrapped).toBe(1);
+    expect(s1.systemFieldUnhealthy).toBe(0);
+    // tick2: fp==baseline → action='none' → health 発火 (fr_id/fr_name missing)
+    const s2 = await runFormalooDriftCheck(deps);
+    expect(s2.systemFieldUnhealthy).toBe(1);
+    expect(s2.notified).toBe(1);
+    const sync = await getFormalooSyncState(WDB, 'fh1');
+    expect(sync?.drift_status).toBe('detected');
+    const events = await listFormalooDriftEvents(WDB, 'fh1');
+    const healthEvent = events.find((e) => e.detail === 'system_field_health');
+    expect(healthEvent).toBeTruthy();
+    expect(healthEvent?.action).toBe('notified');
+  });
+
+  test('flag 無 (default) → fr_id 欠落でも health 発火 0 (既存 drift 挙動 byte 不変)', async () => {
+    await seedLinked('fh2', 's_form_h2');
+    const client = getClient(() => driftBody('s_form_h2', answerFields));
+    const deps = { db: WDB, resolveClient: async () => client, autoApplyEnabled: false }; // systemFieldHealthCheck 未指定
+    await runFormalooDriftCheck(deps); // bootstrap
+    const s2 = await runFormalooDriftCheck(deps);
+    expect(s2.systemFieldUnhealthy).toBe(0);
+    expect(s2.notified).toBe(0);
+    expect(s2.inSync).toBe(1);
+    const events = await listFormalooDriftEvents(WDB, 'fh2');
+    expect(events.some((e) => e.detail === 'system_field_health')).toBe(false);
+  });
+
+  test('healthy form (fr_id/fr_name present) → systemFieldHealthCheck:true でも発火 0', async () => {
+    await seedLinked('fh3', 's_form_h3');
+    const client = getClient(() => driftBody('s_form_h3', withSysFields));
+    const deps = { db: WDB, resolveClient: async () => client, autoApplyEnabled: false, systemFieldHealthCheck: true, includeOwnerGatedSystemFields: true };
+    await runFormalooDriftCheck(deps); // bootstrap
+    const s2 = await runFormalooDriftCheck(deps);
+    expect(s2.systemFieldUnhealthy).toBe(0);
+    expect(s2.inSync).toBe(1); // SP 無し + health 健全 = in-sync
+    const events = await listFormalooDriftEvents(WDB, 'fh3');
+    expect(events.some((e) => e.detail === 'system_field_health')).toBe(false);
+  });
+
+  test('dedup: 同一不健全を 2 tick 連続 → notified 履歴 1 件のみ (sysfield: pending prefix)', async () => {
+    await seedLinked('fh4', 's_form_h4');
+    const client = getClient(() => driftBody('s_form_h4', answerFields));
+    const deps = { db: WDB, resolveClient: async () => client, autoApplyEnabled: false, systemFieldHealthCheck: true, includeOwnerGatedSystemFields: true };
+    await runFormalooDriftCheck(deps); // bootstrap
+    await runFormalooDriftCheck(deps); // 1st detect → 1 event
+    const s3 = await runFormalooDriftCheck(deps); // 2nd tick same unhealthy → dedup
+    expect(s3.systemFieldUnhealthy).toBe(1); // 観測は毎 tick
+    expect(s3.notified).toBe(0); // 記録は dedup
+    const events = await listFormalooDriftEvents(WDB, 'fh4');
+    expect(events.filter((e) => e.detail === 'system_field_health')).toHaveLength(1);
+  });
+
+  test('logicConflict: logic 有 + fr_id/fr_name 健全 → systemFieldUnhealthy (fr_id 破棄を surface)', async () => {
+    await seedLinked('fh5', 's_form_h5');
+    const logic = [{ conditions: [], actions: [{ type: 'submit_form' }] }];
+    const client = getClient(() => driftBody('s_form_h5', withSysFields, logic));
+    const deps = { db: WDB, resolveClient: async () => client, autoApplyEnabled: false, systemFieldHealthCheck: true, includeOwnerGatedSystemFields: true };
+    await runFormalooDriftCheck(deps); // bootstrap (fp は logic 含む)
+    const s2 = await runFormalooDriftCheck(deps);
+    expect(s2.systemFieldUnhealthy).toBe(1); // field は健全でも logic 破棄で不健全判定
+    const events = await listFormalooDriftEvents(WDB, 'fh5');
+    const healthEvent = events.find((e) => e.detail === 'system_field_health');
+    expect(healthEvent).toBeTruthy();
+    expect(healthEvent?.warnings_json ?? '').toContain('fr_id');
   });
 });
