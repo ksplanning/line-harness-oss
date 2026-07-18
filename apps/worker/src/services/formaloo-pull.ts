@@ -5,6 +5,7 @@ import {
   isExpandableMultiJumpItem,
   isExpandableTerminalItem,
   countWeakenedFormalooRules,
+  isFriendSystemAlias,
   logicFingerprint,
   formalooColorToHex,
   normalizeFormDesign,
@@ -227,6 +228,10 @@ export function buildPullResult(
 
   // raw 要素と harness field を対にして持ち、fields (順序付き) と fieldSlugById を同時に組む (T-B3)。
   const paired = fieldsArr
+    // fr-id-capture-fix (R4/T-C4): 予約 friend system field (alias fr_id/fr_name) を harness 定義へ取り込まない
+    //   (逆流防止)。type=hidden は fromFormalooField が既に null で drop するが、alias キーで明示除外して
+    //   subset 型で作られた場合も含め確実に混入を断つ (isFriendSystemAlias 単一正本 / drift 除外と同 helper)。
+    .filter((el) => !(el && typeof el === 'object' && isFriendSystemAlias((el as { alias?: unknown }).alias)))
     .map((el) => {
       const field = fromFormalooField(el, resolveId);
       const slug = el && typeof el === 'object' && typeof (el as { slug?: unknown }).slug === 'string'
