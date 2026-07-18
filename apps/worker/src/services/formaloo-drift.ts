@@ -297,54 +297,63 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
 
         const action = decideDriftAction({ baseline, fingerprint: fp, weakened, syncStatus, autoApplyEnabled: deps.autoApplyEnabled });
 
-        // fr-id-hardening-round2 / T-C5 配線: friend system field (fr_id/fr_name) の健全性を別建てで監査する。
-        //   fingerprint は system field を alias で除外する (false-drift ゼロ) ため、fr_id 削除/visible化/型変更/重複や
-        //   form logic による intake 破棄 (fr_id 捕捉不能) を fingerprint では検知できない = checkSystemFieldHealth が
-        //   その dead spot を埋める。不健全なら既存 drift 通知経路 (recordFormalooDriftEvent + drift_status detected) で
-        //   owner に surface する。定義 drift の baseline/fingerprint は一切触らない (SP 本文 drift と同型の additive 分岐・
-        //   専用 pending prefix `sysfield:` で dedup)。deps.systemFieldHealthCheck=false (default) は完全短絡 = 既存挙動不変。
-        //   定義 drift (action!=='none') がある form では本分岐に入らない = 定義 drift 通知を優先 (health は解消後の tick で surface)。
-        if (action === 'none' && deps.systemFieldHealthCheck) {
-          const health = checkSystemFieldHealth(fieldsArr, { includeOwnerGated: deps.includeOwnerGatedSystemFields ?? true }, rawLogic);
-          if (!health.ok) {
-            summary.systemFieldUnhealthy += 1; // 観測用 (dedup 非依存 = この tick で不健全だった form 数)
-            const warnings = [
-              ...health.issues.map((i) => `friend system field ${i.alias}: ${i.issue}`),
-              ...(health.logicConflict ? ['form logic が有効なため Formaloo が fr_id 値を intake で破棄します (再入場 prefill 不能)'] : []),
-            ];
-            const sfPending = await sha256Hex(`sysfield:${JSON.stringify({ issues: health.issues, logicConflict: health.logicConflict })}`);
-            const isNew = sync?.pending_remote_hash !== sfPending;
+        // fr-id-hardening-round2 / T-C5 + route-terminal-phase2 T-E5: fingerprint 一致 (action='none') でも fingerprint
+        //   非包含の 2 軸を別建て監査する — (a) friend system field 健全性 (T-C5・deps.systemFieldHealthCheck gated)、
+        //   (b) SP 本文 (T-E5)。**両者を同 tick で同時に surface する** (どちらかで early-return して他方をマスクしない
+        //   = reviewer R1 P2: system field 不健全時に SP 本文 drift を無期限に隠さない)。pending_remote_hash は両 signature を
+        //   `|` 連結した合成ハッシュで dedup し (単軸時は従来個別ハッシュと byte 一致 = SP 単軸/health 単軸とも既存挙動不変)、
+        //   1 回の setFormalooSyncState / recordFormalooDriftEvent で両 signal を告知する (badge 固着防止 dedup は維持)。
+        //   定義 drift (action!=='none') がある form では本分岐に入らない = 定義 drift 通知を優先。
+        if (action === 'none') {
+          // (a) friend system field 健全性。deps.systemFieldHealthCheck=false (default) は完全短絡 = 既存挙動不変。
+          let healthUnhealthy = false;
+          let healthSig = '';
+          const combinedWarnings: string[] = [];
+          if (deps.systemFieldHealthCheck) {
+            const health = checkSystemFieldHealth(fieldsArr, { includeOwnerGated: deps.includeOwnerGatedSystemFields ?? true }, rawLogic);
+            if (!health.ok) {
+              healthUnhealthy = true;
+              summary.systemFieldUnhealthy += 1; // 観測用 (dedup 非依存 = この tick で不健全だった form 数)
+              combinedWarnings.push(
+                ...health.issues.map((i) => `friend system field ${i.alias}: ${i.issue}`),
+                ...(health.logicConflict ? ['form logic が有効なため Formaloo が fr_id 値を intake で破棄します (再入場 prefill 不能)'] : []),
+              );
+              healthSig = `sysfield:${JSON.stringify({ issues: health.issues, logicConflict: health.logicConflict })}`;
+            }
+          }
+
+          // (b) SP 本文 drift (T-E5・fingerprint 非包含): remote SP 本文 vs 保存済 SP 本文を直接比較する。SP 無しフォームは
+          //   両 signature '' で常に一致 = 既存挙動不変。health 不健全でもここを必ず評価する (reviewer R1 P2 = マスク解消)。
+          const remoteSp = extractSuccessPages(res.data);
+          const spDrifted = !successPagesContentEqual(parseStoredSuccessPages(form.definition_json), remoteSp);
+          const spSig = spDrifted ? `sp:${successPagesSignature(remoteSp)}` : '';
+          if (spDrifted && healthUnhealthy) combinedWarnings.push('完了ページ本文が Formaloo 側で変更されています');
+
+          if (healthUnhealthy || spDrifted) {
+            // 合成 pending: filter(Boolean).join('|') ゆえ単軸時は従来個別ハッシュ (sha256('sp:xxx') / sha256('sysfield:...'))
+            //   と byte 一致・両軸同時の時のみ連結する (SP 単軸/health 単軸の dedup は既存と不変)。
+            const combinedPending = await sha256Hex([healthSig, spSig].filter(Boolean).join('|'));
+            const isNew = sync?.pending_remote_hash !== combinedPending;
             const transitioned = (sync?.drift_status ?? 'none') !== 'detected';
             if (isNew || transitioned) {
-              await setFormalooSyncState(deps.db, form.id, { syncStatus, driftStatus: 'detected', pendingRemoteHash: sfPending, driftDetectedAt: nowIso });
+              await setFormalooSyncState(deps.db, form.id, {
+                syncStatus, driftStatus: 'detected', pendingRemoteHash: combinedPending, driftDetectedAt: nowIso,
+                // reviewer R1 P2-3: health 由来 surface の時だけ既存 last_error を保持する (SP 単軸は従来どおり omit=clear で
+                //   byte 不変 = L341 pattern の他 3 箇所は非改変)。
+                ...(healthUnhealthy ? { lastError: sync?.last_error ?? null } : {}),
+              });
               await recordFormalooDriftEvent(deps.db, {
                 formId: form.id, action: 'notified', detectedAt: nowIso, remoteHash: fp, prevHash: baseline,
-                hasWarnings: true, warningsJson: JSON.stringify(warnings), syncStatusAt: syncStatus, detail: 'system_field_health',
+                // SP 単軸 (health off/healthy) は従来どおり hasWarnings=weakened・warningsJson/detail 無し (byte 不変)。
+                hasWarnings: healthUnhealthy ? true : weakened,
+                ...(healthUnhealthy ? { warningsJson: JSON.stringify(combinedWarnings), detail: 'system_field_health' } : {}),
+                syncStatusAt: syncStatus,
               });
-              summary.notified += 1;
-            }
-            return; // system-field health 専用経路 (通常 switch / SP 本文 drift を回さない = 二重処理しない)
-          }
-        }
-
-        // route-terminal-phase2 (fix / T-E5 gap): SP title/description は fingerprint 非包含 (fields+logic 設計を
-        //   維持 = false-drift 再発防止) ゆえ、**別建て**で remote SP 本文 vs 保存済 SP 本文を直接比較する
-        //   (design/copy confirm と同族の additive comparison)。fp が一致 (action='none') でも SP 本文が Formaloo
-        //   側で変われば detected を surface する。SP 無しフォームは両 signature '' で常に一致 = 既存挙動不変。
-        if (action === 'none') {
-          const remoteSp = extractSuccessPages(res.data);
-          if (!successPagesContentEqual(parseStoredSuccessPages(form.definition_json), remoteSp)) {
-            const spPending = await sha256Hex(`sp:${successPagesSignature(remoteSp)}`);
-            const isNew = sync?.pending_remote_hash !== spPending;
-            const transitioned = (sync?.drift_status ?? 'none') !== 'detected';
-            if (isNew || transitioned) {
-              await setFormalooSyncState(deps.db, form.id, { syncStatus, driftStatus: 'detected', pendingRemoteHash: spPending, driftDetectedAt: nowIso });
-              await recordFormalooDriftEvent(deps.db, { formId: form.id, action: 'notified', detectedAt: nowIso, remoteHash: fp, prevHash: baseline, hasWarnings: weakened, syncStatusAt: syncStatus });
               summary.notified += 1;
             } else {
               summary.inSync += 1; // 既に detected 済 = 重複記録しない (badge 固着防止)
             }
-            return; // SP 本文 drift 専用経路 (通常 switch を回さない = 二重処理しない)
+            return; // 2 軸を同 tick で surface 済 (通常 switch を回さない = 二重処理しない)
           }
         }
 

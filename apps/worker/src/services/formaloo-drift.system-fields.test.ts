@@ -130,12 +130,12 @@ function getClient(bodyFor: (slug: string) => unknown) {
 
 let wRaw: Database.Database;
 let WDB: D1Database;
-async function seedLinked(id: string, slug: string) {
+async function seedLinked(id: string, slug: string, defJson = '{"fields":[],"logic":[]}') {
   wRaw.prepare(
-    `INSERT INTO formaloo_forms (id, title, definition_json, formaloo_slug, workspace_id, deleted) VALUES (?, ?, '{"fields":[],"logic":[]}', ?, NULL, 0)`,
-  ).run(id, id, slug);
+    `INSERT INTO formaloo_forms (id, title, definition_json, formaloo_slug, workspace_id, deleted) VALUES (?, ?, ?, ?, NULL, 0)`,
+  ).run(id, id, defJson, slug);
   await saveFormalooDefinition(WDB, id, {
-    definitionJson: '{"fields":[],"logic":[]}',
+    definitionJson: defJson,
     fields: [{ id: `${id}_q1`, formalooFieldSlug: 's1', fieldType: 'text', label: '名前', position: 0, configJson: '{}' }],
   });
 }
@@ -224,5 +224,30 @@ describe('T-C5 配線: runFormalooDriftCheck × checkSystemFieldHealth', () => {
     const healthEvent = events.find((e) => e.detail === 'system_field_health');
     expect(healthEvent).toBeTruthy();
     expect(healthEvent?.warnings_json ?? '').toContain('fr_id');
+  });
+
+  // P2 [Important reviewer R1]: system field 不健全時に early-return して SP 本文 drift をマスクしない。両 signal を
+  //   同 tick で surface する (system field 不健全 ∧ SP 本文 drift 有りの form で両方 = fr_id issue + 完了ページ変更)。
+  test('P2: system field 不健全 ∧ SP 本文 drift 有り → 両方を同 tick で surface (SP をマスクしない)', async () => {
+    // stored 定義に SP(sp1/OLD)。remote は SP(sp1/NEW=本文変更) + fr_id 欠落 (health 不健全)。
+    const defJson = JSON.stringify({ fields: [], logic: [], successPages: [{ id: 'sp1', slug: 'sp1', title: 'OLD 完了' }] });
+    await seedLinked('fh6', 's_form_h6', defJson);
+    const remote = () => driftBody('s_form_h6', [
+      ...answerFields, // fr_id/fr_name 無し = health 不健全
+      { slug: 'sp1', type: 'success_page', title: 'NEW 完了', position: 5 }, // SP 本文変更 = SP drift
+    ]);
+    const client = getClient(remote);
+    const deps = { db: WDB, resolveClient: async () => client, autoApplyEnabled: false, systemFieldHealthCheck: true, includeOwnerGatedSystemFields: true };
+    await runFormalooDriftCheck(deps); // bootstrap
+    const s2 = await runFormalooDriftCheck(deps);
+    // 両 signal が同 tick で surface: health 計上 + drift_status detected + 1 event に fr_id issue と 完了ページ変更 の両方
+    expect(s2.systemFieldUnhealthy).toBe(1);
+    const sync = await getFormalooSyncState(WDB, 'fh6');
+    expect(sync?.drift_status).toBe('detected');
+    const events = await listFormalooDriftEvents(WDB, 'fh6');
+    const ev = events.find((e) => e.detail === 'system_field_health');
+    expect(ev).toBeTruthy();
+    expect(ev?.warnings_json ?? '').toContain('fr_id');       // health signal
+    expect(ev?.warnings_json ?? '').toContain('完了ページ');    // SP signal (旧 early-return では欠落=マスク)
   });
 });
