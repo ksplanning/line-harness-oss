@@ -265,6 +265,14 @@ describe('forms-advanced PUT /:id idempotent push (T-A3 / push-idempotency / B3)
       if (method === 'PUT' && url.includes('/v3.0/forms/')) {
         return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
+      if (method === 'GET' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
+        // fr-id-hardening-round2: ensureSystemHiddenFields が読む form-state。実 Formaloo は GET forms に常に応答するため
+        //   mock も応答する (fr_id/fr_name hidden を present で返す = ensure は no-op present → idle)。旧 mock は GET forms を
+        //   404 default にしていたが、silent-skip に依存していただけで実 Formaloo とは乖離していた (T-C3 fail-closed で顕在化)。
+        return new Response(JSON.stringify({ data: { form: { slug: 'FSLUG', fields_list: [
+          { slug: 'h_fr_id', alias: 'fr_id', type: 'hidden' }, { slug: 'h_fr_name', alias: 'fr_name', type: 'hidden' },
+        ] } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       return new Response('{}', { status: 404 });
     }));
     return recorded;
