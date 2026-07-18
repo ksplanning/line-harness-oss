@@ -32,6 +32,7 @@ function makeClient(cfg: {
   fields: RawField[];
   getOk?: boolean; // GET /v3.0/forms/{slug}/ を失敗させる (default true)
   postMode?: PostMode; // POST /v3.0/fields/ の挙動 (default 'append')
+  logic?: unknown[]; // T-C7: form の bare-array logic (default 無=logic なし)
 }) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
   const state = [...cfg.fields];
@@ -41,7 +42,9 @@ function makeClient(cfg: {
     async get<T = unknown>(path: string) {
       calls.push({ method: 'GET', path });
       if (!getOk) return { ok: false, status: 404, error: 'not found' } as { ok: boolean; status: number; data?: T; error?: string };
-      const data = { data: { form: { fields_list: state.map((f) => ({ ...f })) } } } as unknown as T;
+      const form: Record<string, unknown> = { fields_list: state.map((f) => ({ ...f })) };
+      if (cfg.logic !== undefined) form.logic = cfg.logic;
+      const data = { data: { form } } as unknown as T;
       return { ok: true, status: 200, data };
     },
     async post<T = unknown>(path: string, body?: unknown) {
@@ -251,5 +254,63 @@ describe('backfillSystemHiddenFields (O-6: 再 publish されない既存フォ�
     expect(r.alreadyOk).toBe(1); // B は present
     expect(r.outOfSync).toEqual([]);
     expect(r.results).toHaveLength(2);
+  });
+});
+
+describe('T-C7: logic 有効フォームは hidden field 値が破棄される (fr_id 捕捉不能を surface)', () => {
+  test('logic 無 → logicConflict=false (従来どおり created・out_of_sync でない)', async () => {
+    const { client } = makeClient({ fields: [{ slug: 's1', type: 'short_text', title: '名前' }] });
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
+    expect(r.logicConflict).toBe(false);
+    expect(r.ok).toBe(true);
+    expect(r.outOfSync).toBe(false);
+  });
+
+  test('logic 有 → field は作成しても logicConflict=true・out_of_sync (fr_id は Formaloo が破棄=機能しない)', async () => {
+    const { client, calls } = makeClient({
+      fields: [{ slug: 's1', type: 'short_text', title: '名前' }],
+      logic: [{ conditions: [], actions: [{ type: 'submit_form' }] }], // submit rule あり (bare array)
+    });
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
+    expect(r.logicConflict).toBe(true);
+    expect(r.ok).toBe(false); // field 作成は成功でも fr_id 捕捉不能ゆえ ok にしない
+    expect(r.outOfSync).toBe(true); // silent success 禁止 = surface
+    // field 作成自体は行う (idempotent。owner が logic を外せば機能する)
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/')).toBe(true);
+  });
+
+  test('logic 有 + 既に fr_id/fr_name 既在 (present) でも logicConflict=true・out_of_sync', async () => {
+    const { client } = makeClient({
+      fields: [
+        { slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'x' },
+        { slug: 'h2', alias: 'fr_name', type: 'hidden', title: 'y' },
+      ],
+      logic: [{ conditions: [], actions: [{ type: 'submit_form' }] }],
+    });
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
+    expect(r.logicConflict).toBe(true);
+    expect(r.outOfSync).toBe(true);
+    expect(r.outcomes.every((o) => o.status === 'present')).toBe(true); // field 自体は健全
+  });
+
+  test('空 logic array ([]) は logicConflict=false (length>0 のみ検知)', async () => {
+    const { client } = makeClient({ fields: [{ slug: 's1', type: 'short_text' }], logic: [] });
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: false });
+    expect(r.logicConflict).toBe(false);
+  });
+
+  test('checkSystemFieldHealth: rawLogic 有 → logicConflict=true・ok=false (health 別建てでも検知)', () => {
+    const healthyFields = [
+      { slug: 'h1', alias: 'fr_id', type: 'hidden' },
+      { slug: 'h2', alias: 'fr_name', type: 'hidden' },
+    ];
+    // logic 無 (未渡し) → 健全
+    expect(checkSystemFieldHealth(healthyFields, { includeOwnerGated: true }).logicConflict).toBe(false);
+    expect(checkSystemFieldHealth(healthyFields, { includeOwnerGated: true }).ok).toBe(true);
+    // logic 有 → field 健全でも logicConflict で ok=false
+    const withLogic = checkSystemFieldHealth(healthyFields, { includeOwnerGated: true }, [{ actions: [{ type: 'submit_form' }] }]);
+    expect(withLogic.logicConflict).toBe(true);
+    expect(withLogic.ok).toBe(false);
+    expect(withLogic.issues).toEqual([]); // field 自体は健全 (issue は logic と別軸)
   });
 });

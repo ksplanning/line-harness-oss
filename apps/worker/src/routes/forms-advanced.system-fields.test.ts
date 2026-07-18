@@ -94,7 +94,7 @@ function seedFieldSlug(formId: string, fieldId: string, slug: string, position: 
 interface ApiCall { method: string; url: string; body: unknown }
 
 /** 実 Formaloo GET-after-POST を模倣: POST /v3.0/fields/ が state.fields_list に append し、後続 GET が反映する。 */
-function stubFormaloo() {
+function stubFormaloo(opts: { withLogic?: boolean } = {}) {
   const calls: ApiCall[] = [];
   const fieldsList: { slug: string; alias?: string; type?: string; title?: string; position?: number }[] = [
     { slug: 's_one', type: 'short_text', title: '名前', position: 0 },
@@ -117,7 +117,10 @@ function stubFormaloo() {
       return new Response(JSON.stringify({ data: {} }), { status: 200 });
     }
     if (method === 'GET' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
-      return new Response(JSON.stringify({ data: { form: { slug: 'FSLUG', fields_list: fieldsList.map((f) => ({ ...f })) } } }), { status: 200 });
+      const form: Record<string, unknown> = { slug: 'FSLUG', fields_list: fieldsList.map((f) => ({ ...f })) };
+      // T-C7: logic 有効フォームは Formaloo が hidden field 値を破棄する = fr_id 捕捉不能を surface する対象。
+      if (opts.withLogic) form.logic = [{ conditions: [], actions: [{ type: 'submit_form' }] }];
+      return new Response(JSON.stringify({ data: { form } }), { status: 200 });
     }
     if (method === 'PATCH' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
       return new Response(JSON.stringify({ data: {} }), { status: 200 });
@@ -178,5 +181,21 @@ describe('PUT /api/forms-advanced/:id — friend system field auto-push (T-C3 ro
     const res = await putForm(id, { FORMALOO_FR_NAME_AUTOPUSH_DISABLE: '1' });
     expect(res.status).toBe(200);
     expect(sysFieldPosts(calls)).toEqual(['fr_id']);
+  });
+
+  test('T-C7: logic 有効フォーム → syncStatus out_of_sync + logic 専用 message (fr_id 破棄を honest 告知・殻完了防止)', async () => {
+    const id = 'sfD';
+    seedForm(id, 'FSLUG');
+    seedFieldSlug(id, `${id}_f1`, 's_one', 0);
+    const { calls } = stubFormaloo({ withLogic: true });
+    const res = await putForm(id);
+    expect(res.status).toBe(200);
+    // field 作成は行う (owner が logic を外せば機能する) が、状態は out_of_sync
+    expect(sysFieldPosts(calls).sort()).toEqual(['fr_id', 'fr_name']);
+    const data = (await res.json() as { data: { syncStatus: string; syncError?: string | null } }).data;
+    expect(data.syncStatus).toBe('out_of_sync');
+    // owner 向け専用 message (logic により fr_id が破棄される旨)
+    expect(data.syncError ?? '').toContain('logic');
+    expect(data.syncError ?? '').toContain('fr_id');
   });
 });

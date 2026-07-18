@@ -1,5 +1,5 @@
 import { FRIEND_SYSTEM_FIELDS, isFriendSystemAlias, type FriendSystemFieldSpec } from '@line-crm/shared';
-import { extractFieldsList } from './formaloo-pull.js';
+import { extractFieldsList, extractRawLogic } from './formaloo-pull.js';
 
 // =============================================================================
 // fr-id-capture-fix (R3/R4 / T-C2/T-C5/O-6) — friend system hidden field の冪等 ensure。
@@ -17,6 +17,10 @@ import { extractFieldsList } from './formaloo-pull.js';
 //   - **fail-soft**: fields_list を読めない (GET 非ok / shape 不一致) は skipped で見送る (out_of_sync にしない・
 //     回答導線 hot path を落とさない / codex#3 は「読めたのに欠落」を out_of_sync 化する分岐で担保)。
 //   - **owner-gate**: fr_name は氏名=PII ゆえ includeOwnerGated=false で push しない (codex#8)。
+//   - **T-C7 (司令塔 A/B 実測 2026-07-18)**: form に logic (route-terminal generateSubmitWhen 由来の submit rule 等) が
+//     あると Formaloo サーバーは **hidden field の値を intake で破棄する** (logic 無→捕捉 / 有→NULL・position 無関係・
+//     client POST payload には載る)。ゆえに field を作っても logic 有効フォームでは fr_id が機能しない。無警告出荷は
+//     殻完了リスクゆえ logicConflict を surface し out_of_sync + owner message で honest に告知する。
 // =============================================================================
 
 /** ensure/backfill が使う FormalooClient の最小 surface (FormalooClient がこれを満たす / テストは mock)。 */
@@ -38,6 +42,11 @@ export interface SystemFieldEnsureResult {
   outOfSync: boolean;
   /** fields_list を読めず判定を見送った (fail-soft / hot path 保護)。 */
   skipped: boolean;
+  /**
+   * T-C7: form に logic (submit rule 等) があり Formaloo が intake で hidden field 値を破棄する = fr_id 捕捉不能。
+   * field 作成自体は成功しても logic 有効フォームでは fr_id が機能しないため out_of_sync で告知する (殻完了防止)。
+   */
+  logicConflict: boolean;
   outcomes: SystemFieldOutcome[];
 }
 
@@ -70,11 +79,19 @@ function matchesForAlias(list: unknown[], alias: string): { slug: string; type: 
   return out;
 }
 
-/** GET /v3.0/forms/{slug}/ → fields_list (読めなければ null = skip 判定)。 */
-async function fetchFieldsList(client: SystemFieldClient, formSlug: string): Promise<unknown[] | null> {
+/**
+ * GET /v3.0/forms/{slug}/ → fields_list + logic 有無 (読めなければ fields=null = skip 判定)。
+ * T-C7: 同一 full form response の `.data.form.logic` (bare array・extractRawLogic と同 key) から hasLogic を判定する
+ *   (追加の GET なし)。logic があると Formaloo が hidden field 値を intake で破棄するため fr_id 捕捉不能を surface する。
+ */
+async function fetchFormState(
+  client: SystemFieldClient,
+  formSlug: string,
+): Promise<{ fields: unknown[] | null; hasLogic: boolean }> {
   const res = await client.get(`/v3.0/forms/${formSlug}/`);
-  if (!res.ok) return null;
-  return extractFieldsList(res.data);
+  if (!res.ok) return { fields: null, hasLogic: false };
+  const rawLogic = extractRawLogic(res.data);
+  return { fields: extractFieldsList(res.data), hasLogic: Array.isArray(rawLogic) && rawLogic.length > 0 };
 }
 
 /**
@@ -91,15 +108,18 @@ export async function ensureSystemHiddenFields(
 ): Promise<SystemFieldEnsureResult> {
   const includeOwnerGated = opts?.includeOwnerGated ?? true;
   const targets = targetFields(includeOwnerGated);
-  const empty = (): SystemFieldEnsureResult => ({ ok: false, outOfSync: false, skipped: true, outcomes: [] });
+  const empty = (): SystemFieldEnsureResult => ({ ok: false, outOfSync: false, skipped: true, logicConflict: false, outcomes: [] });
 
-  let list: unknown[] | null;
+  let state: { fields: unknown[] | null; hasLogic: boolean };
   try {
-    list = await fetchFieldsList(client, formSlug);
+    state = await fetchFormState(client, formSlug);
   } catch {
     return empty(); // hot path 保護: 読取例外は見送り (回答導線を落とさない)
   }
-  if (list === null) return empty();
+  if (state.fields === null) return empty();
+  const list = state.fields;
+  // T-C7: logic 有効フォームは Formaloo が hidden field 値を破棄する → field を作っても fr_id 捕捉不能。
+  const logicConflict = state.hasLogic;
 
   const outcomes: SystemFieldOutcome[] = [];
   const toCreate: FriendSystemFieldSpec[] = [];
@@ -130,7 +150,7 @@ export async function ensureSystemHiddenFields(
     // POST 後 re-GET で exactly-one を確認 (201消失/timeout-but-created/重複を determinisitc に判定 / codex#14)。
     let verifyList: unknown[] | null;
     try {
-      verifyList = await fetchFieldsList(client, formSlug);
+      verifyList = (await fetchFormState(client, formSlug)).fields;
     } catch {
       verifyList = null;
     }
@@ -153,21 +173,28 @@ export async function ensureSystemHiddenFields(
   }
 
   const bad = outcomes.some((o) => o.status === 'conflict' || o.status === 'error');
-  return { ok: !bad, outOfSync: bad, skipped: false, outcomes };
+  // T-C7: logicConflict は field が created/present でも fr_id 捕捉不能ゆえ out_of_sync で surface する (silent success 禁止)。
+  return { ok: !bad && !logicConflict, outOfSync: bad || logicConflict, skipped: false, logicConflict, outcomes };
 }
 
 export type SystemFieldIssueKind = 'missing' | 'not_hidden' | 'duplicate';
 export interface SystemFieldHealthResult {
   ok: boolean;
   issues: { alias: string; issue: SystemFieldIssueKind }[];
+  /**
+   * T-C7: form logic (submit rule 等) により Formaloo が hidden field 値を破棄する (fr_id 捕捉不能)。
+   * exactly-one hidden が健全でも本 flag が立てば fr_id は機能しない。rawLogic を渡した時のみ判定 (未渡し=false)。
+   */
+  logicConflict: boolean;
 }
 
 /**
  * T-C5(3): 通常 drift とは別建ての system-field 健全性チェック。fingerprint/drift は system field を除外するため
  * 削除/visible化/型変更/重複を検知できない。本チェックが raw fields_list に対し予約 alias が exactly-one hidden か
  * を監査する (drift cron や監査から呼ぶ純関数 / API 非依存)。
+ * T-C7: rawLogic (bare array・extractRawLogic 由来) を渡すと logic 有効フォームでの fr_id 捕捉不能を logicConflict で surface する。
  */
-export function checkSystemFieldHealth(rawFieldsList: unknown, opts?: EnsureOptions): SystemFieldHealthResult {
+export function checkSystemFieldHealth(rawFieldsList: unknown, opts?: EnsureOptions, rawLogic?: unknown): SystemFieldHealthResult {
   const list = Array.isArray(rawFieldsList) ? rawFieldsList : [];
   const targets = targetFields(opts?.includeOwnerGated ?? true);
   const issues: { alias: string; issue: SystemFieldIssueKind }[] = [];
@@ -177,7 +204,8 @@ export function checkSystemFieldHealth(rawFieldsList: unknown, opts?: EnsureOpti
     else if (m.length > 1) issues.push({ alias: spec.alias, issue: 'duplicate' });
     else if (m[0].type !== 'hidden') issues.push({ alias: spec.alias, issue: 'not_hidden' });
   }
-  return { ok: issues.length === 0, issues };
+  const logicConflict = Array.isArray(rawLogic) && rawLogic.length > 0;
+  return { ok: issues.length === 0 && !logicConflict, issues, logicConflict };
 }
 
 export interface BackfillResult {

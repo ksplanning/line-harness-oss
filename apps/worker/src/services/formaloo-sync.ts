@@ -208,7 +208,7 @@ export async function pushDefinitionToFormaloo(
       });
     } catch {
       // 二重ガード: ensure 自体 fail-soft だが、万一の例外でも hot path を絶対落とさない (skipped 扱い)。
-      systemFields = { ok: false, outOfSync: false, skipped: true, outcomes: [] };
+      systemFields = { ok: false, outOfSync: false, skipped: true, logicConflict: false, outcomes: [] };
     }
   }
 

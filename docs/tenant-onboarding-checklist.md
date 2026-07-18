@@ -21,6 +21,13 @@
       既定有効。`FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE='1'` で短絡（rollback）。
     - **手動フォーム / Formaloo 管理画面直作成フォーム**は auto-push を通らないことがある → その場合は
       各 field に alias を手動設定するか、下の O-6 backfill を回す。
+    - **⚠️ logic 併用不可（T-C7 / 司令塔 A/B 実測 2026-07-18）**: フォームに **logic（「回答されたら送信」等の
+      submit rule / route-terminal generateSubmitWhen 由来）が有効だと、Formaloo サーバーは受け取り時（intake）に
+      hidden field の値を破棄する**（logic 無→捕捉 / 有→NULL・field の position 無関係・client POST payload には
+      載る）。ゆえに fr_id field を作っても **logic 有効フォームでは fr_id が機能しない**（再入場 prefill は成立しない）。
+      検知は `ensureSystemHiddenFields` / `checkSystemFieldHealth` の `logicConflict` で surface し、保存時に
+      `syncStatus='out_of_sync'` + owner 向け専用 message で告知する（無警告出荷=殻完了を防ぐ）。
+      **fr_id 運用（再入場 prefill）を使うフォームでは logic を併用しないこと。**
 - [ ] **(iv) `VITE_LIFF_ID` bake** — テナント固有 LIFF ID で web/worker を再 build（空焼き禁止）。
       空焼きは fo-liff 無限ループ / ぐるぐるの回帰源。deploy は必ずテナント build env で再 build
       （propagation-runbook §2 / build-env-rebuild.md）。
