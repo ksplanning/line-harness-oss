@@ -1,5 +1,7 @@
 import type { UpsertFormalooSubmissionInput } from '@line-crm/db';
 import { isDecorationType } from '@line-crm/shared';
+import { verifyFriendToken } from './formaloo-friend-token.js';
+import { renderedAliasValue, FRIEND_TOKEN_ALIAS } from './formaloo-webhook.js';
 
 // =============================================================================
 // Formaloo row 編集 純関数群 (弾M form-post-edit / T-B1)
@@ -98,6 +100,19 @@ export function buildFieldLabelList(
   fields: DefinitionFieldForJoin[],
 ): Array<{ slug: string; label: string }> {
   return joinDefinitionFieldsWithSlug(fieldMap, fields).map((f) => ({ slug: f.slug, label: f.label }));
+}
+
+/**
+ * reconcile-pull の friend_id 復元に使う実効 secret を解決する (line-reentry-prefill-fix / Layer A rollback)。
+ *   `FORMALOO_RECONCILE_FRIEND_LINK_DISABLE='true'` の時は **null** を返す = friend_id 復元だけを緊急停止
+ *   (reconcile のミラー充填自体は継続 = 一覧表示は従来通り)。secret 未設定も null (fail-closed)。単一正本。
+ */
+export function friendLinkSecret(env: {
+  FORMALOO_FRIEND_TOKEN_SECRET?: string | null;
+  FORMALOO_RECONCILE_FRIEND_LINK_DISABLE?: string;
+}): string | null {
+  if (env.FORMALOO_RECONCILE_FRIEND_LINK_DISABLE === 'true') return null;
+  return env.FORMALOO_FRIEND_TOKEN_SECRET ?? null;
 }
 
 /** 編集判定に要る最小 field メタ (formaloo_field_map + definition から endpoint が組む)。 */
@@ -238,14 +253,28 @@ export function makeRowsListRowSlugResolver(
  *   - addressable id = `row.slug` (20ch)。詳細 drill `/v3.0/rows/{slug}/` が 200 で解決する唯一の値
  *     (submit_code は 404 / `/v3.0/forms/{slug}/rows/{slug}/` も 404 = S-1 実測)。ゆえ mirror id も row.slug。
  *   - submittedAt = `row.created_at` (ISO)。
- *   - friendId=null / verified=false: friend 解決・署名検証は webhook 専管 (read-path では付与しない)。
+ *   - friendId (line-reentry-prefill-fix / Layer A): pull 行の**署名 fr_id を verify 成功時のみ**復元する。
+ *     webhook 未配線テナント (piecemaker) では reconcile-pull が friend_id を設定する唯一経路になるため、
+ *     webhook path と同一の `renderedAliasValue`+`verifyFriendToken` で fr_id を検証し friend_id を得る。
+ *     **fail-closed**: secret 未供給 / alias 欠落 / 改ざん / 別鍵署名 は friend_id=null のまま
+ *     (他人の回答を prefill する取り違え=PII を絶対に起こさない / 弾M F-H1 継承)。opts 未指定は従来 byte 同等
+ *     (friend_id=null)。fr_id present 行のみ crypto を回す (CI-3: reconcile ループの CPU 予算保護)。
+ *   - verified=false: pull 由来は未署名扱いのまま (LINE 後処理は発火しない / friend_id 復元と直交)。
  *   - rowSlug=row.slug: 弾M 編集 (PATCH /v3.0/rows/{row_slug}/) が要る addressable slug を write-once で入れる。
- * slug 欠落 row は addressable でない (id にできない) ため null を返し呼び出し側が skip する。
+ * slug 欠落 row は addressable でない (id にできない) ため null を返し呼び出し側が skip する。crypto 検証のため async。
  */
-export function mapFormalooListRowToUpsert(
+export interface MapFormalooRowOptions {
+  /** 署名 fr_id 検証用の専用 secret (FORMALOO_FRIEND_TOKEN_SECRET)。供給時のみ verify 成功で friend_id 復元。 */
+  friendTokenSecret?: string | null;
+  /** 署名 fr_id の alias (既定 fr_id)。 */
+  friendTokenAlias?: string;
+}
+
+export async function mapFormalooListRowToUpsert(
   row: Record<string, unknown>,
   form: { id: string; formaloo_slug: string | null },
-): UpsertFormalooSubmissionInput | null {
+  opts: MapFormalooRowOptions = {},
+): Promise<UpsertFormalooSubmissionInput | null> {
   const slug = typeof row.slug === 'string' && row.slug ? row.slug : null;
   if (!slug) return null;
   const rawData = row.data;
@@ -253,6 +282,19 @@ export function mapFormalooListRowToUpsert(
     ? (rawData as Record<string, unknown>)
     : {};
   const createdAt = typeof row.created_at === 'string' && row.created_at ? row.created_at : new Date().toISOString();
+
+  // 順方向 friend_id 復元 (fail-closed): 署名 fr_id を verify 成功時のみ friend_id に採る。webhook path と
+  //   同一 renderedAliasValue を再利用 (rendered_data 配列/object 形 → data[alias] fallback)。fr_id が全く
+  //   present でない / secret 未供給 / verify 失敗 は friend_id=null 維持 (byte 不変・PII fail-closed)。
+  let friendId: string | null = null;
+  if (opts.friendTokenSecret) {
+    const alias = opts.friendTokenAlias ?? FRIEND_TOKEN_ALIAS;
+    const signedToken = renderedAliasValue(row.rendered_data, alias) ?? renderedAliasValue(rawData, alias);
+    if (signedToken) {
+      friendId = await verifyFriendToken(signedToken, opts.friendTokenSecret);
+    }
+  }
+
   return {
     id: slug,
     formId: form.id,
@@ -260,7 +302,40 @@ export function mapFormalooListRowToUpsert(
     answersJson: JSON.stringify(answers),
     submittedAt: createdAt,
     rowSlug: slug,
-    friendId: null,
+    friendId,
     verified: false,
   };
+}
+
+/**
+ * /fo 再入場 targeted pull (line-reentry-prefill-fix / Layer A / T-A6 / CI-1 の要)。
+ *   reconcile (admin `/rows` GET) は再入場経路では発火しないため、prefill lookup の直前に対象 form の直近
+ *   rows を **bounded** pull → `mapFormalooListRowToUpsert` で friend_id 復元 → upsert 入力の配列を返す
+ *   (呼び出し側が upsert して mirror を埋めてから getFriendLatestSubmission を引く)。
+ *   hot path 保護 (CI-4): maxPages を小さく (既定 2) 抑える。非2xx / 空 rows でループ終了 (fail-safe)。
+ *   formaloo_slug 欠落は pull を一切呼ばず空配列。例外は呼び出し側の try/catch が拾う (fail-soft / 302 degrade)。
+ */
+export async function pullFriendReconcileInputs(
+  client: RowsListGetClient,
+  form: { id: string; formaloo_slug: string | null },
+  opts: MapFormalooRowOptions & { maxPages?: number; pageSize?: number } = {},
+): Promise<UpsertFormalooSubmissionInput[]> {
+  if (!form.formaloo_slug) return [];
+  const maxPages = opts.maxPages ?? 2;
+  const pageSize = opts.pageSize ?? 50;
+  const out: UpsertFormalooSubmissionInput[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const r = await client.get(`/v3.0/forms/${form.formaloo_slug}/rows/?page=${page}&page_size=${pageSize}`);
+    if (!r.ok) break;
+    const rows = extractRows(r.data);
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      const input = await mapFormalooListRowToUpsert(row, form, {
+        friendTokenSecret: opts.friendTokenSecret,
+        friendTokenAlias: opts.friendTokenAlias,
+      });
+      if (input) out.push(input);
+    }
+  }
+  return out;
 }

@@ -206,6 +206,10 @@ export type Env = {
     //   kill-switch。未設定/其他 = reconcile ON (既定・兄弟 /stats・/rows/:rowId と同じ SoT=Formaloo モデル)。
     //   'true' = mirror-only の旧挙動へ即 rollback (Formaloo を一切叩かない)。
     FORMS_ADVANCED_ROWS_LIVE_RECONCILE_DISABLE?: string;
+    // line-reentry-prefill-fix (Layer A): reconcile-pull が署名 fr_id を verify して friend_id を復元する
+    //   機能だけを緊急停止する kill-switch。未設定/其他 = 復元 ON (既定・reconcile が friend_id を fail-closed 復元)。
+    //   'true' = friend_id 復元のみ停止 (reconcile のミラー充填・一覧表示は従来通り継続)。additive rollback。
+    FORMALOO_RECONCILE_FRIEND_LINK_DISABLE?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。

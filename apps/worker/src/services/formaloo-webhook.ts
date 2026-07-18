@@ -63,8 +63,10 @@ function firstString(...vals: unknown[]): string | null {
  *   `[{ slug, alias, value }, ...]` (S-1 live-confirm 2026-07-12 実測) ゆえ alias 直引き object 前提の
  *   `rendered_data[alias]` では取れない。配列は alias 一致 (無ければ slug 一致) の value を、object 形
  *   (fixture/legacy) は alias 直引きを返す。どちらでもない/該当無しは null (fail-safe / 候補 chain 継続)。
+ *   line-reentry-prefill-fix (Layer A): reconcile-pull 写像 (formaloo-row-edit.ts) が同 alias 抽出を
+ *   再利用するため export (重複実装しない / plan §3 grep 3)。
  */
-function renderedAliasValue(rendered: unknown, alias: string): string | null {
+export function renderedAliasValue(rendered: unknown, alias: string): string | null {
   if (Array.isArray(rendered)) {
     for (const entry of rendered) {
       const e = asObject(entry);

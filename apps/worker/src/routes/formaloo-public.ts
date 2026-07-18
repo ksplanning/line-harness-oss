@@ -30,6 +30,8 @@ import {
   findEmptyRequired,
   resolveRowSlug,
   makeRowsListRowSlugResolver,
+  pullFriendReconcileInputs,
+  friendLinkSecret,
 } from '../services/formaloo-row-edit.js';
 import { verifyEditToken, type EditTokenPayload } from '../services/formaloo-edit-token.js';
 import { resolveFormalooClient } from '../services/formaloo-client.js';
@@ -307,10 +309,24 @@ formalooPublic.get('/fo/:id', async (c) => {
       // allow_post_edit=1 かつ env 有効時のみ、本人の**最新 row** answers を field-slug query prefill で付与
       //   (②本人再入場)。OFF/env 未設定 = null = 現状 (fr_id/fr_name のみ) と byte 同等。friendId は解決済
       //   (実在検証済) ゆえ getFriendLatestSubmission が friend 厳密一致で本人 row のみ引く (取り違え防止)。
-      const postEditPrefill =
-        form.allow_post_edit === 1 && isPostEditEnabled(c.env.FORM_POST_EDIT_ENABLED)
-          ? await buildFriendPrefillParams(c.env.DB, id, friendId)
-          : null;
+      const gateOn = form.allow_post_edit === 1 && isPostEditEnabled(c.env.FORM_POST_EDIT_ENABLED);
+      // line-reentry-prefill-fix (Layer A / C3 / T-A6・CI-1): reconcile は admin /rows GET でしか発火しない
+      //   ため、/fo 再入場の prefill lookup 直前に対象 form の直近 rows を **bounded targeted pull** し、署名
+      //   fr_id を verify→friend_id を fail-closed 復元→mirror へ upsert する (webhook 未配線でも本人 row が
+      //   friend_id を持つ)。gate 全通過時のみ発火・fail-soft: client null / 非2xx / throw は prefill 無しで
+      //   302 を必ず返す (hot path 保護 / D-7)。復元は FORMALOO_RECONCILE_FRIEND_LINK_DISABLE で緊急停止可 (D-6)。
+      if (gateOn) {
+        try {
+          const client = await resolveFormalooClient(c.env, form.workspace_id);
+          if (client && form.formaloo_slug) {
+            const inputs = await pullFriendReconcileInputs(client, form, { friendTokenSecret: friendLinkSecret(c.env) });
+            for (const input of inputs) await upsertFormalooSubmission(c.env.DB, input);
+          }
+        } catch (err) {
+          console.error(`/fo/${id} targeted friend reconcile failed (non-blocking):`, err);
+        }
+      }
+      const postEditPrefill = gateOn ? await buildFriendPrefillParams(c.env.DB, id, friendId) : null;
       try {
         const u = new URL(url);
         // answer prefill を先に付与 → 署名 fr_id/fr_name を後で set (予約 param を answer が上書きしない)。
