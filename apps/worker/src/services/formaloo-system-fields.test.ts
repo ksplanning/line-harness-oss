@@ -15,7 +15,8 @@ import {
 //   - 既存非 system field は PATCH/DELETE しない (additive only)
 //   - 衝突(visible/型違い/複数) → 自動修復せず out_of_sync (fail-closed)
 //   - POST 非2xx/timeout/201消失 → throw せず out_of_sync で surface (silent success 禁止)
-//   - fields_list 読取不能 → skipped (hot path 保護・out_of_sync にしない)
+//   - fields_list 読取不能 (GET 非ok / 例外 / shape 不一致) → fail-closed out_of_sync (T-C3 round2:
+//     closer 独立検証 Codex 発見の silent-success gap 是正。throw はしない = 回答導線は落とさず surface のみ)
 // =============================================================================
 
 interface RawField {
@@ -31,6 +32,8 @@ type PostMode = 'append' | 'noop' | 'fail' | 'timeout' | 'appendVisible';
 function makeClient(cfg: {
   fields: RawField[];
   getOk?: boolean; // GET /v3.0/forms/{slug}/ を失敗させる (default true)
+  getThrows?: boolean; // GET が例外を投げる (network 断・T-C3 round2 fail-closed)
+  getBadShape?: boolean; // GET は 200 だが fields_list 不在 (read-shape 不一致・extractFieldsList→null)
   postMode?: PostMode; // POST /v3.0/fields/ の挙動 (default 'append')
   logic?: unknown[]; // T-C7: form の bare-array logic (default 無=logic なし)
 }) {
@@ -41,6 +44,8 @@ function makeClient(cfg: {
   const client: SystemFieldClient = {
     async get<T = unknown>(path: string) {
       calls.push({ method: 'GET', path });
+      if (cfg.getThrows) throw new Error('network boom');
+      if (cfg.getBadShape) return { ok: true, status: 200, data: { data: { form: { title: 'no fields' } } } as unknown as T };
       if (!getOk) return { ok: false, status: 404, error: 'not found' } as { ok: boolean; status: number; data?: T; error?: string };
       const form: Record<string, unknown> = { fields_list: state.map((f) => ({ ...f })) };
       if (cfg.logic !== undefined) form.logic = cfg.logic;
@@ -169,12 +174,31 @@ describe('ensureSystemHiddenFields (T-C2)', () => {
     expect(calls.some((c) => c.method === 'POST' && (c.body as { alias?: string }).alias === 'fr_name')).toBe(false);
   });
 
-  test('fields_list 読取不能 (GET 非ok) → skipped (out_of_sync にしない・hot path 保護)', async () => {
+  // fr-id-hardening-round2 / T-C3 fail-closed (closer 独立検証 Codex 発見の silent-success gap):
+  //   form-state fetch 失敗/読取不能は fail-soft の skipped(=idle 扱い) ではなく **fail-closed の out_of_sync** で
+  //   surface する。ensure は admin 保存経路 (forms-advanced PUT) のみで呼ばれ /fo 回答 hot path では呼ばれないため、
+  //   out_of_sync surface は回答導線を落とさず「同期に失敗・再保存で復旧」を honest に見せるだけ (silent 成功禁止)。
+  test('fetch 失敗 (GET 非ok) → fail-closed out_of_sync・盲目 POST しない (T-C3 round2)', async () => {
     const { client, calls } = makeClient({ fields: [], getOk: false });
     const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
-    expect(r.skipped).toBe(true);
-    expect(r.outOfSync).toBe(false);
-    // POST しない (盲目的に作らない)
+    expect(r.ok).toBe(false);
+    expect(r.outOfSync).toBe(true); // silent success 禁止 = surface して呼び出し側が out_of_sync 化
+    expect(calls.some((c) => c.method === 'POST')).toBe(false); // fields_list 不明ゆえ作成判断は保留
+  });
+
+  test('fetch 例外 (network throw) → fail-closed out_of_sync (throw を握り潰して成功にしない)', async () => {
+    const { client, calls } = makeClient({ fields: [], getThrows: true });
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
+    expect(r.ok).toBe(false);
+    expect(r.outOfSync).toBe(true);
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  test('read-shape 不一致 (200 だが fields_list 不在) → fail-closed out_of_sync', async () => {
+    const { client, calls } = makeClient({ fields: [], getBadShape: true });
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
+    expect(r.ok).toBe(false);
+    expect(r.outOfSync).toBe(true);
     expect(calls.some((c) => c.method === 'POST')).toBe(false);
   });
 });

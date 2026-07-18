@@ -14,8 +14,9 @@ import { extractFieldsList, extractRawLogic } from './formaloo-pull.js';
 //     衝突(visible/型違い/重複)→自動修復せず out_of_sync (fail-closed / codex#4)。
 //   - POST 後 re-GET で exactly-one を確認 (POST 非2xx/timeout/201消失 を out_of_sync で surface / codex#14)。
 //   - **additive only**: 既存 field を PATCH/DELETE しない。POST は新規 system field のみ。
-//   - **fail-soft**: fields_list を読めない (GET 非ok / shape 不一致) は skipped で見送る (out_of_sync にしない・
-//     回答導線 hot path を落とさない / codex#3 は「読めたのに欠落」を out_of_sync 化する分岐で担保)。
+//   - **fail-closed (T-C3 round2)**: fields_list を読めない (GET 非ok / 例外 / shape 不一致) は out_of_sync で surface する
+//     (throw はしない = 回答導線 hot path を落とさない)。旧 skipped(silent) 挙動は closer 独立検証 (Codex) が
+//     silent-success gap として発見。ensure は admin 保存経路のみで呼ばれ /fo 回答経路では呼ばれないため surface が正。
 //   - **owner-gate**: fr_name は氏名=PII ゆえ includeOwnerGated=false で push しない (codex#8)。
 //   - **T-C7 (司令塔 A/B 実測 2026-07-18)**: form に logic (route-terminal generateSubmitWhen 由来の submit rule 等) が
 //     あると Formaloo サーバーは **hidden field の値を intake で破棄する** (logic 無→捕捉 / 有→NULL・position 無関係・
@@ -38,9 +39,14 @@ export interface SystemFieldOutcome {
 export interface SystemFieldEnsureResult {
   /** 対象 alias が全て exactly-one hidden で確定 (created|present) した。 */
   ok: boolean;
-  /** conflict/error があり再試行対象 (silent success 禁止)。skipped は out_of_sync にしない。 */
+  /**
+   * conflict/error/読取不能があり再試行対象 (silent success 禁止)。
+   * T-C3 round2: form-state fetch 失敗/読取不能も fail-closed で outOfSync=true にする (closer 独立検証 Codex 発見の
+   * silent-success gap 是正)。ensure は admin 保存経路のみで呼ばれ /fo 回答 hot path では呼ばれないため surface は
+   * 回答導線を落とさない。
+   */
   outOfSync: boolean;
-  /** fields_list を読めず判定を見送った (fail-soft / hot path 保護)。 */
+  /** fields_list を読めず判定を見送った (fetch 失敗時は skipped=false・outOfSync=true で surface する / T-C3 round2)。 */
   skipped: boolean;
   /**
    * T-C7: form に logic (submit rule 等) があり Formaloo が intake で hidden field 値を破棄する = fr_id 捕捉不能。
@@ -99,7 +105,7 @@ async function fetchFormState(
  *  - 無 → POST {type:'hidden',alias,title,form} → re-GET で exactly-one 確認 → created。
  *  - 正常既在(type=hidden) → no-op (present)。
  *  - 衝突(visible/型違い/重複) → 自動修復せず conflict (out_of_sync / fail-closed)。
- *  - POST 失敗/201消失 → error (out_of_sync)。fields_list 読取不能 → skipped。throw しない。
+ *  - POST 失敗/201消失 → error (out_of_sync)。fields_list 読取不能 → out_of_sync (fail-closed / T-C3 round2)。throw しない。
  */
 export async function ensureSystemHiddenFields(
   client: SystemFieldClient,
@@ -108,15 +114,19 @@ export async function ensureSystemHiddenFields(
 ): Promise<SystemFieldEnsureResult> {
   const includeOwnerGated = opts?.includeOwnerGated ?? true;
   const targets = targetFields(includeOwnerGated);
-  const empty = (): SystemFieldEnsureResult => ({ ok: false, outOfSync: false, skipped: true, logicConflict: false, outcomes: [] });
+  // T-C3 round2 (fail-closed): form-state を読めない (GET 非ok / 例外 / shape 不一致) は「system field が
+  //   本当に揃っているか不明」= silent success を絶対に許さない → outOfSync=true で surface する (throw はしない
+  //   ゆえ publish 本体=回答導線は落とさない)。旧 skipped:true/outOfSync:false は closer 独立検証 (Codex) が
+  //   silent-success gap として発見した挙動。
+  const unreadable = (): SystemFieldEnsureResult => ({ ok: false, outOfSync: true, skipped: false, logicConflict: false, outcomes: [] });
 
   let state: { fields: unknown[] | null; hasLogic: boolean };
   try {
     state = await fetchFormState(client, formSlug);
   } catch {
-    return empty(); // hot path 保護: 読取例外は見送り (回答導線を落とさない)
+    return unreadable(); // 読取例外を握り潰して成功にしない (fail-closed surface)
   }
-  if (state.fields === null) return empty();
+  if (state.fields === null) return unreadable();
   const list = state.fields;
   // T-C7: logic 有効フォームは Formaloo が hidden field 値を破棄する → field を作っても fr_id 捕捉不能。
   const logicConflict = state.hasLogic;
