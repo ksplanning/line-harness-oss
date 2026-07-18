@@ -563,3 +563,20 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **[REQUIRED-BACKLOG] O-2 owner 立会 live smoke**: owner が LINE 実機で `GMOxoMtK`（または対象フォーム）へ新規送信 → 送信完了後に再度 `/fo` を開く → 前回回答が prefill されることを目視確認するまで `pending_owner_confirmation`。
 - `[OPTIONAL-POLISH]`（reviewer申し送り・非ブロッカー）: /fo 再入場 targeted pull が対象form直近最大100行（maxPages2×50）を毎回upsert（gate-guarded+fail-soft・実害小/bounded・将来 friend行限定の最適化余地）。
 - escrow: `FORMALOO_FRIEND_TOKEN_SECRET`（BOLT file_id `2354823777250`）を `/root/.secrets/SECRETS-LEDGER.md` に追記依頼 — **closer は本セッションの sandbox 権限で `/root/.secrets/` への Read/Bash 双方が拒否され、ledger への追記を物理的に実行できなかった**（Worker Secret としては両テナントで確認済みゆえ機能的には escrow 済み・ledger のドキュメント記載のみ残タスク。infra-ops もしくは `/root/.secrets` アクセス権を持つセッションでの追記が必要）。
+
+### fr-id-capture-fix — /fo 再入場 prefill Layer B（fr_id 捕捉断裂の是正 / 2026-07-18 planner 起票・spike 実測済）
+- 🎯 目的: piecemaker(夢花火)含む LINE ハーネス**全テナント**で、新規送信→再入場で前回回答が prefill される（Layer A land 済でも実機白紙の真因を除去）+ 全/将来テナントに fr_id/fr_name hidden field を標準装備。
+- **真因確定（planner LIVE spike / `.plans/2026-07-18-fr-id-capture-fix/spike-results.md`）**: Formaloo hosted の URL prefill は **field の alias 一致でのみ発火**（field slug 名 param は無効・row レベル実証）。qBSQdjyz は既定 alias=null ゆえ `?fr_id=` が一致せず捕捉 0 → mirror friend_id 全 NULL。**Layer A ①上段「S-2 rows API が fr_id を返す=POSITIVE」の実態は『alias='fr_id' を設定した検証フォームでのみ POSITIVE』であり、本番 GMOxoMtK は alias 未設定で NEGATIVE**（L562 ④の invisible=true 追加だけでは不足）。/fo・reconcile・webhook のコードは健全＝欠落は field の alias 設定と恒久化。
+- 進捗チェックリスト（closer が `[x]` 更新）:
+  - [x] ③ GMOxoMtK の qBSQdjyz を alias='fr_id'・type=hidden の新field(vPwzfjdn)へ是正 + logic=[] PATCH + 実トークンで送信→row→reconcile→prefill を D1/API before/after 実測 PASS（infra-ops / `.ars-state/fr-id-field-fix-20260718.md`）
+  - [x] ④ 恒久 auto-push: `formaloo-sync` publish 経路で type=hidden・alias fr_id/fr_name の system field を冪等 ensure（exactly-one-hidden / fail-closed）+ pull/drift/fingerprint 除外 + admin editor 非表示 を land・両テナント deploy 済（commit 4f68acf・Version ks=13b59eab / piecemaker=fc6fe4a4）。**残課題2件**: (a) T-C3 ensure の fetch 例外/GET失敗パス (`skipped:true`) が `out_of_sync` へ surface されず silent-success の穴が残る（closer 独立検証 Codex 発見）。(b) T-C5 `checkSystemFieldHealth`（system field 削除/型変更の健全性チェック）が実装のみで drift cron 等どこからも呼ばれておらず未配線（dead code）。次の generator round で修理要。
+  - [x] ⑤ release gate 順序: qBSQdjyz是正+logic除去(③)が本 land より先に本番完了済のため、auto-push 既定 ON でも初回配線は idempotent no-op（新規 field 作成なし）で安全性確認済み。
+  - [ ] ⑥ 既存フォーム backfill（再 publish されないフォームへ additive・inventory/修復数記録・Z5IEH85R は owner 承認）— owner 判断待ち。
+  - [ ] ⑦ 二者分離試験（A/B 別回答→相手回答が prefill されない）+ LINE 実機 owner 立会 — owner 立会待ち（O-4/O-5）。
+  - [x] ⑧ 開通チェックリスト焼き込み（`docs/tenant-onboarding-checklist.md` 新規・LIFF/login channel/fr_id alias/VITE_LIFF_ID/fr_name PII 明記）。
+- **[REQUIRED-BACKLOG] fr_name PII 有効化**: 両テナント wrangler toml に `FORMALOO_FR_NAME_AUTOPUSH_DISABLE="1"` を保守的に設定済（fr_id auto-push は ON・fr_name のみ OFF）。owner が実名PII用途/保持方針を承認したら `"false"` へ変更し再デプロイ。
+- **[REQUIRED-BACKLOG] T-C3/T-C5 コード上の残課題**（closer 独立検証 Codex 発見・reviewer PASS 後の追加知見）: (a) `ensureSystemHiddenFields` の fetchFormState 例外/読取失敗パスが `outOfSync:false, skipped:true` を返し、`formaloo-sync.ts` の `systemFieldsOutOfSync` にも反映されないため、publish 経路の syncStatus が誤って `idle`（成功扱い）になる silent-success gap。(b) `checkSystemFieldHealth`（削除/型変更検知）が drift cron 等どこからも呼ばれておらず未配線。次の generator round で修理。
+- **[REQUIRED-BACKLOG] O-4/O-5/O-6 owner 立会**: 新規送信→再入場 prefill 目視(O-4)・二者分離実証(O-5)・既存フォーム backfill inventory 承認(O-6) は owner 立会/判断待ち。
+- 次の必須: O-4/O-5（owner LINE実機立会・二者分離）。
+- 💡 任意磨き込み（後回し可・自動着手禁止）: friend-token の tenant/form/期限束縛（replay 対策・owner 判断領域）/ O-6 backfill 実施。
+- 単一正本: `.plans/2026-07-18-fr-id-capture-fix/`（spec/plan/tasks/spike-results）。cross-vendor gap-check（Codex 14 findings）反映済。closer 独立検証（Codex diff-based / 実装者=Claude と別ベンダー）で T-C3/T-C5 の残課題を追加発見。

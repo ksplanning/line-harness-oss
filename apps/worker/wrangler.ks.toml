@@ -65,6 +65,10 @@ FORMALOO_DRIFT_AUTO_APPLY = "false"
 # 有効化 (= "true") は owner 立会テスト時のみ (cron ON と同じ回で可)。ここを "true" にすると
 # アカウント別設定 (account_settings key='faq_bot' enabled) と AND で自動返信が発火する。
 FAQ_BOT_ENABLED = "true"
+# fr-id-capture-fix (2026-07-18): fr_id system field auto-push は既定 ON (qBSQdjyz 実測 PASS 済)。
+#   fr_name は実名 PII のため owner 未確認 → 保守的に "1" (無効) 固定。owner が PII 用途/保持方針を
+#   承認したら "false" or 削除で有効化 (docs/BACKLOG.md「fr-id-capture-fix」節参照)。
+FORMALOO_FR_NAME_AUTOPUSH_DISABLE = "1"
 MANIFEST_URL = "https://github.com/Shudesu/line-harness-oss/releases/latest/download/release-manifest.json"
 # ── FAQ AI (Phase B go-live / owner 立会 §1) additive。生成/埋め込みモデルは env 注入 (literal 焼き込みなし)。
 #    非 deprecated 実確認済 (2026-07-11 docs 200)・埋め込み次元 1024 は live 実測 (data[1][1024]) 済。
