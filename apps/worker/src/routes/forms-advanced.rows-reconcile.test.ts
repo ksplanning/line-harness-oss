@@ -171,10 +171,10 @@ afterEach(() => { vi.unstubAllGlobals(); });
 
 // ── T-A6: mapper 単体 (S-1 実測 shape の写像) ──
 describe('T-A6 mapFormalooListRowToUpsert', () => {
-  test('row → upsert 入力へ S-1 実測 shape どおり写像 (id=slug / answers=row.data / submittedAt=created_at)', () => {
+  test('row → upsert 入力へ S-1 実測 shape どおり写像 (id=slug / answers=row.data / submittedAt=created_at)', async () => {
     const form = { id: 'fa1', formaloo_slug: 'GMOxoMtK' };
     const row = realRow('rowSlug20chAaaaaaaaa', 'submitCode20chBbbbbb', { '9x3BCNZW': 'eee', N31hP5KP: 'a@b.example.com' }, '2026-07-17T12:00:00.000000');
-    const input = mapFormalooListRowToUpsert(row, form)!;
+    const input = (await mapFormalooListRowToUpsert(row, form))!;
     expect(input.id).toBe('rowSlug20chAaaaaaaaa');
     expect(input.rowSlug).toBe('rowSlug20chAaaaaaaaa');
     expect(input.formId).toBe('fa1');
@@ -184,13 +184,13 @@ describe('T-A6 mapFormalooListRowToUpsert', () => {
     expect(input.friendId).toBeNull();
     expect(input.verified).toBe(false);
   });
-  test('slug 欠落 row は null (addressable でない = 書けない)', () => {
+  test('slug 欠落 row は null (addressable でない = 書けない)', async () => {
     const form = { id: 'fa1', formaloo_slug: 'GMOxoMtK' };
-    expect(mapFormalooListRowToUpsert({ data: { a: 1 }, submit_code: 'x' }, form)).toBeNull();
+    expect(await mapFormalooListRowToUpsert({ data: { a: 1 }, submit_code: 'x' }, form)).toBeNull();
   });
-  test('data 欠落は answers={} / created_at 欠落は fallback (空でなく truthy)', () => {
+  test('data 欠落は answers={} / created_at 欠落は fallback (空でなく truthy)', async () => {
     const form = { id: 'fa1', formaloo_slug: 'GMOxoMtK' };
-    const input = mapFormalooListRowToUpsert({ slug: 'sOnly' }, form)!;
+    const input = (await mapFormalooListRowToUpsert({ slug: 'sOnly' }, form))!;
     expect(input.answersJson).toBe('{}');
     expect(typeof input.submittedAt).toBe('string');
     expect(input.submittedAt.length).toBeGreaterThan(0);
