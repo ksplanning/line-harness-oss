@@ -4,6 +4,31 @@
 
 ---
 
+## fo-liff-infinite-loop-fix — piecemaker LIFF 無限リロード修理（2026-07-18 closer クローズ / コード側先行 land）
+
+owner 実機バグ報告（2026-07-18 13:4x）: piecemaker の `/fo/:id` を LINE アプリで開くと「読み込み中」のまま → LIFF 承認+友だち追加後に無限リロード。計画正本: `.plans/2026-07-18-fo-liff-infinite-loop-fix/{spec,plan,tasks}.md`。reviewer Round 1 PASS（claude 本体 + Codex companion 両者 approve 一致・closer_allowed=true・scope=code-track-only）。
+
+**真因（spike S-1 で実測確定）**: piecemaker D1 の `liff_id=2010719554-oNAvHzEr` は夢花火の bot（1661399637）にリンクされた正ログインチャネル `1661482695` **ではない別チャネル `2010719554`** 配下の LIFF を指しており、`getFriendship` throw → client catch が lu 無しの生 `/fo` へ戻す無限ループを起こしていた。正ログインチャネル配下には「うちの client」を指す LIFF がそもそも存在しない（既存 LIFF `1661482695-eboDZbvm` は endpoint=autosns.jp）。
+
+**今回 land した = コード側の安全ブレーキ（無限リロードを止める）のみ**。prefill の完全復旧は設定側是正後。
+- **BUG-1（server one-shot loop-guard）**: `/fo/:id` が LIFF へ渡す復路 `directUrl` に `_lfb=1` を構造的付与。復路が `_lfb=1` あり ∧ lu 無し ∧ friendId 無しの時は LIFF 分岐を skip して Formaloo へ 302（匿名 degrade・再 LIFF しない）。トリガー同定（getFriendship か否か）に非依存で発火する決定論的 kill。
+- **BUG-2（client getFriendship 非致命化）**: `main.ts` の `linkAndAddFlow`/`initSalonBooking`/`initEventBooking` の `Promise.all` 3 箇所で `getFriendship` を `safeGetFriendship`（reject/throw→`{friendFlag:false}`）に置換。ループの増幅器（Promise.all 全体 reject → catch が生 /fo へ戻す）を封じた。
+- **統合**: merge commit `0430bb8`（base `0b70b14`）・origin+piecemaker dual-push・`verify-tenant-sync.sh` SHA 一致確認済み。combined 再走: worker typecheck rc0・worker vitest 189 files/2100 tests 全 green（新規含む・非回帰）・client bundle build OK（50 modules）・web static export OK（NEXT_PUBLIC_API_URL 設定時）。pre-existing の `plugin-template` tsc 失敗（`@types/node` 欠）は既知構造 gap で本 diff 非該当。
+- **独立検証（Codex cross-vendor / 実装者=claude→検証者=codex）**: BUG-1/BUG-2/T-A1/T-A2/T-A3/T-B1 の 6 件は diff+test 直読で PASS 確認（RED→GREEN 実測含む）。D-1（ゲート green）は Codex 自身のサンドボックス再走で `pnpm -r tsc`（誤コマンド・root に script 無し）+ vitest 14 fail + web export fail を報告したが、これは reviewer Round 1 で既に記録済みの「Codex サンドボックス vitest config-loader quirk」と同型の環境起因の誤検出（closer 自身が正しいコマンド `pnpm --filter worker run typecheck` 等で直接再実行し、上記の通り全 green を実測済み・自己申告でなく closer 自身の直接計測で D-1 も確認）。
+- **hosted 実測（両テナント deploy 後）**: ks/piecemaker 両 worker 再デプロイ・`/admin/version` 200（無退行）。piecemaker `GET /fo/fa_5127eb98…b0481?_lfb=1`（LINE UA・lu無し）→ 302 `https://peace-maker.formaloo.me/puw7lh`（`liff` を含まない = ループ終端・AC1 実証）。同 bare（marker 無し）→ 302 `liff.line.me/2010719554-oNAvHzEr?...&_lfb%3D1...`（復路に `_lfb=1` carry・AC2 実証）。
+
+### 🎯 次の必須（required backlog）
+- [ ] **O-1 owner console 手順**: 夢花火の正ログインチャネル `1661482695` 配下（bot `1661399637` にリンク済であることを console で確認込み）に endpoint URL=`https://line-harness-piecemaker.piecemaker.workers.dev` の **新 LIFF を作成**し新 LIFF ID を共有する（既存 `1661482695-eboDZbvm` は autosns.jp 用ゆえ非破壊で温存・触らない）。
+- [ ] **O-2 infra-ops: piecemaker D1 是正**: `line_accounts`（row `ad9d30cd`）の `login_channel_id` を `1661482695` に、`liff_id` を O-1 の新 LIFF ID に、可逆 1 行 UPDATE + read-back で更新。
+- [ ] **O-3 infra-ops: piecemaker worker 是正 + 再デプロイ + hosted 実測**: `LIFF_URL=https://liff.line.me/{新LIFF ID}` ∧ `LINE_LOGIN_CHANNEL_ID=1661482695`（A1-API 選択時は secret も）を更新し、`VITE_LIFF_ID={新LIFF ID}` で dist/client 再ビルド → 再デプロイ → hosted で `/fo/:id`(LINE UA) の 302 先が新 LIFF ID を指すことを curl 実測。
+- [ ] **O-4 owner 立会（LINE 実機）**: 配線是正後、owner が piecemaker の `/fo` リンクを LINE アプリで実際に開き、無限リロードが起きずフォームが表示され既回答が prefill されることを確認。config 是正後も loop が残る場合は診断を login-loop/liff.init へ切替し follow-up spike を起票。
+
+### 💡 任意磨き込み（後回し可・自動着手禁止）
+- [ ] [OPTIONAL-POLISH] CI-4: `_lfb=1` 直リンクを第三者に共有された場合、初回から匿名 degrade（prefill 無し・ループ無し・PII 無し）になる。正規配信経路は bare `/fo` ゆえ実害小・署名/TTL 化は over-engineering として温存。
+- [ ] [OPTIONAL-POLISH] CI-3: `getFriendship` degrade 中（配線是正前）は salon/event booking の friend-add gate が過剰表示され得る（既に友だちでも friend-add UI が出る可能性）。ループより安全側の degrade（追加/再入場で復帰可）ゆえ許容。配線是正後は自動的に実働へ復帰。
+
+---
+
 ## scenario-visual-builder — 線で繋ぐストーリーメッセージ（フロー図ビルダー）
 
 計画正本: `.plans/2026-07-12-scenario-visual-builder/{spec,plan,tasks}.md`
