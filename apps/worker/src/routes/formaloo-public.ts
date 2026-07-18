@@ -228,7 +228,14 @@ formalooPublic.get('/fo/:id', async (c) => {
   // per-recipient で識別が付く (メッセージ本文の個別化不要)。friend 未特定の段階では form_opens に記録しない。
   const ua = c.req.header('user-agent') || '';
   const isLineApp = /\bLine\b/i.test(ua);
-  if (!lineUserId && !friendId && isLineApp) {
+  // BUG-1 (one-shot loop-guard / 無限リロード終端): 下の LIFF 分岐は復路 URL に `_lfb=1` マーカーを付す。
+  //   LIFF から lu/friendId 無しで戻ってきた (= `_lfb=1` あり ∧ lu 無し ∧ friendId 無し) 場合、client 側で
+  //   line_user_id が取得できなかった異常経路 (getFriendship throw = bot 未リンク等) とみなし、二度と LIFF へ
+  //   戻さず下流の Formaloo フォームへ 302 する (匿名 degrade)。これにより LIFF の誤配線でも「無限リロード」で
+  //   なく「(prefill 無しで) フォームは開く」に degrade し、無限ループを決定論的に断つ。トリガー同定 (getFriendship
+  //   か否か) に非依存で発火する。正常 lu 経路 (lineUserId 有り) はこの分岐に入らないため一切不変 (無退行)。
+  const liffBounced = c.req.query('_lfb') === '1';
+  if (!lineUserId && !friendId && isLineApp && !liffBounced) {
     // form の account 固有 LIFF を優先解決 (F-5): secondary account の form では返る LINE userId が
     // provider-scoped ゆえ global LIFF だと当該 account に存在しない ID になり得る。未束縛 (line_account_id
     // NULL) / 未登録 / liff_id 無し / 解決 throw は global LIFF_URL へ fallback。
@@ -244,14 +251,18 @@ formalooPublic.get('/fo/:id', async (c) => {
       }
     }
     if (liffBase) {
-      const directUrl = `${c.env.WORKER_URL || new URL(c.req.url).origin}/fo/${id}`;
+      // 復路 URL に one-shot マーカー `_lfb=1` を構造的に付与 (URL/searchParams)。マーカーは LIFF の top-level
+      //   `redirect` param **値の内側**に URL-encode されて往復する (既存 lu-carry と同機構)。LIFF が redirect
+      //   param を保持する限りマーカーも生き残るため、LIFF 側が custom query を解釈する必要はない (robust)。
+      const directUrl = new URL(`${c.env.WORKER_URL || new URL(c.req.url).origin}/fo/${id}`);
+      directUrl.searchParams.set('_lfb', '1');
       // CX-3 (per-account LIFF 実効化): 解決済み per-account liffId を復路 URL に同梱する。共有 LIFF client の
       //   detectLiffId() は ?liffId= を最優先で読むため、secondary account でも当該 account の LIFF で liff.init
       //   でき、default VITE_LIFF_ID(=primary) への誤 fallback (wrong LIFF context) を防ぐ。これにより LINE
       //   console/API での endpoint ?liffId= provisioning (owner立会) 無しで per-account 解決が成立する。global
       //   fallback (resolvedLiffId null = 未束縛/liff_id 無し) は付与せず client の VITE_LIFF_ID(default) に委ねる。
       const liffIdParam = resolvedLiffId ? `&liffId=${encodeURIComponent(resolvedLiffId)}` : '';
-      return c.redirect(`${liffBase}?redirect=${encodeURIComponent(directUrl)}${liffIdParam}`, 302);
+      return c.redirect(`${liffBase}?redirect=${encodeURIComponent(directUrl.toString())}${liffIdParam}`, 302);
     }
   }
 

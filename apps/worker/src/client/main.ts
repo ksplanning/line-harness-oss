@@ -19,6 +19,7 @@ import { initBooking } from './booking.js';
 import { initForm } from './form.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
 import { appendLineUserToReturnUrl } from '../lib/liff-return-url.js';
+import { safeGetFriendship } from '../lib/liff-friendship.js';
 
 declare const liff: {
   init(config: { liffId: string }): Promise<void>;
@@ -221,7 +222,7 @@ async function linkAndAddFlow() {
     const [profile, rawIdToken, friendship] = await Promise.all([
       liff.getProfile(),
       Promise.resolve(liff.getIDToken()),
-      liff.getFriendship(),
+      safeGetFriendship(() => liff.getFriendship()),
     ]);
 
     // 1. UUID linking (always, regardless of friendship)
@@ -330,7 +331,7 @@ async function initSalonBooking(): Promise<void> {
   const [profile, idToken, friendship] = await Promise.all([
     liff.getProfile(),
     Promise.resolve(liff.getIDToken()),
-    liff.getFriendship(),
+    safeGetFriendship(() => liff.getFriendship()),
   ]);
   if (!idToken) {
     showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
@@ -403,7 +404,7 @@ async function initEventBooking(initialKind: 'detail' | 'history'): Promise<void
   const [profile, idToken, friendship] = await Promise.all([
     liff.getProfile(),
     Promise.resolve(liff.getIDToken()),
-    liff.getFriendship(),
+    safeGetFriendship(() => liff.getFriendship()),
   ]);
   if (!idToken) {
     showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
