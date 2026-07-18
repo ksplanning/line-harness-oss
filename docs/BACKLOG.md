@@ -580,3 +580,7 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - 次の必須: O-4/O-5（owner LINE実機立会・二者分離）。
 - 💡 任意磨き込み（後回し可・自動着手禁止）: friend-token の tenant/form/期限束縛（replay 対策・owner 判断領域）/ O-6 backfill 実施。
 - 単一正本: `.plans/2026-07-18-fr-id-capture-fix/`（spec/plan/tasks/spike-results）。cross-vendor gap-check（Codex 14 findings）反映済。closer 独立検証（Codex diff-based / 実装者=Claude と別ベンダー）で T-C3/T-C5 の残課題を追加発見。
+
+### fr-id-capture-fix 追補 (2026-07-19 00:1x・司令塔 live 是正)
+- **[REQUIRED-NEXT-ROUND] answer field の alias=slug 標準付与**: owner 実機で「fr_id 捕捉✅・friend 復元✅・だが再入場真っ白」→ 最終真因 = /fo の回答 prefill param は slug 名だが Formaloo は **alias 付き field しか URL から受けない** (headless BLANK 再現→alias=slug 付与で PREFILL_VISIBLE 実証)。GMOxoMtK は owner 承認で 5 field に alias=slug 手動付与済み (PATCH /v3.0/fields/{slug}/ {"alias":"<slug>"}・rollback=alias null)。**恒久: formaloo-sync の field push / ensureSystemHiddenFields 系に alias=slug 自動付与を追加** (T-C3/T-C5 と同一 round で実装)。既存フォーム backfill も O-6 に同梱。
+- logic 除去の副次効果 (owner 実機実証): rating/署名が保存されるようになった (logic 有効時は submit トリガー field 以降が破棄されていた)。
