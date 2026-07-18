@@ -4,6 +4,7 @@ import {
   isFriendSystemField,
   checkSystemFieldHealth,
   backfillSystemHiddenFields,
+  backfillFieldAliases,
   type SystemFieldClient,
 } from './formaloo-system-fields.js';
 
@@ -278,6 +279,102 @@ describe('backfillSystemHiddenFields (O-6: 再 publish されない既存フォ�
     expect(r.alreadyOk).toBe(1); // B は present
     expect(r.outOfSync).toEqual([]);
     expect(r.results).toHaveLength(2);
+  });
+});
+
+// =============================================================================
+// fr-id-hardening-round2 (④): backfillFieldAliases — 既存フォームの全 answer field に alias=slug を冪等 backfill。
+//   dry-run 既定 (mutate せず対象列挙) / execute で PATCH {alias:slug} + fr_id/fr_name ensure。
+//   friend-system (fr_id/fr_name) / success_page / 既 alias=slug は対象外。
+// =============================================================================
+function backfillAliasClient(seed: Record<string, RawField[]>) {
+  const calls: { method: string; path: string; body?: unknown }[] = [];
+  const s: Record<string, RawField[]> = {};
+  for (const k of Object.keys(seed)) s[k] = seed[k].map((f) => ({ ...f }));
+  const client: SystemFieldClient = {
+    async get<T = unknown>(path: string) {
+      calls.push({ method: 'GET', path });
+      const slug = path.match(/\/v3\.0\/forms\/([^/]+)\//)?.[1] ?? '';
+      return { ok: true, status: 200, data: { data: { form: { fields_list: (s[slug] ?? []).map((f) => ({ ...f })) } } } as unknown as T };
+    },
+    async post<T = unknown>(path: string, body?: unknown) {
+      calls.push({ method: 'POST', path, body });
+      const b = (body ?? {}) as { alias?: string; type?: string; form?: string };
+      s[b.form ?? '']?.push({ slug: `n_${b.alias}`, alias: b.alias, type: b.type ?? 'hidden' });
+      return { ok: true, status: 201, data: { data: { field: { slug: `n_${b.alias}` } } } as unknown as T };
+    },
+    async request<T = unknown>(method: string, path: string, body?: unknown) {
+      calls.push({ method, path, body });
+      const m = path.match(/\/v3\.0\/fields\/([^/]+)\//);
+      if (method === 'PATCH' && m) {
+        const fslug = m[1];
+        const alias = (body as { alias?: string })?.alias;
+        for (const arr of Object.values(s)) { const f = arr.find((x) => x.slug === fslug); if (f && alias !== undefined) f.alias = alias; }
+      }
+      return { ok: true, status: 200, data: {} as unknown as T };
+    },
+  };
+  return { client, calls };
+}
+
+// form A: alias=null(候補) / alias=slug(既済) / fr_id(system除外) / success_page(除外) / alias≠slug(候補)。
+const formASeed: Record<string, RawField[]> = {
+  A: [
+    { slug: 's1', type: 'short_text' },                       // 候補 (alias null)
+    { slug: 's2', type: 'email', alias: 's2' },               // 既に alias=slug (除外)
+    { slug: 'h1', alias: 'fr_id', type: 'hidden' },           // friend-system (除外)
+    { slug: 'sp1', type: 'success_page' },                    // 完了ページ (除外)
+    { slug: 's3', type: 'short_text', alias: 'oldalias' },    // 候補 (alias≠slug)
+  ],
+};
+
+describe('backfillFieldAliases (④: 既存フォームの alias=slug backfill)', () => {
+  test('dry-run 既定: 対象 field を列挙し 1 byte も mutate しない (PATCH/POST 無)', async () => {
+    const { client, calls } = backfillAliasClient(formASeed);
+    const r = await backfillFieldAliases(client, ['A'], { dryRun: true, includeOwnerGated: true });
+    expect(r.dryRun).toBe(true);
+    expect(r.totalFieldsNeedingAlias).toBe(2);
+    expect(r.forms[0].fieldsNeedingAlias.map((c) => c.slug).sort()).toEqual(['s1', 's3']);
+    expect(r.totalPatched).toBe(0);
+    // mutate しない
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+    // fr_name 欠落を health で report (fr_id は present)
+    expect(r.forms[0].systemFieldHealth.issues.some((i) => i.alias === 'fr_name' && i.issue === 'missing')).toBe(true);
+  });
+
+  test('execute (dryRun:false): 各候補に PATCH {alias:slug} + fr_id/fr_name ensure', async () => {
+    const { client, calls } = backfillAliasClient(formASeed);
+    const r = await backfillFieldAliases(client, ['A'], { dryRun: false, includeOwnerGated: true });
+    expect(r.dryRun).toBe(false);
+    expect(r.totalPatched).toBe(2);
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === '/v3.0/fields/s1/' && (c.body as { alias?: string }).alias === 's1')).toBe(true);
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === '/v3.0/fields/s3/' && (c.body as { alias?: string }).alias === 's3')).toBe(true);
+    // friend-system / success_page / 既 alias=slug は PATCH しない
+    expect(calls.some((c) => c.method === 'PATCH' && (c.path === '/v3.0/fields/s2/' || c.path === '/v3.0/fields/h1/' || c.path === '/v3.0/fields/sp1/'))).toBe(false);
+    // fr_name(欠落) を ensure が POST (fr_id は present)
+    expect(r.forms[0].systemFields).toBeTruthy();
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/' && (c.body as { alias?: string }).alias === 'fr_name')).toBe(true);
+  });
+
+  test('冪等: execute 後の再 execute は候補 0 (alias=slug 済 = no-op)', async () => {
+    const { client } = backfillAliasClient(formASeed);
+    await backfillFieldAliases(client, ['A'], { dryRun: false, includeOwnerGated: true });
+    const r2 = await backfillFieldAliases(client, ['A'], { dryRun: false, includeOwnerGated: true });
+    expect(r2.totalFieldsNeedingAlias).toBe(0);
+    expect(r2.totalPatched).toBe(0);
+  });
+
+  test('fields_list 読取不能 (GET 非ok) → skipped (集計に混ぜない)', async () => {
+    const client: SystemFieldClient = {
+      async get<T = unknown>() { return { ok: false, status: 500, error: 'boom' } as { ok: boolean; status: number; data?: T; error?: string }; },
+      async post<T = unknown>() { return { ok: true, status: 201, data: {} as unknown as T }; },
+      async request<T = unknown>() { return { ok: true, status: 200, data: {} as unknown as T }; },
+    };
+    const r = await backfillFieldAliases(client, ['X'], { dryRun: false });
+    expect(r.forms[0].skipped).toBe(true);
+    expect(r.totalFieldsNeedingAlias).toBe(0);
+    expect(r.totalPatched).toBe(0);
   });
 });
 

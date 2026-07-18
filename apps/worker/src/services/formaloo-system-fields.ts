@@ -28,6 +28,8 @@ import { extractFieldsList, extractRawLogic } from './formaloo-pull.js';
 export interface SystemFieldClient {
   get<T = unknown>(path: string): Promise<{ ok: boolean; status: number; data?: T; error?: string }>;
   post<T = unknown>(path: string, body?: unknown): Promise<{ ok: boolean; status: number; data?: T; error?: string }>;
+  /** fr-id-hardening-round2 (O-6 ④): alias=slug backfill の PATCH に使う (ensure/health は不要ゆえ optional)。 */
+  request?<T = unknown>(method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; data?: T; error?: string }>;
 }
 
 export type SystemFieldStatus = 'created' | 'present' | 'conflict' | 'error';
@@ -250,4 +252,121 @@ export async function backfillSystemHiddenFields(
     else alreadyOk += 1;
   }
   return { total: formSlugs.length, repaired, alreadyOk, outOfSync, results };
+}
+
+// =============================================================================
+// fr-id-hardening-round2 (④ / O-6 同梱): 既存フォームの **全 answer field に alias=slug** を冪等 backfill する経路。
+// -----------------------------------------------------------------------------
+// Formaloo hosted の URL prefill は field の alias 一致でのみ発火し、/fo は本人再入場の回答 prefill を field slug を
+// キーに組む (?<slug>=<value>)。既存フォームは createField を通らない (再 publish されない) ため alias=null のままで
+// 回答 prefill が全滅する。本経路が各 field に `alias=slug` を PATCH 付与し、併せて fr_id/fr_name system field を
+// ensureSystemHiddenFields で冪等付与する。
+//   - **dry-run 既定** (dryRun:true): 一切 mutate せず、alias 付与対象 field と system field の現状 (health) を列挙する
+//     のみ (owner が対象を確認して GO を判断 = 本番一括実行は generator がしない)。
+//   - **execute** (dryRun:false / owner GO 後): 対象 field に PATCH {alias:slug} + ensureSystemHiddenFields を実行。
+//   - **対象外**: friend system field (fr_id/fr_name は意図的に非 slug alias) / success_page / 既に alias=slug の field。
+//   - alias 追加は fingerprint/pull に不可視 = false-drift ゼロ。除外フォーム (Z5IEH85R/puw7lh) は呼び出し側が formSlugs
+//     から外す責務 (本関数は渡された slug のみ触る)。
+// =============================================================================
+
+/** raw fields_list から alias=slug backfill 対象 field を列挙する (friend-system / success_page / 既 alias=slug は除外)。 */
+function fieldAliasCandidates(list: unknown[]): { slug: string; currentAlias: string | null }[] {
+  const out: { slug: string; currentAlias: string | null }[] = [];
+  for (const el of list) {
+    if (!el || typeof el !== 'object') continue;
+    const o = el as Record<string, unknown>;
+    const slug = typeof o.slug === 'string' ? o.slug : '';
+    if (!slug) continue;
+    if (isFriendSystemField(o)) continue; // fr_id/fr_name は意図的に非 slug alias (予約) ゆえ触らない
+    if (o.type === 'success_page') continue; // 完了ページは回答 field でない
+    const alias = typeof o.alias === 'string' ? o.alias : null;
+    if (alias === slug) continue; // 既に alias=slug = 冪等 no-op
+    out.push({ slug, currentAlias: alias });
+  }
+  return out;
+}
+
+export interface FieldAliasBackfillFormResult {
+  formSlug: string;
+  /** fields_list を読めず見送った (GET 非ok / shape 不一致)。 */
+  skipped: boolean;
+  /** alias=slug が必要な field (dry-run/execute 双方で列挙)。 */
+  fieldsNeedingAlias: { slug: string; currentAlias: string | null }[];
+  /** fr_id/fr_name system field の現状健全性 (missing/not_hidden/duplicate/logicConflict)。 */
+  systemFieldHealth: SystemFieldHealthResult;
+  /** execute で alias PATCH 成功した field 数 (dry-run は 0)。 */
+  patched: number;
+  /** execute で alias PATCH 失敗した field。 */
+  failed: { slug: string; error: string }[];
+  /** execute で実行した ensureSystemHiddenFields の結果 (dry-run は未載)。 */
+  systemFields?: SystemFieldEnsureResult;
+}
+export interface FieldAliasBackfillResult {
+  dryRun: boolean;
+  total: number;                    // 処理した form 数
+  totalFieldsNeedingAlias: number;  // 全 form 合計の alias 付与対象 field 数
+  totalPatched: number;             // execute で PATCH 成功した field 総数
+  forms: FieldAliasBackfillFormResult[];
+}
+
+/**
+ * ④ 既存フォームの全 answer field に alias=slug を冪等 backfill する (dry-run 既定)。
+ * @param formSlugs テナント別稼働フォームの inventory (除外フォームは呼び出し側が外す)。
+ * @param opts.dryRun 既定 true = 一切 mutate せず対象列挙のみ。false (owner GO) で PATCH/ensure を実行。
+ */
+export async function backfillFieldAliases(
+  client: SystemFieldClient,
+  formSlugs: string[],
+  opts?: EnsureOptions & { dryRun?: boolean },
+): Promise<FieldAliasBackfillResult> {
+  const dryRun = opts?.dryRun ?? true; // 既定 dry-run: 本番一括実行は owner GO 後にのみ dryRun:false で呼ぶ
+  const includeOwnerGated = opts?.includeOwnerGated ?? true;
+  const forms: FieldAliasBackfillFormResult[] = [];
+  let totalFieldsNeedingAlias = 0;
+  let totalPatched = 0;
+
+  for (const formSlug of formSlugs) {
+    let res: { ok: boolean; status: number; data?: unknown };
+    try {
+      res = await client.get(`/v3.0/forms/${formSlug}/`);
+    } catch {
+      forms.push({ formSlug, skipped: true, fieldsNeedingAlias: [], systemFieldHealth: { ok: false, issues: [], logicConflict: false }, patched: 0, failed: [] });
+      continue;
+    }
+    const fields = res.ok ? extractFieldsList(res.data) : null;
+    if (fields === null) {
+      forms.push({ formSlug, skipped: true, fieldsNeedingAlias: [], systemFieldHealth: { ok: false, issues: [], logicConflict: false }, patched: 0, failed: [] });
+      continue;
+    }
+    const rawLogic = extractRawLogic(res.data);
+    const candidates = fieldAliasCandidates(fields);
+    const health = checkSystemFieldHealth(fields, { includeOwnerGated }, rawLogic);
+    totalFieldsNeedingAlias += candidates.length;
+
+    const failed: { slug: string; error: string }[] = [];
+    let patched = 0;
+    let systemFields: SystemFieldEnsureResult | undefined;
+
+    if (!dryRun) {
+      // execute: 各対象 field に PATCH {alias:slug} (additive・既存 alias 上書きは対象を alias!==slug に絞ってあるゆえ発生しない)。
+      for (const cand of candidates) {
+        try {
+          const pr = client.request
+            ? await client.request('PATCH', `/v3.0/fields/${cand.slug}/`, { alias: cand.slug })
+            : { ok: false, status: 0, error: 'client.request 未実装 (PATCH 不能)' };
+          if (pr.ok) patched += 1;
+          else failed.push({ slug: cand.slug, error: `alias PATCH 失敗 HTTP ${pr.status}${pr.error ? ` (${pr.error})` : ''}` });
+        } catch (e) {
+          failed.push({ slug: cand.slug, error: e instanceof Error ? e.message : String(e) });
+        }
+      }
+      // fr_id/fr_name system field も冪等付与 (再 publish されないフォームの system field 抜けも同時に埋める)。
+      systemFields = await ensureSystemHiddenFields(client, formSlug, { includeOwnerGated });
+      totalPatched += patched;
+    }
+
+    forms.push({ formSlug, skipped: false, fieldsNeedingAlias: candidates, systemFieldHealth: health, patched, failed, ...(systemFields ? { systemFields } : {}) });
+  }
+
+  return { dryRun, total: formSlugs.length, totalFieldsNeedingAlias, totalPatched, forms };
 }
