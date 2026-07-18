@@ -64,6 +64,18 @@ describe('DataCockpit — 表示 (T-D1)', () => {
   })
 })
 
+describe('DataCockpit — 送信日時 JST 表示 (T-C2 / form-response-display-fix)', () => {
+  it('UTC(Z) 保存の submittedAt を JST 壁時計で表示する (08:18Z → 17:18・UTC 素通しでない)', () => {
+    const rows: SubmissionRow[] = [
+      { id: 'z1', friendId: null, answers: { 名前: 'てすと' }, submittedAt: '2026-07-18T08:18:33Z', verified: false },
+    ]
+    render(<DataCockpit {...base({ rows, total: 1 })} />)
+    expect(screen.getByText('2026-07-18 17:18')).toBeTruthy()
+    // UTC 素通し (08:18) が残っていないこと = bug 再発検知
+    expect(screen.queryByText('2026-07-18 08:18')).toBeNull()
+  })
+})
+
 describe('DataCockpit — 検索/ソート/ページング (T-D1)', () => {
   it('フリーワード + 検索 → onQuery(q)', () => {
     const p = base()

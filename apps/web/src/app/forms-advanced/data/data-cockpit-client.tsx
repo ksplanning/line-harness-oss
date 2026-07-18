@@ -16,6 +16,7 @@ import {
 import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import { csvDateStamp, safeFilenamePart } from '@/lib/download'
+import { formatJstMinute } from '@/lib/datetime'
 
 const DEFAULT_QUERY: RowsQuery = { sort: 'desc', page: 1, pageSize: 25 }
 
@@ -201,11 +202,11 @@ export default function DataCockpitClient({ id }: { id: string }) {
               <h2 className="text-sm font-bold text-gray-900">回答の詳細</h2>
               <button type="button" onClick={closeDetail} className="text-gray-400 hover:text-gray-700">閉じる</button>
             </div>
-            <div className="text-xs text-gray-400">{detail.submittedAt.slice(0, 16).replace('T', ' ')}・{detail.source === 'formaloo' ? 'Formaloo 最新' : 'ミラー'}</div>
+            <div className="text-xs text-gray-400">{formatJstMinute(detail.submittedAt)}・{detail.source === 'formaloo' ? 'Formaloo 最新' : 'ミラー'}</div>
             {/* ④ 最終編集の表示 (誰が いつ) */}
             {detail.lastEdit && (
               <div data-testid="last-edit" className="mt-1 text-xs text-amber-700">
-                最終編集: {detail.lastEdit.editorName ?? '不明'}・{detail.lastEdit.editedAt.slice(0, 16).replace('T', ' ')}
+                最終編集: {detail.lastEdit.editorName ?? '不明'}・{formatJstMinute(detail.lastEdit.editedAt)}
               </div>
             )}
 

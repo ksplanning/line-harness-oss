@@ -126,6 +126,13 @@ describe('T-D2 回答詳細 編集モード', () => {
     await openDetail()
     const le = screen.getByTestId('last-edit')
     expect(le.textContent).toContain('Owner')
-    expect(le.textContent).toContain('2026-07-17 02:30')
+    expect(le.textContent).toContain('2026-07-17 02:30') // +09:00 の editedAt を二重変換しない (T-C3)
+  })
+
+  it('T-C3: 詳細ドロワーの送信日時が UTC(Z) を JST 壁時計で表示する (08:18Z → 17:18)', async () => {
+    rowMock.mockResolvedValue({ id: 'row1', source: 'mirror', submittedAt: '2026-07-18T08:18:33Z', answers: { nameSlug: '田中' }, allowPostEdit: 0, fields: FIELDS, lastEdit: null })
+    await openDetail()
+    // ドロワー冒頭の送信日時行 (source ラベル併記) に JST 表示が出る
+    expect(screen.getByText(/2026-07-18 17:18/)).toBeTruthy()
   })
 })

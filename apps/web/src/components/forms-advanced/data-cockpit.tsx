@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import type { SubmissionRow, FormStats, SavedFilter, RowsQuery } from '@/lib/formaloo-advanced-api'
+import { formatJstMinute } from '@/lib/datetime'
 
 // =============================================================================
 // DataCockpit (F-4 / T-D1・T-D2) — 高機能フォームの回答データページ本体 (presentational)。
@@ -203,7 +204,7 @@ export default function DataCockpit(props: DataCockpitProps) {
                   </td>
                 )}
                 {columns.map((col) => <td key={col} className="px-3 py-2 text-gray-800">{cellText(r.answers[col])}</td>)}
-                <td className="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{r.submittedAt.slice(0, 16).replace('T', ' ')}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{formatJstMinute(r.submittedAt)}</td>
                 <td className="px-3 py-2">
                   <button type="button" aria-label={`${r.id} の詳細`} onClick={() => props.onOpenRow(r.id)} className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50">詳細</button>
                 </td>
