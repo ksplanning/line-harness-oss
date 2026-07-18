@@ -1,4 +1,5 @@
 import type { UpsertFormalooSubmissionInput } from '@line-crm/db';
+import { isDecorationType } from '@line-crm/shared';
 
 // =============================================================================
 // Formaloo row 編集 純関数群 (弾M form-post-edit / T-B1)
@@ -29,6 +30,74 @@ export function isEditableFieldType(fieldType: string): boolean {
 /** あと編集 (①管理者編集 + ②本人再入場) の全体 kill-switch 判定 (未設定=無効 fail-closed / 単一正本)。 */
 export function isPostEditEnabled(flag: string | undefined | null): boolean {
   return flag === 'true' || flag === '1';
+}
+
+// =============================================================================
+// form-response-display-fix (T-A1): field slug→label 解決の共有 join。
+//   回答データ画面 (cockpit) の列ヘッダー label 化 (/rows の additive fields) と、
+//   回答詳細の編集コンテキスト (buildRowEditContext) が同じ「定義 fields × field_map slug」の join を要する。
+//   二重管理を避けるため純関数として括り出し、両者が共有する (DRY)。
+// =============================================================================
+
+/** field_map row の slug 解決に要る最小形 (formaloo_field_map の id + formaloo_field_slug)。 */
+export interface FieldSlugMapEntry {
+  /** harness field id (定義 field.id と join するキー)。 */
+  id: string;
+  /** Formaloo field slug (未 push フォームは null)。 */
+  formaloo_field_slug: string | null;
+}
+
+/** join 入力の定義 field 最小形 (harness id + label + type + required)。 */
+export interface DefinitionFieldForJoin {
+  id: string;
+  label: string;
+  type: string;
+  required?: boolean;
+}
+
+/** join 済 field メタ (slug 非 null 保証)。 */
+export interface JoinedFieldMeta {
+  slug: string;
+  label: string;
+  type: string;
+  required: boolean;
+  editable: boolean;
+}
+
+/**
+ * 定義 fields を field_map の formaloo_field_slug で join し、richer な field メタ list を作る (純関数)。
+ *   - 装飾 (section/page_break/video/image) は除外 (回答値なし)。
+ *   - slug 未 push (null) は除外 (回答キーに現れず addressable でない)。
+ *   - 定義順 (質問順) を保持。
+ * buildRowEditContext (編集コンテキスト) と /rows の fields (列ヘッダー) が共有する唯一の join。
+ */
+export function joinDefinitionFieldsWithSlug(
+  fieldMap: FieldSlugMapEntry[],
+  fields: DefinitionFieldForJoin[],
+): JoinedFieldMeta[] {
+  const slugById = new Map<string, string | null>();
+  for (const r of fieldMap) slugById.set(r.id, r.formaloo_field_slug);
+  return fields
+    .filter((f) => !isDecorationType(f.type))
+    .map((f) => ({
+      slug: (slugById.get(f.id) ?? null) as string | null,
+      label: f.label,
+      type: f.type,
+      required: f.required === true,
+      editable: isEditableFieldType(f.type),
+    }))
+    .filter((f): f is JoinedFieldMeta => f.slug != null);
+}
+
+/**
+ * 列ヘッダー表示用の {slug,label} list (回答データ画面 /rows の additive fields)。
+ * joinDefinitionFieldsWithSlug の {slug,label} 射影 (装飾/slug 無し除外・定義順)。
+ */
+export function buildFieldLabelList(
+  fieldMap: FieldSlugMapEntry[],
+  fields: DefinitionFieldForJoin[],
+): Array<{ slug: string; label: string }> {
+  return joinDefinitionFieldsWithSlug(fieldMap, fields).map((f) => ({ slug: f.slug, label: f.label }));
 }
 
 /** 編集判定に要る最小 field メタ (formaloo_field_map + definition から endpoint が組む)。 */

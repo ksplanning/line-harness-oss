@@ -40,9 +40,10 @@ import {
   resolveRowSlug,
   makeRowsListRowSlugResolver,
   isPostEditEnabled,
-  isEditableFieldType,
   extractRows,
   mapFormalooListRowToUpsert,
+  buildFieldLabelList,
+  joinDefinitionFieldsWithSlug,
 } from '../services/formaloo-row-edit.js';
 import {
   validateHarnessField,
@@ -1107,7 +1108,19 @@ formsAdvanced.get('/api/forms-advanced/:id/rows', async (c) => {
       limit: pageSize,
       offset: (page - 1) * pageSize,
     });
-    return c.json({ success: true, data: { rows: rows.map(serializeSubmissionRow), total, page, pageSize } });
+
+    // form-response-display-fix (T-A1): 列ヘッダー label 化用に fields:[{slug,label}] を additive 付与。
+    //   field_map(formaloo_field_slug) × 定義(label) の join (装飾/slug 無し除外・定義順)。
+    //   fail-soft: label 解決に失敗しても一覧本体は返す (web はヘッダーを slug へ fallback する)。
+    let fields: Array<{ slug: string; label: string }> = [];
+    try {
+      const fieldMap = await getFormalooFieldMap(c.env.DB, id);
+      fields = buildFieldLabelList(fieldMap, parseDefinition(form.definition_json).fields);
+    } catch (labelErr) {
+      console.error('GET /api/forms-advanced/:id/rows field label build failed (fail-soft):', labelErr);
+    }
+
+    return c.json({ success: true, data: { rows: rows.map(serializeSubmissionRow), total, page, pageSize, fields } });
   } catch (err) {
     console.error('GET /api/forms-advanced/:id/rows error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -1132,18 +1145,8 @@ async function resolveEditorName(db: D1Database, editorStaffId: string | null | 
 async function buildRowEditContext(db: D1Database, form: FormalooForm, rowId: string, featureEnabled: boolean) {
   const def = parseDefinition(form.definition_json);
   const fieldMap = await getFormalooFieldMap(db, form.id);
-  const slugById = new Map<string, string | null>();
-  for (const r of fieldMap) slugById.set(r.id, r.formaloo_field_slug);
-  const fields = def.fields
-    .filter((f) => !isDecorationType(f.type))
-    .map((f) => ({
-      slug: (slugById.get(f.id) ?? null) as string | null,
-      label: f.label,
-      type: f.type as string,
-      required: f.required === true,
-      editable: isEditableFieldType(f.type),
-    }))
-    .filter((f) => f.slug != null) as Array<{ slug: string; label: string; type: string; required: boolean; editable: boolean }>;
+  // form-response-display-fix (T-A1): /rows の列ヘッダー label 化と同じ join を共有 (DRY・二重管理回避)。
+  const fields = joinDefinitionFieldsWithSlug(fieldMap, def.fields);
   const latest = await getLatestEdit(db, rowId);
   return {
     // 実効 gate (form.allow_post_edit===1 AND env 有効)。env-OFF は 0 = 編集ボタン非表示 (spec R3)。
