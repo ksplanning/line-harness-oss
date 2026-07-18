@@ -146,7 +146,7 @@ describe('T-B1 makeRowsListRowSlugResolver — rows-list submit_code 照合 (bou
 //   最重要 = 他人の回答を prefill しない (verify 成功時のみ復元 / 弾M F-H1 継承)。
 // =============================================================================
 
-const FR_SECRET = 'reconcile_frtok_secret_v1';
+const FR_SECRET = 'reconcile_frtok_secret_v1'; // gitleaks:allow (test fixture HMAC key・実 secret でない)
 const FORM_H = { id: 'form_h', formaloo_slug: 'GMOxoMtK' };
 
 describe('T-A2/T-A3 mapFormalooListRowToUpsert — 署名 fr_id を verify して friend_id を fail-closed 復元', () => {
