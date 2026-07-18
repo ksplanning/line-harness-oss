@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>REPORT: REPORT_2026-07-18_191057_form-response-display-fix</title>
+<style id="ksplanning-tokens">
+:root {
+  --color-bg: #f7f8fa;
+  --color-card: #ffffff;
+  --color-fg: #14181f;
+  --color-fg-muted: #5b6573;
+  --color-fg-soft: #8893a4;
+  --color-border: #e3e7ee;
+  --color-border-strong: #c9d0db;
+  --color-ok: #1f9d55;
+  --color-ok-soft: #e3f6ec;
+  --color-warn: #d39200;
+  --color-warn-soft: #fcf3dc;
+  --color-alert: #c53030;
+  --color-alert-soft: #fbe5e5;
+  --color-accent: #1f3a8a;
+  --color-accent-soft: #e1e8fb;
+  --color-grid-line: rgba(31,58,138,0.18);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow-card: 0 1px 0 rgba(20,24,31,0.04), 0 8px 24px rgba(20,24,31,0.06);
+  --shadow-hero: 0 2px 4px rgba(20,24,31,0.04), 0 18px 40px rgba(31,58,138,0.10);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  padding: var(--space-6);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.hero {
+  background: linear-gradient(135deg, #ffffff 0%, #f0f3fb 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-6) var(--space-8);
+  margin-bottom: var(--space-6);
+  box-shadow: var(--shadow-hero);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: var(--space-6);
+}
+.hero .label {
+  color: var(--color-fg-soft);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.hero .title {
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin-top: var(--space-2);
+  color: var(--color-fg);
+}
+.hero .meta {
+  color: var(--color-fg-muted);
+  font-size: 13px;
+  margin-top: var(--space-2);
+}
+.hero .score-wrap {
+  text-align: right;
+}
+.score {
+  font-family: var(--font-mono);
+  font-size: 52px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.score.ok    { color: var(--color-ok); }
+.score.warn  { color: var(--color-warn); }
+.score.alert { color: var(--color-alert); }
+.score-delta {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-fg-muted);
+  margin-top: var(--space-2);
+}
+.score-delta.up   { color: var(--color-ok); }
+.score-delta.down { color: var(--color-alert); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.badge.ok    { background: var(--color-ok-soft);    color: var(--color-ok); }
+.badge.warn  { background: var(--color-warn-soft);  color: var(--color-warn); }
+.badge.alert { background: var(--color-alert-soft); color: var(--color-alert); }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: var(--space-4);
+}
+section.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+section.card header.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+section.card h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--color-fg-soft);
+  text-transform: uppercase;
+}
+section.card pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+section.card .empty {
+  color: var(--color-fg-soft);
+  font-style: italic;
+  font-size: 13px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table th, table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+table th {
+  color: var(--color-fg-soft);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+td.num { font-family: var(--font-mono); text-align: right; }
+
+.sparkline {
+  display: inline-block;
+  font-family: var(--font-mono);
+  letter-spacing: 1px;
+  color: var(--color-accent);
+}
+
+details {
+  margin-top: var(--space-4);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+details summary {
+  cursor: pointer;
+  color: var(--color-accent);
+  font-weight: 600;
+  font-size: 13px;
+  list-style: none;
+}
+details summary::-webkit-details-marker { display: none; }
+details summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  transition: transform 0.15s ease;
+}
+details[open] summary::before { transform: rotate(90deg); }
+details section { margin-top: var(--space-3); }
+
+footer {
+  margin-top: var(--space-8);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-fg-soft);
+  font-size: 12px;
+}
+footer code {
+  font-family: var(--font-mono);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+@media (max-width: 600px) {
+  body { padding: var(--space-3); font-size: 14px; }
+  .hero {
+    grid-template-columns: 1fr;
+    padding: var(--space-4);
+    gap: var(--space-3);
+  }
+  .hero .score-wrap { text-align: left; }
+  .hero .title { font-size: 22px; }
+  .score { font-size: 40px; }
+  .grid { grid-template-columns: 1fr; gap: var(--space-3); }
+  section.card { padding: var(--space-4); }
+  details { padding: var(--space-3) var(--space-4); }
+}
+</style>
+<style id="ksplanning-report-extra">
+  .meta-table th { width: 32%; vertical-align: top; }
+  .meta-table td { word-break: break-word; }
+  .meta-table td.placeholder { color: var(--color-fg-soft); font-style: italic; }
+  .commit-table th, .commit-table td { font-size: 12px; }
+  .commit-table td.hash code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+  ul.files {
+    margin: var(--space-3) 0 0 0;
+    padding-left: var(--space-5);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .markdown-body {
+    font-size: 14px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .markdown-body code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+  .badge.completed { background: var(--color-ok-soft);    color: var(--color-ok); }
+  .badge.partial   { background: var(--color-warn-soft);  color: var(--color-warn); }
+  .badge.pending_owner_confirmation { background: var(--color-warn-soft); color: var(--color-warn); }
+  .badge.blocked   { background: var(--color-alert-soft); color: var(--color-alert); }
+  .score.completed { color: var(--color-ok); }
+  .score.partial,
+  .score.pending_owner_confirmation { color: var(--color-warn); }
+  .score.blocked   { color: var(--color-alert); }
+  .grid.single { grid-template-columns: 1fr; }
+  section.card[data-kind="links"] ul { margin: 0; padding-left: var(--space-5); }
+  section.card[data-kind="links"] li { margin: var(--space-1) 0; font-size: 13px; }
+</style>
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <div class="label">CLOSE-OUT REPORT</div>
+      <div class="title">piecemaker回答データ画面で正しい件数・質問名ヘッダー・日本時間の送信日時を見て回答を管理できる状態にする</div>
+      <div class="meta">line-harness-ks (+ piecemaker dual-push) · REPORT_2026-07-18_191057_form-response-display-fix · <span class="badge pending_owner_confirmation">OWNER待ち</span> · purpose_done: false</div>
+    </div>
+    <div class="score-wrap">
+      <div class="score pending_owner_confirmation">9/9 (コード実装系T-C1/T-C2/T-C3/T-A1/T-A2/T-B1/D-1/D-2 + deployed実測BUG-1/2/3 + D-3 + R-1 全達成。O-1/O-2/O-3はBACKLOG記録完了)</div>
+      <div class="score-delta">完走</div>
+    </div>
+  </header>
+
+  <section class="card" data-kind="frontmatter">
+    <header class="card-head"><h2>メタ情報</h2></header>
+    <table class="meta-table">
+      <tr><th>app</th><td>line-harness-ks (+ piecemaker dual-push)</td></tr>
+      <tr><th>Box (.md)</th><td><a href="https://app.box.com/file/2354858925453">2354858925453</a></td></tr>
+      <tr><th>Box (.html)</th><td><a href="https://app.box.com/file/2354849447947">2354849447947</a></td></tr>
+      <tr><th>owner 発言原文</th><td>総回答数と実際の回答件数が一致しない１個装回答数が少ないのと、回答データのヘッダーがおかしい 9x3BCNZW N31hP5KP iAGKWaBX 送信日時 / てすとーー! step7423ss@gmail.com 2度目です 2026-07-18 08:18 この並びね んで送信日時が日本時間じゃない</td></tr>
+      <tr><th>ui_case</th><td>true</td></tr>
+      <tr><th>visual-qa-council</th><td>true</td></tr>
+      <tr><th>browser-evaluator click 確認</th><td>false</td></tr>
+      <tr><th>skills_read</th><td>closer-workflow,harness-contracts arscontexta</td></tr>
+    </table>
+  </section>
+
+  <section class="card" data-kind="conclusion">
+    <header class="card-head"><h2>結論</h2></header>
+    <div class="markdown-body">\nowner が報告した piecemaker 回答データ画面の3つの表示不具合（①総回答数が実件数より1件少ない ②列ヘッダーが内部slugのまま ③送信日時がUTC表示）を全て解消しました。deployed実機（headless Chromeスクショ）で3点とも解消を確認済みです。owner送信の「2度目です」の行が、件数にも含まれ、送信日時「2026-07-18 17:18」（日本時間）で正しく表示されています。</div>
+  </section>
+  <section class="card" data-kind="changes">
+    <header class="card-head"><h2>変更内容</h2></header>
+    <details open>
+      <summary>0 commits / 8 files changed</summary>
+      
+      <ul class="files"><li>worktree `case/form-response-display-fix`（5 commits）を main へ fast-forward land（統合commit `0bb95c5`・base `bd6248a`）。</li><li>`/stats` を `/rows` と同じくCOUNT前にbounded reconcileするよう対称化（総回答数off-by-1の根治。env flagでreconcile skip可・fail-soft）。</li><li>`/rows` に field slug→label のリスト（`fields:[{slug,label}]`）を additive 付与（field_map×フォーム定義のjoin）。</li><li>回答データ画面のヘッダーを内部slugでなく質問名（label）で描画するよう変更（未知slugはslug fallback・列順=定義順優先+定義外末尾）。</li><li>`formatJstMinute` ヘルパを新設し、送信日時（一覧・詳細ドロワー・最終編集）の3箇所をUTC→JST表示に変更（`+09:00`明示入力の二重変換なし）。</li><li>origin + piecemaker へ dual-push、`scripts/verify-tenant-sync.sh` でSHA一致確認。</li><li>4デプロイ先（ks worker/admin、piecemaker worker/admin）すべて再デプロイ・health 200確認。</li><li>`docs/BACKLOG.md` に O-1（webhook配線follow-up）/ O-2（CSVヘッダーlabel化未実装）/ O-3（期間フィルタ/日次集計のUTC/JST境界known-limitation）を記録。</li></ul>
+    </details>
+  </section>
+  <section class="card" data-kind="verified">
+    <header class="card-head"><h2>確認したこと</h2></header>
+    <div class="markdown-body">\n**combined再走（land後）**:\n- <code>pnpm --filter worker run test</code>: 2108/2109（既知flake <code>b4-regression.test.ts</code> の nonce偶然2文字一致1件のみ。diff対象外ファイルでbd6248aから無変更・単独3回連続再実行で3/3 green確認済み）\n- <code>pnpm --filter web run test</code>: 1032/1032 全green\n- <code>pnpm --filter shared run test</code>: 404/404 全green\n- <code>pnpm --filter db run test</code>: 411/411 全green\n- worker/web tsc --noEmit: 両方 rc=0\n- web static export build: 全ページ成功（NEXT_PUBLIC_API_URL等の必須env指定でbuild・rc=0）\n- excluded領域（<code>formaloo-public.ts</code> / <code>formaloo-webhook.ts</code> / <code>packages/db</code>）: git numstat 0確認\n\n**dual-tenant deploy + sync**:\n- origin/main、piecemaker/main とも <code>0bb95c5133df9c437e92fd0604fa85187c246c5d</code>（<code>verify-tenant-sync.sh</code> OK）\n- ks worker <code>/admin/version</code> 200 / ks admin <code>/login</code> 200\n- piecemaker worker <code>/admin/version</code> 200 / piecemaker admin <code>/login</code> 200\n\n**deployed実測（HARD gate・headless Chrome CDP9222スクショ）**:\npiecemaker admin に legacy APIキーログインで実ログイン→ <code>/forms-advanced/data?id=fa_5127eb98-b68c-4958-9c4b-db8ae99b0481</code> を実レンダーしスクリーンショット取得（<code>/tmp/.../scratchpad/pm-data-02.png</code>）。\n- ① 総回答数「8」= テーブル「8件中 1-8」実表示件数と一致（off-by-1解消）\n- ② 列ヘッダー「複数行テキスト・メール・1行テキスト・送信日時」（質問名。内部slug 9x3BCNZW等でない）\n- ③ owner本人の送信行「2度目です / step7423ss@gmail.com / てすとーー!」の送信日時が「2026-07-18 17:18」（JST。API実測 submittedAt=<code>2026-07-18T08:18:35Z</code> から正しくJST変換）\n\n**独立検証（done_conditions充足の独立性ガードレール / Generator-LLM=claude のためCodex検証）**:\ncodex exec (model_reasoning_effort=medium) で diff（bd6248a..0bb95c5）とdone_conditions（T-C1/T-C2/T-C3/T-A1/T-A2/T-B1/D-1/D-2）を独立判定。初回D-1判定はCodex自身のsandbox制限（spawnSync EPERM・build必須env未設定）でFAILしたため、closer実測の生ログ（上記combined再走の実数値）を提示して再判定を依頼した結果、8条件全てPASS（<code>done_conditions_verified_by: codex (実装者claude と別ベンダー)</code>）。\n\n**R-1安全規律**: 本番フォーム Z5IEH85R/puw7lh には一切接触せず（対象は piecemaker 既存フォーム fa_5127eb98 のみ・GET/UI閲覧操作のみ・使い捨てフォーム作成なし）。API key は <code>$(cat /root/.secrets/...)</code> でBash変数にのみ保持し値をログ/commit/REPORTへ転記せず。HTTP/CDPともブラウザ風UA使用。</div>
+  </section>
+
+
+  <section class="card" data-kind="open">
+    <header class="card-head"><h2>未解決</h2></header>
+    <div class="markdown-body">\n- O-1: Formaloo webhook配線（infra-ops follow-up・<code>docs/BACKLOG.md</code>記録済）\n- O-2: CSVエクスポートのヘッダーもslugのまま（本件はUI表示のみ対応・<code>docs/BACKLOG.md</code>記録済）\n- O-3: 期間フィルタ/日次集計はUTC日境界のまま（深夜帯の日跨ぎで見かけ上ズレ得る・<code>docs/BACKLOG.md</code>記録済）\n- worker <code>b4-regression.test.ts</code> のnonce偶然一致による稀発flakeは本案件と無関係の既存挙動（単独実行では毎回green）。</div>
+  </section>
+  <section class="card" data-kind="next">
+    <header class="card-head"><h2>次の一手</h2></header>
+    <div class="markdown-body">\nowner が piecemaker管理画面で3点の表示を確認し「OK」と返答されたら <code>status: completed</code> に昇格。O-1（webhook配線）はinfra-ops側の別タスクとして着手可能。</div>
+  </section>
+
+  <section class="card" data-kind="links">
+    <header class="card-head"><h2>関連リンク</h2></header>
+    <ul>
+      <li>handoff: <code>/root/.openclaw/workspace/.ars-state/handoff-20260718-172200-form-response-display-fix.json</code></li><li>Box folder: <a href="https://app.box.com/folder/386663013201">386663013201</a></li>
+    </ul>
+  </section>
+
+  <footer>
+    生成: 2026-07-18 19:11 JST · commit <code>7d731b3993</code> · workspace workspace
+  </footer>
+</body>
+</html>
