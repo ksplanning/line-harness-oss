@@ -181,6 +181,7 @@ export default function DataCockpitClient({ id }: { id: string }) {
           total={rowsPage.total}
           page={rowsPage.page}
           pageSize={rowsPage.pageSize}
+          fieldLabels={rowsPage.fields}
           stats={stats}
           savedFilters={filters}
           isOwner={isOwner}

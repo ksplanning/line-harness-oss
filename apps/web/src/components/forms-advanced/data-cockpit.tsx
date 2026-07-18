@@ -23,6 +23,9 @@ export interface DataCockpitProps {
   stats: FormStats | null
   savedFilters: SavedFilter[]
   isOwner: boolean
+  // form-response-display-fix (T-A2): 列ヘッダーを質問名で描画するための slug→label 対応 (/rows の fields)。
+  //   未指定 or 未知 slug は slug fallback (後方互換)。列順は定義 (この配列) 順優先 + 定義外 slug を末尾。
+  fieldLabels?: Array<{ slug: string; label: string }>
   loading?: boolean
   onQuery: (q: RowsQuery) => void
   onSaveFilter: (name: string, filter: Record<string, unknown>) => void
@@ -40,7 +43,7 @@ function cellText(v: unknown): string {
 }
 
 export default function DataCockpit(props: DataCockpitProps) {
-  const { rows, total, page, pageSize, stats, savedFilters, isOwner } = props
+  const { rows, total, page, pageSize, stats, savedFilters, isOwner, fieldLabels } = props
   const [q, setQ] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -52,12 +55,29 @@ export default function DataCockpit(props: DataCockpitProps) {
   const [saveName, setSaveName] = useState('')
   const [showSave, setShowSave] = useState(false)
 
+  // slug→label 対応 (T-A2)。未指定/未知 slug は slug 自身へ fallback。
+  const labelMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const f of fieldLabels ?? []) m.set(f.slug, f.label)
+    return m
+  }, [fieldLabels])
+  const labelFor = (col: string) => labelMap.get(col) ?? col
+
   // 回答項目 (列) = 現在ページ全行の answer キーの union。
+  //   列順は定義 (fieldLabels) 順を優先し、定義外の answer-slug を元の出現順で末尾に付す (T-A2)。
   const columns = useMemo(() => {
-    const set = new Set<string>()
-    for (const r of rows) for (const k of Object.keys(r.answers)) set.add(k)
-    return [...set]
-  }, [rows])
+    const present = new Set<string>()
+    for (const r of rows) for (const k of Object.keys(r.answers)) present.add(k)
+    const ordered: string[] = []
+    for (const f of fieldLabels ?? []) {
+      if (present.has(f.slug)) { ordered.push(f.slug); present.delete(f.slug) }
+    }
+    // 残り (定義に無い answer-slug) は元の union 出現順で末尾へ。
+    for (const r of rows) for (const k of Object.keys(r.answers)) {
+      if (present.has(k)) { ordered.push(k); present.delete(k) }
+    }
+    return ordered
+  }, [rows, fieldLabels])
 
   const currentFilter = (): RowsQuery => ({ q: q || undefined, from: from || undefined, to: to || undefined, sort, page: 1, pageSize })
   const runSearch = () => { setSelected(new Set()); props.onQuery(currentFilter()) }
@@ -187,7 +207,7 @@ export default function DataCockpit(props: DataCockpitProps) {
           <thead className="bg-gray-50 text-left text-xs text-gray-500">
             <tr>
               {isOwner && <th className="w-10 px-3 py-2" />}
-              {columns.map((col) => <th key={col} className="px-3 py-2 font-medium">{col}</th>)}
+              {columns.map((col) => <th key={col} className="px-3 py-2 font-medium">{labelFor(col)}</th>)}
               <th className="px-3 py-2 font-medium">送信日時</th>
               <th className="px-3 py-2" />
             </tr>

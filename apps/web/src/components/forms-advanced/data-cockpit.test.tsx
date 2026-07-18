@@ -64,6 +64,50 @@ describe('DataCockpit — 表示 (T-D1)', () => {
   })
 })
 
+describe('DataCockpit — 列ヘッダー label 化 (T-A2 / form-response-display-fix)', () => {
+  // 実 slug キー (owner 実機報告の 9x3BCNZW/N31hP5KP/iAGKWaBX) を answers に持つ行。
+  // 既存 fixture は label 風キー (名前/電話) で bug を捕捉できていなかった穴を塞ぐ。
+  const SLUG_ROWS: SubmissionRow[] = [
+    { id: 's1', friendId: null, answers: { '9x3BCNZW': 'てすと', N31hP5KP: 'a@b.example.com', unknownSlug: '?' }, submittedAt: '2026-07-18T08:18:33Z', verified: false },
+  ]
+  const FIELD_LABELS = [
+    { slug: '9x3BCNZW', label: 'お名前' },
+    { slug: 'N31hP5KP', label: 'メールアドレス' },
+    { slug: 'iAGKWaBX', label: 'ご要望' }, // 定義にあるが今ページの answers には無い
+  ]
+
+  it('fieldLabels が与えられると列ヘッダーを slug でなく質問 label で表示する', () => {
+    render(<DataCockpit {...base({ rows: SLUG_ROWS, total: 1, fieldLabels: FIELD_LABELS })} />)
+    const headers = screen.getAllByRole('columnheader').map((th) => th.textContent)
+    expect(headers).toContain('お名前')
+    expect(headers).toContain('メールアドレス')
+    // 生 slug がヘッダーに残っていない (bug 再発検知)
+    expect(headers).not.toContain('9x3BCNZW')
+    expect(headers).not.toContain('N31hP5KP')
+  })
+
+  it('fieldLabels に無い answer-slug は slug のまま fallback 表示する', () => {
+    render(<DataCockpit {...base({ rows: SLUG_ROWS, total: 1, fieldLabels: FIELD_LABELS })} />)
+    const headers = screen.getAllByRole('columnheader').map((th) => th.textContent)
+    expect(headers).toContain('unknownSlug') // 未知 slug は slug fallback
+  })
+
+  it('列順は定義 (fieldLabels) 順優先 + 定義外 answer-slug を末尾に', () => {
+    render(<DataCockpit {...base({ rows: SLUG_ROWS, total: 1, fieldLabels: FIELD_LABELS })} />)
+    // 回答項目ヘッダーのみ (先頭の選択チェック列・末尾の送信日時/操作列を除く)
+    const labels = screen.getAllByRole('columnheader').map((th) => th.textContent).filter((t) => t && !['送信日時', ''].includes(t))
+    // 定義順 (お名前 → メールアドレス) が先、定義外 (unknownSlug) が末尾。iAGKWaBX は answers 不在で列化しない
+    expect(labels).toEqual(['お名前', 'メールアドレス', 'unknownSlug'])
+  })
+
+  it('fieldLabels 未指定なら従来どおり answer キー union をヘッダーに出す (後方互換)', () => {
+    render(<DataCockpit {...base()} />) // 既定 ROWS = 名前/電話 キー
+    const headers = screen.getAllByRole('columnheader').map((th) => th.textContent)
+    expect(headers).toContain('名前')
+    expect(headers).toContain('電話')
+  })
+})
+
 describe('DataCockpit — 送信日時 JST 表示 (T-C2 / form-response-display-fix)', () => {
   it('UTC(Z) 保存の submittedAt を JST 壁時計で表示する (08:18Z → 17:18・UTC 素通しでない)', () => {
     const rows: SubmissionRow[] = [

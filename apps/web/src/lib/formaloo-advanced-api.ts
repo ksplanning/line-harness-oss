@@ -187,6 +187,9 @@ export interface RowsPage {
   total: number
   page: number
   pageSize: number
+  // form-response-display-fix (T-A1): 列ヘッダーを質問名で描画するための slug→label 対応 (additive・後方互換)。
+  //   field_map(formaloo_field_slug) × 定義(label) の join。旧 worker は返さない → optional。
+  fields?: Array<{ slug: string; label: string }>
 }
 /** 弾M (form-post-edit): 編集保存レスポンス (merge 後 answers + ④最終編集情報)。 */
 export interface RowEditResult {
