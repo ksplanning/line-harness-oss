@@ -634,6 +634,9 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         //   fr_name(PII) は別 gate (FORMALOO_FR_NAME_AUTOPUSH_DISABLE) で切れる (owner-gate / codex#8)。
         ensureSystemFields: c.env.FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE !== '1',
         includeOwnerGatedSystemFields: c.env.FORMALOO_FR_NAME_AUTOPUSH_DISABLE !== '1',
+        // fr-id-hardening-round2 (③): 新規 field に alias=slug を標準付与 (Formaloo hosted prefill は alias 一致でのみ発火し
+        //   /fo は回答 prefill を slug-keyed で組む)。既定有効・env で無効化 = rollback。両テナント共通 route。
+        setFieldAlias: c.env.FORMALOO_FIELD_ALIAS_AUTOSET_DISABLE !== '1',
       });
       // route-terminal-phase2 (Track 2): reconcile 後の割当 slug 付き successPages を永続対象へ反映
       //   (POST 成功後の slug を definition_json に残し次回保存で再 POST しない = 非冪等重複作成の根絶)。

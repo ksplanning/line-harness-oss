@@ -217,6 +217,10 @@ export type Env = {
     // fr-id-capture-fix (T-C1/codex#8): fr_name (氏名=PII) の auto-push だけを切る owner-gate。未設定/其他 = 有効
     //   (owner 意図 = Google Sheets 帰属可読化)。'1' = fr_id のみ push し fr_name を作らない (PII 保守テナント向け)。
     FORMALOO_FR_NAME_AUTOPUSH_DISABLE?: string;
+    // fr-id-hardening-round2 (③): 新規 field の alias=slug 標準付与の kill-switch。未設定/其他 = 有効 (両テナント共通
+    //   publish で createField が POST 応答 slug に PATCH {alias:slug} を付与し /fo の slug-keyed 回答 prefill を成立させる)。
+    //   '1' = alias 自動付与を短絡 (byte 同等 / rollback)。Formaloo hosted prefill は alias 一致でのみ発火するため既定有効が正。
+    FORMALOO_FIELD_ALIAS_AUTOSET_DISABLE?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
