@@ -94,7 +94,7 @@ function seedFieldSlug(formId: string, fieldId: string, slug: string, position: 
 interface ApiCall { method: string; url: string; body: unknown }
 
 /** 実 Formaloo GET-after-POST を模倣: POST /v3.0/fields/ が state.fields_list に append し、後続 GET が反映する。 */
-function stubFormaloo(opts: { withLogic?: boolean } = {}) {
+function stubFormaloo(opts: { withLogic?: boolean; formGetFails?: boolean } = {}) {
   const calls: ApiCall[] = [];
   const fieldsList: { slug: string; alias?: string; type?: string; title?: string; position?: number }[] = [
     { slug: 's_one', type: 'short_text', title: '名前', position: 0 },
@@ -117,6 +117,8 @@ function stubFormaloo(opts: { withLogic?: boolean } = {}) {
       return new Response(JSON.stringify({ data: {} }), { status: 200 });
     }
     if (method === 'GET' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
+      // T-C3 round2: ensure の form-state GET を失敗させて silent-success 是正 (fetch 失敗→out_of_sync) を route で検証する。
+      if (opts.formGetFails) return new Response(JSON.stringify({ error: 'boom' }), { status: 500 });
       const form: Record<string, unknown> = { slug: 'FSLUG', fields_list: fieldsList.map((f) => ({ ...f })) };
       // T-C7: logic 有効フォームは Formaloo が hidden field 値を破棄する = fr_id 捕捉不能を surface する対象。
       if (opts.withLogic) form.logic = [{ conditions: [], actions: [{ type: 'submit_form' }] }];
@@ -181,6 +183,22 @@ describe('PUT /api/forms-advanced/:id — friend system field auto-push (T-C3 ro
     const res = await putForm(id, { FORMALOO_FR_NAME_AUTOPUSH_DISABLE: '1' });
     expect(res.status).toBe(200);
     expect(sysFieldPosts(calls)).toEqual(['fr_id']);
+  });
+
+  test('T-C3 round2: ensure の form-state GET 失敗 → syncStatus out_of_sync + 日本語 message (silent-success 是正)', async () => {
+    const id = 'sfE';
+    seedForm(id, 'FSLUG');
+    seedFieldSlug(id, `${id}_f1`, 's_one', 0);
+    const { calls } = stubFormaloo({ formGetFails: true });
+    const res = await putForm(id);
+    expect(res.status).toBe(200); // 回答導線 (保存本体) は落とさない
+    const data = (await res.json() as { data: { syncStatus: string; syncError?: string | null } }).data;
+    // fetch 失敗を idle(成功) 扱いにせず out_of_sync で honest surface する (closer 独立検証 Codex 発見の gap)
+    expect(data.syncStatus).toBe('out_of_sync');
+    expect(data.syncError ?? '').toContain('fr_id'); // 日本語 message (friend 識別用フィールド (fr_id/fr_name) の同期に失敗…)
+    expect(data.syncError ?? '').toMatch(/同期に失敗|再保存/); // 日本語 surface
+    // fields_list を読めない = 盲目 POST しない (system field を勝手に作らない)
+    expect(sysFieldPosts(calls)).toEqual([]);
   });
 
   test('T-C7: logic 有効フォーム → syncStatus out_of_sync + logic 専用 message (fr_id 破棄を honest 告知・殻完了防止)', async () => {

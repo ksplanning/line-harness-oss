@@ -108,6 +108,14 @@ export async function pushDefinitionToFormaloo(
     ensureSystemFields?: boolean;
     /** fr_name (PII owner-gate) も ensure するか。default true (env `FORMALOO_FR_NAME_AUTOPUSH_DISABLE` で切る / codex#8)。 */
     includeOwnerGatedSystemFields?: boolean;
+    /**
+     * fr-id-hardening-round2 (③): 新規作成した field に `alias=slug` を標準付与するか。Formaloo hosted の URL prefill は
+     * field の alias 一致でのみ発火し (spike F1/F2)、/fo は本人再入場の回答 prefill を field slug をキーに組む
+     * (?<slug>=<value>) ため、alias=slug が無いと再入場 prefill が全滅する (owner 実機の「真っ白」真因)。slug は POST
+     * 応答で判明ゆえ POST 後に PATCH {alias:slug} を付与する (2 手・fail-soft)。default false = 従来 byte 不変 (既存直接
+     * 呼び出し/単体テストは影響なし)。両テナント共通 publish route が env `FORMALOO_FIELD_ALIAS_AUTOSET_DISABLE!=='1'` から渡す。
+     */
+    setFieldAlias?: boolean;
   },
 ): Promise<PushResult> {
   const existingFieldSlugs = params.existingFieldSlugs ?? {};
@@ -150,6 +158,20 @@ export async function pushDefinitionToFormaloo(
     if (!res.ok) return { ok: false, formalooSlug: slug, error: `field push failed (${field.id}): HTTP ${res.status}` };
     const fslug = res.data?.data?.field?.slug ?? res.data?.data?.slug;
     if (!fslug) return { ok: false, formalooSlug: slug, error: `field push: slug missing (${field.id})` };
+    // fr-id-hardening-round2 (③ alias=slug 標準付与): Formaloo hosted の URL prefill は field の alias 一致でのみ発火し、
+    //   /fo は本人再入場の回答 prefill を field slug をキーに組む (?<slug>=<value>)。既定 field は alias=null ゆえ prefill が
+    //   全滅する (owner 実機の「真っ白」真因)。slug は POST 応答で判明ゆえ **POST 後に PATCH {alias:slug}** で標準付与する
+    //   (POST 時 alias=slug 指定は slug 未採番ゆえ不能 = 2 手が唯一解・F7 で PATCH alias→200 実証済)。fail-soft: alias PATCH
+    //   失敗は field 作成を落とさない (field は回答可能・prefill は backfill が安全網)。alias 追加は fingerprint (通常 field の
+    //   alias 非射影) / pull (fromFormalooField は alias 非取込) の双方に不可視 = false-drift ゼロ。
+    if (params.setFieldAlias) {
+      try {
+        const pr = await client.request('PATCH', `/v3.0/fields/${fslug}/`, { alias: fslug });
+        if (!pr.ok) console.warn(`[formaloo-sync] field alias 付与失敗 (${field.id} / ${fslug}): HTTP ${pr.status} — 再入場 prefill は backfill 待ち`);
+      } catch (e) {
+        console.warn(`[formaloo-sync] field alias 付与例外 (${field.id} / ${fslug}):`, e instanceof Error ? e.message : String(e));
+      }
+    }
     return { fslug };
   };
 
@@ -207,8 +229,9 @@ export async function pushDefinitionToFormaloo(
         includeOwnerGated: params.includeOwnerGatedSystemFields ?? true,
       });
     } catch {
-      // 二重ガード: ensure 自体 fail-soft だが、万一の例外でも hot path を絶対落とさない (skipped 扱い)。
-      systemFields = { ok: false, outOfSync: false, skipped: true, logicConflict: false, outcomes: [] };
+      // 二重ガード: ensure は throw しない設計だが、万一の例外でも publish 本体(回答導線)は落とさない。
+      //   T-C3 round2: 例外時も「system field が揃ったか不明」= fail-closed で outOfSync=true surface (silent success 禁止)。
+      systemFields = { ok: false, outOfSync: true, skipped: false, logicConflict: false, outcomes: [] };
     }
   }
 
