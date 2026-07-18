@@ -13,13 +13,16 @@ import type { FormalooClient, FormalooResult } from './formaloo-client';
 
 interface RawField { slug: string; alias?: string | null; type?: string; title?: string }
 
-function mockClient(cfg: { fields: RawField[]; postMode?: 'append' | 'fail' }) {
+function mockClient(cfg: { fields: RawField[]; postMode?: 'append' | 'fail'; formGetOk?: boolean }) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
   const state = [...cfg.fields];
   const postMode = cfg.postMode ?? 'append';
+  const formGetOk = cfg.formGetOk ?? true;
   const client = {
     async get<T>(path: string): Promise<FormalooResult<T>> {
       calls.push({ method: 'GET', path });
+      // T-C3 round2: ensure の form-state GET (/v3.0/forms/{slug}/) を失敗させ silent-success 是正を route 手前で検証する。
+      if (!formGetOk && /\/v3\.0\/forms\/[^/]+\/$/.test(path)) return { ok: false, status: 500, error: 'boom' } as FormalooResult<T>;
       return { ok: true, status: 200, data: { data: { form: { fields_list: state.map((f) => ({ ...f })) } } } } as unknown as FormalooResult<T>;
     },
     async post<T>(path: string, body?: unknown): Promise<FormalooResult<T>> {
@@ -89,5 +92,13 @@ describe('pushDefinitionToFormaloo — system field auto-push (T-C3)', () => {
     // 衝突 field を mutate しない (PATCH/DELETE/POST /v3.0/fields/ なし)
     expect(calls.some((c) => c.method === 'PATCH' && c.path.startsWith('/v3.0/fields/'))).toBe(false);
     expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/')).toBe(false);
+  });
+
+  test('T-C3 round2: ensure の form-state GET 失敗 → push 本体は ok・systemFieldsOutOfSync=true (silent-success 禁止)', async () => {
+    const { client } = mockClient({ fields: [], formGetOk: false });
+    const r = await pushDefinitionToFormaloo(client, { ...BASE, ensureSystemFields: true });
+    expect(r.ok).toBe(true); // 回答導線 (push 本体) は落とさない
+    expect(r.systemFieldsOk).toBe(false);
+    expect(r.systemFieldsOutOfSync).toBe(true); // fetch 失敗を idle(成功) 扱いにせず surface
   });
 });

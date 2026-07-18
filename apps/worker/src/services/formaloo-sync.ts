@@ -207,8 +207,9 @@ export async function pushDefinitionToFormaloo(
         includeOwnerGated: params.includeOwnerGatedSystemFields ?? true,
       });
     } catch {
-      // 二重ガード: ensure 自体 fail-soft だが、万一の例外でも hot path を絶対落とさない (skipped 扱い)。
-      systemFields = { ok: false, outOfSync: false, skipped: true, logicConflict: false, outcomes: [] };
+      // 二重ガード: ensure は throw しない設計だが、万一の例外でも publish 本体(回答導線)は落とさない。
+      //   T-C3 round2: 例外時も「system field が揃ったか不明」= fail-closed で outOfSync=true surface (silent success 禁止)。
+      systemFields = { ok: false, outOfSync: true, skipped: false, logicConflict: false, outcomes: [] };
     }
   }
 
