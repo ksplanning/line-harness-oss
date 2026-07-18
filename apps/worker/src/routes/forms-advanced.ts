@@ -44,6 +44,7 @@ import {
   mapFormalooListRowToUpsert,
   buildFieldLabelList,
   joinDefinitionFieldsWithSlug,
+  friendLinkSecret,
 } from '../services/formaloo-row-edit.js';
 import {
   validateHarnessField,
@@ -1057,11 +1058,14 @@ const RECONCILE_PAGE_SIZE = 50;
  *   既存 upsertFormalooSubmission でミラーへ idempotent 充填。呼び出し側が直後に queryFormalooSubmissions で返す。
  * ミラー充填により詳細ドロワー・弾M 編集 (mirror 行前提・/rows/:rowId L899 の 404) も通る。
  * !r.ok / rows 空でループ終了 (makeRowsListRowSlugResolver と同じ bounded 走査作法)。例外は上位 try/catch が拾う。
+ * line-reentry-prefill-fix (Layer A): friendTokenSecret 供給時は各行の署名 fr_id を verify して friend_id を
+ *   fail-closed 復元 (mapFormalooListRowToUpsert 内)。null は復元せず friend_id を触らない (COALESCE で既存保持)。
  */
 async function reconcileFormalooRows(
   db: D1Database,
   form: FormalooForm,
   client: { get<T = unknown>(path: string): Promise<{ ok: true; status: number; data: T } | { ok: false; status: number; error: string }> },
+  opts: { friendTokenSecret?: string | null } = {},
 ): Promise<void> {
   for (let page = 1; page <= MAX_RECONCILE_PAGES; page++) {
     const r = await client.get(`/v3.0/forms/${form.formaloo_slug}/rows/?page=${page}&page_size=${RECONCILE_PAGE_SIZE}`);
@@ -1069,7 +1073,7 @@ async function reconcileFormalooRows(
     const rows = extractRows(r.data);
     if (rows.length === 0) break;
     for (const row of rows) {
-      const input = mapFormalooListRowToUpsert(row, form);
+      const input = await mapFormalooListRowToUpsert(row, form, { friendTokenSecret: opts.friendTokenSecret });
       if (input) await upsertFormalooSubmission(db, input);
     }
   }
@@ -1090,7 +1094,9 @@ formsAdvanced.get('/api/forms-advanced/:id/rows', async (c) => {
       try {
         const client = await resolveFormalooClient(c.env, form.workspace_id);
         if (client && form.formaloo_slug) {
-          await reconcileFormalooRows(c.env.DB, form, client);
+          // line-reentry-prefill-fix (Layer A): 署名 fr_id → friend_id 復元用の実効 secret を渡す
+          //   (FORMALOO_RECONCILE_FRIEND_LINK_DISABLE='true' で null = 復元停止・ミラー充填は継続)。
+          await reconcileFormalooRows(c.env.DB, form, client, { friendTokenSecret: friendLinkSecret(c.env) });
         }
       } catch (reconcileErr) {
         console.error('GET /api/forms-advanced/:id/rows reconcile failed (fail-soft, mirror を返す):', reconcileErr);

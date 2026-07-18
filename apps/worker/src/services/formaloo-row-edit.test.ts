@@ -9,9 +9,13 @@ import {
   findEmptyRequired,
   resolveRowSlug,
   makeRowsListRowSlugResolver,
+  mapFormalooListRowToUpsert,
+  pullFriendReconcileInputs,
+  friendLinkSecret,
   FREE_VALUE_FIELD_TYPES,
   type EditFieldMeta,
 } from './formaloo-row-edit.js';
+import { signFriendToken } from './formaloo-friend-token.js';
 
 const fields: EditFieldMeta[] = [
   { id: 'q_name', slug: 'aynYrQa7', fieldType: 'text', required: true },
@@ -133,5 +137,156 @@ describe('T-B1 makeRowsListRowSlugResolver — rows-list submit_code 照合 (bou
     const client = { get: vi.fn(async () => ({ ok: false, status: 500, error: 'boom' }) as const) };
     const resolver = makeRowsListRowSlugResolver(client, 'form_abc');
     expect(await resolver('any')).toBeNull();
+  });
+});
+
+// =============================================================================
+// line-reentry-prefill-fix (Layer A / C1) — reconcile 写像が署名 fr_id を verify して friend_id を
+//   fail-closed 復元する。webhook 未配線でも本人 row が friend_id を持ち getFriendLatestSubmission が引ける。
+//   最重要 = 他人の回答を prefill しない (verify 成功時のみ復元 / 弾M F-H1 継承)。
+// =============================================================================
+
+const FR_SECRET = 'reconcile_frtok_secret_v1';
+const FORM_H = { id: 'form_h', formaloo_slug: 'GMOxoMtK' };
+
+describe('T-A2/T-A3 mapFormalooListRowToUpsert — 署名 fr_id を verify して friend_id を fail-closed 復元', () => {
+  test('T-A2: rendered_data 配列形 [{slug,alias,value}] の valid fr_id → friend_id 復元', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const row = { slug: 'ROW1', created_at: '2026-07-18T00:00:00+09:00', data: { q1: 'v' }, rendered_data: [{ slug: 'x1', alias: 'fr_id', value: token }] };
+    const input = await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(input?.friendId).toBe('frA');
+  });
+
+  test('T-A2: rendered_data object 形 {fr_id: token} の valid fr_id → 復元', async () => {
+    const token = await signFriendToken('frB', FR_SECRET);
+    const row = { slug: 'ROW2', data: { q1: 'v' }, rendered_data: { fr_id: token } };
+    const input = await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(input?.friendId).toBe('frB');
+  });
+
+  test('T-A2: rendered_data 無しでも data[fr_id] (field slug=fr_id) の valid fr_id → 復元', async () => {
+    const token = await signFriendToken('frC', FR_SECRET);
+    const row = { slug: 'ROW3', data: { fr_id: token, q1: 'v' } };
+    const input = await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(input?.friendId).toBe('frC');
+  });
+
+  test('T-A1/D-1: fr_id 無し行 → friend_id=null (byte 不変・後方互換)', async () => {
+    const row = { slug: 'ROW4', data: { q1: 'v' } };
+    const input = await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(input?.friendId).toBeNull();
+  });
+
+  test('T-A3: secret 未供給 (opts 無し / undefined) → friend_id=null (fail-closed / verify 不能)', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const row = { slug: 'ROW5', data: {}, rendered_data: [{ alias: 'fr_id', value: token }] };
+    expect((await mapFormalooListRowToUpsert(row, FORM_H))?.friendId).toBeNull();
+    expect((await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: undefined }))?.friendId).toBeNull();
+    expect((await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: '' }))?.friendId).toBeNull();
+  });
+
+  test('T-A3: 改ざん token → friend_id=null (他人紐付け=PII を絶対起こさない)', async () => {
+    const token = (await signFriendToken('frA', FR_SECRET))!;
+    const tampered = token.slice(0, -1) + (token.slice(-1) === 'a' ? 'b' : 'a');
+    const row = { slug: 'ROW6', data: {}, rendered_data: [{ alias: 'fr_id', value: tampered }] };
+    const input = await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(input?.friendId).toBeNull();
+  });
+
+  test('T-A3: 別 secret で署名された token → friend_id=null', async () => {
+    const token = await signFriendToken('frA', 'OTHER_secret_zzz');
+    const row = { slug: 'ROW7', data: {}, rendered_data: [{ alias: 'fr_id', value: token }] };
+    const input = await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(input?.friendId).toBeNull();
+  });
+
+  test('D-3/CI-5: verify 失敗行の friendId は null (upsert COALESCE で既存 friend_id を NULL 上書きしない契約の入力側)', async () => {
+    const row = { slug: 'ROW8', data: { q1: 'v' } };
+    const input = await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(input?.friendId).toBeNull();
+  });
+
+  test('slug 欠落 row → null (addressable でない)', async () => {
+    expect(await mapFormalooListRowToUpsert({ data: {} }, FORM_H, { friendTokenSecret: FR_SECRET })).toBeNull();
+  });
+
+  test('answers/id/rowSlug/submittedAt は byte 不変 (friend_id 追加のみ additive)', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const row = { slug: 'ROWX', created_at: '2026-07-18T01:00:00+09:00', data: { q1: 'a', q2: 'b' }, rendered_data: [{ alias: 'fr_id', value: token }] };
+    const input = await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(input).toMatchObject({
+      id: 'ROWX', formId: 'form_h', formalooSlug: 'GMOxoMtK',
+      answersJson: JSON.stringify({ q1: 'a', q2: 'b' }), submittedAt: '2026-07-18T01:00:00+09:00',
+      rowSlug: 'ROWX', friendId: 'frA', verified: false,
+    });
+  });
+});
+
+describe('T-A6 pullFriendReconcileInputs — bounded targeted pull → friend_id 復元 inputs', () => {
+  function clientReturning(pages: Record<number, unknown>) {
+    return {
+      get: vi.fn(async (path: string) => {
+        const m = path.match(/[?&]page=(\d+)/);
+        const page = m ? Number(m[1]) : 1;
+        const data = pages[page];
+        if (data === undefined) return { ok: true, status: 200, data: { data: { rows: [] } } } as const;
+        return { ok: true, status: 200, data } as const;
+      }),
+    };
+  }
+
+  test('直近 rows を pull し valid fr_id 行の friend_id を復元した inputs を返す', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const client = clientReturning({ 1: { data: { rows: [{ slug: 'R1', data: { q: 'v' }, rendered_data: [{ alias: 'fr_id', value: token }] }] } } });
+    const inputs = await pullFriendReconcileInputs(client, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].friendId).toBe('frA');
+    expect(inputs[0].id).toBe('R1');
+  });
+
+  test('非2xx はループ終了 (fail-safe・空配列)', async () => {
+    const client = { get: vi.fn(async () => ({ ok: false, status: 500, error: 'x' }) as const) };
+    expect(await pullFriendReconcileInputs(client, FORM_H, { friendTokenSecret: FR_SECRET })).toEqual([]);
+  });
+
+  test('formaloo_slug null → 空配列 (pull を一切呼ばない)', async () => {
+    const client = { get: vi.fn(async () => ({ ok: true, status: 200, data: {} }) as const) };
+    expect(await pullFriendReconcileInputs(client, { id: 'f', formaloo_slug: null }, { friendTokenSecret: FR_SECRET })).toEqual([]);
+    expect(client.get).not.toHaveBeenCalled();
+  });
+
+  test('secret 未供給 → 行は返すが friendId=null (fail-closed)', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const client = clientReturning({ 1: { data: { rows: [{ slug: 'R1', data: {}, rendered_data: [{ alias: 'fr_id', value: token }] }] } } });
+    const inputs = await pullFriendReconcileInputs(client, FORM_H);
+    expect(inputs[0].friendId).toBeNull();
+  });
+
+  test('maxPages を bounded に (hot path 保護 / CI-4): 既定 2 ページで停止', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const client = clientReturning({
+      1: { data: { rows: [{ slug: 'R1', data: {}, rendered_data: [{ alias: 'fr_id', value: token }] }] } },
+      2: { data: { rows: [{ slug: 'R2', data: {} }] } },
+      3: { data: { rows: [{ slug: 'R3', data: {} }] } },
+    });
+    const inputs = await pullFriendReconcileInputs(client, FORM_H, { friendTokenSecret: FR_SECRET });
+    expect(inputs.map((i) => i.id)).toEqual(['R1', 'R2']); // page 3 は走査しない
+  });
+});
+
+describe('D-6 friendLinkSecret — friend_id 復元 kill-switch (additive rollback)', () => {
+  test('flag 未設定 → secret を返す (復元 ON = 既定)', () => {
+    expect(friendLinkSecret({ FORMALOO_FRIEND_TOKEN_SECRET: 'sek' })).toBe('sek');
+  });
+  test("flag='true' → null (friend_id 復元だけ停止・reconcile 充填は継続)", () => {
+    expect(friendLinkSecret({ FORMALOO_FRIEND_TOKEN_SECRET: 'sek', FORMALOO_RECONCILE_FRIEND_LINK_DISABLE: 'true' })).toBeNull();
+  });
+  test("flag='false'/其他 → secret を返す (既定 ON)", () => {
+    expect(friendLinkSecret({ FORMALOO_FRIEND_TOKEN_SECRET: 'sek', FORMALOO_RECONCILE_FRIEND_LINK_DISABLE: 'false' })).toBe('sek');
+    expect(friendLinkSecret({ FORMALOO_FRIEND_TOKEN_SECRET: 'sek', FORMALOO_RECONCILE_FRIEND_LINK_DISABLE: '1' })).toBe('sek');
+  });
+  test('secret 未設定 → null (fail-closed)', () => {
+    expect(friendLinkSecret({})).toBeNull();
+    expect(friendLinkSecret({ FORMALOO_RECONCILE_FRIEND_LINK_DISABLE: 'true' })).toBeNull();
   });
 });
