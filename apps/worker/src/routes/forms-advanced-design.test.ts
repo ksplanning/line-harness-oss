@@ -55,6 +55,10 @@ function env(): Env['Bindings'] {
     LIFF_URL: 'https://liff.example.test', LINE_CHANNEL_ID: 'c', LINE_LOGIN_CHANNEL_ID: 'lc',
     LINE_LOGIN_CHANNEL_SECRET: 'ls', WORKER_URL: 'https://api.example.com',
     FORMALOO_API_KEY: 'design-formaloo-key', FORMALOO_API_SECRET: 'design-formaloo-secret',
+    // fr-id-capture-fix (T-C3): friend system field auto-push は本 test の関心外 (design 色/画像)。
+    //   本 test の静的 GET mock は POST 後の field を反映しないため ensure が out_of_sync を誤 surface する。
+    //   専用検証 = formaloo-sync.system-fields.test.ts。ここでは無効化して orthogonal に保つ。
+    FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE: '1',
   } as Env['Bindings'];
 }
 

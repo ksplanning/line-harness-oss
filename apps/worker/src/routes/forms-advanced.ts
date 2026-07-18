@@ -629,6 +629,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         // route-terminal-phase2 (Track 2): successPages を reconcile (提供時のみ)。prev で slug carry + 削除検出。
         successPages: successPagesProvided ? incomingSuccessPages : undefined,
         prevSuccessPages: prevDef.successPages,
+        // fr-id-capture-fix (T-C3): friend system hidden field (fr_id/fr_name) を publish 経路で冪等 auto-push
+        //   (両テナント共通 = ks/piecemaker とも同 route)。既定有効・env で無効化 = rollback (D-4)。
+        //   fr_name(PII) は別 gate (FORMALOO_FR_NAME_AUTOPUSH_DISABLE) で切れる (owner-gate / codex#8)。
+        ensureSystemFields: c.env.FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE !== '1',
+        includeOwnerGatedSystemFields: c.env.FORMALOO_FR_NAME_AUTOPUSH_DISABLE !== '1',
       });
       // route-terminal-phase2 (Track 2): reconcile 後の割当 slug 付き successPages を永続対象へ反映
       //   (POST 成功後の slug を definition_json に残し次回保存で再 POST しない = 非冪等重複作成の根絶)。
@@ -788,6 +793,17 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           //   → out_of_sync。「保存されるが送信後に飛ばない」failure_observable を honest に surface する。
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: redirectReflectError,
+          });
+          syncSettled = true;
+        } else if (pushed.systemFieldsOutOfSync) {
+          // fr-id-capture-fix (T-C3): 定義本体は同期したが friend system field (fr_id/fr_name) が exactly-one
+          //   hidden にならなかった (衝突/POST 失敗/201消失)。回答導線は守る (publish 自体は成功) が、system field は
+          //   out_of_sync で honest surface し次回 publish で冪等再試行させる (warn だけの silent success を禁止 / codex#3)。
+          //   定義本体は push 済ゆえ baseline は clear (idle 分岐と同じく自分の push を drift 誤検知させない)。
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync',
+            lastError: 'friend 識別用フィールド (fr_id/fr_name) の同期に失敗しました。再保存で自動復旧します。',
+            remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
           });
           syncSettled = true;
         } else {

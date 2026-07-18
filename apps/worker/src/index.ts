@@ -210,6 +210,13 @@ export type Env = {
     //   機能だけを緊急停止する kill-switch。未設定/其他 = 復元 ON (既定・reconcile が friend_id を fail-closed 復元)。
     //   'true' = friend_id 復元のみ停止 (reconcile のミラー充填・一覧表示は従来通り継続)。additive rollback。
     FORMALOO_RECONCILE_FRIEND_LINK_DISABLE?: string;
+    // fr-id-capture-fix (T-C3/D-4): publish 経路の friend system hidden field (fr_id/fr_name) 冪等 auto-push の
+    //   kill-switch。未設定/其他 = 有効 (既定・両テナント共通 publish で alias='fr_id'/'fr_name' の hidden field を
+    //   冪等 ensure)。'1' = auto-push を短絡 (byte 同等 / rollback = Layer A land 済の現状へ完全復帰)。
+    FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE?: string;
+    // fr-id-capture-fix (T-C1/codex#8): fr_name (氏名=PII) の auto-push だけを切る owner-gate。未設定/其他 = 有効
+    //   (owner 意図 = Google Sheets 帰属可読化)。'1' = fr_id のみ push し fr_name を作らない (PII 保守テナント向け)。
+    FORMALOO_FR_NAME_AUTOPUSH_DISABLE?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
