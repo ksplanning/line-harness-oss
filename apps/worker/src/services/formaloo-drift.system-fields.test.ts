@@ -55,6 +55,13 @@ describe('fingerprint/drift system-field exclusion (T-C5(1))', () => {
     const changed = [{ ...baseFields[0], title: '氏名変更' }, baseFields[1]];
     expect(await formalooDefinitionFingerprint(changed, [])).not.toBe(fpBase);
   });
+
+  test('fr-id-hardening-round2 ③: 通常 answer field に alias=slug を足しても fingerprint 不変 (alias 自動付与が false-drift を誘発しない)', async () => {
+    const fpBase = await formalooDefinitionFingerprint(baseFields, []);
+    // createField/backfill が付ける alias=slug は projectField が非射影ゆえ fingerprint を変えない = drift 誤検知ゼロ。
+    const withAlias = baseFields.map((f) => ({ ...f, alias: f.slug }));
+    expect(await formalooDefinitionFingerprint(withAlias, [])).toBe(fpBase);
+  });
 });
 
 describe('system-field 健全性チェック (T-C5(3): drift とは別建て)', () => {
