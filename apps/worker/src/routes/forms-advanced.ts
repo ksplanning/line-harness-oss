@@ -1379,15 +1379,31 @@ formsAdvanced.get('/api/forms-advanced/:id/stats', async (c) => {
     const form = await getFormalooForm(c.env.DB, id);
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
+    // F6-2: form.workspace_id で多鍵解決。NULL(legacy) → env 単一鍵 fallback (byte-equivalent) /
+    // 登録 active → 暗号文鍵 / 未登録・無効化・復号失敗 → null (env silent fallback しない = 誤送信防止)。fail-soft 契約不変。
+    const client = await resolveFormalooClient(c.env, form.workspace_id);
+
+    // form-response-display-fix (T-B1): 総回答数 off-by-1 の対称化。
+    //   /rows は COUNT 前に reconcile するが /stats は未 reconcile でミラー直 COUNT していたため、
+    //   webhook 未配線 (piecemaker) では並列ロード時に /stats が未充填ミラーを数え「総回答数 < 実表示件数」に。
+    //   /rows と同じ bounded reconcile を COUNT の前に実行 (同一 env flag で skip 可・try/catch fail-soft・
+    //   upsert は ON CONFLICT(id) 冪等ゆえ /rows と並列 reconcile しても安全)。
+    if (c.env.FORMS_ADVANCED_ROWS_LIVE_RECONCILE_DISABLE !== 'true') {
+      try {
+        if (client && form.formaloo_slug) {
+          await reconcileFormalooRows(c.env.DB, form, client);
+        }
+      } catch (reconcileErr) {
+        console.error('GET /api/forms-advanced/:id/stats reconcile failed (fail-soft, mirror を数える):', reconcileErr);
+      }
+    }
+
     const { total } = await queryFormalooSubmissions(c.env.DB, { formId: id, limit: 1, offset: 0 });
     const daily = await formalooSubmissionsDailyCounts(c.env.DB, id);
     const verifiedRow = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM formaloo_submissions WHERE form_id = ? AND verified = 1').bind(id).first<{ n: number }>();
 
-    // Formaloo 側 stats を drill (fail-soft): client 未配備/失敗は null。
+    // Formaloo 側 stats を drill (fail-soft): client 未配備/失敗は null。上で解決済 client を再利用。
     let formaloo: unknown = null;
-    // F6-2: form.workspace_id で多鍵解決。NULL(legacy) → env 単一鍵 fallback (byte-equivalent) /
-    // 登録 active → 暗号文鍵 / 未登録・無効化・復号失敗 → null (env silent fallback しない = 誤送信防止)。fail-soft 契約不変。
-    const client = await resolveFormalooClient(c.env, form.workspace_id);
     if (client && form.formaloo_slug) {
       const r = await client.get<{ data?: unknown }>(`/v3.0/forms/${form.formaloo_slug}/stats/`);
       if (r.ok) formaloo = r.data?.data ?? null;
