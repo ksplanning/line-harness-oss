@@ -1,0 +1,9 @@
+# route-terminal-prefill-coexist — verification log
+
+- TDD-RED: `design acceptance shell` → `RED: missing .plans/2026-07-19-route-terminal-prefill-coexist/design.md` (exit 1)
+- TDD-GREEN: `design acceptance shell` → `PASS: design acceptance` (exit 0)
+- D-1: PASS — `design=.plans/2026-07-19-route-terminal-prefill-coexist/design.md; test -f "$design" && rg -q '^## 1\. 冒頭: 実測で確定した制約$|^### 証跡の訂正関係$' "$design" && test "$(rg -o '/root/\.openclaw/(line-harness-ks|workspace)/[^):、 \x60]+\.(md|sql|ts)' "$design" | sort -u | wc -l)" -eq 5` → `design=1 absolute_sources=5 corrected_evidence=1` (exit 0)
+- D-2: PASS — `design=.plans/2026-07-19-route-terminal-prefill-coexist/design.md; test "$(rg -c '^\| (A |B |C |D0 |D1 |D2 )' "$design")" -eq 6 && rg -q '^\| 案 \| 実現可否 \| 工数目安 \| 誤帰属・PII リスク \| 回帰リスク \| owner 操作の要否 \|$' "$design" && rg -q '^\| C logic の形を変える \| \*\*未確定。' "$design"` → `comparison_rows=6 required_columns=5 C=UNKNOWN` (exit 0)
+- D-3: PASS — `design=.plans/2026-07-19-route-terminal-prefill-coexist/design.md; rg -q '^## 5\. 推奨案: C' "$design" && rg -q '^### owner 向け日常語 1 行サマリ$' "$design" && rg -q '^### owner 向け選択肢提示文$' "$design"` → `recommendation=1 owner_summary=1 owner_choices=1` (exit 0)
+- D-4: PASS — `design=.plans/2026-07-19-route-terminal-prefill-coexist/design.md; test "$(rg -c '^#### (C-S0|C-S1|C-GATE|C-T1|C-T2|C-V1|O-C1)' "$design")" -eq 7 && test "$(rg -c '^機械検証可能 done 条件:$' "$design")" -eq 5 && test "$(rg -o '(apps|packages|docs)/[A-Za-z0-9_./@-]+\.(ts|sql|md):[0-9]+(-[0-9]+)?' "$design" | wc -l)" -eq 25` → `task_sections=7 machine_done_blocks=5 file_line_anchors=25` (exit 0)
+- D-5: PASS — `design=.plans/2026-07-19-route-terminal-prefill-coexist/design.md; rg -q '^## 7\. C 案を今回実測しなかった理由$' "$design" && rg -q '本案件中の外部操作は 0 件' "$design" && rg -q 'DELETE→GET 404' "$design" && test ! -e .plans/2026-07-19-route-terminal-prefill-coexist/c-spike-results.md` → `C_spike=NOT_RUN reason=present cleanup_contract=DELETE_to_404` (exit 0)
