@@ -4,6 +4,20 @@
 
 ---
 
+## admin-ai-chat-phase1 — 管理画面「AIチャット」第1段 (Formaloo純正AI分析)（2026-07-20 closer クローズ / status: pending_owner_confirmation / done 5/6）
+
+owner原文（2026-07-20 02:4x）:「管理画面内チャットの実装っていつ？？」→ 頭脳選択=「両方 (純正→自前の2段構え)」。本件=第1段 (Formaloo Pro プラン純正AI分析)。正本: `.plans/2026-07-20-admin-ai-chat-phase1/tasks.md`。reviewer Round1 PASS（独立 checkout 再実行で D-1〜D-6 全 green・findings は info 2件のみ・closer_allowed）。
+
+**実装**: `apps/worker/src/routes/formaloo-ai-chat.ts`（新規 route・owner-gated flag 既定OFF・contract 未確認時は fail-closed）+ migration 111（`formaloo_ai_chat_history` additive・連打防止 unique index）+ `apps/web/src/app/ai-chat/page.tsx`（チャット風UI・例文提示）。B4並走ファイル（builder.tsx等）不接触。両テナント同時適用可能な設計。
+
+**closer段でデプロイ+実機確認まで実施 → ただし1回実射のみ未達（owner確認待ち）**: migration 111 を両テナントD1へ適用（additive・行数不変）、4面デプロイ（KS worker `6d008dab`/admin `f5e43fa2`、Piecemaker worker `ece0449f`/admin `73a9759e`）、flag OFF での実挙動 (`404 ai_chat_disabled`・byte相当) を両テナントで実測。**AI 1回実射は未達**: host 診断（Piecemaker Formaloo B鍵で二段認証JWT取得は成功・`GET /v3.0/recent-forms/`は200=base URL/鍵は健全）の結果、`POST /v3.0/custom-prompt-analyzes/` と `/v3.0/prompts/` が `api.formaloo.net`/`api.formaloo.me` 両方で **404 Not Found**（現行 Formaloo ワークスペースで API 未有効化の可能性）。推測 POST は送信せず、クレジット消費ゼロ。
+
+**次の一手（owner 確認待ち）**: Formaloo サポートに Custom Prompt Analyze API の有効化を確認する、またはダッシュボードで AI Engine（OpenAI/Bedrock/Gemini 等）を接続してから再診断。確認が取れ次第、closer が host から使い捨てフォームで1回だけ実射→履歴反映確認→flag ONで納品。
+
+詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-20_053500_admin-ai-chat-phase1.md`（Box working folder 386663013201・file_id_md 2356898689674 / file_id_html 2356900473479）。
+
+---
+
 ## richmenu-conditional-rules — タグ/カスタムフィールド条件によるリッチメニュー自動切替（2026-07-19 closer クローズ / status: completed / done 7/7）
 
 owner原文（2026-07-19 17:2x）: 「TAGやカスタムフィールドの内容によってリッチメニューの表示を切り替える機能が欲しい…特定条件による表示設定はいくつでも設定できて、尚且つ優先順位も決めれる 複数の条件を満たしている場合は優先度が高いものが適応される」。正本: `.plans/2026-07-19-richmenu-conditional-rules/{spec,tasks}.md`。reviewer Round1 PASS（独立 checkout 再実行・全 suite green・保護4ファイル不接触・migration 107 のみ）。
