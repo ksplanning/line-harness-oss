@@ -369,8 +369,8 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
                     <span className={`rounded px-2 py-0.5 text-xs font-semibold ${rank === 1 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'}`}>
                       {rank ? `候補${rank}位` : rule.isActive ? '期間外（勝敗対象外）' : '停止中（勝敗対象外）'}
                     </span>
-                    <span className={`rounded px-2 py-0.5 text-xs font-semibold ${status === 'current' ? 'bg-emerald-100 text-emerald-800' : status === 'upcoming' ? 'bg-blue-100 text-blue-800' : 'bg-gray-200 text-gray-700'}`}>
-                      {status === 'current' ? '今有効' : status === 'upcoming' ? '開始前' : '終了済み'}
+                    <span className={`rounded px-2 py-0.5 text-xs font-semibold ${status === 'current' && rule.isActive ? 'bg-emerald-100 text-emerald-800' : status === 'upcoming' ? 'bg-blue-100 text-blue-800' : 'bg-gray-200 text-gray-700'}`}>
+                      {status === 'current' ? rule.isActive ? '今有効' : '期間内（停止中）' : status === 'upcoming' ? '開始前' : '終了済み'}
                     </span>
                     <strong className="text-sm text-gray-900">{rule.name}</strong>
                     <span className="text-xs text-gray-500">優先度 {rule.priority}</span>

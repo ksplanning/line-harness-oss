@@ -80,6 +80,7 @@ describe('DisplayRulePanel', () => {
     expect(screen.getByText('候補1位')).toBeTruthy()
     expect(screen.getByText('候補2位')).toBeTruthy()
     expect(screen.getByText('停止中（勝敗対象外）')).toBeTruthy()
+    expect(within(screen.getByText('停止中ルール').closest('article')!).getByText('期間内（停止中）')).toBeTruthy()
     expect(screen.getByText(/優先度の数字が大きいルールが勝ちます/)).toBeTruthy()
     expect(screen.getByText(/同じ数字なら、先に作ったルール、その後はID順/)).toBeTruthy()
     expect(screen.getByText(/どれにも合わない友だちは「全員のデフォルト」/)).toBeTruthy()
