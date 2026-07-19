@@ -37,6 +37,7 @@ export * from './knowledge';
 export * from './traffic-pools';
 export * from './message-templates';
 export * from './rich-menus';
+export * from './rich-menu-display-rules';
 export * from './response-schedules';
 export * from './saved-searches';
 export * from './canned-responses';
