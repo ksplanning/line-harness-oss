@@ -7,6 +7,7 @@ function app() {
   const a = new Hono<Env>();
   a.use('*', rateLimitMiddleware);
   a.get('/api/protected', (c) => c.json({ success: true }));
+  a.post('/formaloo/instant/:formId/:secret', (c) => c.json({ success: true }));
   return a;
 }
 
@@ -47,5 +48,24 @@ describe('rate-limit IP ceiling (pre-auth token rotation)', () => {
       }, env);
       expect(res.status).toBe(200);
     }
+  });
+});
+
+describe('Formaloo instant webhook は常に unauthenticated IP bucket', () => {
+  test('bogus Bearer を毎回変えても 101 件目を 429 にする', async () => {
+    const ip = '192.0.2.106';
+    const a = app();
+    let lastStatus = 0;
+    for (let i = 0; i < 101; i++) {
+      const res = await a.request('/formaloo/instant/fa_safe/path-secret', {
+        method: 'POST',
+        headers: {
+          'cf-connecting-ip': ip,
+          Authorization: `Bearer rotating-bogus-${i}`,
+        },
+      }, env);
+      lastStatus = res.status;
+    }
+    expect(lastStatus).toBe(429);
   });
 });

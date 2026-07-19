@@ -313,6 +313,44 @@ export async function setFormalooWebhookRegistration(
     .run();
 }
 
+/**
+ * remote POST より前に callback を OFF 状態で固定する。
+ * remote 作成後に D1 の最終保存だけ失敗しても、retry は同じ URL を read-back して採用できる。
+ */
+export async function prepareFormalooWebhookRegistration(
+  db: D1Database,
+  formId: string,
+  registration: { secret: string; url: string },
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_enabled = 0,
+           formaloo_webhook_secret = ?,
+           formaloo_webhook_url = ?,
+           updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(registration.secret, registration.url, jstNow(), formId)
+    .run();
+}
+
+/** remote cleanup が未完でも callback を即 no-op にする。id/secret/URL は再試行用に保持する。 */
+export async function disableFormalooWebhookRegistration(
+  db: D1Database,
+  formId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_enabled = 0,
+           updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(jstNow(), formId)
+    .run();
+}
+
 /** remote 解除成功（404=既に無しを含む）後に local 登録を既定 OFF へ戻す。 */
 export async function clearFormalooWebhookRegistration(
   db: D1Database,

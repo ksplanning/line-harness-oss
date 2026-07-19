@@ -6,7 +6,9 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import {
   clearFormalooWebhookRegistration,
   createFormalooForm,
+  disableFormalooWebhookRegistration,
   getFormalooForm,
+  prepareFormalooWebhookRegistration,
   setFormalooWebhookRegistration,
 } from './formaloo.js';
 
@@ -90,6 +92,20 @@ describe('migration 106 — Formaloo outbound webhook registration', () => {
 });
 
 describe('Formaloo webhook registration DAO', () => {
+  test('remote 作成前に callback secret/URL を OFF 状態で保存し、retry URL を固定する', async () => {
+    const form = await createFormalooForm(DB, { title: '登録準備フォーム' });
+    await prepareFormalooWebhookRegistration(DB, form.id, {
+      secret: 'pending-secret',
+      url: 'https://worker.example/formaloo/instant/fa_pending/pending-secret',
+    });
+    expect(await getFormalooForm(DB, form.id)).toMatchObject({
+      formaloo_webhook_enabled: 0,
+      formaloo_webhook_id: null,
+      formaloo_webhook_secret: 'pending-secret',
+      formaloo_webhook_url: 'https://worker.example/formaloo/instant/fa_pending/pending-secret',
+    });
+  });
+
   test('read-back 済み登録情報を保存し、解除時は全情報を消す', async () => {
     const form = await createFormalooForm(DB, { title: '即時通知フォーム' });
 
@@ -111,6 +127,22 @@ describe('Formaloo webhook registration DAO', () => {
       formaloo_webhook_id: null,
       formaloo_webhook_secret: null,
       formaloo_webhook_url: null,
+    });
+  });
+
+  test('remote DELETE 失敗時は受信だけ OFF にし、再 cleanup 用 id/secret/URL は保持する', async () => {
+    const form = await createFormalooForm(DB, { title: '解除再試行フォーム' });
+    await setFormalooWebhookRegistration(DB, form.id, {
+      webhookId: 'wh_retry',
+      secret: 'retry-secret',
+      url: 'https://worker.example/formaloo/instant/fa_retry/retry-secret',
+    });
+    await disableFormalooWebhookRegistration(DB, form.id);
+    expect(await getFormalooForm(DB, form.id)).toMatchObject({
+      formaloo_webhook_enabled: 0,
+      formaloo_webhook_id: 'wh_retry',
+      formaloo_webhook_secret: 'retry-secret',
+      formaloo_webhook_url: 'https://worker.example/formaloo/instant/fa_retry/retry-secret',
     });
   });
 });

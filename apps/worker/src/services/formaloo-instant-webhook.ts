@@ -18,7 +18,7 @@ interface RemoteWebhook {
   submitEnabled: boolean;
 }
 
-type EnsureResult =
+export type EnsureResult =
   | { ok: true; webhookId: string; created: boolean }
   | { ok: false; reason: 'read_failed' | 'cleanup_failed' | 'create_failed' | 'read_back_failed' };
 
