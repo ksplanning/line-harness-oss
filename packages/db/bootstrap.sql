@@ -1356,6 +1356,10 @@ CREATE INDEX idx_formaloo_ai_chat_daily_guard
 CREATE INDEX idx_formaloo_ai_chat_history_scope
   ON formaloo_ai_chat_history (tenant_scope, line_account_id, form_id, created_at DESC);
 
+CREATE UNIQUE INDEX idx_formaloo_ai_chat_one_pending
+  ON formaloo_ai_chat_history (tenant_scope, line_account_id, form_id)
+  WHERE status = 'pending';
+
 CREATE INDEX idx_formaloo_choice_lists_form ON formaloo_choice_lists (form_id, updated_at);
 
 CREATE INDEX idx_formaloo_drift_events_form ON formaloo_drift_events (form_id, detected_at);

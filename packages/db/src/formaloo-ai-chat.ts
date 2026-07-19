@@ -116,13 +116,33 @@ export async function reserveFormalooAiChatHistory(
          AND credit_reserved = 1
          AND created_at >= ?
          AND created_at < ?
-     ) < ?`,
+     ) < ?
+       AND NOT EXISTS (
+         SELECT 1 FROM formaloo_ai_chat_history
+         WHERE tenant_scope = ?
+           AND line_account_id = ?
+           AND form_id = ?
+           AND status = 'pending'
+       )`,
   ).bind(
     id, input.tenantScope, input.lineAccountId, input.formId, input.question, now, now,
     input.tenantScope, dayStart, nextDayStart, input.dailyLimit,
+    input.tenantScope, input.lineAccountId, input.formId,
   ).run();
   if ((result.meta.changes ?? 0) !== 1) return null;
   return getById(db, id);
+}
+
+export async function hasPendingFormalooAiChatHistory(
+  db: D1Database,
+  input: { tenantScope: string; lineAccountId: string; formId: string },
+): Promise<boolean> {
+  const row = await db.prepare(
+    `SELECT 1 AS found FROM formaloo_ai_chat_history
+     WHERE tenant_scope = ? AND line_account_id = ? AND form_id = ? AND status = 'pending'
+     LIMIT 1`,
+  ).bind(input.tenantScope, input.lineAccountId, input.formId).first<{ found: number }>();
+  return row?.found === 1;
 }
 
 export async function completeFormalooAiChatHistory(

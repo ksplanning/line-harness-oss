@@ -93,6 +93,26 @@ describe('Formaloo AI chat history DAO', () => {
     expect(otherTenant).not.toBeNull();
   });
 
+  test('atomically allows only one pending analysis for the same tenant account and form', async () => {
+    const formA = await createFormalooForm(db, { title: '同時送信ガード', lineAccountId: 'line-a' });
+    const formB = await createFormalooForm(db, { title: '別フォーム', lineAccountId: 'line-a' });
+    const base = {
+      tenantScope: 'tenant-a', lineAccountId: 'line-a', formId: formA.id,
+      dailyLimit: 5, now: '2026-07-20T10:30:00.000+09:00',
+    };
+
+    const [first, duplicate] = await Promise.all([
+      reserveFormalooAiChatHistory(db, { ...base, question: '最初の質問' }),
+      reserveFormalooAiChatHistory(db, { ...base, question: '同時の質問' }),
+    ]);
+    const otherForm = await reserveFormalooAiChatHistory(db, {
+      ...base, formId: formB.id, question: '別フォームの質問',
+    });
+
+    expect([first, duplicate].filter(Boolean)).toHaveLength(1);
+    expect(otherForm).not.toBeNull();
+  });
+
   test('a pre-credit failure releases the reservation, while an issued analysis remains counted', async () => {
     const form = await createFormalooForm(db, { title: '利用枠テスト', lineAccountId: 'line-a' });
     const base = {
