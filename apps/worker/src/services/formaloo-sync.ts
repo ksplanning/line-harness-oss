@@ -2,6 +2,7 @@ import {
   toFormalooFieldPayload,
   toFormalooRawLogic,
   serializeRawLogicForPush,
+  formulaReferenceIds,
   type HarnessField,
   type HarnessLogicRule,
   type FormDisplayType,
@@ -121,6 +122,29 @@ export async function pushDefinitionToFormaloo(
   },
 ): Promise<PushResult> {
   const existingFieldSlugs = params.existingFieldSlugs ?? {};
+  // treasure-b3-calc-dynamic: formula は harness 内部 id を保持する。新規 field の slug は POST 後にしか
+  // 判明しないため、通常 field → 依存解決済み formula の順へ topological に並べ、未解決/cycle は API 送信前に止める。
+  const formulaFields = params.fields.filter((field) => field.type === 'variable' && field.config.variableSubType === 'formula');
+  const nonFormulaFields = params.fields.filter((field) => !(field.type === 'variable' && field.config.variableSubType === 'formula'));
+  const knownIds = new Set([...params.fields.map((field) => field.id), ...Object.keys(existingFieldSlugs)]);
+  for (const field of formulaFields) {
+    const missing = formulaReferenceIds(field.config.formula ?? '').find((id) => !knownIds.has(id));
+    if (missing) return { ok: false, formalooSlug: params.formalooSlug, error: `formula reference missing: ${missing}` };
+  }
+  const resolvedOrderIds = new Set([...nonFormulaFields.map((field) => field.id), ...Object.keys(existingFieldSlugs)]);
+  const pendingFormulaFields = [...formulaFields];
+  const orderedFields = [...nonFormulaFields];
+  while (pendingFormulaFields.length > 0) {
+    const index = pendingFormulaFields.findIndex((field) =>
+      formulaReferenceIds(field.config.formula ?? '').every((id) => resolvedOrderIds.has(id)),
+    );
+    if (index < 0) {
+      return { ok: false, formalooSlug: params.formalooSlug, error: 'formula reference cycle' };
+    }
+    const [field] = pendingFormulaFields.splice(index, 1);
+    orderedFields.push(field!);
+    resolvedOrderIds.add(field!.id);
+  }
   // form-ensure より前に「form が既に存在するか」を捕捉 (B2)。初回 push (form 新規作成) は全 field 新規 =
   // probe 不要 = 従来 POST 経路と同値 (R5 回帰)。form 既存時のみ、未知 field を probe で実在確認する。
   const formPreExisted = !!params.formalooSlug;
@@ -151,11 +175,14 @@ export async function pushDefinitionToFormaloo(
     }
   }
 
+  const fieldSlugs: Record<string, string> = {};
+  const resolveFieldSlug = (fieldId: string): string | undefined => fieldSlugs[fieldId] ?? existingFieldSlugs[fieldId];
+
   // field 新規作成 (POST /v3.0/fields/) の共通ヘルパ。full payload (choices 込み) で作成し slug を集める。
   // field は top-level /v3.0/fields/ へ送り、所属 form は body の `form` slug で紐づける (旧 form-nested path は
   // 本番 Formaloo API に存在せず HTTP 404 だった / 2026-07-10 本番検証)。
   const createField = async (field: HarnessField): Promise<PushResult | { fslug: string }> => {
-    const payload = { ...toFormalooFieldPayload(field), form: slug };
+    const payload = { ...toFormalooFieldPayload(field, resolveFieldSlug), form: slug };
     const res = await client.post<FieldCreateResp>('/v3.0/fields/', payload);
     if (!res.ok) return { ok: false, formalooSlug: slug, error: `field push failed (${field.id}): HTTP ${res.status}` };
     const fslug = res.data?.data?.field?.slug ?? res.data?.data?.slug;
@@ -178,8 +205,7 @@ export async function pushDefinitionToFormaloo(
   };
 
   // 2) fields を upsert (update-vs-create で冪等化 / N-13: field 単位。1 つでも失敗したら out_of_sync)。
-  const fieldSlugs: Record<string, string> = {};
-  for (const field of params.fields) {
+  for (const field of orderedFields) {
     let fieldSlug: string | undefined = existingFieldSlugs[field.id];
 
     // slug 未知 かつ form 既存 → probe GET /v3.0/fields/{field.id}/ で実在確認 (B1/B2)。
@@ -199,7 +225,7 @@ export async function pushDefinitionToFormaloo(
 
     if (fieldSlug) {
       // update = PATCH /v3.0/fields/{slug}/。choice_items を送らない (B6) = choices は不変 (dup も wipe も無し)。
-      const patchBody = toFormalooFieldPayload(field);
+      const patchBody = toFormalooFieldPayload(field, resolveFieldSlug);
       delete patchBody.choice_items;
       const r = await client.request('PATCH', `/v3.0/fields/${fieldSlug}/`, patchBody);
       if (r.status === 404) {

@@ -31,6 +31,9 @@ export const FORMALOO_FIELD_TYPES = [
   // treasure-b1-palette: 入力型 additive (rating=星/良悪/NPS/点数・signature=手書きサイン)。逆引き自動生成。
   'rating',
   'signature',
+  // treasure-b3-calc-dynamic: 計算変数 + 公開 endpoint から取得する動的選択肢。
+  'variable',
+  'choice_fetch',
 ] as const;
 
 // treasure-b1-palette: video は装飾 (回答なし・required 常時 false) だが Formaloo type は oembed (下 HARNESS_TO_FORMALOO_TYPE)。
@@ -45,6 +48,12 @@ export const DECORATION_FIELD_TYPES = ['section', 'page_break', 'video', 'image'
  */
 export const RATING_SUB_TYPES = ['star', 'like_dislike', 'nps', 'score', 'embeded'] as const;
 export type RatingSubType = (typeof RATING_SUB_TYPES)[number];
+export const VARIABLE_SUB_TYPES = ['int', 'string', 'decimal', 'formula'] as const;
+export type VariableSubType = (typeof VARIABLE_SUB_TYPES)[number];
+export interface ChoiceFetchItem {
+  label: string;
+  value: string;
+}
 export type HarnessDecorationType = (typeof DECORATION_FIELD_TYPES)[number];
 
 /**
@@ -150,6 +159,8 @@ export const HARNESS_TO_FORMALOO_TYPE: Record<HarnessFieldType, string> = {
   // treasure-b1-palette: rating/signature は同名。video は装飾だが Formaloo type=oembed (meta ではない = explicit)。
   rating: 'rating',
   signature: 'signature',
+  variable: 'variable',
+  choice_fetch: 'choice_fetch',
   section: 'meta',
   page_break: 'meta',
   video: 'oembed',
@@ -225,6 +236,18 @@ export interface HarnessFieldConfig {
    * harness 側 intent = Formaloo payload には載せない。worker が R2 へ upload し imageUrl を確定してから push。
    */
   imageUpload?: FormDesignImageUpload;
+  /** variable の必須 sub_type (Formaloo 実測 enum)。 */
+  variableSubType?: VariableSubType;
+  /** variable/formula の式。harness 内では `{fieldId}`、push 時だけ `{FormalooSlug}` へ解決する。 */
+  formula?: string;
+  /** variable/formula の小数桁数 (Formaloo decimal_places)。 */
+  decimalPlaces?: number;
+  /** choice_fetch の公開 GET URL (Formaloo choices_source)。 */
+  choicesSource?: string;
+  /** harness 管理リストの id。Formaloo payload には送らない。 */
+  choiceListId?: string;
+  /** builder preview 用の最新リスト値 snapshot。Formaloo payload/fingerprint には送らない。 */
+  choiceFetchItems?: ChoiceFetchItem[];
 }
 
 export interface HarnessField {
@@ -368,6 +391,26 @@ function isFieldType(v: unknown): v is HarnessFieldType {
   );
 }
 
+/** formula 内の `{fieldId}` 参照を出現順・重複なしで取り出す。 */
+export function formulaReferenceIds(formula: string): string[] {
+  const refs: string[] = [];
+  for (const match of formula.matchAll(/\{([^{}]+)\}/g)) {
+    const id = match[1]?.trim();
+    if (id && !refs.includes(id)) refs.push(id);
+  }
+  return refs;
+}
+
+/** formula 参照だけを resolver で写像する。未解決参照は caller が検出できるよう原文保持する。 */
+function mapFormulaReferences(formula: string, resolve?: (id: string) => string | undefined): string {
+  if (!resolve) return formula;
+  return formula.replace(/\{([^{}]+)\}/g, (whole, rawId: string) => {
+    const id = rawId.trim();
+    const mapped = id ? resolve(id) : undefined;
+    return mapped ? `{${mapped}}` : whole;
+  });
+}
+
 /**
  * 未知プロパティを剥がし MVP subset に正規化。subset 外種別・不正 config は reject (M-21)。
  */
@@ -473,10 +516,55 @@ export function validateHarnessField(
     if (typeof up.filename === 'string') copy.filename = up.filename;
     config.imageUpload = copy;
   }
+  if (rawCfg.variableSubType !== undefined) {
+    if (typeof rawCfg.variableSubType !== 'string' || !(VARIABLE_SUB_TYPES as readonly string[]).includes(rawCfg.variableSubType)) {
+      return { ok: false, error: `config.variableSubType must be one of ${VARIABLE_SUB_TYPES.join('/')}` };
+    }
+    config.variableSubType = rawCfg.variableSubType as VariableSubType;
+  }
+  if (rawCfg.formula !== undefined) {
+    if (typeof rawCfg.formula !== 'string') return { ok: false, error: 'config.formula must be string' };
+    config.formula = rawCfg.formula;
+  }
+  if (rawCfg.decimalPlaces !== undefined) {
+    if (typeof rawCfg.decimalPlaces !== 'number' || !Number.isInteger(rawCfg.decimalPlaces) || rawCfg.decimalPlaces < 0) {
+      return { ok: false, error: 'config.decimalPlaces must be a non-negative integer' };
+    }
+    config.decimalPlaces = rawCfg.decimalPlaces;
+  }
+  if (rawCfg.choicesSource !== undefined) {
+    if (typeof rawCfg.choicesSource !== 'string') return { ok: false, error: 'config.choicesSource must be string' };
+    config.choicesSource = rawCfg.choicesSource;
+  }
+  if (rawCfg.choiceListId !== undefined) {
+    if (typeof rawCfg.choiceListId !== 'string') return { ok: false, error: 'config.choiceListId must be string' };
+    config.choiceListId = rawCfg.choiceListId;
+  }
+  if (rawCfg.choiceFetchItems !== undefined) {
+    const items = rawCfg.choiceFetchItems;
+    if (!Array.isArray(items) || !items.every((item) => (
+      item !== null
+      && typeof item === 'object'
+      && typeof (item as Record<string, unknown>).label === 'string'
+      && typeof (item as Record<string, unknown>).value === 'string'
+    ))) {
+      return { ok: false, error: 'config.choiceFetchItems must be {label,value}[]' };
+    }
+    config.choiceFetchItems = (items as ChoiceFetchItem[]).map((item) => ({ label: item.label, value: item.value }));
+  }
   // treasure-b1-palette: video (oembed) は url 必須 = 空/未設定は保存 hold (reject)。
   //   空 url の oembed PATCH は 500 になるため、空 url を push 経路へ通さない (spike 実測 / honest surface)。
   if (o.type === 'video' && !config.videoUrl) {
     return { ok: false, error: '動画の埋め込みURLを入力してください（YouTube/Vimeo 等）' };
+  }
+  if (o.type === 'variable') {
+    if (!config.variableSubType) return { ok: false, error: '計算の種類を選んでください' };
+    if (config.variableSubType === 'formula' && !config.formula?.trim()) {
+      return { ok: false, error: '計算式を入力してください' };
+    }
+  }
+  if (o.type === 'choice_fetch' && (!config.choicesSource || !isSafeImageUrl(config.choicesSource))) {
+    return { ok: false, error: '動的選択肢の公開URLを選んでください' };
   }
 
   return {
@@ -485,7 +573,7 @@ export function validateHarnessField(
       id: o.id,
       type: o.type,
       label: o.label,
-      required: isDecorationType(o.type) ? false : o.required === true,
+      required: isDecorationType(o.type) || o.type === 'variable' ? false : o.required === true,
       position: typeof o.position === 'number' ? o.position : 0,
       config,
     },
@@ -493,7 +581,10 @@ export function validateHarnessField(
 }
 
 /** harness field → Formaloo field POST payload (未知プロパティを持たない明示形 / M-8)。 */
-export function toFormalooFieldPayload(field: HarnessField): Record<string, unknown> {
+export function toFormalooFieldPayload(
+  field: HarnessField,
+  resolveSlug?: (harnessFieldId: string) => string | undefined,
+): Record<string, unknown> {
   if (field.type === 'section') {
     return {
       type: 'meta',
@@ -532,6 +623,29 @@ export function toFormalooFieldPayload(field: HarnessField): Record<string, unkn
       title: field.label,
       description: buildImageDescriptionHtml(field.config.imageUrl ?? '', field.config.imageAlt ?? '', field.config.imageWidth ?? 'medium'),
       position: field.position,
+    };
+  }
+  if (field.type === 'variable') {
+    const subType = field.config.variableSubType!;
+    const payload: Record<string, unknown> = {
+      type: 'variable',
+      title: field.label,
+      position: field.position,
+      sub_type: subType,
+      config: subType === 'formula'
+        ? { formula: mapFormulaReferences(field.config.formula ?? '', resolveSlug) }
+        : {},
+    };
+    if (field.config.decimalPlaces !== undefined) payload.decimal_places = field.config.decimalPlaces;
+    return payload;
+  }
+  if (field.type === 'choice_fetch') {
+    return {
+      type: 'choice_fetch',
+      title: field.label,
+      required: field.required,
+      position: field.position,
+      choices_source: field.config.choicesSource ?? '',
     };
   }
   const p: Record<string, unknown> = {
@@ -634,6 +748,31 @@ export function fromFormalooField(
     };
   }
 
+  if (formalooType === 'variable') {
+    const subType = typeof o.sub_type === 'string' && (VARIABLE_SUB_TYPES as readonly string[]).includes(o.sub_type)
+      ? o.sub_type as VariableSubType
+      : null;
+    if (!subType) return null;
+    const variableConfig: HarnessFieldConfig = { variableSubType: subType };
+    const rawConfig = o.config && typeof o.config === 'object' && !Array.isArray(o.config)
+      ? o.config as Record<string, unknown>
+      : {};
+    if (subType === 'formula' && typeof rawConfig.formula === 'string') {
+      variableConfig.formula = mapFormulaReferences(rawConfig.formula, resolveId);
+    }
+    if (typeof o.decimal_places === 'number' && Number.isInteger(o.decimal_places) && o.decimal_places >= 0) {
+      variableConfig.decimalPlaces = o.decimal_places;
+    }
+    return {
+      id,
+      type: 'variable',
+      label: typeof o.title === 'string' ? o.title : '',
+      required: false,
+      position: typeof o.position === 'number' ? o.position : 0,
+      config: variableConfig,
+    };
+  }
+
   const type = FORMALOO_TO_HARNESS_TYPE[formalooType];
   if (!type) return null; // MVP subset 外 = 復元しない (M-21)
 
@@ -650,6 +789,10 @@ export function fromFormalooField(
   if (typeof o.max_size === 'number' && Number.isFinite(o.max_size) && o.max_size !== 2048) config.maxSizeKb = o.max_size;
   // treasure-b1-palette: rating の sub_type を pull。既定 star は drop (既存 form 不変ガード = maxSizeKb=2048 と同型)。
   if (type === 'rating' && typeof o.sub_type === 'string' && o.sub_type !== 'star') config.ratingSubType = o.sub_type as RatingSubType;
+  if (type === 'choice_fetch') {
+    if (typeof o.choices_source !== 'string' || !o.choices_source) return null;
+    config.choicesSource = o.choices_source;
+  }
   if (type === 'choice' || type === 'dropdown' || type === 'multiple_select') {
     const rawItems = Array.isArray(o.choice_items) ? (o.choice_items as unknown[]) : [];
     const sorted = rawItems

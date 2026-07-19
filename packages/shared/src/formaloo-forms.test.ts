@@ -22,9 +22,9 @@ import {
 } from './formaloo-forms';
 
 describe('formaloo-forms — field 種別 MVP subset (N-13)', () => {
-  test('入力 subset は 12 種 (treasure-b1: rating/signature additive・matrix 等は含まない)', () => {
+  test('入力 subset は 14 種 (treasure-b3: variable/choice_fetch additive・matrix 等は含まない)', () => {
     expect([...FORMALOO_FIELD_TYPES].sort()).toEqual(
-      ['text', 'textarea', 'choice', 'dropdown', 'multiple_select', 'number', 'email', 'phone', 'date', 'file', 'rating', 'signature'].sort(),
+      ['text', 'textarea', 'choice', 'dropdown', 'multiple_select', 'number', 'email', 'phone', 'date', 'file', 'rating', 'signature', 'variable', 'choice_fetch'].sort(),
     );
     expect(FORMALOO_FIELD_TYPES).not.toContain('matrix');
     expect(FORMALOO_FIELD_TYPES).not.toContain('repeating_section');

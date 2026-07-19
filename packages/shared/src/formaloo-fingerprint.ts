@@ -19,7 +19,7 @@
 //  - fields は (position, slug) 昇順に安定ソート (順序ノイズ排除 / 既存 pull の W2 と整合)。
 // =============================================================================
 
-import { FORMALOO_TO_HARNESS_TYPE, isSystemHiddenField, type HarnessFieldType } from './formaloo-forms';
+import { FORMALOO_TO_HARNESS_TYPE, VARIABLE_SUB_TYPES, isSystemHiddenField, type HarnessFieldType } from './formaloo-forms';
 import { parseImageDescription } from './form-image';
 import { extractFormOperationsSettings, type FormOperationsSettings } from './form-operations';
 
@@ -51,7 +51,7 @@ export interface ProjectedField {
   max_size?: number;
   /** choice/dropdown/multiple_select の選択肢 title (position 昇順・その他行除外)。fromFormalooField 出力と同型。 */
   choices?: string[];
-  /** rating の sub_type (treasure-b1-palette)。既定 star は射影しない (既存 form の false-drift 回避 / 後方互換の要)。 */
+  /** rating（既定 star は除外）または variable（必須）の sub_type。 */
   subType?: string;
   /** oembed(video) の埋め込み URL (treasure-b1-palette)。非空時のみ射影 (url 空/未載は false-drift 回避)。 */
   videoUrl?: string;
@@ -64,6 +64,12 @@ export interface ProjectedField {
   imageUrl?: string;
   imageAlt?: string;
   imageWidth?: string;
+  /** variable/formula の式 (非空時のみ)。 */
+  formula?: string;
+  /** variable の decimal_places (有効な非負整数のみ)。 */
+  decimalPlaces?: number;
+  /** choice_fetch の choices_source (非空時のみ)。 */
+  choicesSource?: string;
 }
 
 export interface CanonicalDefinition {
@@ -129,7 +135,7 @@ function projectField(el: unknown, systemPositions: readonly number[]): Projecte
     slug: typeof o.slug === 'string' ? o.slug : '',
     type: formalooType,
     title: typeof o.title === 'string' ? o.title : '',
-    required: o.required === true,
+    required: harnessType === 'variable' ? false : o.required === true,
     position: projectPosition(o.position, systemPositions),
   };
   // 入力項目の補足説明を射影に含める (変換器 fromFormalooField の読取集合と一致)。
@@ -146,6 +152,19 @@ function projectField(el: unknown, systemPositions: readonly number[]): Projecte
   if (typeof o.max_size === 'number' && Number.isFinite(o.max_size) && o.max_size !== 2048) proj.max_size = o.max_size;
   // treasure-b1-palette: rating の sub_type を射影。既定 star は落とす (star rating の false-drift 回避 = 後方互換ガード)。
   if (harnessType === 'rating' && typeof o.sub_type === 'string' && o.sub_type !== 'star') proj.subType = o.sub_type;
+  if (harnessType === 'variable' && typeof o.sub_type === 'string' && (VARIABLE_SUB_TYPES as readonly string[]).includes(o.sub_type)) {
+    proj.subType = o.sub_type;
+    const config = o.config && typeof o.config === 'object' && !Array.isArray(o.config)
+      ? o.config as Record<string, unknown>
+      : {};
+    if (o.sub_type === 'formula' && typeof config.formula === 'string' && config.formula) proj.formula = config.formula;
+    if (typeof o.decimal_places === 'number' && Number.isInteger(o.decimal_places) && o.decimal_places >= 0) {
+      proj.decimalPlaces = o.decimal_places;
+    }
+  }
+  if (harnessType === 'choice_fetch' && typeof o.choices_source === 'string' && o.choices_source) {
+    proj.choicesSource = o.choices_source;
+  }
   if (harnessType === 'choice' || harnessType === 'dropdown' || harnessType === 'multiple_select') {
     const rawItems = Array.isArray(o.choice_items) ? (o.choice_items as unknown[]) : [];
     proj.choices = rawItems
