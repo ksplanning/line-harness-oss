@@ -130,6 +130,13 @@ function projectField(el: unknown, systemPositions: readonly number[]): Projecte
   }
   const harnessType: HarnessFieldType | undefined = FORMALOO_TO_HARNESS_TYPE[formalooType];
   if (!harnessType) return null; // MVP subset 外 = harness に反映されない → 射影対象外
+  // Dynamic fields have server-required discriminators. Pull drops an invalid field, so fingerprint must also
+  // drop it; otherwise drift would detect a field that auto-apply cannot represent (permanent false drift).
+  if (
+    harnessType === 'variable'
+    && (typeof o.sub_type !== 'string' || !(VARIABLE_SUB_TYPES as readonly string[]).includes(o.sub_type))
+  ) return null;
+  if (harnessType === 'choice_fetch' && (typeof o.choices_source !== 'string' || !o.choices_source)) return null;
 
   const proj: ProjectedField = {
     slug: typeof o.slug === 'string' ? o.slug : '',

@@ -150,6 +150,7 @@ describe('official choice_fetch public GET contract', () => {
     expect(publicResponse.status).toBe(200);
     expect(publicResponse.headers.get('content-type')).toContain('application/json');
     expect(publicResponse.headers.get('access-control-allow-origin')).toBe('*');
+    expect(publicResponse.headers.get('access-control-allow-credentials')).toBeNull();
     const publicBody = await publicResponse.json() as Array<{ label: string; value: string }>;
     expect(Array.isArray(publicBody)).toBe(true);
     expect(publicBody).toHaveLength(10);
@@ -158,6 +159,20 @@ describe('official choice_fetch public GET contract', () => {
 
     const searched = await request('GET', `/formaloo/choices/form_a/${list.id}?q=Charlie`, undefined, false);
     expect(await searched.json()).toEqual([{ label: 'Charlie', value: '3' }]);
+  });
+
+  test('answers the public CORS preflight without admin credentials', async () => {
+    const response = await app.request('/formaloo/choices/form_a/fcl_any', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://app.formaloo.com',
+        'Access-Control-Request-Method': 'GET',
+      },
+    }, env());
+    expect(response.status).toBe(204);
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    expect(response.headers.get('access-control-allow-credentials')).toBeNull();
+    expect(response.headers.get('access-control-allow-methods')).toContain('GET');
   });
 
   test('wrong form, missing list, and deleted parent return 404 without exposing another list', async () => {

@@ -68,6 +68,8 @@ const UNAUTHENTICATED_PATTERNS: Array<string | RegExp> = [
   // Formaloo callback は /formaloo/* の auth skip 対象。bogus Bearer で authenticated bucket を選ばせず
   // 常に IP 100/min に固定し、callback token の総当たり・pull 起動連打を入口で抑える。
   /^\/formaloo\/instant\/[^/]+\/[^/]+$/,
+  // choice_fetch も認証不要の公開供給 URL。偽 Bearer のローテーションで緩い token bucket を選ばせない。
+  /^\/formaloo\/choices\/[^/]+\/[^/]+$/,
   // Admin login: per-IP burst throttle (D1 per-account lockout is authoritative; this
   // is the IP dimension of the IP+account complex — GC-6 / batch F). Slows credential
   // stuffing from one IP regardless of which login_id is targeted.

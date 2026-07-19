@@ -8,6 +8,7 @@ function app() {
   a.use('*', rateLimitMiddleware);
   a.get('/api/protected', (c) => c.json({ success: true }));
   a.post('/formaloo/instant/:formId/:secret', (c) => c.json({ success: true }));
+  a.get('/formaloo/choices/:formId/:listId', (c) => c.json([]));
   return a;
 }
 
@@ -62,6 +63,24 @@ describe('Formaloo instant webhook は常に unauthenticated IP bucket', () => {
         headers: {
           'cf-connecting-ip': ip,
           Authorization: `Bearer rotating-bogus-${i}`,
+        },
+      }, env);
+      lastStatus = res.status;
+    }
+    expect(lastStatus).toBe(429);
+  });
+});
+
+describe('Formaloo dynamic choices は常に unauthenticated IP bucket', () => {
+  test('bogus Bearer を毎回変えても 101 件目を 429 にする', async () => {
+    const ip = '192.0.2.108';
+    const a = app();
+    let lastStatus = 0;
+    for (let i = 0; i < 101; i++) {
+      const res = await a.request('/formaloo/choices/form_a/list_a', {
+        headers: {
+          'cf-connecting-ip': ip,
+          Authorization: `Bearer rotating-choice-bogus-${i}`,
         },
       }, env);
       lastStatus = res.status;

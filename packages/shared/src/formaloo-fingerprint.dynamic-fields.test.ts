@@ -37,6 +37,15 @@ describe('dynamic field fingerprint projection', () => {
     expect(field).not.toHaveProperty('decimalPlaces');
   });
 
+  test('drops dynamic fields whose required remote key is unset or invalid, matching pull', () => {
+    expect(canonicalDefinitionProjection([
+      { slug: 'V1', type: 'variable', title: '未設定', position: 0, config: {} },
+      { slug: 'V2', type: 'variable', title: '不正', position: 1, sub_type: 'number', config: {} },
+      { slug: 'C1', type: 'choice_fetch', title: '未設定', position: 2 },
+      { slug: 'C2', type: 'choice_fetch', title: '空', position: 3, choices_source: '' },
+    ], []).fields).toEqual([]);
+  });
+
   test('formula/source changes alter the fingerprint', async () => {
     const variable = (formula: string) => ({
       slug: 'TOTAL', type: 'variable', title: '合計', position: 0, sub_type: 'formula', config: { formula },

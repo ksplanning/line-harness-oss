@@ -252,7 +252,7 @@ export const app = new Hono<Env>();
 // same-origin requests and origins on the ADMIN_ORIGIN allowlist; everything
 // else gets no Access-Control-Allow-Origin header (browser blocks it). Bearer
 // SDK/MCP callers send no Origin header and are unaffected.
-app.use('*', cors({
+const adminCors = cors({
   origin: (origin, c) => resolveCorsOrigin(c.env, origin, c.req.url),
   credentials: true,
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -260,7 +260,23 @@ app.use('*', cors({
   // これが無いと *.pages.dev からの preflight で弾かれ「履歴取得に失敗: Failed to fetch」になる (reviewer G1)。
   allowHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'x-admin-api-key'],
   maxAge: 600,
-}));
+});
+
+// choice_fetch is called by Formaloo's backend and hosted frontend without credentials.
+// Keep it out of the credentialed admin CORS policy so both GET and OPTIONS can use wildcard CORS.
+const publicChoiceCors = cors({
+  origin: '*',
+  allowMethods: ['GET', 'OPTIONS'],
+  allowHeaders: ['Content-Type'],
+  maxAge: 600,
+});
+
+app.use('*', (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  return path.startsWith('/formaloo/choices/')
+    ? publicChoiceCors(c, next)
+    : adminCors(c, next);
+});
 
 // Rate limiting — runs before auth to block abuse early
 app.use('*', rateLimitMiddleware);
