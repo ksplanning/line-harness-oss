@@ -486,3 +486,45 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 
 ### 診断結果 (2026-07-20 closer / host)
 このワークスペースの Formaloo アカウントには AI Custom Prompt Analyze / Prompts API が (プランまたはダッシュボードでの Engine 未設定により) まだ有効化されていない可能性が高い。owner が Formaloo サポートに「Custom Prompt Analyze API を有効化してほしい」と問い合わせるか、ダッシュボードで AI Engine (OpenAI/Bedrock/Gemini 等) を接続後に再診断が必要。コードは safe (flag OFF・contract 未設定は 503 disabled 相当) なので事故リスクはゼロ。
+
+---
+
+# treasure-b4-structural — host live checklist
+
+## できるようになること
+
+複数項目をまとめて聞く表形式と、人数分だけ増やせる入力欄が作れるようになります。
+
+## 対象と安全条件
+
+- sandbox から Formaloo への field 登録・回答送信は行っていない。査読済みの同一 revision を approved host へ deploy してから確認する。
+- KS と Piecemaker は別々に実施し、deployment SHA、実行者、実行時刻、各 read-back 結果をそれぞれ記録する。片方の結果をもう片方へ流用しない。
+- 個人情報を含まない使い捨てフォームと合成回答だけを使う。本番 3 フォーム `Z5IEH85R` / `GMOxoMtK` / `XqACeA2v` には GET を含めて触れない。
+- token、API key、cookie、署名値は証跡へ残さない。HTTP 200 だけでは PASS にせず、作成内容・hosted 表示・submit 後の回答・mirror を照合する。
+
+## matrix の作成・表示・回答確認
+
+1. 管理画面で使い捨てフォームを作り、行を 2 件、列を 2 件持つ matrix field を保存する。保存操作は 1 回だけ行い、失敗時は remote 一覧を確認して重複作成を避ける。
+2. Formaloo detail GET で `choice_groups` の行見出しと `choice_items` の列見出し、識別子、順序が保存値と一致することを確認する。未知の必須値を推測して追加しない。
+3. hosted form を開き、2 行 × 2 列の表として表示されることを確認する。各行で合成回答を選び、1 件だけ submit する。
+4. Formaloo 側の回答 read-back で matrix 値の実際の object 形を確認し、非機密なキー構造だけを記録する。管理画面の即時 pull と reconcile 後も同じ matrix object が `answers_json` に欠落・文字列化なく残ることを確認する。
+
+## repeating section の作成・表示・回答確認
+
+1. 同じ使い捨てフォームに、通常 field を 2 件作ってから、それらを列に持つ repeating section を `min_rows: 1` / `max_rows: 3` で保存する。
+2. Formaloo detail GET で `column_groups` の `column_field`、見出し、順序と `min_rows` / `max_rows` が保存値と一致することを確認する。
+3. hosted form で最小 1 行が表示され、最大 3 行まで追加できることを確認する。2 行分の合成値を入力し、1 件だけ submit する。
+4. Formaloo 側の回答 read-back で複数行の実際の array/object 形を確認し、非機密なキー構造だけを記録する。管理画面の即時 pull、webhook、reconcile 後も行数・列値・順序が `answers_json` に欠落・文字列化なく残ることを確認する。
+
+## webhook・metadata・cleanup
+
+1. 各 submit について、署名済み `fr_id` を使う合成 friend だけで本人解決と row-status metadata 反映を確認する。matrix object と repeating array は scalar metadata へ誤って文字列化されないことを確認する。
+2. webhook 後の local mirror が provider row と 1 対 1で、同じ回答形を保持することを確認する。即時 pull と後続 reconcile を実行しても重複 row や構造変化がないことを確認する。
+3. 検証回答、structural fields、参照元 fields、使い捨てフォーム、local mirror を通常の承認済み手順で削除し、Formaloo detail GET と管理画面再読込で削除を確認する。
+4. 途中で失敗した場合は追加 POST を止め、既存 remote slug と local mirror を照合してから cleanup する。実測した未公開の回答形は verification log へ秘密値なしで追記し、推測で実装を広げない。
+
+## PASS 記録
+
+- [ ] KS: matrix 作成 read-back、hosted 表示・submit、repeating 作成 read-back、複数行 submit、webhook・即時 pull・reconcile、cleanup が PASS。
+- [ ] Piecemaker: matrix 作成 read-back、hosted 表示・submit、repeating 作成 read-back、複数行 submit、webhook・即時 pull・reconcile、cleanup が PASS。
+- [ ] sandbox からの live 登録 0、本番 3 フォームへの接触 0、秘密値の記録 0、重複 POST 0。
