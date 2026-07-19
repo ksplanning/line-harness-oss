@@ -4,6 +4,20 @@
 
 ---
 
+## richmenu-conditional-rules — タグ/カスタムフィールド条件によるリッチメニュー自動切替（2026-07-19 closer クローズ / status: completed / done 7/7）
+
+owner原文（2026-07-19 17:2x）: 「TAGやカスタムフィールドの内容によってリッチメニューの表示を切り替える機能が欲しい…特定条件による表示設定はいくつでも設定できて、尚且つ優先順位も決めれる 複数の条件を満たしている場合は優先度が高いものが適応される」。正本: `.plans/2026-07-19-richmenu-conditional-rules/{spec,tasks}.md`。reviewer Round1 PASS（独立 checkout 再実行・全 suite green・保護4ファイル不接触・migration 107 のみ）。
+
+**実装**: migration 107（`rich_menu_display_rules`/`rich_menu_friend_assignments`/`rich_menu_rule_evaluation_queue`/`rich_menu_rule_reapply_jobs` additive・タグ/metadata変化時の自動再評価トリガー付き）+ 評価/適用エンジン（`evaluateConditionWithResolverStrict` 再利用・優先度 `ORDER BY priority DESC, created_at ASC, id ASC` の決定的 tie-break・同値スキップ・fail-soft retry）+ admin UI 表示条件ルール節（CRUD+並べ替え）+ 一括再評価口（bounded batch・cron 消化・one-running unique index で連打防止）。ルール件数無制限・ルールゼロは byte 同等デフォルト。両テナント同時適用。
+
+**closer段でdeployed実機検証まで完遂（piecemaker）**: 検証ルール2件（`DELETE-ME richmenu priority test A`優先度100→現行メニューAM7Xn9wVyK / `test B`優先度10→別メニュー）を作成→bounded reapply job実行→friend「あやこ」(`入金確認:済`)がRule A(高優先度)にマッチしRule B(低優先度)ではなくAM7Xn9wVyKが選ばれることを実測（優先度tie-break実証）→friend「yurie」(metadata空)は無マッチで現状維持を確認→ルール2件削除→再度reapplyで既定挙動へ復帰確認（D-7実証）。
+
+**⚠️ 発見した地雷（次回同種closer必読）**: ルール新規作成直後の初回reapplyは、ローカル `rich_menu_friend_assignments` テーブルが空のため「現在のLINE側per-user link状態」を知らずに評価する。今回の検証で「あやこ」は元々明示的にAM7Xn9wVyKへper-user linkされていた（isDefault:false）が、このアカウントには**account-wideデフォルトリッチメニューが未設定**だったため、ルール削除後の「デフォルトへ戻す」処理（unlinkRichMenuFromUser）を実行すると、フォールバック先が無く**リッチメニュー非表示（id:null）**になってしまった。closerが `POST /api/friends/:id/rich-menu` で元のAM7Xn9wVyKへ明示的に再リンクして復帰済み。**教訓**: 条件ルールのテストで既存友だちのper-user link状態を変更する場合、account-wideデフォルトが未設定のテナントでは「ルール削除=安全な現状復帰」にならない可能性があるため、事前に対象friendの実リンク状態(`GET /api/friends/:id/rich-menu`)を記録し、テスト後に同じidで明示的に復元すること。
+
+詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-19_220500_richmenu-conditional-rules.md`（Box working folder 386663013201）。
+
+---
+
 ## friend-fields-global-schema — テナント単位「友だち項目定義」の全体適用（2026-07-19 closer クローズ / status: completed / done 6/6）
 
 owner報告（2026-07-19 15:5x）: 「友達個人情報になにも設定されていなかったからカスタムは設定したが、これ個人個人で設定しないといけないんですね…設定したら全体に同じカスタムフィールドが追加される想定でした…ほしかったのは全体に適応です」。正本: `.plans/2026-07-19-friend-fields-global-schema/tasks.md`。reviewer Round3 PASS（R1差し戻し3点=json_each退行なし/参照安定化/性能bounded を全消化）。
