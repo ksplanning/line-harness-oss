@@ -271,7 +271,12 @@ export default function FriendsPage() {
           ))}
         </div>
       ) : (
-        <FriendListTable friends={friends} allTags={allTags} onRefresh={loadFriends} />
+        <FriendListTable
+          friends={friends}
+          allTags={allTags}
+          onRefresh={loadFriends}
+          fieldDefinitions={fieldDefinitions}
+        />
       )}
 
       {!loading && total > 0 && (

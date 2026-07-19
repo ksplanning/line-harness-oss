@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import type { Tag } from '@line-crm/shared'
+import type { FriendFieldDefinition, Tag } from '@line-crm/shared'
 import type { FriendListItem } from '@/lib/api'
 import { api } from '@/lib/api'
 import FriendListRow from './friend-list-row'
@@ -12,9 +12,17 @@ interface Props {
   friends: FriendListItem[]
   allTags: Tag[]
   onRefresh: () => void
+  fieldDefinitions?: readonly FriendFieldDefinition[]
 }
 
-export default function FriendListTable({ friends, allTags, onRefresh }: Props) {
+const EMPTY_FIELD_DEFINITIONS: readonly FriendFieldDefinition[] = []
+
+export default function FriendListTable({
+  friends,
+  allTags,
+  onRefresh,
+  fieldDefinitions = EMPTY_FIELD_DEFINITIONS,
+}: Props) {
   // Inline tag-management expander. The row's primary click navigates to
   // /chats; tag editing stays available here as a secondary action because
   // the chats page's FriendInfoSidebar currently only displays tags (no
@@ -166,7 +174,7 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
                     {/* G9 カスタム項目 (friend metadata) 編集 — タグ管理の直下。
                         expander が開いたときだけ mount され、その時点で metadata を fetch する。 */}
                     <div className="pt-2 border-t border-gray-100">
-                      <CustomMetadataEditor friendId={friend.id} />
+                      <CustomMetadataEditor friendId={friend.id} fieldDefinitions={fieldDefinitions} />
                     </div>
                   </div>
                 )}

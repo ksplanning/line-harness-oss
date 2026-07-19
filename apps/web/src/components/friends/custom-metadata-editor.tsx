@@ -1,13 +1,18 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import type { FriendFieldDefinition } from '@line-crm/shared'
 import { api } from '@/lib/api'
 import { isReservedFriendMetadataKey } from '@line-crm/shared'
 
 interface CustomMetadataEditorProps {
   /** 対象の友だち ID。expander が開いたときに metadata を fetch する。 */
   friendId: string
+  /** Tenant-wide definitions. Empty keeps the historical per-friend-only UI. */
+  fieldDefinitions?: readonly FriendFieldDefinition[]
 }
+
+const EMPTY_FIELD_DEFINITIONS: readonly FriendFieldDefinition[] = []
 
 /**
  * G9 カスタム項目 (friend metadata) の閲覧 + 追加 + 値編集 UI。
@@ -19,7 +24,10 @@ interface CustomMetadataEditorProps {
  *  - 既存 key と同名の追加は merge の自然な動作で値が上書きされる → ラベルを「上書き更新」に切替えて明示。
  * 送信ゼロ: metadata 更新は friends 行の JSON 列更新のみ。broadcast/push/multicast/reply を叩かない。
  */
-export default function CustomMetadataEditor({ friendId }: CustomMetadataEditorProps) {
+export default function CustomMetadataEditor({
+  friendId,
+  fieldDefinitions = EMPTY_FIELD_DEFINITIONS,
+}: CustomMetadataEditorProps) {
   const [metadata, setMetadata] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -81,7 +89,29 @@ export default function CustomMetadataEditor({ friendId }: CustomMetadataEditorP
     }
   }
 
-  const keys = Object.keys(metadata)
+  const displayRows = useMemo(() => {
+    const rows: Array<{ key: string; value: string }> = []
+    const definedKeys = new Set<string>()
+    const activeDefinitions = fieldDefinitions
+      .filter((definition) => definition.isActive && !isReservedFriendMetadataKey(definition.name))
+      .sort((a, b) => a.displayOrder - b.displayOrder || a.id.localeCompare(b.id))
+
+    for (const definition of activeDefinitions) {
+      definedKeys.add(definition.name)
+      rows.push({
+        key: definition.name,
+        value: Object.prototype.hasOwnProperty.call(metadata, definition.name)
+          ? metadata[definition.name]
+          : definition.defaultValue,
+      })
+    }
+    for (const [key, value] of Object.entries(metadata)) {
+      if (!definedKeys.has(key)) rows.push({ key, value })
+    }
+    return rows
+  }, [fieldDefinitions, metadata])
+
+  const keys = displayRows.map((row) => row.key)
   const isDuplicateNewKey = newKey.trim() !== '' && keys.includes(newKey.trim())
 
   const handleAdd = async () => {
@@ -105,9 +135,9 @@ export default function CustomMetadataEditor({ friendId }: CustomMetadataEditorP
     }
   }
 
-  const startEdit = (key: string) => {
+  const startEdit = (key: string, value: string) => {
     setEditingKey(key)
-    setEditingValue(metadata[key] ?? '')
+    setEditingValue(value)
   }
 
   const handleSaveEdit = async () => {
@@ -124,14 +154,14 @@ export default function CustomMetadataEditor({ friendId }: CustomMetadataEditorP
         <p className="text-[11px] text-gray-400">読み込み中...</p>
       ) : loadError ? (
         <p className="text-[11px] text-red-600">{loadError}</p>
-      ) : keys.length === 0 && !adding ? (
+      ) : displayRows.length === 0 && !adding ? (
         <p className="text-[11px] text-gray-400 leading-relaxed">
           まだカスタム項目はありません。<br />
           会社名・担当者・契約プランなど、このシステムにない情報を自由に記録できます。
         </p>
       ) : (
         <div className="space-y-1.5">
-          {keys.map((key) => (
+          {displayRows.map(({ key, value }) => (
             <div key={key} className="flex items-center gap-2 flex-wrap">
               {editingKey === key ? (
                 <>
@@ -160,9 +190,9 @@ export default function CustomMetadataEditor({ friendId }: CustomMetadataEditorP
               ) : (
                 <>
                   <span className="text-xs font-medium text-gray-600 min-w-[6rem] break-all">{key}</span>
-                  <span className="flex-1 text-xs text-gray-800 break-all">{metadata[key] || '（未入力）'}</span>
+                  <span className="flex-1 text-xs text-gray-800 break-all">{value || '（未入力）'}</span>
                   <button
-                    onClick={() => startEdit(key)}
+                    onClick={() => startEdit(key, value)}
                     className="text-xs font-medium text-green-600 hover:text-green-700 px-2 py-1 rounded-md hover:bg-green-50 transition-colors"
                   >
                     編集
