@@ -114,4 +114,17 @@ describe('CustomMetadataEditor — 自動反映値と手動編集の共存', () 
     render(<CustomMetadataEditor friendId="fr_1" />);
     expect(await screen.findByText(/まだカスタム項目はありません/)).toBeTruthy();
   });
+
+  it('定義ゼロは変更前 DOM snapshot と byte 同等', async () => {
+    getFriend.mockResolvedValue({ success: true, data: { metadata: { 独自メモ: '残す' } } });
+    const omitted = render(<CustomMetadataEditor friendId="fr_1" />);
+    await screen.findByText('残す');
+    // Base 6669974 の変更前 renderer から固定した byte 契約。
+    expect(omitted.container.innerHTML).toMatchInlineSnapshot(`"<div><p class="text-[11px] font-medium text-gray-500 mb-2">カスタム項目</p><div class="space-y-1.5"><div class="flex items-center gap-2 flex-wrap"><span class="text-xs font-medium text-gray-600 min-w-[6rem] break-all">独自メモ</span><span class="flex-1 text-xs text-gray-800 break-all">残す</span><button class="text-xs font-medium text-green-600 hover:text-green-700 px-2 py-1 rounded-md hover:bg-green-50 transition-colors">編集</button></div></div><button class="text-xs font-medium text-green-600 hover:text-green-700 flex items-center gap-1 mt-3 transition-colors"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>項目を追加</button></div>"`);
+    omitted.unmount();
+
+    const explicitZero = render(<CustomMetadataEditor friendId="fr_1" fieldDefinitions={[]} />);
+    await screen.findByText('残す');
+    expect(explicitZero.container.innerHTML).toMatchInlineSnapshot(`"<div><p class="text-[11px] font-medium text-gray-500 mb-2">カスタム項目</p><div class="space-y-1.5"><div class="flex items-center gap-2 flex-wrap"><span class="text-xs font-medium text-gray-600 min-w-[6rem] break-all">独自メモ</span><span class="flex-1 text-xs text-gray-800 break-all">残す</span><button class="text-xs font-medium text-green-600 hover:text-green-700 px-2 py-1 rounded-md hover:bg-green-50 transition-colors">編集</button></div></div><button class="text-xs font-medium text-green-600 hover:text-green-700 flex items-center gap-1 mt-3 transition-colors"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>項目を追加</button></div>"`);
+  });
 });
