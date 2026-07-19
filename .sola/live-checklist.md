@@ -92,7 +92,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-curl -fsS -A "$BROWSER_UA" "$HARNESS_BASE_URL/health" >/dev/null
 curl -fsS -A "$BROWSER_UA" -H "Authorization: Bearer $HARNESS_API_KEY" \
   "$HARNESS_BASE_URL/api/forms-advanced" >/dev/null
 ```
@@ -186,7 +185,7 @@ test "${CURRENT_COUNT:-$BASE_COUNT}" -ge "$((BASE_COUNT + 1))"
 ```
 
 45 秒以内に増えれば、最大 6 時間の cron や管理画面 reconcile を待たず webhook の targeted pull が mirror upsert まで到達した。
-同 form の連打抑止は lane の mock pin で `pullInputs` 1 回を固定しているため、live で大量送信しない。
+同 form の連打抑止は lane の route concurrency test で「同時 pull は 1 件、末尾世代は後続 1 回」を固定しているため、live で大量送信しない。
 
 ## 5. Webhook 解除と使い捨て資源の DELETE→404
 
