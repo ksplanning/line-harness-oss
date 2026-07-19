@@ -18,6 +18,12 @@ vi.mock('@line-crm/db', () => ({
   getStaffByApiKey: vi.fn(),
   recoverStalledBroadcasts: vi.fn(),
   recoverStuckDeliveries: vi.fn(),
+  getFormalooForm: vi.fn(),
+  prepareFormalooWebhookRegistration: vi.fn(),
+  setFormalooWebhookRegistration: vi.fn(),
+  disableFormalooWebhookRegistration: vi.fn(),
+  clearFormalooWebhookRegistration: vi.fn(),
+  upsertFormalooSubmission: vi.fn(),
 }));
 
 import { notFoundHandler, type Env } from './index.js';
