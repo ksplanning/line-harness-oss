@@ -528,3 +528,47 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 - [ ] KS: matrix 作成 read-back、hosted 表示・submit、repeating 作成 read-back、複数行 submit、webhook・即時 pull・reconcile、cleanup が PASS。
 - [ ] Piecemaker: matrix 作成 read-back、hosted 表示・submit、repeating 作成 read-back、複数行 submit、webhook・即時 pull・reconcile、cleanup が PASS。
 - [ ] sandbox からの live 登録 0、本番 3 フォームへの接触 0、秘密値の記録 0、重複 POST 0。
+
+---
+
+# richmenu-rule-schedule — host live checklist
+
+## できるようになること
+
+「キャンペーン期間だけ特別メニュー、が自動でできます。期間が明けたら自動で元に戻ります」
+
+## 対象と安全条件
+
+- sandbox では LINE API の実 link/unlink と本番 migration 適用を行っていない。査読済みの同一 revision で migration `112_rich_menu_rule_schedule.sql`、Worker、Web を approved host へ反映してから確認する。
+- KS と Piecemaker は別々に実施し、deployment SHA、migration 適用結果、実行者、JST の実行時刻を記録する。片方の結果をもう片方へ流用しない。
+- 各テナントで利用許可を得たテスト用 LINE アカウント、合成 friend、衝突しない検証用タグ、公開済みの検証用リッチメニューだけを使う。実ユーザー、既存タグ、既存カスタム項目、本番 3 フォーム `Z5IEH85R` / `GMOxoMtK` / `XqACeA2v` には触れない。
+- token、channel secret、friend ID、metadata 全文をログやチェック結果へ残さない。意図的な LINE 障害や cron 停止は作らない。
+
+## migration・画面の無退行
+
+1. migration 112 適用前後の件数を比較し、既存の表示ルールで `active_from` / `active_until` がどちらも NULL、候補順位、適用メニューが従来どおりであることを確認する。
+2. 表示条件ルールの編集画面で「いつから（任意）」「いつまで（任意）」が日本時間として表示され、両方空欄、開始だけ、開始と終了、終了だけを保存・再編集できることを確認する。
+3. 終了を開始より前にすると日本語で拒否され、API も 400 を返すことを確認する。開始と終了が同時刻のゼロ時間ルールは保存でき、終了境界では期間外になることを確認する。
+4. 一覧で「今有効」「開始前」「終了済み」「期間: 無期限」が見え、期間外の高優先度ルールが候補順位へ入らないことを確認する。
+
+## 期間内・開始またぎ・終了またぎの実測
+
+1. 合成 friend に検証用タグを付け、「検証タグあり → 特別メニュー」のルールを作る。現在を含む期間にして再適用し、一覧が「今有効」、テスト用 LINE アカウントが特別メニューになることを確認する。
+2. 同じ条件で優先度が高い開始前ルールを追加し、開始前はそのルールが勝たず、現在期間内の低優先度ルールが候補 1 位のままであることを確認する。
+3. 高優先度ルールの開始を次の 15 分境界までに設定し、管理画面の「既存の友だちへ再適用」を押さずに待つ。開始後の scheduled scan と bounded worker で特別メニューへ自動切替されることを確認する。
+4. 同じルールの終了を次の 15 分境界までに設定し、終了時刻になったらそのルールが「終了済み」になり、次の適用可能なルール、なければ「全員のデフォルト」へ自動で戻ることを確認する。
+5. 同じメニューになる別ルールでもう一度境界をまたぎ、assignment の勝者は更新されても LINE mutation が増えず、同値スキップされることを件数ログだけで確認する。
+
+## 発火粒度・遅延上限・負荷
+
+- 期間境界の走査は既存の 5 分 cron のうち 15 分境界で発火する。正常な cron では境界検知まで最大 15 分。遅延 tick は DB checkpoint の `(前回, 今回]` で次回に回収する。
+- 検知後は LINE 負荷を抑える既存枠で 5 分ごとに最大 20 人。対象 friend より前に `B` 人いる場合、手動一括再適用なしの追加遅延上限は `5分 × floor(B / 20)`、一括再適用併走中は queue 予約枠により `5分 × floor(B / 10)`。したがって正常時の切替上限は「15 分 + この queue 遅延」。LINE 失敗時は 5 分単位の retry が加わる。
+- 21 人以上の合成 friend を安全に用意できる preview では、1 tick が 20 人で止まり、残りが次の tick へ残ることを確認する。実ユーザーで人数試験をしない。
+
+## cleanup・PASS 記録
+
+1. 検証用期間ルールを停止・削除し、bounded 再適用完了後に合成 friend がデフォルトへ戻ったことを確認する。検証用タグ、メニュー、friend は通常の承認済み手順で片付ける。additive migration の列・checkpoint table・index は DROP しない。
+
+- [ ] KS: migration 112、JST 入力、期間内、開始前、開始またぎ、終了またぎ、同値スキップ、デフォルト復帰、cleanup が PASS。
+- [ ] Piecemaker: migration 112、JST 入力、期間内、開始前、開始またぎ、終了またぎ、同値スキップ、デフォルト復帰、cleanup が PASS。
+- [ ] 実ユーザー・本番 3 フォームへの接触 0、手動再適用なしの自動切替、秘密値の記録 0。
