@@ -9,7 +9,7 @@ import InstantWebhookSettings from '@/components/forms-advanced/instant-webhook-
 import { formsAdvancedApi, type AdvancedForm, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
-import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettingsPatch } from '@line-crm/shared'
+import type { FriendFieldDefinition, HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettingsPatch } from '@line-crm/shared'
 
 // F-2/F-5 フォームビルダー本体。id は detail/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
 export default function FormBuilderClient({ id }: { id: string }) {
@@ -21,6 +21,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
 
   const loadShare = useCallback(async () => {
     try { setShare(await formsAdvancedApi.share(id)) } catch { /* fail-soft */ }
@@ -46,6 +47,20 @@ export default function FormBuilderClient({ id }: { id: string }) {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    let active = true
+    void fetchApi<{ success: boolean; data: FriendFieldDefinition[] }>('/api/friend-field-definitions')
+      .then((response) => {
+        if (active && response.success && Array.isArray(response.data)) {
+          setFieldDefinitions(response.data)
+        }
+      })
+      .catch(() => {
+        // Fail-soft: mapping suggestions must not block the form builder.
+      })
+    return () => { active = false }
+  }, [])
 
   const withErr = (fn: () => Promise<AdvancedForm>) => async () => {
     try {
@@ -143,6 +158,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialSuccessPages={form.successPages ?? undefined}
             initialFriendMetadataMappings={form.friendMetadataMappings ?? undefined}
             initialOperationsSettings={form.operationsSettings ?? undefined}
+            fieldDefinitions={fieldDefinitions}
             initialAllowPostEdit={form.allowPostEdit}
             initialAllowEditMail={form.allowEditMail}
             initialEditMailFieldId={form.editMailFieldId}

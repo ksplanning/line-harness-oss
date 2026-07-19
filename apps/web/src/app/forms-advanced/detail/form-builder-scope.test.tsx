@@ -46,7 +46,14 @@ beforeEach(() => {
   builderProps.current = undefined
   mockAccount.selectedAccountId = 'acc_A'
   shareMock.mockResolvedValue({ published: false, publicUrl: null, iframeCode: null, scriptCode: null, gsheetConnected: false, gsheetUrl: null })
-  fetchApiMock.mockResolvedValue({ data: { role: 'owner' } })
+  fetchApiMock.mockImplementation(async (path: string) => (
+    path === '/api/friend-field-definitions'
+      ? { success: true, data: [{
+          id: 'def-1', name: '入金確認', defaultValue: '未', displayOrder: 0, isActive: true,
+          createdAt: '2026-07-19', updatedAt: '2026-07-19',
+        }] }
+      : { data: { role: 'owner' } }
+  ))
 })
 afterEach(() => cleanup())
 
@@ -70,6 +77,26 @@ describe('詳細画面 scope 照合', () => {
     render(<FormBuilderClient id="fa1" />)
     await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
     expect(screen.queryByTestId('scope-blocked')).toBeNull()
+  })
+
+  it('tenant 定義を別取得して builder の候補 props に渡す', async () => {
+    getMock.mockResolvedValue(form('acc_A'))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(builderProps.current?.fieldDefinitions).toEqual([
+      expect.objectContaining({ name: '入金確認', defaultValue: '未', isActive: true }),
+    ]))
+    expect(fetchApiMock).toHaveBeenCalledWith('/api/friend-field-definitions')
+  })
+
+  it('定義 API が失敗してもフォーム本体は表示する', async () => {
+    getMock.mockResolvedValue(form('acc_A'))
+    fetchApiMock.mockImplementation(async (path: string) => {
+      if (path === '/api/friend-field-definitions') throw new Error('definitions unavailable')
+      return { data: { role: 'owner' } }
+    })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+    expect(builderProps.current?.fieldDefinitions).toEqual([])
   })
 
   it('フォーム説明を builder に渡し、title/description を saveDefinition へ欠落なく転送する', async () => {

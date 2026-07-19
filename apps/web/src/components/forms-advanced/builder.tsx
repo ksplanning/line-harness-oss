@@ -24,7 +24,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
+import type { FriendFieldDefinition, HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
 import { computeRouteTerminalWarnings, MAX_FRIEND_METADATA_MAPPINGS, validateRedirectUrl } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
@@ -45,6 +45,7 @@ import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 
 const LINE_GREEN = '#06C755'
+const EMPTY_FIELD_DEFINITIONS: readonly FriendFieldDefinition[] = []
 
 export const MOUSE_ACTIVATION = { distance: 8 } as const
 export const TOUCH_ACTIVATION = { delay: 200, tolerance: 8 } as const
@@ -87,6 +88,8 @@ export interface BuilderProps {
   initialSuccessPages?: SuccessPageSpec[]
   /** row-status-friend-sync: form 単位の Formaloo field → friend.metadata mapping。 */
   initialFriendMetadataMappings?: FriendMetadataMapping[]
+  /** Tenant-wide friend field definitions offered as optional mapping candidates. */
+  fieldDefinitions?: readonly FriendFieldDefinition[]
   /** form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。未設定は 0 (=編集不可=現状挙動)。弾S は inert。 */
   initialAllowPostEdit?: number
   /** form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。 */
@@ -841,6 +844,8 @@ function operationsSettingsPatch(
 }
 
 export default function FormBuilder(props: BuilderProps) {
+  const fieldDefinitionOptions = (props.fieldDefinitions ?? EMPTY_FIELD_DEFINITIONS)
+    .filter((definition) => definition.isActive)
   const autoMode = useAutoLayoutMode()
   const mode = props.layoutMode ?? autoMode
   const [mobileTab, setMobileTab] = useState<'edit' | 'design' | 'preview'>('edit')
@@ -1358,6 +1363,7 @@ export default function FormBuilder(props: BuilderProps) {
                     個人情報の項目名
                     <input
                       aria-label="個人情報の項目名"
+                      list={fieldDefinitionOptions.length > 0 ? 'friend-field-definition-options' : undefined}
                       value={mapping.friendMetadataKey}
                       onChange={(event) => updateFriendMetadataMapping(index, { friendMetadataKey: event.target.value })}
                       placeholder="例: 入金確認"
@@ -1386,6 +1392,13 @@ export default function FormBuilder(props: BuilderProps) {
         >
           ＋反映ルールを追加
         </button>
+        {fieldDefinitionOptions.length > 0 && (
+          <datalist id="friend-field-definition-options">
+            {fieldDefinitionOptions.map((definition) => (
+              <option key={definition.id} value={definition.name} />
+            ))}
+          </datalist>
+        )}
         <p className="mt-2 text-[10px] text-gray-400 leading-snug">
           ※ 設定した項目は Formaloo の値を正とし、手動で直しても次の回答再取得時に Formaloo の値へ戻ります。設定していない個人情報項目は変更しません。
         </p>
