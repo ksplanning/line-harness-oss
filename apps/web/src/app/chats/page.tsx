@@ -105,6 +105,106 @@ function formatYmdSlash(iso: string): string {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
 }
 
+function ChatMessageHistory({
+  messages,
+  friendPictureUrl,
+  scrollRef,
+  expanded = false,
+}: {
+  messages: ChatMessage[]
+  friendPictureUrl: string | null
+  scrollRef: React.RefObject<HTMLDivElement | null>
+  expanded?: boolean
+}) {
+  return (
+    <div
+      ref={scrollRef}
+      data-testid="chat-message-history"
+      className="min-h-0 flex-1 overflow-y-auto p-4 space-y-2"
+      style={{ backgroundColor: '#7494C0' }}
+    >
+      {messages.length === 0 ? (
+        <div className="text-center py-8">
+          <p className="text-white/60 text-sm">メッセージはまだありません。</p>
+        </div>
+      ) : (
+        messages.map((msg, idx) => {
+          const prevMsg = idx > 0 ? messages[idx - 1] : null
+          const showDateSep = !prevMsg || !sameYmd(prevMsg.createdAt, msg.createdAt)
+          const isOutgoing = msg.direction === 'outgoing'
+
+          let bubbleContent: React.ReactNode
+          if (msg.messageType === 'flex') {
+            bubbleContent = (
+              <div
+                data-testid="chat-flex-message"
+                className={expanded ? 'min-w-0 max-w-full' : 'max-w-[300px]'}
+              >
+                <FlexPreviewComponent content={msg.content} maxWidth={280} />
+              </div>
+            )
+          } else if (msg.messageType === 'image') {
+            try {
+              const parsed = JSON.parse(msg.content)
+              bubbleContent = (
+                <img
+                  src={parsed.originalContentUrl || parsed.previewImageUrl}
+                  alt=""
+                  className={`${expanded ? 'max-w-full sm:max-w-lg' : 'max-w-[200px]'} h-auto rounded`}
+                />
+              )
+            } catch {
+              bubbleContent = <span>🖼️ [画像]</span>
+            }
+          } else if (msg.messageType === 'sticker') {
+            bubbleContent = <StickerMessageImage content={msg.content} />
+          } else {
+            bubbleContent = <span>{msg.content}</span>
+          }
+
+          return (
+            <div key={msg.id}>
+              {showDateSep && (
+                <div className="flex justify-center my-3">
+                  <span className="text-[11px] text-white/85 bg-black/20 px-2.5 py-0.5 rounded-full">
+                    {formatYmdSlash(msg.createdAt)}
+                  </span>
+                </div>
+              )}
+              <div className={`flex items-end gap-2 ${isOutgoing ? 'justify-end' : 'justify-start'}`}>
+                {!isOutgoing && (
+                  friendPictureUrl ? (
+                    <img src={friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0 mb-1" />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-gray-300 flex-shrink-0 mb-1" />
+                  )
+                )}
+
+                <div className={`min-w-0 max-w-full flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
+                  <div
+                    data-testid="chat-message-bubble"
+                    className={`${expanded ? 'w-fit max-w-full sm:max-w-3xl' : 'max-w-[320px]'} px-3 py-2 text-sm break-words whitespace-pre-wrap ${
+                      isOutgoing
+                        ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
+                        : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
+                    }`}
+                    style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
+                  >
+                    {bubbleContent}
+                  </div>
+                  <span className="text-xs text-white/50 mt-0.5 px-1">
+                    {new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )
+        })
+      )}
+    </div>
+  )
+}
+
 const ccPrompts = [
   {
     title: 'チャット対応テンプレート',
@@ -333,9 +433,19 @@ export default function ChatsPage() {
   const [loadingSeconds, setLoadingSeconds] = useState(5)
   const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
+  const [isHistoryExpanded, setIsHistoryExpanded] = useState(false)
   const isComposingRef = useRef(false)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
+  const expandedMessagesScrollRef = useRef<HTMLDivElement | null>(null)
+  const expandedHistoryDialogRef = useRef<HTMLElement | null>(null)
+  const expandHistoryButtonRef = useRef<HTMLButtonElement | null>(null)
+  const closeExpandedHistoryButtonRef = useRef<HTMLButtonElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const closeExpandedHistory = useCallback(() => {
+    setIsHistoryExpanded(false)
+    window.setTimeout(() => expandHistoryButtonRef.current?.focus(), 0)
+  }, [])
 
   useEffect(() => {
     try {
@@ -514,6 +624,63 @@ export default function ChatsPage() {
       el.removeEventListener('scroll', onScroll)
     }
   }, [chatDetail?.id, chatDetail?.messages?.length])
+
+  useEffect(() => {
+    if (!isHistoryExpanded) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeExpandedHistoryButtonRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeExpandedHistory()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const dialog = expandedHistoryDialogRef.current
+      if (!dialog) return
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ))
+      if (focusable.length === 0) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      if (!dialog.contains(active) || (!event.shiftKey && active === last) || (event.shiftKey && active === first)) {
+        event.preventDefault()
+        const nextTarget = event.shiftKey ? last : first
+        nextTarget.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [closeExpandedHistory, isHistoryExpanded])
+
+  // 拡大表示は広さで折り返し量が変わるため、開くたびに独立して最新位置へ合わせる。
+  useEffect(() => {
+    if (!isHistoryExpanded || !chatDetail?.messages?.length) return
+    const el = expandedMessagesScrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    let userScrolled = false
+    const onScroll = () => {
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > 20) userScrolled = true
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    const id = window.setTimeout(() => {
+      if (!userScrolled) el.scrollTop = el.scrollHeight
+    }, 150)
+    return () => {
+      window.clearTimeout(id)
+      el.removeEventListener('scroll', onScroll)
+    }
+  }, [chatDetail?.id, chatDetail?.messages?.length, isHistoryExpanded])
 
   // Auto-resize textarea as messageContent grows
   useEffect(() => {
@@ -879,6 +1046,22 @@ export default function ChatsPage() {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    ref={expandHistoryButtonRef}
+                    type="button"
+                    onClick={() => setIsHistoryExpanded(true)}
+                    aria-label="チャット履歴を拡大表示"
+                    aria-haspopup="dialog"
+                    aria-expanded={isHistoryExpanded}
+                    aria-controls="expanded-chat-history"
+                    title="クリックしてチャット履歴を大きく表示"
+                    className="inline-flex min-h-[44px] lg:min-h-0 cursor-pointer items-center gap-1.5 rounded-md border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 transition-colors hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-1"
+                  >
+                    <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 3H3v5m13-5h5v5M8 21H3v-5m13 5h5v-5" />
+                    </svg>
+                    拡大表示
+                  </button>
                   {unansweredOnly && chats.length > 1 && (
                     <button
                       type="button"
@@ -924,84 +1107,11 @@ export default function ChatsPage() {
               </div>
 
               {/* Messages — LINE-style chat bubbles */}
-              <div ref={messagesScrollRef} className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
-                {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
-                  <div className="text-center py-8">
-                    <p className="text-white/60 text-sm">メッセージはまだありません。</p>
-                  </div>
-                ) : (
-                  (chatDetail.messages ?? []).map((msg, idx) => {
-                    const prevMsg = idx > 0 ? (chatDetail.messages ?? [])[idx - 1] : null
-                    const showDateSep = !prevMsg || !sameYmd(prevMsg.createdAt, msg.createdAt)
-                    const isOutgoing = msg.direction === 'outgoing'
-
-                    // メッセージ表示の分岐
-                    let bubbleContent: React.ReactNode
-                    if (msg.messageType === 'flex') {
-                      bubbleContent = (
-                        <div className="max-w-[300px]">
-                          <FlexPreviewComponent content={msg.content} maxWidth={280} />
-                        </div>
-                      )
-                    } else if (msg.messageType === 'image') {
-                      try {
-                        const parsed = JSON.parse(msg.content)
-                        bubbleContent = (
-                          <img src={parsed.originalContentUrl || parsed.previewImageUrl} alt="" className="max-w-[200px] rounded" />
-                        )
-                      } catch {
-                        bubbleContent = <span>🖼️ [画像]</span>
-                      }
-                    } else if (msg.messageType === 'sticker') {
-                      bubbleContent = <StickerMessageImage content={msg.content} />
-                    } else {
-                      bubbleContent = <span>{msg.content}</span>
-                    }
-
-                    return (
-                      <div key={msg.id}>
-                        {showDateSep && (
-                          <div className="flex justify-center my-3">
-                            <span className="text-[11px] text-white/85 bg-black/20 px-2.5 py-0.5 rounded-full">
-                              {formatYmdSlash(msg.createdAt)}
-                            </span>
-                          </div>
-                        )}
-                        <div
-                          className={`flex items-end gap-2 ${isOutgoing ? 'justify-end' : 'justify-start'}`}
-                        >
-                          {/* 相手のアイコン（incoming のみ） */}
-                          {!isOutgoing && (
-                            chatDetail.friendPictureUrl ? (
-                              <img src={chatDetail.friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0 mb-1" />
-                            ) : (
-                              <div className="w-8 h-8 rounded-full bg-gray-300 flex-shrink-0 mb-1" />
-                            )
-                          )}
-
-                          <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
-                            {/* メッセージバブル */}
-                            <div
-                              className={`max-w-[320px] px-3 py-2 text-sm break-words whitespace-pre-wrap ${
-                                isOutgoing
-                                  ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
-                                  : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
-                              }`}
-                              style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
-                            >
-                              {bubbleContent}
-                            </div>
-                            {/* 時刻 */}
-                            <span className="text-xs text-white/50 mt-0.5 px-1">
-                              {new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })
-                )}
-              </div>
+              <ChatMessageHistory
+                messages={chatDetail.messages ?? []}
+                friendPictureUrl={chatDetail.friendPictureUrl}
+                scrollRef={messagesScrollRef}
+              />
 
               {/* Notes */}
               <div className="px-4 py-2 border-t border-gray-200 bg-gray-50">
@@ -1149,6 +1259,52 @@ export default function ChatsPage() {
           </div>
         )}
       </div>
+
+      {isHistoryExpanded && chatDetail && (
+        <>
+          <div
+            role="presentation"
+            data-testid="chat-history-backdrop"
+            className="fixed inset-0 z-[60] bg-black/50"
+            onClick={closeExpandedHistory}
+          />
+          <section
+            ref={expandedHistoryDialogRef}
+            id="expanded-chat-history"
+            role="dialog"
+            tabIndex={-1}
+            aria-modal="true"
+            aria-labelledby="expanded-chat-history-title"
+            className="fixed inset-0 z-[70] flex min-h-0 flex-col overflow-hidden bg-white shadow-2xl sm:inset-[5vh_5vw] sm:rounded-xl"
+          >
+            <div className="flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3 sm:px-6">
+              <div className="min-w-0">
+                <h2 id="expanded-chat-history-title" className="truncate text-base font-bold text-gray-900">
+                  {chatDetail.friendName}のチャット履歴
+                </h2>
+                <p className="text-xs text-gray-500">拡大表示 — 大きな画面で履歴を確認できます</p>
+              </div>
+              <button
+                ref={closeExpandedHistoryButtonRef}
+                type="button"
+                onClick={closeExpandedHistory}
+                aria-label="拡大表示を閉じる"
+                title="閉じる"
+                className="inline-flex h-11 w-11 flex-shrink-0 cursor-pointer items-center justify-center rounded-full text-2xl leading-none text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 focus:outline-none focus:ring-2 focus:ring-green-500"
+              >
+                ×
+              </button>
+            </div>
+            <ChatMessageHistory
+              messages={chatDetail.messages ?? []}
+              friendPictureUrl={chatDetail.friendPictureUrl}
+              scrollRef={expandedMessagesScrollRef}
+              expanded
+            />
+          </section>
+        </>
+      )}
+
       <CcPromptButton prompts={ccPrompts} />
     </div>
   )
