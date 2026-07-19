@@ -211,5 +211,28 @@ describe('LINE verification rail', () => {
     expect(rail.isWranglerTailReady('Connected to test-worker, waiting for logs...')).toBe(true);
     expect(rail.WRANGLER_TAIL_SETTLE_MS).toBeGreaterThanOrEqual(1_000);
     expect(rail.TAIL_BRANCH_MAX_ATTEMPTS).toBe(3);
+
+    const tailEvidence = rail.extractSafeTailEvidence(
+      [
+        'POST https://worker.example.test/webhook - Ok',
+        '  (error) Failed to parse webhook body',
+        'Authorization: Bearer must-not-persist',
+        '  (error) Invalid LINE signature',
+      ].join('\n'),
+      {
+        id: 'safe',
+        testOnly: true,
+        url: 'https://worker.example.test/webhook',
+        allowedOrigin: 'https://worker.example.test',
+        allowedPath: '/webhook',
+        sourcePolicy: 'group-without-user',
+      },
+    );
+    expect(tailEvidence).toEqual([
+      'POST https://worker.example.test/webhook - Ok',
+      '(error) Failed to parse webhook body',
+      '(error) Invalid LINE signature',
+    ]);
+    expect(tailEvidence.join('\n')).not.toContain('must-not-persist');
   });
 });

@@ -47,6 +47,7 @@ Artifacts:
 
 - `webhook-local.json`
 - `webhook-deployed.json`
+- `webhook-tail.log` (allowlisted request/branch lines only)
 
 No secret, access token, Authorization header, or `X-Line-Signature` value is persisted.
 

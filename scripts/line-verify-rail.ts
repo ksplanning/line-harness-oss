@@ -421,6 +421,18 @@ export function isWranglerTailReady(output: string): boolean {
   return /Connected to [^\n]+, waiting for logs/i.test(output);
 }
 
+export function extractSafeTailEvidence(output: string, target: WebhookTarget): string[] {
+  const requestPrefix = `POST ${target.url} `;
+  const allowedBranchLines = new Set([
+    '(error) Failed to parse webhook body',
+    '(error) Invalid LINE signature',
+  ]);
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '').trim())
+    .filter((line) => line.startsWith(requestPrefix) || allowedBranchLines.has(line));
+}
+
 async function startWranglerTail(target: WebhookTarget): Promise<TailSession> {
   if (!process.env.CLOUDFLARE_API_TOKEN || !process.env.CLOUDFLARE_ACCOUNT_ID) {
     throw new Error('CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are required for deployed tail');
@@ -579,6 +591,19 @@ async function runDeployedWebhook(
       if (response.status !== 200) throw new Error(`deployed webhook returned HTTP ${response.status}`);
     }
 
+    const tailEvidenceLines = extractSafeTailEvidence(tail.text(), target);
+    if (
+      !tailEvidenceLines.includes('(error) Failed to parse webhook body') ||
+      !tailEvidenceLines.includes('(error) Invalid LINE signature')
+    ) {
+      throw new Error('safe raw tail evidence is incomplete');
+    }
+    await writeFile(
+      resolve(evidenceDir, 'webhook-tail.log'),
+      `${tailEvidenceLines.join('\n')}\n`,
+      'utf8',
+    );
+
     const result = {
       status: 'PASS',
       target: target.id,
@@ -592,6 +617,8 @@ async function runDeployedWebhook(
       invalidMalformedAttempts: invalidMalformed.attempts,
       safeEventBatchStatus: safeEventBatch.status,
       writesPermitted: false,
+      tailEvidence: 'webhook-tail.log',
+      tailEvidenceLines,
       observedAt: new Date().toISOString(),
     };
     await writeJson(resolve(evidenceDir, 'webhook-deployed.json'), result, [
