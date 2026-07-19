@@ -81,4 +81,16 @@ describe('richMenuDisplayRules API client', () => {
       },
     ])
   })
+
+  test('loads condition choices from the rich-menu permission scope', async () => {
+    const api = await loadApi()
+
+    await api.richMenuDisplayRules.options('acc/1')
+
+    expect(captured).toEqual([{
+      url: `${BASE}/api/rich-menu-display-rules/options?accountId=acc%2F1`,
+      method: 'GET',
+      body: undefined,
+    }])
+  })
 })

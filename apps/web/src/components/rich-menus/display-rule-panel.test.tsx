@@ -9,8 +9,7 @@ const mocks = vi.hoisted(() => ({
   deleteRule: vi.fn(),
   latestJob: vi.fn(),
   startReapply: vi.fn(),
-  listTags: vi.fn(),
-  listFields: vi.fn(),
+  options: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -22,9 +21,8 @@ vi.mock('@/lib/api', () => ({
       delete: (...args: unknown[]) => mocks.deleteRule(...args),
       latestJob: (...args: unknown[]) => mocks.latestJob(...args),
       startReapply: (...args: unknown[]) => mocks.startReapply(...args),
+      options: (...args: unknown[]) => mocks.options(...args),
     },
-    tags: { list: (...args: unknown[]) => mocks.listTags(...args) },
-    friendFieldDefinitions: { list: (...args: unknown[]) => mocks.listFields(...args) },
   },
 }))
 
@@ -50,13 +48,15 @@ beforeEach(() => {
     rule({ id: 'rule-low', name: '購入済み向け', priority: 10, conditionValue: 'tag-paid' }),
     rule({ id: 'rule-off', name: '停止中ルール', priority: 999, isActive: false }),
   ] })
-  mocks.listTags.mockResolvedValue({ success: true, data: [
-    { id: 'tag-vip', name: 'VIP' },
-    { id: 'tag-paid', name: '購入済み' },
-  ] })
-  mocks.listFields.mockResolvedValue({ success: true, data: [
-    { id: 'field-rank', name: '会員ランク', defaultValue: '', displayOrder: 0, isActive: true },
-  ] })
+  mocks.options.mockResolvedValue({ success: true, data: {
+    tags: [
+      { id: 'tag-vip', name: 'VIP' },
+      { id: 'tag-paid', name: '購入済み' },
+    ],
+    fields: [
+      { id: 'field-rank', name: '会員ランク', defaultValue: '', displayOrder: 0, isActive: true },
+    ],
+  } })
   mocks.latestJob.mockResolvedValue({ success: true, data: null })
   mocks.createRule.mockResolvedValue({ success: true, data: rule({ id: 'created' }) })
   mocks.updateRule.mockResolvedValue({ success: true, data: rule() })

@@ -144,6 +144,31 @@ describe('/api/rich-menu-display-rules CRUD', () => {
     const listed = await call('GET', '/api/rich-menu-display-rules?accountId=acc-1');
     expect(await listed.json()).toEqual({ success: true, data: [] });
   });
+
+  test('serves tags and all fields needed to edit existing rules through the rich-menu permission scope', async () => {
+    await DB.prepare("INSERT INTO tags (id, name, color) VALUES ('tag-vip', 'VIP', '#00aa00')").run();
+    await DB.prepare(
+      `INSERT INTO friend_field_definitions (id, name, default_value, display_order, is_active)
+       VALUES ('field-rank', '会員ランク', '', 0, 1), ('field-off', '停止項目', '', 1, 0)`,
+    ).run();
+
+    expect((await call('GET', '/api/rich-menu-display-rules/options')).status).toBe(400);
+    const response = await call('GET', '/api/rich-menu-display-rules/options?accountId=acc-1');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      data: {
+        tags: [{ id: 'tag-vip', name: 'VIP', color: '#00aa00', created_at: expect.any(String) }],
+        fields: [{
+          id: 'field-rank', name: '会員ランク', defaultValue: '', displayOrder: 0,
+          isActive: true, createdAt: expect.any(String), updatedAt: expect.any(String),
+        }, {
+          id: 'field-off', name: '停止項目', defaultValue: '', displayOrder: 1,
+          isActive: false, createdAt: expect.any(String), updatedAt: expect.any(String),
+        }],
+      },
+    });
+  });
 });
 
 describe('/api/rich-menu-display-rules/reapply', () => {
@@ -183,5 +208,12 @@ describe('/api/rich-menu-display-rules/reapply', () => {
     expect((await call('GET', '/api/rich-menu-display-rules/reapply/latest')).status).toBe(400);
     expect((await call('POST', '/api/rich-menu-display-rules/reapply')).status).toBe(400);
     expect((await call('POST', '/api/rich-menu-display-rules/reapply?accountId=missing')).status).toBe(404);
+  });
+
+  test('does not start automatic LINE work for an inactive account', async () => {
+    await DB.prepare("UPDATE line_accounts SET is_active = 0 WHERE id = 'acc-1'").run();
+    const response = await call('POST', '/api/rich-menu-display-rules/reapply?accountId=acc-1');
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ success: false, error: 'account is inactive' });
   });
 });

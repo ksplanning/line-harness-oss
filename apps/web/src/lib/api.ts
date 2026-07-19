@@ -268,6 +268,11 @@ export interface RichMenuRuleReapplyJob {
   updatedAt: string
   completedAt: string | null
 }
+
+export interface RichMenuDisplayRuleOptions {
+  tags: Tag[]
+  fields: FriendFieldDefinition[]
+}
 /** Friend list items, optionally hydrated with chat status (when ?includeChatStatus=true) */
 export type FriendListItem = FriendWithTags & Partial<{
   latestIncomingMessage: { content: string; messageType: string; createdAt: string } | null
@@ -296,6 +301,10 @@ export const api = {
       }),
   },
   richMenuDisplayRules: {
+    options: (accountId: string) =>
+      fetchApi<ApiResponse<RichMenuDisplayRuleOptions>>(
+        `/api/rich-menu-display-rules/options?accountId=${encodeURIComponent(accountId)}`,
+      ),
     list: (accountId: string) =>
       fetchApi<ApiResponse<RichMenuDisplayRule[]>>(
         `/api/rich-menu-display-rules?accountId=${encodeURIComponent(accountId)}`,

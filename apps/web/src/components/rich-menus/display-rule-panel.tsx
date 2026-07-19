@@ -96,15 +96,15 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
     setLoading(true)
     setError(null)
     try {
-      const [rulesResponse, tagsResponse, fieldsResponse, jobResponse] = await Promise.all([
+      const [rulesResponse, optionsResponse, jobResponse] = await Promise.all([
         api.richMenuDisplayRules.list(accountId),
-        api.tags.list(),
-        api.friendFieldDefinitions.list(),
+        api.richMenuDisplayRules.options(accountId),
         api.richMenuDisplayRules.latestJob(accountId),
       ])
       setRules(sortRules(unwrap(rulesResponse)))
-      setTags(unwrap(tagsResponse))
-      setFields(unwrap(fieldsResponse))
+      const options = unwrap(optionsResponse)
+      setTags(options.tags)
+      setFields(options.fields)
       setJob(unwrap(jobResponse))
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError))

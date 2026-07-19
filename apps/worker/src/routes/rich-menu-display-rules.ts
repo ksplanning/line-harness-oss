@@ -1,9 +1,10 @@
 import {
-  RICH_MENU_DISPLAY_CONDITION_TYPES,
   createRichMenuDisplayRule,
   deleteRichMenuDisplayRule,
   getLineAccountById,
+  getTags,
   getRichMenuDisplayRule,
+  listFriendFieldDefinitions,
   listRichMenuDisplayRules,
   updateRichMenuDisplayRule,
   type CreateRichMenuDisplayRuleInput,
@@ -17,9 +18,10 @@ import {
   createRichMenuRuleReapplyJob,
   getLatestRichMenuRuleReapplyJob,
 } from '../services/rich-menu-rule-work.js';
+import { SUPPORTED_CONDITION_TYPES } from '../services/step-delivery.js';
 
 const richMenuDisplayRules = new Hono<Env>();
-const CONDITION_TYPES = new Set<string>(RICH_MENU_DISPLAY_CONDITION_TYPES);
+const CONDITION_TYPES = new Set<RichMenuDisplayConditionType>(SUPPORTED_CONDITION_TYPES);
 
 function accountIdFromQuery(c: { req: { query(name: string): string | undefined } }): string | null {
   const accountId = c.req.query('accountId')?.trim();
@@ -54,7 +56,7 @@ function parseFullInput(
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   const richMenuId = typeof input.richMenuId === 'string' ? input.richMenuId.trim() : '';
   if (!name || name.length > 80) return { error: 'name must be 1-80 characters' };
-  if (!CONDITION_TYPES.has(String(input.conditionType))) return { error: 'unsupported conditionType' };
+  if (!CONDITION_TYPES.has(input.conditionType as RichMenuDisplayConditionType)) return { error: 'unsupported conditionType' };
   const conditionType = input.conditionType as RichMenuDisplayConditionType;
   const conditionValue = normalizeConditionValue(conditionType, input.conditionValue);
   if (!conditionValue) return { error: 'invalid conditionValue' };
@@ -98,6 +100,17 @@ richMenuDisplayRules.post('/api/rich-menu-display-rules', async (c) => {
   return c.json({ success: true, data: created }, 201);
 });
 
+richMenuDisplayRules.get('/api/rich-menu-display-rules/options', async (c) => {
+  const accountId = accountIdFromQuery(c);
+  if (!accountId) return c.json({ success: false, error: 'accountId is required' }, 400);
+  if (!await getLineAccountById(c.env.DB, accountId)) return c.json({ success: false, error: 'account not found' }, 404);
+  const [tags, fields] = await Promise.all([
+    getTags(c.env.DB),
+    listFriendFieldDefinitions(c.env.DB),
+  ]);
+  return c.json({ success: true, data: { tags, fields } });
+});
+
 richMenuDisplayRules.get('/api/rich-menu-display-rules/reapply/latest', async (c) => {
   const accountId = accountIdFromQuery(c);
   if (!accountId) return c.json({ success: false, error: 'accountId is required' }, 400);
@@ -109,7 +122,9 @@ richMenuDisplayRules.get('/api/rich-menu-display-rules/reapply/latest', async (c
 richMenuDisplayRules.post('/api/rich-menu-display-rules/reapply', async (c) => {
   const accountId = accountIdFromQuery(c);
   if (!accountId) return c.json({ success: false, error: 'accountId is required' }, 400);
-  if (!await getLineAccountById(c.env.DB, accountId)) return c.json({ success: false, error: 'account not found' }, 404);
+  const account = await getLineAccountById(c.env.DB, accountId);
+  if (!account) return c.json({ success: false, error: 'account not found' }, 404);
+  if (account.is_active !== 1) return c.json({ success: false, error: 'account is inactive' }, 409);
   try {
     const job = await createRichMenuRuleReapplyJob(c.env.DB, accountId);
     return c.json({ success: true, data: job }, 202);
