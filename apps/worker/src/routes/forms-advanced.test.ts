@@ -1,7 +1,7 @@
 /**
  * F-2 — /api/forms-advanced 統合 (real SQLite)。
  *   - T-B1 backend: create/list/get/save(定義 validate)
- *   - T-B2: 定義保存が field を MVP subset で検証 (matrix は 400) / 保存後 out_of_sync (dev=credential 未設定)
+ *   - T-B2: 定義保存が field を whitelist subset で検証 (lookup は 400) / 保存後 out_of_sync (dev=credential 未設定)
  *   - T-B3: publish gate 状態機械 (draft→publish 直行 409 / submit-for-review→publish OK / draft は embed 409 = N-7)
  *   - landmine#4: 権限なし staff (forms_advanced 無し custom role) は mutating route に 403 (specific-route gate)
  *   - D-1: native forms (/api/forms) は無改変 (本 test は forms-advanced のみ触る)
@@ -192,10 +192,10 @@ describe('forms-advanced 定義保存 (T-B2)', () => {
     expect(d.syncStatus).toBe('out_of_sync'); // FORMALOO credential 未設定 dev
   });
 
-  test('MVP subset 外の field 種別 (matrix) は 400 (N-13)', async () => {
+  test('subset 外の field 種別 (lookup) は 400 (N-13)', async () => {
     const id = await createForm();
     const res = await call('PUT', `/api/forms-advanced/${id}`, {
-      fields: [{ id: 'h1', type: 'matrix', label: 'x', required: false, config: {} }],
+      fields: [{ id: 'h1', type: 'lookup', label: 'x', required: false, config: {} }],
     });
     expect(res.status).toBe(400);
   });

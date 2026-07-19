@@ -53,6 +53,8 @@ interface FormCreateResp {
 }
 interface FieldCreateResp {
   data?: { field?: { slug?: string }; slug?: string };
+  /** type-specific OpenAPI create endpoints return the field schema directly. */
+  slug?: string;
 }
 
 /**
@@ -125,7 +127,12 @@ export async function pushDefinitionToFormaloo(
   // treasure-b3-calc-dynamic: formula は harness 内部 id を保持する。新規 field の slug は POST 後にしか
   // 判明しないため、通常 field → 依存解決済み formula の順へ topological に並べ、未解決/cycle は API 送信前に止める。
   const formulaFields = params.fields.filter((field) => field.type === 'variable' && field.config.variableSubType === 'formula');
-  const nonFormulaFields = params.fields.filter((field) => !(field.type === 'variable' && field.config.variableSubType === 'formula'));
+  // repeating_section の column_field は参照先 slug が必要なので、参照される通常/formula field の後へ送る。
+  const repeatingFields = params.fields.filter((field) => field.type === 'repeating_section');
+  const nonFormulaFields = params.fields.filter((field) => (
+    !(field.type === 'variable' && field.config.variableSubType === 'formula')
+    && field.type !== 'repeating_section'
+  ));
   const knownIds = new Set([...params.fields.map((field) => field.id), ...Object.keys(existingFieldSlugs)]);
   for (const field of formulaFields) {
     const missing = formulaReferenceIds(field.config.formula ?? '').find((id) => !knownIds.has(id));
@@ -150,6 +157,18 @@ export async function pushDefinitionToFormaloo(
     const [field] = pendingFormulaFields.splice(index, 1);
     orderedFields.push(field!);
     resolvedOrderIds.add(field!.id);
+  }
+  for (const field of repeatingFields) {
+    for (const column of field.config.repeatingColumns ?? []) {
+      if (!knownIds.has(column.columnField)) {
+        return { ok: false, formalooSlug: params.formalooSlug, error: `repeating column reference missing: ${column.columnField}` };
+      }
+      if (!resolvedOrderIds.has(column.columnField) && !existingFieldSlugs[column.columnField]) {
+        return { ok: false, formalooSlug: params.formalooSlug, error: `repeating column dependency unresolved: ${column.columnField}` };
+      }
+    }
+    orderedFields.push(field);
+    resolvedOrderIds.add(field.id);
   }
   // form-ensure より前に「form が既に存在するか」を捕捉 (B2)。初回 push (form 新規作成) は全 field 新規 =
   // probe 不要 = 従来 POST 経路と同値 (R5 回帰)。form 既存時のみ、未知 field を probe で実在確認する。
@@ -188,10 +207,17 @@ export async function pushDefinitionToFormaloo(
   // field は top-level /v3.0/fields/ へ送り、所属 form は body の `form` slug で紐づける (旧 form-nested path は
   // 本番 Formaloo API に存在せず HTTP 404 だった / 2026-07-10 本番検証)。
   const createField = async (field: HarnessField): Promise<PushResult | { fslug: string }> => {
-    const payload = { ...toFormalooFieldPayload(field, resolveFieldSlug), form: slug };
-    const res = await client.post<FieldCreateResp>('/v3.0/fields/', payload);
+    const payload: Record<string, unknown> = { ...toFormalooFieldPayload(field, resolveFieldSlug), form: slug };
+    const createPath = field.type === 'matrix'
+      ? '/v3.0/fields/matrix/'
+      : field.type === 'repeating_section'
+        ? '/v3.0/fields/repeating_section/'
+        : '/v3.0/fields/';
+    // type-specific endpoint は path 自体が type discriminator。OpenAPI Request schema に readOnly type は無いため送らない。
+    if (field.type === 'matrix' || field.type === 'repeating_section') delete payload.type;
+    const res = await client.post<FieldCreateResp>(createPath, payload);
     if (!res.ok) return { ok: false, formalooSlug: slug, error: `field push failed (${field.id}): HTTP ${res.status}` };
-    const fslug = res.data?.data?.field?.slug ?? res.data?.data?.slug;
+    const fslug = res.data?.data?.field?.slug ?? res.data?.data?.slug ?? res.data?.slug;
     if (!fslug) return { ok: false, formalooSlug: slug, error: `field push: slug missing (${field.id})` };
     // fr-id-hardening-round2 (③ alias=slug 標準付与): Formaloo hosted の URL prefill は field の alias 一致でのみ発火し、
     //   /fo は本人再入場の回答 prefill を field slug をキーに組む (?<slug>=<value>)。既定 field は alias=null ゆえ prefill が
@@ -232,7 +258,7 @@ export async function pushDefinitionToFormaloo(
     if (fieldSlug) {
       // update = PATCH /v3.0/fields/{slug}/。choice_items を送らない (B6) = choices は不変 (dup も wipe も無し)。
       const patchBody = toFormalooFieldPayload(field, resolveFieldSlug);
-      delete patchBody.choice_items;
+      if (field.type !== 'matrix') delete patchBody.choice_items;
       const r = await client.request('PATCH', `/v3.0/fields/${fieldSlug}/`, patchBody);
       if (r.status === 404) {
         // self-heal: Formaloo 側で field 削除済 → full payload (choices 込み) で作り直し。

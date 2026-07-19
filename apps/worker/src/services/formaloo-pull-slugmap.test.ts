@@ -34,15 +34,15 @@ describe('pullDefinitionFromFormaloo — fieldSlugById (T-B3)', () => {
     expect(r.fieldSlugById).toEqual({ s_name: 's_name' });
   });
 
-  it('subset 外 field (matrix) は fieldSlugById に載らない (harness に反映されないため)', async () => {
+  it('subset 外 field (lookup) は fieldSlugById に載らない (harness に反映されないため)', async () => {
     const r = await pullDefinitionFromFormaloo(
-      mockClient(detail([nameField, { slug: 's_matrix', type: 'matrix', title: '表', position: 2 }])),
+      mockClient(detail([nameField, { slug: 's_lookup', type: 'lookup', title: '参照', position: 2 }])),
       { formalooSlug: 'form_slug', resolveId: (s) => s },
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.fieldSlugById).toEqual({ s_name: 's_name' });
-    expect(Object.keys(r.fieldSlugById ?? {})).not.toContain('s_matrix');
+    expect(Object.keys(r.fieldSlugById ?? {})).not.toContain('s_lookup');
   });
 });
 

@@ -58,7 +58,7 @@ describe('pullDefinitionFromFormaloo — mapping (T-A1)', () => {
     const body = detail(
       [
         { slug: 's_name', type: 'short_text', title: '名前', required: true, position: 0, max_length: 30 },
-        { slug: 's_matrix', type: 'matrix', title: '表', required: false, position: 1 }, // 非 subset → drop
+        { slug: 's_lookup', type: 'lookup', title: '参照', required: false, position: 1 }, // 非 subset → drop
         { slug: 's_age', type: 'number', title: '年齢', required: false, position: 2 },
       ],
       { rules: [{ conditions: [{ field: 's_name', operator: 'equals', value: '花子' }], actions: [{ type: 'show', field: 's_age' }] }] },
@@ -67,7 +67,7 @@ describe('pullDefinitionFromFormaloo — mapping (T-A1)', () => {
     const r = await pullDefinitionFromFormaloo(mockClient(body), { formalooSlug: 'form_slug', resolveId: resolve });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.fields.map((f) => f.id)).toEqual(['h_name', 'h_age']); // matrix drop / resolve
+    expect(r.fields.map((f) => f.id)).toEqual(['h_name', 'h_age']); // lookup drop / resolve
     expect(r.fields.map((f) => f.type)).toEqual(['text', 'number']);
     expect(r.logic).toHaveLength(1);
     expect(r.logic[0].sourceFieldId).toBe('h_name');
@@ -145,12 +145,12 @@ describe('pullDefinitionFromFormaloo — B5 孤立 logic 除去', () => {
     const body = detail(
       [
         { slug: 's_a', type: 'short_text', title: 'A', required: false, position: 0 },
-        { slug: 's_matrix', type: 'matrix', title: 'M', required: false, position: 1 }, // drop される
+        { slug: 's_lookup', type: 'lookup', title: 'M', required: false, position: 1 }, // drop される
       ],
       {
         rules: [
-          // s_matrix (drop) を参照 → 孤立 → 除去されるべき
-          { conditions: [{ field: 's_a', operator: 'equals', value: 'x' }], actions: [{ type: 'show', field: 's_matrix' }] },
+          // s_lookup (drop) を参照 → 孤立 → 除去されるべき
+          { conditions: [{ field: 's_a', operator: 'equals', value: 'x' }], actions: [{ type: 'show', field: 's_lookup' }] },
           // 両端とも生存 → 残す
           { conditions: [{ field: 's_a', operator: 'equals', value: 'y' }], actions: [{ type: 'hide', field: 's_a' }] },
         ],
@@ -161,7 +161,7 @@ describe('pullDefinitionFromFormaloo — B5 孤立 logic 除去', () => {
     if (!r.ok) return;
     expect(r.logic).toHaveLength(1);
     expect(r.logic[0].targetFieldId).toBe('s_a');
-    expect(r.logic.some((rule) => rule.targetFieldId === 's_matrix')).toBe(false);
+    expect(r.logic.some((rule) => rule.targetFieldId === 's_lookup')).toBe(false);
   });
 });
 
