@@ -534,7 +534,7 @@ export function validateHarnessField(
   }
   if (rawCfg.choicesSource !== undefined) {
     if (typeof rawCfg.choicesSource !== 'string') return { ok: false, error: 'config.choicesSource must be string' };
-    config.choicesSource = rawCfg.choicesSource;
+    config.choicesSource = rawCfg.choicesSource.trim();
   }
   if (rawCfg.choiceListId !== undefined) {
     if (typeof rawCfg.choiceListId !== 'string') return { ok: false, error: 'config.choiceListId must be string' };
@@ -640,13 +640,15 @@ export function toFormalooFieldPayload(
     return payload;
   }
   if (field.type === 'choice_fetch') {
-    return {
+    const payload: Record<string, unknown> = {
       type: 'choice_fetch',
       title: field.label,
       required: field.required,
       position: field.position,
       choices_source: field.config.choicesSource ?? '',
     };
+    if (field.config.description !== undefined) payload.description = field.config.description;
+    return payload;
   }
   const p: Record<string, unknown> = {
     type: HARNESS_TO_FORMALOO_TYPE[field.type],

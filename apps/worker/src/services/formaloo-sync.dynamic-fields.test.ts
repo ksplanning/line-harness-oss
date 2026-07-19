@@ -81,4 +81,42 @@ describe('variable formula push slug resolution', () => {
     expect(result.error).toContain('formula reference missing');
     expect(calls.some((call) => call.path.startsWith('/v3.0/fields/'))).toBe(false);
   });
+
+  test('an existing formula cannot reference itself just because its slug is already known', async () => {
+    const { client, calls } = mockClient();
+    const selfReference: HarnessField = {
+      ...total,
+      config: { variableSubType: 'formula', formula: '{total}+1' },
+    };
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'FORM', title: '見積り', fields: [selfReference, price], logic: [],
+      existingFieldSlugs: { total: 'TOTAL_SLUG', price: 'PRICE_SLUG' },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('formula reference cycle');
+    expect(calls.some((call) => call.path.startsWith('/v3.0/fields/'))).toBe(false);
+  });
+
+  test('existing formula fields reject a mutual reference cycle before PATCH', async () => {
+    const { client, calls } = mockClient();
+    const formulaA: HarnessField = {
+      ...total,
+      id: 'formula_a',
+      config: { variableSubType: 'formula', formula: '{formula_b}+1' },
+    };
+    const formulaB: HarnessField = {
+      ...total,
+      id: 'formula_b',
+      config: { variableSubType: 'formula', formula: '{formula_a}+1' },
+    };
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'FORM', title: '見積り', fields: [formulaA, formulaB], logic: [],
+      existingFieldSlugs: { formula_a: 'A_SLUG', formula_b: 'B_SLUG' },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('formula reference cycle');
+    expect(calls.some((call) => call.path.startsWith('/v3.0/fields/'))).toBe(false);
+  });
 });

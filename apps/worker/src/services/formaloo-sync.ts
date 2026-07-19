@@ -131,7 +131,13 @@ export async function pushDefinitionToFormaloo(
     const missing = formulaReferenceIds(field.config.formula ?? '').find((id) => !knownIds.has(id));
     if (missing) return { ok: false, formalooSlug: params.formalooSlug, error: `formula reference missing: ${missing}` };
   }
-  const resolvedOrderIds = new Set([...nonFormulaFields.map((field) => field.id), ...Object.keys(existingFieldSlugs)]);
+  // A known remote slug makes emission possible, but it does not make a formula dependency acyclic.
+  // Keep current formula ids out until their own dependencies have been resolved topologically.
+  const formulaFieldIds = new Set(formulaFields.map((field) => field.id));
+  const resolvedOrderIds = new Set([
+    ...nonFormulaFields.map((field) => field.id),
+    ...Object.keys(existingFieldSlugs).filter((id) => !formulaFieldIds.has(id)),
+  ]);
   const pendingFormulaFields = [...formulaFields];
   const orderedFields = [...nonFormulaFields];
   while (pendingFormulaFields.length > 0) {

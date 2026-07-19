@@ -118,6 +118,7 @@ describe('choice_fetch field measured contract', () => {
         choicesSource: source,
         choiceListId: 'list_1',
         choiceFetchItems: [{ label: '渋谷店', value: 'shibuya' }],
+        description: '予約する店舗を選んでください',
       },
     });
 
@@ -127,16 +128,18 @@ describe('choice_fetch field measured contract', () => {
       required: true,
       position: 1,
       choices_source: source,
+      description: '予約する店舗を選んでください',
     });
     expect(fromFormalooField({
       slug: 'STORE', type: 'choice_fetch', title: '店舗', required: true, position: 1, choices_source: source,
+      description: '予約する店舗を選んでください',
     }, () => 'dynamic_store')).toEqual({
       id: 'dynamic_store',
       type: 'choice_fetch',
       label: '店舗',
       required: true,
       position: 1,
-      config: { choicesSource: source },
+      config: { choicesSource: source, description: '予約する店舗を選んでください' },
     });
   });
 
@@ -146,5 +149,16 @@ describe('choice_fetch field measured contract', () => {
         id: 'dynamic', type: 'choice_fetch', label: '動的選択肢', position: 0, config: { choicesSource },
       }).ok).toBe(false);
     }
+  });
+
+  test('normalizes choices_source before storing and emitting the validated URL', () => {
+    const field = validate({
+      id: 'dynamic', type: 'choice_fetch', label: '動的選択肢', position: 0,
+      config: { choicesSource: '  https://worker.example.test/formaloo/choices/f/l  ' },
+    });
+    expect(field.config.choicesSource).toBe('https://worker.example.test/formaloo/choices/f/l');
+    expect(toFormalooFieldPayload(field)).toMatchObject({
+      choices_source: 'https://worker.example.test/formaloo/choices/f/l',
+    });
   });
 });
