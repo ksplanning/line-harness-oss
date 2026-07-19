@@ -4,6 +4,20 @@
 
 ---
 
+## friend-fields-global-schema — テナント単位「友だち項目定義」の全体適用（2026-07-19 closer クローズ / status: completed / done 6/6）
+
+owner報告（2026-07-19 15:5x）: 「友達個人情報になにも設定されていなかったからカスタムは設定したが、これ個人個人で設定しないといけないんですね…設定したら全体に同じカスタムフィールドが追加される想定でした…ほしかったのは全体に適応です」。正本: `.plans/2026-07-19-friend-fields-global-schema/tasks.md`。reviewer Round3 PASS（R1差し戻し3点=json_each退行なし/参照安定化/性能bounded を全消化）。
+
+**実装**: migration 105（`friend_field_definitions` additive）+ admin CRUD API + 管理画面「友だち項目定義」パネル + `custom-metadata-editor.tsx` の既定値merge拡張（未設定friendには定義の既定値・per-friend独自キーは従来どおり共存）+ row-status mapping候補提示 + 配信出し分け条件の既定値対応。両テナント同時適用（ks/piecemakerとも migration適用・4面デプロイ済み）。
+
+**closer段でdeployed実機検証まで完遂**: piecemakerで検証用定義`DELETE-ME-検証項目`(既定値=未)を作成→friend「あやこ」(既存`入金確認:済`)の個人情報欄で既存値不変+新項目既定値`未`が同時表示されることをheadless Chromeスクショで実測、friend「yurie」(metadata空)でも既定値表示を確認→削除・現状復帰済み。
+
+**⚠️ 発見した地雷（次回同種closer必読）**: `git worktree add`のdetached HEADから`wrangler pages deploy`すると、デフォルトのgit branch判定が「HEAD」を認識できずPreview行きになり、本番admin(`*.pages.dev`)canonical domainが更新されない（Cloudflare Workers本体は影響なし・Pages限定）。`--branch=main`明示指定で解消。1回目のadminデプロイがこれで静かにPreview落ちし、headless Chrome実機検証で「新機能のAPIが一切呼ばれない」という形で発覚した（コード自体は最初から正常だった＝fixture-vs-reality型ではなくdeploy-pipeline型のギャップ）。
+
+詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-19_212846_friend-fields-global-schema.md`（Box working folder 386663013201）。
+
+---
+
 ## fo-liff-infinite-loop-fix — piecemaker LIFF 無限リロード修理（2026-07-18 closer クローズ / コード側先行 land）
 
 owner 実機バグ報告（2026-07-18 13:4x）: piecemaker の `/fo/:id` を LINE アプリで開くと「読み込み中」のまま → LIFF 承認+友だち追加後に無限リロード。計画正本: `.plans/2026-07-18-fo-liff-infinite-loop-fix/{spec,plan,tasks}.md`。reviewer Round 1 PASS（claude 本体 + Codex companion 両者 approve 一致・closer_allowed=true・scope=code-track-only）。
