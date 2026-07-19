@@ -90,7 +90,8 @@
     "103_formaloo_friend_metadata_mapping.sql",
     "104_formaloo_receipt_metadata.sql",
     "105_friend_field_definitions.sql",
-    "106_formaloo_webhook_registration.sql"
+    "106_formaloo_webhook_registration.sql",
+    "107_rich_menu_display_rules.sql"
   ],
-  "migrationCount": 91
+  "migrationCount": 92
 }
