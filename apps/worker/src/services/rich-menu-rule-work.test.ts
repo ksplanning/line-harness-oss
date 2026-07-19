@@ -7,6 +7,7 @@ import { createRichMenuDisplayRule } from '@line-crm/db';
 import {
   RichMenuRuleReapplyConflictError,
   createRichMenuRuleReapplyJob,
+  enqueueRichMenuRuleScheduleTransitions,
   getLatestRichMenuRuleReapplyJob,
   processRichMenuRuleWork,
 } from './rich-menu-rule-work.js';
@@ -334,5 +335,120 @@ describe('dirty friend queue', () => {
     ]);
 
     expect(linkCalls).toBe(1);
+  });
+});
+
+describe('scheduled rich menu rule transitions', () => {
+  test('queues only following friends whose active account crossed a period boundary', async () => {
+    seedFriends(25);
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id, is_following)
+       VALUES ('friend-unfollowed', 'U-off', 'acc-1', 0)`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-2', 'channel-2', 'B', 'account-token-2', 'secret-2')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id, is_following)
+       VALUES ('friend-other', 'U-other', 'acc-2', 1)`,
+    ).run();
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '開始境界', conditionType: 'tag_exists', conditionValue: 'tag-any',
+      richMenuId: 'menu-1', priority: 10, isActive: true,
+      activeFrom: '2026-07-20T00:10:00.000Z', activeUntil: null,
+    });
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-2', name: '停止中', conditionType: 'tag_exists', conditionValue: 'tag-any',
+      richMenuId: 'menu-2', priority: 10, isActive: false,
+      activeFrom: '2026-07-20T00:10:00.000Z', activeUntil: null,
+    });
+
+    const result = await enqueueRichMenuRuleScheduleTransitions(
+      db,
+      new Date('2026-07-20T00:15:00.000Z'),
+    );
+
+    expect(result).toMatchObject({ enqueued: 25, scannedThrough: '2026-07-20T00:15:00.000Z' });
+    expect(raw.prepare(
+      `SELECT q.friend_id FROM rich_menu_rule_evaluation_queue q
+       JOIN friends f ON f.id = q.friend_id
+       WHERE f.line_account_id = 'acc-2' OR f.is_following = 0`,
+    ).all()).toEqual([]);
+  });
+
+  test('recovers a missed scan from its checkpoint and is idempotent at the same scheduled time', async () => {
+    seedFriends(1);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '見逃し回収', conditionType: 'tag_exists', conditionValue: 'tag-any',
+      richMenuId: 'menu-1', priority: 10, isActive: true,
+      activeFrom: '2026-07-20T00:10:00.000Z', activeUntil: null,
+    });
+    raw.prepare(
+      `INSERT INTO rich_menu_rule_schedule_state (id, last_scanned_at)
+       VALUES (1, '2026-07-20T00:00:00.000Z')`,
+    ).run();
+
+    const first = await enqueueRichMenuRuleScheduleTransitions(
+      db,
+      new Date('2026-07-20T00:30:00.000Z'),
+    );
+    const second = await enqueueRichMenuRuleScheduleTransitions(
+      db,
+      new Date('2026-07-20T00:30:00.000Z'),
+    );
+
+    expect(first).toMatchObject({ enqueued: 1, scannedFrom: '2026-07-20T00:00:00.000Z' });
+    expect(second).toMatchObject({ enqueued: 0, scannedFrom: '2026-07-20T00:30:00.000Z' });
+    expect(raw.prepare(
+      'SELECT revision FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?',
+    ).get('friend-000')).toEqual({ revision: 1 });
+  });
+
+  test('preserves an in-flight lease while recording the newer time transition', async () => {
+    seedFriends(1);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '終了境界', conditionType: 'tag_exists', conditionValue: 'tag-any',
+      richMenuId: 'menu-1', priority: 10, isActive: true,
+      activeFrom: null, activeUntil: '2026-07-20T00:10:00.000Z',
+    });
+    raw.prepare(
+      `INSERT INTO rich_menu_rule_evaluation_queue
+       (friend_id, available_at, lease_token, revision)
+       VALUES ('friend-000', '2099-01-01T00:00:00.000', 'worker-in-flight', 1)`,
+    ).run();
+
+    await enqueueRichMenuRuleScheduleTransitions(db, new Date('2026-07-20T00:15:00.000Z'));
+
+    expect(raw.prepare(
+      `SELECT available_at, lease_token, revision
+       FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?`,
+    ).get('friend-000')).toEqual({
+      available_at: '2099-01-01T00:00:00.000',
+      lease_token: 'worker-in-flight',
+      revision: 2,
+    });
+  });
+
+  test('drains a transition through the existing maximum of 20 friends per five-minute tick', async () => {
+    seedFriends(25);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '開始境界', conditionType: 'tag_not_exists', conditionValue: 'tag-missing',
+      richMenuId: 'menu-1', priority: 10, isActive: true,
+      activeFrom: '2026-07-20T00:10:00.000Z', activeUntil: null,
+    });
+    await enqueueRichMenuRuleScheduleTransitions(db, new Date('2026-07-20T00:15:00.000Z'));
+
+    const result = await processRichMenuRuleWork(db, {
+      limit: 20,
+      clientFactory: () => ({
+        async linkRichMenuToUser() {},
+        async unlinkRichMenuFromUser() {},
+      }),
+    });
+
+    expect(result).toMatchObject({ attempted: 20, queueProcessed: 20 });
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM rich_menu_rule_evaluation_queue').get())
+      .toEqual({ count: 5 });
   });
 });

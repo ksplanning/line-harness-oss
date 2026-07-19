@@ -236,4 +236,19 @@ describe('migration 112 — rich menu rule schedule', () => {
       'SELECT active_from, active_until FROM rich_menu_display_rules WHERE id = ?',
     ).get('rule-legacy')).toEqual({ active_from: null, active_until: null });
   });
+
+  test('adds a durable transition checkpoint and indexes the bounded scan paths', () => {
+    expect(raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'rich_menu_rule_schedule_state'",
+    ).get()).toEqual({ name: 'rich_menu_rule_schedule_state' });
+
+    const indexes = raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_rich_menu_rule_schedule_%' ORDER BY name",
+    ).all();
+    expect(indexes).toEqual([
+      { name: 'idx_rich_menu_rule_schedule_friends' },
+      { name: 'idx_rich_menu_rule_schedule_from' },
+      { name: 'idx_rich_menu_rule_schedule_until' },
+    ]);
+  });
 });

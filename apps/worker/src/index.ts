@@ -28,7 +28,10 @@ import { runEventBookingExpirer } from './services/event-booking-expirer.js';
 import { sendEventBookingNotification } from './services/event-booking-notifier.js';
 import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
-import { processRichMenuRuleWork } from './services/rich-menu-rule-work.js';
+import {
+  enqueueRichMenuRuleScheduleTransitions,
+  processRichMenuRuleWork,
+} from './services/rich-menu-rule-work.js';
 import { authMiddleware } from './middleware/auth.js';
 import { permissionMiddleware } from './middleware/permission-middleware.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -777,9 +780,20 @@ async function scheduled(
 
   await Promise.allSettled(jobs);
 
-  // 条件付きリッチメニューは 5 分 tick ごとに最大 20 人だけ処理する。
-  // タグ/metadata 変更と管理画面からの一括再適用を同じ bounded worker で扱う。
+  // 条件付きリッチメニューは15分境界で期間またぎをqueue化し、5分tickごとに最大20人だけ処理する。
+  // checkpoint が遅延tickを回収し、タグ/metadata変更と一括再適用も同じ bounded worker で扱う。
   if (event.cron === '*/5 * * * *') {
+    const scheduledAt = new Date(event.scheduledTime);
+    if (scheduledAt.getUTCMinutes() % 15 === 0) {
+      try {
+        const result = await enqueueRichMenuRuleScheduleTransitions(env.DB, scheduledAt);
+        if (result.enqueued > 0) {
+          console.log(`[rich-menu-rules] scheduled=${result.enqueued}`);
+        }
+      } catch {
+        console.error('[rich-menu-rules] schedule scan error');
+      }
+    }
     try {
       const result = await processRichMenuRuleWork(env.DB);
       if (result.attempted > 0) {

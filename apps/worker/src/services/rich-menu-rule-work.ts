@@ -58,6 +58,97 @@ export class RichMenuRuleReapplyConflictError extends Error {
   }
 }
 
+export interface RichMenuRuleScheduleEnqueueResult {
+  enqueued: number;
+  scannedFrom: string;
+  scannedThrough: string;
+}
+
+const RICH_MENU_RULE_SCHEDULE_SCAN_INTERVAL_MS = 15 * 60_000;
+
+/**
+ * Materialize rule boundaries into the existing deduplicated friend queue.
+ * The checkpoint window is open on the left and closed on the right: (last, scheduled].
+ * A normal cron detects a boundary within 15 minutes; the existing worker then drains
+ * 20 friends per five-minute tick (10 reserved slots while a manual sweep is running).
+ */
+export async function enqueueRichMenuRuleScheduleTransitions(
+  db: D1Database,
+  scheduledAt: Date,
+): Promise<RichMenuRuleScheduleEnqueueResult> {
+  if (!Number.isFinite(scheduledAt.getTime())) throw new Error('invalid rich menu rule scheduled time');
+  const scannedThrough = scheduledAt.toISOString();
+  const fallbackFrom = new Date(
+    scheduledAt.getTime() - RICH_MENU_RULE_SCHEDULE_SCAN_INTERVAL_MS,
+  ).toISOString();
+
+  await db
+    .prepare(
+      `INSERT INTO rich_menu_rule_schedule_state (id, last_scanned_at)
+       VALUES (1, ?) ON CONFLICT(id) DO NOTHING`,
+    )
+    .bind(fallbackFrom)
+    .run();
+  const state = await db
+    .prepare('SELECT last_scanned_at FROM rich_menu_rule_schedule_state WHERE id = 1')
+    .first<{ last_scanned_at: string }>();
+  const scannedFrom = state?.last_scanned_at ?? fallbackFrom;
+  if (Date.parse(scannedFrom) >= scheduledAt.getTime()) {
+    return { enqueued: 0, scannedFrom, scannedThrough };
+  }
+
+  const queued = await db
+    .prepare(
+      `INSERT INTO rich_menu_rule_evaluation_queue
+       (friend_id, attempts, available_at, last_error, lease_token, revision, updated_at)
+       SELECT f.id, 0,
+              strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'),
+              NULL, NULL, 1,
+              strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+       FROM friends f
+       JOIN line_accounts a ON a.id = f.line_account_id AND a.is_active = 1
+       WHERE f.is_following = 1
+         AND EXISTS (
+           SELECT 1 FROM rich_menu_display_rules r
+           WHERE r.account_id = f.line_account_id
+             AND r.is_active = 1
+             AND (
+               (r.active_from IS NOT NULL
+                 AND julianday(r.active_from) > julianday(?)
+                 AND julianday(r.active_from) <= julianday(?))
+               OR
+               (r.active_until IS NOT NULL
+                 AND julianday(r.active_until) > julianday(?)
+                 AND julianday(r.active_until) <= julianday(?))
+             )
+         )
+       ON CONFLICT(friend_id) DO UPDATE SET
+         attempts = 0,
+         available_at = CASE
+           WHEN rich_menu_rule_evaluation_queue.lease_token IS NULL THEN excluded.available_at
+           ELSE rich_menu_rule_evaluation_queue.available_at
+         END,
+         last_error = NULL,
+         revision = rich_menu_rule_evaluation_queue.revision + 1,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(scannedFrom, scannedThrough, scannedFrom, scannedThrough)
+    .run();
+
+  await db
+    .prepare(
+      `UPDATE rich_menu_rule_schedule_state SET last_scanned_at = ?
+       WHERE id = 1 AND julianday(last_scanned_at) < julianday(?)`,
+    )
+    .bind(scannedThrough, scannedThrough)
+    .run();
+  return {
+    enqueued: queued.meta?.changes ?? 0,
+    scannedFrom,
+    scannedThrough,
+  };
+}
+
 export async function getLatestRichMenuRuleReapplyJob(
   db: D1Database,
   accountId: string,

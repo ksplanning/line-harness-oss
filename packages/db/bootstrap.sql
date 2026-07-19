@@ -1026,6 +1026,11 @@ CREATE TABLE rich_menu_rule_reapply_jobs (
   completed_at    TEXT
 );
 
+CREATE TABLE rich_menu_rule_schedule_state (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  last_scanned_at TEXT NOT NULL
+);
+
 CREATE TABLE role_permissions (
   id          TEXT PRIMARY KEY,
   role_id     TEXT NOT NULL,
@@ -1502,6 +1507,15 @@ CREATE INDEX idx_rich_menu_rule_reapply_jobs_latest
 
 CREATE UNIQUE INDEX idx_rich_menu_rule_reapply_jobs_one_running
   ON rich_menu_rule_reapply_jobs(account_id) WHERE status = 'running';
+
+CREATE INDEX idx_rich_menu_rule_schedule_friends
+  ON friends(line_account_id, is_following, id);
+
+CREATE INDEX idx_rich_menu_rule_schedule_from
+  ON rich_menu_display_rules(is_active, active_from, account_id) WHERE active_from IS NOT NULL;
+
+CREATE INDEX idx_rich_menu_rule_schedule_until
+  ON rich_menu_display_rules(is_active, active_until, account_id) WHERE active_until IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_role_permissions_role_feature
   ON role_permissions(role_id, feature_key);

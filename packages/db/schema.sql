@@ -1071,6 +1071,11 @@ CREATE TABLE IF NOT EXISTS rich_menu_rule_reapply_jobs (
   completed_at    TEXT
 );
 
+CREATE TABLE IF NOT EXISTS rich_menu_rule_schedule_state (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  last_scanned_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_rich_menu_display_rules_winner
   ON rich_menu_display_rules(account_id, is_active, priority DESC, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_rich_menu_friend_assignments_account
@@ -1081,6 +1086,10 @@ CREATE INDEX IF NOT EXISTS idx_rich_menu_rule_reapply_jobs_latest
   ON rich_menu_rule_reapply_jobs(account_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rich_menu_rule_reapply_jobs_one_running
   ON rich_menu_rule_reapply_jobs(account_id) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_rich_menu_rule_schedule_from
+  ON rich_menu_display_rules(is_active, active_from, account_id) WHERE active_from IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_rich_menu_rule_schedule_until
+  ON rich_menu_display_rules(is_active, active_until, account_id) WHERE active_until IS NOT NULL;
 
 CREATE TRIGGER IF NOT EXISTS trg_rich_menu_rule_tag_insert AFTER INSERT ON friend_tags BEGIN INSERT INTO rich_menu_rule_evaluation_queue (friend_id, attempts, available_at, last_error, lease_token, revision, updated_at) SELECT NEW.friend_id, 0, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'), NULL, NULL, 1, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') WHERE EXISTS (SELECT 1 FROM friends f JOIN rich_menu_display_rules r ON r.account_id = f.line_account_id AND r.is_active = 1 WHERE f.id = NEW.friend_id) OR EXISTS (SELECT 1 FROM rich_menu_friend_assignments a WHERE a.friend_id = NEW.friend_id) ON CONFLICT(friend_id) DO UPDATE SET attempts = 0, available_at = CASE WHEN rich_menu_rule_evaluation_queue.lease_token IS NULL THEN excluded.available_at ELSE rich_menu_rule_evaluation_queue.available_at END, last_error = NULL, revision = rich_menu_rule_evaluation_queue.revision + 1, updated_at = excluded.updated_at; END;
 CREATE TRIGGER IF NOT EXISTS trg_rich_menu_rule_tag_delete AFTER DELETE ON friend_tags BEGIN INSERT INTO rich_menu_rule_evaluation_queue (friend_id, attempts, available_at, last_error, lease_token, revision, updated_at) SELECT OLD.friend_id, 0, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'), NULL, NULL, 1, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') WHERE EXISTS (SELECT 1 FROM friends WHERE id = OLD.friend_id) AND (EXISTS (SELECT 1 FROM friends f JOIN rich_menu_display_rules r ON r.account_id = f.line_account_id AND r.is_active = 1 WHERE f.id = OLD.friend_id) OR EXISTS (SELECT 1 FROM rich_menu_friend_assignments a WHERE a.friend_id = OLD.friend_id)) ON CONFLICT(friend_id) DO UPDATE SET attempts = 0, available_at = CASE WHEN rich_menu_rule_evaluation_queue.lease_token IS NULL THEN excluded.available_at ELSE rich_menu_rule_evaluation_queue.available_at END, last_error = NULL, revision = rich_menu_rule_evaluation_queue.revision + 1, updated_at = excluded.updated_at; END;

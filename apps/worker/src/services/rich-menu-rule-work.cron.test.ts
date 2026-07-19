@@ -4,11 +4,13 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-const { workSpy } = vi.hoisted(() => ({
+const { enqueueSpy, workSpy } = vi.hoisted(() => ({
+  enqueueSpy: vi.fn(async () => ({ enqueued: 0, scannedFrom: '', scannedThrough: '' })),
   workSpy: vi.fn(async () => ({ attempted: 0, queueProcessed: 0, jobsCompleted: 0 })),
 }));
 vi.mock('./rich-menu-rule-work.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('./rich-menu-rule-work.js')>(),
+  enqueueRichMenuRuleScheduleTransitions: enqueueSpy,
   processRichMenuRuleWork: workSpy,
 }));
 
@@ -52,7 +54,7 @@ function replayAll(db: Database.Database): void {
 }
 
 let raw: Database.Database;
-const tick = (cron: string) => ({ cron, scheduledTime: Date.now(), type: 'scheduled' }) as unknown as ScheduledEvent;
+const tick = (cron: string, scheduledTime = Date.now()) => ({ cron, scheduledTime, type: 'scheduled' }) as unknown as ScheduledEvent;
 const CTX = {} as ExecutionContext;
 
 function env(): Record<string, unknown> {
@@ -74,6 +76,8 @@ function env(): Record<string, unknown> {
 beforeEach(() => {
   raw = new Database(':memory:');
   replayAll(raw);
+  enqueueSpy.mockReset();
+  enqueueSpy.mockResolvedValue({ enqueued: 0, scannedFrom: '', scannedThrough: '' });
   workSpy.mockClear();
 });
 
@@ -86,6 +90,39 @@ describe('scheduled rich menu rule work', () => {
 
   test('does not run on the six-hour tick', async () => {
     await worker.scheduled(tick('0 */6 * * *'), env() as never, CTX);
+    expect(enqueueSpy).not.toHaveBeenCalled();
     expect(workSpy).not.toHaveBeenCalled();
+  });
+
+  test('enqueues transitions before work on each fifteen-minute boundary', async () => {
+    const scheduledTime = Date.parse('2026-07-20T00:15:00.000Z');
+    await worker.scheduled(tick('*/5 * * * *', scheduledTime), env() as never, CTX);
+
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    expect(enqueueSpy).toHaveBeenCalledWith(expect.anything(), new Date(scheduledTime));
+    expect(enqueueSpy.mock.invocationCallOrder[0]).toBeLessThan(workSpy.mock.invocationCallOrder[0]);
+  });
+
+  test('keeps draining work but skips the transition scan between fifteen-minute boundaries', async () => {
+    await worker.scheduled(
+      tick('*/5 * * * *', Date.parse('2026-07-20T00:05:00.000Z')),
+      env() as never,
+      CTX,
+    );
+
+    expect(enqueueSpy).not.toHaveBeenCalled();
+    expect(workSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps draining existing work when the transition scan fails', async () => {
+    enqueueSpy.mockRejectedValueOnce(new Error('temporary D1 failure'));
+    await worker.scheduled(
+      tick('*/5 * * * *', Date.parse('2026-07-20T00:30:00.000Z')),
+      env() as never,
+      CTX,
+    );
+
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    expect(workSpy).toHaveBeenCalledTimes(1);
   });
 });
