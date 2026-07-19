@@ -11,6 +11,7 @@ import { evaluateCondition, isSupportedConditionType, SUPPORTED_CONDITION_TYPES 
 interface FakeTables {
   friendTags?: Set<string>; // "friendId|tagId" entries
   friendMetadata?: Record<string, Record<string, unknown>>; // friendId → metadata
+  friendFieldDefinitions?: Record<string, { defaultValue: string; isActive?: boolean }>;
 }
 
 function mockDb(tables: FakeTables): D1Database {
@@ -27,6 +28,12 @@ function mockDb(tables: FakeTables): D1Database {
             const meta = tables.friendMetadata?.[friendId];
             if (meta === undefined) return null;
             return { metadata: JSON.stringify(meta) } as unknown as T;
+          }
+          if (sql.includes('FROM friend_field_definitions')) {
+            const [name] = args as [string];
+            const definition = tables.friendFieldDefinitions?.[name];
+            if (!definition || definition.isActive === false) return null;
+            return { default_value: definition.defaultValue } as unknown as T;
           }
           return null;
         },
@@ -122,6 +129,48 @@ describe('evaluateCondition', () => {
         }),
       ).toBe(false);
     });
+
+    it('uses an active field-definition default when the key is absent', async () => {
+      const db = mockDb({
+        friendMetadata: { f1: {} },
+        friendFieldDefinitions: { purchased: { defaultValue: '未' } },
+      });
+      expect(
+        await evaluateCondition(db, 'f1', {
+          condition_type: 'metadata_equals',
+          condition_value: JSON.stringify({ key: 'purchased', value: '未' }),
+        }),
+      ).toBe(true);
+    });
+
+    it.each([
+      ['empty string', ''],
+      ['explicit null', null],
+    ])('%s explicitly stored value overrides the definition default', async (_label, storedValue) => {
+      const db = mockDb({
+        friendMetadata: { f1: { purchased: storedValue } },
+        friendFieldDefinitions: { purchased: { defaultValue: '未' } },
+      });
+      expect(
+        await evaluateCondition(db, 'f1', {
+          condition_type: 'metadata_equals',
+          condition_value: JSON.stringify({ key: 'purchased', value: '未' }),
+        }),
+      ).toBe(false);
+    });
+
+    it('does not use an inactive field-definition default', async () => {
+      const db = mockDb({
+        friendMetadata: { f1: {} },
+        friendFieldDefinitions: { purchased: { defaultValue: '未', isActive: false } },
+      });
+      expect(
+        await evaluateCondition(db, 'f1', {
+          condition_type: 'metadata_equals',
+          condition_value: JSON.stringify({ key: 'purchased', value: '未' }),
+        }),
+      ).toBe(false);
+    });
   });
 
   describe('metadata_not_equals', () => {
@@ -140,6 +189,34 @@ describe('evaluateCondition', () => {
         await evaluateCondition(db, 'f1', {
           condition_type: 'metadata_not_equals',
           condition_value: JSON.stringify({ key: 'tier', value: 'gold' }),
+        }),
+      ).toBe(true);
+    });
+
+    it('compares an absent key against the active definition default', async () => {
+      const db = mockDb({
+        friendMetadata: { f1: {} },
+        friendFieldDefinitions: { tier: { defaultValue: 'gold' } },
+      });
+      expect(
+        await evaluateCondition(db, 'f1', {
+          condition_type: 'metadata_not_equals',
+          condition_value: JSON.stringify({ key: 'tier', value: 'gold' }),
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe('metadata_contains defaults', () => {
+    it('uses an active definition default as the contains haystack when the key is absent', async () => {
+      const db = mockDb({
+        friendMetadata: { f1: {} },
+        friendFieldDefinitions: { status: { defaultValue: '入金-未確認' } },
+      });
+      expect(
+        await evaluateCondition(db, 'f1', {
+          condition_type: 'metadata_contains',
+          condition_value: JSON.stringify({ key: 'status', value: '未確認' }),
         }),
       ).toBe(true);
     });

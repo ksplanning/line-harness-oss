@@ -1,3 +1,5 @@
+import { buildFriendMetadataPredicate } from './friend-metadata-condition.js'
+
 /**
  * 行動 rule (G11 遡及オーディエンス) の期間指定。
  *  - sinceDays: 過去 N 日 (相対・省略時 30)。
@@ -153,8 +155,9 @@ export function buildSegmentWhere(
           throw new Error('metadata_equals rule requires { key: string; value: string }')
         }
         const mv = rule.value as { key: string; value: string }
-        clauses.push(`json_extract(f.metadata, ?) = ?`)
-        bindings.push(`$.${mv.key}`, mv.value)
+        const predicate = buildFriendMetadataPredicate(mv.key, mv.value, 'equals')
+        clauses.push(predicate.sql)
+        bindings.push(...predicate.bindings)
         break
       }
 
@@ -168,8 +171,9 @@ export function buildSegmentWhere(
           throw new Error('metadata_not_equals rule requires { key: string; value: string }')
         }
         const mv = rule.value as { key: string; value: string }
-        clauses.push(`(json_extract(f.metadata, ?) IS NULL OR json_extract(f.metadata, ?) != ?)`)
-        bindings.push(`$.${mv.key}`, `$.${mv.key}`, mv.value)
+        const predicate = buildFriendMetadataPredicate(mv.key, mv.value, 'not_equals')
+        clauses.push(predicate.sql)
+        bindings.push(...predicate.bindings)
         break
       }
 

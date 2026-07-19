@@ -16,6 +16,7 @@ import {
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
+import { getEffectiveFriendMetadataValue } from './friend-metadata-condition.js';
 
 /**
  * Replace template variables in message content.
@@ -344,17 +345,8 @@ export async function evaluateCondition(
           console.error('[scenario] malformed metadata condition_value');
           return false;
         }
-        const friend = await db
-          .prepare('SELECT metadata FROM friends WHERE id = ?')
-          .bind(friendId)
-          .first<{ metadata: string }>();
-        let metadata: Record<string, unknown> = {};
-        try {
-          metadata = JSON.parse(friend?.metadata || '{}') as Record<string, unknown>;
-        } catch {
-          metadata = {};
-        }
-        const matches = metadata[parsed.key] === parsed.value;
+        const actual = await getEffectiveFriendMetadataValue(db, friendId, parsed.key);
+        const matches = actual === parsed.value;
         return step.condition_type === 'metadata_equals' ? matches : !matches;
       }
       case 'metadata_contains':
@@ -369,19 +361,8 @@ export async function evaluateCondition(
           console.error(`[scenario] empty contains needle for condition_type: ${step.condition_type}`);
           return false;
         }
-        const friend = await db
-          .prepare('SELECT metadata FROM friends WHERE id = ?')
-          .bind(friendId)
-          .first<{ metadata: string }>();
-        let metadata: Record<string, unknown> = {};
-        try {
-          metadata = JSON.parse(friend?.metadata || '{}') as Record<string, unknown>;
-        } catch {
-          metadata = {};
-        }
-        const haystackValue = Object.prototype.hasOwnProperty.call(metadata, parsed.key)
-          ? metadata[parsed.key]
-          : '';
+        const actual = await getEffectiveFriendMetadataValue(db, friendId, parsed.key);
+        const haystackValue = actual === undefined ? '' : actual;
         const haystackNorm = normalizeForContains(haystackValue === undefined ? '' : String(haystackValue));
         const matches = haystackNorm.includes(needleNorm);
         return step.condition_type === 'metadata_contains' ? matches : !matches;

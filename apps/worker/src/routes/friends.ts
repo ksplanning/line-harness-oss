@@ -14,6 +14,7 @@ import type { Friend as DbFriend, Tag as DbTag } from '@line-crm/db';
 import { isReservedFriendMetadataKey } from '@line-crm/shared';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage } from '../services/step-delivery.js';
+import { buildFriendMetadataPredicate } from '../services/friend-metadata-condition.js';
 import type { Env } from '../index.js';
 
 const friends = new Hono<Env>();
@@ -156,8 +157,9 @@ friends.get('/api/friends', async (c) => {
     for (const [key, value] of url.searchParams.entries()) {
       if (key.startsWith('metadata.')) {
         const metaKey = key.slice('metadata.'.length);
-        conditions.push(`json_extract(f.metadata, '$.' || ?) = ?`);
-        binds.push(metaKey, value);
+        const predicate = buildFriendMetadataPredicate(metaKey, value, 'equals');
+        conditions.push(predicate.sql);
+        binds.push(...predicate.bindings);
       }
     }
 
