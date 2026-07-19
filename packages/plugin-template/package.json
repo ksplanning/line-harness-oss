@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "build:mcp": "tsup mcp-server/index.ts --format esm --out-dir dist-mcp",
+    "pretypecheck": "pnpm --filter @line-harness/sdk build",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"
@@ -17,6 +18,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240620.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "@types/node": "^22.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
     "wrangler": "^4.0.0",
