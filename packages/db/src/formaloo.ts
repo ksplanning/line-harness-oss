@@ -921,6 +921,30 @@ export interface ClaimEditMailAttemptInput {
   providerIdempotencyKey: string;
 }
 
+export interface MarkEditMailPreSendSkippedInput {
+  submissionId: string;
+  expectedAttemptCount: number;
+  error: string;
+}
+
+/** provider 呼出し前の恒久 skip を、並行送信を上書きしない CAS で terminal 化する。 */
+export async function markEditMailPreSendSkipped(
+  db: D1Database,
+  input: MarkEditMailPreSendSkippedInput,
+): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `UPDATE formaloo_edit_mail_sends
+         SET status = 'skipped', last_attempt_at = ?, error = ?
+       WHERE submission_id = ?
+         AND status IN ('pending', 'failed')
+         AND attempt_count = ?`,
+    )
+    .bind(jstNow(), input.error, input.submissionId, input.expectedAttemptCount)
+    .run();
+  return ((res as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
+}
+
 /** cron/webhook 共通: provider 呼出し前に 1 attempt を CAS 確保する。 */
 export async function claimEditMailAttempt(db: D1Database, input: ClaimEditMailAttemptInput): Promise<boolean> {
   const res = await db

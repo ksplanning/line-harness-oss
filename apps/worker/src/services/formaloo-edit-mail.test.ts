@@ -188,4 +188,23 @@ describe('processFormalooEditMail', () => {
     expect(retrySend).not.toHaveBeenCalled();
     expect(await getEditMailSend(DB, 'submission-1')).toMatchObject({ status: 'skipped', attempt_count: 1, error: 'recipient_changed' });
   });
+
+  it('再送前に恒久的な送信条件を失った行はterminal skipにして次回sweepから除外する', async () => {
+    await seed();
+    const firstSend = vi.fn(async (_senderEnv, input) => ({
+      status: 'failed' as const, error: 'resend_http_500', providerIdempotencyKey: input.idempotencyKey,
+    }));
+    await processFormalooEditMail(env(), { submissionId: 'submission-1', mode: 'initial' }, { send: firstSend });
+    raw.prepare("UPDATE formaloo_forms SET allow_edit_mail=0 WHERE id='form-1'").run();
+    const retrySend = vi.fn();
+
+    await expect(runFormalooEditMailOutbox(env(), { send: retrySend }))
+      .resolves.toEqual({ attempted: 1, sent: 0, failed: 0, skipped: 1 });
+    expect(retrySend).not.toHaveBeenCalled();
+    expect(await getEditMailSend(DB, 'submission-1')).toMatchObject({
+      status: 'skipped', attempt_count: 1, error: 'form_disabled',
+    });
+    await expect(runFormalooEditMailOutbox(env(), { send: retrySend }))
+      .resolves.toEqual({ attempted: 0, sent: 0, failed: 0, skipped: 0 });
+  });
 });

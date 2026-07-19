@@ -6,6 +6,7 @@ import {
   getFormalooForm,
   getFormalooSubmission,
   listRetryableEditMailSends,
+  markEditMailPreSendSkipped,
   recordEditMailResult,
 } from '@line-crm/db';
 import {
@@ -33,6 +34,12 @@ type SendFunction = (
 
 export interface FormalooEditMailDependencies {
   send?: SendFunction;
+}
+
+interface ProcessFormalooEditMailInput {
+  submissionId: string;
+  mode: 'initial' | 'retry';
+  expectedAttemptCount?: number;
 }
 
 export type ProcessFormalooEditMailResult =
@@ -105,6 +112,24 @@ async function sha256Hex(value: string): Promise<string> {
   return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+async function finishPreSendSkip(
+  db: D1Database,
+  input: ProcessFormalooEditMailInput,
+  reason: string,
+): Promise<ProcessFormalooEditMailResult> {
+  if (input.mode !== 'retry') return { status: 'skipped', reason };
+  const outbox = await getEditMailSend(db, input.submissionId);
+  if (!outbox) return { status: 'skipped', reason: 'missing_outbox' };
+  const marked = await markEditMailPreSendSkipped(db, {
+    submissionId: input.submissionId,
+    expectedAttemptCount: input.expectedAttemptCount ?? outbox.attempt_count,
+    error: reason,
+  });
+  return marked
+    ? { status: 'skipped', reason }
+    : { status: 'skipped', reason: 'attempt_not_claimed' };
+}
+
 async function finishFailedAttempt(
   db: D1Database,
   submissionId: string,
@@ -123,34 +148,34 @@ async function finishFailedAttempt(
 
 export async function processFormalooEditMail(
   env: FormalooEditMailEnv,
-  input: { submissionId: string; mode: 'initial' | 'retry'; expectedAttemptCount?: number },
+  input: ProcessFormalooEditMailInput,
   deps: FormalooEditMailDependencies = {},
 ): Promise<ProcessFormalooEditMailResult> {
   const runtime = configuredPublicBase(env);
   if (!runtime.ok) return { status: 'skipped', reason: runtime.reason };
 
   const submission = await getFormalooSubmission(env.DB, input.submissionId);
-  if (!submission) return { status: 'skipped', reason: 'missing_submission' };
+  if (!submission) return finishPreSendSkip(env.DB, input, 'missing_submission');
   const form = await getFormalooForm(env.DB, submission.form_id);
-  if (!form) return { status: 'skipped', reason: 'missing_form' };
+  if (!form) return finishPreSendSkip(env.DB, input, 'missing_form');
   if (submission.verified !== 1 || form.builder_status !== 'published') {
-    return { status: 'skipped', reason: 'ineligible_submission' };
+    return finishPreSendSkip(env.DB, input, 'ineligible_submission');
   }
   if (form.allow_post_edit !== 1 || form.allow_edit_mail !== 1) {
-    return { status: 'skipped', reason: 'form_disabled' };
+    return finishPreSendSkip(env.DB, input, 'form_disabled');
   }
   const explicitSlug = form.edit_mail_field_slug?.trim();
-  if (!explicitSlug) return { status: 'skipped', reason: 'missing_recipient_slug' };
+  if (!explicitSlug) return finishPreSendSkip(env.DB, input, 'missing_recipient_slug');
 
   const fieldMap = await getFormalooFieldMap(env.DB, form.id);
   const recipientField = fieldMap.find(
     (field) => field.formaloo_field_slug === explicitSlug && field.field_type === 'email',
   );
-  if (!recipientField) return { status: 'skipped', reason: 'invalid_recipient_slug' };
+  if (!recipientField) return finishPreSendSkip(env.DB, input, 'invalid_recipient_slug');
   const answers = parseAnswers(submission.answers_json);
-  if (!answers) return { status: 'skipped', reason: 'invalid_answers' };
+  if (!answers) return finishPreSendSkip(env.DB, input, 'invalid_answers');
   const recipient = recipientEmail(answers[explicitSlug]);
-  if (!recipient) return { status: 'skipped', reason: 'invalid_recipient' };
+  if (!recipient) return finishPreSendSkip(env.DB, input, 'invalid_recipient');
 
   const recipientHash = await sha256Hex(recipient.toLowerCase());
   const generatedProviderKey = `formaloo-edit-mail/${(await sha256Hex(submission.id)).slice(0, 40)}`;
@@ -168,6 +193,7 @@ export async function processFormalooEditMail(
   if (!outbox) return { status: 'skipped', reason: 'missing_outbox' };
 
   if (outbox.recipient_hash !== recipientHash) {
+    if (input.mode === 'retry') return finishPreSendSkip(env.DB, input, 'recipient_changed');
     await recordEditMailResult(env.DB, {
       submissionId: submission.id,
       status: 'skipped',

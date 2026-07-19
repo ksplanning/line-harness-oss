@@ -18,6 +18,7 @@ import {
   resolveFormEmailFieldSlug,
   bumpEditLinkEpoch,
   getEditMailSend,
+  markEditMailPreSendSkipped,
 } from './formaloo.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -139,6 +140,37 @@ describe('form-edit-mail-link — recordEditMailResult 状態遷移 (T-A2)', () 
 });
 
 describe('form-edit-mail Phase B — bounded outbox attempt', () => {
+  test('恒久的なpre-send skipをCASでterminal化し、retry列挙から外す', async () => {
+    await claimEditMailSend(DB, {
+      submissionId: 'sub-skip', formId: 'f1', recipientHash: 'h',
+      providerIdempotencyKey: 'formaloo-edit-mail/sub-skip',
+    });
+
+    expect(await markEditMailPreSendSkipped(DB, {
+      submissionId: 'sub-skip', expectedAttemptCount: 0, error: 'form_disabled',
+    })).toBe(true);
+    expect(await getEditMailSend(DB, 'sub-skip')).toMatchObject({
+      status: 'skipped', attempt_count: 0, error: 'form_disabled',
+    });
+    expect(await listRetryableEditMailSends(DB, { maxAttempts: 3, limit: 10 })).toEqual([]);
+    expect(await markEditMailPreSendSkipped(DB, {
+      submissionId: 'sub-skip', expectedAttemptCount: 0, error: 'form_disabled',
+    })).toBe(false);
+
+    await claimEditMailSend(DB, {
+      submissionId: 'sub-race', formId: 'f1', recipientHash: 'h',
+      providerIdempotencyKey: 'formaloo-edit-mail/sub-race',
+    });
+    expect(await claimEditMailAttempt(DB, {
+      submissionId: 'sub-race', expectedAttemptCount: 0, maxAttempts: 3,
+      providerIdempotencyKey: 'formaloo-edit-mail/sub-race',
+    })).toBe(true);
+    expect(await markEditMailPreSendSkipped(DB, {
+      submissionId: 'sub-race', expectedAttemptCount: 0, error: 'form_disabled',
+    })).toBe(false);
+    expect(await getEditMailSend(DB, 'sub-race')).toMatchObject({ status: 'pending', attempt_count: 1 });
+  });
+
   test('attempt を送信前に CAS claim し、同じ expected count の並行取得を拒否する', async () => {
     await claimEditMailSend(DB, {
       submissionId: 'sub-cas',
