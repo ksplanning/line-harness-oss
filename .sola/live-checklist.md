@@ -463,3 +463,72 @@ ks が全 PASS して cleanup 済みになってから、同じ手順を piecema
 - [ ] position: dry-run 結果、owner GO、execute 結果、re-GET、fingerprint 同一の証跡が揃った。
 - [ ] kill-switch 値と rollback 対象 deployment を記録した。
 - [ ] 1 項目でも未確認なら live PASS とせず、BLOCKED または FAIL として査読へ返す。
+
+# row-status-friend-sync — host live checklist
+
+## 対象と禁止事項
+
+- host/staging 工程だけで実施する。コード作業中は live API を呼ばない。
+- 本番 3 フォームには触れない。検証対象は `sheettest-2`（form slug `o31Xm8wo`）だけ。
+- 入金済み field は `BjEp0J2J`。friend は staging D1 に作る合成 friend と、その friend ID をアプリ既存 helper で署名した `fr_id` を使う。
+- `FORMALOO_FRIEND_TOKEN_SECRET`、署名済み `fr_id`、friend ID をログ・コミット・画面共有へ貼らない。
+
+## 事前条件
+
+- [ ] migration `103_formaloo_friend_metadata_mapping.sql` を staging D1 に適用済み。
+- [ ] worker/web は本件 commit を反映済み。
+- [ ] staging worker に `FORMALOO_FRIEND_TOKEN_SECRET` が設定済み。
+- [ ] `FORMALOO_RECONCILE_FRIEND_LINK_DISABLE` は未設定または `false`。
+- [ ] form builder の「友だち個人情報への反映」に次の 1 ルールを保存済み。
+  - Formaloo field slug / alias: `BjEp0J2J`
+  - 個人情報の項目名: `入金確認`
+- [ ] staging D1 に合成 friend を作り、個人情報欄の `入金確認` を `未`、別の手動項目（例: `備考`）を任意値にしておく。
+- [ ] 合成 friend の署名済み `fr_id` を、秘密値を出力しない host session で既存 `signFriendToken` helper から生成し、sheettest-2 の検証 row にだけ設定する。
+
+## E2E: シートの「済」→ Formaloo → friend.metadata
+
+1. sheettest-2 の合成 friend row で「入金済み」を `済` に変更する。
+2. Google Sheets sidebar の **Sync** を手動実行する。
+3. Formaloo 管理画面で form `o31Xm8wo` の同じ row を開き、field `BjEp0J2J` が `済`、`fr_id` が合成 friend 用の署名値であることを確認する。値そのものは記録しない。
+4. Line Harness 管理画面で当該 form の「回答データ」または「統計」を開く。これが bounded reconcile の発火点になる。
+5. 合成 friend の個人情報欄を開き、次を確認する。
+   - `入金確認` が `済`
+   - `備考` など mapping 未設定の手動項目が元のまま
+   - 内部由来 marker は UI に表示されない
+6. staging D1 で、値と最終由来だけを確認する（ID は host 変数で bind し、出力を外へ貼らない）。
+   - `metadata["入金確認"] = "済"`
+   - `metadata["__formaloo_friend_metadata_sync"]["入金確認"]` に formId / rowId / formalooFieldKey / updatedAt がある
+7. 同じ画面をもう一度開き、friend の `updated_at` が変わらないことを確認する。同値 reconcile は write しない。
+8. 任意の追加確認として `BjEp0J2J` を空にして sidebar **Sync** → reconcile を行い、`metadata["入金確認"]` も空になることを確認する。確認後は `済` へ戻す。
+
+## fail-closed / kill-switch 確認
+
+1. staging worker の `FORMALOO_RECONCILE_FRIEND_LINK_DISABLE=true` を設定して反映する。
+2. sheettest-2 の合成 row を別の値へ変更し sidebar **Sync**、続けて管理画面の回答データを開く。
+3. friend.metadata が変わらないことを確認する。この switch は署名 friend 解決を止めるため metadata intent も生成されない。
+4. 確認後は env を未設定（または `false`）へ戻して worker を再反映する。
+5. 追加の負例として改ざんした `fr_id` を使う場合も、合成 friend・別 friend のどちらも更新されないことを確認する。実 token は証跡へ残さない。
+
+## rollback
+
+1. 即時停止は `FORMALOO_RECONCILE_FRIEND_LINK_DISABLE=true`。回答ミラー pull は続くが、本同期だけでなく既存の friend_id 復元 / prefill も同時に止まる。
+2. form builder の mapping ルールを削除して保存する（`[]` = form 単位 OFF）。
+3. code rollback が必要なら本件 commit 群を逆順に revert する。additive migration の列は drop せず残してよい。既定 `[]` なので旧コード・未設定 form は no-op。
+4. すでに反映済みの値は自動で元へ戻らない。staging の合成 friend だけ個人情報欄から `未` へ手動復元する。
+5. sheettest-2 の合成 row / 合成 friend を host の通常 cleanup 手順で片付ける。本番データは削除しない。
+
+## 制約（合格報告に必ず添える）
+
+- シートから Formaloo へは sidebar **Sync の手動実行が必要**。
+- 本同期の通常発火は admin の回答データ `/rows` または統計 `/stats` 閲覧時。cron には本件 row reconcile が未配線。
+- `/fo` targeted pull は回答後編集が form/env の両方で有効な場合だけ発火する。
+- 緊急停止に使う `FORMALOO_RECONCILE_FRIEND_LINK_DISABLE=true` は既存の friend_id 復元 / prefill も止める。停止確認後は必ず元に戻す。
+- mapping 対象キーは Formaloo が正。管理画面で手動変更しても、次の reconcile で Formaloo 値と違えば戻る。mapping 未設定キーは保持する。
+
+## PASS 条件
+
+- [ ] シート `済` → sidebar Sync → Formaloo `BjEp0J2J=済` → 合成 friend `入金確認=済` を確認。
+- [ ] 別 friend と mapping 未設定の手動 metadata は不変。
+- [ ] 同値再実行は friend row を更新しない。
+- [ ] kill-switch または改ざん `fr_id` で更新ゼロ。
+- [ ] rollback 後に env と合成データを片付けた。
