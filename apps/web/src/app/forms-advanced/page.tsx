@@ -367,9 +367,10 @@ export default function FormsAdvancedListPage() {
                       ))}
                     </select>
                   </div>
-                  <div className="flex gap-2 text-xs">
+                  <div className="flex flex-wrap gap-2 text-xs">
                     <Link href={`/forms-advanced/detail?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">編集</Link>
                     <Link href={`/forms-advanced/data?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">データ</Link>
+                    <Link href={`/forms-advanced/recurring?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">定期自動回答</Link>
                   </div>
                 </div>
               )

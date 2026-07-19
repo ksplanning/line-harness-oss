@@ -63,6 +63,14 @@ describe('② account 確定で list(selectedAccountId)', () => {
     await waitFor(() => expect(screen.getByTestId('form-card-fa1')).toBeTruthy())
     expect(listMock).toHaveBeenCalledWith('acc_A')
   })
+
+  it('各 form card から定期自動回答の専用画面へ移動できる', async () => {
+    mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
+    listMock.mockResolvedValue([form('fa/1', '在庫報告', 'acc_A')])
+    render(<Page />)
+    const link = await screen.findByRole('link', { name: '定期自動回答' })
+    expect(link.getAttribute('href')).toBe('/forms-advanced/recurring?id=fa/1')
+  })
 })
 
 describe('② drift badge 一覧レンダリング (T-D2 / formaloo-auto-pull)', () => {
