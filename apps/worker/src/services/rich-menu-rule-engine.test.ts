@@ -103,6 +103,86 @@ describe('applyRichMenuRulesForFriend', () => {
       .toEqual({ rule_id: 'a-old', rich_menu_id: 'menu-a' });
   });
 
+  test('ANDs the period before priority and uses a start-inclusive, end-exclusive interval', async () => {
+    const insert = raw.prepare(
+      `INSERT INTO rich_menu_display_rules
+       (id, account_id, name, condition_type, condition_value, rich_menu_id, priority, active_from, active_until)
+       VALUES (?, 'acc-1', ?, 'tag_exists', 'tag-paid', ?, ?, ?, ?)`,
+    );
+    insert.run('future', '開始前', 'menu-future', 400, '2026-07-20T03:00:00.000Z', null);
+    insert.run('ended', '終了済み', 'menu-ended', 300, null, '2026-07-20T02:00:00.000Z');
+    insert.run('ends-now', '終了ちょうど', 'menu-ends-now', 200, null, '2026-07-20T02:30:00.000Z');
+    insert.run('starts-now', '開始ちょうど', 'menu-current', 100, '2026-07-20T02:30:00.000Z', null);
+    const line = lineDouble();
+
+    const result = await applyRichMenuRulesForFriend(
+      db,
+      'friend-1',
+      line.factory,
+      { now: new Date('2026-07-20T02:30:00.000Z') },
+    );
+
+    expect(result).toMatchObject({ status: 'applied', ruleId: 'starts-now', richMenuId: 'menu-current' });
+    expect(line.calls).toEqual([{ method: 'link', userId: 'U1', richMenuId: 'menu-current' }]);
+  });
+
+  test('reverts to the default when every matching rule is outside its period', async () => {
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1',
+      name: '明日から',
+      conditionType: 'tag_exists',
+      conditionValue: 'tag-paid',
+      richMenuId: 'menu-future',
+      priority: 100,
+      isActive: true,
+      activeFrom: '2026-07-21T00:00:00.000Z',
+      activeUntil: null,
+    });
+    raw.prepare(
+      `INSERT INTO rich_menu_friend_assignments (friend_id, account_id, rule_id, rich_menu_id)
+       VALUES ('friend-1', 'acc-1', NULL, 'menu-current')`,
+    ).run();
+    const line = lineDouble();
+
+    const result = await applyRichMenuRulesForFriend(
+      db,
+      'friend-1',
+      line.factory,
+      { now: new Date('2026-07-20T00:00:00.000Z') },
+    );
+
+    expect(result).toEqual({ status: 'reverted', friendId: 'friend-1', ruleId: null, richMenuId: null });
+    expect(line.calls).toEqual([{ method: 'unlink', userId: 'U1' }]);
+  });
+
+  test('keeps a rule with both period bounds null bit-for-bit compatible', async () => {
+    const rule = await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1',
+      name: '従来ルール',
+      conditionType: 'tag_exists',
+      conditionValue: 'tag-paid',
+      richMenuId: 'menu-legacy',
+      priority: 10,
+      isActive: true,
+    });
+    const line = lineDouble();
+
+    const result = await applyRichMenuRulesForFriend(
+      db,
+      'friend-1',
+      line.factory,
+      { now: new Date('2099-01-01T00:00:00.000Z') },
+    );
+
+    expect(result).toEqual({
+      status: 'applied',
+      friendId: 'friend-1',
+      ruleId: rule.id,
+      richMenuId: 'menu-legacy',
+    });
+    expect(line.calls).toEqual([{ method: 'link', userId: 'U1', richMenuId: 'menu-legacy' }]);
+  });
+
   test('reuses effective custom-field defaults through evaluateCondition', async () => {
     raw.prepare(
       `INSERT INTO friend_field_definitions (id, name, default_value)

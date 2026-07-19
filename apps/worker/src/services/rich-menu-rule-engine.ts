@@ -42,6 +42,20 @@ const defaultClientFactory: RichMenuRuleLineClientFactory = (token) => new LineC
 export interface RichMenuRuleApplyOptions {
   queueLease?: { token: string; revision: number };
   preserveQueue?: boolean;
+  now?: Date;
+}
+
+function isRuleInActivePeriod(
+  rule: { activeFrom: string | null; activeUntil: string | null },
+  now: Date,
+): boolean {
+  const nowMs = now.getTime();
+  const activeFromMs = rule.activeFrom === null ? null : Date.parse(rule.activeFrom);
+  const activeUntilMs = rule.activeUntil === null ? null : Date.parse(rule.activeUntil);
+  if (activeFromMs !== null && !Number.isFinite(activeFromMs)) throw new Error('invalid rich menu rule activeFrom');
+  if (activeUntilMs !== null && !Number.isFinite(activeUntilMs)) throw new Error('invalid rich menu rule activeUntil');
+  return (activeFromMs === null || nowMs >= activeFromMs)
+    && (activeUntilMs === null || nowMs < activeUntilMs);
 }
 
 function safeError(error: unknown): string {
@@ -198,8 +212,10 @@ export async function applyRichMenuRulesForFriend(
       return { status: 'no_rules', friendId };
     }
 
-    const needsTags = rules.some((rule) => rule.conditionType.startsWith('tag_'));
-    const needsMetadata = rules.some((rule) => rule.conditionType.startsWith('metadata_'));
+    const evaluatedAt = applyOptions.now ?? new Date();
+    const eligibleRules = rules.filter((rule) => isRuleInActivePeriod(rule, evaluatedAt));
+    const needsTags = eligibleRules.some((rule) => rule.conditionType.startsWith('tag_'));
+    const needsMetadata = eligibleRules.some((rule) => rule.conditionType.startsWith('metadata_'));
     const [tagRows, definitionRows] = await Promise.all([
       needsTags
         ? db
@@ -241,7 +257,7 @@ export async function applyRichMenuRulesForFriend(
     };
 
     let winner: (typeof rules)[number] | null = null;
-    for (const rule of rules) {
+    for (const rule of eligibleRules) {
       if (await evaluateConditionWithResolverStrict(resolver, {
         condition_type: rule.conditionType,
         condition_value: rule.conditionValue,
