@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
+import { JP_LOCALIZED_CONTENT, MANAGED_LOCALIZATION_KEYS } from '@line-crm/shared';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formsAdvanced } from './forms-advanced.js';
@@ -50,7 +51,7 @@ function replayAll(db: Database.Database) {
 let raw: Database.Database;
 let DB: D1Database;
 
-function env(): Env['Bindings'] {
+function env(overrides: Partial<Env['Bindings']> = {}): Env['Bindings'] {
   return {
     DB, IMAGES: {} as R2Bucket, ASSETS: {} as Fetcher,
     LINE_CHANNEL_SECRET: 's', LINE_CHANNEL_ACCESS_TOKEN: 't', API_KEY: 'copy-owner-key',
@@ -60,6 +61,7 @@ function env(): Env['Bindings'] {
     // fr-id-capture-fix (T-C3): friend system field auto-push は本 test の関心外 (文言 localization)。
     //   静的 GET mock は POST 後の field を反映しないため無効化 (専用検証 = formaloo-sync.system-fields.test.ts)。
     FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE: '1',
+    ...overrides,
   } as Env['Bindings'];
 }
 
@@ -71,12 +73,12 @@ function app() {
   return hono;
 }
 
-function call(method: string, path: string, body?: unknown) {
+function call(method: string, path: string, body?: unknown, bindings?: Partial<Env['Bindings']>) {
   return app().request(path, {
     method,
     headers: { Authorization: 'Bearer copy-owner-key', 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }, env());
+  }, env(bindings));
 }
 
 function seedForm(id: string, slug: string | null, definitionJson = '{"fields":[],"logic":[]}') {
@@ -113,7 +115,7 @@ function formalooFold(s: string): string {
  *   - reflectAfterGet: N 回目の confirm GET から反映 (bounded retry 収束模倣)。
  *   - foldCopy: 文言 PATCH 値を formalooFold して保存 (Formaloo の server-side 正規化を模倣 = 全角→半角)。
  */
-function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: boolean; reflectAfterGet?: number; foldCopy?: boolean } = {}) {
+function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: boolean; softIgnoreLocalization?: boolean; reflectAfterGet?: number; foldCopy?: boolean } = {}) {
   const calls: ApiCall[] = [];
   const state: Record<string, unknown> = { fields_list: [], ...(opts.getForm ?? {}) };
   let pending: Record<string, unknown> | null = null;
@@ -139,8 +141,9 @@ function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: bo
       return new Response(JSON.stringify({ data: { form: { ...state } } }), { status: 200 });
     }
     if (method === 'PATCH' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
+      const patchBody = (body ?? {}) as Record<string, unknown>;
       const copy: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries((body ?? {}) as Record<string, unknown>)) if (COPY_KEYS.includes(k)) copy[k] = v;
+      for (const [k, v] of Object.entries(patchBody)) if (COPY_KEYS.includes(k)) copy[k] = v;
       if (Object.keys(copy).length) {
         // form-copy-sync-warning-fix: foldCopy 時は Formaloo の server-side 正規化を模して保存 (全角→半角 等)。
         const stored = opts.foldCopy
@@ -149,6 +152,9 @@ function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: bo
         if (opts.softIgnore) { /* soft-200: 無言無視 = state に反映しない */ }
         else if (opts.reflectAfterGet != null) pending = { ...(pending ?? {}), ...stored };
         else Object.assign(state, stored);
+      }
+      if ('localized_content' in patchBody && !opts.softIgnoreLocalization) {
+        state.localized_content = patchBody.localized_content;
       }
       return new Response(JSON.stringify({ data: { form: body } }), { status: 200 });
     }
@@ -162,6 +168,9 @@ function copyPatch(calls: ApiCall[]) {
   return calls.find((e) => e.method === 'PATCH' && e.body != null && COPY_KEYS.some((k) => k in (e.body as Record<string, unknown>)));
 }
 function anyCopyPatch(calls: ApiCall[]) { return copyPatch(calls); }
+function localizedPatch(calls: ApiCall[]) {
+  return calls.find((e) => e.method === 'PATCH' && e.body != null && 'localized_content' in (e.body as Record<string, unknown>));
+}
 
 beforeEach(() => { raw = new Database(':memory:'); replayAll(raw); DB = d1(raw); });
 afterEach(() => vi.unstubAllGlobals());
@@ -339,5 +348,87 @@ describe('PUT /api/forms-advanced/:id — form-copy-sync-warning-fix (正規化 
     expect(data.syncError).toEqual(expect.any(String));
     // copy 文言 PATCH は送られている (design と同一 meta PATCH に合流) = copy 経路も実行された証跡。
     expect(copyPatch(calls)).toBeDefined();
+  });
+});
+
+describe('PUT /api/forms-advanced/:id — localized_content 日本語 UI chrome', () => {
+  test('localizationJa=true は現行 localized_content へ管理 key だけを merge し、foreign/nested key と flag を保持する', async () => {
+    seedForm('lj1', 'SLUGLJ1');
+    const foreign = { tenant_banner: '残す', errors: { required: '独自必須文言' } };
+    const calls = stubFormaloo({
+      getForm: {
+        localized_content: foreign,
+        combined_localized_content: { next_btn: 'Next', errors: { required: 'Required' } },
+      },
+    });
+
+    const res = await call('PUT', '/api/forms-advanced/lj1', { fields: [], logic: [], localizationJa: true });
+
+    expect(res.status).toBe(200);
+    expect(localizedPatch(calls)?.body).toMatchObject({
+      localized_content: { ...foreign, ...JP_LOCALIZED_CONTENT },
+    });
+    expect(definitionOf('lj1').localizationJa).toBe(true);
+    const data = (await res.json() as { data: { localizationJa: boolean; syncStatus: string } }).data;
+    expect(data.localizationJa).toBe(true);
+    expect(data.syncStatus).toBe('idle');
+  });
+
+  test('localizationJa=false は管理 key だけを解除し、foreign/nested key を破壊しない', async () => {
+    seedForm('lj2', 'SLUGLJ2', JSON.stringify({ fields: [], logic: [], localizationJa: true }));
+    const foreign = { tenant_banner: '残す', errors: { required: '独自必須文言' } };
+    const calls = stubFormaloo({ getForm: { localized_content: { ...foreign, ...JP_LOCALIZED_CONTENT } } });
+
+    const res = await call('PUT', '/api/forms-advanced/lj2', { fields: [], logic: [], localizationJa: false });
+
+    expect(res.status).toBe(200);
+    expect(localizedPatch(calls)?.body).toMatchObject({ localized_content: foreign });
+    const sent = (localizedPatch(calls)?.body as { localized_content: Record<string, unknown> }).localized_content;
+    for (const key of MANAGED_LOCALIZATION_KEYS) expect(key in sent).toBe(false);
+    expect(definitionOf('lj2').localizationJa).toBe(false);
+    expect((await res.json() as { data: { localizationJa: boolean } }).data.localizationJa).toBe(false);
+  });
+
+  test('localizationJa 未指定の再保存は PATCH せず、保存済 flag を carry して definition JSON 生バイトが一致する', async () => {
+    seedForm('lj3', 'SLUGLJ3');
+    const calls = stubFormaloo({ getForm: { localized_content: {} } });
+    await call('PUT', '/api/forms-advanced/lj3', { fields: [], logic: [], localizationJa: true });
+    const before = rawDefinitionOf('lj3');
+    const patchCount = calls.filter((call) => call.body != null && 'localized_content' in (call.body as Record<string, unknown>)).length;
+
+    const res = await call('PUT', '/api/forms-advanced/lj3', { fields: [], logic: [] });
+
+    expect(res.status).toBe(200);
+    expect(rawDefinitionOf('lj3')).toBe(before);
+    expect(definitionOf('lj3').localizationJa).toBe(true);
+    expect(calls.filter((call) => call.body != null && 'localized_content' in (call.body as Record<string, unknown>))).toHaveLength(patchCount);
+  });
+
+  test("FORMALOO_LOCALIZATION_DISABLE='1' は flag 永続化・localized_content 通信を byte 同等に短絡する", async () => {
+    seedForm('lj4', 'SLUGLJ4');
+    const calls = stubFormaloo({ getForm: { localized_content: { foreign: '残す' } } });
+    const disabled = { FORMALOO_LOCALIZATION_DISABLE: '1' } as Partial<Env['Bindings']>;
+    await call('PUT', '/api/forms-advanced/lj4', { fields: [], logic: [] }, disabled);
+    const before = rawDefinitionOf('lj4');
+    const patchCount = calls.filter((call) => call.body != null && 'localized_content' in (call.body as Record<string, unknown>)).length;
+
+    const res = await call('PUT', '/api/forms-advanced/lj4', { fields: [], logic: [], localizationJa: true }, disabled);
+
+    expect(res.status).toBe(200);
+    expect(rawDefinitionOf('lj4')).toBe(before);
+    expect('localizationJa' in definitionOf('lj4')).toBe(false);
+    expect(calls.filter((call) => call.body != null && 'localized_content' in (call.body as Record<string, unknown>))).toHaveLength(patchCount);
+  });
+
+  test('localized_content PATCH の soft-200 未反映は GET-after-PATCH で out_of_sync にする', async () => {
+    seedForm('lj5', 'SLUGLJ5');
+    stubFormaloo({ getForm: { localized_content: { foreign: '残す' } }, softIgnoreLocalization: true });
+
+    const res = await call('PUT', '/api/forms-advanced/lj5', { fields: [], logic: [], localizationJa: true });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string; syncError: string | null } }).data;
+    expect(data.syncStatus).toBe('out_of_sync');
+    expect(data.syncError).toContain('日本語 UI');
   });
 });

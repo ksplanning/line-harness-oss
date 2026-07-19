@@ -84,7 +84,12 @@ import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/f
 import { pullDefinitionFromFormaloo } from '../services/formaloo-pull.js';
 import { designColorFields, confirmDesignReflected, confirmBackgroundReflected, applyDesignImages, type BackgroundReflectionExpected } from '../services/formaloo-design.js';
 import { resolveRatingStarCustomCss } from '../services/formaloo-rating-css.js';
-import { formCopyFields, confirmFormCopyReflected } from '../services/formaloo-copy.js';
+import {
+  formCopyFields,
+  confirmFormCopyReflected,
+  localizedContentFields,
+  confirmLocalizedContentReflected,
+} from '../services/formaloo-copy.js';
 import { redirectFields, confirmRedirectReflected, validateFormRedirectInput } from '../services/formaloo-redirect.js';
 import { deleteSuccessPages } from '../services/formaloo-success-page.js';
 import { ownerGate } from '../lib/owner-gate.js';
@@ -116,6 +121,8 @@ interface StoredDefinition {
   formType?: FormDisplayType;
   // form-jp-localization: 公開ページ文言 (additive JSON key)。未設定フォームは undefined = 後方互換 (byte 不変)。
   formCopy?: FormCopy;
+  // hosted UI chrome の管理 key を日本語化する owner intent。undefined=未管理 / false=管理 key を解除。
+  localizationJa?: boolean;
   // route-terminal-phase2 (Track 1): 送信後リダイレクト設定 (additive JSON key)。未設定は undefined = 後方互換 (byte 不変)。
   formRedirect?: FormRedirect;
   // route-terminal-phase2 (Track 2): ルート別完了ページ + 割当 slug (additive JSON key)。未設定は undefined = 後方互換。
@@ -141,6 +148,8 @@ function parseDefinition(json: string): StoredDefinition {
       formCopy: d.formCopy && typeof d.formCopy === 'object' && !Array.isArray(d.formCopy)
         ? normalizeFormCopy(d.formCopy)
         : undefined,
+      // boolean だけを受理。false は OFF intent なので undefined へ潰さない。
+      localizationJa: typeof d.localizationJa === 'boolean' ? d.localizationJa : undefined,
       // route-terminal-phase2: redirect whitelist 正規化。redirect が無ければ undefined = 後方互換 (byte 不変)。
       formRedirect: d.formRedirect && typeof d.formRedirect === 'object' && !Array.isArray(d.formRedirect)
         ? normalizeFormRedirect(d.formRedirect)
@@ -151,7 +160,7 @@ function parseDefinition(json: string): StoredDefinition {
         : undefined,
     };
   } catch {
-    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined, formRedirect: undefined, successPages: undefined };
+    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined, localizationJa: undefined, formRedirect: undefined, successPages: undefined };
   }
 }
 
@@ -204,6 +213,8 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     design: def.design ?? null,
     // form-route-branching (R2): 表示形式 (builder の initialFormType)。未設定は null (builder が simple 既定表示)。
     formType: def.formType ?? null,
+    // 未管理フォームは false 表示。保存時は undefined と false を分け、明示 OFF だけ remote 管理 key を解除する。
+    localizationJa: def.localizationJa ?? false,
     // route-terminal-phase2 (Track 1 / CX-3): 送信後リダイレクト設定 (builder の initialFormRedirect)。
     //   未設定は null。保存済 redirect を reload で復元し編集/解除できるようにする (design/formType と同型の露出)。
     formRedirect: def.formRedirect ?? null,
@@ -326,8 +337,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -517,6 +528,15 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       ? { ...(prevDef.formCopy ?? {}), ...incomingFormCopy }
       : prevDef.formCopy;
 
+    // hosted UI chrome 日本語化: boolean present-key のみ更新し、未指定 save は既存 intent を byte 同等 carry。
+    // 緊急 rollback は FORMALOO_LOCALIZATION_DISABLE='1'。このとき入力 flag の永続化・GET/PATCH/confirm を
+    // すべて短絡し、既存 definition_json と通常保存経路を変えない。OFF(false) は管理 key のみを明示解除する。
+    const localizationProvided = c.env.FORMALOO_LOCALIZATION_DISABLE !== '1'
+      && typeof body.localizationJa === 'boolean';
+    const localizationJaToPersist = localizationProvided
+      ? body.localizationJa as boolean
+      : prevDef.localizationJa;
+
     // ── route-terminal-phase2 (Track 1): 送信後リダイレクト設定 ──
     // update 意味論 (**replace**・formCopy の merge とは異なる): formRedirect は url+toggle が 1 論理単位ゆえ
     //   提供時は normalize 済で **全置換** (merge すると url クリア時に prev url が残る CX-4 バグ)。未提供は prev carry
@@ -562,6 +582,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         ...(formTypeToPersist ? { formType: formTypeToPersist } : {}),
         // form-jp-localization: 文言が非空のときだけ載せる (未設定フォームは byte 一致 = 後方互換)。
         ...(formCopyToPersist && Object.keys(formCopyToPersist).length ? { formCopy: formCopyToPersist } : {}),
+        // UI chrome intent は false も解除状態として保持。未管理(undefined)だけ key を載せない。
+        ...(typeof localizationJaToPersist === 'boolean' ? { localizationJa: localizationJaToPersist } : {}),
         // route-terminal-phase2: redirect が非空のときだけ載せる (未設定/クリア後は byte 一致 = 後方互換)。
         ...(formRedirectToPersist && Object.keys(formRedirectToPersist).length ? { formRedirect: formRedirectToPersist } : {}),
         // route-terminal-phase2 (Track 2): successPages が非空のときだけ載せる (割当 slug 込み・未設定は byte 一致)。
@@ -656,6 +678,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         const ratingStarCssFields = slug
           ? await resolveRatingStarCustomCss(client, slug, fields, designToPersist)
           : {};
+        // `combined_localized_content` ではなく現行 `localized_content` を GET し、管理 key だけを非破壊 merge。
+        // flag 未指定または kill-switch 中は GET 自体を行わない。
+        const localizedFields = slug && localizationProvided
+          ? await localizedContentFields(client, slug, localizationJaToPersist as boolean)
+          : {};
         // form-design: 色は既存 meta PATCH に **JSON-string RGBA** で合流 (update 意味論: design 未提供なら載せない)。
         //   partial update 破壊防止 (#9): incomingDesign でなく **merged designToPersist** を送り、単色変更でも
         //   remote に残る 6 色が古い形式/欠落で残らないよう 7 色を原子送する。design 未提供は空 {} (design=null 不可触)。
@@ -668,6 +695,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
               // form-jp-localization: 文言も同一 meta PATCH に additive 合流 (present-key only)。
               //   未提供は載せない (prev 文言を Formaloo 側で誤って潰さない = update 意味論)。
               ...(formCopyProvided ? formCopyFields(formCopyToPersist) : {}),
+              ...localizedFields,
               // route-terminal-phase2: redirect も同一 meta PATCH に additive 合流。CX-4 clear は明示 null で解除。
               //   未提供は載せない (prev redirect を誤って潰さない)。design/formCopy と別 key で byte disjoint。
               ...(formRedirectProvided
@@ -720,6 +748,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         if (metaRes.ok && slug && formCopyProvided && formCopyToPersist) {
           const reflected = await confirmFormCopyReflected(client, slug, formCopyToPersist);
           if (!reflected.ok) formCopyReflectError = reflected.error ?? '文言が公開ページに反映されませんでした';
+        }
+        // localized_content も soft-200 を必ず GET-after-PATCH 確認。既に目的状態で PATCH が不要だった場合も、
+        // GET 失敗を成功扱いしないため明示 intent がある限り確認する。OFF は管理 key 全件不在を確認する。
+        let localizedContentReflectError: string | null = null;
+        if (metaRes.ok && slug && localizationProvided) {
+          const reflected = await confirmLocalizedContentReflected(client, slug, localizationJaToPersist as boolean);
+          if (!reflected.ok) localizedContentReflectError = reflected.error ?? '日本語 UI が公開ページに反映されませんでした';
         }
         // route-terminal-phase2: redirect も soft-200 対策の GET-after-PATCH 確認 (design/formCopy と同型・別 helper)。
         //   送った URL が hosted に反映されない (soft-200 無言無視) を honest surface。clear(null)/未提供は GET せず素通り。
@@ -789,6 +824,12 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           //   「設定は保存されるが hosted に反映されない」failure_observable を honest に surface する。
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync', lastError: formCopyReflectError,
+          });
+          syncSettled = true;
+        } else if (localizedContentReflectError) {
+          // localized_content の soft-200 / GET 失敗を idle にしない。foreign key は helper の比較対象外。
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync', lastError: localizedContentReflectError,
           });
           syncSettled = true;
         } else if (redirectReflectError) {

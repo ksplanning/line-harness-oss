@@ -221,6 +221,10 @@ export type Env = {
     //   publish で createField が POST 応答 slug に PATCH {alias:slug} を付与し /fo の slug-keyed 回答 prefill を成立させる)。
     //   '1' = alias 自動付与を短絡 (byte 同等 / rollback)。Formaloo hosted prefill は alias 一致でのみ発火するため既定有効が正。
     FORMALOO_FIELD_ALIAS_AUTOSET_DISABLE?: string;
+    // form-jp-reapply-impl: hosted UI chrome 日本語化だけを緊急停止する kill-switch。
+    //   未設定/其他 = ON、'1' = localizationJa 入力の永続化・localized_content GET/PATCH/confirm を完全短絡。
+    //   rollback はこの値を '1' にして再 deploy。既存 definition_json と他の Formaloo 同期は byte 同等で維持する。
+    FORMALOO_LOCALIZATION_DISABLE?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。
