@@ -411,3 +411,75 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 - [ ] KS: migration 109、登録 read-back、初回 1 回、一時停止、再開、取消、cleanup が PASS。
 - [ ] Piecemaker: migration 109、登録 read-back、初回 1 回、一時停止、再開、取消、cleanup が PASS。
 - [ ] 本番 3 フォームへのアクセス 0、重複登録 0、秘密値の記録 0。
+
+---
+
+# admin-ai-chat-phase1 — host 1回実射チェックリスト
+
+## できるようになることと sandbox 境界
+
+「管理画面で『今週の回答の傾向は？』と聞くと AI が答えます」
+
+- sandbox では Formaloo AI を一度も実射していない。AIクレジットを守るため、既定値は
+  `FORMALOO_AI_CHAT_ENABLED=false`（未設定も OFF）であり、OFF 中は API が `404` を返す。
+- 対象 workspace は Pro 契約済みであり、無料枠は前提にしない。契約内 credit も費用として前後差分を確認する。
+- 初回の実射は査読済みの同一 revision を deploy した host で、owner が選んだ KS または Piecemaker の
+  **どちらか1テナントだけ・1回だけ**行う。もう片方は migration/build/flag OFF の互換確認までに留める。
+- 本番3フォーム `Z5IEH85R` / `GMOxoMtK` / `XqACeA2v` には GET を含めて触れない。個人情報を含まない
+  合成回答だけを持つ使い捨てフォームを使い、秘密値・prompt/回答全文を証跡へ残さない。
+
+## 公式契約の確認ゲート（推測禁止）
+
+1. 2026-07-20 確認の Formaloo 公式
+   [POST API](https://docs.formaloo.com/#tag/Custom-Prompt-Analyses/operation/customPromptAnalyzesCreate) は
+   `POST /v3.0/custom-prompt-analyzes/`、server `https://api.formaloo.me`、201 を示す一方、request body schema を
+   公開せず、201 の説明も “No response body” である。
+2. 公式 [result API](https://docs.formaloo.com/#tag/Custom-Prompt-Results/operation/customPromptResultsRetrieve) は
+   `GET /v3.0/custom-prompt-results/{slug}/` と、結果の `slug` / `result` / `errors`、状態
+   `created` / `in_progress` / `completed` / `failed` を公開している。
+3. したがって、POST の Content-Type、form/prompt の実キー、poll 用 slug の取得元は推測しない。現行の公式サポート
+   または Formaloo が明示した最新資料から、**クレジットを使わずに**この3点を確認する。確認できなければ flag を
+   ON にせず、この工程を BLOCKED として止める。
+4. 既存共通 client の接続先は `https://api.formaloo.net`、上記公式 server は `.me` である。`.net` が同 endpoint の
+   正式 alias と確認できるまで実射しない。必要な変更は本件の推測で広げず、公式回答を添えて別査読に戻す。
+5. 確認済みの body と slug source だけを Worker が検証できる JSON contract にし、
+   `FORMALOO_AI_CHAT_REQUEST_CONTRACT_JSON` secret へ入れる。値は repo、端末履歴、verification log に書かない。
+
+## deploy・flag ON・1回実射
+
+1. KS と Piecemaker へ migration `111_formaloo_ai_chat_history.sql` を各テナントの承認済み通常手順で適用し、
+   table と `idx_formaloo_ai_chat_one_pending` があることを read-back する。同じ査読済み revision の Worker/Web を
+   tenant ごとに fresh build/deploy し、両方とも flag 未設定/OFF の `404` を確認する。
+2. Formaloo の Workspace usage 画面で実射前の AI credit 残数を記録する。公式
+   [usage説明](https://help.formaloo.com/en/articles/13744503-pay-only-for-what-you-use-formaloo-add-ons-and-workspace-usage-explained)
+   は Formaloo AI を credit-based とし、credit は使用時に差し引かれるとしているが、1分析あたりの正確な消費量は
+   公開していない。見込みは「分析発行1回」、credit 数は不明なので、前後差分を実測する。
+3. `<tenant>` を owner が選んだ `ks` または `piecemaker` に置換する。contract secret を承認済み secret 管理経路で投入し、
+   日次上限を `1` にした後、実射直前だけ次の同等操作で flag を ON にする。
+
+   ```bash
+   printf '%s' '1' | pnpm exec wrangler secret put FORMALOO_AI_CHAT_DAILY_LIMIT --config apps/worker/wrangler.<tenant>.toml
+   printf '%s' 'true' | pnpm exec wrangler secret put FORMALOO_AI_CHAT_ENABLED --config apps/worker/wrangler.<tenant>.toml
+   ```
+
+4. 選んだテナントの管理画面で、使い捨てフォームを選び「今週の回答の傾向は？」を1回だけ送る。実行中にボタンが
+   無効であること、完了後に回答・質問・フォーム・analysis slug・credit 使用表示が履歴へ再表示されることを確認する。
+   HTTP 200 だけでなく、Formaloo 側の1分析と画面回答の内容が対応した時だけ PASS とする。
+5. 402、timeout、契約不一致、空回答になった場合は画面の日本語エラーを記録し、再送しない。provider 側の結果一覧と
+   履歴の `failed` / credit 状態を read-only で確認して査読へ戻す。
+6. 成否にかかわらず1回の直後に、同じ config で flag を OFF に戻し、API `404` を確認する。
+
+   ```bash
+   printf '%s' 'false' | pnpm exec wrangler secret put FORMALOO_AI_CHAT_ENABLED --config apps/worker/wrangler.<tenant>.toml
+   ```
+
+## PASS 記録と cleanup
+
+- 実射後の AI credit 残数を確認し、前後差分、tenant、deployment SHA、実行時刻、analysis slug だけを記録する。
+  secret、prompt/回答全文、顧客データは記録しない。
+- 使い捨てフォームと合成回答を承認済み通常手順で削除し、再表示で消えたことを確認する。migration/table は additive のため
+  DROP しない。contract secret は保持が承認されていなければ削除し、flag は必ず OFF のままにする。
+
+- [ ] 選択した1テナント: 公式 POST contract と `.net` alias、migration 111、1回だけの分析、履歴再表示、credit 差分、flag 再OFF、cleanup が PASS。
+- [ ] もう1テナント: migration 111、fresh build、flag OFF `404`、日次上限/tenant 分離の設定が PASS（AI実射 0）。
+- [ ] sandbox AI実射 0、本番3フォーム接触 0、重複送信 0、秘密値記録 0。
