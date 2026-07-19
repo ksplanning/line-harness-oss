@@ -152,6 +152,7 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   // ── 友だち管理 (friend) — users-grouped を users より前に ──
   // (friend-reminders は booking / friends の messages・rich-menu・score・reminders は上の specific-first で除外済)
   { test: prefix('friends'), feature: 'friend' },
+  { test: prefix('friend-field-definitions'), feature: 'friend' },
   { test: prefix('tags'), feature: 'friend' },
   { test: prefix('users-grouped'), feature: 'friend' },
   { test: prefix('users'), feature: 'friend' },

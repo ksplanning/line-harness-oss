@@ -75,6 +75,7 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/api/scenarios')).toBe('scenario');
     expect(mapPathToFeature('/api/automations')).toBe('scenario');
     expect(mapPathToFeature('/api/friends')).toBe('friend');
+    expect(mapPathToFeature('/api/friend-field-definitions')).toBe('friend');
     expect(mapPathToFeature('/api/forms')).toBe('form');
     expect(mapPathToFeature('/api/faqs')).toBe('faq');
     // Phase B B-3: 取込ナレッジは既存 faq 権限で gate (新 FeatureKey なし / Codex #12)。

@@ -51,6 +51,17 @@ export interface Friend {
   updatedAt: string;
 }
 
+/** Tenant-wide definition projected into every friend's metadata editor. */
+export interface FriendFieldDefinition {
+  id: string;
+  name: string;
+  defaultValue: string;
+  displayOrder: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * 友だち一覧のチャット状況フィールド (`?includeChatStatus=true` で付与).
  * L-step 風の友だちリスト UI で「未対応 / シナリオ / 直近受信メッセージ」を

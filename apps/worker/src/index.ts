@@ -33,6 +33,7 @@ import { permissionMiddleware } from './middleware/permission-middleware.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
+import { friendFieldDefinitions } from './routes/friend-field-definitions.js';
 import { tags } from './routes/tags.js';
 import { scenarios } from './routes/scenarios.js';
 import { broadcasts } from './routes/broadcasts.js';
@@ -271,6 +272,7 @@ app.use('*', permissionMiddleware);
 // Mount route groups — MVP & Round 2
 app.route('/', webhook);
 app.route('/', friends);
+app.route('/', friendFieldDefinitions);
 app.route('/', tags);
 app.route('/', scenarios);
 app.route('/', broadcasts);
