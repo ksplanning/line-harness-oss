@@ -5,8 +5,10 @@ import {
   isExpandableMultiJumpItem,
   isExpandableTerminalItem,
   countWeakenedFormalooRules,
-  isFriendSystemAlias,
+  isSystemHiddenField,
   logicFingerprint,
+  extractFormOperationsSettings,
+  hasFormalooOperationsFields,
   formalooColorToHex,
   normalizeFormDesign,
   FORM_DESIGN_COLOR_KEYS,
@@ -18,6 +20,7 @@ import {
   type FormDesign,
   type FormDisplayType,
   type SuccessPageSpec,
+  type FormOperationsSettings,
 } from '@line-crm/shared';
 import type { FormalooClient } from './formaloo-client';
 
@@ -75,6 +78,8 @@ export type PullResult =
        * 変更を検知する。SP が無いフォームは未載 (後方互換)。
        */
       successPages?: SuccessPageSpec[];
+      /** Formaloo `data.form.*` の管理5キーから逆算した運用制御。空 object は全解除を表す。 */
+      operationsSettings?: FormOperationsSettings;
     }
   | { ok: false; error: string };
 
@@ -231,7 +236,7 @@ export function buildPullResult(
     // fr-id-capture-fix (R4/T-C4): 予約 friend system field (alias fr_id/fr_name) を harness 定義へ取り込まない
     //   (逆流防止)。type=hidden は fromFormalooField が既に null で drop するが、alias キーで明示除外して
     //   subset 型で作られた場合も含め確実に混入を断つ (isFriendSystemAlias 単一正本 / drift 除外と同 helper)。
-    .filter((el) => !(el && typeof el === 'object' && isFriendSystemAlias((el as { alias?: unknown }).alias)))
+    .filter((el) => !isSystemHiddenField(el))
     .map((el) => {
       const field = fromFormalooField(el, resolveId);
       const slug = el && typeof el === 'object' && typeof (el as { slug?: unknown }).slug === 'string'
@@ -297,6 +302,8 @@ export function buildPullResult(
     ...(extractFormType(body) !== undefined ? { formType: extractFormType(body) } : {}),
     // route-terminal-phase2 (T-E5): success_page 要素を successPages へ分離抽出 (SP 無しは未載 = 後方互換)。
     ...((): { successPages?: SuccessPageSpec[] } => { const sp = extractSuccessPages(body); return sp.length ? { successPages: sp } : {}; })(),
+    // treasure B2: present な実測キーだけを逆算。空 object は false/null 全解除、shape 欠落は未載で区別する。
+    ...(hasFormalooOperationsFields(body) ? { operationsSettings: extractFormOperationsSettings(body) } : {}),
   };
 }
 

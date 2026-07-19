@@ -19,7 +19,7 @@ import {
   type FormalooForm,
   type FormalooSubmissionRow,
 } from '@line-crm/db';
-import { isDecorationType } from '@line-crm/shared';
+import { isDecorationType, UTM_SYSTEM_ALIASES } from '@line-crm/shared';
 import { isBuilderStatus, buildPublicUrl } from '../services/formaloo-publish-gate.js';
 import { verifyWebhookToken, verifyHmacSignature, parseWebhookPayload } from '../services/formaloo-webhook.js';
 import { signFriendToken } from '../services/formaloo-friend-token.js';
@@ -84,6 +84,27 @@ function formalooAddressOf(definitionJson: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** UTM 記録は form 単位で明示 ON の時だけ有効。未設定/false/壊れは既定 OFF へ縮退する。 */
+function isUtmTrackingEnabled(definitionJson: string): boolean {
+  try {
+    const d = JSON.parse(definitionJson) as { operationsSettings?: unknown };
+    if (!d.operationsSettings || typeof d.operationsSettings !== 'object') return false;
+    return (d.operationsSettings as { utmTracking?: unknown }).utmTracking === true;
+  } catch {
+    return false;
+  }
+}
+
+/** 公開 URL から hosted prefill へ渡してよい exact 3 UTM aliases だけを抽出する。 */
+function utmPrefillParams(query: (key: string) => string | undefined): Array<[string, string]> {
+  const params: Array<[string, string]> = [];
+  for (const alias of UTM_SYSTEM_ALIASES) {
+    const value = query(alias);
+    if (value !== undefined) params.push([alias, value]);
+  }
+  return params;
 }
 
 // =============================================================================
@@ -240,6 +261,12 @@ formalooPublic.get('/fo/:id', async (c) => {
   const url = buildPublicUrl(status, formalooAddressOf(form.definition_json));
   if (!url) return c.json({ success: false, error: 'このフォームは現在ご利用いただけません' }, 404);
 
+  // treasure-b2-form-settings: 未設定/false は一切 URL を組み直さず byte 同一。明示 ON の時だけ exact 3 UTM
+  // aliases を抽出し、匿名/friend/LIFF のいずれの導線でも同じ allowlist を使う。
+  const utmParams = isUtmTrackingEnabled(form.definition_json)
+    ? utmPrefillParams((key) => c.req.query(key))
+    : [];
+
   // friend 解決 (?lu= line user id / ?f= friend id) — tracked-links /t/:id と同源。
   const lineUserId = c.req.query('lu') ?? null;
   let friendId = c.req.query('f') ?? null;
@@ -277,6 +304,7 @@ formalooPublic.get('/fo/:id', async (c) => {
       //   param を保持する限りマーカーも生き残るため、LIFF 側が custom query を解釈する必要はない (robust)。
       const directUrl = new URL(`${c.env.WORKER_URL || new URL(c.req.url).origin}/fo/${id}`);
       directUrl.searchParams.set('_lfb', '1');
+      for (const [alias, value] of utmParams) directUrl.searchParams.set(alias, value);
       // CX-3 (per-account LIFF 実効化): 解決済み per-account liffId を復路 URL に同梱する。共有 LIFF client の
       //   detectLiffId() は ?liffId= を最優先で読むため、secondary account でも当該 account の LIFF で liff.init
       //   でき、default VITE_LIFF_ID(=primary) への誤 fallback (wrong LIFF context) を防ぐ。これにより LINE
@@ -357,6 +385,18 @@ formalooPublic.get('/fo/:id', async (c) => {
         // 転送先 address が不正 URL の場合は prefill を諦めて生 url へ (fail-soft / 誤 404 を出さない)。
         console.error(`/fo/${id} prefill compose failed (non-blocking):`, err);
       }
+    }
+  }
+
+  // UTM は friend 解決・署名 secret から独立した流入元記録。friend prefill 合成後に exact aliases を追加するため、
+  // 匿名でも記録でき、既存 fr_id/fr_name・回答 prefill は保持される。ON でも UTM query が無ければ URL は触らない。
+  if (utmParams.length > 0) {
+    try {
+      const u = new URL(redirectUrl);
+      for (const [alias, value] of utmParams) u.searchParams.set(alias, value);
+      redirectUrl = u.toString();
+    } catch (err) {
+      console.error(`/fo/${id} UTM prefill compose failed (non-blocking):`, err);
     }
   }
 

@@ -24,7 +24,17 @@ import {
   recordFormalooDriftEvent,
   type FormalooForm,
 } from '@line-crm/db';
-import { formalooDefinitionFingerprint, countWeakenedFormalooRules, normalizeFormDesign, normalizeSuccessPages, type FormDesign, type FormDisplayType, type SuccessPageSpec } from '@line-crm/shared';
+import {
+  formalooDefinitionFingerprint,
+  countWeakenedFormalooRules,
+  normalizeFormDesign,
+  normalizeSuccessPages,
+  normalizeFormOperationsSettings,
+  type FormDesign,
+  type FormDisplayType,
+  type SuccessPageSpec,
+  type FormOperationsSettings,
+} from '@line-crm/shared';
 import { buildPullResult, extractFieldsList, extractRawLogic, extractLogic, extractSuccessPages } from './formaloo-pull.js';
 import { checkSystemFieldHealth } from './formaloo-system-fields.js';
 import type { FormalooClient } from './formaloo-client.js';
@@ -144,6 +154,16 @@ function parseStoredSuccessPages(definitionJson: string): SuccessPageSpec[] {
   }
 }
 
+/** 保存済み form 単位運用設定。UTM は harness local intent、残りは remote pull で置換する。 */
+function parseStoredOperationsSettings(definitionJson: string): FormOperationsSettings {
+  try {
+    const d = JSON.parse(definitionJson) as { operationsSettings?: unknown };
+    return normalizeFormOperationsSettings(d?.operationsSettings);
+  } catch {
+    return {};
+  }
+}
+
 /**
  * drift carry: local の harness id/slug を保ちつつ remote pull の title/description を **slug で** 反映する
  *   (route-terminal-phase2 T-E5 / CX-1: SP 本文変更は fingerprint に映らない → drift carry 側で検知する方針)。
@@ -236,6 +256,15 @@ async function applyDriftToD1(
   //   を slug で反映 (完了ページ本文変更を検知)。remote 抽出無しは local を保持 (無関係 drift で消えない)。
   const successPages = mergeDriftSuccessPages(parseStoredSuccessPages(form.definition_json), pull.successPages ?? []);
 
+  // treasure B2: remote が運用 key を返した時は管理5項目を完全置換（false/null 全解除も反映）。
+  // UTM は Harness 公開導線だけの intent なので local 値を保持する。shape 欠落時は全 local を保守的に carry。
+  const localOperations = parseStoredOperationsSettings(form.definition_json);
+  const operationsSettings = normalizeFormOperationsSettings(
+    pull.operationsSettings !== undefined
+      ? { ...pull.operationsSettings, ...(localOperations.utmTracking ? { utmTracking: true } : {}) }
+      : localOperations,
+  );
+
   const definitionJson = JSON.stringify({
     fields: pull.fields,
     logic: pull.logic,
@@ -245,6 +274,7 @@ async function applyDriftToD1(
     ...(design && Object.keys(design).length ? { design } : {}),
     ...(formType ? { formType } : {}),
     ...(successPages.length ? { successPages } : {}),
+    ...(Object.keys(operationsSettings).length ? { operationsSettings } : {}),
   });
   const fieldRows = pull.fields.map((f) => ({
     id: f.id,
@@ -286,7 +316,7 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
 
         const rawLogic = extractRawLogic(res.data);
         const logicForFp: unknown = rawLogic != null ? rawLogic : extractLogic(res.data);
-        const fp = await formalooDefinitionFingerprint(fieldsArr, logicForFp);
+        const fp = await formalooDefinitionFingerprint(fieldsArr, logicForFp, res.data);
         const weakened = countWeakenedFormalooRules(rawLogic != null ? rawLogic : extractLogic(res.data)) > 0;
 
         summary.checked += 1;
@@ -310,12 +340,15 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
           let healthSig = '';
           const combinedWarnings: string[] = [];
           if (deps.systemFieldHealthCheck) {
-            const health = checkSystemFieldHealth(fieldsArr, { includeOwnerGated: deps.includeOwnerGatedSystemFields ?? true }, rawLogic);
+            const health = checkSystemFieldHealth(fieldsArr, {
+              includeOwnerGated: deps.includeOwnerGatedSystemFields ?? true,
+              includeUtm: parseStoredOperationsSettings(form.definition_json).utmTracking === true,
+            }, rawLogic);
             if (!health.ok) {
               healthUnhealthy = true;
               summary.systemFieldUnhealthy += 1; // 観測用 (dedup 非依存 = この tick で不健全だった form 数)
               combinedWarnings.push(
-                ...health.issues.map((i) => `friend system field ${i.alias}: ${i.issue}`),
+                ...health.issues.map((i) => `${i.alias.startsWith('utm_') ? 'UTM' : 'friend'} system field ${i.alias}: ${i.issue}`),
                 ...(health.logicConflict
                   ? ['Formaloo の「回答されたら送信」はトリガー位置以降の回答を保存しません。fr_id がトリガーより後ろです。fr_id を先頭 (position 0) に固定すれば logic と共存できます。']
                   : []),

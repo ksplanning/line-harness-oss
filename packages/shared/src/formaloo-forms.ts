@@ -11,6 +11,7 @@
 
 import type { FormCopy } from './form-copy';
 import type { FormRedirect } from './form-redirect';
+import type { FormOperationsSettings } from './form-operations';
 import type { SuccessPageSpec } from './form-success-page';
 import { buildImageDescriptionHtml, parseImageDescription, isImageWidth, isSafeImageUrl, type ImageWidth } from './form-image';
 import { validateImageUpload, type FormDesignImageUpload } from './form-design';
@@ -94,12 +95,40 @@ export const FRIEND_SYSTEM_FIELDS: readonly FriendSystemFieldSpec[] = [
   { alias: 'fr_name', title: 'LINE friend name (system)', type: 'hidden', required: false, position: 0, ownerGated: true },
 ] as const;
 
+/**
+ * UTM 流入元を hosted URL prefill から回答 row へ受け渡す予約 hidden field。
+ * friend prefix の後ろへ additive に ensure し、公開導線ではこの exact 3 aliases 以外を転送しない。
+ */
+export const UTM_SYSTEM_FIELDS: readonly FriendSystemFieldSpec[] = [
+  { alias: 'utm_source', title: 'UTM source (system)', type: 'hidden', required: false, position: 0, ownerGated: false },
+  { alias: 'utm_medium', title: 'UTM medium (system)', type: 'hidden', required: false, position: 0, ownerGated: false },
+  { alias: 'utm_campaign', title: 'UTM campaign (system)', type: 'hidden', required: false, position: 0, ownerGated: false },
+] as const;
+
 /** 予約 alias 集合 (生 'fr_id'/'fr_name' のハードコピーを push/pull/drift 経路に散らさない単一正本)。 */
 export const FRIEND_SYSTEM_ALIASES: readonly string[] = FRIEND_SYSTEM_FIELDS.map((f) => f.alias);
+
+/** UTM prefill 用の予約 alias。公開 route の転送 allowlist と同じ exact 3 keys。 */
+export const UTM_SYSTEM_ALIASES: readonly string[] = UTM_SYSTEM_FIELDS.map((f) => f.alias);
 
 /** alias が friend system field の予約 alias か (pull 除外 / drift 除外 / admin 露出除外 の共通判定)。 */
 export function isFriendSystemAlias(alias: unknown): boolean {
   return typeof alias === 'string' && FRIEND_SYSTEM_ALIASES.includes(alias);
+}
+
+/** alias が UTM system field の予約 alias か。 */
+export function isUtmSystemAlias(alias: unknown): boolean {
+  return typeof alias === 'string' && UTM_SYSTEM_ALIASES.includes(alias);
+}
+
+/**
+ * harness 定義/pull/fingerprint から除外する managed field か。
+ * friend aliases は既存契約どおり alias-only、UTM は既存の可視回答 field を壊さないよう hidden 型だけを予約する。
+ */
+export function isSystemHiddenField(field: unknown): boolean {
+  if (!field || typeof field !== 'object' || Array.isArray(field)) return false;
+  const value = field as { alias?: unknown; type?: unknown };
+  return isFriendSystemAlias(value.alias) || (value.type === 'hidden' && isUtmSystemAlias(value.alias));
 }
 
 export function isDecorationType(t: string): t is HarnessDecorationType {
@@ -285,6 +314,8 @@ export interface HarnessLogicRule {
 export interface HarnessFormDefinition {
   fields: HarnessField[];
   logic: HarnessLogicRule[];
+  /** フォーム単位の運用制御。既定値のみの時は省略して既存 definition byte を保つ。 */
+  operationsSettings?: FormOperationsSettings;
   /**
    * フォーム表示形式 (form-route-branching R2 / additive optional)。design と同じく値があるときだけ persist。
    * 未設定フォームは definition_json に載らない = 後方互換 (byte 不変)。

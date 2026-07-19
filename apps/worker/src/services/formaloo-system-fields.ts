@@ -1,4 +1,10 @@
-import { FRIEND_SYSTEM_FIELDS, isFriendSystemAlias, type FriendSystemFieldSpec } from '@line-crm/shared';
+import {
+  FRIEND_SYSTEM_FIELDS,
+  UTM_SYSTEM_FIELDS,
+  isFriendSystemAlias,
+  isSystemHiddenField,
+  type FriendSystemFieldSpec,
+} from '@line-crm/shared';
 import { extractFieldsList, extractRawLogic } from './formaloo-pull.js';
 
 // =============================================================================
@@ -58,6 +64,8 @@ export interface SystemFieldEnsureResult {
 export interface EnsureOptions {
   /** fr_name (PII owner-gate) も ensure するか。default true (fr_name auto-push は env で切れる / T-C1)。 */
   includeOwnerGated?: boolean;
+  /** UTM exact 3 aliases も friend prefix の後ろへ ensure するか。default false = 既存挙動不変。 */
+  includeUtm?: boolean;
 }
 
 /** raw Formaloo field 要素が予約 friend system field (alias 一致) か。 */
@@ -66,9 +74,31 @@ export function isFriendSystemField(field: unknown): boolean {
   return isFriendSystemAlias((field as { alias?: unknown }).alias);
 }
 
-/** ensure 対象の予約 field 群 (owner-gate 適用後)。 */
-function targetFields(includeOwnerGated: boolean): readonly FriendSystemFieldSpec[] {
-  return FRIEND_SYSTEM_FIELDS.filter((f) => (f.ownerGated ? includeOwnerGated : true));
+/** raw Formaloo field 要素が friend/UTM いずれかの managed hidden field か。 */
+function isManagedSystemField(field: unknown): boolean {
+  return isSystemHiddenField(field);
+}
+
+/** ensure 対象の予約 field 群。friend prefix の直後に UTM exact 3 aliases を並べる。 */
+function targetFields(
+  includeOwnerGated: boolean,
+  includeUtm = false,
+  currentFields: readonly unknown[] = [],
+): readonly FriendSystemFieldSpec[] {
+  // fr_name の新規作成は owner gate に従う。一方、既在 fr_name は UTM ON 時の prefix anchor として必ず保持し、
+  // UTM 3項目の position:0 挿入で position>1 へ押し出さない（fr_id=0 / fr_name<=1 契約）。
+  const existingAliases = new Set(
+    currentFields
+      .filter((field): field is { alias?: unknown } => !!field && typeof field === 'object' && !Array.isArray(field))
+      .map((field) => field.alias)
+      .filter((alias): alias is string => typeof alias === 'string'),
+  );
+  return [
+    ...FRIEND_SYSTEM_FIELDS.filter((field) => (
+      !field.ownerGated || includeOwnerGated || (includeUtm && existingAliases.has(field.alias))
+    )),
+    ...(includeUtm ? UTM_SYSTEM_FIELDS : []),
+  ];
 }
 
 interface SystemFieldMatch {
@@ -102,7 +132,7 @@ function matchesForAlias(list: unknown[], alias: string): SystemFieldMatch[] {
 function isAtSystemPrefix(match: SystemFieldMatch, targetIndex: number, list: unknown[]): boolean {
   if (match.position === null) return false;
   const regularFields = list.filter(
-    (field) => field && typeof field === 'object' && !isFriendSystemAlias((field as Record<string, unknown>).alias),
+    (field) => field && typeof field === 'object' && !isSystemHiddenField(field),
   ) as Record<string, unknown>[];
   if (regularFields.some((field) => typeof field.position !== 'number' || !Number.isFinite(field.position))) return false;
   const regularPositions = regularFields.map((field) => field.position as number);
@@ -171,7 +201,6 @@ export async function ensureSystemHiddenFields(
   opts?: EnsureOptions,
 ): Promise<SystemFieldEnsureResult> {
   const includeOwnerGated = opts?.includeOwnerGated ?? true;
-  const targets = targetFields(includeOwnerGated);
   // T-C3 round2 (fail-closed): form-state を読めない (GET 非ok / 例外 / shape 不一致) は「system field が
   //   本当に揃っているか不明」= silent success を絶対に許さない → outOfSync=true で surface する (throw はしない
   //   ゆえ publish 本体=回答導線は落とさない)。旧 skipped:true/outOfSync:false は closer 独立検証 (Codex) が
@@ -186,6 +215,7 @@ export async function ensureSystemHiddenFields(
   }
   if (state.fields === null) return unreadable();
   const list = state.fields;
+  const targets = targetFields(includeOwnerGated, opts?.includeUtm === true, list);
   let finalFields = list;
   let finalRawLogic = state.rawLogic;
 
@@ -343,7 +373,7 @@ export interface SystemFieldHealthResult {
  */
 export function checkSystemFieldHealth(rawFieldsList: unknown, opts?: EnsureOptions, rawLogic?: unknown): SystemFieldHealthResult {
   const list = Array.isArray(rawFieldsList) ? rawFieldsList : [];
-  const targets = targetFields(opts?.includeOwnerGated ?? true);
+  const targets = targetFields(opts?.includeOwnerGated ?? true, opts?.includeUtm === true, list);
   const issues: { alias: string; issue: SystemFieldIssueKind }[] = [];
   for (const [targetIndex, spec] of targets.entries()) {
     const m = matchesForAlias(list, spec.alias);
@@ -405,7 +435,7 @@ export async function backfillSystemHiddenFields(
 //     から外す責務 (本関数は渡された slug のみ触る)。
 // =============================================================================
 
-/** raw fields_list から alias=slug backfill 対象 field を列挙する (friend-system / success_page / 既 alias=slug は除外)。 */
+/** raw fields_list から alias=slug backfill 対象 field を列挙する (managed system / success_page / 既 alias=slug は除外)。 */
 function fieldAliasCandidates(list: unknown[]): { slug: string; currentAlias: string | null }[] {
   const out: { slug: string; currentAlias: string | null }[] = [];
   for (const el of list) {
@@ -413,7 +443,7 @@ function fieldAliasCandidates(list: unknown[]): { slug: string; currentAlias: st
     const o = el as Record<string, unknown>;
     const slug = typeof o.slug === 'string' ? o.slug : '';
     if (!slug) continue;
-    if (isFriendSystemField(o)) continue; // fr_id/fr_name は意図的に非 slug alias (予約) ゆえ触らない
+    if (isManagedSystemField(o)) continue; // friend/UTM は意図的に非 slug alias (予約) ゆえ触らない
     if (o.type === 'success_page') continue; // 完了ページは回答 field でない
     const alias = typeof o.alias === 'string' ? o.alias : null;
     if (alias === slug) continue; // 既に alias=slug = 冪等 no-op
@@ -461,6 +491,7 @@ export async function backfillFieldAliases(
 ): Promise<FieldAliasBackfillResult> {
   const dryRun = opts?.dryRun ?? true; // 既定 dry-run: 本番一括実行は owner GO 後にのみ dryRun:false で呼ぶ
   const includeOwnerGated = opts?.includeOwnerGated ?? false; // PII 安全側: fr_name は明示 opt-in の時のみ (P1 / codex#8)
+  const includeUtm = opts?.includeUtm === true;
   const forms: FieldAliasBackfillFormResult[] = [];
   let totalFieldsNeedingAlias = 0;
   let totalPatched = 0;
@@ -480,7 +511,7 @@ export async function backfillFieldAliases(
     }
     const rawLogic = extractRawLogic(res.data);
     const candidates = fieldAliasCandidates(fields);
-    const health = checkSystemFieldHealth(fields, { includeOwnerGated }, rawLogic);
+    const health = checkSystemFieldHealth(fields, { includeOwnerGated, includeUtm }, rawLogic);
     totalFieldsNeedingAlias += candidates.length;
 
     const failed: { slug: string; error: string }[] = [];
@@ -501,7 +532,7 @@ export async function backfillFieldAliases(
         }
       }
       // fr_id/fr_name system field も冪等付与 (再 publish されないフォームの system field 抜けも同時に埋める)。
-      systemFields = await ensureSystemHiddenFields(client, formSlug, { includeOwnerGated });
+      systemFields = await ensureSystemHiddenFields(client, formSlug, { includeOwnerGated, includeUtm });
       totalPatched += patched;
     }
 

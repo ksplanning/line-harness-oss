@@ -211,6 +211,23 @@ describe('T-C5 配線: runFormalooDriftCheck × checkSystemFieldHealth', () => {
     expect(events.some((e) => e.detail === 'system_field_health')).toBe(false);
   });
 
+  test('utmTracking=true でUTM hiddenが欠落したら既存drift health経路へsurfaceする', async () => {
+    const defJson = JSON.stringify({ fields: [], logic: [], operationsSettings: { utmTracking: true } });
+    await seedLinked('fh-utm', 's_form_utm', defJson);
+    // friend prefix は健全だが UTM 3 aliases は欠落。
+    const client = getClient(() => driftBody('s_form_utm', withSysFields));
+    const deps = { db: WDB, resolveClient: async () => client, autoApplyEnabled: false, systemFieldHealthCheck: true, includeOwnerGatedSystemFields: true };
+
+    await runFormalooDriftCheck(deps); // bootstrap
+    const second = await runFormalooDriftCheck(deps);
+
+    expect(second.systemFieldUnhealthy).toBe(1);
+    expect(second.notified).toBe(1);
+    const events = await listFormalooDriftEvents(WDB, 'fh-utm');
+    const healthEvent = events.find((event) => event.detail === 'system_field_health');
+    expect(healthEvent?.warnings_json ?? '').toContain('utm_source');
+  });
+
   test('dedup: 同一不健全を 2 tick 連続 → notified 履歴 1 件のみ (sysfield: pending prefix)', async () => {
     await seedLinked('fh4', 's_form_h4');
     const client = getClient(() => driftBody('s_form_h4', answerFields));

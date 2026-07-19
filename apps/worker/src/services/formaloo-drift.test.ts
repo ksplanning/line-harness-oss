@@ -57,8 +57,8 @@ function replayAll(db: Database.Database) {
 }
 
 /** Formaloo form-detail body。fieldsList は raw Formaloo field 要素、logic は bare array。 */
-function body(slug: string, fieldsList: unknown[], logic: unknown[] = []): unknown {
-  return { data: { form: { slug, fields_list: fieldsList, logic } } };
+function body(slug: string, fieldsList: unknown[], logic: unknown[] = [], formMeta: Record<string, unknown> = {}): unknown {
+  return { data: { form: { slug, fields_list: fieldsList, logic, ...formMeta } } };
 }
 function rawField(slug: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return { slug, type: 'short_text', title: '氏名', required: false, position: 0, ...over };
@@ -82,7 +82,7 @@ async function fpOf(bodyObj: unknown): Promise<string> {
   const fields = extractFieldsList(bodyObj);
   const rawLogic = extractRawLogic(bodyObj);
   const logicForFp: unknown = rawLogic != null ? rawLogic : extractLogic(bodyObj);
-  return formalooDefinitionFingerprint(fields, logicForFp);
+  return formalooDefinitionFingerprint(fields, logicForFp, bodyObj);
 }
 
 /** get のみ本物・書込 (post/put/request/delete) は spy 0 回 assert 用。 */
@@ -199,6 +199,46 @@ describe('runFormalooDriftCheck — 3. drift clean + autoApply ON → auto_appli
     expect(sum2.autoApplied).toBe(0);
     expect(sum2.inSync).toBe(1);
     expect((await listFormalooDriftEvents(DB, 'f1')).length).toBe(1); // auto_applied 1 件のみ
+  });
+
+  it('運用設定のremote set/clearをauto-applyし、Harness local-only UTM intentは保持する', async () => {
+    const localDefinition = JSON.stringify({ fields: [], logic: [], operationsSettings: { utmTracking: true } });
+    await seedForm('f-ops', 's_form_ops', localDefinition);
+    const defaults = body('s_form_ops', [rawField('s_q1')], [], {
+      has_recaptcha: false,
+      accept_draft_answers: false,
+      max_submit_count: null,
+      submit_start_time: null,
+      submit_end_time: null,
+    });
+    const configured = body('s_form_ops', [rawField('s_q1')], [], {
+      has_recaptcha: true,
+      accept_draft_answers: true,
+      max_submit_count: 100,
+      submit_start_time: '2026-07-20T00:00:00Z',
+      submit_end_time: '2026-08-20T00:00:00Z',
+    });
+    await setFormalooSyncState(DB, 'f-ops', {
+      syncStatus: 'idle', remoteDefinitionHash: await fpOf(defaults), driftStatus: 'none',
+    });
+    let remote = configured;
+    const { client } = spyClient(() => remote);
+
+    const setSummary = await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: true });
+    expect(setSummary.autoApplied).toBe(1);
+    expect(JSON.parse((await getFormalooForm(DB, 'f-ops'))!.definition_json).operationsSettings).toEqual({
+      hasRecaptcha: true,
+      acceptDraftAnswers: true,
+      maxSubmitCount: 100,
+      submitStartTime: '2026-07-20T00:00:00Z',
+      submitEndTime: '2026-08-20T00:00:00Z',
+      utmTracking: true,
+    });
+
+    remote = defaults;
+    const clearSummary = await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: true });
+    expect(clearSummary.autoApplied).toBe(1);
+    expect(JSON.parse((await getFormalooForm(DB, 'f-ops'))!.definition_json).operationsSettings).toEqual({ utmTracking: true });
   });
 
   it('meta section/page_break を definition_json と field_map slug に残し config.text も保持する (T-B4/T-B8)', async () => {

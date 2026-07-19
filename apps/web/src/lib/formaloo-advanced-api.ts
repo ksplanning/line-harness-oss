@@ -1,5 +1,5 @@
 import { fetchApi, downloadCsv } from './api'
-import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
 
 // =============================================================================
 // 高機能フォーム (Formaloo-backed) API クライアント (F-2 / T-B1)。fetchApi 経由 (cookie 認証 + CSRF)。
@@ -17,6 +17,8 @@ export interface AdvancedForm {
   submitCount: number
   fields: HarnessField[]
   logic: HarnessLogicRule[]
+  // treasure-b2-form-settings: 非既定値だけを持つ form 単位の運用制御。
+  operationsSettings?: FormOperationsSettings | null
   publicUrl: string | null
   embedCode: string | null
   syncStatus: string
@@ -78,6 +80,8 @@ export interface PulledDefinition {
   formType?: FormDisplayType
   // route-terminal-phase2 (Track 2 / T-E5): Formaloo 側の完了ページ (success_page 分離抽出) を builder へ復元。
   successPages?: SuccessPageSpec[]
+  // Formaloo GET から逆算した remote 5 項目。UTM は Harness local-only のため含めない。
+  operationsSettings?: FormOperationsSettings
 }
 
 // preserve-raw: save body に carry する logic メタ (未編集判定 + verbatim 再送素材)。
@@ -86,6 +90,8 @@ export interface SaveDefinitionBody {
   logic: HarnessLogicRule[]
   rawLogic?: unknown
   logicFingerprint?: string | null
+  // treasure-b2-form-settings: touched key のみ。解除は false/null を明示する。
+  operationsSettings?: FormOperationsSettingsPatch
   title?: string
   description?: string | null
   // form-design (Batch D): 色 (canonical hex) + 画像 upload intent (keep/replace/remove)。

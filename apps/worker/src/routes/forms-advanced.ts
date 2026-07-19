@@ -56,6 +56,9 @@ import {
   normalizeFormCopy,
   normalizeFormRedirect,
   normalizeSuccessPages,
+  normalizeFormOperationsSettings,
+  validateFormOperationsSettingsPatch,
+  mergeFormOperationsSettings,
   parseFriendMetadataMappingsJson,
   validateFriendMetadataMappings,
   defaultFormDesign,
@@ -72,6 +75,8 @@ import {
   type FormRedirect,
   type SuccessPageSpec,
   type FriendMetadataMapping,
+  type FormOperationsSettings,
+  type FormOperationsSettingsPatch,
 } from '@line-crm/shared';
 import {
   canTransition,
@@ -94,6 +99,7 @@ import {
   confirmLocalizedContentReflected,
 } from '../services/formaloo-copy.js';
 import { redirectFields, confirmRedirectReflected, validateFormRedirectInput } from '../services/formaloo-redirect.js';
+import { formOperationsFields, confirmFormOperationsReflected } from '../services/formaloo-form-operations.js';
 import { deleteSuccessPages } from '../services/formaloo-success-page.js';
 import { reapplyHostedAppearance } from '../services/formaloo-reapply.js';
 import { ownerGate } from '../lib/owner-gate.js';
@@ -131,6 +137,8 @@ interface StoredDefinition {
   formRedirect?: FormRedirect;
   // route-terminal-phase2 (Track 2): ルート別完了ページ + 割当 slug (additive JSON key)。未設定は undefined = 後方互換。
   successPages?: SuccessPageSpec[];
+  // treasure B2: form 単位の運用制御。非既定値だけを保存し、空なら key 自体を持たない。
+  operationsSettings?: FormOperationsSettings;
 }
 
 function parseDefinition(json: string): StoredDefinition {
@@ -162,9 +170,15 @@ function parseDefinition(json: string): StoredDefinition {
       successPages: Array.isArray(d.successPages) && d.successPages.length
         ? normalizeSuccessPages(d.successPages)
         : undefined,
+      operationsSettings: d.operationsSettings && typeof d.operationsSettings === 'object' && !Array.isArray(d.operationsSettings)
+        ? (() => {
+            const value = normalizeFormOperationsSettings(d.operationsSettings);
+            return Object.keys(value).length ? value : undefined;
+          })()
+        : undefined,
     };
   } catch {
-    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined, localizationJa: undefined, formRedirect: undefined, successPages: undefined };
+    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined, localizationJa: undefined, formRedirect: undefined, successPages: undefined, operationsSettings: undefined };
   }
 }
 
@@ -236,6 +250,8 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     // route-terminal-phase2 (Track 2 / T-E5): ルート別完了ページ (builder の initialSuccessPages)。未設定は null。
     //   保存済 SP (割当 slug 込み) を reload で復元し編集/削除できるようにする。
     successPages: def.successPages ?? null,
+    // treasure B2: 未設定は null。builder は現行挙動（全OFF・無制限）として表示する。
+    operationsSettings: def.operationsSettings ?? null,
     // row-status-friend-sync: local-only mapping。壊れた JSON は [] に倒し機能 OFF (fail-closed)。
     friendMetadataMappings: parseFriendMetadataMappingsJson(form.friend_metadata_mappings_json),
     // N-7: publish 前は null (公開/埋め込み URL 発行不可)
@@ -435,8 +451,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -468,6 +484,14 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     //   で明示 reject する (normalize の silent drop に頼らない = builder バイパスの直 API 濫用も塞ぐ)。
     const redirectInputCheck = validateFormRedirectInput(body.formRedirect);
     if (!redirectInputCheck.ok) return c.json({ success: false, error: redirectInputCheck.error }, 400);
+    // treasure B2: present-key の時だけ管理6 camelCase key を厳格検証。未知 key は whitelist drop。
+    const operationsSettingsProvided = body.operationsSettings !== undefined;
+    let operationsSettingsPatch: FormOperationsSettingsPatch = {};
+    if (operationsSettingsProvided) {
+      const validation = validateFormOperationsSettingsPatch(body.operationsSettings);
+      if (!validation.ok) return c.json({ success: false, error: validation.error }, 400);
+      operationsSettingsPatch = validation.patch;
+    }
     const rawFields = Array.isArray(body.fields) ? body.fields : [];
     const rawLogicRules = Array.isArray(body.logic) ? body.logic : [];
 
@@ -507,6 +531,14 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const fieldIds = new Set(fields.map((f) => f.id));
     const decorationIds = new Set(fields.filter((f) => isDecorationType(f.type)).map((f) => f.id));
     const prevDef = parseDefinition(form.definition_json);
+    // present-key 部分更新を保存済み canonical へ merge。false/null で全解除された時は空 object = JSON key を載せない。
+    const operationsSettingsToPersist = operationsSettingsProvided
+      ? mergeFormOperationsSettings(prevDef.operationsSettings, operationsSettingsPatch)
+      : prevDef.operationsSettings;
+    // Formaloo へは実測済み管理5 snake_case key だけを送る。UTM は Harness 公開導線だけの intent。
+    const operationsUpdateFields = operationsSettingsProvided
+      ? formOperationsFields(operationsSettingsPatch)
+      : {};
     // route-terminal-phase2 (Track 2 / T-D1): 有効な success-page 集合を先に確定する。
     //   successPages 提供時は incoming、未提供は prev を carry (submit rule が既存 SP を参照し続けられる)。
     const successPagesProvided = body.successPages !== undefined;
@@ -718,6 +750,10 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         ...(formRedirectToPersist && Object.keys(formRedirectToPersist).length ? { formRedirect: formRedirectToPersist } : {}),
         // route-terminal-phase2 (Track 2): successPages が非空のときだけ載せる (割当 slug 込み・未設定は byte 一致)。
         ...(successPagesToPersist && successPagesToPersist.length ? { successPages: successPagesToPersist } : {}),
+        // treasure B2: false/null/未設定は canonical から落とし、既存フォームの definition JSON に key を足さない。
+        ...(operationsSettingsToPersist && Object.keys(operationsSettingsToPersist).length
+          ? { operationsSettings: operationsSettingsToPersist }
+          : {}),
       });
     const fieldRows = (slugFor: (fid: string) => string | null) =>
       fields.map((f) => ({ id: f.id, formalooFieldSlug: slugFor(f.id), fieldType: f.type, label: f.label, position: f.position, configJson: JSON.stringify(f.config) }));
@@ -791,6 +827,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         //   fr_name(PII) は別 gate (FORMALOO_FR_NAME_AUTOPUSH_DISABLE) で切れる (owner-gate / codex#8)。
         ensureSystemFields: c.env.FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE !== '1',
         includeOwnerGatedSystemFields: c.env.FORMALOO_FR_NAME_AUTOPUSH_DISABLE !== '1',
+        // treasure B2: form 単位 UTM intent ON の時だけ exact 3 hidden aliases を friend prefix 後へ冪等 ensure。
+        includeUtmSystemFields: operationsSettingsToPersist?.utmTracking === true,
         // fr-id-hardening-round2 (③): 新規 field に alias=slug を標準付与 (Formaloo hosted prefill は alias 一致でのみ発火し
         //   /fo は回答 prefill を slug-keyed で組む)。既定有効・env で無効化 = rollback。両テナント共通 route。
         setFieldAlias: c.env.FORMALOO_FIELD_ALIAS_AUTOSET_DISABLE !== '1',
@@ -852,6 +890,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
               ...(formCopyProvided ? formCopyFields(formCopyToPersist) : {}),
               ...localizedFields,
               ...receiptSettingsFields,
+              // treasure B2: FormUpdateRequest 実測済み管理5 keyだけを present-key で合流。
+              ...operationsUpdateFields,
               // route-terminal-phase2: redirect も同一 meta PATCH に additive 合流。CX-4 clear は明示 null で解除。
               //   未提供は載せない (prev redirect を誤って潰さない)。design/formCopy と別 key で byte disjoint。
               ...(formRedirectProvided
@@ -918,6 +958,12 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         if (metaRes.ok && slug && formRedirectProvided && !redirectCleared && formRedirectToPersist) {
           const reflected = await confirmRedirectReflected(client, slug, formRedirectToPersist);
           if (!reflected.ok) redirectReflectError = reflected.error ?? '飛び先 URL が公開ページに反映されませんでした';
+        }
+        // treasure B2: PATCH 200 は soft-ignore され得るため、管理5 key を独立 GET data.form.* で確認する。
+        let operationsReflectError: string | null = null;
+        if (metaRes.ok && slug && Object.keys(operationsUpdateFields).length > 0) {
+          const reflected = await confirmFormOperationsReflected(client, slug, operationsSettingsPatch);
+          if (!reflected.ok) operationsReflectError = reflected.error ?? '運用制御が Formaloo に反映されませんでした';
         }
         // bg-fullpage-render-fix (R4/T-A1): 画像 replace/remove の反映も soft-200 対策で GET-after-PATCH 確認
         //   (色/文言/redirect と同型・別 helper で file-disjoint)。期待は **intent ベース**で組む: replace=set /
@@ -995,17 +1041,36 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
             syncStatus: 'out_of_sync', lastError: redirectReflectError,
           });
           syncSettled = true;
+        } else if (operationsReflectError) {
+          // treasure B2: API 200 だけでは完了扱いにせず、GET read-back 不一致を honest に surface する。
+          await setFormalooSyncState(c.env.DB, id, {
+            syncStatus: 'out_of_sync', lastError: operationsReflectError,
+          });
+          syncSettled = true;
         } else if (pushed.systemFieldsOutOfSync) {
           // fr-id-capture-fix (T-C3/T-C7): 定義本体は同期したが friend system field (fr_id/fr_name) が正しく機能しない。
           //   回答導線は守る (publish 自体は成功) が、system field は out_of_sync で honest surface する (silent success 禁止 / codex#3)。
           //   定義本体は push 済ゆえ baseline は clear (idle 分岐と同じく自分の push を drift 誤検知させない)。
           //   T-C7: logicConflict = fr_id が is_answered→submit のトリガーより後ろにあり、送信時の保存対象外になる。
           const logicConflict = pushed.systemFields?.logicConflict === true;
+          const failedSystemAliases = pushed.systemFields?.outcomes
+            .filter((outcome) => outcome.status === 'conflict' || outcome.status === 'error')
+            .map((outcome) => outcome.alias) ?? [];
+          const utmRequested = operationsSettingsToPersist?.utmTracking === true;
+          const utmFailed = failedSystemAliases.some((alias) => alias.startsWith('utm_'));
+          const friendFailed = failedSystemAliases.some((alias) => alias === 'fr_id' || alias === 'fr_name');
+          const systemFieldError = utmRequested
+            ? utmFailed && !friendFailed
+              ? 'UTM 流入元記録用フィールド (utm_source/utm_medium/utm_campaign) の同期に失敗しました。再保存で自動復旧します。'
+              : friendFailed && !utmFailed
+                ? 'friend 識別用フィールド (fr_id/fr_name) の同期に失敗しました。再保存で自動復旧します。'
+                : 'friend 識別用および UTM 流入元記録用フィールドの同期を確認できませんでした。再保存で自動復旧します。'
+            : 'friend 識別用フィールド (fr_id/fr_name) の同期に失敗しました。再保存で自動復旧します。';
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync',
             lastError: logicConflict
               ? 'Formaloo の「回答されたら送信」は、トリガー位置以降の回答を保存しません。friend 識別フィールド (fr_id) がトリガーより後ろにある場合だけ再入場 prefill に影響します。fr_id を先頭 (position 0) に固定すれば logic と共存できます。'
-              : 'friend 識別用フィールド (fr_id/fr_name) の同期に失敗しました。再保存で自動復旧します。',
+              : systemFieldError,
             remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
           });
           syncSettled = true;
@@ -1122,6 +1187,8 @@ formsAdvanced.get('/api/forms-advanced/:id/pull', async (c) => {
         ...(r.design && Object.keys(r.design).length ? { design: r.design } : {}),
         // form-route-branching (R2): Formaloo の表示形式を builder に復元させる (未設定は載せない)。
         ...(r.formType ? { formType: r.formType } : {}),
+        // treasure B2: 実測5 key の canonical。空 object は remote の false/null 全解除を表す。
+        ...(r.operationsSettings !== undefined ? { operationsSettings: r.operationsSettings } : {}),
       },
     });
   } catch (err) {

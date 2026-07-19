@@ -24,7 +24,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping } from '@line-crm/shared'
+import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
 import { computeRouteTerminalWarnings, MAX_FRIEND_METADATA_MAPPINGS, validateRedirectUrl } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
@@ -93,14 +93,16 @@ export interface BuilderProps {
   initialAllowEditMail?: number
   /** form-edit-mail Phase B: 宛先として明示選択済みの email field internal id。未設定は先頭 fallback せず null。 */
   initialEditMailFieldId?: string | null
+  /** treasure-b2-form-settings: form 単位の運用制御。未設定は従来挙動 (すべて OFF / 無制限)。 */
+  initialOperationsSettings?: FormOperationsSettings
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
   /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。design/formType/successPages も復元 (F2)。 */
-  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null; design?: FormDesign; formType?: FormDisplayType; successPages?: SuccessPageSpec[] } | null>
+  onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null; design?: FormDesign; formType?: FormDisplayType; successPages?: SuccessPageSpec[]; operationsSettings?: FormOperationsSettings } | null>
   publicUrl?: string | null
   embedCode?: string | null
   syncStatus?: string
@@ -760,6 +762,84 @@ function useAutoLayoutMode(): 'mobile' | 'desktop' {
   return autoMode
 }
 
+interface OperationsSettingsEditorState {
+  hasRecaptcha: boolean
+  acceptDraftAnswers: boolean
+  maxSubmitCount: string
+  submitStartTime: string
+  submitEndTime: string
+  /** datetime-local が表示できない microseconds を含む remote 原文。表示値が未編集なら保存時に再利用する。 */
+  submitStartTimeSource?: string
+  submitEndTimeSource?: string
+  utmTracking: boolean
+}
+
+/** Formaloo FormUpdateRequest / pull が管理する5項目。UTM は Harness local-only なので含めない。 */
+const FORMALOO_OPERATION_SETTING_KEYS = [
+  'hasRecaptcha',
+  'acceptDraftAnswers',
+  'maxSubmitCount',
+  'submitStartTime',
+  'submitEndTime',
+] as const satisfies readonly (keyof FormOperationsSettingsPatch)[]
+
+/** Formaloo の ISO8601 を JST の datetime-local 壁時計へ写す。 */
+function toJstDateTimeLocal(value: string | undefined): string {
+  if (!value) return ''
+  const timeShape = /T\d{2}:\d{2}(:\d{2})?(\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.exec(value)
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return value.slice(0, 16)
+  const jst = new Date(timestamp + 9 * 60 * 60 * 1000).toISOString()
+  // datetime-local の既定 step は分単位。remote に秒がある時だけ秒（小数6桁まで）も表示して保持する。
+  if (!timeShape?.[1]) return jst.slice(0, 16)
+  // HTML datetime-local の fractional second は millisecond 精度まで。6桁原文は editor state の Source に別保持する。
+  return `${jst.slice(0, 19)}${timeShape[2]?.slice(0, 4) ?? ''}`
+}
+
+function initialOperationsEditorState(settings?: FormOperationsSettings): OperationsSettingsEditorState {
+  return {
+    hasRecaptcha: settings?.hasRecaptcha === true,
+    acceptDraftAnswers: settings?.acceptDraftAnswers === true,
+    maxSubmitCount: settings?.maxSubmitCount == null ? '' : String(settings.maxSubmitCount),
+    submitStartTime: toJstDateTimeLocal(settings?.submitStartTime),
+    submitEndTime: toJstDateTimeLocal(settings?.submitEndTime),
+    submitStartTimeSource: settings?.submitStartTime,
+    submitEndTimeSource: settings?.submitEndTime,
+    utmTracking: settings?.utmTracking === true,
+  }
+}
+
+function toJstIso(value: string): string | null {
+  if (!value) return null
+  const hasSeconds = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(value)
+  return `${value}${hasSeconds ? '' : ':00'}+09:00`
+}
+
+/** touched key だけを API payload に写し、clear は false/null として明示する。 */
+function operationsSettingsPatch(
+  state: OperationsSettingsEditorState,
+  touched: ReadonlySet<keyof FormOperationsSettingsPatch>,
+): FormOperationsSettingsPatch {
+  const patch: FormOperationsSettingsPatch = {}
+  if (touched.has('hasRecaptcha')) patch.hasRecaptcha = state.hasRecaptcha
+  if (touched.has('acceptDraftAnswers')) patch.acceptDraftAnswers = state.acceptDraftAnswers
+  if (touched.has('maxSubmitCount')) patch.maxSubmitCount = state.maxSubmitCount === '' ? null : Number(state.maxSubmitCount)
+  if (touched.has('submitStartTime')) {
+    patch.submitStartTime = state.submitStartTimeSource
+      && toJstDateTimeLocal(state.submitStartTimeSource) === state.submitStartTime
+      ? state.submitStartTimeSource
+      : toJstIso(state.submitStartTime)
+  }
+  if (touched.has('submitEndTime')) {
+    patch.submitEndTime = state.submitEndTimeSource
+      && toJstDateTimeLocal(state.submitEndTimeSource) === state.submitEndTime
+      ? state.submitEndTimeSource
+      : toJstIso(state.submitEndTime)
+  }
+  if (touched.has('utmTracking')) patch.utmTracking = state.utmTracking
+  return patch
+}
+
 export default function FormBuilder(props: BuilderProps) {
   const autoMode = useAutoLayoutMode()
   const mode = props.layoutMode ?? autoMode
@@ -779,6 +859,18 @@ export default function FormBuilder(props: BuilderProps) {
   // form-route-branching (R2): 表示形式 (simple/multi_step) + 自動切替の可視通知 + save 警告。
   const [formType, setFormType] = useState<FormDisplayType | undefined>(props.initialFormType)
   const [formTypeNotice, setFormTypeNotice] = useState<string | null>(null)
+  // treasure-b2-form-settings: UI は完全 state を持つが、保存時は touched key だけを送る。
+  // 初期未操作を absent にすることで、既存フォームへ false/null を勝手に PATCH しない。
+  const [operationsSettings, setOperationsSettings] = useState<OperationsSettingsEditorState>(() => initialOperationsEditorState(props.initialOperationsSettings))
+  const [operationsSettingsTouched, setOperationsSettingsTouched] = useState<Set<keyof FormOperationsSettingsPatch>>(() => new Set())
+  const updateOperationsSetting = <K extends keyof FormOperationsSettingsPatch>(key: K, value: OperationsSettingsEditorState[K]) => {
+    setOperationsSettings((current) => ({ ...current, [key]: value }))
+    setOperationsSettingsTouched((current) => {
+      const next = new Set(current)
+      next.add(key)
+      return next
+    })
+  }
   // form-jp-localization: 公開ページ文言 (送信ボタン/完了/送信エラー)。現在値を完全 object で保持し、
   //   触ったときだけ onSave に載せる (formCopyTouched)。初期未編集は送らない = 既存フォーム不干渉 (absent)。
   const [formCopy, setFormCopy] = useState<{ buttonText: string; successMessage: string; errorMessage: string }>({
@@ -956,7 +1048,7 @@ export default function FormBuilder(props: BuilderProps) {
   }
 
   const handleSave = async () => {
-    if (!title.trim()) return
+    if (!title.trim() || reimporting) return
     // route-terminal-phase2 (T-C1): 危険/不正な redirect URL は保存を阻む (inline error を先に直させる)。
     if (redirectUrlError) return
     if (allowEditMail === 1 && !editMailFieldId) {
@@ -969,12 +1061,22 @@ export default function FormBuilder(props: BuilderProps) {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
       // form-jp-localization: 文言を触ったときだけ完全 object で載せる (初期未編集は absent = 既存不干渉)。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), ...(friendMetadataMappingsTouched ? { friendMetadataMappings } : {}), allowPostEdit, allowEditMail, editMailFieldId: editMailFieldId || null })
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), ...(friendMetadataMappingsTouched ? { friendMetadataMappings } : {}), ...(operationsSettingsTouched.size > 0 ? { operationsSettings: operationsSettingsPatch(operationsSettings, operationsSettingsTouched) } : {}), allowPostEdit, allowEditMail, editMailFieldId: editMailFieldId || null })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
         // 画像 intent の消費は「完全同期(ok)」時のみ。soft-fail(out_of_sync)/throw は pending file を保持し再試行可能に。
-        if (result.ok) setDesignImages({})
+        if (result.ok) {
+          setDesignImages({})
+          // remote 原文はこの save で消費済み。後の手編集で古い microseconds を再利用しない。
+          setOperationsSettings((current) => ({
+            ...current,
+            submitStartTimeSource: undefined,
+            submitEndTimeSource: undefined,
+          }))
+          // 成功済み partial intent を後の無関係 save で再送し、Formaloo 直編集を巻き戻さない。
+          setOperationsSettingsTouched(new Set())
+        }
         // form-route-branching: jump+simple backstop 等の非ブロッキング警告を surface。
         setSaveWarnings(Array.isArray(result.warnings) ? result.warnings : [])
       }
@@ -986,6 +1088,7 @@ export default function FormBuilder(props: BuilderProps) {
   // Formaloo 再取り込み (pull / N-8)。ok===true の時だけ editor を置換し、失敗 (ok:false/null) は
   // editor を保持する (B2 = 空へ潰さない)。note は親が setNotice で表示。reimporting で二重実行防止。
   const handleReimport = async () => {
+    if (saving || reimporting) return
     setReimportConfirm(false)
     setReimporting(true)
     try {
@@ -1003,6 +1106,31 @@ export default function FormBuilder(props: BuilderProps) {
         // form-route-branching: pull した表示形式を復元 (未設定は undefined = simple 表示)。
         setFormType(d.formType)
         setFormTypeNotice(null)
+        // `operationsSettings:{}` は remote 全解除、property absent は GET shape 不明。両者を混同しない。
+        // pull は preview-only なので、remote 値を得た時は次の save に管理5項目を載せて D1 へも永続する。
+        if (d.operationsSettings !== undefined) {
+          setOperationsSettings((current) => ({
+            ...initialOperationsEditorState(d.operationsSettings),
+            utmTracking: current.utmTracking,
+          }))
+          setOperationsSettingsTouched((current) => {
+            const next = new Set<keyof FormOperationsSettingsPatch>(FORMALOO_OPERATION_SETTING_KEYS)
+            // UTM は Formaloo form GET では復元できない local-only intent。未保存なら再取り込み後も保存対象に残す。
+            if (current.has('utmTracking')) next.add('utmTracking')
+            return next
+          })
+        } else {
+          // shape 不明では remote default と断定しない。保存済み managed 値へ戻し、local-only UTM は維持する。
+          setOperationsSettings((current) => ({
+            ...initialOperationsEditorState(props.initialOperationsSettings),
+            utmTracking: current.utmTracking,
+          }))
+          setOperationsSettingsTouched((current) => (
+            current.has('utmTracking')
+              ? new Set<keyof FormOperationsSettingsPatch>(['utmTracking'])
+              : new Set<keyof FormOperationsSettingsPatch>()
+          ))
+        }
         // form-jp-localization: 再取り込みは「未保存の編集を破棄」。文言は pull 非対応 (backlog) のため
         //   初期 (空・未編集) にリセットし、未保存の文言編集を持ち越さない (reimport 契約と一貫)。
         setFormCopy({ buttonText: '', successMessage: '', errorMessage: '' })
@@ -1075,11 +1203,11 @@ export default function FormBuilder(props: BuilderProps) {
           )
         })()}
         <div className="flex-1" />
-        <button type="button" onClick={handleSave} disabled={saving || !title.trim()} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>
+        <button type="button" onClick={handleSave} disabled={saving || reimporting || !title.trim()} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>
           {saving ? '保存中...' : '保存'}
         </button>
         {props.onReimport && !reimportConfirm && (
-          <button type="button" onClick={() => setReimportConfirm(true)} disabled={reimporting} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200 disabled:opacity-50">
+          <button type="button" onClick={() => setReimportConfirm(true)} disabled={reimporting || saving} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200 disabled:opacity-50">
             {reimporting ? '取り込み中...' : 'Formaloo から再取り込み'}
           </button>
         )}
@@ -1087,7 +1215,7 @@ export default function FormBuilder(props: BuilderProps) {
           // 行内確認 (window.confirm 不使用 / M-16): 未保存の編集が Formaloo の内容に置き換わる旨
           <span className="flex items-center gap-1 text-xs" data-testid="reimport-confirm">
             <span>未保存の変更は破棄され Formaloo の内容に置き換わります。よろしいですか？</span>
-            <button type="button" onClick={handleReimport} className="text-white px-2 py-0.5 rounded" style={{ backgroundColor: LINE_GREEN }}>はい</button>
+            <button type="button" onClick={handleReimport} disabled={saving || reimporting} className="text-white px-2 py-0.5 rounded disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>はい</button>
             <button type="button" onClick={() => setReimportConfirm(false)} className="text-gray-500">いいえ</button>
           </span>
         )}
@@ -1108,6 +1236,86 @@ export default function FormBuilder(props: BuilderProps) {
         {props.status === 'published' && props.onUnpublish && (
           <button type="button" onClick={props.onUnpublish} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200">非公開に戻す</button>
         )}
+      </div>
+
+      {/* treasure-b2-form-settings: Formaloo の form-meta と公開導線を form 単位で制御する。
+          touched key のみ保存するため、未設定の既存フォームは従来どおりの挙動を保つ。 */}
+      <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="operations-settings-section">
+        <div className="mb-2 text-xs font-medium text-gray-600">運用制御</div>
+        <div className="grid gap-2 md:grid-cols-2">
+          <label className="flex items-center gap-2 text-xs text-gray-600">
+            <input
+              type="checkbox"
+              aria-label="reCAPTCHA（ロボット対策）"
+              disabled={saving}
+              checked={operationsSettings.hasRecaptcha}
+              onChange={(event) => updateOperationsSetting('hasRecaptcha', event.target.checked)}
+            />
+            <span>reCAPTCHA（ロボット対策）</span>
+          </label>
+          <label className="flex items-center gap-2 text-xs text-gray-600">
+            <input
+              type="checkbox"
+              aria-label="下書き保存"
+              disabled={saving}
+              checked={operationsSettings.acceptDraftAnswers}
+              onChange={(event) => updateOperationsSetting('acceptDraftAnswers', event.target.checked)}
+            />
+            <span>回答の下書き保存</span>
+          </label>
+          <label className="block text-[11px] text-gray-500">
+            送信上限（先着 N 名）
+            <input
+              type="number"
+              min={1}
+              step={1}
+              aria-label="送信上限（先着 N 名）"
+              disabled={saving}
+              value={operationsSettings.maxSubmitCount}
+              onChange={(event) => updateOperationsSetting('maxSubmitCount', event.target.value)}
+              placeholder="未設定なら無制限"
+              className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+            />
+          </label>
+          <span className="hidden md:block" aria-hidden />
+          <label className="block text-[11px] text-gray-500">
+            受付開始
+            <input
+              type="datetime-local"
+              aria-label="受付開始"
+              disabled={saving}
+              step="any"
+              value={operationsSettings.submitStartTime}
+              onChange={(event) => updateOperationsSetting('submitStartTime', event.target.value)}
+              className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+            />
+          </label>
+          <label className="block text-[11px] text-gray-500">
+            受付終了
+            <input
+              type="datetime-local"
+              aria-label="受付終了"
+              disabled={saving}
+              step="any"
+              value={operationsSettings.submitEndTime}
+              onChange={(event) => updateOperationsSetting('submitEndTime', event.target.value)}
+              className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-gray-600 md:col-span-2">
+            <input
+              type="checkbox"
+              aria-label="UTM 流入元を自動記録"
+              disabled={saving}
+              checked={operationsSettings.utmTracking}
+              onChange={(event) => updateOperationsSetting('utmTracking', event.target.checked)}
+            />
+            <span>UTM 流入元を自動記録</span>
+          </label>
+        </div>
+        <p className="mt-2 text-[10px] text-gray-400 leading-snug">
+          ※ 上限と受付期間は空欄なら制限しません。UTM を有効にすると、公開 URL の utm_source / utm_medium / utm_campaign を回答へ記録します。
+        </p>
       </div>
 
       {/* form-media-limits ③: フォーム単位「後編集を許可しない」トグル (弾M あと編集の前提スイッチ)。

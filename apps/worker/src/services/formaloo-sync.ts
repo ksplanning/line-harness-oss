@@ -108,6 +108,8 @@ export async function pushDefinitionToFormaloo(
     ensureSystemFields?: boolean;
     /** fr_name (PII owner-gate) も ensure するか。default true (env `FORMALOO_FR_NAME_AUTOPUSH_DISABLE` で切る / codex#8)。 */
     includeOwnerGatedSystemFields?: boolean;
+    /** UTM 流入元記録用 exact 3 hidden aliases も friend prefix の後ろへ ensure するか。default false。 */
+    includeUtmSystemFields?: boolean;
     /**
      * fr-id-hardening-round2 (③): 新規作成した field に `alias=slug` を標準付与するか。Formaloo hosted の URL prefill は
      * field の alias 一致でのみ発火し (spike F1/F2)、/fo は本人再入場の回答 prefill を field slug をキーに組む
@@ -227,6 +229,7 @@ export async function pushDefinitionToFormaloo(
     try {
       systemFields = await ensureSystemHiddenFields(client, slug, {
         includeOwnerGated: params.includeOwnerGatedSystemFields ?? true,
+        includeUtm: params.includeUtmSystemFields === true,
       });
     } catch {
       // 二重ガード: ensure は throw しない設計だが、万一の例外でも publish 本体(回答導線)は落とさない。
