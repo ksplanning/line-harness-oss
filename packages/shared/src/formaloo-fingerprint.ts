@@ -21,6 +21,7 @@
 
 import { FORMALOO_TO_HARNESS_TYPE, isFriendSystemAlias, type HarnessFieldType } from './formaloo-forms';
 import { parseImageDescription } from './form-image';
+import { extractFormOperationsSettings, type FormOperationsSettings } from './form-operations';
 
 // crypto.subtle / TextEncoder は Node18+ / Cloudflare Workers 双方の runtime global。
 // 本パッケージの tsconfig lib=ES2022 は Web Crypto / TextEncoder を型宣言しないため、
@@ -69,6 +70,8 @@ export interface CanonicalDefinition {
   fields: ProjectedField[];
   /** bare array (実 Formaloo logic 逐語) or 射影済 rule 群 (legacy synthetic)。順序は有意 (R0)。 */
   logic: unknown;
+  /** Formaloo 既定(false/null)を落とした form-level 運用設定。未設定時は key 自体を持たない。 */
+  formSettings?: FormOperationsSettings;
 }
 
 /** system field の先頭挿入で押し下げられた通常 field の position を、挿入前の値へ戻す。 */
@@ -187,7 +190,7 @@ function projectRulesObject(rawLogic: unknown): unknown[] {
  *  - rawFieldsList: extractFieldsList(res.data) の結果 (raw Formaloo field 要素の配列)。
  *  - rawLogic: extractRawLogic(res.data) の bare array (未載時は extractLogic の `{rules}` を渡す)。
  */
-export function canonicalDefinitionProjection(rawFieldsList: unknown, rawLogic: unknown): CanonicalDefinition {
+export function canonicalDefinitionProjection(rawFieldsList: unknown, rawLogic: unknown, rawForm?: unknown): CanonicalDefinition {
   const rawFields = Array.isArray(rawFieldsList) ? rawFieldsList : [];
   const systemPositions = rawFields
     .filter((field) => field && typeof field === 'object' && isFriendSystemAlias((field as Record<string, unknown>).alias))
@@ -198,7 +201,12 @@ export function canonicalDefinitionProjection(rawFieldsList: unknown, rawLogic: 
     .filter((f): f is ProjectedField => f !== null)
     .sort((a, b) => a.position - b.position || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   const logic = Array.isArray(rawLogic) ? rawLogic : projectRulesObject(rawLogic);
-  return { fields, logic };
+  const formSettings = extractFormOperationsSettings(rawForm);
+  return {
+    fields,
+    logic,
+    ...(Object.keys(formSettings).length ? { formSettings } : {}),
+  };
 }
 
 /** object の key を再帰的にソートした決定的 JSON (配列順は保持 = R0 順序有意)。formaloo-forms の canonicalStringify と同型。 */
@@ -216,8 +224,8 @@ export function stableStringify(value: unknown): string {
  * Formaloo 定義 fingerprint = hex(SHA-256(stableStringify(canonicalDefinitionProjection(...))))。
  * Web Crypto (Workers ネイティブ / 依存追加なし)。前回 baseline と等値比較して drift を判定する。
  */
-export async function formalooDefinitionFingerprint(rawFieldsList: unknown, rawLogic: unknown): Promise<string> {
-  const canon = stableStringify(canonicalDefinitionProjection(rawFieldsList, rawLogic));
+export async function formalooDefinitionFingerprint(rawFieldsList: unknown, rawLogic: unknown, rawForm?: unknown): Promise<string> {
+  const canon = stableStringify(canonicalDefinitionProjection(rawFieldsList, rawLogic, rawForm));
   const bytes = new TextEncoder().encode(canon);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
