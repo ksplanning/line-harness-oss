@@ -225,6 +225,49 @@ export type FriendFieldDefinitionInput = Pick<
   FriendFieldDefinition,
   'name' | 'defaultValue' | 'displayOrder' | 'isActive'
 >
+
+export type RichMenuDisplayConditionType =
+  | 'tag_exists'
+  | 'tag_not_exists'
+  | 'metadata_equals'
+  | 'metadata_not_equals'
+  | 'metadata_contains'
+  | 'metadata_not_contains'
+  | 'tag_name_contains'
+  | 'tag_name_not_contains'
+
+export interface RichMenuDisplayRule {
+  id: string
+  accountId: string
+  name: string
+  conditionType: RichMenuDisplayConditionType
+  conditionValue: string
+  richMenuId: string
+  priority: number
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type RichMenuDisplayRuleInput = Pick<
+  RichMenuDisplayRule,
+  'name' | 'conditionType' | 'conditionValue' | 'richMenuId' | 'priority' | 'isActive'
+>
+
+export interface RichMenuRuleReapplyJob {
+  id: string
+  accountId: string
+  status: 'running' | 'completed'
+  totalCount: number
+  processedCount: number
+  appliedCount: number
+  skippedCount: number
+  failedCount: number
+  lastFriendId: string | null
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
+}
 /** Friend list items, optionally hydrated with chat status (when ?includeChatStatus=true) */
 export type FriendListItem = FriendWithTags & Partial<{
   latestIncomingMessage: { content: string; messageType: string; createdAt: string } | null
@@ -251,6 +294,36 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/friend-field-definitions/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       }),
+  },
+  richMenuDisplayRules: {
+    list: (accountId: string) =>
+      fetchApi<ApiResponse<RichMenuDisplayRule[]>>(
+        `/api/rich-menu-display-rules?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    create: (accountId: string, input: RichMenuDisplayRuleInput) =>
+      fetchApi<ApiResponse<RichMenuDisplayRule>>(
+        `/api/rich-menu-display-rules?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    update: (accountId: string, id: string, patch: Partial<RichMenuDisplayRuleInput>) =>
+      fetchApi<ApiResponse<RichMenuDisplayRule>>(
+        `/api/rich-menu-display-rules/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'PATCH', body: JSON.stringify(patch) },
+      ),
+    delete: (accountId: string, id: string) =>
+      fetchApi<ApiResponse<null>>(
+        `/api/rich-menu-display-rules/${encodeURIComponent(id)}?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'DELETE' },
+      ),
+    latestJob: (accountId: string) =>
+      fetchApi<ApiResponse<RichMenuRuleReapplyJob | null>>(
+        `/api/rich-menu-display-rules/reapply/latest?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    startReapply: (accountId: string) =>
+      fetchApi<ApiResponse<RichMenuRuleReapplyJob>>(
+        `/api/rich-menu-display-rules/reapply?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'POST' },
+      ),
   },
   friends: {
     list: (params?: FriendListParams) => {

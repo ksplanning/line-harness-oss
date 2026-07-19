@@ -6,15 +6,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, cleanup } from '@testing-library/react'
 
-const m = vi.hoisted(() => ({ list: vi.fn(), external: vi.fn() }))
+const m = vi.hoisted(() => ({ list: vi.fn(), external: vi.fn(), panelProps: vi.fn() }))
 vi.mock('next/link', () => ({ default: ({ children }: { children: React.ReactNode }) => <span>{children}</span> }))
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => ({ selectedAccount: { id: 'acc-1', name: 'A' } }) }))
 vi.mock('@/components/layout/header', () => ({ default: () => null }))
 vi.mock('@/components/rich-menus/tap-analytics-panel', () => ({ default: () => null }))
 vi.mock('@/components/rich-menus/apply-to-tag-modal', () => ({ ApplyToTagModal: () => null }))
+vi.mock('@/components/rich-menus/display-rule-panel', () => ({
+  DisplayRulePanel: (props: unknown) => {
+    m.panelProps(props)
+    return <div>条件ルール接続済み</div>
+  },
+}))
 vi.mock('@/lib/api', () => ({ api: { richMenuGroups: {
   list: (...a: unknown[]) => m.list(...a),
   external: (...a: unknown[]) => m.external(...a),
+  externalImageUrl: () => 'https://images.example.test/menu',
 } } }))
 
 import RichMenusListPage from './page'
@@ -47,5 +54,28 @@ describe('rich-menus list 期間限定 badge', () => {
     render(<RichMenusListPage />)
     await waitFor(() => expect(screen.getByText('通常メニュー')).toBeTruthy())
     expect(screen.queryByText('期間限定')).toBeNull()
+  })
+
+  it('passes the selected account and LINE richMenuId choices to the display rule panel', async () => {
+    m.list.mockResolvedValue({ success: true, data: [] })
+    m.external.mockResolvedValue({
+      success: true,
+      data: {
+        currentDefault: 'menu-vip',
+        lineMenus: [{
+          richMenuId: 'menu-vip', name: 'VIPメニュー', chatBarText: 'メニュー',
+          size: { width: 2500, height: 1686 }, areasCount: 1, isCurrentDefault: true,
+          adminManaged: false, adminInfo: null,
+        }],
+      },
+    })
+
+    render(<RichMenusListPage />)
+
+    await waitFor(() => expect(screen.getByText('条件ルール接続済み')).toBeTruthy())
+    expect(m.panelProps).toHaveBeenCalledWith({
+      accountId: 'acc-1',
+      menus: [{ richMenuId: 'menu-vip', name: 'VIPメニュー' }],
+    })
   })
 })

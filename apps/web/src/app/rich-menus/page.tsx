@@ -7,6 +7,7 @@ import { useAccount } from '@/contexts/account-context'
 import { api } from '@/lib/api'
 import { ApplyToTagModal } from '@/components/rich-menus/apply-to-tag-modal'
 import TapAnalyticsPanel from '@/components/rich-menus/tap-analytics-panel'
+import { DisplayRulePanel } from '@/components/rich-menus/display-rule-panel'
 
 type RichMenuGroupListItem = {
   id: string
@@ -333,6 +334,16 @@ export default function RichMenusListPage() {
             </div>
           ))}
         </div>
+      )}
+
+      {selectedAccount && !loading && !error && activeTab === 'list' && (
+        <DisplayRulePanel
+          accountId={selectedAccount.id}
+          menus={(external?.lineMenus ?? []).map((menu) => ({
+            richMenuId: menu.richMenuId,
+            name: menu.name,
+          }))}
+        />
       )}
 
       {applyTo && (
