@@ -225,6 +225,9 @@ export type Env = {
     //   未設定/其他 = ON、'1' = localizationJa 入力の永続化・localized_content GET/PATCH/confirm を完全短絡。
     //   rollback はこの値を '1' にして再 deploy。既存 definition_json と他の Formaloo 同期は byte 同等で維持する。
     FORMALOO_LOCALIZATION_DISABLE?: string;
+    // form-jp-reapply-impl: 一発再反映 endpoint 全体の kill-switch。未設定/其他 = 有効、'1' = 入口で 503。
+    //   rollback はこの値を '1' にして再 deploy。DB lookup/sync 更新/credential 解決/外部通信を全て短絡する。
+    FORMALOO_REAPPLY_DISABLE?: string;
   };
   Variables: {
     // roleId (G64): custom role の FK。env-owner / built-in role は null/undefined。

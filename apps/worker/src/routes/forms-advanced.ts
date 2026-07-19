@@ -92,6 +92,7 @@ import {
 } from '../services/formaloo-copy.js';
 import { redirectFields, confirmRedirectReflected, validateFormRedirectInput } from '../services/formaloo-redirect.js';
 import { deleteSuccessPages } from '../services/formaloo-success-page.js';
+import { reapplyHostedAppearance } from '../services/formaloo-reapply.js';
 import { ownerGate } from '../lib/owner-gate.js';
 import type { Env } from '../index.js';
 
@@ -323,6 +324,87 @@ formsAdvanced.get('/api/forms-advanced/:id', async (c) => {
     return c.json({ success: true, data: await serializeForm(c.env.DB, form, isOwnerCtx(c)) });
   } catch (err) {
     console.error('GET /api/forms-advanced/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/forms-advanced/:id/reapply-hosted — 保存済み見た目を hosted へ一発再反映。
+// 境界は現デプロイ固有 D1 の id lookup + DB 保存済み workspace_id。body の slug/workspace は一切読まず、
+// 登録済み workspace の鍵解決が失敗した場合も env 単一鍵へ fallback しない (resolveFormalooClient の fail-closed 契約)。
+// field/logic/回答は保存も全置換 push もせず、service の管理 meta + video height 部分 PATCH だけを許可する。
+formsAdvanced.post('/api/forms-advanced/:id/reapply-hosted', async (c) => {
+  // 緊急 rollback: DB lookup / sync state 更新 / credential 解決 / Formaloo 通信より前に完全短絡する。
+  if (c.env.FORMALOO_REAPPLY_DISABLE === '1') {
+    return c.json({ success: false, error: '公開ページ再反映は一時停止中です' }, 503);
+  }
+
+  const id = c.req.param('id')!;
+  let syncStarted = false;
+  let syncSettled = false;
+  try {
+    const form = await getFormalooForm(c.env.DB, id);
+    // 現 D1 に無い id（別デプロイ/テナントを含む）は存在を漏らさず 404。request body による補完は禁止。
+    if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    if (!form.formaloo_slug) {
+      return c.json({ success: false, error: 'Formaloo への初回同期が完了していません' }, 409);
+    }
+
+    const client = await resolveFormalooClient(c.env, form.workspace_id);
+    if (!client) {
+      await setFormalooSyncState(c.env.DB, id, {
+        syncStatus: 'out_of_sync',
+        lastError: 'Formaloo credentials を保存済み workspace から解決できません',
+      });
+      syncSettled = true;
+      return c.json({ success: false, error: 'Formaloo 接続情報を解決できません' }, 503);
+    }
+
+    const fieldMap = await getFormalooFieldMap(c.env.DB, id);
+    const fieldSlugs: Record<string, string> = {};
+    for (const row of fieldMap) {
+      if (row.formaloo_field_slug) fieldSlugs[row.id] = row.formaloo_field_slug;
+    }
+    const definition = parseDefinition(form.definition_json);
+
+    await setFormalooSyncState(c.env.DB, id, { syncStatus: 'pushing', lastError: null });
+    syncStarted = true;
+    const result = await reapplyHostedAppearance(
+      client,
+      form.formaloo_slug,
+      definition,
+      fieldSlugs,
+      { localizationEnabled: c.env.FORMALOO_LOCALIZATION_DISABLE !== '1' },
+    );
+
+    if (result.ok) {
+      await setFormalooSyncState(c.env.DB, id, {
+        syncStatus: 'idle',
+        lastError: null,
+        lastPushedAt: new Date().toISOString(),
+      });
+    } else {
+      const failed = Object.entries(result.parts)
+        .filter(([, part]) => !part.ok)
+        .map(([name, part]) => `${name}: ${part.error ?? 'failed'}`);
+      await setFormalooSyncState(c.env.DB, id, {
+        syncStatus: 'out_of_sync',
+        lastError: `公開ページの再反映に失敗しました — ${failed.join(' / ')}`,
+      });
+    }
+    syncSettled = true;
+    return c.json({ success: result.ok, data: result });
+  } catch (error) {
+    if (syncStarted && !syncSettled) {
+      try {
+        await setFormalooSyncState(c.env.DB, id, {
+          syncStatus: 'out_of_sync',
+          lastError: '公開ページの再反映処理に失敗しました',
+        });
+      } catch {
+        // D1 自体が利用不能なら outer 500 に任せる。
+      }
+    }
+    console.error('POST /api/forms-advanced/:id/reapply-hosted error:', error);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
