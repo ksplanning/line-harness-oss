@@ -225,3 +225,48 @@ FORMALOO_JWT=''
 ```
 
 KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler.piecemaker.toml` で新しい shell から同じ手順を繰り返す。
+
+---
+
+# friend-fields-global-schema — host live checklist
+
+## 対象と安全条件
+
+- sandbox では live 操作をしていない。land と migration 適用後、host 担当者が **KS と Piecemaker を別々に**検証する。片方の結果をもう片方の証跡として流用しない。
+- 各 deployment で migration `105_friend_field_definitions.sql`、Worker/Web の deployment SHA、実行者、実行時刻を記録する。項目定義は deployment の D1 全体に効くため、LINE アカウントを切り替えても同じ定義が見えることを前提にする。
+- 項目名は衝突しない `live確認_<tenant>_<timestamp>`、friend と form/row は PII を含まない合成データだけを使う。本番フォームや既存 friend を変更しない。
+- 配信セグメントは「該当人数を計算」までとし、メッセージ配信は実行しない。token、署名済み `fr_id`、friend ID、metadata 全文は証跡へ残さない。
+
+## CRUD・全友だち表示・個別編集
+
+1. 友だち画面の「友だち項目定義」で、検証項目を `既定値=未`、他と重ならない表示順、有効で追加する。画面再読込後も同じ名前・既定値・表示順・有効状態で取得できることを確認する。
+2. 同じ deployment 内で LINE アカウントを切り替え、両方の友だち画面に同じ定義が見えることを確認する。別 deployment には同名定義を作るまで現れないことも確認する。
+3. このキーを metadata に持たない合成 friend A/B の個人情報欄を開き、両方に検証項目が `未` と表示されることを確認する。既存の friend 固有キーは残り、内部 marker は表示されないことも確認する。
+4. A だけを `済` に編集して再読込し、A は `済`、B は `未` のままであることを確認する。定義の既定値を一時的に `未確認` へ更新すると B だけが `未確認` になり、A の明示値 `済` は変わらないことを確認してから、既定値を `未` へ戻す。
+5. 定義を無効にして保存し、form mapping の候補から消えることを確認する。キー未設定の B からは既定値だけの行が消える一方、A の明示値 `済` は定義外の個別項目として保持表示されることを確認する。再び有効にすると B の既定値行が戻り、A の明示値も保持されていることを確認する。
+
+## form mapping・reconcile
+
+1. 既存フォームではなく合成 friend 専用の disposable form を作る。form builder の「友だち個人情報への反映」で、検証項目が「個人情報の項目名」の候補に出ること、候補外の自由文字も引き続き入力できることを確認する。
+2. disposable field → 検証項目の mapping を保存して画面を再読込し、設定が保持されることを確認する。
+3. host の secret-safe な手順で合成 friend B 用の署名済み `fr_id` を disposable row にだけ設定する。field を `確認済` にし、回答データまたは統計画面を開いて reconcile を発火する。
+4. B の個人情報欄を再読込し、既定値 `未` ではなく `確認済` と表示されることを確認する。A、mapping 外の friend 固有キー、内部 marker の非表示は変わらないことも確認する。
+
+## 配信出し分け条件
+
+1. 対象 LINE アカウントの friend 総数を先に記録する。配信セグメントで `metadata_equals` 相当の「検証項目 = 未」を指定し、キー未設定の friend が既定値 `未` として人数へ含まれることを確認する。
+2. 「検証項目 = 済」では A が、「検証項目 = 確認済」では reconcile 後の B が含まれることを、該当人数だけで確認する。配信は行わない。
+3. 定義を一時的に無効にした場合、未設定 friend を既定値 `未` とみなさないことを確認する。確認後は有効へ戻す。
+
+## cleanup・rollback
+
+1. disposable form の mapping と row/form を通常の host cleanup 手順で削除する。合成 friend A/B を削除または検証前の状態へ戻し、その後で検証項目を削除する。削除後の GET/画面再読込で定義が消えたことを確認する。
+2. 定義の削除や無効化は既存 `friend.metadata` を書き換えない。明示編集や reconcile 済みの値は自動では元に戻らないため、合成 friend 以外を復元対象にしない。
+3. 異常時の即時停止は、対象定義を無効にして mapping を外す。code rollback が必要なら承認済みの直前 deployment へ戻すが、additive migration/table は drop せず、既存 metadata の変換・移行もしない。
+4. KS を全項目 PASS・cleanup 済みにしてから Piecemaker を同じ手順で検証する。どちらか一方でも未確認なら live PASS にせず、FAIL または BLOCKED として返す。
+
+## PASS 記録
+
+- [ ] KS: CRUD、deployment 全体表示、既定値、個別編集、無効/再有効、mapping/reconcile、segment count、cleanup が PASS。
+- [ ] Piecemaker: CRUD、deployment 全体表示、既定値、個別編集、無効/再有効、mapping/reconcile、segment count、cleanup が PASS。
+- [ ] 本番フォーム・既存 friend の mutation 0、配信 0、秘密値の記録 0。
