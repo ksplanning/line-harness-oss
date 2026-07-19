@@ -5,6 +5,7 @@ import Link from 'next/link'
 import Header from '@/components/layout/header'
 import FormBuilder from '@/components/forms-advanced/builder'
 import SharePanel from '@/components/forms-advanced/share-panel'
+import InstantWebhookSettings from '@/components/forms-advanced/instant-webhook-settings'
 import { formsAdvancedApi, type AdvancedForm, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
@@ -125,6 +126,9 @@ export default function FormBuilderClient({ id }: { id: string }) {
           {notice && (
             <div className="mb-3 text-xs px-3 py-2 rounded bg-gray-50 border border-gray-200 text-gray-700">{notice}</div>
           )}
+          <div className="mb-4">
+            <InstantWebhookSettings formId={form.id} />
+          </div>
           <FormBuilder
             key={`${form.id}:${form.builderStatus}`}
             formTitle={form.title}
