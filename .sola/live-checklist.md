@@ -314,3 +314,57 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 - [ ] KS: ルールなし無退行、8 条件、優先順位、同値スキップ、デフォルト復帰、bounded 再適用、cleanup が PASS。
 - [ ] Piecemaker: ルールなし無退行、8 条件、優先順位、同値スキップ、デフォルト復帰、bounded 再適用、cleanup が PASS。
 - [ ] 実ユーザー・本番フォームへの mutation 0、配信 0、秘密値の記録 0。
+
+---
+
+# treasure-b3-calc-dynamic — host live checklist
+
+## 目的と sandbox 境界
+
+「見積り・診断フォームの自動計算と、予約枠などの選択肢自動供給ができるようになります」
+
+- sandbox では `choice_fetch` field を Formaloo へ live 登録していない。field 作成時に Formaloo が
+  `choices_source` を実際に fetch して URL と応答を検証するため、公開 endpoint の deploy 前には登録しない。
+- 査読済みの同一 revision を deploy した host で、KS と Piecemaker を別々に確認する。本番 3 フォーム
+  `Z5IEH85R` / `GMOxoMtK` / `XqACeA2v` には触れず、各テナントの使い捨てフォームと合成選択肢だけを使う。
+- 仕様根拠は Formaloo 公式の
+  [API endpoint specifications](https://help.formaloo.com/en/articles/8143269-api-endpoint-specifications-for-fetch-choice-field) と
+  [Dynamic Fetch Choice field](https://help.formaloo.com/en/articles/8143467-dynamic-fetch-choice-field-for-developers-beta) とする。
+
+## 1. 選択肢供給 endpoint を先に deploy・検証
+
+1. Worker/Web と選択肢リスト用 migration を同じ査読済み revision で deploy する。選択肢リスト管理画面から、
+   使い捨てフォーム配下に 11 件以上の合成項目を持つ検証リストを作り、表示された公開
+   `choices_source` URL を記録する。秘密値や既存顧客データは使わない。
+2. 認証ヘッダーなしの公開 `GET` が `200` を返し、body が envelope なしの生配列
+   `[{"label":"...","value":"..."}]` であることを確認する。各要素が `label` と `value` の文字列だけを持ち、
+   返却件数が最大 10 件であることを確認する。
+3. `?q=<合成検索語>` を付け、絞り込みが 10 件制限より先に行われ、該当する `label` / `value` が返ることを確認する。
+   ブラウザ相当の cross-origin request で CORS が許可されることも response header で確認する。
+4. 別フォーム ID、別リスト ID、削除済みリストではデータが漏れず `404` になることを確認する。
+
+## 2. endpoint 成立後にだけ Formaloo field を作成
+
+1. 上記 endpoint が全項目 PASS してから、使い捨て Formaloo form に `type: "choice_fetch"` と
+   `choices_source: <検証済み公開 URL>` を指定して field を作る。作成時の Formaloo URL 検証が成功することを確認する。
+2. read-back で `type` と `choices_source` が保持されていることを確認する。計算 field も同じ使い捨てフォームで
+   `sub_type: "formula"` と `{fieldSlug}` 参照を使い、参照元の値から結果が更新されることを確認する。
+3. 不正 URL や timeout を故意に live 環境へ作らない。必要な失敗契約は lane の mock/test 証跡を使う。
+
+## 3. hosted form で実効確認
+
+1. Formaloo の hosted form を開き、動的選択肢に供給リストの `label` が表示されることを確認する。検索が表示される場合は
+   `q` 経由で 11 件目以降も候補へ現れることを確認する。
+2. 候補を 1 件選択して送信し、送信回答が選択した `{label,value}` と一致することを Formaloo 側の使い捨て回答で確認する。
+3. 供給リストの項目を管理画面で追加・更新・削除し、hosted form の再読込後に候補へ反映されることを確認する。
+4. endpoint の `200` と正しい JSON は **soft-200** の配線確認にすぎない。Formaloo の作成時検証を通過し、hosted form で
+   動的表示・選択・submit まで成功した時点だけを「実効 PASS」とする。
+
+## cleanup・PASS 記録
+
+1. 使い捨て回答、`choice_fetch` / 計算 field、使い捨て Formaloo form、ローカル選択肢リストとフォームを通常の host 手順で削除し、
+   GET/画面再読込で削除を確認する。additive migration は rollback 時も DROP しない。
+
+- [ ] KS: endpoint deploy、raw array、CORS、`q`、最大 10 件、Formaloo 作成時検証、hosted 表示・選択・submit、cleanup が PASS。
+- [ ] Piecemaker: endpoint deploy、raw array、CORS、`q`、最大 10 件、Formaloo 作成時検証、hosted 表示・選択・submit、cleanup が PASS。
+- [ ] sandbox での live field 登録 0、本番 3 フォームへの接触 0、秘密値の記録 0。
