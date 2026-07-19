@@ -1080,6 +1080,20 @@ richMenuGroups.post('/api/rich-menu-groups/:groupId/apply-to-tag', async (c) => 
       targetPage.line_richmenu_id,
       userIds,
     );
+    for (let offset = 0; offset < userIds.length; offset += 100) {
+      const linkedUserIds = userIds.slice(offset, offset + 100);
+      const placeholders = linkedUserIds.map(() => '?').join(', ');
+      await c.env.DB
+        .prepare(
+          `DELETE FROM rich_menu_friend_assignments
+           WHERE friend_id IN (
+             SELECT f.id FROM friends f
+             WHERE f.line_account_id = ? AND f.line_user_id IN (${placeholders})
+           )`,
+        )
+        .bind(group.account_id, ...linkedUserIds)
+        .run();
+    }
     return c.json({ success: true, data: result });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

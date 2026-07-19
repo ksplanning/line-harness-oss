@@ -17,6 +17,7 @@ const dbMocks = {
   setPageRichMenuId: vi.fn(),
   markRichMenuGroupPublished: vi.fn(),
   getLineAccountById: vi.fn(),
+  getFollowingLineUserIdsByTag: vi.fn(),
 };
 vi.mock('@line-crm/db', () => dbMocks);
 
@@ -500,5 +501,40 @@ describe('POST /api/rich-menu-groups/:groupId/publish', () => {
     const res = await app.request('/api/rich-menu-groups/gid12345-aaaa/publish', { method: 'POST' });
     expect(res.status).toBe(500);
     expect(dbMocks.releasePublishLock).toHaveBeenCalledWith(expect.anything(), 'gid12345-aaaa');
+  });
+});
+
+describe('POST /api/rich-menu-groups/:groupId/apply-to-tag', () => {
+  test('bulk-link success invalidates conditional-rule assignments for exactly the target friends', async () => {
+    dbMocks.getRichMenuGroupWithPages.mockResolvedValue({
+      id: 'g1', account_id: 'acc-1', name: 'VIP', chat_bar_text: 'menu', size: 'large',
+      default_page_id: 'p1', is_default_for_all: 0, status: 'published', publishing_at: null,
+      created_at: '', updated_at: '',
+      pages: [{
+        id: 'p1', group_id: 'g1', order_index: 0, name: 'home', alias_id: 'alias',
+        line_richmenu_id: 'menu-vip', image_r2_key: null, image_content_type: null,
+        created_at: '', updated_at: '', areas: [],
+      }],
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'token' });
+    dbMocks.getFollowingLineUserIdsByTag.mockResolvedValue(['U1']);
+    const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+    const bind = vi.fn(() => ({ run }));
+    const prepare = vi.fn(() => ({ bind }));
+    const db = { prepare, batch: vi.fn() } as unknown as D1Database;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+    const app = setupApp({ db });
+
+    const response = await app.request('/api/rich-menu-groups/g1/apply-to-tag', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'bulk-link', tagId: 'tag-vip' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(prepare).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM rich_menu_friend_assignments'));
+    expect(prepare).toHaveBeenCalledWith(expect.stringContaining('line_user_id IN'));
+    expect(bind).toHaveBeenCalledWith('acc-1', 'U1');
+    vi.unstubAllGlobals();
   });
 });
