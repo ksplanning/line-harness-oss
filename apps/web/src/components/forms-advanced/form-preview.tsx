@@ -111,7 +111,12 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
         </div>
       )
     case 'matrix': {
-      const columns = Object.values(field.config.matrixChoiceItems ?? {})
+      const columns = Object.entries(field.config.matrixChoiceItems ?? {}).map(([key, item]) => ({
+        key,
+        title: item && typeof item === 'object' && !Array.isArray(item) && typeof item.title === 'string'
+          ? item.title
+          : key,
+      }))
       const rows = field.config.matrixChoiceGroups ?? []
       return (
         <div className="space-y-1.5" data-testid="preview-matrix">
@@ -121,7 +126,7 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
                 <tr>
                   <th scope="col" className="px-2 py-2 text-left font-medium">項目</th>
                   {columns.map((column, index) => (
-                    <th key={`${column.slug ?? column.title}-${index}`} scope="col" className="px-2 py-2 text-center font-medium">
+                    <th key={`${column.key}-${index}`} scope="col" className="px-2 py-2 text-center font-medium">
                       {column.title}
                     </th>
                   ))}
@@ -132,7 +137,7 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
                   <tr key={`${row.slug ?? row.refId ?? row.title}-${rowIndex}`} className="border-t border-gray-100">
                     <th scope="row" className="whitespace-nowrap px-2 py-2 text-left font-medium">{row.title}</th>
                     {columns.map((column, columnIndex) => (
-                      <td key={`${column.slug ?? column.title}-${columnIndex}`} className="px-2 py-2 text-center">
+                      <td key={`${column.key}-${columnIndex}`} className="px-2 py-2 text-center">
                         <input
                           type="radio"
                           disabled

@@ -62,14 +62,6 @@ export interface ChoiceFetchItem {
 export type FormalooJsonValue = string | number | boolean | null | FormalooJsonValue[] | { [key: string]: FormalooJsonValue };
 export type FormalooJsonObject = { [key: string]: FormalooJsonValue };
 
-/** matrix `choice_items` object の 1 列。未知キーは validation で剥がす。 */
-export interface MatrixChoiceItem {
-  title: string;
-  slug?: string;
-  /** OpenAPI description に明記された choice image（URL または base64 文字列）。 */
-  image?: string;
-}
-
 /** matrix `choice_groups` の 1 行。pull 済み識別子はタイトル編集後も保持する。 */
 export interface MatrixChoiceGroup {
   refId?: string;
@@ -280,8 +272,8 @@ export interface HarnessFieldConfig {
   choiceListId?: string;
   /** builder preview 用の最新リスト値 snapshot。Formaloo payload/fingerprint には送らない。 */
   choiceFetchItems?: ChoiceFetchItem[];
-  /** matrix の列。OpenAPI が object とするため key→{title,slug?} を whitelist 保持する。 */
-  matrixChoiceItems?: Record<string, MatrixChoiceItem>;
+  /** matrix の列。OpenAPI `object/additionalProperties` を JSON-safe raw のまま保持する。 */
+  matrixChoiceItems?: FormalooJsonObject;
   /** matrix の bulk_choices (OpenAPI additionalProperties object)。UI は編集せず pull→push 保持のみ。 */
   matrixBulkChoices?: FormalooJsonObject;
   /** matrix の行。 */
@@ -496,22 +488,17 @@ function cloneFormalooJsonObject(value: unknown): FormalooJsonObject | null {
   return cloned && typeof cloned === 'object' && !Array.isArray(cloned) ? cloned : null;
 }
 
-function matrixChoiceItems(value: unknown): Record<string, MatrixChoiceItem> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const out: Record<string, MatrixChoiceItem> = {};
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (UNSAFE_JSON_KEYS.has(key) || !raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-    const item = raw as Record<string, unknown>;
-    if (typeof item.title !== 'string' || !item.title.trim()) return null;
-    if (item.slug !== undefined && typeof item.slug !== 'string') return null;
-    if (item.image !== undefined && typeof item.image !== 'string') return null;
-    out[key] = {
-      title: item.title,
-      ...(typeof item.slug === 'string' ? { slug: item.slug } : {}),
-      ...(typeof item.image === 'string' ? { image: item.image } : {}),
-    };
+function matrixChoiceItems(value: unknown): FormalooJsonObject | null {
+  const out = cloneFormalooJsonObject(value);
+  if (!out || Object.keys(out).length === 0) return null;
+  for (const item of Object.values(out)) {
+    if (
+      item && typeof item === 'object' && !Array.isArray(item)
+      && Object.prototype.hasOwnProperty.call(item, 'title')
+      && (typeof item.title !== 'string' || !item.title.trim())
+    ) return null;
   }
-  return Object.keys(out).length > 0 ? out : null;
+  return out;
 }
 
 function matrixChoiceGroups(value: unknown): MatrixChoiceGroup[] | null {
@@ -695,7 +682,7 @@ export function validateHarnessField(
   }
   if (rawCfg.matrixChoiceItems !== undefined) {
     const items = matrixChoiceItems(rawCfg.matrixChoiceItems);
-    if (!items) return { ok: false, error: 'config.matrixChoiceItems must be a non-empty object of {title,slug?,image?}' };
+    if (!items) return { ok: false, error: 'config.matrixChoiceItems must be a non-empty JSON object' };
     config.matrixChoiceItems = items;
   }
   if (rawCfg.matrixBulkChoices !== undefined) {

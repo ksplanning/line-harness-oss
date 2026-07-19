@@ -80,6 +80,54 @@ describe('matrix field builder', () => {
       bad: { title: '不満', slug: 'BAD' },
     })
   })
+
+  test('未型付けの choice_items は別の列を編集しても raw のまま保持する', () => {
+    const onSave = vi.fn()
+    const matrix = field('matrix', 'm', '満足度', {
+      matrixChoiceItems: {
+        good: { title: '良い', slug: 'GOOD' },
+        provider_extension: ['provider', { opaque: true }],
+      },
+      matrixChoiceGroups: [{ title: '接客' }],
+    })
+    render(<FormBuilder {...base({ initialFields: [matrix], onSave })} />)
+
+    fireEvent.change(screen.getByLabelText('列（1行に1項目）'), {
+      target: { value: '満足\nprovider_extension' },
+    })
+    fireEvent.click(screen.getByText('保存'))
+
+    const config = (onSave.mock.calls[0][0] as { fields: HarnessField[] }).fields[0].config
+    expect(config.matrixChoiceItems).toEqual({
+      good: { title: '満足', slug: 'GOOD' },
+      provider_extension: ['provider', { opaque: true }],
+    })
+  })
+
+  test('末尾で Enter を押してから通常入力で行と列を追加できる', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave })} />)
+    fireEvent.click(screen.getByLabelText('行列を追加'))
+
+    const rows = screen.getByLabelText('行（1行に1項目）') as HTMLTextAreaElement
+    fireEvent.change(rows, { target: { value: '行1\n行2\n' } })
+    expect(rows.value).toBe('行1\n行2\n')
+    fireEvent.change(rows, { target: { value: '行1\n行2\n行3' } })
+    expect(rows.value).toBe('行1\n行2\n行3')
+
+    const columns = screen.getByLabelText('列（1行に1項目）') as HTMLTextAreaElement
+    fireEvent.change(columns, { target: { value: '列1\n列2\n' } })
+    expect(columns.value).toBe('列1\n列2\n')
+    fireEvent.change(columns, { target: { value: '列1\n列2\n列3' } })
+    expect(columns.value).toBe('列1\n列2\n列3')
+
+    fireEvent.click(screen.getByText('保存'))
+    const saved = (onSave.mock.calls[0][0] as { fields: HarnessField[] }).fields[0]
+    expect(saved.config.matrixChoiceGroups?.map((row) => row.title)).toEqual(['行1', '行2', '行3'])
+    expect(Object.values(saved.config.matrixChoiceItems ?? {}).map((item) => (
+      item && typeof item === 'object' && !Array.isArray(item) ? item.title : undefined
+    ))).toEqual(['列1', '列2', '列3'])
+  })
 })
 
 describe('repeating section builder', () => {
@@ -126,5 +174,22 @@ describe('repeating section builder', () => {
     fireEvent.click(within(canvas).getByText('参加者').closest('button')!)
     const values = Array.from((screen.getByLabelText('繰り返し列1の項目') as HTMLSelectElement).options).map((option) => option.value)
     expect(values).toEqual(['name'])
+  })
+
+  test('繰り返し列から参照中の通常項目は削除させない', () => {
+    const fields = [
+      field('text', 'name', '氏名'),
+      field('repeating_section', 'repeat', '参加者', {
+        repeatingColumns: [{ columnField: 'name', title: '氏名' }], minRows: 1, maxRows: 2,
+      }),
+    ]
+    render(<FormBuilder {...base({ initialFields: fields })} />)
+
+    const canvas = screen.getByTestId('canvas')
+    fireEvent.click(within(canvas).getAllByLabelText('削除')[0])
+    fireEvent.click(within(canvas).getByText('はい'))
+
+    expect(within(canvas).getByText('氏名')).toBeTruthy()
+    expect(screen.getByTestId('drop-feedback').textContent).toMatch(/参加者.*繰り返し列.*削除できません/)
   })
 })

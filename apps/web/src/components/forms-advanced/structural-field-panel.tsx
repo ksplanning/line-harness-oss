@@ -1,6 +1,6 @@
 'use client'
 
-import type { HarnessField } from '@line-crm/shared'
+import type { FormalooJsonObject, FormalooJsonValue, HarnessField } from '@line-crm/shared'
 import { isRepeatingColumnType } from './field-types'
 
 interface StructuralFieldPanelProps {
@@ -10,7 +10,23 @@ interface StructuralFieldPanelProps {
 }
 
 function itemTitles(value: string): string[] {
-  return value.split('\n').map((item) => item.trim()).filter(Boolean)
+  // Controlled textarea で末尾の空行を即削除すると、Enter の次の文字を新しい行へ入力できない。
+  // 編集途中は空行も保持し、shared validation が保存時の完成形を判定する。
+  return value.split('\n')
+}
+
+function matrixItemTitle(key: string, value: FormalooJsonValue): string {
+  if (value && typeof value === 'object' && !Array.isArray(value) && typeof value.title === 'string') {
+    return value.title
+  }
+  // OpenAPI は choice_items の値を additionalProperties としか定義しない。未知形は外側 key を正直に表示する。
+  return key
+}
+
+function matrixItemWithTitle(value: FormalooJsonValue, title: string): FormalooJsonObject {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...value, title }
+    : { title }
 }
 
 function generatedColumnKey(index: number, usedKeys: ReadonlySet<string>): string {
@@ -90,17 +106,20 @@ export default function StructuralFieldPanel({ field, allFields, onChange }: Str
           <textarea
             aria-label="列（1行に1項目）"
             rows={4}
-            value={itemEntries.map(([, item]) => item.title).join('\n')}
+            value={itemEntries.map(([key, item]) => matrixItemTitle(key, item)).join('\n')}
             onChange={(event) => {
               const titles = itemTitles(event.target.value)
               const usedKeys = new Set(itemEntries.map(([key]) => key))
-              const nextItems: NonNullable<HarnessField['config']['matrixChoiceItems']> = {}
+              const nextItems: FormalooJsonObject = {}
 
               titles.forEach((title, index) => {
                 const current = itemEntries[index]
                 const key = current?.[0] ?? generatedColumnKey(index, usedKeys)
                 usedKeys.add(key)
-                nextItems[key] = { ...current?.[1], title }
+                const currentValue = current?.[1]
+                nextItems[key] = currentValue !== undefined && title === matrixItemTitle(key, currentValue)
+                  ? currentValue
+                  : matrixItemWithTitle(currentValue ?? {}, title)
               })
               setCfg({ matrixChoiceItems: nextItems })
             }}

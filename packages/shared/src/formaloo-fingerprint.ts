@@ -27,7 +27,6 @@ import {
   type FormalooJsonObject,
   type HarnessFieldType,
   type MatrixChoiceGroup,
-  type MatrixChoiceItem,
   type RepeatingSectionColumn,
 } from './formaloo-forms';
 import { parseImageDescription } from './form-image';
@@ -81,7 +80,7 @@ export interface ProjectedField {
   /** choice_fetch の choices_source (非空時のみ)。 */
   choicesSource?: string;
   /** treasure-b4-structural: matrix/repeating の pull 射影。 */
-  matrixChoiceItems?: Record<string, MatrixChoiceItem>;
+  matrixChoiceItems?: FormalooJsonObject;
   matrixBulkChoices?: FormalooJsonObject;
   matrixChoiceGroups?: MatrixChoiceGroup[];
   repeatingColumns?: RepeatingSectionColumn[];

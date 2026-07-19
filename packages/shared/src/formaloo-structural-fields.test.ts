@@ -24,6 +24,8 @@ describe('matrix field OpenAPI contract', () => {
     choice_items: {
       quality: { title: '良い', slug: 'CHOICE_GOOD', image: 'data:image/png;base64,AAA' },
       neutral: { title: '普通' },
+      provider_extension: { presentation: { badge: true }, order: 3 },
+      legacy_literal: '未型付けの選択肢',
     },
     bulk_choices: { source: '良い\n普通' },
     choice_groups: [
@@ -69,31 +71,31 @@ describe('matrix field OpenAPI contract', () => {
     });
   });
 
-  test('requires an object of titled columns and at least one titled row', () => {
+  test('requires a non-empty JSON object of columns and at least one titled row', () => {
     const base = { id: 'm', type: 'matrix', label: '表', required: false, position: 0 };
     for (const config of [
       {},
       { matrixChoiceItems: [], matrixChoiceGroups: [{ title: '行' }] },
+      { matrixChoiceItems: {}, matrixChoiceGroups: [{ title: '行' }] },
       { matrixChoiceItems: { c1: { title: '列' } }, matrixChoiceGroups: [] },
       { matrixChoiceItems: { c1: { title: '' } }, matrixChoiceGroups: [{ title: '行' }] },
-      { matrixChoiceItems: { c1: { title: '列', slug: 42 } }, matrixChoiceGroups: [{ title: '行' }] },
-      { matrixChoiceItems: { c1: { title: '列', image: 42 } }, matrixChoiceGroups: [{ title: '行' }] },
+      { matrixChoiceItems: { c1: undefined }, matrixChoiceGroups: [{ title: '行' }] },
     ]) {
       expect(validateHarnessField({ ...base, config }).ok).toBe(false);
     }
   });
 
-  test('validation strips unknown properties without dropping measured identifiers', () => {
+  test('validation strips unknown modeled properties while preserving documented additionalProperties JSON', () => {
     const field = validate({
       id: 'm', type: 'matrix', label: '表', required: false, position: 0, evil: true,
       config: {
-        matrixChoiceItems: { c1: { title: 'はい', slug: 'C1' } },
+        matrixChoiceItems: { c1: { title: 'はい', slug: 'C1', provider_hint: { mode: 'compact' } } },
         matrixChoiceGroups: [{ refId: 'R', slug: 'ROW', title: '質問', jsonKey: 'question', injected: true }],
         injected: true,
       },
     });
     expect(field.config).toEqual({
-      matrixChoiceItems: { c1: { title: 'はい', slug: 'C1' } },
+      matrixChoiceItems: { c1: { title: 'はい', slug: 'C1', provider_hint: { mode: 'compact' } } },
       matrixChoiceGroups: [{ refId: 'R', slug: 'ROW', title: '質問', jsonKey: 'question' }],
     });
   });

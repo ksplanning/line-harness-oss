@@ -1200,6 +1200,16 @@ export default function FormBuilder(props: BuilderProps) {
     }))
   }
   const deleteField = (id: string) => {
+    const deletingField = fields.find((field) => field.id === id)
+    const repeatingOwner = fields.find((field) => (
+      field.type === 'repeating_section'
+      && field.config.repeatingColumns?.some((column) => column.columnField === id)
+    ))
+    if (deletingField && repeatingOwner) {
+      setDropFeedback(`「${deletingField.label}」は「${repeatingOwner.label}」の繰り返し列で使われているため削除できません。先に列を別項目へ変更するか、繰り返しセクションを削除してください。`)
+      return
+    }
+    setDropFeedback(null)
     const deletingDecoration = fields.some((field) => field.id === id && isDecoration(field.type))
     setFields((cur) => reposition(cur.filter((f) => f.id !== id)))
     setLogic((cur) => cur.filter((r) =>
