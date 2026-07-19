@@ -9,11 +9,14 @@ interface CapturedInsert {
 function fakeDb(opts: {
   friend?: { line_user_id: string };
   capturedInserts: CapturedInsert[];
+  capturedAssignmentDeletes?: unknown[][];
 }): D1Database {
   return {
     prepare(sql: string) {
+      let boundArgs: unknown[] = [];
       return {
         bind(...args: unknown[]) {
+          boundArgs = args;
           if (sql.includes('INSERT INTO messages_log')) {
             opts.capturedInserts.push({ sql, binds: args });
           }
@@ -29,6 +32,9 @@ function fakeDb(opts: {
           return null;
         },
         async run(): Promise<{ success: true }> {
+          if (sql.includes('DELETE FROM rich_menu_friend_assignments')) {
+            opts.capturedAssignmentDeletes?.push(boundArgs);
+          }
           return { success: true };
         },
       };
@@ -55,11 +61,16 @@ vi.mock('@line-crm/db', async () => {
   };
 });
 
+const linkRichMenuToUser = vi.fn().mockResolvedValue(undefined);
+const unlinkRichMenuFromUser = vi.fn().mockResolvedValue(undefined);
+
 vi.mock('@line-crm/line-sdk', () => {
   return {
     LineClient: vi.fn().mockImplementation(() => ({
       replyMessage: vi.fn().mockResolvedValue(undefined),
       pushMessage: vi.fn().mockResolvedValue(undefined),
+      linkRichMenuToUser,
+      unlinkRichMenuFromUser,
     })),
   };
 });
@@ -281,5 +292,42 @@ describe('fireEvent — G28 businessHoursSuppressed gate (HIGH-1)', () => {
 
     expect(captured).toHaveLength(1);
     expect(captured[0].binds[5]).toBe('automation');
+  });
+});
+
+describe('fireEvent — rich menu assignment cache consistency', () => {
+  beforeEach(() => {
+    linkRichMenuToUser.mockClear();
+    unlinkRichMenuFromUser.mockClear();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ['switch_rich_menu', { richMenuId: 'menu-auto' }, linkRichMenuToUser],
+    ['remove_rich_menu', {}, unlinkRichMenuFromUser],
+  ])('forgets the conditional cache after %s succeeds', async (type, params, lineCall) => {
+    const dbModule = await import('@line-crm/db');
+    (dbModule.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      {
+        id: `auto-${type}`,
+        line_account_id: 'acc-1',
+        conditions: JSON.stringify({}),
+        actions: JSON.stringify([{ type, params }]),
+      },
+    ]);
+    const deletes: unknown[][] = [];
+    const db = fakeDb({
+      friend: { line_user_id: 'U_test' },
+      capturedInserts: [],
+      capturedAssignmentDeletes: deletes,
+    });
+
+    await fireEvent(db, 'manual_test', { friendId: 'friend-1', eventData: {} }, 'channel-token', 'acc-1');
+
+    expect(lineCall).toHaveBeenCalledTimes(1);
+    expect(deletes).toEqual([['friend-1']]);
   });
 });

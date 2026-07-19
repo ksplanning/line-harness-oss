@@ -1,6 +1,6 @@
 import { listRichMenuDisplayRules } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
-import { evaluateCondition } from './step-delivery.js';
+import { evaluateConditionStrict } from './step-delivery.js';
 
 export interface RichMenuRuleLineClient {
   linkRichMenuToUser(userId: string, richMenuId: string): Promise<unknown>;
@@ -135,7 +135,7 @@ export async function applyRichMenuRulesForFriend(
 
     let winner: (typeof rules)[number] | null = null;
     for (const rule of rules) {
-      if (await evaluateCondition(db, friendId, {
+      if (await evaluateConditionStrict(db, friendId, {
         condition_type: rule.conditionType,
         condition_value: rule.conditionValue,
       })) {
@@ -145,7 +145,11 @@ export async function applyRichMenuRulesForFriend(
     }
 
     const desiredRichMenuId = winner?.richMenuId ?? null;
-    if (assignment && assignment.rich_menu_id === desiredRichMenuId) {
+    if (
+      assignment
+      && assignment.account_id === friend.line_account_id
+      && assignment.rich_menu_id === desiredRichMenuId
+    ) {
       await saveAssignment(db, {
         friendId,
         accountId: friend.line_account_id,

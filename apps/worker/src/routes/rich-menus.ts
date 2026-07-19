@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { LineClient } from '@line-crm/line-sdk';
 import { getFriendById, getLineAccountById } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { forgetRichMenuRuleAssignment } from '../services/rich-menu-rule-engine.js';
 
 const richMenus = new Hono<Env>();
 
@@ -94,6 +95,7 @@ richMenus.post('/api/friends/:friendId/rich-menu', async (c) => {
     }
     const lineClient = new LineClient(accessToken);
     await lineClient.linkRichMenuToUser(friend.line_user_id, body.richMenuId);
+    await forgetRichMenuRuleAssignment(db, friendId);
 
     return c.json({ success: true, data: null });
   } catch (err) {
@@ -122,6 +124,7 @@ richMenus.delete('/api/friends/:friendId/rich-menu', async (c) => {
     }
     const lineClient = new LineClient(accessToken);
     await lineClient.unlinkRichMenuFromUser(friend.line_user_id);
+    await forgetRichMenuRuleAssignment(db, friendId);
 
     return c.json({ success: true, data: null });
   } catch (err) {

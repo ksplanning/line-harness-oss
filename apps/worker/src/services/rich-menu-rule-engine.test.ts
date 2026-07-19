@@ -149,6 +149,35 @@ describe('applyRichMenuRulesForFriend', () => {
       .toEqual({ rule_id: rule.id });
   });
 
+  test('does not reuse an assignment from a different LINE account even when the menu id matches', async () => {
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-2', 'channel-2', 'B', 'account-token-2', 'secret-2')`,
+    ).run();
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-2',
+      name: '購入済み',
+      conditionType: 'tag_exists',
+      conditionValue: 'tag-paid',
+      richMenuId: 'menu-paid',
+      priority: 10,
+      isActive: true,
+    });
+    raw.prepare(
+      `INSERT INTO rich_menu_friend_assignments (friend_id, account_id, rule_id, rich_menu_id)
+       VALUES ('friend-1', 'acc-1', NULL, 'menu-paid')`,
+    ).run();
+    raw.prepare("UPDATE friends SET line_account_id = 'acc-2' WHERE id = 'friend-1'").run();
+    const line = lineDouble();
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toMatchObject({ status: 'applied', richMenuId: 'menu-paid' });
+    expect(line.calls).toEqual([{ method: 'link', userId: 'U1', richMenuId: 'menu-paid' }]);
+    expect(raw.prepare('SELECT account_id FROM rich_menu_friend_assignments WHERE friend_id = ?').get('friend-1'))
+      .toEqual({ account_id: 'acc-2' });
+  });
+
   test('active rules with no match remove the per-user override and record default state', async () => {
     await createRichMenuDisplayRule(db, {
       accountId: 'acc-1',
@@ -218,6 +247,43 @@ describe('applyRichMenuRulesForFriend', () => {
     expect(result).toMatchObject({ status: 'failed', friendId: 'friend-1' });
     expect(raw.prepare('SELECT rich_menu_id FROM rich_menu_friend_assignments WHERE friend_id = ?').get('friend-1'))
       .toEqual({ rich_menu_id: 'menu-old' });
+    expect(raw.prepare('SELECT attempts FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?').get('friend-1'))
+      .toEqual({ attempts: 1 });
+  });
+
+  test('a condition database failure never unlinks and is retried fail-soft', async () => {
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1',
+      name: '購入済み',
+      conditionType: 'tag_exists',
+      conditionValue: 'tag-paid',
+      richMenuId: 'menu-paid',
+      priority: 10,
+      isActive: true,
+    });
+    raw.prepare(
+      `INSERT INTO rich_menu_friend_assignments (friend_id, account_id, rule_id, rich_menu_id)
+       VALUES ('friend-1', 'acc-1', NULL, 'menu-current')`,
+    ).run();
+    const failingDb = {
+      prepare(sql: string) {
+        if (sql.includes('FROM friend_tags WHERE friend_id')) {
+          return {
+            bind() { return this; },
+            async first() { throw new Error('temporary D1 failure'); },
+          };
+        }
+        return db.prepare(sql);
+      },
+    } as unknown as D1Database;
+    const line = lineDouble();
+
+    const result = await applyRichMenuRulesForFriend(failingDb, 'friend-1', line.factory);
+
+    expect(result).toMatchObject({ status: 'failed', friendId: 'friend-1' });
+    expect(line.factory).not.toHaveBeenCalled();
+    expect(raw.prepare('SELECT rich_menu_id FROM rich_menu_friend_assignments WHERE friend_id = ?').get('friend-1'))
+      .toEqual({ rich_menu_id: 'menu-current' });
     expect(raw.prepare('SELECT attempts FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?').get('friend-1'))
       .toEqual({ attempts: 1 });
   });

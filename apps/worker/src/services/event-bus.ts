@@ -23,6 +23,7 @@ import {
 import { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { sendAdConversions } from './ad-conversion.js';
+import { forgetRichMenuRuleAssignment } from './rich-menu-rule-engine.js';
 
 export interface EventPayload {
   friendId?: string;
@@ -356,6 +357,7 @@ async function executeAction(
       if (!friend) break;
       const lineClient = new LineClient(lineAccessToken);
       await lineClient.linkRichMenuToUser(friend.line_user_id, action.params.richMenuId);
+      await forgetRichMenuRuleAssignment(db, friendId);
       break;
     }
 
@@ -368,6 +370,7 @@ async function executeAction(
       if (!friend) break;
       const lineClient = new LineClient(lineAccessToken);
       await lineClient.unlinkRichMenuFromUser(friend.line_user_id);
+      await forgetRichMenuRuleAssignment(db, friendId);
       break;
     }
 

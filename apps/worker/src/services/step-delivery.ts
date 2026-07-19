@@ -307,10 +307,11 @@ export function isSupportedConditionType(value: unknown): value is (typeof SUPPO
   return typeof value === 'string' && (SUPPORTED_CONDITION_TYPES as readonly string[]).includes(value);
 }
 
-export async function evaluateCondition(
+async function evaluateConditionInternal(
   db: D1Database,
   friendId: string,
   step: { condition_type: string | null; condition_value: string | null },
+  throwOnFailure: boolean,
 ): Promise<boolean> {
   if (!step.condition_type) return true;
   if (!isSupportedConditionType(step.condition_type)) {
@@ -383,9 +384,31 @@ export async function evaluateCondition(
       }
     }
   } catch (err) {
+    if (throwOnFailure) throw err;
     console.error('[scenario] condition evaluation failed', err);
     return false;
   }
+}
+
+export function evaluateCondition(
+  db: D1Database,
+  friendId: string,
+  step: { condition_type: string | null; condition_value: string | null },
+): Promise<boolean> {
+  return evaluateConditionInternal(db, friendId, step, false);
+}
+
+/**
+ * Rich-menu selection must distinguish a real mismatch from an unavailable
+ * condition lookup. Input validation still returns false, while DB/JSON
+ * failures escape so the caller can preserve the current menu and retry.
+ */
+export function evaluateConditionStrict(
+  db: D1Database,
+  friendId: string,
+  step: { condition_type: string | null; condition_value: string | null },
+): Promise<boolean> {
+  return evaluateConditionInternal(db, friendId, step, true);
 }
 
 
