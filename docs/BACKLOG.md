@@ -4,6 +4,22 @@
 
 ---
 
+## richmenu-rule-schedule — リッチメニュー表示ルールの期間条件（2026-07-20 closer クローズ / status: completed / done 6/6）
+
+owner原文（2026-07-20 03:4x）:「あと、リッチメニューの条件の表示期間を設定可能に　いつから　やいつからいつまで　など　これもタグやカスタムフィールどに追加で条件として加えることも可能にしておいてほしい」。土台=richmenu-conditional-rules（上記節・landed済み）。正本: `.plans/2026-07-20-richmenu-rule-schedule/{spec,plan,tasks}.md`。reviewer Round1 PASS（独立checkoutで全done id再検証・diff sha256一致・4636テスト全pass・closer_allowed）。
+
+**実装**: migration 112（`rich_menu_display_rules`に`active_from`/`active_until`(nullable・JST既定)追加+`rich_menu_rule_schedule_state`チェックポイントテーブル新設+3index・additive）+ 評価エンジンへ期間ANDフィルタ（開始inclusive/終了exclusive・期間null行は既存挙動byte同等）+ 時間起点の自動再評価（既存*/5 cronの(last_scanned,now]半開区間スキャン・15分粒度・fail-safe）+ admin API validation（until<fromは400・PATCHはhasOwnPropertyで明示nullクリアと未指定保持を分離）+ admin UI期間欄（datetime-local JST往復・「今有効/開始前/終了済み/無期限」表示）。
+
+**closer段でdeployed実機検証まで完遂（piecemaker・実あやこ）**: ①期間null=既存挙動不変（タグ付与→ルール作成→reapply→適用確認）②期間外（未来開始）=不適用（reapply→リンク解除確認）③期間内=適用（PATCH→reapply→再適用確認）④**境界またぎ自動再評価=手動reapplyを一切呼ばずに実測**（activeUntilを2分後に設定→20秒間隔監視→境界通過から約2.5分後に自動切替を確認）⑤validation=until<from PATCHで400・ルール不変確認。migration112は両テナント本番D1へ適用（行数不変）。4面デプロイ（KS worker `3950d518`/piecemaker `7c2e84ae`/KS admin hash`06e92e23`/piecemaker admin hash`99203128`・canonical byte一致確認）。
+
+**完全撤収**: テストルール・タグをDELETE→404/list空/D1直接カウント0を確認、あやこのper-user linkを元の`richmenu-4e9176148352e2281ed06658ac56c16d`へ明示復帰しGET確認、metadata/tagsとも開始前とbyte同一を確認（本番状態を検証開始前と完全一致に復元）。
+
+**未解決**: KS側deployed実機検証は未実施（reviewer独立checkoutで両テナント互換をコードレベル確認済み・precedent踏襲でpiecemakerを代表証跡採用）。admin UI期間欄の目視確認はowner初回使用時に軽く確認推奨。
+
+詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-20_073714_richmenu-rule-schedule.md`（Box working folder 386663013201）。
+
+---
+
 ## admin-ai-chat-phase1 — 管理画面「AIチャット」第1段 (Formaloo純正AI分析)（2026-07-20 closer クローズ / status: pending_owner_confirmation / done 5/6）
 
 owner原文（2026-07-20 02:4x）:「管理画面内チャットの実装っていつ？？」→ 頭脳選択=「両方 (純正→自前の2段構え)」。本件=第1段 (Formaloo Pro プラン純正AI分析)。正本: `.plans/2026-07-20-admin-ai-chat-phase1/tasks.md`。reviewer Round1 PASS（独立 checkout 再実行で D-1〜D-6 全 green・findings は info 2件のみ・closer_allowed）。
