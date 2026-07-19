@@ -70,6 +70,11 @@ describe('migration 107 — conditional rich menu rules', () => {
        VALUES ('acc-1', 'ch-1', 'A', 'token', 'secret')`,
     ).run();
     raw.prepare(
+      `INSERT INTO rich_menu_display_rules
+       (id, account_id, name, condition_type, condition_value, rich_menu_id, priority)
+       VALUES ('rule-1', 'acc-1', '購入済み', 'tag_exists', 'tag-1', 'menu-1', 10)`,
+    ).run();
+    raw.prepare(
       `INSERT INTO friends (id, line_user_id, line_account_id, metadata)
        VALUES ('friend-1', 'U1', NULL, '{}')`,
     ).run();
@@ -104,6 +109,11 @@ describe('migration 107 — conditional rich menu rules', () => {
       `INSERT INTO friends (id, line_user_id, line_account_id)
        VALUES ('friend-1', 'U1', 'acc-1')`,
     ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_display_rules
+       (id, account_id, name, condition_type, condition_value, rich_menu_id, priority)
+       VALUES ('rule-1', 'acc-1', 'VIP', 'tag_name_contains', 'VIP', 'menu-1', 10)`,
+    ).run();
     raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-1', '一般')").run();
     raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-1', 'tag-1')").run();
     raw.prepare('DELETE FROM rich_menu_rule_evaluation_queue').run();
@@ -129,5 +139,65 @@ describe('migration 107 — conditional rich menu rules', () => {
 
     expect(() => raw.prepare("DELETE FROM friends WHERE id = 'friend-1'").run()).not.toThrow();
     expect(raw.prepare('SELECT * FROM rich_menu_rule_evaluation_queue').all()).toEqual([]);
+  });
+
+  test('keeps rule-less tenants byte-compatible by not creating background work', () => {
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-1', 'ch-1', 'A', 'token', 'secret')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id, metadata)
+       VALUES ('friend-1', 'U1', NULL, '{}')`,
+    ).run();
+    raw.prepare("UPDATE friends SET line_account_id = 'acc-1' WHERE id = 'friend-1'").run();
+    raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-1', 'VIP')").run();
+    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-1', 'tag-1')").run();
+    raw.prepare("UPDATE friends SET metadata = '{\"rank\":\"VIP\"}' WHERE id = 'friend-1'").run();
+    raw.prepare("UPDATE tags SET name = '特別VIP' WHERE id = 'tag-1'").run();
+
+    expect(raw.prepare('SELECT * FROM rich_menu_rule_evaluation_queue').all()).toEqual([]);
+  });
+
+  test('requeues managed friends when their LINE account becomes active again', () => {
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret, is_active)
+       VALUES ('acc-1', 'ch-1', 'A', 'token', 'secret', 0)`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_display_rules
+       (id, account_id, name, condition_type, condition_value, rich_menu_id, priority)
+       VALUES ('rule-1', 'acc-1', 'VIP', 'tag_exists', 'tag-vip', 'menu-1', 10)`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id)
+       VALUES ('friend-1', 'U1', 'acc-1')`,
+    ).run();
+
+    raw.prepare("UPDATE line_accounts SET is_active = 1 WHERE id = 'acc-1'").run();
+
+    expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').all())
+      .toEqual([{ friend_id: 'friend-1' }]);
+  });
+
+  test('requeues a managed friend when they follow the account again', () => {
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-1', 'ch-1', 'A', 'token', 'secret')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_display_rules
+       (id, account_id, name, condition_type, condition_value, rich_menu_id, priority)
+       VALUES ('rule-1', 'acc-1', 'VIP', 'tag_exists', 'tag-vip', 'menu-1', 10)`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id, is_following)
+       VALUES ('friend-1', 'U1', 'acc-1', 0)`,
+    ).run();
+
+    raw.prepare("UPDATE friends SET is_following = 1 WHERE id = 'friend-1'").run();
+
+    expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').all())
+      .toEqual([{ friend_id: 'friend-1' }]);
   });
 });
