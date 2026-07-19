@@ -7,7 +7,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { describe, expect, test, beforeEach } from 'vitest';
+import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { jstNow, createRole, setRolePermissions } from '@line-crm/db';
 import { parseCsv } from '@line-crm/shared';
@@ -47,6 +47,7 @@ function replayAll(db: Database.Database) {
 
 let raw: Database.Database;
 let DB: D1Database;
+let bindingOverrides: Partial<Env['Bindings']> = {};
 
 function env(): Env['Bindings'] {
   return {
@@ -54,6 +55,7 @@ function env(): Env['Bindings'] {
     LINE_CHANNEL_SECRET: 's', LINE_CHANNEL_ACCESS_TOKEN: 't', API_KEY: 'env-owner-key',
     LIFF_URL: 'https://liff.example.test', LINE_CHANNEL_ID: 'c', LINE_LOGIN_CHANNEL_ID: 'lc',
     LINE_LOGIN_CHANNEL_SECRET: 'ls', WORKER_URL: 'https://api.example.com',
+    ...bindingOverrides,
   } as Env['Bindings'];
 }
 
@@ -92,7 +94,10 @@ beforeEach(() => {
   raw = new Database(':memory:');
   replayAll(raw);
   DB = d1(raw);
+  bindingOverrides = {};
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('T-D1 rows 検索/ページング', () => {
   beforeEach(() => {
@@ -256,6 +261,63 @@ describe('T-D2 一括削除 (owner gated)', () => {
     expect(res.status).toBe(200);
     expect((await res.json() as { data: { deleted: number } }).data.deleted).toBe(1);
     expect((await (await call('GET', '/api/forms-advanced/fa1/rows')).json() as { data: { total: number } }).data.total).toBe(1);
+  });
+
+  test('Formaloo row slug を解決し slugs_list で削除後、GET 404 を確認してから mirror を削除する', async () => {
+    bindingOverrides = { FORMALOO_API_KEY: 'bulk-key', FORMALOO_API_SECRET: 'bulk-secret' };
+    const requests: Array<{ method: string; url: string; body: unknown }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      const body = typeof init?.body === 'string' && init.body.startsWith('{') ? JSON.parse(init.body) as unknown : init?.body ?? null;
+      requests.push({ method, url, body });
+      if (url.endsWith('/v1.0/oauth2/authorization-token/')) {
+        return new Response(JSON.stringify({ authorization_token: 'bulk-token' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/v3.0/forms/slug_fa1/rows/?')) {
+        return new Response(JSON.stringify({ data: { rows: [{ submit_code: 's1', slug: 'remote-row-1' }] } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/v3.0/forms/slug_fa1/rows/bulk-delete/')) {
+        return new Response(JSON.stringify({ status: 'success' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/v3.0/rows/remote-row-1/')) {
+        return new Response(JSON.stringify({ detail: 'Not found.' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`unexpected Formaloo request: ${method} ${url}`);
+    }));
+
+    const res = await call('POST', '/api/forms-advanced/fa1/rows/bulk-delete', { ids: ['s1'] });
+
+    expect(res.status).toBe(200);
+    const bulk = requests.find((r) => r.url.endsWith('/rows/bulk-delete/'));
+    expect(bulk?.body).toEqual({ slugs_list: ['remote-row-1'] });
+    expect(requests.some((r) => r.method === 'GET' && r.url.endsWith('/v3.0/rows/remote-row-1/'))).toBe(true);
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM formaloo_submissions WHERE id = ?').get('s1')).toEqual({ n: 0 });
+  });
+
+  test('bulk-delete が 200 でも row が残る場合は fail-closed で mirror を保持する', async () => {
+    bindingOverrides = { FORMALOO_API_KEY: 'bulk-stale-key', FORMALOO_API_SECRET: 'bulk-stale-secret' };
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/v1.0/oauth2/authorization-token/')) {
+        return new Response(JSON.stringify({ authorization_token: 'bulk-stale-token' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/v3.0/forms/slug_fa1/rows/?')) {
+        return new Response(JSON.stringify({ data: { rows: [{ submit_code: 's1', slug: 'remote-row-stale' }] } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/v3.0/forms/slug_fa1/rows/bulk-delete/')) {
+        return new Response(JSON.stringify({ status: 'success' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/v3.0/rows/remote-row-stale/')) {
+        return new Response(JSON.stringify({ data: { row: { slug: 'remote-row-stale' } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`unexpected Formaloo request: ${url}`);
+    }));
+
+    const res = await call('POST', '/api/forms-advanced/fa1/rows/bulk-delete', { ids: ['s1'] });
+
+    expect(res.status).toBe(502);
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM formaloo_submissions WHERE id = ?').get('s1')).toEqual({ n: 1 });
   });
 
   test('owner でない forms_advanced staff は 403 (機微 mutating)', async () => {

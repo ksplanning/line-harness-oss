@@ -103,8 +103,8 @@ function seedForm(id: string, workspaceId: string | null, slug: string | null = 
 function seedSubmission(id: string, formId: string) {
   const now = jstNow();
   raw.prepare(
-    `INSERT INTO formaloo_submissions (id, form_id, friend_id, answers_json, submitted_at) VALUES (?,?,?,?,?)`,
-  ).run(id, formId, null, '{"a":1}', now);
+    `INSERT INTO formaloo_submissions (id, form_id, friend_id, answers_json, submitted_at, formaloo_row_slug) VALUES (?,?,?,?,?,?)`,
+  ).run(id, formId, null, '{"a":1}', now, id);
 }
 
 /** globalThis.fetch を stub し、Formaloo への各呼び出しの x-api-key を記録する。 */
@@ -115,6 +115,10 @@ function stubFetch() {
     if (headers['x-api-key']) keys.push(headers['x-api-key']);
     if (String(url).includes('authorization-token')) {
       return new Response(JSON.stringify({ authorization_token: 'jwt' }), { status: 200 });
+    }
+    // bulk-delete の persist 確認: form-nested の row detail とは別 endpoint。削除済みを 404 で返す。
+    if ((init?.method ?? 'GET') === 'GET' && String(url).endsWith('/v3.0/rows/sub1/')) {
+      return new Response(JSON.stringify({ detail: 'Not found.' }), { status: 404 });
     }
     // form detail (pull) は form.fields_list を期待するので最小の空 form を返す。他は空 data。
     return new Response(JSON.stringify({ data: { form: { slug: 'the_slug', fields_list: [], logic: { rules: [] } } } }), { status: 200 });

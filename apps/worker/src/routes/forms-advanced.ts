@@ -1657,18 +1657,37 @@ formsAdvanced.post('/api/forms-advanced/:id/rows/bulk-delete', async (c) => {
     if (ids.length === 0) return c.json({ success: false, error: '削除する回答を選択してください' }, 400);
     if (ids.length > MAX_BULK_DELETE) return c.json({ success: false, error: `一度に削除できるのは ${MAX_BULK_DELETE} 件までです` }, 400);
 
-    const deleted = await bulkDeleteFormalooSubmissions(c.env.DB, id, ids);
-    // Formaloo 側でも削除 (fail-soft): 失敗してもミラー削除は確定させる。
+    // Formaloo 側の row slug 解決には削除前の mirror が必要。先に消すと legacy submit_code から
+    // addressable slug を引けず、remote 失敗時にも復旧材料を失うため、persist 確認後まで保持する。
+    const mirrors = await Promise.all(ids.map((submissionId) => getFormalooSubmission(c.env.DB, submissionId)));
     // F6-2: form.workspace_id で多鍵解決。NULL(legacy) → env 単一鍵 fallback (byte-equivalent) /
-    // 登録 active → 暗号文鍵 / 未登録・無効化・復号失敗 → null (env silent fallback しない = 誤送信防止)。fail-soft 契約不変。
+    // 登録 active → 暗号文鍵 / 未登録・無効化・復号失敗 → null (env silent fallback しない = 誤送信防止)。
     const client = await resolveFormalooClient(c.env, form.workspace_id);
     if (client && form.formaloo_slug) {
-      try {
-        await client.post(`/v3.0/forms/${form.formaloo_slug}/rows/bulk-delete/`, { rows: ids });
-      } catch (e) {
-        console.error('formaloo bulk-delete push failed (fail-soft):', e);
+      const resolver = makeRowsListRowSlugResolver(client, form.formaloo_slug);
+      const rowSlugs: string[] = [];
+      for (let i = 0; i < ids.length; i += 1) {
+        const mirror = mirrors[i];
+        if (!mirror || mirror.form_id !== id) {
+          return c.json({ success: false, error: '削除対象の回答が見つかりません（削除していません）' }, 422);
+        }
+        const rowSlug = await resolveRowSlug(mirror, resolver);
+        if (!rowSlug) {
+          return c.json({ success: false, error: 'Formaloo 側の回答識別子を取得できません（削除していません）' }, 422);
+        }
+        rowSlugs.push(rowSlug);
+      }
+
+      const pushed = await client.post(`/v3.0/forms/${form.formaloo_slug}/rows/bulk-delete/`, { slugs_list: rowSlugs });
+      if (!pushed.ok) {
+        return c.json({ success: false, error: 'Formaloo から回答を削除できませんでした（ミラーは保持しました）' }, 502);
+      }
+      const confirmations = await Promise.all(rowSlugs.map((rowSlug) => client.get(`/v3.0/rows/${rowSlug}/`)));
+      if (confirmations.some((result) => result.status !== 404)) {
+        return c.json({ success: false, error: 'Formaloo で削除結果を確認できませんでした（ミラーは保持しました）' }, 502);
       }
     }
+    const deleted = await bulkDeleteFormalooSubmissions(c.env.DB, id, ids);
     return c.json({ success: true, data: { deleted } });
   } catch (err) {
     console.error('POST /api/forms-advanced/:id/rows/bulk-delete error:', err);
