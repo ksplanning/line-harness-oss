@@ -94,4 +94,40 @@ describe('migration 107 — conditional rich menu rules', () => {
     raw.prepare("UPDATE friends SET metadata = '{\"paid\":true}' WHERE id = 'friend-1'").run();
     expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').get()).toEqual({ friend_id: 'friend-1' });
   });
+
+  test('queues friends whose tag name changes for tag-name conditions', () => {
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-1', 'ch-1', 'A', 'token', 'secret')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id)
+       VALUES ('friend-1', 'U1', 'acc-1')`,
+    ).run();
+    raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-1', '一般')").run();
+    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-1', 'tag-1')").run();
+    raw.prepare('DELETE FROM rich_menu_rule_evaluation_queue').run();
+
+    raw.prepare("UPDATE tags SET name = 'VIP会員' WHERE id = 'tag-1'").run();
+
+    expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').all())
+      .toEqual([{ friend_id: 'friend-1' }]);
+  });
+
+  test('does not resurrect queue rows while a tagged friend is cascade-deleted', () => {
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-1', 'ch-1', 'A', 'token', 'secret')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id)
+       VALUES ('friend-1', 'U1', 'acc-1')`,
+    ).run();
+    raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-1', '購入済み')").run();
+    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-1', 'tag-1')").run();
+    raw.prepare('DELETE FROM rich_menu_rule_evaluation_queue').run();
+
+    expect(() => raw.prepare("DELETE FROM friends WHERE id = 'friend-1'").run()).not.toThrow();
+    expect(raw.prepare('SELECT * FROM rich_menu_rule_evaluation_queue').all()).toEqual([]);
+  });
 });
