@@ -39,11 +39,17 @@ describe('richMenuDisplayRules API client', () => {
       richMenuId: 'menu/vip',
       priority: 100,
       isActive: true,
+      activeFrom: '2026-07-20T10:00:00+09:00',
+      activeUntil: '2026-07-31T18:00:00+09:00',
     }
 
     await api.richMenuDisplayRules.list('acc/1')
     await api.richMenuDisplayRules.create('acc/1', input)
-    await api.richMenuDisplayRules.update('acc/1', 'rule/1', { priority: 200, isActive: false })
+    await api.richMenuDisplayRules.update('acc/1', 'rule/1', {
+      priority: 200,
+      isActive: false,
+      activeUntil: null,
+    })
     await api.richMenuDisplayRules.delete('acc/1', 'rule/1')
 
     expect(captured).toEqual([
@@ -52,7 +58,7 @@ describe('richMenuDisplayRules API client', () => {
       {
         url: `${BASE}/api/rich-menu-display-rules/rule%2F1?accountId=acc%2F1`,
         method: 'PATCH',
-        body: { priority: 200, isActive: false },
+        body: { priority: 200, isActive: false, activeUntil: null },
       },
       {
         url: `${BASE}/api/rich-menu-display-rules/rule%2F1?accountId=acc%2F1`,

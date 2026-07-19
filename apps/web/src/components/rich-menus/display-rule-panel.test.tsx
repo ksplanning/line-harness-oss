@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -37,6 +37,8 @@ const rule = (over: Record<string, unknown> = {}) => ({
   richMenuId: 'menu-vip',
   priority: 100,
   isActive: true,
+  activeFrom: null,
+  activeUntil: null,
   createdAt: '2026-07-19T10:00:00.000',
   updatedAt: '2026-07-19T10:00:00.000',
   ...over,
@@ -112,6 +114,8 @@ describe('DisplayRulePanel', () => {
       richMenuId: 'menu-vip',
       priority: 250,
       isActive: true,
+      activeFrom: null,
+      activeUntil: null,
     }))
     expect(screen.getByText(/ルールを変えたため、既存の友だちへ再適用してください/)).toBeTruthy()
   })
@@ -152,5 +156,82 @@ describe('DisplayRulePanel', () => {
     expect(screen.getByText('適用 8・変更なし 3・失敗 1')).toBeTruthy()
     expect(screen.getByText(/5分ごとに最大20人ずつ/)).toBeTruthy()
     expect(screen.getByRole('button', { name: '既存の友だちへ再適用中' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  test('creates an optional period as explicit JST and sends null for an empty bound', async () => {
+    render(<DisplayRulePanel accountId="acc-1" menus={[{ richMenuId: 'menu-vip', name: 'VIPメニュー' }]} />)
+    await screen.findByText('表示条件ルール')
+    fireEvent.click(screen.getByRole('button', { name: 'ルールを追加' }))
+
+    fireEvent.change(screen.getByLabelText('ルール名'), { target: { value: '夏キャンペーン' } })
+    fireEvent.change(screen.getByLabelText('いつから（任意）'), { target: { value: '2026-07-20T10:00' } })
+    fireEvent.change(screen.getByLabelText('いつまで（任意）'), { target: { value: '2026-07-31T18:00' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(mocks.createRule).toHaveBeenCalledWith('acc-1', expect.objectContaining({
+      activeFrom: '2026-07-20T10:00:00+09:00',
+      activeUntil: '2026-07-31T18:00:00+09:00',
+    })))
+  })
+
+  test('rejects an end before the start in Japanese without calling the API', async () => {
+    render(<DisplayRulePanel accountId="acc-1" menus={[{ richMenuId: 'menu-vip', name: 'VIPメニュー' }]} />)
+    await screen.findByText('表示条件ルール')
+    fireEvent.click(screen.getByRole('button', { name: 'ルールを追加' }))
+
+    fireEvent.change(screen.getByLabelText('ルール名'), { target: { value: '逆転期間' } })
+    fireEvent.change(screen.getByLabelText('いつから（任意）'), { target: { value: '2026-07-20T18:00' } })
+    fireEvent.change(screen.getByLabelText('いつまで（任意）'), { target: { value: '2026-07-20T10:00' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(await screen.findByText('終了日時は開始日時以降にしてください。')).toBeTruthy()
+    expect(mocks.createRule).not.toHaveBeenCalled()
+  })
+
+  test('round-trips stored UTC bounds through Japanese datetime inputs while editing', async () => {
+    mocks.listRules.mockResolvedValue({ success: true, data: [rule({
+      activeFrom: '2026-07-20T01:00:00.000Z',
+      activeUntil: '2026-07-20T09:00:00.000Z',
+    })] })
+    render(<DisplayRulePanel accountId="acc-1" menus={[{ richMenuId: 'menu-vip', name: 'VIPメニュー' }]} />)
+    await screen.findByText('表示条件ルール')
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+
+    expect((screen.getByLabelText('いつから（任意）') as HTMLInputElement).value).toBe('2026-07-20T10:00')
+    expect((screen.getByLabelText('いつまで（任意）') as HTMLInputElement).value).toBe('2026-07-20T18:00')
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(mocks.updateRule).toHaveBeenCalledWith(
+      'acc-1',
+      'rule-high',
+      expect.objectContaining({
+        activeFrom: '2026-07-20T10:00:00+09:00',
+        activeUntil: '2026-07-20T18:00:00+09:00',
+      }),
+    ))
+  })
+
+  test('shows current, upcoming, ended, and unlimited periods and ranks only current rules', async () => {
+    const now = Date.now()
+    mocks.listRules.mockResolvedValue({ success: true, data: [
+      rule({ id: 'future', name: '開始前ルール', priority: 500, activeFrom: new Date(now + 3_600_000).toISOString() }),
+      rule({ id: 'ended', name: '終了済みルール', priority: 400, activeUntil: new Date(now - 3_600_000).toISOString() }),
+      rule({
+        id: 'current', name: '期間内ルール', priority: 100,
+        activeFrom: new Date(now - 3_600_000).toISOString(),
+        activeUntil: new Date(now + 3_600_000).toISOString(),
+      }),
+      rule({ id: 'unlimited', name: '無期限ルール', priority: 50 }),
+    ] })
+    render(<DisplayRulePanel accountId="acc-1" menus={[{ richMenuId: 'menu-vip', name: 'VIPメニュー' }]} />)
+    await screen.findByText('表示条件ルール')
+
+    expect(screen.getByText('開始前')).toBeTruthy()
+    expect(screen.getByText('終了済み')).toBeTruthy()
+    expect(screen.getAllByText('今有効')).toHaveLength(2)
+    expect(screen.getByText('期間: 無期限')).toBeTruthy()
+    expect(screen.getAllByText('期間外（勝敗対象外）')).toHaveLength(2)
+    expect(within(screen.getByText('期間内ルール').closest('article')!).getByText('候補1位')).toBeTruthy()
+    expect(within(screen.getByText('無期限ルール').closest('article')!).getByText('候補2位')).toBeTruthy()
   })
 })

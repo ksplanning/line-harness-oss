@@ -245,13 +245,22 @@ export interface RichMenuDisplayRule {
   richMenuId: string
   priority: number
   isActive: boolean
+  activeFrom: string | null
+  activeUntil: string | null
   createdAt: string
   updatedAt: string
 }
 
 export type RichMenuDisplayRuleInput = Pick<
   RichMenuDisplayRule,
-  'name' | 'conditionType' | 'conditionValue' | 'richMenuId' | 'priority' | 'isActive'
+  | 'name'
+  | 'conditionType'
+  | 'conditionValue'
+  | 'richMenuId'
+  | 'priority'
+  | 'isActive'
+  | 'activeFrom'
+  | 'activeUntil'
 >
 
 export interface RichMenuRuleReapplyJob {

@@ -39,6 +39,8 @@ type RuleForm = {
   richMenuId: string
   priority: string
   isActive: boolean
+  activeFrom: string
+  activeUntil: string
 }
 
 function sortRules(rules: RichMenuDisplayRule[]): RichMenuDisplayRule[] {
@@ -66,6 +68,39 @@ function conditionLabel(type: RichMenuDisplayConditionType): string {
   return CONDITION_OPTIONS.find((option) => option.value === type)?.label ?? type
 }
 
+type PeriodStatus = 'current' | 'upcoming' | 'ended'
+
+function periodStatus(rule: RichMenuDisplayRule, now = Date.now()): PeriodStatus {
+  if (rule.activeFrom && now < Date.parse(rule.activeFrom)) return 'upcoming'
+  if (rule.activeUntil && now >= Date.parse(rule.activeUntil)) return 'ended'
+  return 'current'
+}
+
+function toJstDateTimeInput(value: string | null): string {
+  if (!value) return ''
+  const instant = Date.parse(value)
+  if (!Number.isFinite(instant)) return ''
+  return new Date(instant + 9 * 60 * 60_000).toISOString().slice(0, 16)
+}
+
+function fromJstDateTimeInput(value: string): string | null {
+  if (!value) return null
+  return `${value}${value.length === 16 ? ':00' : ''}+09:00`
+}
+
+function formatJstDateTime(value: string): string {
+  const shifted = new Date(Date.parse(value) + 9 * 60 * 60_000)
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${shifted.getUTCFullYear()}年${shifted.getUTCMonth() + 1}月${shifted.getUTCDate()}日 ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`
+}
+
+function describePeriod(rule: RichMenuDisplayRule): string {
+  if (!rule.activeFrom && !rule.activeUntil) return '期間: 無期限'
+  const from = rule.activeFrom ? formatJstDateTime(rule.activeFrom) : '指定なし'
+  const until = rule.activeUntil ? formatJstDateTime(rule.activeUntil) : '無期限'
+  return `期間: ${from} から ${until} まで（日本時間）`
+}
+
 function initialForm(menus: MenuOption[], tags: TagOption[], fields: FieldOption[]): RuleForm {
   return {
     id: null,
@@ -77,6 +112,8 @@ function initialForm(menus: MenuOption[], tags: TagOption[], fields: FieldOption
     richMenuId: menus[0]?.richMenuId ?? '',
     priority: '0',
     isActive: true,
+    activeFrom: '',
+    activeUntil: '',
   }
 }
 
@@ -160,6 +197,8 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
       richMenuId: rule.richMenuId,
       priority: String(rule.priority),
       isActive: rule.isActive,
+      activeFrom: toJstDateTimeInput(rule.activeFrom),
+      activeUntil: toJstDateTimeInput(rule.activeUntil),
     })
   }
 
@@ -181,12 +220,18 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
       richMenuId: current.richMenuId,
       priority,
       isActive: current.isActive,
+      activeFrom: fromJstDateTimeInput(current.activeFrom),
+      activeUntil: fromJstDateTimeInput(current.activeUntil),
     }
   }
 
   async function saveRule(event: React.FormEvent): Promise<void> {
     event.preventDefault()
     if (!form) return
+    if (form.activeFrom && form.activeUntil && form.activeUntil < form.activeFrom) {
+      setError('終了日時は開始日時以降にしてください。')
+      return
+    }
     const input = toInput(form)
     if (!input) {
       setError('ルール名・条件・メニュー・整数の優先度を入力してください。')
@@ -270,10 +315,14 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
   }
 
   let activeRank = 0
-  const rankedRules = rules.map((rule) => ({
-    rule,
-    rank: rule.isActive ? ++activeRank : null,
-  }))
+  const rankedRules = rules.map((rule) => {
+    const status = periodStatus(rule)
+    return {
+      rule,
+      status,
+      rank: rule.isActive && status === 'current' ? ++activeRank : null,
+    }
+  })
   const isRunning = job?.status === 'running'
 
   return (
@@ -286,6 +335,9 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
           </p>
           <p className="text-sm text-gray-600">
             どれにも合わない友だちは「全員のデフォルト」に戻ります。ルールはいくつでも追加できます。
+          </p>
+          <p className="text-sm text-gray-600">
+            表示期間はタグ・カスタム項目の条件と一緒に判定され、期間外は勝敗の対象になりません。
           </p>
         </div>
         <button
@@ -309,18 +361,22 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
 
       {!loading && rankedRules.length > 0 && (
         <div className="mt-4 space-y-3">
-          {rankedRules.map(({ rule, rank }) => (
-            <article key={rule.id} className={`rounded border p-4 ${rule.isActive ? 'border-gray-200' : 'border-gray-200 bg-gray-50 opacity-75'}`}>
+          {rankedRules.map(({ rule, rank, status }) => (
+            <article key={rule.id} className={`rounded border p-4 ${rule.isActive && status === 'current' ? 'border-gray-200' : 'border-gray-200 bg-gray-50'}`}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={`rounded px-2 py-0.5 text-xs font-semibold ${rank === 1 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'}`}>
-                      {rank ? `候補${rank}位` : '停止中（勝敗対象外）'}
+                      {rank ? `候補${rank}位` : rule.isActive ? '期間外（勝敗対象外）' : '停止中（勝敗対象外）'}
+                    </span>
+                    <span className={`rounded px-2 py-0.5 text-xs font-semibold ${status === 'current' ? 'bg-emerald-100 text-emerald-800' : status === 'upcoming' ? 'bg-blue-100 text-blue-800' : 'bg-gray-200 text-gray-700'}`}>
+                      {status === 'current' ? '今有効' : status === 'upcoming' ? '開始前' : '終了済み'}
                     </span>
                     <strong className="text-sm text-gray-900">{rule.name}</strong>
                     <span className="text-xs text-gray-500">優先度 {rule.priority}</span>
                   </div>
                   <p className="mt-2 text-sm text-gray-700">{describeCondition(rule)}</p>
+                  <p className="text-sm text-gray-700">{describePeriod(rule)}</p>
                   <p className="text-sm text-gray-700">
                     表示: {menuNames.get(rule.richMenuId) ?? rule.richMenuId}
                   </p>
@@ -344,7 +400,7 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
       )}
 
       {form && (
-        <form onSubmit={(event) => void saveRule(event)} className="mt-5 rounded border border-green-200 bg-green-50/40 p-4 space-y-4">
+        <form noValidate onSubmit={(event) => void saveRule(event)} className="mt-5 rounded border border-green-200 bg-green-50/40 p-4 space-y-4">
           <h3 className="font-semibold text-sm text-gray-900">{form.id ? 'ルールを編集' : '新しいルール'}</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <label className="text-sm text-gray-700">
@@ -406,6 +462,37 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
               <span className="block mb-1">優先度</span>
               <input aria-label="優先度" type="number" step="1" min="-1000000" max="1000000" value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })} className="w-full rounded border border-gray-300 px-3 py-2" required />
             </label>
+            <fieldset className="md:col-span-2 rounded border border-gray-200 bg-white p-3">
+              <legend className="px-1 text-sm font-medium text-gray-800">表示期間（日本時間）</legend>
+              <p className="mb-3 text-xs text-gray-600">
+                両方空欄なら無期限です。開始だけ・終了だけでも設定できます。終了日時になると対象外になります。
+              </p>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <label className="text-sm text-gray-700">
+                  <span className="block mb-1">いつから（任意）</span>
+                  <input
+                    aria-label="いつから（任意）"
+                    type="datetime-local"
+                    step="60"
+                    value={form.activeFrom}
+                    onChange={(event) => setForm({ ...form, activeFrom: event.target.value })}
+                    className="w-full rounded border border-gray-300 px-3 py-2"
+                  />
+                </label>
+                <label className="text-sm text-gray-700">
+                  <span className="block mb-1">いつまで（任意）</span>
+                  <input
+                    aria-label="いつまで（任意）"
+                    type="datetime-local"
+                    step="60"
+                    min={form.activeFrom || undefined}
+                    value={form.activeUntil}
+                    onChange={(event) => setForm({ ...form, activeUntil: event.target.value })}
+                    className="w-full rounded border border-gray-300 px-3 py-2"
+                  />
+                </label>
+              </div>
+            </fieldset>
           </div>
           <label className="flex items-center gap-2 text-sm text-gray-700">
             <input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} />
