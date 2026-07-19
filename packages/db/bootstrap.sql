@@ -524,6 +524,23 @@ CREATE TABLE formaloo_forms (
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , allow_post_edit INTEGER NOT NULL DEFAULT 0, allow_edit_mail INTEGER NOT NULL DEFAULT 0, edit_mail_field_slug TEXT, edit_link_epoch INTEGER NOT NULL DEFAULT 0, formaloo_webhook_enabled INTEGER NOT NULL DEFAULT 0, formaloo_webhook_id TEXT, formaloo_webhook_secret TEXT, formaloo_webhook_url TEXT, formaloo_webhook_lock_token TEXT, formaloo_webhook_lock_until INTEGER, formaloo_webhook_pull_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_processed_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_lock_token TEXT, formaloo_webhook_pull_lock_until INTEGER, formaloo_webhook_pull_not_before INTEGER NOT NULL DEFAULT 0);
 
+CREATE TABLE formaloo_recurring_submissions (
+  id                   TEXT PRIMARY KEY,
+  form_id              TEXT NOT NULL REFERENCES formaloo_forms (id) ON DELETE CASCADE,
+  idempotency_key      TEXT NOT NULL,
+  remote_slug          TEXT,
+  schedule_json        TEXT NOT NULL,
+  submission_data_json TEXT NOT NULL DEFAULT '{}',
+  status               TEXT NOT NULL DEFAULT 'resumed' CHECK (status IN ('resumed', 'paused', 'cancelled')),
+  sync_state           TEXT NOT NULL DEFAULT 'pending' CHECK (sync_state IN ('pending', 'synced', 'failed')),
+  last_error           TEXT,
+  operation_token      TEXT,
+  operation_lock_until INTEGER,
+  created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE (form_id, idempotency_key)
+);
+
 CREATE TABLE formaloo_saved_filters (
   id          TEXT PRIMARY KEY,
   form_id     TEXT NOT NULL,
@@ -1330,6 +1347,13 @@ CREATE INDEX idx_formaloo_forms_account ON formaloo_forms (line_account_id, dele
 CREATE INDEX idx_formaloo_forms_folder ON formaloo_forms (folder_id);
 
 CREATE INDEX idx_formaloo_forms_slug ON formaloo_forms (formaloo_slug);
+
+CREATE INDEX idx_formaloo_recurring_form
+  ON formaloo_recurring_submissions (form_id, created_at DESC);
+
+CREATE UNIQUE INDEX idx_formaloo_recurring_remote_slug
+  ON formaloo_recurring_submissions (form_id, remote_slug)
+  WHERE remote_slug IS NOT NULL;
 
 CREATE INDEX idx_formaloo_saved_filters_form ON formaloo_saved_filters (form_id);
 
