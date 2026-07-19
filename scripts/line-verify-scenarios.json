@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "verifications": {
+    "webhook-signature-local": {
+      "kind": "webhook-local",
+      "target": "ks-no-write-webhook",
+      "description": "Generate a LINE HMAC signature and verify valid/invalid fixtures with the worker verifier."
+    },
+    "webhook-signature-deployed": {
+      "kind": "webhook-deployed",
+      "target": "ks-no-write-webhook",
+      "description": "POST signed and invalid fixtures to the deployed worker and distinguish both branches in live tail logs."
+    },
+    "hosted-form-scenario": {
+      "kind": "form-probe",
+      "target": "line-verify-rail-form",
+      "description": "Render, prefill, submit, re-enter, and edit a dedicated hosted test form through CDP with a LINE user agent."
+    }
+  },
+  "caseTypes": {
+    "webhook": [
+      "webhook-signature-local",
+      "webhook-signature-deployed"
+    ],
+    "liff-form": [
+      "hosted-form-scenario"
+    ],
+    "worker-change": [
+      "webhook-signature-local",
+      "webhook-signature-deployed",
+      "hosted-form-scenario"
+    ],
+    "all": [
+      "webhook-signature-local",
+      "webhook-signature-deployed",
+      "hosted-form-scenario"
+    ]
+  },
+  "targets": {
+    "webhook": {
+      "ks-no-write-webhook": {
+        "id": "ks-no-write-webhook",
+        "testOnly": true,
+        "url": "https://line-harness-ks.web-8af.workers.dev/webhook",
+        "allowedOrigin": "https://line-harness-ks.web-8af.workers.dev",
+        "allowedPath": "/webhook",
+        "sourcePolicy": "group-without-user",
+        "workerName": "line-harness-ks",
+        "wranglerConfig": "apps/worker/wrangler.ks.toml"
+      }
+    },
+    "forms": {
+      "line-verify-rail-form": {
+        "id": "line-verify-rail-form",
+        "testOnly": true,
+        "formId": "RS9u3Bbn",
+        "localFormId": "fa_9a43d10a-48a6-4072-9e57-98823d9d22f9",
+        "url": "https://peace-maker.formaloo.me/a7gxuq",
+        "allowedOrigins": [
+          "https://peace-maker.formaloo.me"
+        ],
+        "markerText": "LINE VERIFY RAIL TEST ONLY",
+        "formSelector": "form",
+        "fieldId": "9VrB4daS",
+        "fieldSelector": "input[name=\"9VrB4daS\"]",
+        "submitSelector": "button[type=\"submit\"]",
+        "successText": "LINE VERIFY RAIL SUBMITTED",
+        "submissionOrigins": [
+          "https://api.formaloo.me"
+        ],
+        "submissionPath": "/v3.0/form-displays/slug/RS9u3Bbn/submit/",
+        "prefillParam": "9VrB4daS",
+        "initialValue": "line-verify-prefill-20260719",
+        "editedValue": "line-verify-edited-20260719"
+      }
+    }
+  }
+}
