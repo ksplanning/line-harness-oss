@@ -603,3 +603,11 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 
 ### route-terminal-prefill-coexist — 両立設計完了・owner 選択待ち (2026-07-19 / Sola lane 設計案件)
 - **[REQUIRED-NEXT-ROUND] owner 選択待ち**: route-terminal (経路終端の自動送信) と fr_id/prefill (再入場 自動入力) は Formaloo 仕様上いまの形のままでは同一フォームで両立しない (実測確定)。設計書 `.plans/2026-07-19-route-terminal-prefill-coexist/design.md` に owner 向け3択を用意 — 🅒 推奨(使い捨てフォームで logic 形状を実測し PASS した形だけ本番候補化) / 🅐 現状維持(prefill フォームは logic 併用不可の運用ルール継続) / 🅑 非推奨(時刻相関の事後紐付け・PII 誤帰属リスクで不採用)。C 案の実測は未実施 (design.md §7 に理由明記・使い捨てフォームのみ・DELETE→404 契約で次案件の C-S0/C-S1 から着手できる tasks 雛形あり)。owner が 🅒 を選んだ場合、design.md 内の tasks 雛形をそのまま次案件へ流用可。本案件中の本番フォーム (Z5IEH85R/puw7lh/GMOxoMtK) への設定変更は 0 件。詳細: REPORT `.ars-state/REPORT_2026-07-19_014649_route-terminal-prefill-coexist.md`（workspace）。
+
+## chat-history-popup — 個別チャット履歴の拡大表示（2026-07-19 closer クローズ / Sola lane）
+- **owner 原文**: 「後追加でさ個別のチャット履歴をチャット風の窓で見れてるんだけど狭いからクリックしたら表示域をポップアップで広く表示出来るようにしてほしい」
+- **実装**: `apps/web/src/app/chats/page.tsx` にヘッダー「拡大表示」ボタンを追加。クリックで `role="dialog"` モーダルが開き、デスクトップは viewport 約90%、モバイル(390px)は全画面で同じチャット履歴を閲覧可能。閉じる = ✕ボタン（44×44px）/ 背景クリック / Esc の3経路。開いた直後は最新メッセージ位置にスクロール。既存の狭い窓（送信欄・メモ・対応ステータス操作）は無退行。
+- **land**: Sola lane（Generator-LLM: codex）→ review-desk PASS（独立 checkout 再実行 + 反転検証）→ closer が dual-push（origin+piecemaker・`verify-tenant-sync.sh` SHA一致確認）→ 両テナント admin デプロイ（ks Pages `004fc29c` / piecemaker Pages `c1e8fac9`）・health 200。
+- **closer 独立検証（Claude・実装者=Codexと別ベンダー）**: done_conditions D-1〜D-5 を headless Chrome (CDP 9222) の実レンダーで再検証（両テナントでログイン→/chats→友だち選択→拡大表示クリック→モーダルサイズ実測1296×810/1440×900=90%×90%→✕/背景/Escの3経路で閉じることを実機確認→モバイル390×844で全画面+閉じるボタン44×44pxを実測）。5/5 PASS。
+- **owner 実機確認待ち（pending_owner_confirmation）**: UI案件のため owner が実際に管理画面で「拡大表示」を試して OK と回答するまで completed に昇格しない。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-19_122348_chat-history-popup.md`（Box working folder 386663013201・box_file_id_md 2355921042235 / box_file_id_html 2355924066880）。
