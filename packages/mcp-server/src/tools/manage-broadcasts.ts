@@ -26,16 +26,19 @@ export function registerManageBroadcasts(server: McpServer): void {
 
         if (action === "list") {
           const broadcasts = await client.broadcasts.list(accountId ? { accountId } : undefined);
-          const enriched = (broadcasts as Array<Record<string, unknown>>).map((b) => ({
-            ...b,
-            insightStatus: b.insight_status || null,
-            openRate: b.open_rate != null
-              ? `${(Number(b.open_rate) * 100).toFixed(1)}%`
-              : null,
-            clickRate: b.click_rate != null
-              ? `${(Number(b.click_rate) * 100).toFixed(1)}%`
-              : null,
-          }));
+          const enriched = broadcasts.map((broadcast) => {
+            const raw = broadcast as unknown as Record<string, unknown>;
+            return {
+              ...broadcast,
+              insightStatus: raw.insight_status || null,
+              openRate: raw.open_rate != null
+                ? `${(Number(raw.open_rate) * 100).toFixed(1)}%`
+                : null,
+              clickRate: raw.click_rate != null
+                ? `${(Number(raw.click_rate) * 100).toFixed(1)}%`
+                : null,
+            };
+          });
           return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, broadcasts: enriched }, null, 2) }] };
         }
 
@@ -55,7 +58,7 @@ export function registerManageBroadcasts(server: McpServer): void {
 
         if (action === "get") {
           const broadcast = await client.broadcasts.get(broadcastId);
-          const row = broadcast as Record<string, unknown>;
+          const row = broadcast as unknown as Record<string, unknown>;
           const insight = row.insight_status
             ? {
                 status: row.insight_status,

@@ -8,7 +8,9 @@
   "main": "./dist/index.js",
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch"
+    "dev": "tsup --watch",
+    "pretypecheck": "pnpm --filter @line-harness/sdk build",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@line-harness/sdk": "workspace:*",
@@ -16,6 +18,7 @@
     "zod": "^3.24.4"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "tsup": "^8.4.0",
     "typescript": "^5.9.3"
   }

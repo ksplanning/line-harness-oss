@@ -26,14 +26,14 @@ export function registerManageAutoReplies(server: McpServer): void {
         if (action === "create") {
           if (!keyword) throw new Error("keyword is required for create");
           if (!responseContent) throw new Error("responseContent is required for create");
-          const createInput: Record<string, unknown> = {
+          const createInput: Parameters<typeof client.autoReplies.create>[0] = {
             keyword,
             responseContent,
           };
           if (matchType !== undefined) createInput.matchType = matchType;
           if (responseType !== undefined) createInput.responseType = responseType;
           if (lineAccountId !== undefined) createInput.lineAccountId = lineAccountId;
-          const item = await client.autoReplies.create(createInput as Parameters<typeof client.autoReplies.create>[0]);
+          const item = await client.autoReplies.create(createInput);
           return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, autoReply: item }, null, 2) }] };
         }
         if (!autoReplyId) throw new Error("autoReplyId is required for this action");
