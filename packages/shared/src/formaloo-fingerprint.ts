@@ -81,7 +81,6 @@ export interface ProjectedField {
   choicesSource?: string;
   /** treasure-b4-structural: matrix/repeating の pull 射影。 */
   matrixChoiceItems?: FormalooJsonObject;
-  matrixBulkChoices?: FormalooJsonObject;
   matrixChoiceGroups?: MatrixChoiceGroup[];
   repeatingColumns?: RepeatingSectionColumn[];
   minRows?: number;
@@ -173,9 +172,6 @@ function projectField(el: unknown, systemPositions: readonly number[]): Projecte
     if (field.type === 'matrix') {
       structural.matrixChoiceItems = field.config.matrixChoiceItems;
       structural.matrixChoiceGroups = field.config.matrixChoiceGroups;
-      if (field.config.matrixBulkChoices && Object.keys(field.config.matrixBulkChoices).length > 0) {
-        structural.matrixBulkChoices = field.config.matrixBulkChoices;
-      }
     } else {
       structural.repeatingColumns = field.config.repeatingColumns;
       if (field.config.minRows !== undefined) structural.minRows = field.config.minRows;

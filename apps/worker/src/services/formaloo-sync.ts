@@ -256,9 +256,9 @@ export async function pushDefinitionToFormaloo(
     }
 
     if (fieldSlug) {
-      // update = PATCH /v3.0/fields/{slug}/。choice_items を送らない (B6) = choices は不変 (dup も wipe も無し)。
+      // update = PATCH /v3.0/fields/{slug}/。choice_items は Formaloo 実 API の matrix でも 500 になるため送らない。
       const patchBody = toFormalooFieldPayload(field, resolveFieldSlug);
-      if (field.type !== 'matrix') delete patchBody.choice_items;
+      delete patchBody.choice_items;
       const r = await client.request('PATCH', `/v3.0/fields/${fieldSlug}/`, patchBody);
       if (r.status === 404) {
         // self-heal: Formaloo 側で field 削除済 → full payload (choices 込み) で作り直し。

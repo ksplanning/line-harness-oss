@@ -274,8 +274,6 @@ export interface HarnessFieldConfig {
   choiceFetchItems?: ChoiceFetchItem[];
   /** matrix の列。OpenAPI `object/additionalProperties` を JSON-safe raw のまま保持する。 */
   matrixChoiceItems?: FormalooJsonObject;
-  /** matrix の bulk_choices (OpenAPI additionalProperties object)。UI は編集せず pull→push 保持のみ。 */
-  matrixBulkChoices?: FormalooJsonObject;
   /** matrix の行。 */
   matrixChoiceGroups?: MatrixChoiceGroup[];
   /** repeating_section の列構成。columnField は harness field id。 */
@@ -501,6 +499,24 @@ function matrixChoiceItems(value: unknown): FormalooJsonObject | null {
   return out;
 }
 
+/** Formaloo 実 API の matrix 作成用 `bulk_choices` と editor 用 choice object を往復させる。 */
+function matrixChoiceItemsFromBulkChoices(value: unknown): FormalooJsonObject | null {
+  if (
+    !Array.isArray(value)
+    || value.length === 0
+    || !value.every((title) => typeof title === 'string' && title.trim())
+  ) return null;
+  return Object.fromEntries(value.map((title, index) => [`column_${index + 1}`, { title }]));
+}
+
+function matrixBulkChoiceTitles(value: FormalooJsonObject | undefined): string[] {
+  return Object.values(value ?? {}).flatMap((item) => (
+    item && typeof item === 'object' && !Array.isArray(item) && typeof item.title === 'string'
+      ? [item.title]
+      : []
+  ));
+}
+
 function matrixChoiceGroups(value: unknown): MatrixChoiceGroup[] | null {
   if (!Array.isArray(value) || value.length === 0) return null;
   const out: MatrixChoiceGroup[] = [];
@@ -685,11 +701,6 @@ export function validateHarnessField(
     if (!items) return { ok: false, error: 'config.matrixChoiceItems must be a non-empty JSON object' };
     config.matrixChoiceItems = items;
   }
-  if (rawCfg.matrixBulkChoices !== undefined) {
-    const bulk = cloneFormalooJsonObject(rawCfg.matrixBulkChoices);
-    if (!bulk) return { ok: false, error: 'config.matrixBulkChoices must be a JSON object' };
-    config.matrixBulkChoices = bulk;
-  }
   if (rawCfg.matrixChoiceGroups !== undefined) {
     const groups = matrixChoiceGroups(rawCfg.matrixChoiceGroups);
     if (!groups) return { ok: false, error: 'config.matrixChoiceGroups must be a non-empty {title,refId?,slug?,jsonKey?}[]' };
@@ -805,7 +816,7 @@ export function toFormalooFieldPayload(
       title: field.label,
       required: field.required,
       position: field.position,
-      choice_items: field.config.matrixChoiceItems ?? {},
+      bulk_choices: matrixBulkChoiceTitles(field.config.matrixChoiceItems),
       choice_groups: (field.config.matrixChoiceGroups ?? []).map((group) => ({
         ...(group.refId !== undefined ? { ref_id: group.refId } : {}),
         ...(group.slug !== undefined ? { slug: group.slug } : {}),
@@ -814,7 +825,6 @@ export function toFormalooFieldPayload(
       })),
     };
     if (field.config.description !== undefined) payload.description = field.config.description;
-    if (field.config.matrixBulkChoices !== undefined) payload.bulk_choices = field.config.matrixBulkChoices;
     if (field.config.formalooConfig !== undefined) payload.config = field.config.formalooConfig;
     if (field.config.shuffleChoices !== undefined) payload.shuffle_choices = field.config.shuffleChoices;
     return payload;
@@ -965,8 +975,10 @@ export function fromFormalooField(
   }
 
   if (formalooType === 'matrix') {
+    const pulledChoiceItems = matrixChoiceItems(o.choice_items)
+      ?? matrixChoiceItemsFromBulkChoices(o.bulk_choices);
     const structuralConfig: Record<string, unknown> = {
-      matrixChoiceItems: o.choice_items,
+      matrixChoiceItems: pulledChoiceItems ?? o.choice_items,
       matrixChoiceGroups: Array.isArray(o.choice_groups)
         ? o.choice_groups.map((raw) => {
           const group = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
@@ -980,7 +992,6 @@ export function fromFormalooField(
         : o.choice_groups,
     };
     if (typeof o.description === 'string') structuralConfig.description = o.description;
-    if (o.bulk_choices !== undefined) structuralConfig.matrixBulkChoices = o.bulk_choices;
     if (o.config !== undefined) structuralConfig.formalooConfig = o.config;
     if (typeof o.shuffle_choices === 'boolean') structuralConfig.shuffleChoices = o.shuffle_choices;
     const parsed = validateHarnessField({

@@ -62,9 +62,10 @@ describe('structural field transport', () => {
     ]);
     expect(posts[0].body).toEqual({
       form: 'FORM', title: '満足度', required: true, position: 1,
-      choice_items: { good: { title: '良い' }, bad: { title: '悪い' } },
+      bulk_choices: ['良い', '悪い'],
       choice_groups: [{ title: '接客' }, { title: '速度' }],
     });
+    expect(posts[0].body).not.toHaveProperty('choice_items');
     expect(posts[2].body).toEqual({
       form: 'FORM', title: '参加者', required: false, position: 2,
       column_groups: [{ column_field: 'NAME_SLUG', title: '氏名' }], min_rows: 1, max_rows: 3,
@@ -72,7 +73,7 @@ describe('structural field transport', () => {
     expect(result.fieldSlugs).toEqual({ name: 'NAME_SLUG', matrix: 'MATRIX_SLUG', repeat: 'REPEAT_SLUG' });
   });
 
-  test('matrix PATCH retains choice_items while ordinary choice PATCH keeps the legacy omission', async () => {
+  test('matrix PATCH uses bulk_choices while every PATCH omits choice_items', async () => {
     const { client, calls } = mockClient();
     const choice = {
       id: 'choice', type: 'choice', label: '選択', required: false, position: 0, config: { choices: ['A', 'B'] },
@@ -88,7 +89,8 @@ describe('structural field transport', () => {
     expect(choicePatch?.body).not.toHaveProperty('choice_items');
     expect(matrixPatch?.body).toMatchObject({
       type: 'matrix',
-      choice_items: { good: { title: '良い' }, bad: { title: '悪い' } },
+      bulk_choices: ['良い', '悪い'],
     });
+    expect(matrixPatch?.body).not.toHaveProperty('choice_items');
   });
 });

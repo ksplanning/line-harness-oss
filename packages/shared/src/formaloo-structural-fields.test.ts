@@ -24,10 +24,8 @@ describe('matrix field OpenAPI contract', () => {
     choice_items: {
       quality: { title: '良い', slug: 'CHOICE_GOOD', image: 'data:image/png;base64,AAA' },
       neutral: { title: '普通' },
-      provider_extension: { presentation: { badge: true }, order: 3 },
-      legacy_literal: '未型付けの選択肢',
     },
-    bulk_choices: { source: '良い\n普通' },
+    bulk_choices: ['良い', '普通'],
     choice_groups: [
       { ref_id: 'ROW_REF', slug: 'ROW_SERVICE', title: '接客', json_key: 'service' },
       { title: '速度' },
@@ -36,7 +34,7 @@ describe('matrix field OpenAPI contract', () => {
     shuffle_choices: true,
   };
 
-  test('pull whitelists row/column identifiers and push emits the same structural shape', () => {
+  test('pulls the bulk-created read shape and pushes only bulk_choices', () => {
     const field = fromFormalooField(remoteShape, () => 'matrix_id');
     expect(field).toEqual({
       id: 'matrix_id',
@@ -47,7 +45,6 @@ describe('matrix field OpenAPI contract', () => {
       config: {
         description: '各項目を選んでください',
         matrixChoiceItems: remoteShape.choice_items,
-        matrixBulkChoices: remoteShape.bulk_choices,
         matrixChoiceGroups: [
           { refId: 'ROW_REF', slug: 'ROW_SERVICE', title: '接客', jsonKey: 'service' },
           { title: '速度' },
@@ -57,18 +54,35 @@ describe('matrix field OpenAPI contract', () => {
       },
     });
 
-    expect(toFormalooFieldPayload(field!)).toEqual({
+    const payload = toFormalooFieldPayload(field!);
+    expect(payload).toEqual({
       type: 'matrix',
       title: '満足度',
       required: true,
       position: 2,
       description: '各項目を選んでください',
-      choice_items: remoteShape.choice_items,
-      bulk_choices: remoteShape.bulk_choices,
+      bulk_choices: ['良い', '普通'],
       choice_groups: remoteShape.choice_groups,
       config: { layout: 'compact' },
       shuffle_choices: true,
     });
+    expect(payload).not.toHaveProperty('choice_items');
+  });
+
+  test('pulls a bulk-only response into editable columns and re-emits it symmetrically', () => {
+    const field = fromFormalooField({
+      slug: 'MATRIX_SLUG', type: 'matrix', title: '満足度', required: true, position: 2,
+      bulk_choices: ['良い', '普通'],
+      choice_groups: [{ title: '接客' }],
+    }, () => 'matrix_id');
+
+    expect(field?.config.matrixChoiceItems).toEqual({
+      column_1: { title: '良い' },
+      column_2: { title: '普通' },
+    });
+    const payload = toFormalooFieldPayload(field!);
+    expect(payload).toMatchObject({ bulk_choices: ['良い', '普通'] });
+    expect(payload).not.toHaveProperty('choice_items');
   });
 
   test('requires a non-empty JSON object of columns and at least one titled row', () => {

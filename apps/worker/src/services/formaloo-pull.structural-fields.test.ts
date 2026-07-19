@@ -20,6 +20,7 @@ describe('structural fields pull integration', () => {
       {
         slug: 'MATRIX_SLUG', type: 'matrix', title: '満足度', required: true, position: 1,
         choice_items: { good: { title: '良い', slug: 'GOOD' }, bad: { title: '悪い' } },
+        bulk_choices: ['良い', '悪い'],
         choice_groups: [{ ref_id: 'ROW_REF', slug: 'ROW', title: '接客', json_key: 'service' }],
         shuffle_choices: true,
       },
@@ -50,11 +51,13 @@ describe('structural fields pull integration', () => {
     ]);
 
     const slugById = result.fieldSlugById ?? {};
-    expect(toFormalooFieldPayload(result.fields[1])).toMatchObject({
-      choice_items: fields[1].choice_items,
+    const matrixPayload = toFormalooFieldPayload(result.fields[1]);
+    expect(matrixPayload).toMatchObject({
+      bulk_choices: ['良い', '悪い'],
       choice_groups: fields[1].choice_groups,
       shuffle_choices: true,
     });
+    expect(matrixPayload).not.toHaveProperty('choice_items');
     expect(toFormalooFieldPayload(result.fields[2], (id) => slugById[id])).toMatchObject({
       column_groups: fields[2].column_groups,
       min_rows: 1,

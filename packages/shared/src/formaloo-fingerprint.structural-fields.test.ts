@@ -8,6 +8,7 @@ import {
 const matrix = (rowTitle = '接客') => ({
   slug: 'MATRIX', type: 'matrix', title: '満足度', required: true, position: 1,
   choice_items: { good: { title: '良い', slug: 'GOOD' }, bad: { title: '悪い' } },
+  bulk_choices: ['良い', '悪い'],
   choice_groups: [{ ref_id: 'ROW_REF', slug: 'ROW', title: rowTitle, json_key: 'service' }],
   config: { layout: 'compact' }, shuffle_choices: false,
 });
