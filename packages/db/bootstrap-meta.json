@@ -88,7 +88,8 @@
     "101_formaloo_edit_mail.sql",
     "102_lp_hosting.sql",
     "103_formaloo_friend_metadata_mapping.sql",
-    "104_formaloo_receipt_metadata.sql"
+    "104_formaloo_receipt_metadata.sql",
+    "106_formaloo_webhook_registration.sql"
   ],
-  "migrationCount": 89
+  "migrationCount": 90
 }

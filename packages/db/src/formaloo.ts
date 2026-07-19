@@ -40,6 +40,11 @@ export interface FormalooForm {
   edit_link_epoch: number;
   // migration 103: Formaloo field slug/alias → friend.metadata key。[] = 未設定・完全 no-op。
   friend_metadata_mappings_json: string;
+  // migration 106: form 単位の Formaloo outbound webhook。既定 OFF・read-back 成功後のみ enabled=1。
+  formaloo_webhook_enabled: number;
+  formaloo_webhook_id: string | null;
+  formaloo_webhook_secret: string | null;
+  formaloo_webhook_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -277,6 +282,54 @@ export async function listFormalooForms(
 
 export async function getFormalooForm(db: D1Database, id: string): Promise<FormalooForm | null> {
   return db.prepare('SELECT * FROM formaloo_forms WHERE id = ?').bind(id).first<FormalooForm>();
+}
+
+/**
+ * read-back で submit event=true を確認できた remote webhook だけを有効登録として保存する。
+ * callback secret / URL は公開 API に直返しせず、新しい受信 route の照合にだけ使う。
+ */
+export async function setFormalooWebhookRegistration(
+  db: D1Database,
+  formId: string,
+  registration: { webhookId: string; secret: string; url: string },
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_enabled = 1,
+           formaloo_webhook_id = ?,
+           formaloo_webhook_secret = ?,
+           formaloo_webhook_url = ?,
+           updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(
+      registration.webhookId,
+      registration.secret,
+      registration.url,
+      jstNow(),
+      formId,
+    )
+    .run();
+}
+
+/** remote 解除成功（404=既に無しを含む）後に local 登録を既定 OFF へ戻す。 */
+export async function clearFormalooWebhookRegistration(
+  db: D1Database,
+  formId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_enabled = 0,
+           formaloo_webhook_id = NULL,
+           formaloo_webhook_secret = NULL,
+           formaloo_webhook_url = NULL,
+           updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(jstNow(), formId)
+    .run();
 }
 
 export async function getFormalooFieldMap(

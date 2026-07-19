@@ -513,7 +513,7 @@ CREATE TABLE formaloo_forms (
   friend_metadata_mappings_json TEXT NOT NULL DEFAULT '[]', -- migration 103: Formaloo row → friend.metadata (空配列=OFF)
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, allow_post_edit INTEGER NOT NULL DEFAULT 0, allow_edit_mail INTEGER NOT NULL DEFAULT 0, edit_mail_field_slug TEXT, edit_link_epoch INTEGER NOT NULL DEFAULT 0);
+, allow_post_edit INTEGER NOT NULL DEFAULT 0, allow_edit_mail INTEGER NOT NULL DEFAULT 0, edit_mail_field_slug TEXT, edit_link_epoch INTEGER NOT NULL DEFAULT 0, formaloo_webhook_enabled INTEGER NOT NULL DEFAULT 0, formaloo_webhook_id TEXT, formaloo_webhook_secret TEXT, formaloo_webhook_url TEXT);
 
 CREATE TABLE formaloo_saved_filters (
   id          TEXT PRIMARY KEY,
