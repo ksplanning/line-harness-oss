@@ -611,3 +611,10 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **closer 独立検証（Claude・実装者=Codexと別ベンダー）**: done_conditions D-1〜D-5 を headless Chrome (CDP 9222) の実レンダーで再検証（両テナントでログイン→/chats→友だち選択→拡大表示クリック→モーダルサイズ実測1296×810/1440×900=90%×90%→✕/背景/Escの3経路で閉じることを実機確認→モバイル390×844で全画面+閉じるボタン44×44pxを実測）。5/5 PASS。
 - **owner 実機確認待ち（pending_owner_confirmation）**: UI案件のため owner が実際に管理画面で「拡大表示」を試して OK と回答するまで completed に昇格しない。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-19_122348_chat-history-popup.md`（Box working folder 386663013201・box_file_id_md 2355921042235 / box_file_id_html 2355924066880）。
+
+## line-verify-rail — LINE 実機検証レール dogfood 締め（2026-07-19 closer クローズ / status: completed）
+- **owner 原文**: 「実機検証しないから毎回わたしがしないといけない。権限を完全委譲するからやってもらえないか」
+- **上流案件（land 済・純増4ファイル）**: `scripts/line-verify-rail.ts`(1124行) / `scripts/line-verify-scenarios.json` / `docs/line-verify-rail.md` / test。desk R1 PASS（origin+piecemaker dual-push・118289b・verify-tenant-sync OK）。
+- **本 closer が実施**: レール1コマンド（`pnpm exec tsx scripts/line-verify-rail.ts --scenario all`）を実際に実行し、①署名付き webhook 実射（正当署名→パースエラー分岐/不正署名→拒否分岐、両方 deployed Worker への実POST + ライブ wrangler tail ログで確認）②LIFF/フォーム probe（LINE UA+CDP で hosted test form の5フェーズ全実行・スクショ/HTML保存）を実測。**PASS**（1回目は wrangler tail 購読 warm-up のフレークで FAIL したが2回目 PASS・詳細は REPORT「未解決」）。既存 suite 全緑（shared 421/421・worker 2310/2310・web 1051/1051）。done_conditions D-1〜D-5 は closer（Claude・実装者=Codex と別ベンダー）が dogfood 実測で 5/5 独立検証。
+- 💡 任意磨き込み（後回し可）: `WRANGLER_TAIL_SETTLE_MS`(2000ms) を伸ばして初回コールドスタートのフレーク発生率を下げる。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-19_162820_line-verify-rail.md`（Box working folder 386663013201・box_file_id_md 2356159015079 / box_file_id_html 2356158587350）。
