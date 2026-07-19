@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { api } from '@/lib/api'
+import { isReservedFriendMetadataKey } from '@line-crm/shared'
 
 interface FriendDetail {
   id: string
@@ -108,6 +109,10 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
     })
     return () => { cancelled = true }
   }, [friendId])
+
+  const visibleMetadata = friend
+    ? Object.entries(friend.metadata).filter(([key]) => !isReservedFriendMetadataKey(key))
+    : []
 
   if (!friendId) return null
 
@@ -227,11 +232,11 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
             </div>
 
             {/* Metadata custom fields */}
-            {friend.metadata && Object.keys(friend.metadata).length > 0 && (
+            {visibleMetadata.length > 0 && (
               <div className="p-4">
                 <h4 className="text-[11px] font-medium text-gray-500 mb-2">友だち情報</h4>
                 <dl className="space-y-2 text-xs">
-                  {Object.entries(friend.metadata).map(([key, value]) => (
+                  {visibleMetadata.map(([key, value]) => (
                     <div key={key}>
                       <dt className="text-[10px] text-gray-400 uppercase tracking-wide">{key}</dt>
                       <dd className="text-gray-700 mt-0.5 whitespace-pre-wrap break-words">{renderValue(value)}</dd>

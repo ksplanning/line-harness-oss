@@ -11,6 +11,7 @@ import {
   jstNow,
 } from '@line-crm/db';
 import type { Friend as DbFriend, Tag as DbTag } from '@line-crm/db';
+import { isReservedFriendMetadataKey } from '@line-crm/shared';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage } from '../services/step-delivery.js';
 import type { Env } from '../index.js';
@@ -509,20 +510,41 @@ friends.put('/api/friends/:id/metadata', async (c) => {
     const friendId = c.req.param('id');
     const db = c.env.DB;
 
-    const friend = await getFriendById(db, friendId);
+    let friend = await getFriendById(db, friendId);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
 
     const body = await c.req.json<Record<string, unknown>>();
-    const existing = JSON.parse(friend.metadata || '{}');
-    const merged = { ...existing, ...body };
-    const now = jstNow();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ success: false, error: 'Metadata must be an object' }, 400);
+    }
+    if (Object.keys(body).some(isReservedFriendMetadataKey)) {
+      return c.json({ success: false, error: '予約された個人情報の項目名は更新できません' }, 400);
+    }
 
-    await db
-      .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
-      .bind(JSON.stringify(merged), now, friendId)
-      .run();
+    // read-modify-write は metadata 全体を巻き戻すため、元 JSON を CAS 条件にして最大2回 retry。
+    // 自動 Formaloo 同期が間に入っても、由来 marker や他キーを消さない。
+    let saved = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const existing = JSON.parse(friend.metadata || '{}') as unknown;
+      if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+        return c.json({ success: false, error: 'Stored metadata is invalid' }, 500);
+      }
+      const merged = Object.assign(Object.create(null) as Record<string, unknown>, existing, body);
+      const result = await db
+        .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ? AND metadata IS ?')
+        .bind(JSON.stringify(merged), jstNow(), friendId, friend.metadata)
+        .run();
+      if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1) {
+        saved = true;
+        break;
+      }
+      const latest = await getFriendById(db, friendId);
+      if (!latest) return c.json({ success: false, error: 'Friend not found' }, 404);
+      friend = latest;
+    }
+    if (!saved) return c.json({ success: false, error: 'Metadata was updated concurrently' }, 409);
 
     const updated = await getFriendById(db, friendId);
     const tags = await getFriendTags(db, friendId);

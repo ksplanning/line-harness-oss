@@ -24,8 +24,8 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect, SuccessPageSpec } from '@line-crm/shared'
-import { computeRouteTerminalWarnings, validateRedirectUrl } from '@line-crm/shared'
+import type { HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping } from '@line-crm/shared'
+import { computeRouteTerminalWarnings, MAX_FRIEND_METADATA_MAPPINGS, validateRedirectUrl } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
   FIELD_CATEGORIES,
@@ -85,13 +85,15 @@ export interface BuilderProps {
   initialFormRedirect?: FormRedirect
   /** route-terminal-phase2 (Track 2): 初期のルート別完了ページ (割当 slug 込み)。未設定は空 = SP なし。 */
   initialSuccessPages?: SuccessPageSpec[]
+  /** row-status-friend-sync: form 単位の Formaloo field → friend.metadata mapping。 */
+  initialFriendMetadataMappings?: FriendMetadataMapping[]
   /** form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。未設定は 0 (=編集不可=現状挙動)。弾S は inert。 */
   initialAllowPostEdit?: number
   /** form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。 */
   initialAllowEditMail?: number
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
@@ -830,6 +832,22 @@ export default function FormBuilder(props: BuilderProps) {
   const [allowPostEdit, setAllowPostEdit] = useState<number>(props.initialAllowPostEdit ?? 0)
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。allow_post_edit=1 でのみ有効 (依存を UI で表現)。
   const [allowEditMail, setAllowEditMail] = useState<number>(props.initialAllowEditMail ?? 0)
+  const [friendMetadataMappings, setFriendMetadataMappings] = useState<FriendMetadataMapping[]>(props.initialFriendMetadataMappings ?? [])
+  const [friendMetadataMappingsTouched, setFriendMetadataMappingsTouched] = useState(false)
+  const mutateFriendMetadataMappings = (next: FriendMetadataMapping[]) => {
+    setFriendMetadataMappings(next)
+    setFriendMetadataMappingsTouched(true)
+  }
+  const addFriendMetadataMapping = () => {
+    if (friendMetadataMappings.length >= MAX_FRIEND_METADATA_MAPPINGS) return
+    mutateFriendMetadataMappings([...friendMetadataMappings, { formalooFieldKey: '', friendMetadataKey: '' }])
+  }
+  const updateFriendMetadataMapping = (index: number, patch: Partial<FriendMetadataMapping>) => {
+    mutateFriendMetadataMappings(friendMetadataMappings.map((mapping, current) => current === index ? { ...mapping, ...patch } : mapping))
+  }
+  const removeFriendMetadataMapping = (index: number) => {
+    mutateFriendMetadataMappings(friendMetadataMappings.filter((_, current) => current !== index))
+  }
   // jump 追加時: simple なら multi_step へ自動切替 + 可視通知 (多層防御の主機構)。
   const ensureMultiStep = () => {
     setFormType('multi_step')
@@ -937,7 +955,7 @@ export default function FormBuilder(props: BuilderProps) {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
       // form-jp-localization: 文言を触ったときだけ完全 object で載せる (初期未編集は absent = 既存不干渉)。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), allowPostEdit, allowEditMail })
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), ...(friendMetadataMappingsTouched ? { friendMetadataMappings } : {}), allowPostEdit, allowEditMail })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
@@ -1093,6 +1111,62 @@ export default function FormBuilder(props: BuilderProps) {
         <span className="basis-full text-[10px] text-gray-400 leading-snug">
           ※ この設定はいまは保存のみで、実際に効き始めるのは「あと編集」機能（次の弾）を作ってからです。
         </span>
+      </div>
+
+      <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="friend-metadata-mapping-section">
+        <div className="text-xs font-medium text-gray-600 mb-1">友だち個人情報への反映</div>
+        {friendMetadataMappings.length === 0 ? (
+          <p className="text-[11px] text-gray-400">未設定のため自動反映しません。</p>
+        ) : (
+          <div className="space-y-2">
+            {friendMetadataMappings.map((mapping, index) => (
+              <div key={index} className="rounded border border-gray-200 bg-white px-2 py-2">
+                <div className="grid gap-2 md:grid-cols-2">
+                  <label className="block text-[11px] text-gray-500">
+                    Formaloo field slug / alias
+                    <input
+                      aria-label="Formaloo field slug / alias"
+                      value={mapping.formalooFieldKey}
+                      onChange={(event) => updateFriendMetadataMapping(index, { formalooFieldKey: event.target.value })}
+                      placeholder="例: BjEp0J2J"
+                      className="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm"
+                    />
+                  </label>
+                  <label className="block text-[11px] text-gray-500">
+                    個人情報の項目名
+                    <input
+                      aria-label="個人情報の項目名"
+                      value={mapping.friendMetadataKey}
+                      onChange={(event) => updateFriendMetadataMapping(index, { friendMetadataKey: event.target.value })}
+                      placeholder="例: 入金確認"
+                      className="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm"
+                    />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  aria-label="反映ルールを削除"
+                  onClick={() => removeFriendMetadataMapping(index)}
+                  className="mt-1 text-[11px] text-red-600 hover:text-red-700"
+                >
+                  このルールを削除
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={addFriendMetadataMapping}
+          disabled={friendMetadataMappings.length >= MAX_FRIEND_METADATA_MAPPINGS}
+          className="mt-2 text-xs disabled:opacity-50"
+          style={{ color: LINE_GREEN }}
+        >
+          ＋反映ルールを追加
+        </button>
+        <p className="mt-2 text-[10px] text-gray-400 leading-snug">
+          ※ 設定した項目は Formaloo の値を正とし、手動で直しても次の回答再取得時に Formaloo の値へ戻ります。設定していない個人情報項目は変更しません。
+        </p>
       </div>
 
       {/* form-edit-mail-link (弾L): フォーム単位「メールで編集 URL を送る」トグル。

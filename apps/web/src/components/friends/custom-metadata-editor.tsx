@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '@/lib/api'
+import { isReservedFriendMetadataKey } from '@line-crm/shared'
 
 interface CustomMetadataEditorProps {
   /** 対象の友だち ID。expander が開いたときに metadata を fetch する。 */
@@ -45,6 +46,7 @@ export default function CustomMetadataEditor({ friendId }: CustomMetadataEditorP
         const raw = (res.data.metadata ?? {}) as Record<string, unknown>
         const normalized: Record<string, string> = {}
         for (const [k, v] of Object.entries(raw)) {
+          if (isReservedFriendMetadataKey(k)) continue
           normalized[k] = v == null ? '' : String(v)
         }
         setMetadata(normalized)
@@ -86,6 +88,10 @@ export default function CustomMetadataEditor({ friendId }: CustomMetadataEditorP
     const key = newKey.trim()
     if (key === '') {
       setAddError('項目名を入力してください')
+      return
+    }
+    if (isReservedFriendMetadataKey(key)) {
+      setAddError('この項目名は予約されているため使えません')
       return
     }
     setAddError('')

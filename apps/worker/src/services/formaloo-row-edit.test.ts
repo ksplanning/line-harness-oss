@@ -244,6 +244,21 @@ describe('T-A6 pullFriendReconcileInputs — bounded targeted pull → friend_id
     expect(inputs[0].id).toBe('R1');
   });
 
+  test('targeted pull も form mapping を verified metadata intent へ載せる', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const client = clientReturning({
+      1: { data: { rows: [{ slug: 'R_PAY', created_at: '2026-07-19T12:00:00Z', data: { BjEp0J2J: '済' }, rendered_data: [{ alias: 'fr_id', value: token }] }] } },
+    });
+    const inputs = await pullFriendReconcileInputs(client, {
+      ...FORM_H,
+      friend_metadata_mappings_json: JSON.stringify([{ formalooFieldKey: 'BjEp0J2J', friendMetadataKey: '入金確認' }]),
+    }, { friendTokenSecret: FR_SECRET });
+    expect(inputs[0].verifiedFriendMetadataSync).toEqual({
+      friendId: 'frA',
+      updates: [{ formalooFieldKey: 'BjEp0J2J', friendMetadataKey: '入金確認', value: '済' }],
+    });
+  });
+
   test('非2xx はループ終了 (fail-safe・空配列)', async () => {
     const client = { get: vi.fn(async () => ({ ok: false, status: 500, error: 'x' }) as const) };
     expect(await pullFriendReconcileInputs(client, FORM_H, { friendTokenSecret: FR_SECRET })).toEqual([]);
@@ -288,5 +303,104 @@ describe('D-6 friendLinkSecret — friend_id 復元 kill-switch (additive rollba
   test('secret 未設定 → null (fail-closed)', () => {
     expect(friendLinkSecret({})).toBeNull();
     expect(friendLinkSecret({ FORMALOO_RECONCILE_FRIEND_LINK_DISABLE: 'true' })).toBeNull();
+  });
+});
+
+describe('row-status-friend-sync — verified row metadata intent', () => {
+  const mappedForm = {
+    ...FORM_H,
+    friend_metadata_mappings_json: JSON.stringify([
+      { formalooFieldKey: 'BjEp0J2J', friendMetadataKey: '入金確認' },
+      { formalooFieldKey: 'payment_alias', friendMetadataKey: '入金メモ' },
+    ]),
+  };
+
+  test('署名 fr_id 検証成功時だけ slug/alias の row 値を sync intent にする', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const row = {
+      slug: 'ROW_PAY',
+      created_at: '2026-07-19T12:00:00Z',
+      data: { BjEp0J2J: '済' },
+      rendered_data: [
+        { alias: 'fr_id', value: token },
+        { alias: 'payment_alias', value: 'カード決済済み' },
+      ],
+    };
+    const input = await mapFormalooListRowToUpsert(row, mappedForm, { friendTokenSecret: FR_SECRET });
+    expect(input?.verifiedFriendMetadataSync).toEqual({
+      friendId: 'frA',
+      updates: [
+        { formalooFieldKey: 'BjEp0J2J', friendMetadataKey: '入金確認', value: '済' },
+        { formalooFieldKey: 'payment_alias', friendMetadataKey: '入金メモ', value: 'カード決済済み' },
+      ],
+    });
+  });
+
+  test('改ざん token / secret 未供給は intent を返さず fail-closed', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const tampered = `${token}x`;
+    const row = { slug: 'ROW_BAD', data: { BjEp0J2J: '済' }, rendered_data: [{ alias: 'fr_id', value: tampered }] };
+    const invalid = await mapFormalooListRowToUpsert(row, mappedForm, { friendTokenSecret: FR_SECRET });
+    const noSecret = await mapFormalooListRowToUpsert(row, mappedForm);
+    expect(invalid?.friendId).toBeNull();
+    expect(invalid?.verifiedFriendMetadataSync).toBeUndefined();
+    expect(noSecret?.verifiedFriendMetadataSync).toBeUndefined();
+  });
+
+  test('mapping 未設定 / source 値欠落は既存 upsert のままで何もしない', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const row = { slug: 'ROW_EMPTY', data: {}, rendered_data: [{ alias: 'fr_id', value: token }] };
+    const noMapping = await mapFormalooListRowToUpsert(row, FORM_H, { friendTokenSecret: FR_SECRET });
+    const noValue = await mapFormalooListRowToUpsert(row, mappedForm, { friendTokenSecret: FR_SECRET });
+    expect(noMapping?.verifiedFriendMetadataSync).toBeUndefined();
+    expect(noValue?.verifiedFriendMetadataSync).toBeUndefined();
+  });
+
+  test('値を空文字にした時も slug/alias mapping の clear intent を返す', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const row = {
+      slug: 'ROW_CLEAR',
+      created_at: '2026-07-19T12:00:00Z',
+      data: { BjEp0J2J: '' },
+      rendered_data: [
+        { alias: 'fr_id', value: token },
+        { alias: 'payment_alias', value: '' },
+      ],
+    };
+    const input = await mapFormalooListRowToUpsert(row, mappedForm, { friendTokenSecret: FR_SECRET });
+    expect(input?.verifiedFriendMetadataSync?.updates).toEqual([
+      { formalooFieldKey: 'BjEp0J2J', friendMetadataKey: '入金確認', value: '' },
+      { formalooFieldKey: 'payment_alias', friendMetadataKey: '入金メモ', value: '' },
+    ]);
+  });
+
+  test('alias の number/boolean も個人情報用の文字列にする', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const input = await mapFormalooListRowToUpsert({
+      slug: 'ROW_SCALAR',
+      created_at: '2026-07-19T12:00:00Z',
+      data: {},
+      rendered_data: [
+        { alias: 'fr_id', value: token },
+        { alias: 'payment_alias', value: 1 },
+      ],
+    }, mappedForm, { friendTokenSecret: FR_SECRET });
+    expect(input?.verifiedFriendMetadataSync?.updates).toContainEqual({
+      formalooFieldKey: 'payment_alias', friendMetadataKey: '入金メモ', value: '1',
+    });
+  });
+
+  test('created_at 欠落/不正 row は friend_id を復元しても metadata intent を作らない', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    for (const created_at of [undefined, 'not-a-date']) {
+      const input = await mapFormalooListRowToUpsert({
+        slug: `ROW_${created_at ?? 'MISSING'}`,
+        ...(created_at === undefined ? {} : { created_at }),
+        data: { BjEp0J2J: '未' },
+        rendered_data: [{ alias: 'fr_id', value: token }],
+      }, mappedForm, { friendTokenSecret: FR_SECRET });
+      expect(input?.friendId).toBe('frA');
+      expect(input?.verifiedFriendMetadataSync).toBeUndefined();
+    }
   });
 });

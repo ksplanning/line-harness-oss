@@ -21,11 +21,17 @@ import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formsAdvanced } from './forms-advanced.js';
 import { mapFormalooListRowToUpsert } from '../services/formaloo-row-edit.js';
+import { signFriendToken } from '../services/formaloo-friend-token.js';
 import type { Env } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
 const BENIGN = /duplicate column name|already exists/i;
+const FRIEND_TOKEN_SECRET = 'rows_reconcile_friend_metadata_test_secret';
+const PAYMENT_FIELD = 'BjEp0J2J';
+const FRIEND_METADATA_MAPPINGS = JSON.stringify([
+  { formalooFieldKey: PAYMENT_FIELD, friendMetadataKey: '入金確認' },
+]);
 
 function d1(db: Database.Database): D1Database {
   return {
@@ -99,6 +105,21 @@ function seedForm(id: string, slug: string | null = null) {
   raw.prepare(`INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status) VALUES (?,?,?,?)`)
     .run(id, slug ?? `slug_${id}`, 'テスト', 'published');
 }
+function seedMappedForm(id: string, slug: string) {
+  raw.prepare(
+    `INSERT INTO formaloo_forms
+       (id, formaloo_slug, title, builder_status, friend_metadata_mappings_json)
+     VALUES (?,?,?,?,?)`,
+  ).run(id, slug, 'テスト', 'published', FRIEND_METADATA_MAPPINGS);
+}
+function seedFriend(id: string, metadata: Record<string, unknown>) {
+  raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, metadata) VALUES (?,?,?,?)`)
+    .run(id, `U_${id}`, '田中', JSON.stringify(metadata));
+}
+function friendMetadata(id: string): Record<string, unknown> {
+  const row = raw.prepare('SELECT metadata FROM friends WHERE id=?').get(id) as { metadata: string };
+  return JSON.parse(row.metadata) as Record<string, unknown>;
+}
 function seedSub(id: string, formId: string, answers: Record<string, unknown>, submittedAt: string) {
   raw.prepare(`INSERT INTO formaloo_submissions (id, form_id, answers_json, submitted_at) VALUES (?,?,?,?)`)
     .run(id, formId, JSON.stringify(answers), submittedAt);
@@ -124,6 +145,22 @@ function realRow(slug: string, submitCode: string, answers: Record<string, unkno
     updated_at: createdAt,
     status: 'active',
   };
+}
+
+async function signedMappedRow(
+  slug: string,
+  friendId: string,
+  paymentStatus: string,
+  createdAt = '2026-07-19T14:00:00+09:00',
+): Promise<Record<string, unknown>> {
+  const token = await signFriendToken(friendId, FRIEND_TOKEN_SECRET);
+  const row = realRow(slug, `submit_${slug}`, { [PAYMENT_FIELD]: paymentStatus }, createdAt);
+  row.rendered_data = [
+    ...(row.rendered_data as unknown[]),
+    { slug: 'friend_token_field', alias: 'fr_id', type: 'hidden', value: token, raw_value: token },
+  ];
+  row.data = { ...(row.data as Record<string, unknown>), friend_token_field: token };
+  return row;
 }
 
 /** rows-list body を S-1 実測どおりに包む (data.rows・extractRows が data.data.rows を解決)。 */
@@ -229,6 +266,51 @@ describe('T-A1 /rows reconcile (RED: 現行は空を返す / GREEN: Formaloo か
     await call('GET', '/api/forms-advanced/fa1/rows');
     await call('GET', '/api/forms-advanced/fa1/rows');
     expect(mirrorCount('fa1')).toBe(1);
+  });
+});
+
+describe('D-2 /rows reconcile — 署名 fr_id の mapped row を friend.metadata へ反映', () => {
+  test('有効 HMAC + form mapping の「済」を本人の入金確認だけに反映する', async () => {
+    seedMappedForm('fa1', 'GMOxoMtK');
+    seedFriend('frA', { 入金確認: '未', 備考: '手動値を保持' });
+    const row = await signedMappedRow('paidRow', 'frA', '済');
+    stubFormaloo((page) => (page === 1 ? [row] : []));
+
+    const res = await call('GET', '/api/forms-advanced/fa1/rows', {
+      FORMALOO_FRIEND_TOKEN_SECRET: FRIEND_TOKEN_SECRET,
+    });
+
+    expect(res.status).toBe(200);
+    expect(mirrorRow('paidRow')?.friend_id).toBe('frA');
+    expect(friendMetadata('frA')).toMatchObject({
+      入金確認: '済',
+      備考: '手動値を保持',
+      __formaloo_friend_metadata_sync: {
+        入金確認: {
+          formId: 'fa1',
+          rowId: 'paidRow',
+          formalooFieldKey: PAYMENT_FIELD,
+          value: '済',
+        },
+      },
+    });
+  });
+
+  test('friend-link kill-switch 中は valid token でも friend.metadata を変更しない', async () => {
+    seedMappedForm('fa1', 'GMOxoMtK');
+    const before = { 入金確認: '未', 備考: '手動値を保持' };
+    seedFriend('frA', before);
+    const row = await signedMappedRow('disabledRow', 'frA', '済');
+    stubFormaloo((page) => (page === 1 ? [row] : []));
+
+    const res = await call('GET', '/api/forms-advanced/fa1/rows', {
+      FORMALOO_FRIEND_TOKEN_SECRET: FRIEND_TOKEN_SECRET,
+      FORMALOO_RECONCILE_FRIEND_LINK_DISABLE: 'true',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mirrorRow('disabledRow')?.friend_id).toBeNull();
+    expect(friendMetadata('frA')).toEqual(before);
   });
 });
 

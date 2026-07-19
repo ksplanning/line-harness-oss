@@ -1,5 +1,5 @@
 import { fetchApi, downloadCsv } from './api'
-import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping } from '@line-crm/shared'
 
 // =============================================================================
 // 高機能フォーム (Formaloo-backed) API クライアント (F-2 / T-B1)。fetchApi 経由 (cookie 認証 + CSRF)。
@@ -38,6 +38,7 @@ export interface AdvancedForm {
   formRedirect?: FormRedirect | null
   // route-terminal-phase2 (Track 2 / T-E5): ルート別完了ページ (builder の initialSuccessPages)。未設定は null。
   successPages?: SuccessPageSpec[] | null
+  friendMetadataMappings?: FriendMetadataMapping[]
   // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。既定 0=現状挙動。弾S は inert (実効化は弾M)。
   allowPostEdit?: number
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。
@@ -97,6 +98,8 @@ export interface SaveDefinitionBody {
   formRedirect?: FormRedirect
   // route-terminal-phase2 (Track 2 / T-E5): ルート別完了ページ。builder が触ったときだけ載る (present-key)。
   successPages?: SuccessPageSpec[]
+  // row-status-friend-sync: form 単位の Formaloo field → friend.metadata mapping。
+  friendMetadataMappings?: FriendMetadataMapping[]
   // form-media-limits ③: 回答者後編集の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。
   allowPostEdit?: number
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。

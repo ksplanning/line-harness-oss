@@ -8,7 +8,7 @@ import SharePanel from '@/components/forms-advanced/share-panel'
 import { formsAdvancedApi, type AdvancedForm, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
-import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec } from '@line-crm/shared'
+import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping } from '@line-crm/shared'
 
 // F-2/F-5 フォームビルダー本体。id は detail/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
 export default function FormBuilderClient({ id }: { id: string }) {
@@ -57,7 +57,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
     }
   }
 
-  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; allowPostEdit?: number; allowEditMail?: number }) => {
+  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; allowPostEdit?: number; allowEditMail?: number }) => {
     try {
       // preserve-raw: builder が carry した rawLogic + logicFingerprint をそのまま save body へ渡す。
       // form-design: design(色) + designImages(画像 intent) / form-route-branching: formType も同梱される。
@@ -137,6 +137,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialFormType={form.formType ?? undefined}
             initialFormRedirect={form.formRedirect ?? undefined}
             initialSuccessPages={form.successPages ?? undefined}
+            initialFriendMetadataMappings={form.friendMetadataMappings ?? undefined}
             initialAllowPostEdit={form.allowPostEdit}
             initialAllowEditMail={form.allowEditMail}
             syncStatus={form.syncStatus}

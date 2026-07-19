@@ -1,5 +1,5 @@
 import type { UpsertFormalooSubmissionInput } from '@line-crm/db';
-import { isDecorationType } from '@line-crm/shared';
+import { isDecorationType, parseFriendMetadataMappingsJson } from '@line-crm/shared';
 import { verifyFriendToken } from './formaloo-friend-token.js';
 import { renderedAliasValue, FRIEND_TOKEN_ALIAS } from './formaloo-webhook.js';
 
@@ -270,9 +270,52 @@ export interface MapFormalooRowOptions {
   friendTokenAlias?: string;
 }
 
+/** friend.metadata は管理画面で文字列表示するため、scalar のみ安全に文字列化する。 */
+function friendMetadataScalar(value: unknown): string | null {
+  // 空文字は Formaloo 側で項目を空にした明示的な clear 値なので保持する。
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return String(value);
+  return null;
+}
+
+/** rendered_data の alias/slug 一致値を、空文字や number/boolean を落とさず読む。 */
+function renderedFriendMetadataScalar(rendered: unknown, key: string): string | null {
+  if (Array.isArray(rendered)) {
+    for (const entry of rendered) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const record = entry as Record<string, unknown>;
+      if (record.alias !== key && record.slug !== key) continue;
+      return friendMetadataScalar(record.value ?? record.rendered_value);
+    }
+    return null;
+  }
+  if (rendered && typeof rendered === 'object' && !Array.isArray(rendered)) {
+    const record = rendered as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(record, key)) return friendMetadataScalar(record[key]);
+  }
+  return null;
+}
+
+/** mapping key を row の rendered_data(alias/slug) → flat data(slug) の順で解決する。 */
+function mappedFriendMetadataUpdates(
+  row: Record<string, unknown>,
+  answers: Record<string, unknown>,
+  mappingsJson: string | null | undefined,
+) {
+  const updates: Array<{ formalooFieldKey: string; friendMetadataKey: string; value: string }> = [];
+  for (const mapping of parseFriendMetadataMappingsJson(mappingsJson)) {
+    const value = renderedFriendMetadataScalar(row.rendered_data, mapping.formalooFieldKey)
+      ?? friendMetadataScalar(answers[mapping.formalooFieldKey]);
+    if (value == null) continue;
+    updates.push({ ...mapping, value });
+  }
+  return updates;
+}
+
 export async function mapFormalooListRowToUpsert(
   row: Record<string, unknown>,
-  form: { id: string; formaloo_slug: string | null },
+  form: { id: string; formaloo_slug: string | null; friend_metadata_mappings_json?: string | null },
   opts: MapFormalooRowOptions = {},
 ): Promise<UpsertFormalooSubmissionInput | null> {
   const slug = typeof row.slug === 'string' && row.slug ? row.slug : null;
@@ -281,7 +324,9 @@ export async function mapFormalooListRowToUpsert(
   const answers = rawData && typeof rawData === 'object' && !Array.isArray(rawData)
     ? (rawData as Record<string, unknown>)
     : {};
-  const createdAt = typeof row.created_at === 'string' && row.created_at ? row.created_at : new Date().toISOString();
+  const rawCreatedAt = typeof row.created_at === 'string' && row.created_at ? row.created_at : null;
+  const hasReliableCreatedAt = rawCreatedAt !== null && Number.isFinite(Date.parse(rawCreatedAt));
+  const createdAt = rawCreatedAt ?? new Date().toISOString();
 
   // 順方向 friend_id 復元 (fail-closed): 署名 fr_id を verify 成功時のみ friend_id に採る。webhook path と
   //   同一 renderedAliasValue を再利用 (rendered_data 配列/object 形 → data[alias] fallback)。fr_id が全く
@@ -295,6 +340,12 @@ export async function mapFormalooListRowToUpsert(
     }
   }
 
+  // created_at 欠落/不正 row は既存 mirror と friend_id 復元には流すが、
+  // 新旧を安全に決められないため metadata 更新 intent だけを fail-closed で止める。
+  const metadataUpdates = friendId && hasReliableCreatedAt
+    ? mappedFriendMetadataUpdates(row, answers, form.friend_metadata_mappings_json)
+    : [];
+
   return {
     id: slug,
     formId: form.id,
@@ -304,6 +355,9 @@ export async function mapFormalooListRowToUpsert(
     rowSlug: slug,
     friendId,
     verified: false,
+    ...(friendId && metadataUpdates.length
+      ? { verifiedFriendMetadataSync: { friendId, updates: metadataUpdates } }
+      : {}),
   };
 }
 
@@ -317,7 +371,7 @@ export async function mapFormalooListRowToUpsert(
  */
 export async function pullFriendReconcileInputs(
   client: RowsListGetClient,
-  form: { id: string; formaloo_slug: string | null },
+  form: { id: string; formaloo_slug: string | null; friend_metadata_mappings_json?: string | null },
   opts: MapFormalooRowOptions & { maxPages?: number; pageSize?: number } = {},
 ): Promise<UpsertFormalooSubmissionInput[]> {
   if (!form.formaloo_slug) return [];

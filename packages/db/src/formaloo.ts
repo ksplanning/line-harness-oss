@@ -38,6 +38,8 @@ export interface FormalooForm {
   edit_mail_field_slug: string | null;
   // migration 101 (G-5): 編集 URL の失効世代。bump で当該 form の既発行 token を一括失効 (開封時 live gate が照合)。
   edit_link_epoch: number;
+  // migration 103: Formaloo field slug/alias → friend.metadata key。[] = 未設定・完全 no-op。
+  friend_metadata_mappings_json: string;
   created_at: string;
   updated_at: string;
 }
@@ -316,6 +318,8 @@ export async function saveFormalooDefinition(
     allowEditMail?: number;
     // form-edit-mail-link (弾L / OD-3): 送付先 email 欄の明示指定 slug。present-key 更新 (未指定は変えない)。
     editMailFieldSlug?: string | null;
+    // row-status-friend-sync: canonical JSON array。present-key 更新 (未指定は変えない)。
+    friendMetadataMappingsJson?: string;
   },
 ): Promise<void> {
   const now = jstNow();
@@ -357,6 +361,10 @@ export async function saveFormalooDefinition(
   if (params.editMailFieldSlug !== undefined) {
     sets.push('edit_mail_field_slug = ?');
     vals.push(params.editMailFieldSlug);
+  }
+  if (params.friendMetadataMappingsJson !== undefined) {
+    sets.push('friend_metadata_mappings_json = ?');
+    vals.push(params.friendMetadataMappingsJson);
   }
   vals.push(id);
   await db.prepare(`UPDATE formaloo_forms SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
@@ -581,6 +589,95 @@ export interface UpsertFormalooSubmissionInput {
   //   **write-once + null backfill**: 既存が非 null なら再送の異なる非 null でも上書きしない
   //   (COALESCE(existing, excluded))。row_slug は Formaloo 側で不変ゆえ最初に capture した値を正とする。
   rowSlug?: string | null;
+  /** 今回の reconcile で署名 fr_id を検証できた時だけ mapper が作る metadata 更新 intent。 */
+  verifiedFriendMetadataSync?: {
+    friendId: string;
+    updates: Array<{
+      formalooFieldKey: string;
+      friendMetadataKey: string;
+      value: string;
+    }>;
+  };
+}
+
+const FORMALOO_FRIEND_METADATA_SYNC_STATE_KEY = '__formaloo_friend_metadata_sync';
+const RESERVED_FRIEND_METADATA_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/**
+ * 最新 row の verified intent だけを friend.metadata へ反映する。
+ * configured target は Formaloo が所有し、同値なら write せず、未 mapping key は atomic JSON merge で保持する。
+ */
+async function applyVerifiedFriendMetadataSync(
+  db: D1Database,
+  input: UpsertFormalooSubmissionInput,
+): Promise<void> {
+  const intent = input.verifiedFriendMetadataSync;
+  if (!intent || !input.friendId || intent.friendId !== input.friendId || intent.updates.length === 0) return;
+
+  const updates = intent.updates.filter((update) => (
+    Boolean(update.friendMetadataKey)
+    && !update.friendMetadataKey.startsWith('__formaloo_')
+    && !RESERVED_FRIEND_METADATA_KEYS.has(update.friendMetadataKey)
+    && typeof update.value === 'string'
+    && update.value.length <= 10_000
+  ));
+  if (updates.length === 0) return;
+
+  // JSON Merge Patch 用の null-prototype object。予約 key は上で除外済みだが、
+  // 履歴キーも含め plain object の prototype setter に値を吸われないようにする。
+  const patch: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const statePatch: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const updatedAt = jstNow();
+  for (const update of updates) {
+    patch[update.friendMetadataKey] = update.value;
+    statePatch[update.friendMetadataKey] = {
+      formId: input.formId,
+      rowId: input.id,
+      formalooFieldKey: update.formalooFieldKey,
+      value: update.value,
+      updatedAt,
+    };
+  }
+  patch[FORMALOO_FRIEND_METADATA_SYNC_STATE_KEY] = statePatch;
+
+  // 1 atomic UPDATE で「最新 row 判定 + 同値 skip + metadata merge + 由来保存」を行う。
+  // reconcile 上限400行でも upsert と合わせて最大800 statements。同一時刻は
+  // Formaloo rows API の newest-first 処理順を保つため、先に insert された rowid を勝たせる。
+  await db.prepare(
+    `UPDATE friends
+     SET metadata = json_patch(metadata, json(?)), updated_at = ?
+     WHERE id = ?
+       AND json_valid(metadata) = 1
+       AND json_type(metadata) = 'object'
+       AND EXISTS (
+         SELECT 1 FROM formaloo_submissions candidate
+         WHERE candidate.id = ? AND candidate.form_id = ? AND candidate.friend_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM formaloo_submissions newer
+             WHERE newer.form_id = candidate.form_id AND newer.friend_id = candidate.friend_id
+               AND (
+                 julianday(newer.submitted_at) > julianday(candidate.submitted_at)
+                 OR (
+                   julianday(newer.submitted_at) = julianday(candidate.submitted_at)
+                   AND newer.rowid < candidate.rowid
+                 )
+               )
+           )
+       )
+       AND EXISTS (
+         SELECT 1 FROM json_each(json(?)) requested
+         WHERE NOT EXISTS (
+           SELECT 1 FROM json_each(friends.metadata) current
+           WHERE current.key = json_extract(requested.value, '$.friendMetadataKey')
+             AND current.type = 'text'
+             AND current.atom = json_extract(requested.value, '$.value')
+         )
+       )`,
+  ).bind(
+    JSON.stringify(patch), updatedAt, intent.friendId,
+    input.id, input.formId, intent.friendId,
+    JSON.stringify(updates),
+  ).run();
 }
 
 /**
@@ -608,6 +705,7 @@ export async function upsertFormalooSubmission(
     )
     .bind(input.id, input.formId, input.formalooSlug ?? null, input.friendId ?? null, input.answersJson, input.submittedAt, now, v, input.rowSlug ?? null)
     .run();
+  await applyVerifiedFriendMetadataSync(db, input);
 }
 
 /**

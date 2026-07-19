@@ -134,4 +134,26 @@ describe('詳細画面 redirect load/relay 配線', () => {
       successPages: [{ id: 'sp1', title: 'A完了' }],
     }))
   })
+
+  it('D-1 load: GET の friendMetadataMappings を builder の初期値へ渡す', async () => {
+    const mappings = [{ formalooFieldKey: 'BjEp0J2J', friendMetadataKey: '入金確認' }]
+    getMock.mockResolvedValue(form({ friendMetadataMappings: mappings }))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+    expect(builderProps.current?.initialFriendMetadataMappings).toEqual(mappings)
+  })
+
+  it('D-1 relay: builder の friendMetadataMappings を saveDefinition へ欠落なく渡す', async () => {
+    const mappings = [{ formalooFieldKey: 'BjEp0J2J', friendMetadataKey: '入金確認' }]
+    getMock.mockResolvedValue(form())
+    saveDefinitionMock.mockResolvedValue(form({ syncStatus: 'idle', friendMetadataMappings: mappings }))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+    await act(async () => {
+      await (builderProps.current?.onSave as (def: Record<string, unknown>) => Promise<void>)({
+        fields: [], logic: [], title: 'F', friendMetadataMappings: mappings,
+      })
+    })
+    expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', expect.objectContaining({ friendMetadataMappings: mappings }))
+  })
 })

@@ -15,3 +15,4 @@ export * from "./form-copy";
 export * from "./formaloo-localization";
 export * from "./form-redirect";
 export * from "./form-success-page";
+export * from "./formaloo-friend-metadata";

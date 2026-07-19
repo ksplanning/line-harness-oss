@@ -17,11 +17,17 @@ import { Hono } from 'hono';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formsAdvanced } from './forms-advanced.js';
+import { signFriendToken } from '../services/formaloo-friend-token.js';
 import type { Env } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
 const BENIGN = /duplicate column name|already exists/i;
+const FRIEND_TOKEN_SECRET = 'stats_reconcile_friend_metadata_test_secret';
+const PAYMENT_FIELD = 'BjEp0J2J';
+const FRIEND_METADATA_MAPPINGS = JSON.stringify([
+  { formalooFieldKey: PAYMENT_FIELD, friendMetadataKey: '入金確認' },
+]);
 
 function d1(db: Database.Database): D1Database {
   return {
@@ -90,6 +96,21 @@ function seedForm(id: string, slug: string | null = null) {
   raw.prepare(`INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status) VALUES (?,?,?,?)`)
     .run(id, slug ?? `slug_${id}`, 'テスト', 'published');
 }
+function seedMappedForm(id: string, slug: string) {
+  raw.prepare(
+    `INSERT INTO formaloo_forms
+       (id, formaloo_slug, title, builder_status, friend_metadata_mappings_json)
+     VALUES (?,?,?,?,?)`,
+  ).run(id, slug, 'テスト', 'published', FRIEND_METADATA_MAPPINGS);
+}
+function seedFriend(id: string, metadata: Record<string, unknown>) {
+  raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, metadata) VALUES (?,?,?,?)`)
+    .run(id, `U_${id}`, '田中', JSON.stringify(metadata));
+}
+function friendMetadata(id: string): Record<string, unknown> {
+  const row = raw.prepare('SELECT metadata FROM friends WHERE id=?').get(id) as { metadata: string };
+  return JSON.parse(row.metadata) as Record<string, unknown>;
+}
 function seedSub(id: string, formId: string, answers: Record<string, unknown>, submittedAt: string) {
   raw.prepare(`INSERT INTO formaloo_submissions (id, form_id, answers_json, submitted_at) VALUES (?,?,?,?)`)
     .run(id, formId, JSON.stringify(answers), submittedAt);
@@ -103,6 +124,16 @@ function realRow(slug: string, submitCode: string, answers: Record<string, unkno
     form: 'GMOxoMtK', row_tags: [], rendered_data: [], data: answers,
     slug, submit_code: submitCode, tracking_code: null, created_at: createdAt, updated_at: createdAt, status: 'active',
   };
+}
+async function signedMappedRow(slug: string, friendId: string, paymentStatus: string): Promise<Record<string, unknown>> {
+  const token = await signFriendToken(friendId, FRIEND_TOKEN_SECRET);
+  const row = realRow(slug, `submit_${slug}`, { [PAYMENT_FIELD]: paymentStatus }, '2026-07-19T14:00:00+09:00');
+  row.rendered_data = [
+    { slug: PAYMENT_FIELD, type: 'text', value: paymentStatus, raw_value: paymentStatus },
+    { slug: 'friend_token_field', alias: 'fr_id', type: 'hidden', value: token, raw_value: token },
+  ];
+  row.data = { ...(row.data as Record<string, unknown>), friend_token_field: token };
+  return row;
 }
 function listBody(rows: Array<Record<string, unknown>>, page: number, pageSize: number) {
   return {
@@ -218,5 +249,33 @@ describe('T-B1 /stats reconcile 対称化 (RED: 現行はミラー直 COUNT / GR
     expect(d.total).toBe(2);
     expect(d.verified).toBe(1);
     expect(d.daily).toEqual([{ day: '2026-07-01', count: 2 }]);
+  });
+});
+
+describe('D-2 /stats reconcile — 署名 fr_id の mapped row を friend.metadata へ反映', () => {
+  test('/stats 単独の reconcile でも valid HMAC mapping を本人の入金確認へ反映する', async () => {
+    seedMappedForm('fa1', 'GMOxoMtK');
+    seedFriend('frA', { 入金確認: '未', 備考: '手動値を保持' });
+    const row = await signedMappedRow('statsPaidRow', 'frA', '済');
+    stubFormaloo((page) => (page === 1 ? [row] : []));
+
+    const res = await call('GET', '/api/forms-advanced/fa1/stats', {
+      FORMALOO_FRIEND_TOKEN_SECRET: FRIEND_TOKEN_SECRET,
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json() as { data: { total: number } }).data.total).toBe(1);
+    expect(friendMetadata('frA')).toMatchObject({
+      入金確認: '済',
+      備考: '手動値を保持',
+      __formaloo_friend_metadata_sync: {
+        入金確認: {
+          formId: 'fa1',
+          rowId: 'statsPaidRow',
+          formalooFieldKey: PAYMENT_FIELD,
+          value: '済',
+        },
+      },
+    });
   });
 });

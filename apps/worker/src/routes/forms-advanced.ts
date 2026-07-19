@@ -56,6 +56,8 @@ import {
   normalizeFormCopy,
   normalizeFormRedirect,
   normalizeSuccessPages,
+  parseFriendMetadataMappingsJson,
+  validateFriendMetadataMappings,
   defaultFormDesign,
   serializeRawLogicForPush,
   computeRouteTerminalWarnings,
@@ -69,6 +71,7 @@ import {
   type FormCopy,
   type FormRedirect,
   type SuccessPageSpec,
+  type FriendMetadataMapping,
 } from '@line-crm/shared';
 import {
   canTransition,
@@ -222,6 +225,8 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     // route-terminal-phase2 (Track 2 / T-E5): ルート別完了ページ (builder の initialSuccessPages)。未設定は null。
     //   保存済 SP (割当 slug 込み) を reload で復元し編集/削除できるようにする。
     successPages: def.successPages ?? null,
+    // row-status-friend-sync: local-only mapping。壊れた JSON は [] に倒し機能 OFF (fail-closed)。
+    friendMetadataMappings: parseFriendMetadataMappingsJson(form.friend_metadata_mappings_json),
     // N-7: publish 前は null (公開/埋め込み URL 発行不可)
     publicUrl,
     embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
@@ -419,8 +424,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -439,6 +444,14 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const allowEditMail = body.allowEditMail === undefined
       ? undefined
       : (body.allowEditMail === 1 || body.allowEditMail === true || body.allowEditMail === '1' ? 1 : 0);
+    // row-status-friend-sync: present-key の時だけ canonicalize。未指定は独立列を保持、[] は明示解除。
+    const friendMetadataMappingsProvided = body.friendMetadataMappings !== undefined;
+    let friendMetadataMappings: FriendMetadataMapping[] | undefined;
+    if (friendMetadataMappingsProvided) {
+      const validation = validateFriendMetadataMappings(body.friendMetadataMappings);
+      if (!validation.ok) return c.json({ success: false, error: validation.error }, 400);
+      friendMetadataMappings = validation.mappings;
+    }
     // route-terminal-phase2 (T-B2 / CI-4/CX-7): redirect URL は Formaloo server が無検証 STORE する (spike M7)
     //   → worker authoritative gate で raw body.formRedirect を厳格検証し、危険 URL/非 string を push 前に 400
     //   で明示 reject する (normalize の silent drop に頼らない = builder バイパスの直 API 濫用も塞ぐ)。
@@ -682,6 +695,9 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       allowPostEdit,
       // form-edit-mail-link (弾L): 同上 harness 側 D1 保存のみ (Formaloo push しない)。present-key = 未指定は不変。
       allowEditMail,
+      friendMetadataMappingsJson: friendMetadataMappingsProvided
+        ? JSON.stringify(friendMetadataMappings ?? [])
+        : undefined,
     });
 
     // ④ 保存時 re-bind: key 登録前に作られた孤立 form (workspace_id=NULL) は、保存のたびに active workspace が
@@ -1542,7 +1558,7 @@ formsAdvanced.get('/api/forms-advanced/:id/stats', async (c) => {
     if (c.env.FORMS_ADVANCED_ROWS_LIVE_RECONCILE_DISABLE !== 'true') {
       try {
         if (client && form.formaloo_slug) {
-          await reconcileFormalooRows(c.env.DB, form, client);
+          await reconcileFormalooRows(c.env.DB, form, client, { friendTokenSecret: friendLinkSecret(c.env) });
         }
       } catch (reconcileErr) {
         console.error('GET /api/forms-advanced/:id/stats reconcile failed (fail-soft, mirror を数える):', reconcileErr);
