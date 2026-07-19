@@ -368,3 +368,46 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 - [ ] KS: endpoint deploy、raw array、CORS、`q`、最大 10 件、Formaloo 作成時検証、hosted 表示・選択・submit、cleanup が PASS。
 - [ ] Piecemaker: endpoint deploy、raw array、CORS、`q`、最大 10 件、Formaloo 作成時検証、hosted 表示・選択・submit、cleanup が PASS。
 - [ ] sandbox での live field 登録 0、本番 3 フォームへの接触 0、秘密値の記録 0。
+
+---
+
+# treasure-recurring-submission — host live checklist
+
+## できるようになること
+
+在庫報告などの決まった回答を、決めた時刻に自動で送れるようになります。
+
+## 対象と安全条件
+
+- sandbox から Formaloo への実登録は行っていない。査読後、migration `109_formaloo_recurring_submissions.sql` と同じ revision の Worker/Web を approved host へ適用して確認する。
+- KS と Piecemaker は別々に実施し、migration 適用結果、deployment SHA、実行者、実行時刻をそれぞれ記録する。片方の結果をもう片方へ流用しない。
+- その場で作る、機密情報や個人情報を含まない使い捨てフォームだけを使う。本番 3 フォーム `Z5IEH85R` / `GMOxoMtK` / `XqACeA2v` には GET を含めて触れない。
+- Formaloo の公式 OpenAPI は `interval` を「文字列値を持つ object」とだけ定義し、キー名・単位・値の例を公開していない。推測で登録せず、approved host で確認できた実 payload を使う。token、API key、回答の機密値は画面共有や証跡へ残さない。
+
+## 登録前の契約確認
+
+1. Formaloo の現行 UI または公式サポートから、検証時点の `interval` object のキー名・単位・値を確認する。確認日と出典だけを記録し、secret は記録しない。
+2. 使い捨てフォームを作成・保存し、Formaloo form slug が取得済みであることを確認する。slug がない場合は先へ進まない。
+3. 管理画面のフォーム一覧から「定期自動回答」を開き、開始時刻、確認済みの interval JSON、合成回答 JSON を入力する。初回は 5〜10 分以内に 1 回だけ発火する設定にする。
+4. 登録操作は 1 回だけ行う。同じ画面で再試行が必要な場合は、先に一覧と Formaloo detail GET を確認し、重複登録がないことを確定する。
+
+## 登録・read-back・初回発火
+
+1. 「追加」を押し、応答で取得した remote slug を secret を含まない検証メモへ記録する。Formaloo OpenAPI の create response schema は slug を明記していないため、slug が返らない場合は PASS にせず停止する。
+2. 管理画面の一覧を再読込し、開始時刻、終了時刻、interval、回答内容、状態 `稼働中` が登録値と一致することを確認する。
+3. Formaloo の detail GET でも同じ remote slug の schedule と status=`resumed` を read-back し、一致しなければ停止する。HTTP 200 だけを成功証拠にしない。
+4. 初回予定時刻を待ち、使い捨てフォームに合成回答がちょうど 1 行だけ作られたことを確認する。回答時刻と非機密の marker だけを記録し、回答全文は保存しない。
+
+## 一時停止・再開・取消・掃除
+
+1. 「一時停止」を押し、画面再読込と Formaloo detail GET の両方で status=`paused` を確認する。停止中に次の発火時刻を越えても回答が増えないことを確認する。
+2. 「再開」を押し、両方で status=`resumed` を確認する。必要なら次の 1 回だけ発火を確認し、連続実行はしない。
+3. 「取消」→「本当に取消」を押し、画面再読込と detail GET の両方で status=`cancelled` を確認する。公式 API に DELETE 契約はないため、取消は status 変更として確認する。
+4. cancelled 後に回答が増えないことを確認してから、使い捨てフォーム、合成回答、local mirror を承認済みの通常手順で片付ける。migration/table は additive なので DROP しない。
+5. 途中で失敗した場合も、取得済み remote slug を status=`cancelled` にして read-back した後で使い捨て資源を削除する。slug 不明なら重複 POST をせず、provider 側の一覧確認を担当者へ引き継ぐ。
+
+## PASS 記録
+
+- [ ] KS: migration 109、登録 read-back、初回 1 回、一時停止、再開、取消、cleanup が PASS。
+- [ ] Piecemaker: migration 109、登録 read-back、初回 1 回、一時停止、再開、取消、cleanup が PASS。
+- [ ] 本番 3 フォームへのアクセス 0、重複登録 0、秘密値の記録 0。
