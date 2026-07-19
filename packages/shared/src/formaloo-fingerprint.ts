@@ -71,8 +71,14 @@ export interface CanonicalDefinition {
   logic: unknown;
 }
 
+/** system field の先頭挿入で押し下げられた通常 field の position を、挿入前の値へ戻す。 */
+function projectPosition(position: unknown, systemPositions: readonly number[]): number {
+  const raw = typeof position === 'number' && Number.isFinite(position) ? position : 0;
+  return raw - systemPositions.filter((systemPosition) => systemPosition < raw).length;
+}
+
 /** raw Formaloo field 要素 → 射影 (subset 外種別は null で drop = fromFormalooField と同じ保持集合)。 */
-function projectField(el: unknown): ProjectedField | null {
+function projectField(el: unknown, systemPositions: readonly number[]): ProjectedField | null {
   if (typeof el !== 'object' || el === null) return null;
   const o = el as Record<string, unknown>;
   // fr-id-capture-fix (R4/T-C5): 予約 friend system field (alias fr_id/fr_name) を fingerprint に含めない。
@@ -91,7 +97,7 @@ function projectField(el: unknown): ProjectedField | null {
       type: 'meta',
       title: typeof o.title === 'string' ? o.title : '',
       required: false,
-      position: typeof o.position === 'number' ? o.position : 0,
+      position: projectPosition(o.position, systemPositions),
       imageUrl: parsed.url,
       imageAlt: parsed.alt,
       imageWidth: parsed.width,
@@ -108,7 +114,7 @@ function projectField(el: unknown): ProjectedField | null {
       type: 'oembed',
       title: typeof o.title === 'string' ? o.title : '',
       required: false,
-      position: typeof o.position === 'number' ? o.position : 0,
+      position: projectPosition(o.position, systemPositions),
     };
     if (typeof o.url === 'string' && o.url) proj.videoUrl = o.url;
     return proj;
@@ -121,7 +127,7 @@ function projectField(el: unknown): ProjectedField | null {
     type: formalooType,
     title: typeof o.title === 'string' ? o.title : '',
     required: o.required === true,
-    position: typeof o.position === 'number' ? o.position : 0,
+    position: projectPosition(o.position, systemPositions),
   };
   // 入力項目の補足説明を射影に含める (変換器 fromFormalooField の読取集合と一致)。
   // 非空ガード: description 無/空の既存 field は key を持たず fingerprint byte 不変 (false-drift 回避 / S-2)。
@@ -182,8 +188,13 @@ function projectRulesObject(rawLogic: unknown): unknown[] {
  *  - rawLogic: extractRawLogic(res.data) の bare array (未載時は extractLogic の `{rules}` を渡す)。
  */
 export function canonicalDefinitionProjection(rawFieldsList: unknown, rawLogic: unknown): CanonicalDefinition {
-  const fields = (Array.isArray(rawFieldsList) ? rawFieldsList : [])
-    .map(projectField)
+  const rawFields = Array.isArray(rawFieldsList) ? rawFieldsList : [];
+  const systemPositions = rawFields
+    .filter((field) => field && typeof field === 'object' && isFriendSystemAlias((field as Record<string, unknown>).alias))
+    .map((field) => (field as Record<string, unknown>).position)
+    .filter((position): position is number => typeof position === 'number' && Number.isFinite(position));
+  const fields = rawFields
+    .map((field) => projectField(field, systemPositions))
     .filter((f): f is ProjectedField => f !== null)
     .sort((a, b) => a.position - b.position || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   const logic = Array.isArray(rawLogic) ? rawLogic : projectRulesObject(rawLogic);

@@ -13,15 +13,13 @@ import { extractFieldsList, extractRawLogic } from './formaloo-pull.js';
 //   - **予約 alias ちょうど 1 件かつ type=hidden** を保証 (codex#4)。無→POST・正常既在→no-op・
 //     衝突(visible/型違い/重複)→自動修復せず out_of_sync (fail-closed / codex#4)。
 //   - POST 後 re-GET で exactly-one を確認 (POST 非2xx/timeout/201消失 を out_of_sync で surface / codex#14)。
-//   - **additive only**: 既存 field を PATCH/DELETE しない。POST は新規 system field のみ。
+//   - 既存の通常 field は PATCH/DELETE しない。位置ずれした system field だけ position=0 へ PATCH する。
 //   - **fail-closed (T-C3 round2)**: fields_list を読めない (GET 非ok / 例外 / shape 不一致) は out_of_sync で surface する
 //     (throw はしない = 回答導線 hot path を落とさない)。旧 skipped(silent) 挙動は closer 独立検証 (Codex) が
 //     silent-success gap として発見。ensure は admin 保存経路のみで呼ばれ /fo 回答経路では呼ばれないため surface が正。
 //   - **owner-gate**: fr_name は氏名=PII ゆえ includeOwnerGated=false で push しない (codex#8)。
-//   - **T-C7 (司令塔 A/B 実測 2026-07-18)**: form に logic (route-terminal generateSubmitWhen 由来の submit rule 等) が
-//     あると Formaloo サーバーは **hidden field の値を intake で破棄する** (logic 無→捕捉 / 有→NULL・position 無関係・
-//     client POST payload には載る)。ゆえに field を作っても logic 有効フォームでは fr_id が機能しない。無警告出荷は
-//     殻完了リスクゆえ logicConflict を surface し out_of_sync + owner message で honest に告知する。
+//   - **T-C7 (grammar 実測 2026-07-19)**: is_answered(X)→submit は X 以降の field を保存しない。
+//     fr_id を先頭へ固定すれば共存でき、fr_id が X より後ろの場合だけ logicConflict を surface する。
 // =============================================================================
 
 /** ensure/backfill が使う FormalooClient の最小 surface (FormalooClient がこれを満たす / テストは mock)。 */
@@ -32,14 +30,14 @@ export interface SystemFieldClient {
   request?<T = unknown>(method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; data?: T; error?: string }>;
 }
 
-export type SystemFieldStatus = 'created' | 'present' | 'conflict' | 'error';
+export type SystemFieldStatus = 'created' | 'repositioned' | 'present' | 'conflict' | 'error';
 export interface SystemFieldOutcome {
   alias: string;
   status: SystemFieldStatus;
   detail?: string;
 }
 export interface SystemFieldEnsureResult {
-  /** 対象 alias が全て exactly-one hidden で確定 (created|present) した。 */
+  /** 対象 alias が全て exactly-one hidden + 先頭で確定 (created|repositioned|present) した。 */
   ok: boolean;
   /**
    * conflict/error/読取不能があり再試行対象 (silent success 禁止)。
@@ -51,8 +49,7 @@ export interface SystemFieldEnsureResult {
   /** fields_list を読めず判定を見送った (fetch 失敗時は skipped=false・outOfSync=true で surface する / T-C3 round2)。 */
   skipped: boolean;
   /**
-   * T-C7: form に logic (submit rule 等) があり Formaloo が intake で hidden field 値を破棄する = fr_id 捕捉不能。
-   * field 作成自体は成功しても logic 有効フォームでは fr_id が機能しないため out_of_sync で告知する (殻完了防止)。
+   * T-C7: fr_id が is_answered→submit のトリガーより後ろにあり、保存対象外になる時だけ true。
    */
   logicConflict: boolean;
   outcomes: SystemFieldOutcome[];
@@ -74,37 +71,96 @@ function targetFields(includeOwnerGated: boolean): readonly FriendSystemFieldSpe
   return FRIEND_SYSTEM_FIELDS.filter((f) => (f.ownerGated ? includeOwnerGated : true));
 }
 
-/** raw fields_list から alias 一致要素を集める (type 判定込み)。 */
-function matchesForAlias(list: unknown[], alias: string): { slug: string; type: string }[] {
-  const out: { slug: string; type: string }[] = [];
+interface SystemFieldMatch {
+  slug: string;
+  type: string;
+  position: number | null;
+}
+
+/** raw fields_list から alias 一致要素を集める (type/position 判定込み)。 */
+function matchesForAlias(list: unknown[], alias: string): SystemFieldMatch[] {
+  const out: SystemFieldMatch[] = [];
   for (const el of list) {
     if (!el || typeof el !== 'object') continue;
     const o = el as Record<string, unknown>;
     if (o.alias === alias) {
-      out.push({ slug: typeof o.slug === 'string' ? o.slug : '', type: typeof o.type === 'string' ? o.type : '' });
+      out.push({
+        slug: typeof o.slug === 'string' ? o.slug : '',
+        type: typeof o.type === 'string' ? o.type : '',
+        position: typeof o.position === 'number' && Number.isFinite(o.position) ? o.position : null,
+      });
     }
   }
   return out;
 }
 
 /**
- * GET /v3.0/forms/{slug}/ → fields_list + logic 有無 (読めなければ fields=null = skip 判定)。
- * T-C7: 同一 full form response の `.data.form.logic` (bare array・extractRawLogic と同 key) から hasLogic を判定する
- *   (追加の GET なし)。logic があると Formaloo が hidden field 値を intake で破棄するため fr_id 捕捉不能を surface する。
+ * Formaloo は複数 field へ順に position=0 を適用すると 0,1,... に再採番することがある。
+ * そのため spec 順の prefix (fr_id=0, fr_name<=1) を「先頭」として受理する。position 欠落時は前後関係を
+ * 証明できないため fail-closed とする。
+ */
+function isAtSystemPrefix(match: SystemFieldMatch, targetIndex: number, list: unknown[]): boolean {
+  if (match.position === null) return false;
+  const regularFields = list.filter(
+    (field) => field && typeof field === 'object' && !isFriendSystemAlias((field as Record<string, unknown>).alias),
+  ) as Record<string, unknown>[];
+  if (regularFields.some((field) => typeof field.position !== 'number' || !Number.isFinite(field.position))) return false;
+  const regularPositions = regularFields.map((field) => field.position as number);
+  const firstRegularPosition = regularPositions.length > 0 ? Math.min(...regularPositions) : null;
+  return match.position <= targetIndex && (firstRegularPosition === null || match.position < firstRegularPosition);
+}
+
+/**
+ * GET /v3.0/forms/{slug}/ → fields_list + raw logic (読めなければ fields=null = skip 判定)。
  */
 async function fetchFormState(
   client: SystemFieldClient,
   formSlug: string,
-): Promise<{ fields: unknown[] | null; hasLogic: boolean }> {
+): Promise<{ fields: unknown[] | null; rawLogic: unknown[] | null }> {
   const res = await client.get(`/v3.0/forms/${formSlug}/`);
-  if (!res.ok) return { fields: null, hasLogic: false };
-  const rawLogic = extractRawLogic(res.data);
-  return { fields: extractFieldsList(res.data), hasLogic: Array.isArray(rawLogic) && rawLogic.length > 0 };
+  if (!res.ok) return { fields: null, rawLogic: null };
+  return { fields: extractFieldsList(res.data), rawLogic: extractRawLogic(res.data) };
+}
+
+/** is_answered(X)→submit は X 以降を保存しないため、fr_id が X より後ろにある時だけ競合とする。 */
+function hasSubmitPositionConflict(list: unknown[], rawLogic: unknown): boolean {
+  const frId = matchesForAlias(list, 'fr_id');
+  if (frId.length !== 1 || frId[0].type !== 'hidden' || frId[0].position === null || !Array.isArray(rawLogic)) return false;
+
+  const positions = new Map<string, number>();
+  for (const field of list) {
+    if (!field || typeof field !== 'object') continue;
+    const raw = field as Record<string, unknown>;
+    if (typeof raw.slug === 'string' && typeof raw.position === 'number' && Number.isFinite(raw.position)) positions.set(raw.slug, raw.position);
+  }
+
+  for (const item of rawLogic) {
+    if (!item || typeof item !== 'object') continue;
+    const actions = (item as Record<string, unknown>).actions;
+    if (!Array.isArray(actions)) continue;
+    for (const action of actions) {
+      if (!action || typeof action !== 'object') continue;
+      const rawAction = action as Record<string, unknown>;
+      if (rawAction.action !== 'submit' || !Array.isArray(rawAction.args) || rawAction.args.length !== 0) continue;
+      const when = rawAction.when;
+      if (!when || typeof when !== 'object') continue;
+      const rawWhen = when as Record<string, unknown>;
+      if (rawWhen.operation !== 'is_answered' || !Array.isArray(rawWhen.args) || rawWhen.args.length !== 1) continue;
+      const operand = rawWhen.args[0];
+      if (!operand || typeof operand !== 'object') continue;
+      const rawOperand = operand as Record<string, unknown>;
+      if (rawOperand.type !== 'field' || typeof rawOperand.value !== 'string') continue;
+      const triggerPosition = positions.get(rawOperand.value);
+      if (triggerPosition !== undefined && frId[0].position > triggerPosition) return true;
+    }
+  }
+  return false;
 }
 
 /**
  * 予約 system hidden field (fr_id / fr_name) を冪等 ensure する。
- *  - 無 → POST {type:'hidden',alias,title,form} → re-GET で exactly-one 確認 → created。
+ *  - 無 → POST {type:'hidden',alias,title,form,position:0} → re-GET で exactly-one/先頭を確認 → created。
+ *  - 位置ずれ → PATCH {position:0} → re-GET で先頭を確認 → repositioned。
  *  - 正常既在(type=hidden) → no-op (present)。
  *  - 衝突(visible/型違い/重複) → 自動修復せず conflict (out_of_sync / fail-closed)。
  *  - POST 失敗/201消失 → error (out_of_sync)。fields_list 読取不能 → out_of_sync (fail-closed / T-C3 round2)。throw しない。
@@ -122,7 +178,7 @@ export async function ensureSystemHiddenFields(
   //   silent-success gap として発見した挙動。
   const unreadable = (): SystemFieldEnsureResult => ({ ok: false, outOfSync: true, skipped: false, logicConflict: false, outcomes: [] });
 
-  let state: { fields: unknown[] | null; hasLogic: boolean };
+  let state: { fields: unknown[] | null; rawLogic: unknown[] | null };
   try {
     state = await fetchFormState(client, formSlug);
   } catch {
@@ -130,72 +186,151 @@ export async function ensureSystemHiddenFields(
   }
   if (state.fields === null) return unreadable();
   const list = state.fields;
-  // T-C7: logic 有効フォームは Formaloo が hidden field 値を破棄する → field を作っても fr_id 捕捉不能。
-  const logicConflict = state.hasLogic;
+  let finalFields = list;
+  let finalRawLogic = state.rawLogic;
 
-  const outcomes: SystemFieldOutcome[] = [];
+  type InitialDisposition = 'create' | 'reposition' | 'present' | 'conflict';
+  const initialDisposition = new Map<string, InitialDisposition>();
+  const initialConflictDetails = new Map<string, string>();
   const toCreate: FriendSystemFieldSpec[] = [];
+  const toReposition: { spec: FriendSystemFieldSpec; slug: string }[] = [];
 
-  for (const spec of targets) {
+  for (const [targetIndex, spec] of targets.entries()) {
     const m = matchesForAlias(list, spec.alias);
     if (m.length === 0) {
       toCreate.push(spec);
+      initialDisposition.set(spec.alias, 'create');
     } else if (m.length === 1) {
-      if (m[0].type === 'hidden') outcomes.push({ alias: spec.alias, status: 'present' });
-      else outcomes.push({ alias: spec.alias, status: 'conflict', detail: `alias 既在だが type=${m[0].type || 'unknown'} (hidden でない)` });
+      if (m[0].type === 'hidden' && !isAtSystemPrefix(m[0], targetIndex, list)) {
+        toReposition.push({ spec, slug: m[0].slug });
+        initialDisposition.set(spec.alias, 'reposition');
+      } else if (m[0].type === 'hidden') {
+        initialDisposition.set(spec.alias, 'present');
+      } else {
+        initialDisposition.set(spec.alias, 'conflict');
+        initialConflictDetails.set(spec.alias, `alias 既在だが type=${m[0].type || 'unknown'} (hidden でない)`);
+      }
     } else {
-      outcomes.push({ alias: spec.alias, status: 'conflict', detail: `alias 重複 ${m.length} 件` });
+      initialDisposition.set(spec.alias, 'conflict');
+      initialConflictDetails.set(spec.alias, `alias 重複 ${m.length} 件`);
     }
   }
 
-  if (toCreate.length > 0) {
-    const postErrors: Record<string, string> = {};
-    for (const spec of toCreate) {
-      let res: { ok: boolean; status: number; error?: string };
-      try {
-        res = await client.post('/v3.0/fields/', { type: 'hidden', alias: spec.alias, title: spec.title, form: formSlug });
-      } catch (e) {
-        res = { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
-      }
-      if (!res.ok) postErrors[spec.alias] = `POST 失敗 HTTP ${res.status}${res.error ? ` (${res.error})` : ''}`;
-    }
-    // POST 後 re-GET で exactly-one を確認 (201消失/timeout-but-created/重複を determinisitc に判定 / codex#14)。
-    let verifyList: unknown[] | null;
+  type SystemFieldMutation =
+    | { kind: 'create'; spec: FriendSystemFieldSpec; slug: '' }
+    | { kind: 'reposition'; spec: FriendSystemFieldSpec; slug: string };
+  const mutations: SystemFieldMutation[] = [];
+  for (const spec of targets) {
+    if (toCreate.includes(spec)) mutations.push({ kind: 'create', spec, slug: '' });
+    const reposition = toReposition.find((candidate) => candidate.spec === spec);
+    if (reposition) mutations.push({ kind: 'reposition', spec, slug: reposition.slug });
+  }
+  mutations.reverse(); // position=0 を後から適用した fr_id が最終的に先頭となるよう fr_name→fr_id の順で mutate。
+
+  const mutationErrors: Record<string, string> = {};
+  const normalizedAliases = new Set<string>();
+  const mutate = async (mutation: SystemFieldMutation): Promise<void> => {
+    const { spec } = mutation;
+    let res: { ok: boolean; status: number; error?: string };
     try {
-      verifyList = (await fetchFormState(client, formSlug)).fields;
-    } catch {
-      verifyList = null;
+      res = mutation.kind === 'create'
+        ? await client.post('/v3.0/fields/', { type: spec.type, alias: spec.alias, title: spec.title, form: formSlug, position: spec.position })
+        : client.request
+          ? await client.request('PATCH', `/v3.0/fields/${mutation.slug}/`, { position: spec.position })
+          : { ok: false, status: 0, error: 'client.request 未実装 (position PATCH 不能)' };
+    } catch (e) {
+      res = { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
     }
-    for (const spec of toCreate) {
-      if (verifyList === null) {
-        outcomes.push({ alias: spec.alias, status: 'error', detail: postErrors[spec.alias] ?? 're-GET 不能で作成確認できず' });
-        continue;
-      }
-      const m = matchesForAlias(verifyList, spec.alias);
-      if (m.length === 1 && m[0].type === 'hidden') {
-        outcomes.push({ alias: spec.alias, status: 'created' });
-      } else if (m.length === 0) {
-        outcomes.push({ alias: spec.alias, status: 'error', detail: postErrors[spec.alias] ?? 'POST 後も未作成 (201消失/timeout)' });
-      } else if (m.length === 1) {
-        outcomes.push({ alias: spec.alias, status: 'conflict', detail: `作成後 type=${m[0].type} (hidden でない)` });
+    if (!res.ok) {
+      const operation = mutation.kind === 'create' ? 'POST' : 'position PATCH';
+      mutationErrors[spec.alias] = `${operation} 失敗 HTTP ${res.status}${res.error ? ` (${res.error})` : ''}`;
+    }
+  };
+
+  let verificationFailed = false;
+  if (mutations.length > 0) {
+    for (const mutation of mutations) await mutate(mutation);
+    // mutate 後 re-GET で全 target を再検証する。1 field の先頭挿入で既存 system field が押し下がる場合も見逃さない。
+    try {
+      const verifyState = await fetchFormState(client, formSlug);
+      if (verifyState.fields !== null) {
+        finalFields = verifyState.fields;
+        finalRawLogic = verifyState.rawLogic;
       } else {
-        outcomes.push({ alias: spec.alias, status: 'conflict', detail: `作成後 alias 重複 ${m.length} 件` });
+        verificationFailed = true;
       }
+    } catch {
+      verificationFailed = true;
+    }
+
+    if (!verificationFailed) {
+      const normalization: SystemFieldMutation[] = [];
+      for (const [targetIndex, spec] of targets.entries()) {
+        const m = matchesForAlias(finalFields, spec.alias);
+        if (m.length === 1 && m[0].type === 'hidden' && !isAtSystemPrefix(m[0], targetIndex, finalFields) && m[0].slug) {
+          normalization.push({ kind: 'reposition', spec, slug: m[0].slug });
+        }
+      }
+      normalization.reverse();
+      if (normalization.length > 0) {
+        for (const mutation of normalization) {
+          normalizedAliases.add(mutation.spec.alias);
+          await mutate(mutation);
+        }
+        try {
+          const normalizedState = await fetchFormState(client, formSlug);
+          if (normalizedState.fields !== null) {
+            finalFields = normalizedState.fields;
+            finalRawLogic = normalizedState.rawLogic;
+          } else {
+            verificationFailed = true;
+          }
+        } catch {
+          verificationFailed = true;
+        }
+      }
+    }
+  }
+
+  const outcomes: SystemFieldOutcome[] = [];
+  for (const [targetIndex, spec] of targets.entries()) {
+    const disposition = initialDisposition.get(spec.alias);
+    if (verificationFailed) {
+      if (disposition === 'conflict') outcomes.push({ alias: spec.alias, status: 'conflict', detail: initialConflictDetails.get(spec.alias) });
+      else outcomes.push({ alias: spec.alias, status: 'error', detail: mutationErrors[spec.alias] ?? 're-GET 不能で最終位置を確認できず' });
+      continue;
+    }
+
+    const m = matchesForAlias(finalFields, spec.alias);
+    if (m.length === 0) {
+      outcomes.push({ alias: spec.alias, status: 'error', detail: mutationErrors[spec.alias] ?? 'mutate 後も未作成 (201消失/timeout)' });
+    } else if (m.length > 1) {
+      outcomes.push({ alias: spec.alias, status: 'conflict', detail: `alias 重複 ${m.length} 件` });
+    } else if (m[0].type !== 'hidden') {
+      outcomes.push({ alias: spec.alias, status: 'conflict', detail: `alias 既在だが type=${m[0].type || 'unknown'} (hidden でない)` });
+    } else if (!isAtSystemPrefix(m[0], targetIndex, finalFields)) {
+      outcomes.push({ alias: spec.alias, status: 'error', detail: mutationErrors[spec.alias] ?? `position=${m[0].position ?? 'unknown'} (先頭を確認できない)` });
+    } else if (disposition === 'create') {
+      outcomes.push({ alias: spec.alias, status: 'created' });
+    } else if (disposition === 'reposition' || normalizedAliases.has(spec.alias)) {
+      outcomes.push({ alias: spec.alias, status: 'repositioned' });
+    } else {
+      outcomes.push({ alias: spec.alias, status: 'present' });
     }
   }
 
   const bad = outcomes.some((o) => o.status === 'conflict' || o.status === 'error');
-  // T-C7: logicConflict は field が created/present でも fr_id 捕捉不能ゆえ out_of_sync で surface する (silent success 禁止)。
+  const logicConflict = hasSubmitPositionConflict(finalFields, finalRawLogic);
+  // is_answered→submit のトリガーより fr_id が後ろなら、その回答が保存対象外になるため out_of_sync で surface する。
   return { ok: !bad && !logicConflict, outOfSync: bad || logicConflict, skipped: false, logicConflict, outcomes };
 }
 
-export type SystemFieldIssueKind = 'missing' | 'not_hidden' | 'duplicate';
+export type SystemFieldIssueKind = 'missing' | 'not_hidden' | 'duplicate' | 'not_first';
 export interface SystemFieldHealthResult {
   ok: boolean;
   issues: { alias: string; issue: SystemFieldIssueKind }[];
   /**
-   * T-C7: form logic (submit rule 等) により Formaloo が hidden field 値を破棄する (fr_id 捕捉不能)。
-   * exactly-one hidden が健全でも本 flag が立てば fr_id は機能しない。rawLogic を渡した時のみ判定 (未渡し=false)。
+   * T-C7: is_answered→submit のトリガー位置より fr_id が後ろなら true。先頭固定なら logic と共存できる。
    */
   logicConflict: boolean;
 }
@@ -204,19 +339,20 @@ export interface SystemFieldHealthResult {
  * T-C5(3): 通常 drift とは別建ての system-field 健全性チェック。fingerprint/drift は system field を除外するため
  * 削除/visible化/型変更/重複を検知できない。本チェックが raw fields_list に対し予約 alias が exactly-one hidden か
  * を監査する (drift cron や監査から呼ぶ純関数 / API 非依存)。
- * T-C7: rawLogic (bare array・extractRawLogic 由来) を渡すと logic 有効フォームでの fr_id 捕捉不能を logicConflict で surface する。
+ * T-C7: rawLogic を渡すと is_answered→submit host と fr_id の position を比較し、fr_id が後ろの場合だけ surface する。
  */
 export function checkSystemFieldHealth(rawFieldsList: unknown, opts?: EnsureOptions, rawLogic?: unknown): SystemFieldHealthResult {
   const list = Array.isArray(rawFieldsList) ? rawFieldsList : [];
   const targets = targetFields(opts?.includeOwnerGated ?? true);
   const issues: { alias: string; issue: SystemFieldIssueKind }[] = [];
-  for (const spec of targets) {
+  for (const [targetIndex, spec] of targets.entries()) {
     const m = matchesForAlias(list, spec.alias);
     if (m.length === 0) issues.push({ alias: spec.alias, issue: 'missing' });
     else if (m.length > 1) issues.push({ alias: spec.alias, issue: 'duplicate' });
     else if (m[0].type !== 'hidden') issues.push({ alias: spec.alias, issue: 'not_hidden' });
+    else if (!isAtSystemPrefix(m[0], targetIndex, list)) issues.push({ alias: spec.alias, issue: 'not_first' });
   }
-  const logicConflict = Array.isArray(rawLogic) && rawLogic.length > 0;
+  const logicConflict = hasSubmitPositionConflict(list, rawLogic);
   return { ok: issues.length === 0 && !logicConflict, issues, logicConflict };
 }
 
@@ -229,9 +365,9 @@ export interface BackfillResult {
 }
 
 /**
- * O-6 code path: 再 publish されない既存フォームへ system hidden field を additive backfill する。
+ * O-6 code path: 再 publish されない既存フォームへ system hidden field を backfill する。
  * 呼び出し側 (owner_role: infra-ops) がテナント別稼働フォームの inventory (formSlugs) を供給し、本関数が各 form に
- * ensureSystemHiddenFields を適用して集計を返す。既存 field/回答は不可触 (additive only)。除外フォーム
+ * ensureSystemHiddenFields を適用して集計を返す。通常 field/回答は不可触で、予約 system field の追加・位置修復だけを行う。除外フォーム
  * (Z5IEH85R/puw7lh 等 owner 実フォーム) は呼び出し側が formSlugs から外す責務 (本関数は渡された slug のみ触る)。
  */
 export async function backfillSystemHiddenFields(
@@ -248,7 +384,7 @@ export async function backfillSystemHiddenFields(
     results.push({ formSlug, result });
     if (result.outOfSync) outOfSync.push(formSlug);
     else if (result.skipped) { /* 見送り: repaired/alreadyOk どちらにも数えない */ }
-    else if (result.outcomes.some((o) => o.status === 'created')) repaired += 1;
+    else if (result.outcomes.some((o) => o.status === 'created' || o.status === 'repositioned')) repaired += 1;
     else alreadyOk += 1;
   }
   return { total: formSlugs.length, repaired, alreadyOk, outOfSync, results };
@@ -292,7 +428,7 @@ export interface FieldAliasBackfillFormResult {
   skipped: boolean;
   /** alias=slug が必要な field (dry-run/execute 双方で列挙)。 */
   fieldsNeedingAlias: { slug: string; currentAlias: string | null }[];
-  /** fr_id/fr_name system field の現状健全性 (missing/not_hidden/duplicate/logicConflict)。 */
+  /** fr_id/fr_name system field の現状健全性 (missing/not_hidden/duplicate/not_first/logicConflict)。 */
   systemFieldHealth: SystemFieldHealthResult;
   /** execute で alias PATCH 成功した field 数 (dry-run は 0)。 */
   patched: number;

@@ -925,13 +925,12 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           // fr-id-capture-fix (T-C3/T-C7): 定義本体は同期したが friend system field (fr_id/fr_name) が正しく機能しない。
           //   回答導線は守る (publish 自体は成功) が、system field は out_of_sync で honest surface する (silent success 禁止 / codex#3)。
           //   定義本体は push 済ゆえ baseline は clear (idle 分岐と同じく自分の push を drift 誤検知させない)。
-          //   T-C7: logicConflict = form に logic (回答されたら送信 等) があり Formaloo が hidden field 値を intake で破棄する
-          //     ため fr_id が捕捉できない (field 作成は成功していても機能しない)。再保存では復旧しないので専用 message で告知。
+          //   T-C7: logicConflict = fr_id が is_answered→submit のトリガーより後ろにあり、送信時の保存対象外になる。
           const logicConflict = pushed.systemFields?.logicConflict === true;
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync',
             lastError: logicConflict
-              ? 'このフォームは logic（「回答されたら送信」等）が有効なため、Formaloo が friend 識別フィールド (fr_id) の値を受け取り時に破棄します。再入場prefill（前回回答の自動入力）を使うには、このフォームで logic を併用しないでください。'
+              ? 'Formaloo の「回答されたら送信」は、トリガー位置以降の回答を保存しません。friend 識別フィールド (fr_id) がトリガーより後ろにある場合だけ再入場 prefill に影響します。fr_id を先頭 (position 0) に固定すれば logic と共存できます。'
               : 'friend 識別用フィールド (fr_id/fr_name) の同期に失敗しました。再保存で自動復旧します。',
             remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
           });

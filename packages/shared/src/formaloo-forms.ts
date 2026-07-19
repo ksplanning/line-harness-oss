@@ -82,14 +82,16 @@ export interface FriendSystemFieldSpec {
   readonly type: 'hidden';
   /** 回答必須にしない (system 付与値ゆえ)。 */
   readonly required: false;
+  /** 自動送信 logic より先に捕捉するため、常に form の先頭へ置く。 */
+  readonly position: 0;
   /** owner-gate 対象か (fr_name=PII は true・env で auto-push を切れる / codex#8)。 */
   readonly ownerGated: boolean;
 }
 
 /** 予約 friend system field の単一正本 (fr_id=identity 必須 / fr_name=PII owner-gate)。 */
 export const FRIEND_SYSTEM_FIELDS: readonly FriendSystemFieldSpec[] = [
-  { alias: 'fr_id', title: 'LINE friend id (system)', type: 'hidden', required: false, ownerGated: false },
-  { alias: 'fr_name', title: 'LINE friend name (system)', type: 'hidden', required: false, ownerGated: true },
+  { alias: 'fr_id', title: 'LINE friend id (system)', type: 'hidden', required: false, position: 0, ownerGated: false },
+  { alias: 'fr_name', title: 'LINE friend name (system)', type: 'hidden', required: false, position: 0, ownerGated: true },
 ] as const;
 
 /** 予約 alias 集合 (生 'fr_id'/'fr_name' のハードコピーを push/pull/drift 経路に散らさない単一正本)。 */

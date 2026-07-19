@@ -32,6 +32,17 @@ describe('fingerprint/drift system-field exclusion (T-C5(1))', () => {
     expect(await formalooDefinitionFingerprint(withSys, [])).toBe(fpBase);
   });
 
+  test('system field を先頭へ移して通常 field が再採番されても fingerprint byte 不変', async () => {
+    const fpBase = await formalooDefinitionFingerprint(baseFields, []);
+    const systemFirst = [
+      { slug: 'h1', type: 'hidden', alias: 'fr_id', title: 'sys id', position: 0 },
+      { slug: 'h2', type: 'hidden', alias: 'fr_name', title: 'sys name', position: 1 },
+      { ...baseFields[0], position: 2 },
+      { ...baseFields[1], position: 3 },
+    ];
+    expect(await formalooDefinitionFingerprint(systemFirst, [])).toBe(fpBase);
+  });
+
   test('subset 型(short_text)の予約 alias でも fingerprint 不変 (type filter でなく alias filter が効く芯)', async () => {
     const fpBase = await formalooDefinitionFingerprint(baseFields, []);
     // 予約 alias を subset 型で作ると、alias 除外が無ければ fingerprint が変わってしまう = false-drift。
@@ -67,9 +78,10 @@ describe('fingerprint/drift system-field exclusion (T-C5(1))', () => {
 describe('system-field 健全性チェック (T-C5(3): drift とは別建て)', () => {
   test('exactly-one hidden なら健全 / 削除・visible化・重複を検知', () => {
     const healthy = [
-      ...baseFields,
-      { slug: 'h1', alias: 'fr_id', type: 'hidden' },
-      { slug: 'h2', alias: 'fr_name', type: 'hidden' },
+      { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 0 },
+      { slug: 'h2', alias: 'fr_name', type: 'hidden', position: 1 },
+      { ...baseFields[0], position: 2 },
+      { ...baseFields[1], position: 3 },
     ];
     expect(checkSystemFieldHealth(healthy, { includeOwnerGated: true }).ok).toBe(true);
 
@@ -142,9 +154,9 @@ async function seedLinked(id: string, slug: string, defJson = '{"fields":[],"log
 
 const answerFields = [{ slug: 's1', type: 'short_text', title: '名前', position: 0, required: true }];
 const withSysFields = [
-  ...answerFields,
-  { slug: 'h1', type: 'hidden', alias: 'fr_id', title: 'sys id', position: 1 },
-  { slug: 'h2', type: 'hidden', alias: 'fr_name', title: 'sys name', position: 2 },
+  { slug: 'h1', type: 'hidden', alias: 'fr_id', title: 'sys id', position: 0 },
+  { slug: 'h2', type: 'hidden', alias: 'fr_name', title: 'sys name', position: 1 },
+  { ...answerFields[0], position: 2 },
 ];
 
 describe('T-C5 配線: runFormalooDriftCheck × checkSystemFieldHealth', () => {
@@ -212,10 +224,18 @@ describe('T-C5 配線: runFormalooDriftCheck × checkSystemFieldHealth', () => {
     expect(events.filter((e) => e.detail === 'system_field_health')).toHaveLength(1);
   });
 
-  test('logicConflict: logic 有 + fr_id/fr_name 健全 → systemFieldUnhealthy (fr_id 破棄を surface)', async () => {
+  test('logicConflict: fr_id が is_answered→submit host より後ろ → systemFieldUnhealthy', async () => {
     await seedLinked('fh5', 's_form_h5');
-    const logic = [{ conditions: [], actions: [{ type: 'submit_form' }] }];
-    const client = getClient(() => driftBody('s_form_h5', withSysFields, logic));
+    const misplacedFields = [
+      { slug: 's1', type: 'short_text', title: '名前', position: 0, required: true },
+      { slug: 'h1', type: 'hidden', alias: 'fr_id', title: 'sys id', position: 2 },
+      { slug: 'h2', type: 'hidden', alias: 'fr_name', title: 'sys name', position: 3 },
+    ];
+    const logic = [{
+      type: 'field', identifier: 's1',
+      actions: [{ action: 'submit', args: [], when: { operation: 'is_answered', args: [{ type: 'field', value: 's1' }] } }],
+    }];
+    const client = getClient(() => driftBody('s_form_h5', misplacedFields, logic));
     const deps = { db: WDB, resolveClient: async () => client, autoApplyEnabled: false, systemFieldHealthCheck: true, includeOwnerGatedSystemFields: true };
     await runFormalooDriftCheck(deps); // bootstrap (fp は logic 含む)
     const s2 = await runFormalooDriftCheck(deps);
@@ -224,6 +244,8 @@ describe('T-C5 配線: runFormalooDriftCheck × checkSystemFieldHealth', () => {
     const healthEvent = events.find((e) => e.detail === 'system_field_health');
     expect(healthEvent).toBeTruthy();
     expect(healthEvent?.warnings_json ?? '').toContain('fr_id');
+    expect(healthEvent?.warnings_json ?? '').toContain('トリガー位置以降');
+    expect(healthEvent?.warnings_json ?? '').toContain('先頭');
   });
 
   // P2 [Important reviewer R1]: system field 不健全時に early-return して SP 本文 drift をマスクしない。両 signal を

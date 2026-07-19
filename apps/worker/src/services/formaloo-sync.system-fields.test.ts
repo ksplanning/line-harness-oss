@@ -11,11 +11,20 @@ import type { FormalooClient, FormalooResult } from './formaloo-client';
 //   - 衝突 → systemFieldsOutOfSync=true (回答導線=push 本体は ok を維持・system は out_of_sync surface)。
 // =============================================================================
 
-interface RawField { slug: string; alias?: string | null; type?: string; title?: string }
+interface RawField { slug: string; alias?: string | null; type?: string; title?: string; position?: number }
 
 function mockClient(cfg: { fields: RawField[]; postMode?: 'append' | 'fail'; formGetOk?: boolean }) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
-  const state = [...cfg.fields];
+  const state = cfg.fields.map((field) => ({ ...field }));
+  const moveToPosition = (slug: string, position: number) => {
+    const ordered = [...state].sort((a, b) => (a.position ?? state.indexOf(a)) - (b.position ?? state.indexOf(b)));
+    const index = ordered.findIndex((field) => field.slug === slug);
+    if (index < 0) return;
+    const [field] = ordered.splice(index, 1);
+    ordered.splice(position, 0, field);
+    ordered.forEach((item, itemPosition) => { item.position = itemPosition; });
+    state.splice(0, state.length, ...ordered);
+  };
   const postMode = cfg.postMode ?? 'append';
   const formGetOk = cfg.formGetOk ?? true;
   const client = {
@@ -27,13 +36,17 @@ function mockClient(cfg: { fields: RawField[]; postMode?: 'append' | 'fail'; for
     },
     async post<T>(path: string, body?: unknown): Promise<FormalooResult<T>> {
       calls.push({ method: 'POST', path, body });
-      const b = (body ?? {}) as { alias?: string; type?: string };
+      const b = (body ?? {}) as { alias?: string; type?: string; position?: number };
       if (postMode === 'fail') return { ok: false, status: 500, error: 'boom' } as FormalooResult<T>;
-      state.push({ slug: `new_${b.alias}`, alias: b.alias, type: b.type ?? 'hidden' });
+      state.push({ slug: `new_${b.alias}`, alias: b.alias, type: b.type ?? 'hidden', position: b.position });
+      if (b.position !== undefined) moveToPosition(`new_${b.alias}`, b.position);
       return { ok: true, status: 201, data: { data: { field: { slug: `new_${b.alias}` } } } } as unknown as FormalooResult<T>;
     },
     async request<T>(method: string, path: string, body?: unknown): Promise<FormalooResult<T>> {
       calls.push({ method, path, body });
+      const slug = path.match(/\/v3\.0\/fields\/([^/]+)\/$/)?.[1];
+      const position = (body as { position?: unknown } | undefined)?.position;
+      if (method === 'PATCH' && slug && typeof position === 'number') moveToPosition(slug, position);
       return { ok: true, status: 200, data: {} } as FormalooResult<T>;
     },
   } as unknown as FormalooClient;
@@ -54,6 +67,7 @@ describe('pushDefinitionToFormaloo — system field auto-push (T-C3)', () => {
     // hidden + form 紐付けの payload
     expect(sysPosts.every((c) => (c.body as { type?: string }).type === 'hidden')).toBe(true);
     expect(sysPosts.every((c) => (c.body as { form?: string }).form === 'FSLUG')).toBe(true);
+    expect(sysPosts.every((c) => (c.body as { position?: number }).position === 0)).toBe(true);
   });
 
   test('D-4 rollback: ensureSystemFields 未指定(default) → GET/POST 一切なし・systemFields 無 (byte 同等)', async () => {

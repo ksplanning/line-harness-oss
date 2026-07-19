@@ -99,7 +99,7 @@ export interface DriftCheckSummary {
   conflicts: number;    // 新規/変化した競合
   inSync: number;
   skipped: number;      // client 無 / GET 失敗 / read-shape 不一致 / 例外 (fail-safe)
-  systemFieldUnhealthy: number; // T-C5: fr_id/fr_name の削除/visible化/重複/logic破棄を検知した form 数 (観測用・dedup 非依存)
+  systemFieldUnhealthy: number; // T-C5: fr_id/fr_name の削除/visible化/重複/位置ずれ・submit trigger 後方配置を検知した form 数
 }
 
 /** definition_json から formalooAddress のみ取り出す (auto-apply で既存 address を保持)。 */
@@ -316,7 +316,9 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
               summary.systemFieldUnhealthy += 1; // 観測用 (dedup 非依存 = この tick で不健全だった form 数)
               combinedWarnings.push(
                 ...health.issues.map((i) => `friend system field ${i.alias}: ${i.issue}`),
-                ...(health.logicConflict ? ['form logic が有効なため Formaloo が fr_id 値を intake で破棄します (再入場 prefill 不能)'] : []),
+                ...(health.logicConflict
+                  ? ['Formaloo の「回答されたら送信」はトリガー位置以降の回答を保存しません。fr_id がトリガーより後ろです。fr_id を先頭 (position 0) に固定すれば logic と共存できます。']
+                  : []),
               );
               healthSig = `sysfield:${JSON.stringify({ issues: health.issues, logicConflict: health.logicConflict })}`;
             }

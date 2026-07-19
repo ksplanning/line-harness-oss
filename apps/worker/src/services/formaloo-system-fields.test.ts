@@ -26,6 +26,7 @@ interface RawField {
   type?: string;
   title?: string;
   invisible?: boolean;
+  position?: number;
 }
 
 type PostMode = 'append' | 'noop' | 'fail' | 'timeout' | 'appendVisible';
@@ -37,9 +38,19 @@ function makeClient(cfg: {
   getBadShape?: boolean; // GET は 200 だが fields_list 不在 (read-shape 不一致・extractFieldsList→null)
   postMode?: PostMode; // POST /v3.0/fields/ の挙動 (default 'append')
   logic?: unknown[]; // T-C7: form の bare-array logic (default 無=logic なし)
+  positionPatchMode?: 'apply' | 'noop'; // position PATCH の soft-200 を再現 (default apply)
 }) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
-  const state = [...cfg.fields];
+  const state = cfg.fields.map((field) => ({ ...field }));
+  const moveToPosition = (slug: string, position: number) => {
+    const ordered = [...state].sort((a, b) => (a.position ?? state.indexOf(a)) - (b.position ?? state.indexOf(b)));
+    const index = ordered.findIndex((field) => field.slug === slug);
+    if (index < 0) return;
+    const [field] = ordered.splice(index, 1);
+    ordered.splice(position, 0, field);
+    ordered.forEach((item, itemPosition) => { item.position = itemPosition; });
+    state.splice(0, state.length, ...ordered);
+  };
   const getOk = cfg.getOk ?? true;
   const postMode = cfg.postMode ?? 'append';
   const client: SystemFieldClient = {
@@ -55,17 +66,25 @@ function makeClient(cfg: {
     },
     async post<T = unknown>(path: string, body?: unknown) {
       calls.push({ method: 'POST', path, body });
-      const b = (body ?? {}) as { alias?: string; type?: string; title?: string };
+      const b = (body ?? {}) as { alias?: string; type?: string; title?: string; position?: number };
       if (postMode === 'fail') return { ok: false, status: 500, error: 'boom' } as { ok: boolean; status: number; data?: T; error?: string };
       if (postMode === 'timeout') return { ok: false, status: 0, error: 'network' } as { ok: boolean; status: number; data?: T; error?: string };
       if (postMode === 'append') {
-        state.push({ slug: `new_${b.alias}`, alias: b.alias, type: b.type ?? 'hidden', title: b.title });
+        state.push({ slug: `new_${b.alias}`, alias: b.alias, type: b.type ?? 'hidden', title: b.title, position: b.position });
+        if (b.position !== undefined) moveToPosition(`new_${b.alias}`, b.position);
       }
       if (postMode === 'appendVisible') {
-        state.push({ slug: `new_${b.alias}`, alias: b.alias, type: 'short_text', title: b.title });
+        state.push({ slug: `new_${b.alias}`, alias: b.alias, type: 'short_text', title: b.title, position: b.position });
       }
       // 'noop' = 201 を返すが state を変えない (201消失シミュレーション)
       return { ok: true, status: 201, data: { data: { field: { slug: `new_${b.alias}` } } } as unknown as T };
+    },
+    async request<T = unknown>(method: string, path: string, body?: unknown) {
+      calls.push({ method, path, body });
+      const slug = path.match(/\/v3\.0\/fields\/([^/]+)\//)?.[1];
+      const position = (body as { position?: unknown } | undefined)?.position;
+      if (method === 'PATCH' && slug && typeof position === 'number' && cfg.positionPatchMode !== 'noop') moveToPosition(slug, position);
+      return { ok: true, status: 200, data: {} as unknown as T };
     },
   };
   return { client, calls, state };
@@ -84,6 +103,7 @@ describe('ensureSystemHiddenFields (T-C2)', () => {
     const frIdPost = calls.find((c) => c.method === 'POST' && (c.body as { alias?: string }).alias === 'fr_id')!;
     expect(frIdPost.path).toBe('/v3.0/fields/');
     expect(frIdPost.body).toMatchObject({ type: 'hidden', alias: 'fr_id', form: 'FSLUG' });
+    expect((frIdPost.body as { position?: number }).position).toBe(0);
     expect((frIdPost.body as { title?: string }).title).toBeTruthy();
     // POST 後 re-GET が行われる
     const gets = calls.filter((c) => c.method === 'GET');
@@ -93,9 +113,9 @@ describe('ensureSystemHiddenFields (T-C2)', () => {
   test('(2) 正常既在(type=hidden) → POST 0 (冪等 no-op / present)', async () => {
     const { client, calls } = makeClient({
       fields: [
-        { slug: 's1', type: 'short_text', title: '名前' },
-        { slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'x' },
-        { slug: 'h2', alias: 'fr_name', type: 'hidden', title: 'y' },
+        { slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'x', position: 0 },
+        { slug: 'h2', alias: 'fr_name', type: 'hidden', title: 'y', position: 1 },
+        { slug: 's1', type: 'short_text', title: '名前', position: 2 },
       ],
     });
     const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
@@ -103,6 +123,56 @@ describe('ensureSystemHiddenFields (T-C2)', () => {
     expect(r.outOfSync).toBe(false);
     expect(r.outcomes.every((o) => o.status === 'present')).toBe(true);
     expect(calls.filter((c) => c.method === 'POST').length).toBe(0);
+  });
+
+  test('既存 fr_id/fr_name が回答 field より後ろなら position:0 PATCH で先頭へ是正する', async () => {
+    const { client, calls, state } = makeClient({
+      fields: [
+        { slug: 's1', type: 'short_text', title: '名前', position: 0 },
+        { slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'x', position: 2 },
+        { slug: 'h2', alias: 'fr_name', type: 'hidden', title: 'y', position: 3 },
+      ],
+    });
+
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
+
+    const positionPatches = calls.filter((c) => c.method === 'PATCH' && (c.body as { position?: unknown })?.position === 0);
+    expect(positionPatches.map((c) => c.path)).toEqual(['/v3.0/fields/h2/', '/v3.0/fields/h1/']);
+    expect(state.find((field) => field.alias === 'fr_id')?.position).toBe(0);
+    expect(state.find((field) => field.alias === 'fr_name')?.position).toBe(1);
+    expect(state.find((field) => field.slug === 's1')?.position).toBe(2);
+    expect(r.outcomes.every((outcome) => outcome.status === 'repositioned')).toBe(true);
+    expect(r.outOfSync).toBe(false);
+  });
+
+  test('fr_name の先頭追加で既存 fr_id が押し下がっても、最終 re-GET 後に fr_id=0 へ戻す', async () => {
+    const { client, calls, state } = makeClient({
+      fields: [
+        { slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'id', position: 0 },
+        { slug: 's1', type: 'short_text', title: '名前', position: 1 },
+      ],
+    });
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
+
+    expect(calls.some((call) => call.method === 'PATCH' && call.path === '/v3.0/fields/h1/' && (call.body as { position?: unknown })?.position === 0)).toBe(true);
+    expect(state.find((field) => field.alias === 'fr_id')?.position).toBe(0);
+    expect(state.find((field) => field.alias === 'fr_name')?.position).toBe(1);
+    expect(state.find((field) => field.slug === 's1')?.position).toBe(2);
+    expect(r.outOfSync).toBe(false);
+  });
+
+  test('position PATCH が 200 でも re-GET へ反映されなければ fail-closed', async () => {
+    const { client } = makeClient({
+      fields: [
+        { slug: 's1', type: 'short_text', position: 0 },
+        { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 1 },
+      ],
+      positionPatchMode: 'noop',
+    });
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: false });
+    expect(r.ok).toBe(false);
+    expect(r.outOfSync).toBe(true);
+    expect(r.outcomes.find((outcome) => outcome.alias === 'fr_id')?.status).toBe('error');
   });
 
   test('(3) 既存非 system field を PATCH/DELETE しない (additive only)', async () => {
@@ -159,7 +229,7 @@ describe('ensureSystemHiddenFields (T-C2)', () => {
   test('(5c) POST timeout(status 0) だが再GETで field 実在 → created (idempotent recovery)', async () => {
     // timeout は失敗を返すが field は実在する状況をシミュレート: 事前に fr_id を state へ入れておき postMode=timeout。
     const { client } = makeClient({
-      fields: [{ slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'x' }],
+      fields: [{ slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'x', position: 0 }],
       postMode: 'timeout',
     });
     // fr_id は既在ゆえ POST されない = present。timeout 経路の recovery は (5b/5a) で担保・ここは present 確認。
@@ -218,9 +288,9 @@ describe('isFriendSystemField (raw field 判定)', () => {
 describe('checkSystemFieldHealth (T-C5(3): system field 健全性の別建てチェック)', () => {
   test('fr_id/fr_name が exactly-one hidden → ok・issues 空', () => {
     const list = [
-      { slug: 's1', type: 'short_text' },
-      { slug: 'h1', alias: 'fr_id', type: 'hidden' },
-      { slug: 'h2', alias: 'fr_name', type: 'hidden' },
+      { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 0 },
+      { slug: 'h2', alias: 'fr_name', type: 'hidden', position: 1 },
+      { slug: 's1', type: 'short_text', position: 2 },
     ];
     const r = checkSystemFieldHealth(list, { includeOwnerGated: true });
     expect(r.ok).toBe(true);
@@ -250,16 +320,43 @@ describe('checkSystemFieldHealth (T-C5(3): system field 健全性の別建てチ
     expect(r.ok).toBe(false);
     expect(r.issues.find((i) => i.alias === 'fr_id')!.issue).toBe('duplicate');
   });
+
+  test('system field が回答 field より後ろなら not_first を検知する', () => {
+    const r = checkSystemFieldHealth([
+      { slug: 's1', type: 'short_text', position: 0 },
+      { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 2 },
+      { slug: 'h2', alias: 'fr_name', type: 'hidden', position: 3 },
+    ], { includeOwnerGated: true });
+    expect(r.issues).toEqual([
+      { alias: 'fr_id', issue: 'not_first' },
+      { alias: 'fr_name', issue: 'not_first' },
+    ]);
+  });
+
+  test('position 欠落は先頭を証明できないため not_first として fail-closed', () => {
+    const r = checkSystemFieldHealth([{ slug: 'h1', alias: 'fr_id', type: 'hidden' }], { includeOwnerGated: false });
+    expect(r.ok).toBe(false);
+    expect(r.issues).toEqual([{ alias: 'fr_id', issue: 'not_first' }]);
+  });
+
+  test('通常 field の position 欠落時も前後関係を証明できないため fail-closed', () => {
+    const r = checkSystemFieldHealth([
+      { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 0 },
+      { slug: 's1', type: 'short_text' },
+    ], { includeOwnerGated: false });
+    expect(r.ok).toBe(false);
+    expect(r.issues).toEqual([{ alias: 'fr_id', issue: 'not_first' }]);
+  });
 });
 
 describe('backfillSystemHiddenFields (O-6: 再 publish されない既存フォームへ additive backfill 経路)', () => {
   test('複数フォームを ensure し total/repaired/alreadyOk/outOfSync を集計', async () => {
     // form A: 未設定 → repair (created)。form B: 既在 → alreadyOk。
     const state: Record<string, RawField[]> = {
-      A: [{ slug: 's1', type: 'short_text' }],
+      A: [{ slug: 's1', type: 'short_text', position: 2 }],
       B: [
-        { slug: 'h1', alias: 'fr_id', type: 'hidden' },
-        { slug: 'h2', alias: 'fr_name', type: 'hidden' },
+        { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 0 },
+        { slug: 'h2', alias: 'fr_name', type: 'hidden', position: 1 },
       ],
     };
     const client: SystemFieldClient = {
@@ -268,8 +365,8 @@ describe('backfillSystemHiddenFields (O-6: 再 publish されない既存フォ�
         return { ok: true, status: 200, data: { data: { form: { fields_list: (state[slug] ?? []).map((f) => ({ ...f })) } } } as unknown as T };
       },
       async post<T = unknown>(path: string, body?: unknown) {
-        const b = (body ?? {}) as { alias?: string; type?: string; form?: string };
-        state[b.form ?? '']?.push({ slug: `n_${b.alias}`, alias: b.alias, type: b.type ?? 'hidden' });
+      const b = (body ?? {}) as { alias?: string; type?: string; form?: string; position?: number };
+      state[b.form ?? '']?.push({ slug: `n_${b.alias}`, alias: b.alias, type: b.type ?? 'hidden', position: b.position });
         return { ok: true, status: 201, data: { data: { field: { slug: `n_${b.alias}` } } } as unknown as T };
       },
     };
@@ -291,6 +388,15 @@ function backfillAliasClient(seed: Record<string, RawField[]>) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
   const s: Record<string, RawField[]> = {};
   for (const k of Object.keys(seed)) s[k] = seed[k].map((f) => ({ ...f }));
+  const moveToPosition = (fields: RawField[], slug: string, position: number) => {
+    const ordered = [...fields].sort((a, b) => (a.position ?? fields.indexOf(a)) - (b.position ?? fields.indexOf(b)));
+    const index = ordered.findIndex((field) => field.slug === slug);
+    if (index < 0) return;
+    const [field] = ordered.splice(index, 1);
+    ordered.splice(position, 0, field);
+    ordered.forEach((item, itemPosition) => { item.position = itemPosition; });
+    fields.splice(0, fields.length, ...ordered);
+  };
   const client: SystemFieldClient = {
     async get<T = unknown>(path: string) {
       calls.push({ method: 'GET', path });
@@ -299,8 +405,10 @@ function backfillAliasClient(seed: Record<string, RawField[]>) {
     },
     async post<T = unknown>(path: string, body?: unknown) {
       calls.push({ method: 'POST', path, body });
-      const b = (body ?? {}) as { alias?: string; type?: string; form?: string };
-      s[b.form ?? '']?.push({ slug: `n_${b.alias}`, alias: b.alias, type: b.type ?? 'hidden' });
+      const b = (body ?? {}) as { alias?: string; type?: string; form?: string; position?: number };
+      const fields = s[b.form ?? ''];
+      fields?.push({ slug: `n_${b.alias}`, alias: b.alias, type: b.type ?? 'hidden', position: b.position });
+      if (fields && b.position !== undefined) moveToPosition(fields, `n_${b.alias}`, b.position);
       return { ok: true, status: 201, data: { data: { field: { slug: `n_${b.alias}` } } } as unknown as T };
     },
     async request<T = unknown>(method: string, path: string, body?: unknown) {
@@ -308,8 +416,12 @@ function backfillAliasClient(seed: Record<string, RawField[]>) {
       const m = path.match(/\/v3\.0\/fields\/([^/]+)\//);
       if (method === 'PATCH' && m) {
         const fslug = m[1];
-        const alias = (body as { alias?: string })?.alias;
-        for (const arr of Object.values(s)) { const f = arr.find((x) => x.slug === fslug); if (f && alias !== undefined) f.alias = alias; }
+        const patch = body as { alias?: string; position?: number } | undefined;
+        for (const arr of Object.values(s)) {
+          const f = arr.find((x) => x.slug === fslug);
+          if (f && patch?.alias !== undefined) f.alias = patch.alias;
+          if (f && patch?.position !== undefined) moveToPosition(arr, fslug, patch.position);
+        }
       }
       return { ok: true, status: 200, data: {} as unknown as T };
     },
@@ -320,11 +432,11 @@ function backfillAliasClient(seed: Record<string, RawField[]>) {
 // form A: alias=null(候補) / alias=slug(既済) / fr_id(system除外) / success_page(除外) / alias≠slug(候補)。
 const formASeed: Record<string, RawField[]> = {
   A: [
-    { slug: 's1', type: 'short_text' },                       // 候補 (alias null)
-    { slug: 's2', type: 'email', alias: 's2' },               // 既に alias=slug (除外)
-    { slug: 'h1', alias: 'fr_id', type: 'hidden' },           // friend-system (除外)
-    { slug: 'sp1', type: 'success_page' },                    // 完了ページ (除外)
-    { slug: 's3', type: 'short_text', alias: 'oldalias' },    // 候補 (alias≠slug)
+    { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 0 },             // friend-system (除外)
+    { slug: 's1', type: 'short_text', position: 1 },                         // 候補 (alias null)
+    { slug: 's2', type: 'email', alias: 's2', position: 2 },                 // 既に alias=slug (除外)
+    { slug: 'sp1', type: 'success_page', position: 3 },                      // 完了ページ (除外)
+    { slug: 's3', type: 'short_text', alias: 'oldalias', position: 4 },      // 候補 (alias≠slug)
   ],
 };
 
@@ -343,6 +455,30 @@ describe('backfillFieldAliases (④: 既存フォームの alias=slug backfill)'
     expect(r.forms[0].systemFieldHealth.issues.some((i) => i.alias === 'fr_name' && i.issue === 'missing')).toBe(true);
   });
 
+  test('system field の位置ずれを dry-run で列挙し、execute で position:0 へ是正する', async () => {
+    const seed = {
+      A: [
+        { slug: 's1', alias: 's1', type: 'short_text', position: 0 },
+        { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 2 },
+        { slug: 'h2', alias: 'fr_name', type: 'hidden', position: 3 },
+      ],
+    };
+    const dryClient = backfillAliasClient(seed);
+    const dry = await backfillFieldAliases(dryClient.client, ['A'], { dryRun: true, includeOwnerGated: true });
+    expect(dry.forms[0].systemFieldHealth.issues).toEqual([
+      { alias: 'fr_id', issue: 'not_first' },
+      { alias: 'fr_name', issue: 'not_first' },
+    ]);
+    expect(dryClient.calls.some((call) => call.method !== 'GET')).toBe(false);
+
+    const executeClient = backfillAliasClient(seed);
+    const executed = await backfillFieldAliases(executeClient.client, ['A'], { dryRun: false, includeOwnerGated: true });
+    const positionPatches = executeClient.calls.filter((call) => call.method === 'PATCH' && (call.body as { position?: unknown })?.position === 0);
+    expect(positionPatches.map((call) => call.path)).toEqual(['/v3.0/fields/h2/', '/v3.0/fields/h1/']);
+    expect(executed.forms[0].systemFields?.outcomes.every((outcome) => outcome.status === 'repositioned')).toBe(true);
+    expect(executed.forms[0].systemFields?.outOfSync).toBe(false);
+  });
+
   test('execute (dryRun:false): 各候補に PATCH {alias:slug} + fr_id/fr_name ensure', async () => {
     const { client, calls } = backfillAliasClient(formASeed);
     const r = await backfillFieldAliases(client, ['A'], { dryRun: false, includeOwnerGated: true });
@@ -350,8 +486,8 @@ describe('backfillFieldAliases (④: 既存フォームの alias=slug backfill)'
     expect(r.totalPatched).toBe(2);
     expect(calls.some((c) => c.method === 'PATCH' && c.path === '/v3.0/fields/s1/' && (c.body as { alias?: string }).alias === 's1')).toBe(true);
     expect(calls.some((c) => c.method === 'PATCH' && c.path === '/v3.0/fields/s3/' && (c.body as { alias?: string }).alias === 's3')).toBe(true);
-    // friend-system / success_page / 既 alias=slug は PATCH しない
-    expect(calls.some((c) => c.method === 'PATCH' && (c.path === '/v3.0/fields/s2/' || c.path === '/v3.0/fields/h1/' || c.path === '/v3.0/fields/sp1/'))).toBe(false);
+    // 通常 field のうち success_page / 既 alias=slug は PATCH しない。h1 は fr_name 先頭追加後の位置復旧だけ許可。
+    expect(calls.some((c) => c.method === 'PATCH' && (c.path === '/v3.0/fields/s2/' || c.path === '/v3.0/fields/sp1/'))).toBe(false);
     // fr_name(欠落) を ensure が POST (fr_id は present)
     expect(r.forms[0].systemFields).toBeTruthy();
     expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/' && (c.body as { alias?: string }).alias === 'fr_name')).toBe(true);
@@ -392,7 +528,17 @@ describe('backfillFieldAliases (④: 既存フォームの alias=slug backfill)'
   });
 });
 
-describe('T-C7: logic 有効フォームは hidden field 値が破棄される (fr_id 捕捉不能を surface)', () => {
+const submitWhenAnswered = (hostSlug: string) => [{
+  type: 'field',
+  identifier: hostSlug,
+  actions: [{
+    action: 'submit',
+    args: [],
+    when: { operation: 'is_answered', args: [{ type: 'field', value: hostSlug }] },
+  }],
+}];
+
+describe('T-C7: is_answered→submit はトリガー位置以降を保存しない (fr_id 位置依存の警告)', () => {
   test('logic 無 → logicConflict=false (従来どおり created・out_of_sync でない)', async () => {
     const { client } = makeClient({ fields: [{ slug: 's1', type: 'short_text', title: '名前' }] });
     const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
@@ -401,31 +547,34 @@ describe('T-C7: logic 有効フォームは hidden field 値が破棄される (
     expect(r.outOfSync).toBe(false);
   });
 
-  test('logic 有 → field は作成しても logicConflict=true・out_of_sync (fr_id は Formaloo が破棄=機能しない)', async () => {
-    const { client, calls } = makeClient({
-      fields: [{ slug: 's1', type: 'short_text', title: '名前' }],
-      logic: [{ conditions: [], actions: [{ type: 'submit_form' }] }], // submit rule あり (bare array)
-    });
-    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
-    expect(r.logicConflict).toBe(true);
-    expect(r.ok).toBe(false); // field 作成は成功でも fr_id 捕捉不能ゆえ ok にしない
-    expect(r.outOfSync).toBe(true); // silent success 禁止 = surface
-    // field 作成自体は行う (idempotent。owner が logic を外せば機能する)
-    expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/')).toBe(true);
-  });
-
-  test('logic 有 + 既に fr_id/fr_name 既在 (present) でも logicConflict=true・out_of_sync', async () => {
+  test('fr_id が submit トリガーより後ろ → logicConflict=true・out_of_sync', async () => {
     const { client } = makeClient({
       fields: [
-        { slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'x' },
-        { slug: 'h2', alias: 'fr_name', type: 'hidden', title: 'y' },
+        { slug: 's1', type: 'short_text', title: '名前', position: 0 },
+        { slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'x', position: 2 },
       ],
-      logic: [{ conditions: [], actions: [{ type: 'submit_form' }] }],
+      logic: submitWhenAnswered('s1'),
+      positionPatchMode: 'noop',
+    });
+    const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: false });
+    expect(r.logicConflict).toBe(true);
+    expect(r.ok).toBe(false);
+    expect(r.outOfSync).toBe(true);
+  });
+
+  test('fr_id が position 0 なら is_answered→submit と共存できる', async () => {
+    const { client } = makeClient({
+      fields: [
+        { slug: 'h1', alias: 'fr_id', type: 'hidden', title: 'x', position: 0 },
+        { slug: 'h2', alias: 'fr_name', type: 'hidden', title: 'y', position: 1 },
+        { slug: 's1', type: 'short_text', title: '名前', position: 2 },
+      ],
+      logic: submitWhenAnswered('s1'),
     });
     const r = await ensureSystemHiddenFields(client, 'FSLUG', { includeOwnerGated: true });
-    expect(r.logicConflict).toBe(true);
-    expect(r.outOfSync).toBe(true);
-    expect(r.outcomes.every((o) => o.status === 'present')).toBe(true); // field 自体は健全
+    expect(r.logicConflict).toBe(false);
+    expect(r.outOfSync).toBe(false);
+    expect(r.outcomes.every((o) => o.status === 'present')).toBe(true);
   });
 
   test('空 logic array ([]) は logicConflict=false (length>0 のみ検知)', async () => {
@@ -434,18 +583,31 @@ describe('T-C7: logic 有効フォームは hidden field 値が破棄される (
     expect(r.logicConflict).toBe(false);
   });
 
-  test('checkSystemFieldHealth: rawLogic 有 → logicConflict=true・ok=false (health 別建てでも検知)', () => {
-    const healthyFields = [
-      { slug: 'h1', alias: 'fr_id', type: 'hidden' },
-      { slug: 'h2', alias: 'fr_name', type: 'hidden' },
+  test('show/hide 等の非 submit logic は position に関係なく警告しない', () => {
+    const fields = [
+      { slug: 's1', type: 'short_text', position: 0 },
+      { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 2 },
     ];
-    // logic 無 (未渡し) → 健全
+    const showLogic = [{
+      type: 'field', identifier: 's1',
+      actions: [{ action: 'show', args: [{ type: 'field', identifier: 's2' }], when: { operation: 'is_answered', args: [{ type: 'field', value: 's1' }] } }],
+    }];
+    expect(checkSystemFieldHealth(fields, { includeOwnerGated: false }, showLogic).logicConflict).toBe(false);
+  });
+
+  test('checkSystemFieldHealth: fr_id が submit host より後ろの場合だけ logicConflict=true', () => {
+    const healthyFields = [
+      { slug: 'h1', alias: 'fr_id', type: 'hidden', position: 0 },
+      { slug: 'h2', alias: 'fr_name', type: 'hidden', position: 1 },
+      { slug: 's1', type: 'short_text', position: 2 },
+    ];
     expect(checkSystemFieldHealth(healthyFields, { includeOwnerGated: true }).logicConflict).toBe(false);
     expect(checkSystemFieldHealth(healthyFields, { includeOwnerGated: true }).ok).toBe(true);
-    // logic 有 → field 健全でも logicConflict で ok=false
-    const withLogic = checkSystemFieldHealth(healthyFields, { includeOwnerGated: true }, [{ actions: [{ type: 'submit_form' }] }]);
-    expect(withLogic.logicConflict).toBe(true);
-    expect(withLogic.ok).toBe(false);
-    expect(withLogic.issues).toEqual([]); // field 自体は健全 (issue は logic と別軸)
+    expect(checkSystemFieldHealth(healthyFields, { includeOwnerGated: true }, submitWhenAnswered('s1')).logicConflict).toBe(false);
+
+    const misplaced = [healthyFields[2], { ...healthyFields[0], position: 3 }, { ...healthyFields[1], position: 4 }];
+    const withConflict = checkSystemFieldHealth(misplaced, { includeOwnerGated: true }, submitWhenAnswered('s1'));
+    expect(withConflict.logicConflict).toBe(true);
+    expect(withConflict.ok).toBe(false);
   });
 });

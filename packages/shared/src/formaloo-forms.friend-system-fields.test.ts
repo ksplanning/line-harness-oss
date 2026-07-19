@@ -21,6 +21,7 @@ describe('FRIEND_SYSTEM_FIELDS (T-C1: system hidden field 単一正本)', () => 
     for (const f of FRIEND_SYSTEM_FIELDS) {
       expect(f.type).toBe('hidden');
       expect(f.required).toBe(false);
+      expect(f.position).toBe(0);
       expect(typeof f.title).toBe('string');
       expect(f.title.length).toBeGreaterThan(0);
     }

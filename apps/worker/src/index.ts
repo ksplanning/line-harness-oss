@@ -812,7 +812,7 @@ async function scheduled(
         db: env.DB,
         resolveClient: (wsid) => resolveFormalooClient(env, wsid),
         autoApplyEnabled: env.FORMALOO_DRIFT_AUTO_APPLY === 'true',
-        // fr-id-hardening-round2 / T-C5 配線: friend system field 健全性 (fr_id/fr_name の削除/visible化/重複/logic破棄) を
+        // fr-id-hardening-round2 / T-C5 配線: friend system field 健全性 (削除/visible化/重複/位置ずれ・submit trigger 後方配置) を
         //   drift 走行点で監査し不健全なら既存 drift 通知経路で surface。autopush 有効テナントでのみ動く (無効なら fr_id 不在が
         //   正常ゆえ false alarm を出さない)。fr_name は owner-gate と同じ判定。
         systemFieldHealthCheck: env.FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE !== '1',

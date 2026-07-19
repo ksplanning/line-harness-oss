@@ -21,13 +21,11 @@
       既定有効。`FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE='1'` で短絡（rollback）。
     - **手動フォーム / Formaloo 管理画面直作成フォーム**は auto-push を通らないことがある → その場合は
       各 field に alias を手動設定するか、下の O-6 backfill を回す。
-    - **⚠️ logic 併用不可（T-C7 / 司令塔 A/B 実測 2026-07-18）**: フォームに **logic（「回答されたら送信」等の
-      submit rule / route-terminal generateSubmitWhen 由来）が有効だと、Formaloo サーバーは受け取り時（intake）に
-      hidden field の値を破棄する**（logic 無→捕捉 / 有→NULL・field の position 無関係・client POST payload には
-      載る）。ゆえに fr_id field を作っても **logic 有効フォームでは fr_id が機能しない**（再入場 prefill は成立しない）。
-      検知は `ensureSystemHiddenFields` / `checkSystemFieldHealth` の `logicConflict` で surface し、保存時に
-      `syncStatus='out_of_sync'` + owner 向け専用 message で告知する（無警告出荷=殻完了を防ぐ）。
-      **fr_id 運用（再入場 prefill）を使うフォームでは logic を併用しないこと。**
+    - **⚠️ logic は位置条件つきで共存可（T-C7 / grammar 実測 2026-07-19）**: Formaloo の
+      **「回答されたら送信」(`is_answered(X)→submit`) はトリガー X の position 以降の field を保存しない**。
+      `fr_id` を先頭 (`position 0`) に固定すれば再入場 prefill と logic は共存できる。`fr_id` がトリガーより後ろに
+      ある場合だけ `ensureSystemHiddenFields` / `checkSystemFieldHealth` の `logicConflict` で検知し、
+      `syncStatus='out_of_sync'` + owner 向け位置修正 message を表示する。
 - [ ] **(iv) `VITE_LIFF_ID` bake** — テナント固有 LIFF ID で web/worker を再 build（空焼き禁止）。
       空焼きは fo-liff 無限ループ / ぐるぐるの回帰源。deploy は必ずテナント build env で再 build
       （propagation-runbook §2 / build-env-rebuild.md）。
@@ -47,10 +45,10 @@
 ## O-6 — 再 publish されない既存フォームへの backfill（owner_role: infra-ops）
 
 `ensureSystemHiddenFields` は publish 時に走るため、**再 publish されないフォーム**（ks/TRïNA の既存フォーム・
-過去コピー）は hidden field を持たないままになり得る。恒久標準装備を担保するには additive backfill を回す:
+過去コピー）は hidden field を持たないか、末尾に配置されたままになり得る。恒久標準装備を担保するには backfill を回す:
 
 1. テナント別（ks / piecemaker）の稼働フォーム inventory を作成（formaloo_slug 一覧）。
-2. `backfillSystemHiddenFields(client, formSlugs[], { includeOwnerGated })` を実行（既存 field/回答は不可触・additive only）。
+2. `backfillSystemHiddenFields(client, formSlugs[], { includeOwnerGated })` を実行（通常 field/回答は不可触。予約 field の追加と先頭への位置修復だけを行う）。
 3. **除外**: Z5IEH85R / puw7lh 等 owner 実フォームは owner 承認が要る → inventory から外すか承認後に実行。
 4. 対象総数 / 修復数 / 除外数 / out_of_sync（衝突）を記録。未実施フォームは残タスクとして明示（殻完了禁止）。
 
