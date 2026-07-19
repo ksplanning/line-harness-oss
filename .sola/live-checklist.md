@@ -386,3 +386,80 @@ rm -rf "$CDP_DIR"
 - 本番 ID `GMOxoMtK / Z5IEH85R / puw7lh` mutation 0
 
 ks が全 PASS して cleanup 済みになってから、同じ手順を piecemaker の credential / worker URL で繰り返す。
+
+---
+
+# formaloo-fixes-round3 — host live 確認チェックリスト
+
+> sandbox では外部 API を呼んでいない。本書は host の `infra-ops` が owner GO 後に実行する。実トークン・API key・回答本文はログや commit に残さず、結果は HTTP status / 件数 / slug の伏字だけを記録する。
+
+## 0. 共通 gate
+
+- [ ] 対象 tenant、Worker deployment SHA、app form ID、Formaloo form slug、実行者、owner GO の時刻を記録した。
+- [ ] 本番 owner フォームや除外フォームを inventory から外した。削除確認には復元不要な disposable row を 1 件だけ使う。
+- [ ] 変更前の `fields_list`（slug / alias / type / position のみ）と definition fingerprint を secret-safe な場所へ保存した。
+- [ ] `FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE='1'` で system field auto-push と対応する drift health check を止められることを確認した。
+- [ ] PII を増やさない既定として `FORMALOO_FR_NAME_AUTOPUSH_DISABLE='1'` を維持する。fr_name を有効にする場合は別の明示 owner GO を得た。
+
+## 1. bulk-delete の実 API 実効確認
+
+1. owner 承認済みの検証フォームへ disposable row を 1 件送信し、app mirror ID と Formaloo row slug を記録する。
+2. 削除前に app の `GET /api/forms-advanced/<formId>/rows/<mirrorId>` と、secret-safe な `FormalooClient.get('/v3.0/rows/<rowSlug>/')` がともに HTTP 200 であることを確認する。
+3. owner token を shell 履歴へ直接書かず、次を実行する。
+
+   ```bash
+   curl --fail-with-body \
+     -X POST "${CHECK_WORKER_ORIGIN}/api/forms-advanced/${CHECK_FORM_ID}/rows/bulk-delete" \
+     -H "Authorization: Bearer ${CHECK_OWNER_TOKEN}" \
+     -H 'Content-Type: application/json' \
+     --data "{\"ids\":[\"${CHECK_MIRROR_ID}\"]}"
+   ```
+
+4. response が HTTP 200、`success:true`、`data.deleted:1` であることを記録する。アプリ内部では Formaloo へ `{slugs_list:[<rowSlug>]}` を送り、その後の row GET が 404 の場合だけ mirror を削除する。
+5. host からも `FormalooClient.get('/v3.0/rows/<rowSlug>/')` が HTTP 404、app の row GET も HTTP 404 であることを再確認する。
+6. HTTP 422/502 の場合は PASS にしない。特に Formaloo row が残るのに mirror だけ消えていないことを確認し、対象追加を止める。
+
+### bulk-delete rollback / 停止
+
+- row 削除そのものは不可逆なので、disposable row 以外で試さない。必要な回答は事前 export する。
+- bulk-delete 専用 env kill-switch は現状ない。異常時は owner 操作を停止し、管理 UI から一括削除を使わず、Worker を直前の承認済み deployment へ rollback する。ただし旧 deployment は remote 削除 shape の既知バグを持つため、rollback 後も bulk-delete を再開しない。
+
+## 2. 既存フォームの system field position 是正
+
+1. tenant ごとに承認済み Formaloo form slug の inventory を固定する。まず必ず dry-run を行う。
+
+   ```ts
+   await backfillFieldAliases(client, approvedFormSlugs, {
+     dryRun: true,
+     includeOwnerGated: false,
+   });
+   ```
+
+2. dry-run 中の mutation が 0 件であることを API log で確認し、各 form の `systemFieldHealth.issues`（`missing` / `not_hidden` / `duplicate` / `not_first`）と `logicConflict` を owner へ提示する。
+3. visible/duplicate conflict、position 欠落、読取不能 form は execute 対象から外して調査する。自動修復対象は missing または exactly-one hidden の `not_first` だけとする。
+4. owner が最終 inventory を GO した後だけ execute する。fr_name の PII 承認がない限り `includeOwnerGated:false` を維持する。
+
+   ```ts
+   await backfillFieldAliases(client, ownerApprovedFormSlugs, {
+     dryRun: false,
+     includeOwnerGated: false,
+   });
+   ```
+
+5. form ごとに `systemFields.ok=true`、`outOfSync=false`、outcome が `present` / `created` / `repositioned` のいずれかであることを確認する。
+6. re-GET した `fields_list` で `fr_id` が position 0、owner-gated で作る場合の `fr_name` も通常 field より前であることを確認する。
+7. `is_answered(X)→submit` がある form は `fr_id.position < X.position` と `logicConflict=false` を確認する。トリガー位置以降の回答は保存されない仕様なので、後続の通常回答項目も owner が意図した配置か確認する。
+8. 変更前後の definition fingerprint が同一であること、drift event が増えていないことを記録する。
+
+### position rollback / kill-switch
+
+- 異常時は直ちに `FORMALOO_SYSTEM_FIELDS_AUTOPUSH_DISABLE='1'` を設定して再 deploy し、自動作成・位置修復と system-field health cron を停止する。fr_name だけ止める場合は `FORMALOO_FR_NAME_AUTOPUSH_DISABLE='1'`。
+- system field を先頭へ移した状態は通常 field/回答を削除しないため、原則として data rollback はせずコードを rollback して調査する。
+- owner が data rollback も明示承認した場合だけ、保存済みの変更前 field order を使い、予約 field を元 position へ PATCH して re-GET で確認する。system field の DELETE や通常 field の PATCH は行わない。
+
+## 3. 完了記録
+
+- [ ] bulk-delete: pre-200 / delete-200 / Formaloo-404 / mirror-404 の証跡が揃った。
+- [ ] position: dry-run 結果、owner GO、execute 結果、re-GET、fingerprint 同一の証跡が揃った。
+- [ ] kill-switch 値と rollback 対象 deployment を記録した。
+- [ ] 1 項目でも未確認なら live PASS とせず、BLOCKED または FAIL として査読へ返す。
