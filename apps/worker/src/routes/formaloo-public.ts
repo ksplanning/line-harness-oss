@@ -34,6 +34,7 @@ import {
   friendLinkSecret,
 } from '../services/formaloo-row-edit.js';
 import { verifyEditToken, type EditTokenPayload } from '../services/formaloo-edit-token.js';
+import { extractFormalooReceiptMetadata, processFormalooEditMail } from '../services/formaloo-edit-mail.js';
 import { resolveFormalooClient } from '../services/formaloo-client.js';
 import type { Env } from '../index.js';
 
@@ -139,6 +140,7 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
   // 5) 台帳照合 (どの harness form の回答か)
   const form = await getFormalooFormBySlug(c.env.DB, parsed.slug);
   if (!form) return c.json({ success: true });
+  const receiptMetadata = extractFormalooReceiptMetadata(payload);
 
   // 6) 冪等 upsert (N-3 / 順序非依存)。弾M (T-A4): rowSlug を additive で渡す (COALESCE 保持 = 再送で
   //    null が既存 row_slug を落とさない)。既存の submissionId/friendId/answers/verified 経路は byte 不変。
@@ -151,6 +153,9 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
     submittedAt: parsed.submittedAt,
     verified,
     rowSlug: parsed.rowSlug,
+    trackingCode: receiptMetadata.trackingCode,
+    submitNumber: receiptMetadata.submitNumber,
+    pdfLink: receiptMetadata.pdfLink,
   });
 
   // 7) LINE 後処理 (T-C3): published + verified のときだけ、claim 成功で 1 回だけ発火 (N-7・N-3)。
@@ -165,6 +170,20 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
   if (eligible && claimed) {
     await fireFormalooSubmitSideEffects(c, form, parsed.friendId);
     await incrementFormalooSubmitCount(c.env.DB, form.id);
+
+    // form-edit-mail Phase B: webhook の応答を provider 待ちで塞がない。既存 eligibility/consume claim に加え、
+    // form 両 gate + env kill-switch が真の時だけ独立 outbox 処理を waitUntil へ渡す。失敗は必ず吸収し 200 を維持。
+    if (form.allow_post_edit === 1 && form.allow_edit_mail === 1 && c.env.FORM_EDIT_MAIL_ENABLED === 'true') {
+      const mailJob = processFormalooEditMail(c.env, { submissionId: parsed.submissionId, mode: 'initial' })
+        .then(() => undefined)
+        .catch(() => undefined);
+      try {
+        c.executionCtx.waitUntil(mailJob);
+      } catch {
+        // unit-test / 非 Workers adapter には ExecutionContext が無い場合がある。provider処理自体は fail-soft。
+        void mailJob;
+      }
+    }
   }
   // eligible=false のときは claim (0→1 消費) のみ = 発火なし・以後昇格不可。
 

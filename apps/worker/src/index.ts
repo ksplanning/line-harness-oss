@@ -21,6 +21,7 @@ import { processInsightFetch } from './services/insight-fetcher.js';
 import { processDueReminders } from './services/booking-reminders.js';
 import { resolveFormalooClient } from './services/formaloo-client.js';
 import { runFormalooDriftCheck } from './services/formaloo-drift.js';
+import { runFormalooEditMailOutbox } from './services/formaloo-edit-mail.js';
 import { runExpirer } from './services/booking-expirer.js';
 import { processDueEventReminders } from './services/event-booking-reminders.js';
 import { runEventBookingExpirer } from './services/event-booking-expirer.js';
@@ -165,6 +166,11 @@ export type Env = {
     RICH_MENU_SCHEDULE_ENABLED?: string;
     MANIFEST_URL?: string;
     WORKER_PUBLIC_URL?: string;
+    // form-edit-mail Phase B: Resend HTTP sender。全て optional + FORM_EDIT_MAIL_ENABLED='true' の AND gate。
+    // 差出人は env で差替可能にし、テスト/本番ドメインをコードへ埋め込まない。
+    RESEND_API_KEY?: string;
+    FORM_EDIT_MAIL_ENABLED?: string;
+    FORM_EDIT_MAIL_FROM?: string;
     ADMIN_PUBLIC_URL?: string;
     LIFF_PUBLIC_URL?: string;
     // Formaloo 統合 (F-1 / line-formaloo-forms)。secret は `wrangler secret put` で供給 (closer 工程 S-1)。
@@ -741,6 +747,21 @@ async function scheduled(
   }
 
   await Promise.allSettled(jobs);
+
+  // form-edit-mail Phase B: 既存 */5 tick だけで bounded outbox を再送する。env 未設定は job 自体を作らない。
+  // 宛先/本文/例外 message はログへ出さず、件数だけを運用証跡にする。
+  if (event.cron === '*/5 * * * *' && env.FORM_EDIT_MAIL_ENABLED === 'true') {
+    try {
+      const result = await runFormalooEditMailOutbox(env);
+      if (result.attempted > 0) {
+        console.log(
+          `[formaloo-edit-mail] attempted=${result.attempted} sent=${result.sent} failed=${result.failed} skipped=${result.skipped}`,
+        );
+      }
+    } catch {
+      console.error('[formaloo-edit-mail] outbox error');
+    }
+  }
 
   // Fetch broadcast insights (runs daily, self-throttled)
   try {
