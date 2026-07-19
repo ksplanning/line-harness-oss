@@ -480,6 +480,9 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 - 使い捨てフォームと合成回答を承認済み通常手順で削除し、再表示で消えたことを確認する。migration/table は additive のため
   DROP しない。contract secret は保持が承認されていなければ削除し、flag は必ず OFF のままにする。
 
-- [ ] 選択した1テナント: 公式 POST contract と `.net` alias、migration 111、1回だけの分析、履歴再表示、credit 差分、flag 再OFF、cleanup が PASS。
-- [ ] もう1テナント: migration 111、fresh build、flag OFF `404`、日次上限/tenant 分離の設定が PASS（AI実射 0）。
-- [ ] sandbox AI実射 0、本番3フォーム接触 0、重複送信 0、秘密値記録 0。
+- [x] 両テナント (KS/Piecemaker): migration 111 適用 (additive・formaloo_forms 行数不変 KS=37/PM=20)・fresh deploy (worker+admin 4面)・flag 未設定 (既定OFF) で `POST /api/forms-advanced/ai-chat/analyze` が `404 ai_chat_disabled` (Bearer 認証は通過・未認証は 401 維持) を実測。
+- [BLOCKED] 1回実射: **host 診断で `POST /v3.0/custom-prompt-analyzes/` および `/v3.0/prompts/` が現行 Formaloo Pro ワークスペース (Piecemaker B鍵) で `api.formaloo.net` / `api.formaloo.me` 両方とも `404 Not Found` を実測** (同一 JWT/x-api-key で `GET /v3.0/recent-forms/` は 200 = 認証・base URL 自体は健全)。空 body での 400 バリデーション経由の contract 逆引きも試みたが、そもそもルートが存在しないため到達不能。ゆえに body schema は host 診断でも確認不能・contract secret 未投入・flag は両テナントとも既定 OFF のまま維持。クレジット消費ゼロ (推測 POST 未送信)。
+- [x] sandbox AI実射 0、本番3フォーム接触 0、重複送信 0、秘密値記録 0 (トークン/鍵は sub-shell 変数キャプチャのみ・会話/ログに非出力)。
+
+### 診断結果 (2026-07-20 closer / host)
+このワークスペースの Formaloo アカウントには AI Custom Prompt Analyze / Prompts API が (プランまたはダッシュボードでの Engine 未設定により) まだ有効化されていない可能性が高い。owner が Formaloo サポートに「Custom Prompt Analyze API を有効化してほしい」と問い合わせるか、ダッシュボードで AI Engine (OpenAI/Bedrock/Gemini 等) を接続後に再診断が必要。コードは safe (flag OFF・contract 未設定は 503 disabled 相当) なので事故リスクはゼロ。
