@@ -90,6 +90,42 @@ describe('migration 105 — tenant friend field definitions', () => {
     expect(sql).toMatch(/CREATE TABLE/i);
     expect(sql).not.toMatch(/^\s*(ALTER|DROP|RENAME|UPDATE|DELETE)\b/im);
   });
+
+  test('既存 friends.metadata の保存バイトを migration 適用前後で変えない', () => {
+    const legacy = new Database(':memory:');
+    try {
+      legacy.exec(`
+        CREATE TABLE friends (
+          id TEXT PRIMARY KEY,
+          metadata TEXT
+        );
+      `);
+
+      const insert = legacy.prepare('INSERT INTO friends (id, metadata) VALUES (?, ?)');
+      insert.run('valid-json', '{ "入金確認" : "未", "nested": {"count": 1} }');
+      insert.run('invalid-json', '{"unfinished":');
+      insert.run('null-metadata', null);
+
+      const snapshot = () => legacy.prepare(`
+        SELECT
+          id,
+          metadata,
+          typeof(metadata) AS storage_type,
+          length(CAST(metadata AS BLOB)) AS byte_length,
+          hex(CAST(metadata AS BLOB)) AS metadata_hex
+        FROM friends
+        ORDER BY id
+      `).all();
+      const before = snapshot();
+
+      legacy.exec(readFileSync(join(MIGRATIONS_DIR, '105_friend_field_definitions.sql'), 'utf8'));
+
+      expect(snapshot()).toStrictEqual(before);
+      expect(legacy.prepare('SELECT COUNT(*) AS count FROM friend_field_definitions').get()).toEqual({ count: 0 });
+    } finally {
+      legacy.close();
+    }
+  });
 });
 
 describe('friend field definition model', () => {
