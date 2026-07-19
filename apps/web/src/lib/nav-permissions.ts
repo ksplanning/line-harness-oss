@@ -31,6 +31,7 @@ export const NAV_FEATURE: Record<string, string> = {
   '/scoring': 'analytics',
   '/form-submissions': 'form',
   '/forms-advanced': 'forms_advanced',
+  '/ai-chat': 'forms_advanced',
   '/settings/formaloo-workspaces': 'forms_advanced',
   '/duplicates': 'friend',
   '/automations': 'scenario',
