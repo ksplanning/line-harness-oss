@@ -130,6 +130,9 @@ function mirrorCount(formId: string): number {
 function mirrorRow(id: string): { answers_json: string; formaloo_row_slug: string | null; verified: number; friend_id: string | null } | undefined {
   return raw.prepare('SELECT answers_json, formaloo_row_slug, verified, friend_id FROM formaloo_submissions WHERE id=?').get(id) as never;
 }
+function receiptRow(id: string): { tracking_code: string | null; submit_number: string | null; pdf_link: string | null } | undefined {
+  return raw.prepare('SELECT tracking_code, submit_number, pdf_link FROM formaloo_submissions WHERE id=?').get(id) as never;
+}
 
 /** S-1 実測 shape の rows-list row を作る (load-bearing field のみ・実形を忠実に反映)。 */
 function realRow(slug: string, submitCode: string, answers: Record<string, unknown>, createdAt: string): Record<string, unknown> {
@@ -232,6 +235,32 @@ describe('T-A6 mapFormalooListRowToUpsert', () => {
     expect(typeof input.submittedAt).toBe('string');
     expect(input.submittedAt.length).toBeGreaterThan(0);
   });
+  test('submit-time 控え metadata は row root の完全一致キーだけを取込み、回答内の同名キーは無視する', async () => {
+    const form = { id: 'fa1', formaloo_slug: 'GMOxoMtK' };
+    const row = realRow(
+      'receipt-row',
+      'sc',
+      { tracking_code: '回答欄の値', submit_number: '回答欄の値', pdf_link: 'https://wrong.example/answer.pdf' },
+      '2026-07-17T12:00:00.000000',
+    );
+    Object.assign(row, {
+      tracking_code: '  TRACK-001  ',
+      submit_number: 42,
+      pdf_link: ' https://cdn.example.test/receipt.pdf ',
+    });
+    const input = (await mapFormalooListRowToUpsert(row, form))!;
+    expect(input.trackingCode).toBe('TRACK-001');
+    expect(input.submitNumber).toBe('42');
+    expect(input.pdfLink).toBe('https://cdn.example.test/receipt.pdf');
+
+    const collisionOnly = (await mapFormalooListRowToUpsert({
+      slug: 'collision-only',
+      data: { tracking_code: 'answer-only', submit_number: 'answer-only', pdf_link: 'https://wrong.example/answer.pdf' },
+    }, form))!;
+    expect(collisionOnly.trackingCode).toBeNull();
+    expect(collisionOnly.submitNumber).toBeNull();
+    expect(collisionOnly.pdfLink).toBeNull();
+  });
 });
 
 // ── T-A1: reconcile 本線 (Formaloo に rows / ミラー空 → 一覧が非空) ──
@@ -258,6 +287,25 @@ describe('T-A1 /rows reconcile (RED: 現行は空を返す / GREEN: Formaloo か
     expect(mirrorRow('slugA')!.formaloo_row_slug).toBe('slugA');
     expect(mirrorRow('slugA')!.verified).toBe(0);
     expect(mirrorRow('slugA')!.friend_id).toBeNull();
+  });
+
+  test('reconcile pull が tracking_code / submit_number / pdf_link を D1 ミラーへ保存する', async () => {
+    seedForm('fa-receipt', 'RECEIPT_FORM');
+    const row = realRow('receipt-slug', 'sc-receipt', { answer: 'ok' }, '2026-07-17T14:00:00.000000');
+    Object.assign(row, {
+      tracking_code: 'TRACK-900',
+      submit_number: '000123',
+      pdf_link: 'https://cdn.example.test/receipt-900.pdf',
+    });
+    stubFormaloo((page) => (page === 1 ? [row] : []));
+
+    const res = await call('GET', '/api/forms-advanced/fa-receipt/rows');
+    expect(res.status).toBe(200);
+    expect(receiptRow('receipt-slug')).toEqual({
+      tracking_code: 'TRACK-900',
+      submit_number: '000123',
+      pdf_link: 'https://cdn.example.test/receipt-900.pdf',
+    });
   });
 
   test('idempotent: 2 回 reconcile しても 1 行 (ON CONFLICT(id))', async () => {

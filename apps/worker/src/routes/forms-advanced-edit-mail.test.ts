@@ -46,13 +46,14 @@ function replayAll(db: Database.Database) {
 let raw: Database.Database;
 let DB: D1Database;
 
-function env(): Env['Bindings'] {
+function env(overrides: Partial<Env['Bindings']> = {}): Env['Bindings'] {
   return {
     DB, IMAGES: {} as R2Bucket, ASSETS: {} as Fetcher,
     LINE_CHANNEL_SECRET: 's', LINE_CHANNEL_ACCESS_TOKEN: 't', API_KEY: 'em-owner-key',
     LIFF_URL: 'https://liff.example.test', LINE_CHANNEL_ID: 'c', LINE_LOGIN_CHANNEL_ID: 'lc',
     LINE_LOGIN_CHANNEL_SECRET: 'ls', WORKER_URL: 'https://api.example.com',
     FORMALOO_API_KEY: 'em-fk', FORMALOO_API_SECRET: 'em-fs',
+    ...overrides,
   } as Env['Bindings'];
 }
 
@@ -64,12 +65,12 @@ function app() {
   return hono;
 }
 
-function call(method: string, path: string, body?: unknown) {
+function call(method: string, path: string, body?: unknown, bindings = env()) {
   return app().request(path, {
     method,
     headers: { Authorization: 'Bearer em-owner-key', 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }, env());
+  }, bindings);
 }
 
 function seedForm(id: string, slug: string | null) {
@@ -83,6 +84,19 @@ function editMailRow(id: string): number | undefined {
   return r?.v;
 }
 
+function seedFieldMap(formId: string, id: string, slug: string, type = 'email') {
+  raw.prepare(
+    `INSERT INTO formaloo_field_map
+       (id, form_id, formaloo_field_slug, field_type, label, position, config_json)
+     VALUES (?, ?, ?, ?, '項目', 0, '{}')`,
+  ).run(id, formId, slug, type);
+}
+
+function editMailFieldSlug(id: string): string | null | undefined {
+  const row = raw.prepare('SELECT edit_mail_field_slug AS slug FROM formaloo_forms WHERE id=?').get(id) as { slug: string | null } | undefined;
+  return row?.slug;
+}
+
 interface ApiCall { method: string; url: string; body: unknown }
 function stubFormaloo(): ApiCall[] {
   const calls: ApiCall[] = [];
@@ -94,6 +108,7 @@ function stubFormaloo(): ApiCall[] {
     calls.push({ method, url, body });
     if (url.includes('/oauth2/authorization-token/')) return new Response(JSON.stringify({ authorization_token: 'jwt' }), { status: 200 });
     if (method === 'POST' && /\/v3\.0\/forms\/$/.test(url)) return new Response(JSON.stringify({ data: { form: { slug: 'CREATED' } } }), { status: 201 });
+    if (method === 'GET' && /\/v3\.0\/fields\/[^/?]+\/$/.test(url)) return new Response('{}', { status: 404 });
     if (method === 'POST' && /\/fields\/$/.test(url)) return new Response(JSON.stringify({ data: { field: { slug: 'FLD' } } }), { status: 201 });
     return new Response(JSON.stringify({ data: { form: body ?? {}, field: {} } }), { status: 200 });
   }));
@@ -154,10 +169,127 @@ describe('PUT /api/forms-advanced/:id — allow_edit_mail は Formaloo push に�
       logic: [],
       allowEditMail: 1,
     });
-    const forbidden = /allow_edit_mail|allowEditMail/;
+    const forbidden = /allow_edit_mail|allowEditMail|edit_mail_field|editMailField/;
     for (const c of calls) {
       expect(JSON.stringify(c.body ?? {})).not.toMatch(forbidden);
     }
     expect(editMailRow('em5')).toBe(1);
+  });
+});
+
+describe('GET/PUT /api/forms-advanced/:id — 編集メール宛先の明示指定 (Phase B / G-1)', () => {
+  test('GET は保存 slug と完全一致する email map の internal id だけを返す (先頭 fallback なし)', async () => {
+    seedForm('em6', 'EM_FORM6');
+    seedFieldMap('em6', 'first-email', 'FIRST');
+    seedFieldMap('em6', 'chosen-email', 'CHOSEN');
+    raw.prepare("UPDATE formaloo_forms SET edit_mail_field_slug='CHOSEN' WHERE id='em6'").run();
+
+    const get = await call('GET', '/api/forms-advanced/em6');
+    const meta = (await get.json()) as { data: { editMailFieldId?: string | null } };
+    expect(meta.data.editMailFieldId).toBe('chosen-email');
+
+    raw.prepare("UPDATE formaloo_forms SET edit_mail_field_slug=NULL WHERE id='em6'").run();
+    const unset = await call('GET', '/api/forms-advanced/em6');
+    expect(((await unset.json()) as { data: { editMailFieldId?: string | null } }).data.editMailFieldId).toBeNull();
+  });
+
+  test('PUT は明示した既存 email internal id を remote slug に変換して保存する', async () => {
+    seedForm('em7', 'EM_FORM7');
+    seedFieldMap('em7', 'reply-email', 'REMOTE_EMAIL');
+    stubFormaloo();
+    const res = await call('PUT', '/api/forms-advanced/em7', {
+      fields: [{ id: 'reply-email', type: 'email', label: '返信先', required: true, position: 0, config: {} }],
+      logic: [],
+      editMailFieldId: 'reply-email',
+    });
+    expect(res.status).toBe(200);
+    expect(editMailFieldSlug('em7')).toBe('REMOTE_EMAIL');
+    expect(((await res.json()) as { data: { editMailFieldId?: string | null } }).data.editMailFieldId).toBe('reply-email');
+  });
+
+  test('新規 email internal id は push 後に採番された remote slug を保存する', async () => {
+    seedForm('em7-new', 'EM_FORM7_NEW');
+    stubFormaloo();
+    const res = await call('PUT', '/api/forms-advanced/em7-new', {
+      fields: [{ id: 'new-email', type: 'email', label: '新規返信先', required: true, position: 0, config: {} }],
+      logic: [],
+      editMailFieldId: 'new-email',
+    });
+    expect(res.status).toBe(200);
+    expect(editMailFieldSlug('em7-new')).toBe('FLD');
+    expect(((await res.json()) as { data: { editMailFieldId?: string | null } }).data.editMailFieldId).toBe('new-email');
+  });
+
+  test.each([
+    ['unknown id', 'missing'],
+    ['text field', 'name-field'],
+  ])('unknown/text は 400 で reject (%s)', async (_case, editMailFieldId) => {
+    seedForm(`em8-${editMailFieldId}`, 'EM_FORM8');
+    const res = await call('PUT', `/api/forms-advanced/em8-${editMailFieldId}`, {
+      fields: [
+        { id: 'name-field', type: 'text', label: '氏名', required: true, position: 0, config: {} },
+        { id: 'reply-email', type: 'email', label: '返信先', required: true, position: 1, config: {} },
+      ],
+      logic: [],
+      editMailFieldId,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('null は明示解除し、key 不在は既存 slug を維持する', async () => {
+    seedForm('em9', 'EM_FORM9');
+    seedFieldMap('em9', 'reply-email', 'REMOTE_EMAIL');
+    raw.prepare("UPDATE formaloo_forms SET edit_mail_field_slug='REMOTE_EMAIL' WHERE id='em9'").run();
+    stubFormaloo();
+    await call('PUT', '/api/forms-advanced/em9', {
+      fields: [{ id: 'reply-email', type: 'email', label: '返信先', required: true, position: 0, config: {} }],
+      logic: [],
+    });
+    expect(editMailFieldSlug('em9')).toBe('REMOTE_EMAIL');
+    await call('PUT', '/api/forms-advanced/em9', {
+      fields: [{ id: 'reply-email', type: 'email', label: '返信先', required: true, position: 0, config: {} }],
+      logic: [],
+      editMailFieldId: null,
+    });
+    expect(editMailFieldSlug('em9')).toBeNull();
+  });
+});
+
+describe('PUT /api/forms-advanced/:id — submit-time 控え設定 (Phase B / D-7)', () => {
+  const receiptKeys = ['show_submit_tracking_code', 'assign_submit_number', 'generate_pdf_for_user'] as const;
+  const field = { id: 'reply-email', type: 'email', label: '返信先', required: true, position: 0, config: {} };
+
+  test('env + 後編集 + メール + 明示宛先の AND gate で既存 meta PATCH に3設定を true で合流する', async () => {
+    seedForm('em10', 'EM_FORM10');
+    seedFieldMap('em10', 'reply-email', 'REMOTE_EMAIL');
+    const calls = stubFormaloo();
+    const res = await call('PUT', '/api/forms-advanced/em10', {
+      fields: [field], logic: [], allowPostEdit: 1, allowEditMail: 1, editMailFieldId: 'reply-email',
+    }, env({ FORM_EDIT_MAIL_ENABLED: 'true' }));
+    expect(res.status).toBe(200);
+    const body = calls.map((call) => call.body).find((candidate) =>
+      candidate && typeof candidate === 'object' && receiptKeys.every((key) => key in (candidate as Record<string, unknown>)),
+    ) as Record<string, unknown> | undefined;
+    expect(body).toBeTruthy();
+    for (const key of receiptKeys) expect(body?.[key]).toBe(true);
+  });
+
+  test.each([
+    ['env 未設定', {}, { allowPostEdit: 1, allowEditMail: 1 }],
+    ['後編集 OFF', { FORM_EDIT_MAIL_ENABLED: 'true' }, { allowPostEdit: 0, allowEditMail: 1 }],
+    ['メール OFF', { FORM_EDIT_MAIL_ENABLED: 'true' }, { allowPostEdit: 1, allowEditMail: 0 }],
+  ])('%s なら3設定を一切送らない', async (_case, bindingOverrides, flags) => {
+    const id = `gate-${flags.allowPostEdit}-${flags.allowEditMail}-${Object.keys(bindingOverrides).length}`;
+    seedForm(id, 'EM_GATE');
+    seedFieldMap(id, 'reply-email', 'REMOTE_EMAIL');
+    const calls = stubFormaloo();
+    const res = await call('PUT', `/api/forms-advanced/${id}`, {
+      fields: [field], logic: [], ...flags, editMailFieldId: 'reply-email',
+    }, env(bindingOverrides));
+    expect(res.status).toBe(200);
+    for (const call of calls) {
+      const serialized = JSON.stringify(call.body ?? {});
+      for (const key of receiptKeys) expect(serialized).not.toContain(key);
+    }
   });
 });

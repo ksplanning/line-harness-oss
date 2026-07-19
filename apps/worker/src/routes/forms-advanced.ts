@@ -193,6 +193,15 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     const events = await listFormalooDriftEvents(db, form.id, 1);
     driftHasWarnings = (events[0]?.has_warnings ?? 0) === 1;
   }
+  // Phase B / G-1: remote slug と email 型が完全一致する map 行だけを builder internal id へ戻す。
+  // NULL/不一致/非 email は fail-closed。複数 email の先頭 fallback は行わない。
+  let editMailFieldId: string | null = null;
+  if (form.edit_mail_field_slug) {
+    const fieldMap = await getFormalooFieldMap(db, form.id);
+    editMailFieldId = fieldMap.find((row) =>
+      row.formaloo_field_slug === form.edit_mail_field_slug && row.field_type === 'email',
+    )?.id ?? null;
+  }
   return {
     id: form.id,
     title: form.title,
@@ -208,6 +217,8 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     allowPostEdit: form.allow_post_edit,
     // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。builder 読込用 (allow_post_edit=1 でのみ有効)。
     allowEditMail: form.allow_edit_mail,
+    // Phase B: server 権威で remote slug から逆引きした明示宛先。未設定時は null (自動採用なし)。
+    editMailFieldId,
     fields: def.fields,
     logic: def.logic,
     // preserve-raw (Batch 1): 未編集判定用の fingerprint のみ露出 (builder が save で carry する)。
@@ -424,8 +435,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -466,6 +477,23 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       const r = validateHarnessField({ ...(rawFields[i] as object), position: (rawFields[i] as { position?: number }).position ?? i });
       if (!r.ok) return c.json({ success: false, error: `フィールド ${i + 1}: ${r.error}` }, 400);
       fields.push(r.field);
+    }
+    // Phase B / G-1: client は internal id を送り、server が save 対象の email 型だけを受理して remote slug へ解決する。
+    // key 不在=既存選択を維持 / null=明示解除。unknown・非 email は第三者誤送信防止のため fail-closed 400。
+    const editMailFieldIdProvided = Object.prototype.hasOwnProperty.call(body, 'editMailFieldId');
+    let editMailFieldId: string | null | undefined;
+    if (editMailFieldIdProvided) {
+      if (body.editMailFieldId === null) {
+        editMailFieldId = null;
+      } else if (typeof body.editMailFieldId !== 'string' || !body.editMailFieldId) {
+        return c.json({ success: false, error: '編集URLメールの宛先項目が不正です' }, 400);
+      } else {
+        const selected = fields.find((field) => field.id === body.editMailFieldId);
+        if (!selected || selected.type !== 'email') {
+          return c.json({ success: false, error: '編集URLメールの宛先にはメール項目を選んでください' }, 400);
+        }
+        editMailFieldId = selected.id;
+      }
     }
     // form-image-decoration: 差し込み画像の upload intent (dataUrl) を R2 host へ解決し imageUrl を確定する
     //   (validateHarnessField 済 = dataUrl は 10MB/MIME 検証済)。imageUpload は D1/push に残さない (巨大 base64 非永続)。
@@ -585,6 +613,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     for (const row of existingMap) {
       if (row.formaloo_field_slug) existingFieldSlugs[row.id] = row.formaloo_field_slug;
     }
+    // 新規 email field は push 前には slug 未確定なので一旦 null (fail-closed)。push 成功後の save で確定値へ更新する。
+    // key 不在は undefined のまま DAO present-key semantics で既存設定を維持する。
+    const editMailFieldSlugBeforePush = editMailFieldId === undefined
+      ? undefined
+      : editMailFieldId === null
+        ? null
+        : existingFieldSlugs[editMailFieldId] ?? null;
     // F1 TOCTOU 窓閉じ: D1 定義を書き換える前に sync_status='pushing' へ先行遷移する。これで保存中 (D1 定義が
     // 新ローカル内容に置き換わり push 完了まで) の窓に cron drift-check が割り込んでも、非 idle を見て auto-apply
     // せず conflict_held に落ちる (ローカル編集の silent 上書き防止)。窓終了時に下の終端 setSyncState が
@@ -698,6 +733,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       friendMetadataMappingsJson: friendMetadataMappingsProvided
         ? JSON.stringify(friendMetadataMappings ?? [])
         : undefined,
+      // Phase B / G-1: builder 明示 internal id を既知の remote slug に解決。先頭 email fallback は禁止。
+      editMailFieldSlug: editMailFieldSlugBeforePush,
     });
 
     // ④ 保存時 re-bind: key 登録前に作られた孤立 form (workspace_id=NULL) は、保存のたびに active workspace が
@@ -761,6 +798,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       // route-terminal-phase2 (Track 2): reconcile 後の割当 slug 付き successPages を永続対象へ反映
       //   (POST 成功後の slug を definition_json に残し次回保存で再 POST しない = 非冪等重複作成の根絶)。
       if (pushed.successPages) successPagesToPersist = pushed.successPages;
+      const editMailFieldSlugAfterPush = editMailFieldId === undefined
+        ? form.edit_mail_field_slug
+        : editMailFieldId === null
+          ? null
+          : pushed.fieldSlugs?.[editMailFieldId] ?? existingFieldSlugs[editMailFieldId] ?? null;
       if (pushed.ok) {
         // slug + address + (backfill 後の) rawLogic + design(色) を反映
         await saveFormalooDefinition(c.env.DB, id, {
@@ -769,6 +811,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           formalooSlug: pushed.formalooSlug ?? null,
           title: newTitle,
           description: newDescription,
+          // 新規 field を含め、push が確定した remote slug だけを明示宛先として保存する。
+          editMailFieldSlug: editMailFieldId === undefined ? undefined : editMailFieldSlugAfterPush,
         });
         const slug = pushed.formalooSlug ?? form.formaloo_slug;
         // b1-field-polish: 星色 custom_css を rating-gated で meta PATCH body に合流 (別キー disjoint・designColorFields 不改変)。
@@ -780,6 +824,19 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         // flag 未指定または kill-switch 中は GET 自体を行わない。
         const localizedFields = slug && localizationProvided
           ? await localizedContentFields(client, slug, localizationJaToPersist as boolean)
+          : {};
+        // D-7: edit-mail 対象フォームだけ submit-time の受付番号/PDF生成を additive 有効化する。
+        // kill-switch OFF・両 form flag・明示宛先 slug の AND gate。OFF 時は false を送らず既存 remote 設定を不可触にする。
+        const receiptSettingsEnabled = c.env.FORM_EDIT_MAIL_ENABLED === 'true'
+          && (allowPostEdit ?? form.allow_post_edit) === 1
+          && (allowEditMail ?? form.allow_edit_mail) === 1
+          && editMailFieldSlugAfterPush != null;
+        const receiptSettingsFields = receiptSettingsEnabled
+          ? {
+              show_submit_tracking_code: true,
+              assign_submit_number: true,
+              generate_pdf_for_user: true,
+            }
           : {};
         // form-design: 色は既存 meta PATCH に **JSON-string RGBA** で合流 (update 意味論: design 未提供なら載せない)。
         //   partial update 破壊防止 (#9): incomingDesign でなく **merged designToPersist** を送り、単色変更でも
@@ -794,6 +851,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
               //   未提供は載せない (prev 文言を Formaloo 側で誤って潰さない = update 意味論)。
               ...(formCopyProvided ? formCopyFields(formCopyToPersist) : {}),
               ...localizedFields,
+              ...receiptSettingsFields,
               // route-terminal-phase2: redirect も同一 meta PATCH に additive 合流。CX-4 clear は明示 null で解除。
               //   未提供は載せない (prev redirect を誤って潰さない)。design/formCopy と別 key で byte disjoint。
               ...(formRedirectProvided

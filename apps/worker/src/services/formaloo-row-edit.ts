@@ -313,6 +313,15 @@ function mappedFriendMetadataUpdates(
   return updates;
 }
 
+/** rows-list root の submit-time metadata を D1 TEXT へ安全に正規化する。回答 data からは読まない。 */
+function receiptMetadataText(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : null;
+}
+
 export async function mapFormalooListRowToUpsert(
   row: Record<string, unknown>,
   form: { id: string; formaloo_slug: string | null; friend_metadata_mappings_json?: string | null },
@@ -358,6 +367,11 @@ export async function mapFormalooListRowToUpsert(
     ...(friendId && metadataUpdates.length
       ? { verifiedFriendMetadataSync: { friendId, updates: metadataUpdates } }
       : {}),
+    // D-7: Formaloo submit-time 生成値は row root の完全一致キーだけを採用する。
+    // row.data は回答 flat map なので、同名の質問回答を metadata と誤認しない。
+    trackingCode: receiptMetadataText(row.tracking_code),
+    submitNumber: receiptMetadataText(row.submit_number),
+    pdfLink: receiptMetadataText(row.pdf_link),
   };
 }
 

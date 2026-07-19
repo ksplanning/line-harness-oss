@@ -91,9 +91,11 @@ export interface BuilderProps {
   initialAllowPostEdit?: number
   /** form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。 */
   initialAllowEditMail?: number
+  /** form-edit-mail Phase B: 宛先として明示選択済みの email field internal id。未設定は先頭 fallback せず null。 */
+  initialEditMailFieldId?: string | null
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; allowPostEdit?: number; allowEditMail?: number }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
   onSubmitForReview?: () => void
   onPublish?: () => void
   onUnpublish?: () => void
@@ -848,6 +850,12 @@ export default function FormBuilder(props: BuilderProps) {
   const removeFriendMetadataMapping = (index: number) => {
     mutateFriendMetadataMappings(friendMetadataMappings.filter((_, current) => current !== index))
   }
+  // Phase B / G-1: 宛先は owner が email field を明示選択する。先頭 email の自動採用は禁止。
+  const [editMailFieldId, setEditMailFieldId] = useState<string>(() => {
+    const initial = props.initialEditMailFieldId ?? ''
+    return props.initialFields.some((field) => field.id === initial && field.type === 'email') ? initial : ''
+  })
+  const [editMailFieldError, setEditMailFieldError] = useState<string | null>(null)
   // jump 追加時: simple なら multi_step へ自動切替 + 可視通知 (多層防御の主機構)。
   const ensureMultiStep = () => {
     setFormType('multi_step')
@@ -944,18 +952,24 @@ export default function FormBuilder(props: BuilderProps) {
       && (!deletingDecoration || !r.actions?.some((action) => action.targetFieldId === id)),
     ))
     if (selectedId === id) setSelectedId(null)
+    if (editMailFieldId === id) setEditMailFieldId('')
   }
 
   const handleSave = async () => {
     if (!title.trim()) return
     // route-terminal-phase2 (T-C1): 危険/不正な redirect URL は保存を阻む (inline error を先に直させる)。
     if (redirectUrlError) return
+    if (allowEditMail === 1 && !editMailFieldId) {
+      setEditMailFieldError('編集URLの送信先に使うメール項目を選んでください。')
+      return
+    }
+    setEditMailFieldError(null)
     setSaving(true)
     try {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
       // form-jp-localization: 文言を触ったときだけ完全 object で載せる (初期未編集は absent = 既存不干渉)。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), ...(friendMetadataMappingsTouched ? { friendMetadataMappings } : {}), allowPostEdit, allowEditMail })
+      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), ...(friendMetadataMappingsTouched ? { friendMetadataMappings } : {}), allowPostEdit, allowEditMail, editMailFieldId: editMailFieldId || null })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
@@ -1178,10 +1192,32 @@ export default function FormBuilder(props: BuilderProps) {
             aria-label="メールで編集URLを送る"
             disabled={allowPostEdit === 0}
             checked={allowEditMail === 1}
-            onChange={(e) => setAllowEditMail(e.target.checked ? 1 : 0)}
+            onChange={(e) => {
+              setAllowEditMail(e.target.checked ? 1 : 0)
+              setEditMailFieldError(null)
+            }}
           />
           <span>回答完了時に、入力されたメールアドレス宛へ「編集用リンク」を送る（フォーム単位）</span>
         </label>
+        <label className={`basis-full text-[11px] ${allowPostEdit === 1 && allowEditMail === 1 ? 'text-gray-600' : 'text-gray-400'}`}>
+          編集URLの送信先メール項目
+          <select
+            aria-label="編集URLメールの宛先項目"
+            disabled={allowPostEdit === 0 || allowEditMail === 0}
+            value={editMailFieldId}
+            onChange={(event) => {
+              setEditMailFieldId(event.target.value)
+              setEditMailFieldError(null)
+            }}
+            className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-xs disabled:bg-gray-100"
+          >
+            <option value="">選択してください（自動選択しません）</option>
+            {fields.filter((field) => field.type === 'email').map((field) => (
+              <option key={field.id} value={field.id}>{field.label}</option>
+            ))}
+          </select>
+        </label>
+        {editMailFieldError && <span className="basis-full text-[11px] text-red-600">{editMailFieldError}</span>}
         <span className="basis-full text-[10px] text-gray-400 leading-snug">
           ※ 「回答者による後からの編集」を許可したフォームでのみ設定できます。メール送信の実際の有効化は運用側の設定が必要です。
         </span>
