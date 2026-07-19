@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  JP_CUSTOMIZED_TEXTS,
   JP_LOCALIZED_CONTENT,
   DEFAULT_RATING_STAR_COLOR,
   RATING_STAR_CSS_END,
@@ -25,6 +26,7 @@ function fakeClient(opts: {
   failFormGets?: number;
   failMetaPatch?: boolean;
   ignoreMetaPatch?: boolean;
+  ignoreCustomizedTextsPatch?: boolean;
   ignoreFieldPatches?: string[];
 } = {}) {
   const calls: Call[] = [];
@@ -47,7 +49,11 @@ function fakeClient(opts: {
         }
         if (method === 'PATCH') {
           if (opts.failMetaPatch) return { ok: false, status: 500, error: 'meta PATCH failed' };
-          if (!opts.ignoreMetaPatch) Object.assign(form, clone(body as Record<string, unknown>));
+          if (!opts.ignoreMetaPatch) {
+            const reflected = clone(body as Record<string, unknown>);
+            if (opts.ignoreCustomizedTextsPatch) delete reflected.customized_texts;
+            Object.assign(form, reflected);
+          }
           return { ok: true, status: 200, data: { data: { form: clone(form) } } as T };
         }
       }
@@ -107,6 +113,7 @@ describe('reapplyHostedAppearance', () => {
       form: {
         custom_css: '.foreign{display:block}',
         localized_content: { tenant_banner: '残す', errors: { required: '独自必須文言' } },
+        customized_texts: { tenant_label: '残す', nested: { color: 'blue' }, start_btn: 'Start' },
         logic: remoteLogic,
         rows: remoteRows,
       },
@@ -124,7 +131,7 @@ describe('reapplyHostedAppearance', () => {
     expect(Object.values(result.parts).every((part) => part.ok)).toBe(true);
     const meta = calls.find((call) => call.method === 'PATCH' && call.path === '/v3.0/forms/FORM-1/');
     expect(Object.keys(meta?.body as Record<string, unknown>).sort()).toEqual([
-      'background_color', 'button_color', 'button_text', 'custom_css', 'localized_content',
+      'background_color', 'button_color', 'button_text', 'custom_css', 'customized_texts', 'localized_content',
     ]);
     expect(JSON.parse((meta?.body as Record<string, string>).background_color)).toEqual({ r: 17, g: 17, b: 17, a: 1 });
     expect((meta?.body as Record<string, string>).custom_css).toContain('.foreign{display:block}');
@@ -132,6 +139,9 @@ describe('reapplyHostedAppearance', () => {
     expect((meta?.body as Record<string, string>).custom_css).toContain(RATING_STAR_CSS_END);
     expect((meta?.body as Record<string, unknown>).localized_content).toEqual({
       tenant_banner: '残す', errors: { required: '独自必須文言' }, ...JP_LOCALIZED_CONTENT,
+    });
+    expect((meta?.body as Record<string, unknown>).customized_texts).toEqual({
+      tenant_label: '残す', nested: { color: 'blue' }, ...JP_CUSTOMIZED_TEXTS,
     });
     const videoPatch = calls.find((call) => call.method === 'PATCH' && call.path === '/v3.0/fields/remote-video/');
     expect(videoPatch?.body).toEqual({
@@ -155,7 +165,11 @@ describe('reapplyHostedAppearance', () => {
 
   test('localizationJa=false は管理 key だけを除去し、foreign/nested key を残す', async () => {
     const foreign = { tenant_banner: '残す', errors: { required: '独自必須文言' } };
-    const { client, calls } = fakeClient({ form: { localized_content: { ...foreign, ...JP_LOCALIZED_CONTENT } } });
+    const customForeign = { tenant_label: '残す', nested: { color: 'blue' } };
+    const { client, calls } = fakeClient({ form: {
+      localized_content: { ...foreign, ...JP_LOCALIZED_CONTENT },
+      customized_texts: { ...customForeign, ...JP_CUSTOMIZED_TEXTS },
+    } });
 
     const result = await reapplyHostedAppearance(
       client,
@@ -168,7 +182,49 @@ describe('reapplyHostedAppearance', () => {
     expect(result.ok).toBe(true);
     expect(result.parts.localization).toMatchObject({ ok: true, skipped: false });
     const meta = calls.find((call) => call.method === 'PATCH');
-    expect(meta?.body).toEqual({ localized_content: foreign });
+    expect(meta?.body).toEqual({ localized_content: foreign, customized_texts: customForeign });
+  });
+
+  test('localizationJa=false で削除対象が無ければ foreign-only state を載せず PATCH を短絡する', async () => {
+    const { client, calls } = fakeClient({ form: {
+      localized_content: { tenant_banner: '残す' },
+      customized_texts: { tenant_label: '残す', nested: { color: 'blue' } },
+    } });
+
+    const result = await reapplyHostedAppearance(
+      client,
+      'FORM-2A',
+      { fields: [], localizationJa: false },
+      {},
+      fast,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.parts.localization).toMatchObject({ ok: true, skipped: false });
+    expect(calls.filter((call) => call.method === 'GET')).toHaveLength(1);
+    expect(calls.some((call) => call.method === 'PATCH')).toBe(false);
+  });
+
+  test('customized_texts のみ soft-200 で無視されたら localization part を fail-closed にする', async () => {
+    const { client, calls } = fakeClient({
+      form: { localized_content: {}, customized_texts: { foreign: '残す' } },
+      ignoreCustomizedTextsPatch: true,
+    });
+
+    const result = await reapplyHostedAppearance(
+      client,
+      'FORM-2B',
+      { fields: [], localizationJa: true },
+      {},
+      fast,
+    );
+
+    expect(calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({
+      localized_content: JP_LOCALIZED_CONTENT,
+      customized_texts: { foreign: '残す', ...JP_CUSTOMIZED_TEXTS },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.parts.localization).toMatchObject({ ok: false, skipped: false });
   });
 
   test('star/localization の事前 GET 失敗だけを failed にし、独立な design/copy PATCH は続行する', async () => {
@@ -284,6 +340,7 @@ describe('reapplyHostedAppearance', () => {
     const meta = calls.find((call) => call.method === 'PATCH' && call.path === '/v3.0/forms/FORM-6/');
     expect(meta?.body).toEqual({ text_color: JSON.stringify({ r: 34, g: 34, b: 34, a: 1 }) });
     expect('localized_content' in (meta?.body as Record<string, unknown>)).toBe(false);
+    expect('customized_texts' in (meta?.body as Record<string, unknown>)).toBe(false);
   });
 
   test('同じ定義を二度再反映しても PATCH body は同一で managed CSS が重複しない', async () => {

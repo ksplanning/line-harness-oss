@@ -38,6 +38,17 @@ export const JP_LOCALIZED_CONTENT: Readonly<Record<ManagedLocalizationKey, strin
   long_text_hint: '改行するには Shift + Enter を押してください',
 });
 
+// Formaloo hosted は Start/Continue について localized_content より customized_texts を
+// 優先描画する。そのため同じ 2 key だけを両 container で管理する。
+export const MANAGED_CUSTOMIZED_TEXT_KEYS = ['start_btn', 'continue_btn'] as const;
+
+export type ManagedCustomizedTextKey = (typeof MANAGED_CUSTOMIZED_TEXT_KEYS)[number];
+
+export const JP_CUSTOMIZED_TEXTS: Readonly<Record<ManagedCustomizedTextKey, string>> = Object.freeze({
+  start_btn: JP_LOCALIZED_CONTENT.start_btn,
+  continue_btn: JP_LOCALIZED_CONTENT.continue_btn,
+});
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -61,5 +72,24 @@ export function buildLocalizedContentMerge(existing: unknown, enabled: boolean):
   }
   const merged = { ...source };
   for (const key of MANAGED_LOCALIZATION_KEYS) delete merged[key];
+  return merged;
+}
+
+/**
+ * 現行 `customized_texts` へ Start/Continue の管理 2 key だけを ON=merge / OFF=remove する。
+ * foreign/nested key は参照を含め保持し、既に目的状態なら入力 object 自体を返す。
+ */
+export function buildCustomizedTextsMerge(existing: unknown, enabled: boolean): Record<string, unknown> {
+  const source = asRecord(existing);
+  if (enabled) {
+    const changed = MANAGED_CUSTOMIZED_TEXT_KEYS.some((key) => source[key] !== JP_CUSTOMIZED_TEXTS[key]);
+    return changed ? { ...source, ...JP_CUSTOMIZED_TEXTS } : source;
+  }
+
+  if (!MANAGED_CUSTOMIZED_TEXT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(source, key))) {
+    return source;
+  }
+  const merged = { ...source };
+  for (const key of MANAGED_CUSTOMIZED_TEXT_KEYS) delete merged[key];
   return merged;
 }

@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import {
+  JP_CUSTOMIZED_TEXTS,
   JP_LOCALIZED_CONTENT,
+  MANAGED_CUSTOMIZED_TEXT_KEYS,
   MANAGED_LOCALIZATION_KEYS,
+  buildCustomizedTextsMerge,
   buildLocalizedContentMerge,
 } from './formaloo-localization';
 
@@ -27,6 +30,11 @@ describe('Formaloo hosted 日本語 chrome の管理境界', () => {
     expect(Object.keys(JP_LOCALIZED_CONTENT)).toEqual(EXPECTED_KEYS);
     expect(Object.keys(JP_LOCALIZED_CONTENT).some((key) => /max.?length|character/i.test(key))).toBe(false);
     expect(Object.values(JP_LOCALIZED_CONTENT).every((value) => typeof value === 'string' && value.length > 0)).toBe(true);
+  });
+
+  test('customized_texts は優先描画される Start/Continue の 2 key だけを管理する', () => {
+    expect(MANAGED_CUSTOMIZED_TEXT_KEYS).toEqual(['start_btn', 'continue_btn']);
+    expect(JP_CUSTOMIZED_TEXTS).toEqual({ start_btn: '開始', continue_btn: '続ける' });
   });
 });
 
@@ -83,5 +91,48 @@ describe('buildLocalizedContentMerge', () => {
     expect(buildLocalizedContentMerge(firstOff, false)).toBe(firstOff);
     expect(buildLocalizedContentMerge(null, false)).toEqual({});
     expect(buildLocalizedContentMerge([], true)).toEqual(JP_LOCALIZED_CONTENT);
+  });
+});
+
+describe('buildCustomizedTextsMerge', () => {
+  test('ON は Start/Continue だけを日本語へ merge し、foreign/nested key と入力 object を保つ', () => {
+    const existing = {
+      start_btn: 'Start',
+      tenant_label: 'foreign',
+      nested: { color: 'blue' },
+    };
+    const before = structuredClone(existing);
+
+    const merged = buildCustomizedTextsMerge(existing, true);
+
+    expect(merged).toEqual({ ...existing, ...JP_CUSTOMIZED_TEXTS });
+    expect(merged.nested).toBe(existing.nested);
+    expect(existing).toEqual(before);
+  });
+
+  test('OFF は管理 2 key だけを除去し、foreign/nested key を byte 同等で残す', () => {
+    const existing = {
+      tenant_label: 'foreign',
+      start_btn: '開始',
+      nested: { color: 'blue' },
+      continue_btn: '続ける',
+    };
+
+    expect(buildCustomizedTextsMerge(existing, false)).toEqual({
+      tenant_label: 'foreign',
+      nested: { color: 'blue' },
+    });
+    expect(existing).toHaveProperty('start_btn');
+    expect(existing).toHaveProperty('continue_btn');
+  });
+
+  test('既に ON/OFF なら同じ object を返し、再適用も冪等', () => {
+    const alreadyOn = { tenant_label: 'foreign', ...JP_CUSTOMIZED_TEXTS };
+    const alreadyOff = { tenant_label: 'foreign', nested: { color: 'blue' } };
+
+    expect(buildCustomizedTextsMerge(alreadyOn, true)).toBe(alreadyOn);
+    expect(buildCustomizedTextsMerge(alreadyOff, false)).toBe(alreadyOff);
+    expect(buildCustomizedTextsMerge(buildCustomizedTextsMerge(alreadyOn, true), true)).toBe(alreadyOn);
+    expect(JSON.stringify(buildCustomizedTextsMerge(alreadyOff, false))).toBe(JSON.stringify(alreadyOff));
   });
 });

@@ -1,8 +1,11 @@
 import {
+  JP_CUSTOMIZED_TEXTS,
   JP_LOCALIZED_CONTENT,
+  MANAGED_CUSTOMIZED_TEXT_KEYS,
   MANAGED_LOCALIZATION_KEYS,
   FORM_COPY_KEYS,
   FORM_COPY_TO_FORMALOO,
+  buildCustomizedTextsMerge,
   buildLocalizedContentMerge,
   type FormCopy,
   type FormCopyKey,
@@ -38,9 +41,10 @@ export function formCopyFields(copy: FormCopy | undefined | null): Record<string
   return out;
 }
 
-/** `localized_content` の管理 key だけを運ぶ meta PATCH fragment。 */
+/** 日本語 UI の管理 key だけを運ぶ meta PATCH fragment。 */
 export interface LocalizedContentPatchFields {
   localized_content?: Record<string, unknown>;
+  customized_texts?: Record<string, unknown>;
 }
 
 function localizationRecord(value: unknown): Record<string, unknown> {
@@ -50,7 +54,8 @@ function localizationRecord(value: unknown): Record<string, unknown> {
 }
 
 /**
- * 現行 form の `localized_content` を GET して、管理 key だけを ON/OFF merge する。
+ * 現行 form の `localized_content` / `customized_texts` を GET して、管理 key だけを ON/OFF merge する。
+ * hosted は Start/Continue で customized_texts を優先するため、2 key は両方へ同じ意図を適用する。
  * `combined_localized_content` は英語 default 全体を含むため merge 元にはしない。
  * GET 失敗や既に目的状態なら `{}` を返し、foreign clobber / 不要 PATCH を避ける。
  */
@@ -64,7 +69,12 @@ export async function localizedContentFields(
   const form = extractForm(g.data);
   const existing = localizationRecord(form.localized_content);
   const merged = buildLocalizedContentMerge(existing, enabled);
-  return merged === existing ? {} : { localized_content: merged };
+  const existingCustomized = localizationRecord(form.customized_texts);
+  const mergedCustomized = buildCustomizedTextsMerge(existingCustomized, enabled);
+  return {
+    ...(merged === existing ? {} : { localized_content: merged }),
+    ...(mergedCustomized === existingCustomized ? {} : { customized_texts: mergedCustomized }),
+  };
 }
 
 /** localized_content の soft-200 確認結果。 */
@@ -74,7 +84,8 @@ export interface LocalizedContentReflectionResult {
 }
 
 /**
- * GET-after-PATCH で管理 key の ON=日本語全一致 / OFF=全件不在を確認する。
+ * GET-after-PATCH で localized_content と customized_texts の管理 key を両方確認する。
+ * ON=日本語全一致 / OFF=全件不在。
  * foreign key は比較対象外。GET 失敗・不一致は route が out_of_sync に surface できる形で返す。
  */
 export async function confirmLocalizedContentReflected(
@@ -89,7 +100,9 @@ export async function confirmLocalizedContentReflected(
   for (let attempt = 0; attempt <= retries; attempt++) {
     const g = await client.request('GET', `/v3.0/forms/${formalooSlug}/`);
     if (g.ok) {
-      const current = localizationRecord(extractForm(g.data).localized_content);
+      const form = extractForm(g.data);
+      const current = localizationRecord(form.localized_content);
+      const currentCustomized = localizationRecord(form.customized_texts);
       let allMatch = true;
       for (const key of MANAGED_LOCALIZATION_KEYS) {
         const matches = enabled
@@ -97,8 +110,20 @@ export async function confirmLocalizedContentReflected(
           : !Object.prototype.hasOwnProperty.call(current, key);
         if (!matches) {
           allMatch = false;
-          lastMiss = key;
+          lastMiss = `localized_content.${key}`;
           break;
+        }
+      }
+      if (allMatch) {
+        for (const key of MANAGED_CUSTOMIZED_TEXT_KEYS) {
+          const matches = enabled
+            ? currentCustomized[key] === JP_CUSTOMIZED_TEXTS[key]
+            : !Object.prototype.hasOwnProperty.call(currentCustomized, key);
+          if (!matches) {
+            allMatch = false;
+            lastMiss = `customized_texts.${key}`;
+            break;
+          }
         }
       }
       if (allMatch) return { ok: true };

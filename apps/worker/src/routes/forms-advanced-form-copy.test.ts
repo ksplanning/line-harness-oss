@@ -12,7 +12,12 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
-import { JP_LOCALIZED_CONTENT, MANAGED_LOCALIZATION_KEYS } from '@line-crm/shared';
+import {
+  JP_CUSTOMIZED_TEXTS,
+  JP_LOCALIZED_CONTENT,
+  MANAGED_CUSTOMIZED_TEXT_KEYS,
+  MANAGED_LOCALIZATION_KEYS,
+} from '@line-crm/shared';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formsAdvanced } from './forms-advanced.js';
@@ -115,7 +120,14 @@ function formalooFold(s: string): string {
  *   - reflectAfterGet: N 回目の confirm GET から反映 (bounded retry 収束模倣)。
  *   - foldCopy: 文言 PATCH 値を formalooFold して保存 (Formaloo の server-side 正規化を模倣 = 全角→半角)。
  */
-function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: boolean; softIgnoreLocalization?: boolean; reflectAfterGet?: number; foldCopy?: boolean } = {}) {
+function stubFormaloo(opts: {
+  getForm?: Record<string, unknown>;
+  softIgnore?: boolean;
+  softIgnoreLocalization?: boolean;
+  softIgnoreCustomizedTexts?: boolean;
+  reflectAfterGet?: number;
+  foldCopy?: boolean;
+} = {}) {
   const calls: ApiCall[] = [];
   const state: Record<string, unknown> = { fields_list: [], ...(opts.getForm ?? {}) };
   let pending: Record<string, unknown> | null = null;
@@ -155,6 +167,9 @@ function stubFormaloo(opts: { getForm?: Record<string, unknown>; softIgnore?: bo
       }
       if ('localized_content' in patchBody && !opts.softIgnoreLocalization) {
         state.localized_content = patchBody.localized_content;
+      }
+      if ('customized_texts' in patchBody && !opts.softIgnoreCustomizedTexts) {
+        state.customized_texts = patchBody.customized_texts;
       }
       return new Response(JSON.stringify({ data: { form: body } }), { status: 200 });
     }
@@ -358,6 +373,7 @@ describe('PUT /api/forms-advanced/:id — localized_content 日本語 UI chrome'
     const calls = stubFormaloo({
       getForm: {
         localized_content: foreign,
+        customized_texts: { tenant_label: '残す', nested: { color: 'blue' }, start_btn: 'Start' },
         combined_localized_content: { next_btn: 'Next', errors: { required: 'Required' } },
       },
     });
@@ -367,6 +383,9 @@ describe('PUT /api/forms-advanced/:id — localized_content 日本語 UI chrome'
     expect(res.status).toBe(200);
     expect(localizedPatch(calls)?.body).toMatchObject({
       localized_content: { ...foreign, ...JP_LOCALIZED_CONTENT },
+      customized_texts: {
+        tenant_label: '残す', nested: { color: 'blue' }, ...JP_CUSTOMIZED_TEXTS,
+      },
     });
     expect(definitionOf('lj1').localizationJa).toBe(true);
     const data = (await res.json() as { data: { localizationJa: boolean; syncStatus: string } }).data;
@@ -377,14 +396,26 @@ describe('PUT /api/forms-advanced/:id — localized_content 日本語 UI chrome'
   test('localizationJa=false は管理 key だけを解除し、foreign/nested key を破壊しない', async () => {
     seedForm('lj2', 'SLUGLJ2', JSON.stringify({ fields: [], logic: [], localizationJa: true }));
     const foreign = { tenant_banner: '残す', errors: { required: '独自必須文言' } };
-    const calls = stubFormaloo({ getForm: { localized_content: { ...foreign, ...JP_LOCALIZED_CONTENT } } });
+    const customForeign = { tenant_label: '残す', nested: { color: 'blue' } };
+    const calls = stubFormaloo({ getForm: {
+      localized_content: { ...foreign, ...JP_LOCALIZED_CONTENT },
+      customized_texts: { ...customForeign, ...JP_CUSTOMIZED_TEXTS },
+    } });
 
     const res = await call('PUT', '/api/forms-advanced/lj2', { fields: [], logic: [], localizationJa: false });
 
     expect(res.status).toBe(200);
-    expect(localizedPatch(calls)?.body).toMatchObject({ localized_content: foreign });
-    const sent = (localizedPatch(calls)?.body as { localized_content: Record<string, unknown> }).localized_content;
+    expect(localizedPatch(calls)?.body).toMatchObject({
+      localized_content: foreign,
+      customized_texts: customForeign,
+    });
+    const patchBody = localizedPatch(calls)?.body as {
+      localized_content: Record<string, unknown>;
+      customized_texts: Record<string, unknown>;
+    };
+    const sent = patchBody.localized_content;
     for (const key of MANAGED_LOCALIZATION_KEYS) expect(key in sent).toBe(false);
+    for (const key of MANAGED_CUSTOMIZED_TEXT_KEYS) expect(key in patchBody.customized_texts).toBe(false);
     expect(definitionOf('lj2').localizationJa).toBe(false);
     expect((await res.json() as { data: { localizationJa: boolean } }).data.localizationJa).toBe(false);
   });
@@ -395,6 +426,7 @@ describe('PUT /api/forms-advanced/:id — localized_content 日本語 UI chrome'
     await call('PUT', '/api/forms-advanced/lj3', { fields: [], logic: [], localizationJa: true });
     const before = rawDefinitionOf('lj3');
     const patchCount = calls.filter((call) => call.body != null && 'localized_content' in (call.body as Record<string, unknown>)).length;
+    const customPatchCount = calls.filter((call) => call.body != null && 'customized_texts' in (call.body as Record<string, unknown>)).length;
 
     const res = await call('PUT', '/api/forms-advanced/lj3', { fields: [], logic: [] });
 
@@ -402,6 +434,7 @@ describe('PUT /api/forms-advanced/:id — localized_content 日本語 UI chrome'
     expect(rawDefinitionOf('lj3')).toBe(before);
     expect(definitionOf('lj3').localizationJa).toBe(true);
     expect(calls.filter((call) => call.body != null && 'localized_content' in (call.body as Record<string, unknown>))).toHaveLength(patchCount);
+    expect(calls.filter((call) => call.body != null && 'customized_texts' in (call.body as Record<string, unknown>))).toHaveLength(customPatchCount);
   });
 
   test("FORMALOO_LOCALIZATION_DISABLE='1' は flag 永続化・localized_content 通信を byte 同等に短絡する", async () => {
@@ -411,6 +444,7 @@ describe('PUT /api/forms-advanced/:id — localized_content 日本語 UI chrome'
     await call('PUT', '/api/forms-advanced/lj4', { fields: [], logic: [] }, disabled);
     const before = rawDefinitionOf('lj4');
     const patchCount = calls.filter((call) => call.body != null && 'localized_content' in (call.body as Record<string, unknown>)).length;
+    const customPatchCount = calls.filter((call) => call.body != null && 'customized_texts' in (call.body as Record<string, unknown>)).length;
 
     const res = await call('PUT', '/api/forms-advanced/lj4', { fields: [], logic: [], localizationJa: true }, disabled);
 
@@ -418,6 +452,7 @@ describe('PUT /api/forms-advanced/:id — localized_content 日本語 UI chrome'
     expect(rawDefinitionOf('lj4')).toBe(before);
     expect('localizationJa' in definitionOf('lj4')).toBe(false);
     expect(calls.filter((call) => call.body != null && 'localized_content' in (call.body as Record<string, unknown>))).toHaveLength(patchCount);
+    expect(calls.filter((call) => call.body != null && 'customized_texts' in (call.body as Record<string, unknown>))).toHaveLength(customPatchCount);
   });
 
   test('localized_content PATCH の soft-200 未反映は GET-after-PATCH で out_of_sync にする', async () => {
@@ -425,6 +460,21 @@ describe('PUT /api/forms-advanced/:id — localized_content 日本語 UI chrome'
     stubFormaloo({ getForm: { localized_content: { foreign: '残す' } }, softIgnoreLocalization: true });
 
     const res = await call('PUT', '/api/forms-advanced/lj5', { fields: [], logic: [], localizationJa: true });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: { syncStatus: string; syncError: string | null } }).data;
+    expect(data.syncStatus).toBe('out_of_sync');
+    expect(data.syncError).toContain('日本語 UI');
+  });
+
+  test('customized_texts のみ soft-200 未反映でも GET-after-PATCH で out_of_sync にする', async () => {
+    seedForm('lj6', 'SLUGLJ6');
+    stubFormaloo({
+      getForm: { localized_content: {}, customized_texts: { foreign: '残す' } },
+      softIgnoreCustomizedTexts: true,
+    });
+
+    const res = await call('PUT', '/api/forms-advanced/lj6', { fields: [], logic: [], localizationJa: true });
 
     expect(res.status).toBe(200);
     const data = (await res.json() as { data: { syncStatus: string; syncError: string | null } }).data;

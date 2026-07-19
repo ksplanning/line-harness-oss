@@ -1,8 +1,11 @@
 import {
   DEFAULT_RATING_STAR_COLOR,
   DEFAULT_VIDEO_HEIGHT,
+  JP_CUSTOMIZED_TEXTS,
   JP_LOCALIZED_CONTENT,
+  MANAGED_CUSTOMIZED_TEXT_KEYS,
   MANAGED_LOCALIZATION_KEYS,
+  buildCustomizedTextsMerge,
   buildLocalizedContentMerge,
   isValidHexColor,
   mergeManagedCss,
@@ -127,9 +130,14 @@ function copyMatches(form: Record<string, unknown>, fields: Record<string, strin
 
 function localizationMatches(form: Record<string, unknown>, enabled: boolean): boolean {
   const current = record(form.localized_content);
-  return MANAGED_LOCALIZATION_KEYS.every((key) => enabled
+  const customized = record(form.customized_texts);
+  const localizedMatches = MANAGED_LOCALIZATION_KEYS.every((key) => enabled
     ? current[key] === JP_LOCALIZED_CONTENT[key]
     : !Object.prototype.hasOwnProperty.call(current, key));
+  const customizedMatches = MANAGED_CUSTOMIZED_TEXT_KEYS.every((key) => enabled
+    ? customized[key] === JP_CUSTOMIZED_TEXTS[key]
+    : !Object.prototype.hasOwnProperty.call(customized, key));
+  return localizedMatches && customizedMatches;
 }
 
 function partError(part: MetaPart, detail: string): string {
@@ -204,8 +212,19 @@ export async function reapplyHostedAppearance(
       }
       if (wantsLocalization) {
         localizationEnabled = definition.localizationJa as boolean;
-        metaBody.localized_content = buildLocalizedContentMerge(form.localized_content, localizationEnabled);
-        includedMetaParts.push('localization');
+        const currentLocalized = record(form.localized_content);
+        const wantedLocalized = buildLocalizedContentMerge(currentLocalized, localizationEnabled);
+        const currentCustomized = record(form.customized_texts);
+        const wantedCustomized = buildCustomizedTextsMerge(currentCustomized, localizationEnabled);
+        const localizedChanged = wantedLocalized !== currentLocalized;
+        const customizedChanged = wantedCustomized !== currentCustomized;
+        // ON は従来の reapply 契約どおり管理 container を再送する。OFF は削除対象が無ければ
+        // container 自体を載せず、foreign-only state の byte 同等と不要な {} PATCH を守る。
+        if (localizationEnabled || localizedChanged) metaBody.localized_content = wantedLocalized;
+        if (localizationEnabled || customizedChanged) metaBody.customized_texts = wantedCustomized;
+        if (localizationEnabled || localizedChanged || customizedChanged) {
+          includedMetaParts.push('localization');
+        }
       }
     }
   }
