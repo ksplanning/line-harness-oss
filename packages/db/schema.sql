@@ -1245,6 +1245,18 @@ CREATE INDEX IF NOT EXISTS idx_formaloo_forms_slug ON formaloo_forms (formaloo_s
 CREATE INDEX IF NOT EXISTS idx_formaloo_forms_account ON formaloo_forms (line_account_id, deleted, updated_at);
 CREATE INDEX IF NOT EXISTS idx_formaloo_forms_folder ON formaloo_forms (folder_id);
 
+-- migration 108: choice_fetch の公開 GET が読む、form 単位の Harness 管理選択肢リスト。
+-- item は Formaloo 公式契約の {label,value}[] を items_json に保持し、公開 route が最大10件へ絞る。
+CREATE TABLE IF NOT EXISTS formaloo_choice_lists (
+  id         TEXT PRIMARY KEY,
+  form_id    TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  items_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_formaloo_choice_lists_form ON formaloo_choice_lists (form_id, updated_at);
+
 -- migration 096: ハーネス側フォルダ分類 (SoT / F6-3 本柱③)。Formaloo 側フォルダとは自動連動しない (API 非露出 / N-19)。
 -- line_account_id は NOT NULL (フォルダは必ず account に属す / Codex M#3)。FK off = アプリ層で cross-account/循環/削除を解決。
 CREATE TABLE IF NOT EXISTS formaloo_folders (
