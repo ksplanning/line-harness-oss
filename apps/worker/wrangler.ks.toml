@@ -77,6 +77,12 @@ AI_MODEL_ID = "@cf/meta/llama-3.1-8b-instruct-fast"
 AI_EMBED_MODEL_ID = "@cf/qwen/qwen3-embedding-0.6b"
 AI_EMBED_NEURON_PER_MTOK = "3000"
 AI_CHUNK_RELEVANCE_FLOOR = "0.70"
+# 弾L Phase B (form-edit-mail-phase-b / 2026-07-19): Resend 編集メール送付。全て env AND gate
+#   (ENABLED="true" ∧ RESEND_API_KEY secret 設定 ∧ FROM 設定 ∧ form.allow_edit_mail=1)。
+#   送信元は owner 決定 (2026-07-19) でテスト稼働= testline.skdcc.jp。後々本番アドレスへ差替予定
+#   (ハードコードなし・env 変更のみで切替可能)。
+FORM_EDIT_MAIL_ENABLED = "true"
+FORM_EDIT_MAIL_FROM = "受付 <no-reply@testline.skdcc.jp>"
 
 # Workers AI binding (env.AI.run(modelId, ...))。B-1 WorkersAiProvider が使用。
 [ai]
