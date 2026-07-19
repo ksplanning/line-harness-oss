@@ -73,6 +73,7 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('lp'), feature: 'analytics' },
 
   // ── リッチメニュー (rich_menu) ──
+  { test: prefix('rich-menu-display-rules'), feature: 'rich_menu' },
   { test: prefix('rich-menu-groups'), feature: 'rich_menu' },
   { test: prefix('rich-menus'), feature: 'rich_menu' },
 

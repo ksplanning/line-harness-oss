@@ -54,6 +54,7 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
   test('prefix bleed しない (analytics vs rich_menu / template-packs vs templates)', () => {
     expect(mapPathToFeature('/api/rich-menu-analytics/x')).toBe('analytics');
     expect(mapPathToFeature('/api/rich-menu-groups/x')).toBe('rich_menu');
+    expect(mapPathToFeature('/api/rich-menu-display-rules')).toBe('rich_menu');
     expect(mapPathToFeature('/api/rich-menus')).toBe('rich_menu');
     expect(mapPathToFeature('/api/template-packs')).toBe('template');
     expect(mapPathToFeature('/api/message-templates')).toBe('template');
