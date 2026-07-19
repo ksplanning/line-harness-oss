@@ -1,5 +1,6 @@
 export { jstNow, toJstString, isTimeBefore } from './utils';
 export * from './friends';
+export * from './friend-field-definitions';
 export * from './tags';
 export * from './scenarios';
 export * from './scenario-schedule';

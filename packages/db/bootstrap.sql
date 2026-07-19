@@ -590,6 +590,16 @@ CREATE TABLE forms (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 , on_submit_message_type TEXT CHECK (on_submit_message_type IN ('text', 'flex')) DEFAULT NULL, on_submit_message_content TEXT DEFAULT NULL, on_submit_webhook_url TEXT, on_submit_webhook_headers TEXT, on_submit_webhook_fail_message TEXT, og_title TEXT, og_description TEXT, og_image_url TEXT);
 
+CREATE TABLE friend_field_definitions (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  default_value TEXT NOT NULL DEFAULT '',
+  display_order INTEGER NOT NULL DEFAULT 0,
+  is_active     INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE friend_reminder_deliveries (
   id                TEXT PRIMARY KEY,
   friend_reminder_id TEXT NOT NULL REFERENCES friend_reminders (id) ON DELETE CASCADE,
@@ -1275,6 +1285,12 @@ CREATE INDEX idx_formaloo_submissions_friend_latest ON formaloo_submissions (for
 CREATE INDEX idx_formaloo_submissions_unverified ON formaloo_submissions (form_id, verified);
 
 CREATE INDEX idx_formaloo_workspaces_active ON formaloo_workspaces (is_active);
+
+CREATE INDEX idx_friend_field_definitions_active_order
+  ON friend_field_definitions (is_active, display_order, id);
+
+CREATE UNIQUE INDEX idx_friend_field_definitions_name
+  ON friend_field_definitions (name);
 
 CREATE INDEX idx_friend_reminders_friend ON friend_reminders (friend_id);
 
