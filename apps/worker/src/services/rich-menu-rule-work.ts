@@ -124,6 +124,43 @@ function resultBucket(result: RichMenuRuleApplyResult): 'applied' | 'skipped' | 
   return 'skipped';
 }
 
+async function claimFriendEvaluation(
+  db: D1Database,
+  friendId: string,
+  knownRevision?: number,
+): Promise<{ token: string; revision: number } | null> {
+  let revision = knownRevision;
+  if (revision === undefined) {
+    await db
+      .prepare(
+        `INSERT INTO rich_menu_rule_evaluation_queue (friend_id)
+         VALUES (?) ON CONFLICT(friend_id) DO NOTHING`,
+      )
+      .bind(friendId)
+      .run();
+    const row = await db
+      .prepare('SELECT revision FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?')
+      .bind(friendId)
+      .first<{ revision: number }>();
+    if (!row) return null;
+    revision = row.revision;
+  }
+
+  const token = crypto.randomUUID();
+  const claimed = await db
+    .prepare(
+      `UPDATE rich_menu_rule_evaluation_queue
+       SET lease_token = ?,
+           available_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+10 minutes'),
+           updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+       WHERE friend_id = ? AND revision = ?
+         AND available_at <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')`,
+    )
+    .bind(token, friendId, revision)
+    .run();
+  return (claimed.meta?.changes ?? 0) === 1 ? { token, revision } : null;
+}
+
 export async function processRichMenuRuleWork(
   db: D1Database,
   options: { limit?: number; clientFactory?: RichMenuRuleLineClientFactory } = {},
@@ -155,16 +192,18 @@ export async function processRichMenuRuleWork(
 
   for (const jobRow of runningJobs.results) {
     if (jobRemaining === 0) break;
+    const jobLockToken = crypto.randomUUID();
     const claimed = await db
       .prepare(
         `UPDATE rich_menu_rule_reapply_jobs
-         SET locked_until = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+10 minutes'),
+         SET lock_token = ?,
+             locked_until = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+10 minutes'),
              updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
          WHERE id = ? AND status = 'running'
            AND processed_count = ? AND last_friend_id IS ?
            AND (locked_until IS NULL OR locked_until <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))`,
       )
-      .bind(jobRow.id, jobRow.processed_count, jobRow.last_friend_id)
+      .bind(jobLockToken, jobRow.id, jobRow.processed_count, jobRow.last_friend_id)
       .run();
     if ((claimed.meta?.changes ?? 0) !== 1) continue;
 
@@ -182,7 +221,17 @@ export async function processRichMenuRuleWork(
     let skipped = 0;
     let failed = 0;
     for (const friend of batch) {
-      const result = await applyRichMenuRulesForFriend(db, friend.id, options.clientFactory);
+      const queueLease = await claimFriendEvaluation(db, friend.id);
+      if (!queueLease) {
+        skipped++;
+        continue;
+      }
+      const result = await applyRichMenuRulesForFriend(
+        db,
+        friend.id,
+        options.clientFactory,
+        { queueLease },
+      );
       const bucket = resultBucket(result);
       if (bucket === 'applied') applied++;
       else if (bucket === 'failed') failed++;
@@ -191,9 +240,8 @@ export async function processRichMenuRuleWork(
     attempted += batch.length;
     jobRemaining -= batch.length;
     const completed = !hasMore;
-    if (completed) jobsCompleted++;
     const lastFriendId = batch.at(-1)?.id ?? jobRow.last_friend_id;
-    await db
+    const finalized = await db
       .prepare(
         `UPDATE rich_menu_rule_reapply_jobs SET
            status = ?,
@@ -203,9 +251,10 @@ export async function processRichMenuRuleWork(
            failed_count = failed_count + ?,
            last_friend_id = ?,
            locked_until = NULL,
+           lock_token = NULL,
            updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'),
            completed_at = CASE WHEN ? = 'completed' THEN strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') ELSE NULL END
-         WHERE id = ?`,
+         WHERE id = ? AND lock_token = ?`,
       )
       .bind(
         completed ? 'completed' : 'running',
@@ -216,8 +265,10 @@ export async function processRichMenuRuleWork(
         lastFriendId,
         completed ? 'completed' : 'running',
         jobRow.id,
+        jobLockToken,
       )
       .run();
+    if (completed && (finalized.meta?.changes ?? 0) === 1) jobsCompleted++;
   }
 
   let queueProcessed = 0;
@@ -225,25 +276,21 @@ export async function processRichMenuRuleWork(
   if (remaining > 0) {
     const queued = await db
       .prepare(
-        `SELECT friend_id FROM rich_menu_rule_evaluation_queue
+        `SELECT friend_id, revision FROM rich_menu_rule_evaluation_queue
          WHERE available_at <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
          ORDER BY available_at ASC, friend_id ASC LIMIT ?`,
       )
       .bind(remaining)
-      .all<{ friend_id: string }>();
+      .all<{ friend_id: string; revision: number }>();
     for (const item of queued.results) {
-      const claimed = await db
-        .prepare(
-          `UPDATE rich_menu_rule_evaluation_queue
-           SET available_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+2 minutes'),
-               updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
-           WHERE friend_id = ?
-             AND available_at <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')`,
-        )
-        .bind(item.friend_id)
-        .run();
-      if ((claimed.meta?.changes ?? 0) !== 1) continue;
-      await applyRichMenuRulesForFriend(db, item.friend_id, options.clientFactory);
+      const queueLease = await claimFriendEvaluation(db, item.friend_id, item.revision);
+      if (!queueLease) continue;
+      await applyRichMenuRulesForFriend(
+        db,
+        item.friend_id,
+        options.clientFactory,
+        { queueLease },
+      );
       attempted++;
       queueProcessed++;
     }

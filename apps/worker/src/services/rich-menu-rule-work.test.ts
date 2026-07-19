@@ -167,6 +167,69 @@ describe('rich menu rule reapply jobs', () => {
     expect(result).toEqual({ attempted: 20, queueProcessed: 1, jobsCompleted: 0 });
     expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({ processedCount: 19 });
   });
+
+  test('a sweep never erases a newer metadata change queued while LINE is in flight', async () => {
+    seedFriends(1);
+    raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-paid', '購入済み')").run();
+    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-000', 'tag-paid')").run();
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '購入済み', conditionType: 'tag_exists', conditionValue: 'tag-paid',
+      richMenuId: 'menu-paid', priority: 10, isActive: true,
+    });
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    raw.prepare('DELETE FROM rich_menu_rule_evaluation_queue').run();
+    let releaseLine!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLine = resolve; });
+
+    const processing = processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: () => ({
+        async linkRichMenuToUser() { markStarted(); await release; },
+        async unlinkRichMenuFromUser() {},
+      }),
+    });
+    await started;
+    raw.prepare("UPDATE friends SET metadata = '{\"rank\":\"VIP\"}' WHERE id = 'friend-000'").run();
+    releaseLine();
+    await processing;
+
+    expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').all())
+      .toEqual([{ friend_id: 'friend-000' }]);
+  });
+
+  test('only the worker that still owns the job lock reports its completion', async () => {
+    seedFriends(1);
+    raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-paid', '購入済み')").run();
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '購入済み', conditionType: 'tag_exists', conditionValue: 'tag-paid',
+      richMenuId: 'menu-paid', priority: 10, isActive: true,
+    });
+    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-000', 'tag-paid')").run();
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    raw.prepare('DELETE FROM rich_menu_rule_evaluation_queue').run();
+    let releaseLine!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLine = resolve; });
+    const clientFactory = () => ({
+      async linkRichMenuToUser() { markStarted(); await release; },
+      async unlinkRichMenuFromUser() {},
+    });
+
+    const staleWorker = processRichMenuRuleWork(db, { limit: 1, clientFactory });
+    await started;
+    raw.prepare(
+      "UPDATE rich_menu_rule_reapply_jobs SET locked_until = '2000-01-01T00:00:00.000' WHERE account_id = 'acc-1'",
+    ).run();
+    const newOwnerResult = await processRichMenuRuleWork(db, { limit: 1, clientFactory });
+    releaseLine();
+    const staleResult = await staleWorker;
+
+    expect(newOwnerResult.jobsCompleted + staleResult.jobsCompleted).toBe(1);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({ status: 'completed' });
+  });
 });
 
 describe('dirty friend queue', () => {
@@ -190,7 +253,6 @@ describe('dirty friend queue', () => {
   test('leases a queued friend so overlapping workers perform one LINE mutation', async () => {
     seedFriends(1);
     raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-paid', '購入済み')").run();
-    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-000', 'tag-paid')").run();
     await createRichMenuDisplayRule(db, {
       accountId: 'acc-1',
       name: '購入済み',
@@ -200,6 +262,7 @@ describe('dirty friend queue', () => {
       priority: 10,
       isActive: true,
     });
+    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-000', 'tag-paid')").run();
     let linkCalls = 0;
     const clientFactory = () => ({
       async linkRichMenuToUser() {
@@ -216,5 +279,60 @@ describe('dirty friend queue', () => {
 
     expect(linkCalls).toBe(1);
     expect(results.reduce((total, result) => total + result.queueProcessed, 0)).toBe(1);
+  });
+
+  test('a queue lease only clears its own generation, not a newer dirty update', async () => {
+    seedFriends(1);
+    raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-paid', '購入済み')").run();
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '購入済み', conditionType: 'tag_exists', conditionValue: 'tag-paid',
+      richMenuId: 'menu-paid', priority: 10, isActive: true,
+    });
+    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-000', 'tag-paid')").run();
+    let releaseLine!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLine = resolve; });
+
+    const processing = processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: () => ({
+        async linkRichMenuToUser() { markStarted(); await release; },
+        async unlinkRichMenuFromUser() {},
+      }),
+    });
+    await started;
+    raw.prepare("UPDATE friends SET metadata = '{\"paid\":true}' WHERE id = 'friend-000'").run();
+    releaseLine();
+    await processing;
+
+    expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').all())
+      .toEqual([{ friend_id: 'friend-000' }]);
+  });
+
+  test('one friend shared by a sweep and dirty queue receives one LINE mutation across overlapping workers', async () => {
+    seedFriends(1);
+    raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-paid', '購入済み')").run();
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '購入済み', conditionType: 'tag_exists', conditionValue: 'tag-paid',
+      richMenuId: 'menu-paid', priority: 10, isActive: true,
+    });
+    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-000', 'tag-paid')").run();
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    let linkCalls = 0;
+    const clientFactory = () => ({
+      async linkRichMenuToUser() {
+        linkCalls++;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      },
+      async unlinkRichMenuFromUser() {},
+    });
+
+    await Promise.all([
+      processRichMenuRuleWork(db, { limit: 2, clientFactory }),
+      processRichMenuRuleWork(db, { limit: 2, clientFactory }),
+    ]);
+
+    expect(linkCalls).toBe(1);
   });
 });

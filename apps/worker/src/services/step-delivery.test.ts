@@ -223,6 +223,22 @@ describe('evaluateCondition', () => {
   });
 
   describe('fail-safe semantics (OSS #120 regression)', () => {
+    it('tag lookup failure returns false instead of escaping the fail-safe boundary', async () => {
+      const db = {
+        prepare: () => ({
+          bind: () => ({
+            first: async () => { throw new Error('temporary D1 failure'); },
+          }),
+        }),
+      } as unknown as D1Database;
+
+      await expect(evaluateCondition(db, 'f1', {
+        condition_type: 'tag_exists',
+        condition_value: 'tag-A',
+      })).resolves.toBe(false);
+      expect(errorSpy).toHaveBeenCalled();
+    });
+
     it('unknown condition_type → false (skip), NOT true (deliver)', async () => {
       // OSS issue #120: user passed condition_type='tag_not_has' (typo for tag_not_exists);
       // pre-fix behaviour was to fall through to default and return true → over-deliver to every

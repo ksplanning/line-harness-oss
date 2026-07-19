@@ -1,6 +1,9 @@
 import { listRichMenuDisplayRules } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
-import { evaluateConditionStrict } from './step-delivery.js';
+import {
+  evaluateConditionWithResolverStrict,
+  type ConditionValueResolver,
+} from './step-delivery.js';
 
 export interface RichMenuRuleLineClient {
   linkRichMenuToUser(userId: string, richMenuId: string): Promise<unknown>;
@@ -11,7 +14,7 @@ export type RichMenuRuleLineClientFactory = (channelAccessToken: string) => Rich
 
 export type RichMenuRuleApplyResult =
   | { status: 'no_rules'; friendId: string }
-  | { status: 'ignored'; friendId: string; reason: 'missing_friend' | 'not_following' | 'missing_account' }
+  | { status: 'ignored'; friendId: string; reason: 'missing_friend' | 'not_following' | 'missing_account' | 'inactive_account' }
   | { status: 'applied'; friendId: string; ruleId: string; richMenuId: string }
   | { status: 'reverted'; friendId: string; ruleId: null; richMenuId: null }
   | { status: 'skipped'; friendId: string; reason: 'same_menu'; ruleId: string | null; richMenuId: string | null }
@@ -22,7 +25,9 @@ interface FriendRuleContext {
   line_user_id: string;
   line_account_id: string | null;
   is_following: number;
+  metadata: string | null;
   channel_access_token: string | null;
+  account_is_active: number | null;
 }
 
 interface FriendAssignment {
@@ -34,25 +39,80 @@ interface FriendAssignment {
 
 const defaultClientFactory: RichMenuRuleLineClientFactory = (token) => new LineClient(token);
 
+export interface RichMenuRuleApplyOptions {
+  queueLease?: { token: string; revision: number };
+  preserveQueue?: boolean;
+}
+
 function safeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]').slice(0, 500);
 }
 
-async function clearQueue(db: D1Database, friendId: string): Promise<void> {
+async function clearQueue(
+  db: D1Database,
+  friendId: string,
+  options: RichMenuRuleApplyOptions,
+): Promise<void> {
+  if (options.preserveQueue) return;
+  if (options.queueLease) {
+    const removed = await db
+      .prepare(
+        `DELETE FROM rich_menu_rule_evaluation_queue
+         WHERE friend_id = ? AND lease_token = ? AND revision = ?`,
+      )
+      .bind(friendId, options.queueLease.token, options.queueLease.revision)
+      .run();
+    if ((removed.meta?.changes ?? 0) === 0) {
+      await db
+        .prepare(
+          `UPDATE rich_menu_rule_evaluation_queue
+           SET lease_token = NULL,
+               available_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'),
+               updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+           WHERE friend_id = ? AND lease_token = ?`,
+        )
+        .bind(friendId, options.queueLease.token)
+        .run();
+    }
+    return;
+  }
   await db.prepare('DELETE FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?').bind(friendId).run();
 }
 
-async function queueRetry(db: D1Database, friendId: string, error: unknown): Promise<void> {
+async function queueRetry(
+  db: D1Database,
+  friendId: string,
+  error: unknown,
+  options: RichMenuRuleApplyOptions,
+): Promise<void> {
+  if (options.queueLease) {
+    await db
+      .prepare(
+        `UPDATE rich_menu_rule_evaluation_queue SET
+           attempts = attempts + 1,
+           available_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+5 minutes'),
+           last_error = ?,
+           lease_token = NULL,
+           revision = revision + 1,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+         WHERE friend_id = ? AND lease_token = ?`,
+      )
+      .bind(safeError(error), friendId, options.queueLease.token)
+      .run();
+    return;
+  }
   await db
     .prepare(
       `INSERT INTO rich_menu_rule_evaluation_queue
-       (friend_id, attempts, available_at, last_error, updated_at)
-       VALUES (?, 1, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+5 minutes'), ?, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+       (friend_id, attempts, available_at, last_error, lease_token, revision, updated_at)
+       VALUES (?, 1, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+5 minutes'), ?, NULL, 1, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
        ON CONFLICT(friend_id) DO UPDATE SET
          attempts = rich_menu_rule_evaluation_queue.attempts + 1,
          available_at = excluded.available_at,
          last_error = excluded.last_error,
+         lease_token = NULL,
+         revision = rich_menu_rule_evaluation_queue.revision + 1,
          updated_at = excluded.updated_at`,
     )
     .bind(friendId, safeError(error))
@@ -95,12 +155,13 @@ export async function applyRichMenuRulesForFriend(
   db: D1Database,
   friendId: string,
   clientFactory: RichMenuRuleLineClientFactory = defaultClientFactory,
+  applyOptions: RichMenuRuleApplyOptions = {},
 ): Promise<RichMenuRuleApplyResult> {
   try {
     const friend = await db
       .prepare(
-        `SELECT f.id, f.line_user_id, f.line_account_id, f.is_following,
-                a.channel_access_token
+        `SELECT f.id, f.line_user_id, f.line_account_id, f.is_following, f.metadata,
+                a.channel_access_token, a.is_active AS account_is_active
          FROM friends f
          LEFT JOIN line_accounts a ON a.id = f.line_account_id
          WHERE f.id = ?`,
@@ -108,16 +169,20 @@ export async function applyRichMenuRulesForFriend(
       .bind(friendId)
       .first<FriendRuleContext>();
     if (!friend) {
-      await clearQueue(db, friendId);
+      await clearQueue(db, friendId, applyOptions);
       return { status: 'ignored', friendId, reason: 'missing_friend' };
     }
     if (friend.is_following !== 1) {
-      await clearQueue(db, friendId);
+      await clearQueue(db, friendId, applyOptions);
       return { status: 'ignored', friendId, reason: 'not_following' };
     }
     if (!friend.line_account_id || !friend.channel_access_token) {
-      await clearQueue(db, friendId);
+      await clearQueue(db, friendId, applyOptions);
       return { status: 'ignored', friendId, reason: 'missing_account' };
+    }
+    if (friend.account_is_active !== 1) {
+      await clearQueue(db, friendId, applyOptions);
+      return { status: 'ignored', friendId, reason: 'inactive_account' };
     }
 
     const [rules, assignment] = await Promise.all([
@@ -129,13 +194,55 @@ export async function applyRichMenuRulesForFriend(
     ]);
 
     if (rules.length === 0 && !assignment) {
-      await clearQueue(db, friendId);
+      await clearQueue(db, friendId, applyOptions);
       return { status: 'no_rules', friendId };
     }
 
+    const needsTags = rules.some((rule) => rule.conditionType.startsWith('tag_'));
+    const needsMetadata = rules.some((rule) => rule.conditionType.startsWith('metadata_'));
+    const [tagRows, definitionRows] = await Promise.all([
+      needsTags
+        ? db
+          .prepare(
+            `SELECT ft.tag_id, t.name
+             FROM friend_tags ft JOIN tags t ON t.id = ft.tag_id
+             WHERE ft.friend_id = ?`,
+          )
+          .bind(friendId)
+          .all<{ tag_id: string; name: string }>()
+        : Promise.resolve({ results: [] as Array<{ tag_id: string; name: string }> }),
+      needsMetadata
+        ? db
+          .prepare('SELECT name, default_value FROM friend_field_definitions WHERE is_active = 1')
+          .all<{ name: string; default_value: string }>()
+        : Promise.resolve({ results: [] as Array<{ name: string; default_value: string }> }),
+    ]);
+    let metadata: Record<string, unknown> | null = null;
+    if (typeof friend.metadata === 'string') {
+      try {
+        const parsed = JSON.parse(friend.metadata) as unknown;
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          metadata = parsed as Record<string, unknown>;
+        }
+      } catch {
+        metadata = null;
+      }
+    }
+    const tagIds = new Set(tagRows.results.map((tag) => tag.tag_id));
+    const tagNames = tagRows.results.map((tag) => tag.name);
+    const defaults = new Map(definitionRows.results.map((definition) => [definition.name, definition.default_value]));
+    const resolver: ConditionValueResolver = {
+      async hasTag(tagId) { return tagIds.has(tagId); },
+      async getMetadata(key) {
+        if (!metadata) return undefined;
+        return Object.prototype.hasOwnProperty.call(metadata, key) ? metadata[key] : defaults.get(key);
+      },
+      async getTagNames() { return tagNames; },
+    };
+
     let winner: (typeof rules)[number] | null = null;
     for (const rule of rules) {
-      if (await evaluateConditionStrict(db, friendId, {
+      if (await evaluateConditionWithResolverStrict(resolver, {
         condition_type: rule.conditionType,
         condition_value: rule.conditionValue,
       })) {
@@ -158,10 +265,10 @@ export async function applyRichMenuRulesForFriend(
       });
       if (rules.length === 0 && desiredRichMenuId === null) {
         await forgetRichMenuRuleAssignment(db, friendId);
-        await clearQueue(db, friendId);
+        await clearQueue(db, friendId, applyOptions);
         return { status: 'no_rules', friendId };
       }
-      await clearQueue(db, friendId);
+      await clearQueue(db, friendId, applyOptions);
       return {
         status: 'skipped',
         friendId,
@@ -180,7 +287,7 @@ export async function applyRichMenuRulesForFriend(
         ruleId: winner.id,
         richMenuId: winner.richMenuId,
       });
-      await clearQueue(db, friendId);
+      await clearQueue(db, friendId, applyOptions);
       return {
         status: 'applied',
         friendId,
@@ -200,11 +307,11 @@ export async function applyRichMenuRulesForFriend(
         richMenuId: null,
       });
     }
-    await clearQueue(db, friendId);
+    await clearQueue(db, friendId, applyOptions);
     return { status: 'reverted', friendId, ruleId: null, richMenuId: null };
   } catch (error) {
     try {
-      await queueRetry(db, friendId, error);
+      await queueRetry(db, friendId, error, applyOptions);
     } catch {
       // The original operation remains fail-soft even if retry persistence is unavailable.
     }

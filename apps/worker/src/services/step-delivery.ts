@@ -307,9 +307,14 @@ export function isSupportedConditionType(value: unknown): value is (typeof SUPPO
   return typeof value === 'string' && (SUPPORTED_CONDITION_TYPES as readonly string[]).includes(value);
 }
 
-async function evaluateConditionInternal(
-  db: D1Database,
-  friendId: string,
+export interface ConditionValueResolver {
+  hasTag(tagId: string): Promise<boolean>;
+  getMetadata(key: string): Promise<unknown>;
+  getTagNames(): Promise<string[]>;
+}
+
+async function evaluateConditionWithResolverInternal(
+  resolver: ConditionValueResolver,
   step: { condition_type: string | null; condition_value: string | null },
   throwOnFailure: boolean,
 ): Promise<boolean> {
@@ -326,18 +331,10 @@ async function evaluateConditionInternal(
   try {
     switch (step.condition_type) {
       case 'tag_exists': {
-        const tag = await db
-          .prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?')
-          .bind(friendId, step.condition_value)
-          .first();
-        return !!tag;
+        return await resolver.hasTag(step.condition_value);
       }
       case 'tag_not_exists': {
-        const tag = await db
-          .prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?')
-          .bind(friendId, step.condition_value)
-          .first();
-        return !tag;
+        return !await resolver.hasTag(step.condition_value);
       }
       case 'metadata_equals':
       case 'metadata_not_equals': {
@@ -346,7 +343,7 @@ async function evaluateConditionInternal(
           console.error('[scenario] malformed metadata condition_value');
           return false;
         }
-        const actual = await getEffectiveFriendMetadataValue(db, friendId, parsed.key);
+        const actual = await resolver.getMetadata(parsed.key);
         const matches = actual === parsed.value;
         return step.condition_type === 'metadata_equals' ? matches : !matches;
       }
@@ -362,7 +359,7 @@ async function evaluateConditionInternal(
           console.error(`[scenario] empty contains needle for condition_type: ${step.condition_type}`);
           return false;
         }
-        const actual = await getEffectiveFriendMetadataValue(db, friendId, parsed.key);
+        const actual = await resolver.getMetadata(parsed.key);
         const haystackValue = actual === undefined ? '' : actual;
         const haystackNorm = normalizeForContains(haystackValue === undefined ? '' : String(haystackValue));
         const matches = haystackNorm.includes(needleNorm);
@@ -375,11 +372,8 @@ async function evaluateConditionInternal(
           console.error(`[scenario] empty contains needle for condition_type: ${step.condition_type}`);
           return false;
         }
-        const tags = await db
-          .prepare('SELECT t.name AS name FROM friend_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.friend_id = ?')
-          .bind(friendId)
-          .all<{ name: string }>();
-        const matches = tags.results.some((tag) => normalizeForContains(tag.name).includes(needleNorm));
+        const tagNames = await resolver.getTagNames();
+        const matches = tagNames.some((name) => normalizeForContains(name).includes(needleNorm));
         return step.condition_type === 'tag_name_contains' ? matches : !matches;
       }
     }
@@ -390,12 +384,34 @@ async function evaluateConditionInternal(
   }
 }
 
+function d1ConditionResolver(db: D1Database, friendId: string): ConditionValueResolver {
+  return {
+    async hasTag(tagId) {
+      const tag = await db
+        .prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?')
+        .bind(friendId, tagId)
+        .first();
+      return !!tag;
+    },
+    getMetadata(key) {
+      return getEffectiveFriendMetadataValue(db, friendId, key);
+    },
+    async getTagNames() {
+      const tags = await db
+        .prepare('SELECT t.name AS name FROM friend_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.friend_id = ?')
+        .bind(friendId)
+        .all<{ name: string }>();
+      return tags.results.map((tag) => tag.name);
+    },
+  };
+}
+
 export function evaluateCondition(
   db: D1Database,
   friendId: string,
   step: { condition_type: string | null; condition_value: string | null },
 ): Promise<boolean> {
-  return evaluateConditionInternal(db, friendId, step, false);
+  return evaluateConditionWithResolverInternal(d1ConditionResolver(db, friendId), step, false);
 }
 
 /**
@@ -408,7 +424,14 @@ export function evaluateConditionStrict(
   friendId: string,
   step: { condition_type: string | null; condition_value: string | null },
 ): Promise<boolean> {
-  return evaluateConditionInternal(db, friendId, step, true);
+  return evaluateConditionWithResolverInternal(d1ConditionResolver(db, friendId), step, true);
+}
+
+export function evaluateConditionWithResolverStrict(
+  resolver: ConditionValueResolver,
+  step: { condition_type: string | null; condition_value: string | null },
+): Promise<boolean> {
+  return evaluateConditionWithResolverInternal(resolver, step, true);
 }
 
 

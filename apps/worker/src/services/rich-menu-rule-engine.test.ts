@@ -213,6 +213,26 @@ describe('applyRichMenuRulesForFriend', () => {
     expect(raw.prepare('SELECT * FROM rich_menu_rule_evaluation_queue').all()).toEqual([]);
   });
 
+  test('an inactive LINE account never constructs a client or mutates its assignment', async () => {
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '購入済み', conditionType: 'tag_exists', conditionValue: 'tag-paid',
+      richMenuId: 'menu-paid', priority: 10, isActive: true,
+    });
+    raw.prepare(
+      `INSERT INTO rich_menu_friend_assignments (friend_id, account_id, rule_id, rich_menu_id)
+       VALUES ('friend-1', 'acc-1', NULL, 'menu-old')`,
+    ).run();
+    raw.prepare("UPDATE line_accounts SET is_active = 0 WHERE id = 'acc-1'").run();
+    const line = lineDouble();
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'ignored', friendId: 'friend-1', reason: 'inactive_account' });
+    expect(line.factory).not.toHaveBeenCalled();
+    expect(raw.prepare('SELECT rich_menu_id FROM rich_menu_friend_assignments WHERE friend_id = ?').get('friend-1'))
+      .toEqual({ rich_menu_id: 'menu-old' });
+  });
+
   test('deleting the last rule still reverts friends previously managed by the engine', async () => {
     raw.prepare(
       `INSERT INTO rich_menu_friend_assignments (friend_id, account_id, rule_id, rich_menu_id)
@@ -251,6 +271,31 @@ describe('applyRichMenuRulesForFriend', () => {
       .toEqual({ attempts: 1 });
   });
 
+  test('a stale worker failure never releases a queue lease now owned by another worker', async () => {
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '購入済み', conditionType: 'tag_exists', conditionValue: 'tag-paid',
+      richMenuId: 'menu-new', priority: 10, isActive: true,
+    });
+    raw.prepare(
+      `INSERT INTO rich_menu_rule_evaluation_queue (friend_id, lease_token, revision)
+       VALUES ('friend-1', 'new-owner', 2)
+       ON CONFLICT(friend_id) DO UPDATE SET lease_token = 'new-owner', revision = 2, attempts = 0`,
+    ).run();
+    const line = lineDouble({ failLink: true });
+
+    const result = await applyRichMenuRulesForFriend(
+      db,
+      'friend-1',
+      line.factory,
+      { queueLease: { token: 'stale-owner', revision: 1 } },
+    );
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(raw.prepare(
+      'SELECT lease_token, revision, attempts FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?',
+    ).get('friend-1')).toEqual({ lease_token: 'new-owner', revision: 2, attempts: 0 });
+  });
+
   test('a condition database failure never unlinks and is retried fail-soft', async () => {
     await createRichMenuDisplayRule(db, {
       accountId: 'acc-1',
@@ -267,10 +312,10 @@ describe('applyRichMenuRulesForFriend', () => {
     ).run();
     const failingDb = {
       prepare(sql: string) {
-        if (sql.includes('FROM friend_tags WHERE friend_id')) {
+        if (sql.includes('FROM friend_tags ft JOIN tags')) {
           return {
             bind() { return this; },
-            async first() { throw new Error('temporary D1 failure'); },
+            async all() { throw new Error('temporary D1 failure'); },
           };
         }
         return db.prepare(sql);
@@ -286,5 +331,36 @@ describe('applyRichMenuRulesForFriend', () => {
       .toEqual({ rich_menu_id: 'menu-current' });
     expect(raw.prepare('SELECT attempts FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?').get('friend-1'))
       .toEqual({ attempts: 1 });
+  });
+
+  test('evaluates an unlimited rule list with a fixed per-friend query budget', async () => {
+    const insert = raw.prepare(
+      `INSERT INTO rich_menu_display_rules
+       (id, account_id, name, condition_type, condition_value, rich_menu_id, priority)
+       VALUES (?, 'acc-1', ?, 'tag_exists', ?, ?, ?)`,
+    );
+    for (let index = 0; index < 125; index++) {
+      insert.run(
+        `rule-${index}`,
+        `ルール${index}`,
+        index === 0 ? 'tag-paid' : `missing-${index}`,
+        `menu-${index}`,
+        index,
+      );
+    }
+    let queryCount = 0;
+    const countingDb = {
+      prepare(sql: string) {
+        queryCount++;
+        return db.prepare(sql);
+      },
+    } as unknown as D1Database;
+    const line = lineDouble();
+
+    const result = await applyRichMenuRulesForFriend(countingDb, 'friend-1', line.factory);
+
+    expect(result).toMatchObject({ status: 'applied', ruleId: 'rule-0', richMenuId: 'menu-0' });
+    expect(line.calls).toEqual([{ method: 'link', userId: 'U1', richMenuId: 'menu-0' }]);
+    expect(queryCount).toBeLessThanOrEqual(9);
   });
 });
