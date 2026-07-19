@@ -2,7 +2,7 @@ import { isDecorationType, DEFAULT_RATING_STAR_COLOR, type HarnessFieldType, typ
 
 // =============================================================================
 // パレット field 種別メタ (F-2 / T-B1) — 素人向け日本語ラベル (英語 type 名を見せない / ui-design)。
-// MVP subset のみ (N-13)。matrix/repeating_section 等は F-2b 以降。
+// MVP subset を起点に、実装済み field を additive に公開する。
 // =============================================================================
 
 export type FieldCategory = '入力' | '選択' | '高度' | '装飾'
@@ -27,6 +27,8 @@ export const FIELD_TYPE_META: FieldTypeMeta[] = [
   { type: 'choice_fetch', label: '動的選択肢', icon: '🔄', category: '選択' },
   { type: 'file', label: 'ファイル添付', icon: '📎', category: '高度' },
   { type: 'variable', label: '計算', icon: '🧮', category: '高度' },
+  { type: 'matrix', label: '行列', icon: '▦', category: '高度' },
+  { type: 'repeating_section', label: '繰り返しセクション', icon: '🔁', category: '高度' },
   // treasure-b1-palette: rating(入力)・signature(高度)・video(装飾) を additive。
   { type: 'rating', label: '評価', icon: '⭐', category: '入力' },
   { type: 'signature', label: '署名', icon: '✍️', category: '高度' },
@@ -97,6 +99,16 @@ export const FIELD_CATEGORIES: FieldCategory[] = ['入力', '選択', '高度', 
 
 export { isDecorationType }
 export const isDecoration = isDecorationType
+
+/** 既存の計算式・条件分岐から参照できる scalar field。構造 field だけを additive に除外する。 */
+export function isScalarReferenceType(type: HarnessFieldType): boolean {
+  return !isDecorationType(type) && type !== 'matrix' && type !== 'repeating_section'
+}
+
+/** repeating_section の列として選べる通常入力 field（計算 variable は列コンテナへ入れない）。 */
+export function isRepeatingColumnType(type: HarnessFieldType): boolean {
+  return isScalarReferenceType(type) && type !== 'variable'
+}
 
 export function fieldTypeLabel(type: HarnessFieldType): string {
   return FIELD_TYPE_META.find((m) => m.type === type)?.label ?? type

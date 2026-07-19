@@ -110,6 +110,88 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
           <p className="text-xs text-gray-500">ファイルを添付する項目です。実際の選択は公開フォームで行えます。</p>
         </div>
       )
+    case 'matrix': {
+      const columns = Object.values(field.config.matrixChoiceItems ?? {})
+      const rows = field.config.matrixChoiceGroups ?? []
+      return (
+        <div className="space-y-1.5" data-testid="preview-matrix">
+          <div className="overflow-x-auto rounded-lg border border-gray-200">
+            <table className="min-w-full border-collapse text-xs text-gray-700">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th scope="col" className="px-2 py-2 text-left font-medium">項目</th>
+                  {columns.map((column, index) => (
+                    <th key={`${column.slug ?? column.title}-${index}`} scope="col" className="px-2 py-2 text-center font-medium">
+                      {column.title}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, rowIndex) => (
+                  <tr key={`${row.slug ?? row.refId ?? row.title}-${rowIndex}`} className="border-t border-gray-100">
+                    <th scope="row" className="whitespace-nowrap px-2 py-2 text-left font-medium">{row.title}</th>
+                    {columns.map((column, columnIndex) => (
+                      <td key={`${column.slug ?? column.title}-${columnIndex}`} className="px-2 py-2 text-center">
+                        <input
+                          type="radio"
+                          disabled
+                          aria-label={`${row.title}: ${column.title}`}
+                          name={`preview-matrix-${field.id}-${rowIndex}`}
+                          className="h-4 w-4 accent-[#06C755]"
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p data-testid="preview-matrix-note" className="text-[10px] leading-snug text-gray-400">
+            公開フォームでは Formaloo の行列入力として操作できます。このプレビューは行と列の構成確認用です。
+          </p>
+        </div>
+      )
+    }
+    case 'repeating_section': {
+      const columns = field.config.repeatingColumns ?? []
+      const minRows = field.config.minRows ?? 0
+      const maxRows = field.config.maxRows
+      return (
+        <div className="space-y-1.5" data-testid="preview-repeating">
+          <div className="overflow-x-auto rounded-lg border border-gray-200">
+            <table className="min-w-full border-collapse text-xs text-gray-700">
+              <thead className="bg-gray-50">
+                <tr>
+                  {columns.map((column, index) => (
+                    <th key={`${column.slug ?? column.columnField}-${index}`} scope="col" className="px-2 py-2 text-left font-medium">
+                      {column.title}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-t border-gray-100">
+                  {columns.map((column, index) => (
+                    <td key={`${column.slug ?? column.columnField}-${index}`} className="px-2 py-2">
+                      <input
+                        type="text"
+                        disabled
+                        aria-label={`${column.title}（代表行）`}
+                        className={disabledClassName}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p data-testid="preview-repeating-note" className="text-[10px] leading-snug text-gray-400">
+            公開フォームでは {minRows}〜{maxRows ?? '上限なし'} 行を追加して入力できます。このプレビューは列構成の代表表示です。
+          </p>
+        </div>
+      )
+    }
     case 'variable':
       return (
         <div data-testid="preview-variable" className="space-y-1 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">

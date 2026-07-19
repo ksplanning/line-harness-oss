@@ -38,11 +38,14 @@ import {
   VARIABLE_SUB_TYPE_OPTIONS,
   VIDEO_SIZE_PRESETS,
   isDecoration,
+  isRepeatingColumnType,
+  isScalarReferenceType,
 } from './field-types'
 import FormPreview from './form-preview'
 import DesignPanel from './design-panel'
 import ImageFieldPanel from './image-field-panel'
 import ChoiceFetchFieldPanel from './choice-fetch-field-panel'
+import StructuralFieldPanel from './structural-field-panel'
 import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 
@@ -120,7 +123,8 @@ export interface BuilderProps {
   layoutMode?: 'mobile' | 'desktop'
 }
 
-function newField(type: HarnessFieldType): HarnessField {
+function newField(type: HarnessFieldType, allFields: HarnessField[] = []): HarnessField {
+  const firstScalarField = allFields.find((field) => isRepeatingColumnType(field.type))
   return {
     id: `f_${(crypto.randomUUID?.() ?? String(Math.random())).slice(0, 8)}`,
     type,
@@ -131,6 +135,22 @@ function newField(type: HarnessFieldType): HarnessField {
       ? { choices: ['選択肢1', '選択肢2'] }
       : type === 'variable'
         ? { variableSubType: 'int' }
+        : type === 'matrix'
+          ? {
+              matrixChoiceGroups: [{ title: '行1' }, { title: '行2' }],
+              matrixChoiceItems: {
+                column_1: { title: '列1' },
+                column_2: { title: '列2' },
+              },
+            }
+          : type === 'repeating_section'
+            ? {
+                minRows: 1,
+                maxRows: 5,
+                repeatingColumns: firstScalarField
+                  ? [{ columnField: firstScalarField.id, title: firstScalarField.label }]
+                  : [],
+              }
         : type === 'section'
           ? { text: '' }
           : type === 'video'
@@ -460,7 +480,7 @@ function SettingsPanel({
   }
 
   if (field.type === 'variable') {
-    const referenceFields = allFields.filter((candidate) => candidate.id !== field.id && !isDecoration(candidate.type))
+    const referenceFields = allFields.filter((candidate) => candidate.id !== field.id && isScalarReferenceType(candidate.type))
     const subType = cfg.variableSubType ?? 'int'
     return (
       <div className="space-y-3 text-sm" data-testid="settings-panel">
@@ -540,9 +560,13 @@ function SettingsPanel({
     )
   }
 
+  if (field.type === 'matrix' || field.type === 'repeating_section') {
+    return <StructuralFieldPanel field={field} allFields={allFields} onChange={onChange} />
+  }
+
   const rulesForField = logic.filter((r) => r.sourceFieldId === field.id)
   const addRule = () => {
-    const other = allFields.find((f) => f.id !== field.id && !isDecoration(f.type))
+    const other = allFields.find((f) => f.id !== field.id && isScalarReferenceType(f.type))
     if (!other) return
     onLogicChange([
       ...logic,
@@ -553,7 +577,7 @@ function SettingsPanel({
   //   host required は「残存 submit があれば true / 無ければ元値 (terminalHostWasRequired) へ復元」で再計算する。
   const hostHasSubmit = (list: HarnessLogicRule[]) => list.some((r) => r.sourceFieldId === field.id && r.action === 'submit')
   const firstPageId = () => allFields.find((f) => f.type === 'page_break')?.id ?? ''
-  const firstOtherFieldId = () => allFields.find((f) => f.id !== field.id && !isDecoration(f.type))?.id ?? ''
+  const firstOtherFieldId = () => allFields.find((f) => f.id !== field.id && isScalarReferenceType(f.type))?.id ?? ''
   // logic 差替 + required 再計算。restoreRequired = submit が host から消えた時に戻す元値。
   const applyLogic = (nextLogic: HarnessLogicRule[], restoreRequired?: boolean) => {
     onLogicChange(nextLogic)
@@ -591,7 +615,7 @@ function SettingsPanel({
           const curIsPage = allFields.some((f) => f.id === r.targetFieldId && f.type === 'page_break')
           next.targetFieldId = curIsPage ? r.targetFieldId : firstPageId()
         } else {
-          const curValid = allFields.some((f) => f.id === r.targetFieldId && f.id !== field.id && !isDecoration(f.type))
+          const curValid = allFields.some((f) => f.id === r.targetFieldId && f.id !== field.id && isScalarReferenceType(f.type))
           next.targetFieldId = curValid ? r.targetFieldId : firstOtherFieldId()
         }
       }
@@ -774,7 +798,7 @@ function SettingsPanel({
           // jump 飛び先は page_break (改ページ) / show・hide・skip は非装飾 field。
           const targetOptions = isJump
             ? allFields.filter((f) => f.type === 'page_break')
-            : allFields.filter((f) => f.id !== field.id && !isDecoration(f.type))
+            : allFields.filter((f) => f.id !== field.id && isScalarReferenceType(f.type))
           // 分岐アクション select (submit option 含む・route-terminal-submit)。
           const actionSelect = (
             <select
@@ -851,7 +875,7 @@ function SettingsPanel({
           )
         })}
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={addRule} disabled={allFields.filter((f) => f.id !== field.id && !isDecoration(f.type)).length < 1} className="text-xs disabled:opacity-40" style={{ color: LINE_GREEN }}>＋ 分岐を追加</button>
+          <button type="button" onClick={addRule} disabled={allFields.filter((f) => f.id !== field.id && isScalarReferenceType(f.type)).length < 1} className="text-xs disabled:opacity-40" style={{ color: LINE_GREEN }}>＋ 分岐を追加</button>
           {/* route-terminal-submit: 「ここで送信」は他 field を要さず追加可 (入力1項目でも可)。 */}
           <button type="button" onClick={addSubmitRule} className="text-xs" style={{ color: LINE_GREEN }}>＋「ここで送信」を追加</button>
         </div>
@@ -1092,7 +1116,7 @@ export default function FormBuilder(props: BuilderProps) {
   const reposition = (list: HarnessField[]) => list.map((f, i) => ({ ...f, position: i }))
 
   const addField = (type: HarnessFieldType, index?: number) => {
-    const f = newField(type)
+    const f = newField(type, fields)
     setFields((cur) => {
       const next = [...cur]
       if (typeof index === 'number') next.splice(index, 0, f)
