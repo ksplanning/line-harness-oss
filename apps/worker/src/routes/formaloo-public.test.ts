@@ -309,6 +309,56 @@ describe('T-A4 webhook upsert が rowSlug を渡す (弾M / 回帰 0)', () => {
   });
 });
 
+describe('D-3 structural answers direct webhook mirror', () => {
+  test('署名 fr_id と matrix object / repeating array を route から D1 へそのまま保存する', async () => {
+    seedFriend('frA');
+    seedForm('fa1', 'form_abc', 'published', null);
+    const friendToken = await import('../services/formaloo-friend-token.js')
+      .then((module) => module.signFriendToken('frA', FRIEND_SECRET));
+    const answers = {
+      legacy_text: '従来値',
+      matrix_slug: { service: 'good', speed: 'neutral' },
+      repeat_slug: [
+        { name: '田中', quantity: 2 },
+        { name: '佐藤', quantity: 1 },
+      ],
+    };
+    const payload = {
+      submit_code: 'ROW_STRUCTURAL',
+      form: 'form_abc',
+      slug: 'ROWSLUG_STRUCTURAL',
+      data: answers,
+      rendered_data: [{ alias: 'fr_id', value: friendToken }],
+      created_at: '2026-07-20T05:00:00+09:00',
+    };
+    const body = JSON.stringify(payload);
+    const timestamp = new Date().toISOString();
+    const res = await app().request(`/formaloo/webhook/${TOKEN}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-formaloo-signature': await hmac(body, timestamp),
+        'x-formaloo-timestamp': timestamp,
+      },
+      body,
+    }, envWithFriendSecret());
+
+    expect(res.status).toBe(200);
+    const mirrored = raw.prepare(
+      `SELECT friend_id, answers_json, verified, formaloo_row_slug FROM formaloo_submissions WHERE id=?`,
+    ).get('ROW_STRUCTURAL') as {
+      friend_id: string | null;
+      answers_json: string;
+      verified: number;
+      formaloo_row_slug: string | null;
+    };
+    expect(mirrored.friend_id).toBe('frA');
+    expect(mirrored.verified).toBe(1);
+    expect(mirrored.formaloo_row_slug).toBe('ROWSLUG_STRUCTURAL');
+    expect(JSON.parse(mirrored.answers_json)).toEqual(answers);
+  });
+});
+
 describe('T-C2 開封リダイレクト /fo/:id (G11 / 認証除外)', () => {
   test('published + ?f= → form_opens INSERT + 302 で Formaloo address へ (Authorization 不要)', async () => {
     seedFriend('fr_1');
