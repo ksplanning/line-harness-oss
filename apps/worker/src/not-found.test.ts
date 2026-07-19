@@ -10,6 +10,7 @@ vi.mock('@line-crm/db', () => ({
   // index.ts pulls these eagerly at module load; provide no-op stubs so the
   // import graph resolves under Vitest.
   getLineAccounts: vi.fn().mockResolvedValue([]),
+  getLineAccountById: vi.fn(),
   getTrafficPoolBySlug: vi.fn(),
   getTrafficPoolById: vi.fn(),
   getRandomPoolAccount: vi.fn(),
@@ -44,6 +45,12 @@ vi.mock('@line-crm/db', () => ({
   completeFormalooRecurringSubmission: vi.fn(),
   markFormalooRecurringSubmissionFailed: vi.fn(),
   refreshFormalooRecurringSubmission: vi.fn(),
+  listFormalooAiChatHistory: vi.fn().mockResolvedValue([]),
+  reserveFormalooAiChatHistory: vi.fn(),
+  hasPendingFormalooAiChatHistory: vi.fn().mockResolvedValue(false),
+  completeFormalooAiChatHistory: vi.fn(),
+  failFormalooAiChatHistory: vi.fn(),
+  jstNow: vi.fn().mockReturnValue('2026-07-20T00:00:00.000+09:00'),
 }));
 
 import { notFoundHandler, type Env } from './index.js';
