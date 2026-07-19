@@ -686,6 +686,7 @@ async function applyVerifiedFriendMetadataSync(
     input.id, input.formId, intent.friendId,
     JSON.stringify(updates),
   ).run();
+}
 
 /**
  * 回答ミラーへ冪等 upsert。PK=submission id で dedup (N-3・順序非依存)。
