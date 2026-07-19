@@ -505,16 +505,18 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 ## matrix の作成・表示・回答確認
 
 1. 管理画面で使い捨てフォームを作り、行を 2 件、列を 2 件持つ matrix field を保存する。保存操作は 1 回だけ行い、失敗時は remote 一覧を確認して重複作成を避ける。
-2. Formaloo detail GET で `choice_groups` の行見出しと `choice_items` の列見出し、識別子、順序が保存値と一致することを確認する。未知の必須値を推測して追加しない。
-3. hosted form を開き、2 行 × 2 列の表として表示されることを確認する。各行で合成回答を選び、1 件だけ submit する。
-4. Formaloo 側の回答 read-back で matrix 値の実際の object 形を確認し、非機密なキー構造だけを記録する。管理画面の即時 pull と reconcile 後も同じ matrix object が `answers_json` に欠落・文字列化なく残ることを確認する。
+2. secret を出さない request 証跡で matrix の POST/PATCH body に `choice_items` が無く、`bulk_choices` が保存した列見出しの文字列配列であることを確認する。Formaloo detail GET では、Formaloo が自動生成した `choice_items` の列見出し・識別子・順序と `choice_groups` の行見出しが保存値と一致することを確認する。
+3. 管理画面で再取込みして再読込し、2 列が消えず同じ順序で編集できることを確認する。その後の保存でも `bulk_choices` のみが送られ、`choice_items` を送らないことを再確認する。
+4. hosted form を開き、2 行 × 2 列の表として表示されることを確認する。各行で合成回答を選び、1 件だけ submit する。
+5. Formaloo 側の回答 read-back で matrix 値の実際の object 形を確認し、非機密なキー構造だけを記録する。管理画面の即時 pull と reconcile 後も同じ matrix object が `answers_json` に欠落・文字列化なく残ることを確認する。
 
 ## repeating section の作成・表示・回答確認
 
 1. 同じ使い捨てフォームに、通常 field を 2 件作ってから、それらを列に持つ repeating section を `min_rows: 1` / `max_rows: 3` で保存する。
-2. Formaloo detail GET で `column_groups` の `column_field`、見出し、順序と `min_rows` / `max_rows` が保存値と一致することを確認する。
-3. hosted form で最小 1 行が表示され、最大 3 行まで追加できることを確認する。2 行分の合成値を入力し、1 件だけ submit する。
-4. Formaloo 側の回答 read-back で複数行の実際の array/object 形を確認し、非機密なキー構造だけを記録する。管理画面の即時 pull、webhook、reconcile 後も行数・列値・順序が `answers_json` に欠落・文字列化なく残ることを確認する。
+2. Formaloo detail GET で `column_groups[].column_field` が object（オブジェクト）で返り、その `slug`、見出し、順序と `min_rows` / `max_rows` が保存値と一致することを確認する。実際の object に含まれる追加キーは推測で再現せず、非機密なキー構造だけを記録する。
+3. 管理画面で再取込みして再読込し、repeating section 自体と2つの列が消えず、列の参照先・見出し・順序・最小/最大行数が同じであることを確認する。そのまま再保存し、detail GET ともう1度の再取込みでもフィールドが残ることを確認する。
+4. hosted form で最小 1 行が表示され、最大 3 行まで追加できることを確認する。2 行分の合成値を入力し、1 件だけ submit する。
+5. Formaloo 側の回答 read-back で複数行の実際の array/object 形を確認し、非機密なキー構造だけを記録する。管理画面の即時 pull、webhook、reconcile 後も行数・列値・順序が `answers_json` に欠落・文字列化なく残ることを確認する。
 
 ## webhook・metadata・cleanup
 
@@ -525,8 +527,8 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 
 ## PASS 記録
 
-- [ ] KS: matrix 作成 read-back、hosted 表示・submit、repeating 作成 read-back、複数行 submit、webhook・即時 pull・reconcile、cleanup が PASS。
-- [ ] Piecemaker: matrix 作成 read-back、hosted 表示・submit、repeating 作成 read-back、複数行 submit、webhook・即時 pull・reconcile、cleanup が PASS。
+- [ ] KS: matrix の bulk-only push/read-back/再保存、repeating の object pull/再取込み、hosted 表示・submit、webhook・即時 pull・reconcile、cleanup が PASS。
+- [ ] Piecemaker: matrix の bulk-only push/read-back/再保存、repeating の object pull/再取込み、hosted 表示・submit、webhook・即時 pull・reconcile、cleanup が PASS。
 - [ ] sandbox からの live 登録 0、本番 3 フォームへの接触 0、秘密値の記録 0、重複 POST 0。
 
 ---
