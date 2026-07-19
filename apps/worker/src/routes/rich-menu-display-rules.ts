@@ -12,6 +12,11 @@ import {
 } from '@line-crm/db';
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
+import {
+  RichMenuRuleReapplyConflictError,
+  createRichMenuRuleReapplyJob,
+  getLatestRichMenuRuleReapplyJob,
+} from '../services/rich-menu-rule-work.js';
 
 const richMenuDisplayRules = new Hono<Env>();
 const CONDITION_TYPES = new Set<string>(RICH_MENU_DISPLAY_CONDITION_TYPES);
@@ -91,6 +96,33 @@ richMenuDisplayRules.post('/api/rich-menu-display-rules', async (c) => {
   if ('error' in parsed) return c.json({ success: false, error: parsed.error }, 400);
   const created = await createRichMenuDisplayRule(c.env.DB, parsed.value);
   return c.json({ success: true, data: created }, 201);
+});
+
+richMenuDisplayRules.get('/api/rich-menu-display-rules/reapply/latest', async (c) => {
+  const accountId = accountIdFromQuery(c);
+  if (!accountId) return c.json({ success: false, error: 'accountId is required' }, 400);
+  if (!await getLineAccountById(c.env.DB, accountId)) return c.json({ success: false, error: 'account not found' }, 404);
+  const job = await getLatestRichMenuRuleReapplyJob(c.env.DB, accountId);
+  return c.json({ success: true, data: job });
+});
+
+richMenuDisplayRules.post('/api/rich-menu-display-rules/reapply', async (c) => {
+  const accountId = accountIdFromQuery(c);
+  if (!accountId) return c.json({ success: false, error: 'accountId is required' }, 400);
+  if (!await getLineAccountById(c.env.DB, accountId)) return c.json({ success: false, error: 'account not found' }, 404);
+  try {
+    const job = await createRichMenuRuleReapplyJob(c.env.DB, accountId);
+    return c.json({ success: true, data: job }, 202);
+  } catch (error) {
+    if (error instanceof RichMenuRuleReapplyConflictError) {
+      return c.json({
+        success: false,
+        error: 'reapply already running or started recently',
+        data: error.job,
+      }, 409);
+    }
+    throw error;
+  }
 });
 
 richMenuDisplayRules.get('/api/rich-menu-display-rules/:id', async (c) => {

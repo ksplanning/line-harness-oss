@@ -28,6 +28,7 @@ import { runEventBookingExpirer } from './services/event-booking-expirer.js';
 import { sendEventBookingNotification } from './services/event-booking-notifier.js';
 import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
+import { processRichMenuRuleWork } from './services/rich-menu-rule-work.js';
 import { authMiddleware } from './middleware/auth.js';
 import { permissionMiddleware } from './middleware/permission-middleware.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -753,6 +754,21 @@ async function scheduled(
   }
 
   await Promise.allSettled(jobs);
+
+  // 条件付きリッチメニューは 5 分 tick ごとに最大 20 人だけ処理する。
+  // タグ/metadata 変更と管理画面からの一括再適用を同じ bounded worker で扱う。
+  if (event.cron === '*/5 * * * *') {
+    try {
+      const result = await processRichMenuRuleWork(env.DB);
+      if (result.attempted > 0) {
+        console.log(
+          `[rich-menu-rules] attempted=${result.attempted} queue=${result.queueProcessed} jobsCompleted=${result.jobsCompleted}`,
+        );
+      }
+    } catch {
+      console.error('[rich-menu-rules] worker error');
+    }
+  }
 
   // form-edit-mail Phase B: 既存 */5 tick だけで bounded outbox を再送する。env 未設定は job 自体を作らない。
   // 宛先/本文/例外 message はログへ出さず、件数だけを運用証跡にする。

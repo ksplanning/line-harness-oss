@@ -145,3 +145,43 @@ describe('/api/rich-menu-display-rules CRUD', () => {
     expect(await listed.json()).toEqual({ success: true, data: [] });
   });
 });
+
+describe('/api/rich-menu-display-rules/reapply', () => {
+  test('reports the latest job, starts one bounded sweep, and blocks repeated starts', async () => {
+    await DB.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id, is_following)
+       VALUES ('friend-1', 'U-friend-1', 'acc-1', 1)`,
+    ).run();
+
+    const empty = await call('GET', '/api/rich-menu-display-rules/reapply/latest?accountId=acc-1');
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ success: true, data: null });
+
+    const started = await call('POST', '/api/rich-menu-display-rules/reapply?accountId=acc-1');
+    expect(started.status).toBe(202);
+    expect(await started.json()).toMatchObject({
+      success: true,
+      data: { accountId: 'acc-1', status: 'running', totalCount: 1, processedCount: 0 },
+    });
+
+    const latest = await call('GET', '/api/rich-menu-display-rules/reapply/latest?accountId=acc-1');
+    expect(await latest.json()).toMatchObject({
+      success: true,
+      data: { accountId: 'acc-1', status: 'running', totalCount: 1 },
+    });
+
+    const repeated = await call('POST', '/api/rich-menu-display-rules/reapply?accountId=acc-1');
+    expect(repeated.status).toBe(409);
+    expect(await repeated.json()).toMatchObject({
+      success: false,
+      error: 'reapply already running or started recently',
+      data: { accountId: 'acc-1', status: 'running' },
+    });
+  });
+
+  test('requires an existing account', async () => {
+    expect((await call('GET', '/api/rich-menu-display-rules/reapply/latest')).status).toBe(400);
+    expect((await call('POST', '/api/rich-menu-display-rules/reapply')).status).toBe(400);
+    expect((await call('POST', '/api/rich-menu-display-rules/reapply?accountId=missing')).status).toBe(404);
+  });
+});
