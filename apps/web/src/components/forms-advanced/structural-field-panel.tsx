@@ -15,6 +15,80 @@ function itemTitles(value: string): string[] {
   return value.split('\n')
 }
 
+interface TitleAlignment {
+  pairs: Array<[number, number]>
+  distance: number
+}
+
+function alignEqualTitles(oldIndexes: readonly number[], nextIndexes: readonly number[]): Array<[number, number]> {
+  const memo = new Map<string, TitleAlignment>()
+  const better = (left: TitleAlignment, right: TitleAlignment): TitleAlignment => {
+    if (left.pairs.length !== right.pairs.length) return left.pairs.length > right.pairs.length ? left : right
+    return left.distance <= right.distance ? left : right
+  }
+  const visit = (oldCursor: number, nextCursor: number): TitleAlignment => {
+    const key = `${oldCursor}:${nextCursor}`
+    const cached = memo.get(key)
+    if (cached) return cached
+    if (oldCursor >= oldIndexes.length || nextCursor >= nextIndexes.length) {
+      return { pairs: [], distance: 0 }
+    }
+
+    const tail = visit(oldCursor + 1, nextCursor + 1)
+    let best: TitleAlignment = {
+      pairs: [[oldIndexes[oldCursor], nextIndexes[nextCursor]], ...tail.pairs],
+      distance: Math.abs(oldIndexes[oldCursor] - nextIndexes[nextCursor]) + tail.distance,
+    }
+    best = better(best, visit(oldCursor + 1, nextCursor))
+    best = better(best, visit(oldCursor, nextCursor + 1))
+    memo.set(key, best)
+    return best
+  }
+  return visit(0, 0).pairs
+}
+
+function reconcileByDisplayedTitle<T>(
+  entries: readonly T[],
+  titleOf: (entry: T) => string,
+  nextTitles: readonly string[],
+): Array<T | undefined> {
+  const remaining = new Set(entries.map((_, index) => index))
+  const matches: Array<T | undefined> = Array.from({ length: nextTitles.length })
+
+  const oldIndexesByTitle = new Map<string, number[]>()
+  entries.forEach((entry, oldIndex) => {
+    const title = titleOf(entry)
+    oldIndexesByTitle.set(title, [...(oldIndexesByTitle.get(title) ?? []), oldIndex])
+  })
+  const nextIndexesByTitle = new Map<string, number[]>()
+  nextTitles.forEach((title, nextIndex) => {
+    nextIndexesByTitle.set(title, [...(nextIndexesByTitle.get(title) ?? []), nextIndex])
+  })
+
+  // 同名項目は出現順を壊さず、対応数最大・位置差最小で照合する。中間削除・並べ替え・重複名でも
+  // remote identity を別項目へ付け替えない。
+  nextIndexesByTitle.forEach((nextIndexes, title) => {
+    const oldIndexes = oldIndexesByTitle.get(title)
+    if (!oldIndexes) return
+    alignEqualTitles(oldIndexes, nextIndexes).forEach(([oldIndex, nextIndex]) => {
+      matches[nextIndex] = entries[oldIndex]
+      remaining.delete(oldIndex)
+    })
+  })
+
+  // 同じ見出しが無い箇所だけを編集（rename）とみなし、最も近い未対応項目の identity を引き継ぐ。
+  nextTitles.forEach((_, nextIndex) => {
+    if (matches[nextIndex] !== undefined || remaining.size === 0) return
+    const nearestIndex = Array.from(remaining).reduce((nearest, candidate) => (
+      Math.abs(candidate - nextIndex) < Math.abs(nearest - nextIndex) ? candidate : nearest
+    ))
+    matches[nextIndex] = entries[nearestIndex]
+    remaining.delete(nearestIndex)
+  })
+
+  return matches
+}
+
 function matrixItemTitle(key: string, value: FormalooJsonValue): string {
   if (value && typeof value === 'object' && !Array.isArray(value) && typeof value.title === 'string') {
     return value.title
@@ -91,9 +165,10 @@ export default function StructuralFieldPanel({ field, allFields, onChange }: Str
             value={groups.map((group) => group.title).join('\n')}
             onChange={(event) => {
               const titles = itemTitles(event.target.value)
+              const matchedGroups = reconcileByDisplayedTitle(groups, (group) => group.title, titles)
               setCfg({
                 matrixChoiceGroups: titles.map((title, index) => ({
-                  ...groups[index],
+                  ...matchedGroups[index],
                   title,
                 })),
               })
@@ -109,11 +184,16 @@ export default function StructuralFieldPanel({ field, allFields, onChange }: Str
             value={itemEntries.map(([key, item]) => matrixItemTitle(key, item)).join('\n')}
             onChange={(event) => {
               const titles = itemTitles(event.target.value)
+              const matchedEntries = reconcileByDisplayedTitle(
+                itemEntries,
+                ([key, item]) => matrixItemTitle(key, item),
+                titles,
+              )
               const usedKeys = new Set(itemEntries.map(([key]) => key))
               const nextItems: FormalooJsonObject = {}
 
               titles.forEach((title, index) => {
-                const current = itemEntries[index]
+                const current = matchedEntries[index]
                 const key = current?.[0] ?? generatedColumnKey(index, usedKeys)
                 usedKeys.add(key)
                 const currentValue = current?.[1]
@@ -131,6 +211,12 @@ export default function StructuralFieldPanel({ field, allFields, onChange }: Str
   }
 
   const columns = cfg.repeatingColumns ?? []
+  const setRowBound = (key: 'minRows' | 'maxRows', value: string) => {
+    const nextConfig = { ...cfg }
+    if (value === '') delete nextConfig[key]
+    else nextConfig[key] = Number(value)
+    onChange({ ...field, config: nextConfig })
+  }
   const updateColumn = (index: number, patch: Partial<(typeof columns)[number]>) => {
     setCfg({ repeatingColumns: columns.map((column, current) => current === index ? { ...column, ...patch } : column) })
   }
@@ -147,8 +233,8 @@ export default function StructuralFieldPanel({ field, allFields, onChange }: Str
             max={32767}
             step={1}
             aria-label="最小行数"
-            value={cfg.minRows ?? 1}
-            onChange={(event) => setCfg({ minRows: Number(event.target.value) })}
+            value={cfg.minRows ?? ''}
+            onChange={(event) => setRowBound('minRows', event.target.value)}
             className="w-full rounded border border-gray-300 px-2 py-1"
           />
         </div>
@@ -160,8 +246,8 @@ export default function StructuralFieldPanel({ field, allFields, onChange }: Str
             max={32767}
             step={1}
             aria-label="最大行数"
-            value={cfg.maxRows ?? 5}
-            onChange={(event) => setCfg({ maxRows: Number(event.target.value) })}
+            value={cfg.maxRows ?? ''}
+            onChange={(event) => setRowBound('maxRows', event.target.value)}
             className="w-full rounded border border-gray-300 px-2 py-1"
           />
         </div>

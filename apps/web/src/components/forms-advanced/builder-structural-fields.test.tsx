@@ -81,6 +81,82 @@ describe('matrix field builder', () => {
     })
   })
 
+  test('中間の行と列を削除しても後続の remote identity と raw metadata を付け替えない', () => {
+    const onSave = vi.fn()
+    const matrix = field('matrix', 'm', '満足度', {
+      matrixChoiceItems: {
+        a: { title: '列A', slug: 'COL_A' },
+        b: { title: '列B', slug: 'COL_B' },
+        c: { title: '列C', slug: 'COL_C', provider_extension: { opaque: true } },
+      },
+      matrixChoiceGroups: [
+        { refId: 'REF_A', slug: 'ROW_A', title: '行A', jsonKey: 'row_a' },
+        { refId: 'REF_B', slug: 'ROW_B', title: '行B', jsonKey: 'row_b' },
+        { refId: 'REF_C', slug: 'ROW_C', title: '行C', jsonKey: 'row_c' },
+      ],
+    })
+    render(<FormBuilder {...base({ initialFields: [matrix], onSave })} />)
+
+    fireEvent.change(screen.getByLabelText('行（1行に1項目）'), { target: { value: '行A\n行C' } })
+    fireEvent.change(screen.getByLabelText('列（1行に1項目）'), { target: { value: '列A\n列C' } })
+    fireEvent.click(screen.getByText('保存'))
+
+    const config = (onSave.mock.calls[0][0] as { fields: HarnessField[] }).fields[0].config
+    expect(config.matrixChoiceGroups).toEqual([
+      { refId: 'REF_A', slug: 'ROW_A', title: '行A', jsonKey: 'row_a' },
+      { refId: 'REF_C', slug: 'ROW_C', title: '行C', jsonKey: 'row_c' },
+    ])
+    expect(config.matrixChoiceItems).toEqual({
+      a: { title: '列A', slug: 'COL_A' },
+      c: { title: '列C', slug: 'COL_C', provider_extension: { opaque: true } },
+    })
+  })
+
+  test('列名を隣と同じ名前へ変更しても remote identity の並びを入れ替えない', () => {
+    const onSave = vi.fn()
+    const matrix = field('matrix', 'm', '満足度', {
+      matrixChoiceItems: {
+        a: { title: '列A', slug: 'COL_A' },
+        b: { title: '列B', slug: 'COL_B' },
+      },
+      matrixChoiceGroups: [{ title: '行' }],
+    })
+    render(<FormBuilder {...base({ initialFields: [matrix], onSave })} />)
+
+    fireEvent.change(screen.getByLabelText('列（1行に1項目）'), { target: { value: '列B\n列B' } })
+    fireEvent.click(screen.getByText('保存'))
+
+    const items = (onSave.mock.calls[0][0] as { fields: HarnessField[] }).fields[0].config.matrixChoiceItems
+    expect(Object.keys(items ?? {})).toEqual(['a', 'b'])
+    expect(items).toEqual({
+      a: { title: '列B', slug: 'COL_A' },
+      b: { title: '列B', slug: 'COL_B' },
+    })
+  })
+
+  test('同名列が複数ある状態で先頭列を削除しても残る identity の順序を保つ', () => {
+    const onSave = vi.fn()
+    const matrix = field('matrix', 'm', '満足度', {
+      matrixChoiceItems: {
+        a: { title: '列A', slug: 'COL_A' },
+        b1: { title: '列B', slug: 'COL_B1' },
+        b2: { title: '列B', slug: 'COL_B2' },
+      },
+      matrixChoiceGroups: [{ title: '行' }],
+    })
+    render(<FormBuilder {...base({ initialFields: [matrix], onSave })} />)
+
+    fireEvent.change(screen.getByLabelText('列（1行に1項目）'), { target: { value: '列B\n列B' } })
+    fireEvent.click(screen.getByText('保存'))
+
+    const items = (onSave.mock.calls[0][0] as { fields: HarnessField[] }).fields[0].config.matrixChoiceItems
+    expect(Object.keys(items ?? {})).toEqual(['b1', 'b2'])
+    expect(items).toEqual({
+      b1: { title: '列B', slug: 'COL_B1' },
+      b2: { title: '列B', slug: 'COL_B2' },
+    })
+  })
+
   test('未型付けの choice_items は別の列を編集しても raw のまま保持する', () => {
     const onSave = vi.fn()
     const matrix = field('matrix', 'm', '満足度', {
@@ -131,6 +207,32 @@ describe('matrix field builder', () => {
 })
 
 describe('repeating section builder', () => {
+  test('pull で未指定の min/max は空欄のまま保持し、数値入力後も空欄へ戻せる', () => {
+    const onSave = vi.fn()
+    const fields = [
+      field('text', 'name', '氏名'),
+      field('repeating_section', 'repeat', '参加者', {
+        repeatingColumns: [{ columnField: 'name', title: '氏名' }],
+      }),
+    ]
+    render(<FormBuilder {...base({ initialFields: fields, onSave })} />)
+
+    const canvas = screen.getByTestId('canvas')
+    fireEvent.click(within(canvas).getByText('参加者').closest('button')!)
+    const minRows = screen.getByLabelText('最小行数') as HTMLInputElement
+    const maxRows = screen.getByLabelText('最大行数') as HTMLInputElement
+    expect(minRows.value).toBe('')
+    expect(maxRows.value).toBe('')
+
+    fireEvent.change(minRows, { target: { value: '2' } })
+    fireEvent.change(minRows, { target: { value: '' } })
+    fireEvent.click(screen.getByText('保存'))
+
+    const saved = (onSave.mock.calls[0][0] as { fields: HarnessField[] }).fields[1]
+    expect(saved.config).not.toHaveProperty('minRows')
+    expect(saved.config).not.toHaveProperty('maxRows')
+  })
+
   test('min/max と列 field 構成を編集して保存する', () => {
     const onSave = vi.fn()
     const fields = [field('text', 'name', '氏名'), field('email', 'email', 'メール')]
