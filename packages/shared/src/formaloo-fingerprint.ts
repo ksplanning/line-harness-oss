@@ -19,7 +19,17 @@
 //  - fields は (position, slug) 昇順に安定ソート (順序ノイズ排除 / 既存 pull の W2 と整合)。
 // =============================================================================
 
-import { FORMALOO_TO_HARNESS_TYPE, VARIABLE_SUB_TYPES, isSystemHiddenField, type HarnessFieldType } from './formaloo-forms';
+import {
+  FORMALOO_TO_HARNESS_TYPE,
+  VARIABLE_SUB_TYPES,
+  fromFormalooField,
+  isSystemHiddenField,
+  type FormalooJsonObject,
+  type HarnessFieldType,
+  type MatrixChoiceGroup,
+  type MatrixChoiceItem,
+  type RepeatingSectionColumn,
+} from './formaloo-forms';
 import { parseImageDescription } from './form-image';
 import { extractFormOperationsSettings, type FormOperationsSettings } from './form-operations';
 
@@ -70,6 +80,16 @@ export interface ProjectedField {
   decimalPlaces?: number;
   /** choice_fetch の choices_source (非空時のみ)。 */
   choicesSource?: string;
+  /** treasure-b4-structural: matrix/repeating の pull 射影。 */
+  matrixChoiceItems?: Record<string, MatrixChoiceItem>;
+  matrixBulkChoices?: FormalooJsonObject;
+  matrixChoiceGroups?: MatrixChoiceGroup[];
+  repeatingColumns?: RepeatingSectionColumn[];
+  minRows?: number;
+  maxRows?: number;
+  hasOtherChoice?: true;
+  shuffleChoices?: true;
+  formalooConfig?: FormalooJsonObject;
 }
 
 export interface CanonicalDefinition {
@@ -137,6 +157,38 @@ function projectField(el: unknown, systemPositions: readonly number[]): Projecte
     && (typeof o.sub_type !== 'string' || !(VARIABLE_SUB_TYPES as readonly string[]).includes(o.sub_type))
   ) return null;
   if (harnessType === 'choice_fetch' && (typeof o.choices_source !== 'string' || !o.choices_source)) return null;
+
+  // treasure-b4-structural: 変換器自身で whitelist/必須形を検証し、その config だけを射影する。
+  // OpenAPI の false 既定は key を落として未載と同一 canonical にする (既存 fingerprint guard)。
+  if (harnessType === 'matrix' || harnessType === 'repeating_section') {
+    const field = fromFormalooField(o);
+    if (!field) return null;
+    const structural: ProjectedField = {
+      slug: typeof o.slug === 'string' ? o.slug : '',
+      type: formalooType,
+      title: field.label,
+      required: field.required,
+      position: projectPosition(o.position, systemPositions),
+    };
+    if (field.config.description) structural.description = field.config.description;
+    if (field.type === 'matrix') {
+      structural.matrixChoiceItems = field.config.matrixChoiceItems;
+      structural.matrixChoiceGroups = field.config.matrixChoiceGroups;
+      if (field.config.matrixBulkChoices && Object.keys(field.config.matrixBulkChoices).length > 0) {
+        structural.matrixBulkChoices = field.config.matrixBulkChoices;
+      }
+    } else {
+      structural.repeatingColumns = field.config.repeatingColumns;
+      if (field.config.minRows !== undefined) structural.minRows = field.config.minRows;
+      if (field.config.maxRows !== undefined) structural.maxRows = field.config.maxRows;
+      if (field.config.hasOtherChoice === true) structural.hasOtherChoice = true;
+    }
+    if (field.config.shuffleChoices === true) structural.shuffleChoices = true;
+    if (field.config.formalooConfig && Object.keys(field.config.formalooConfig).length > 0) {
+      structural.formalooConfig = field.config.formalooConfig;
+    }
+    return structural;
+  }
 
   const proj: ProjectedField = {
     slug: typeof o.slug === 'string' ? o.slug : '',

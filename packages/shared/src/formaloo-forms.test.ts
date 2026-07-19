@@ -1,6 +1,6 @@
 /**
  * T-B2 (F-2) — harness フォーム定義 ↔ Formaloo field/logic マッピングの round-trip 検証。
- *   - field 種別は N-13 MVP subset のみ (matrix/repeating_section 等は弾く / M-21 明示 reject)
+ *   - field 種別は whitelist subset のみ (lookup 等は弾く / M-21 明示 reject)
  *   - logic (条件分岐 R1) は harness rule ↔ Formaloo logic object を双方向変換し round-trip 一致 (N-8)
  *   - serialize whitelist: 未知プロパティは往復で漏れない (M-8)
  */
@@ -21,13 +21,12 @@ import {
   type HarnessLogicRule,
 } from './formaloo-forms';
 
-describe('formaloo-forms — field 種別 MVP subset (N-13)', () => {
-  test('入力 subset は 14 種 (treasure-b3: variable/choice_fetch additive・matrix 等は含まない)', () => {
+describe('formaloo-forms — field 種別 whitelist subset (N-13)', () => {
+  test('入力 subset は 16 種 (treasure-b4: matrix/repeating_section additive)', () => {
     expect([...FORMALOO_FIELD_TYPES].sort()).toEqual(
-      ['text', 'textarea', 'choice', 'dropdown', 'multiple_select', 'number', 'email', 'phone', 'date', 'file', 'rating', 'signature', 'variable', 'choice_fetch'].sort(),
+      ['text', 'textarea', 'choice', 'dropdown', 'multiple_select', 'number', 'email', 'phone', 'date', 'file', 'rating', 'signature', 'variable', 'choice_fetch', 'matrix', 'repeating_section'].sort(),
     );
-    expect(FORMALOO_FIELD_TYPES).not.toContain('matrix');
-    expect(FORMALOO_FIELD_TYPES).not.toContain('repeating_section');
+    expect(FORMALOO_FIELD_TYPES).not.toContain('lookup');
   });
 
   test('harness→Formaloo 種別マップ (text→short_text / textarea→long_text)', () => {
@@ -59,8 +58,8 @@ describe('formaloo-forms — validateHarnessField (M-21 明示 reject)', () => {
     const r = validateHarnessField({ id: 'f1', type: 'text', label: '名前', required: true, position: 0, config: { maxLength: 20 } });
     expect(r.ok).toBe(true);
   });
-  test('subset 外の field 種別 (matrix) は弾く', () => {
-    const r = validateHarnessField({ id: 'f1', type: 'matrix', label: 'x', required: false, position: 0, config: {} });
+  test('subset 外の field 種別 (lookup) は弾く', () => {
+    const r = validateHarnessField({ id: 'f1', type: 'lookup', label: 'x', required: false, position: 0, config: {} });
     expect(r.ok).toBe(false);
   });
   test('未知プロパティは剥がす (whitelist / M-8)', () => {
@@ -247,8 +246,8 @@ describe('formaloo-forms — fromFormalooField (builder pull / N-8 選択肢読�
     expect(fromFormalooField(readChoiceField)!.id).toBe('FS_CHOICE'); // resolver 無し = slug fallback
   });
 
-  test('未対応 type (matrix 等) は null (MVP subset のみ / M-21)', () => {
-    expect(fromFormalooField({ slug: 'x', type: 'matrix', title: 'm' })).toBeNull();
+  test('未対応 type (lookup 等) は null (whitelist subset のみ / M-21)', () => {
+    expect(fromFormalooField({ slug: 'x', type: 'lookup', title: 'm' })).toBeNull();
     expect(fromFormalooField(null)).toBeNull();
     expect(fromFormalooField('nope' as unknown)).toBeNull();
   });

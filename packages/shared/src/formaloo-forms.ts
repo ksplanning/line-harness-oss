@@ -3,8 +3,8 @@
 // -----------------------------------------------------------------------------
 // SoT (§4): Formaloo = 定義の権威。harness は authoring proxy。本モジュールは
 //   「素人向け harness モデル」↔「Formaloo API 形式」の双方向変換 + 検証を担う。
-// N-13 MVP subset: text/textarea/choice/dropdown/multiple_select/number/email/phone/date/file + 基本 logic のみ。
-//   matrix/repeating_section/linked-rows/lookup/product/oembed/ai-box は F-2b 以降 (段階スコープ)。
+// N-13 MVP subset: text/textarea/choice/dropdown/multiple_select/number/email/phone/date/file + 基本 logic。
+//   treasure-b4-structural で matrix/repeating_section を additive 対応。linked-rows/lookup/product/ai-box は未対応。
 // M-21: validateFlex 教訓 = 未知プロパティ素通し禁止。field/logic は明示 whitelist で正規化し不正を弾く。
 // M-8: serialize whitelist round-trip (worker push / builder pull の双方で同一定義)。
 // =============================================================================
@@ -34,6 +34,9 @@ export const FORMALOO_FIELD_TYPES = [
   // treasure-b3-calc-dynamic: 計算変数 + 公開 endpoint から取得する動的選択肢。
   'variable',
   'choice_fetch',
+  // treasure-b4-structural: 行列アンケート + 複数行入力コンテナ。
+  'matrix',
+  'repeating_section',
 ] as const;
 
 // treasure-b1-palette: video は装飾 (回答なし・required 常時 false) だが Formaloo type は oembed (下 HARNESS_TO_FORMALOO_TYPE)。
@@ -53,6 +56,33 @@ export type VariableSubType = (typeof VARIABLE_SUB_TYPES)[number];
 export interface ChoiceFetchItem {
   label: string;
   value: string;
+}
+
+/** OpenAPI `additionalProperties: {}` の JSON object を安全に保持するための再帰 JSON 型。 */
+export type FormalooJsonValue = string | number | boolean | null | FormalooJsonValue[] | { [key: string]: FormalooJsonValue };
+export type FormalooJsonObject = { [key: string]: FormalooJsonValue };
+
+/** matrix `choice_items` object の 1 列。未知キーは validation で剥がす。 */
+export interface MatrixChoiceItem {
+  title: string;
+  slug?: string;
+  /** OpenAPI description に明記された choice image（URL または base64 文字列）。 */
+  image?: string;
+}
+
+/** matrix `choice_groups` の 1 行。pull 済み識別子はタイトル編集後も保持する。 */
+export interface MatrixChoiceGroup {
+  refId?: string;
+  slug?: string;
+  title: string;
+  jsonKey?: string;
+}
+
+/** repeating_section `column_groups` の 1 列。columnField は harness id、push 時だけ Formaloo slug へ解決する。 */
+export interface RepeatingSectionColumn {
+  columnField: string;
+  slug?: string;
+  title: string;
 }
 export type HarnessDecorationType = (typeof DECORATION_FIELD_TYPES)[number];
 
@@ -161,6 +191,8 @@ export const HARNESS_TO_FORMALOO_TYPE: Record<HarnessFieldType, string> = {
   signature: 'signature',
   variable: 'variable',
   choice_fetch: 'choice_fetch',
+  matrix: 'matrix',
+  repeating_section: 'repeating_section',
   section: 'meta',
   page_break: 'meta',
   video: 'oembed',
@@ -248,6 +280,23 @@ export interface HarnessFieldConfig {
   choiceListId?: string;
   /** builder preview 用の最新リスト値 snapshot。Formaloo payload/fingerprint には送らない。 */
   choiceFetchItems?: ChoiceFetchItem[];
+  /** matrix の列。OpenAPI が object とするため key→{title,slug?} を whitelist 保持する。 */
+  matrixChoiceItems?: Record<string, MatrixChoiceItem>;
+  /** matrix の bulk_choices (OpenAPI additionalProperties object)。UI は編集せず pull→push 保持のみ。 */
+  matrixBulkChoices?: FormalooJsonObject;
+  /** matrix の行。 */
+  matrixChoiceGroups?: MatrixChoiceGroup[];
+  /** repeating_section の列構成。columnField は harness field id。 */
+  repeatingColumns?: RepeatingSectionColumn[];
+  /** repeating_section の最小/最大行数 (OpenAPI 0..32767)。 */
+  minRows?: number;
+  maxRows?: number;
+  /** repeating_section の「その他」列。 */
+  hasOtherChoice?: boolean;
+  /** matrix/repeating_section の選択肢順をシャッフルするか。 */
+  shuffleChoices?: boolean;
+  /** structural field の Formaloo config object。既定空 object は fingerprint から落とす。 */
+  formalooConfig?: FormalooJsonObject;
 }
 
 export interface HarnessField {
@@ -411,6 +460,98 @@ function mapFormulaReferences(formula: string, resolve?: (id: string) => string 
   });
 }
 
+const UNSAFE_JSON_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/** additionalProperties object を JSON 値だけに絞って clone。undefined/function/cycle/prototype 汚染キーは reject。 */
+function cloneFormalooJsonValue(value: unknown, seen: Set<object>): FormalooJsonValue | undefined {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'object') return undefined;
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const out: FormalooJsonValue[] = [];
+    for (const item of value) {
+      const cloned = cloneFormalooJsonValue(item, seen);
+      if (cloned === undefined) return undefined;
+      out.push(cloned);
+    }
+    seen.delete(value);
+    return out;
+  }
+  const out: FormalooJsonObject = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (UNSAFE_JSON_KEYS.has(key)) return undefined;
+    const cloned = cloneFormalooJsonValue(item, seen);
+    if (cloned === undefined) return undefined;
+    out[key] = cloned;
+  }
+  seen.delete(value);
+  return out;
+}
+
+function cloneFormalooJsonObject(value: unknown): FormalooJsonObject | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const cloned = cloneFormalooJsonValue(value, new Set());
+  return cloned && typeof cloned === 'object' && !Array.isArray(cloned) ? cloned : null;
+}
+
+function matrixChoiceItems(value: unknown): Record<string, MatrixChoiceItem> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const out: Record<string, MatrixChoiceItem> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (UNSAFE_JSON_KEYS.has(key) || !raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const item = raw as Record<string, unknown>;
+    if (typeof item.title !== 'string' || !item.title.trim()) return null;
+    if (item.slug !== undefined && typeof item.slug !== 'string') return null;
+    if (item.image !== undefined && typeof item.image !== 'string') return null;
+    out[key] = {
+      title: item.title,
+      ...(typeof item.slug === 'string' ? { slug: item.slug } : {}),
+      ...(typeof item.image === 'string' ? { image: item.image } : {}),
+    };
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function matrixChoiceGroups(value: unknown): MatrixChoiceGroup[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const out: MatrixChoiceGroup[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const group = raw as Record<string, unknown>;
+    if (typeof group.title !== 'string' || !group.title.trim()) return null;
+    for (const key of ['refId', 'slug', 'jsonKey'] as const) {
+      if (group[key] !== undefined && typeof group[key] !== 'string') return null;
+    }
+    out.push({
+      ...(typeof group.refId === 'string' ? { refId: group.refId } : {}),
+      ...(typeof group.slug === 'string' ? { slug: group.slug } : {}),
+      title: group.title,
+      ...(typeof group.jsonKey === 'string' ? { jsonKey: group.jsonKey } : {}),
+    });
+  }
+  return out;
+}
+
+function repeatingColumns(value: unknown): RepeatingSectionColumn[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const out: RepeatingSectionColumn[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const column = raw as Record<string, unknown>;
+    if (typeof column.columnField !== 'string' || !column.columnField.trim()) return null;
+    if (typeof column.title !== 'string' || !column.title.trim()) return null;
+    if (column.slug !== undefined && typeof column.slug !== 'string') return null;
+    out.push({
+      columnField: column.columnField,
+      ...(typeof column.slug === 'string' ? { slug: column.slug } : {}),
+      title: column.title,
+    });
+  }
+  return out;
+}
+
 /**
  * 未知プロパティを剥がし MVP subset に正規化。subset 外種別・不正 config は reject (M-21)。
  */
@@ -552,6 +693,43 @@ export function validateHarnessField(
     }
     config.choiceFetchItems = (items as ChoiceFetchItem[]).map((item) => ({ label: item.label, value: item.value }));
   }
+  if (rawCfg.matrixChoiceItems !== undefined) {
+    const items = matrixChoiceItems(rawCfg.matrixChoiceItems);
+    if (!items) return { ok: false, error: 'config.matrixChoiceItems must be a non-empty object of {title,slug?,image?}' };
+    config.matrixChoiceItems = items;
+  }
+  if (rawCfg.matrixBulkChoices !== undefined) {
+    const bulk = cloneFormalooJsonObject(rawCfg.matrixBulkChoices);
+    if (!bulk) return { ok: false, error: 'config.matrixBulkChoices must be a JSON object' };
+    config.matrixBulkChoices = bulk;
+  }
+  if (rawCfg.matrixChoiceGroups !== undefined) {
+    const groups = matrixChoiceGroups(rawCfg.matrixChoiceGroups);
+    if (!groups) return { ok: false, error: 'config.matrixChoiceGroups must be a non-empty {title,refId?,slug?,jsonKey?}[]' };
+    config.matrixChoiceGroups = groups;
+  }
+  if (rawCfg.repeatingColumns !== undefined) {
+    const columns = repeatingColumns(rawCfg.repeatingColumns);
+    if (!columns) return { ok: false, error: 'config.repeatingColumns must be a non-empty {columnField,slug?,title}[]' };
+    config.repeatingColumns = columns;
+  }
+  for (const key of ['minRows', 'maxRows'] as const) {
+    if (rawCfg[key] === undefined) continue;
+    if (typeof rawCfg[key] !== 'number' || !Number.isInteger(rawCfg[key]) || rawCfg[key] < 0 || rawCfg[key] > 32767) {
+      return { ok: false, error: `config.${key} must be an integer between 0 and 32767` };
+    }
+    config[key] = rawCfg[key];
+  }
+  for (const key of ['hasOtherChoice', 'shuffleChoices'] as const) {
+    if (rawCfg[key] === undefined) continue;
+    if (typeof rawCfg[key] !== 'boolean') return { ok: false, error: `config.${key} must be boolean` };
+    config[key] = rawCfg[key];
+  }
+  if (rawCfg.formalooConfig !== undefined) {
+    const structuralConfig = cloneFormalooJsonObject(rawCfg.formalooConfig);
+    if (!structuralConfig) return { ok: false, error: 'config.formalooConfig must be a JSON object' };
+    config.formalooConfig = structuralConfig;
+  }
   // treasure-b1-palette: video (oembed) は url 必須 = 空/未設定は保存 hold (reject)。
   //   空 url の oembed PATCH は 500 になるため、空 url を push 経路へ通さない (spike 実測 / honest surface)。
   if (o.type === 'video' && !config.videoUrl) {
@@ -565,6 +743,15 @@ export function validateHarnessField(
   }
   if (o.type === 'choice_fetch' && (!config.choicesSource || !isSafeImageUrl(config.choicesSource))) {
     return { ok: false, error: '動的選択肢の公開URLを選んでください' };
+  }
+  if (o.type === 'matrix' && (!config.matrixChoiceItems || !config.matrixChoiceGroups)) {
+    return { ok: false, error: '行列には1つ以上の行と列が必要です' };
+  }
+  if (o.type === 'repeating_section') {
+    if (!config.repeatingColumns) return { ok: false, error: '繰り返しセクションには1つ以上の列が必要です' };
+    if (config.minRows !== undefined && config.maxRows !== undefined && config.minRows > config.maxRows) {
+      return { ok: false, error: '繰り返しセクションの最小行数は最大行数以下にしてください' };
+    }
   }
 
   return {
@@ -625,6 +812,46 @@ export function toFormalooFieldPayload(
       position: field.position,
     };
   }
+  if (field.type === 'matrix') {
+    const payload: Record<string, unknown> = {
+      type: 'matrix',
+      title: field.label,
+      required: field.required,
+      position: field.position,
+      choice_items: field.config.matrixChoiceItems ?? {},
+      choice_groups: (field.config.matrixChoiceGroups ?? []).map((group) => ({
+        ...(group.refId !== undefined ? { ref_id: group.refId } : {}),
+        ...(group.slug !== undefined ? { slug: group.slug } : {}),
+        title: group.title,
+        ...(group.jsonKey !== undefined ? { json_key: group.jsonKey } : {}),
+      })),
+    };
+    if (field.config.description !== undefined) payload.description = field.config.description;
+    if (field.config.matrixBulkChoices !== undefined) payload.bulk_choices = field.config.matrixBulkChoices;
+    if (field.config.formalooConfig !== undefined) payload.config = field.config.formalooConfig;
+    if (field.config.shuffleChoices !== undefined) payload.shuffle_choices = field.config.shuffleChoices;
+    return payload;
+  }
+  if (field.type === 'repeating_section') {
+    const payload: Record<string, unknown> = {
+      type: 'repeating_section',
+      title: field.label,
+      required: field.required,
+      position: field.position,
+      column_groups: (field.config.repeatingColumns ?? []).map((column) => ({
+        column_field: resolveSlug?.(column.columnField) ?? column.columnField,
+        ...(column.slug !== undefined ? { slug: column.slug } : {}),
+        title: column.title,
+      })),
+    };
+    if (field.config.description !== undefined) payload.description = field.config.description;
+    if (field.config.minRows !== undefined) payload.min_rows = field.config.minRows;
+    if (field.config.maxRows !== undefined) payload.max_rows = field.config.maxRows;
+    if (field.config.hasOtherChoice !== undefined) payload.has_other_choice = field.config.hasOtherChoice;
+    if (field.config.shuffleChoices !== undefined) payload.shuffle_choices = field.config.shuffleChoices;
+    if (field.config.formalooConfig !== undefined) payload.config = field.config.formalooConfig;
+    return payload;
+  }
   if (field.type === 'variable') {
     const subType = field.config.variableSubType!;
     const payload: Record<string, unknown> = {
@@ -679,7 +906,7 @@ export function toFormalooFieldPayload(
 /**
  * Formaloo field オブジェクト (form detail の `fields_list` 要素 / read-shape) → harness field 再構成。
  * builder open 時に Formaloo→harness へ選択肢を読み戻す pull 経路 (N-8) の単一 field 変換。
- *  - MVP subset 外の Formaloo type (matrix 等) は null で捨てる (M-21)。
+ *  - 対応 subset 外の Formaloo type (lookup 等) は null で捨てる (M-21)。
  *  - choice 系は read-shape の `choice_items[]` から `title` を復元 (position 昇順 / `is_other_choice` は
  *    自由記述「その他」なので選択肢から除外)。push の [{title}] 形も position 無しで順序保持して復元できる。
  *  - 未知プロパティは無視 (whitelist / M-8)。id は resolveId?.(slug) があればそれを、無ければ Formaloo slug。
@@ -748,6 +975,67 @@ export function fromFormalooField(
       position: typeof o.position === 'number' ? o.position : 0,
       config: videoConfig,
     };
+  }
+
+  if (formalooType === 'matrix') {
+    const structuralConfig: Record<string, unknown> = {
+      matrixChoiceItems: o.choice_items,
+      matrixChoiceGroups: Array.isArray(o.choice_groups)
+        ? o.choice_groups.map((raw) => {
+          const group = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+          return {
+            ...(group.ref_id !== undefined ? { refId: group.ref_id } : {}),
+            ...(group.slug !== undefined ? { slug: group.slug } : {}),
+            title: group.title,
+            ...(group.json_key !== undefined ? { jsonKey: group.json_key } : {}),
+          };
+        })
+        : o.choice_groups,
+    };
+    if (typeof o.description === 'string') structuralConfig.description = o.description;
+    if (o.bulk_choices !== undefined) structuralConfig.matrixBulkChoices = o.bulk_choices;
+    if (o.config !== undefined) structuralConfig.formalooConfig = o.config;
+    if (typeof o.shuffle_choices === 'boolean') structuralConfig.shuffleChoices = o.shuffle_choices;
+    const parsed = validateHarnessField({
+      id,
+      type: 'matrix',
+      label: typeof o.title === 'string' ? o.title : '',
+      required: o.required === true,
+      position: typeof o.position === 'number' ? o.position : 0,
+      config: structuralConfig,
+    });
+    return parsed.ok ? parsed.field : null;
+  }
+
+  if (formalooType === 'repeating_section') {
+    const structuralConfig: Record<string, unknown> = {
+      repeatingColumns: Array.isArray(o.column_groups)
+        ? o.column_groups.map((raw) => {
+          const column = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+          const rawColumnField = typeof column.column_field === 'string' ? column.column_field : '';
+          return {
+            columnField: (rawColumnField ? resolveId?.(rawColumnField) : undefined) ?? rawColumnField,
+            ...(column.slug !== undefined ? { slug: column.slug } : {}),
+            title: column.title,
+          };
+        })
+        : o.column_groups,
+    };
+    if (typeof o.description === 'string') structuralConfig.description = o.description;
+    if (typeof o.min_rows === 'number') structuralConfig.minRows = o.min_rows;
+    if (typeof o.max_rows === 'number') structuralConfig.maxRows = o.max_rows;
+    if (typeof o.has_other_choice === 'boolean') structuralConfig.hasOtherChoice = o.has_other_choice;
+    if (typeof o.shuffle_choices === 'boolean') structuralConfig.shuffleChoices = o.shuffle_choices;
+    if (o.config !== undefined) structuralConfig.formalooConfig = o.config;
+    const parsed = validateHarnessField({
+      id,
+      type: 'repeating_section',
+      label: typeof o.title === 'string' ? o.title : '',
+      required: o.required === true,
+      position: typeof o.position === 'number' ? o.position : 0,
+      config: structuralConfig,
+    });
+    return parsed.ok ? parsed.field : null;
   }
 
   if (formalooType === 'variable') {

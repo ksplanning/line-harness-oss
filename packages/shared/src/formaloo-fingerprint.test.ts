@@ -70,12 +70,12 @@ describe('formalooDefinitionFingerprint — (b) volatile キー変化 → hash �
     ]);
     expect(noisy).toBe(base);
   });
-  it('subset 外 field (matrix 等) の追加/変更は hash に影響しない (harness に反映されないため)', async () => {
+  it('subset 外 field (lookup 等) の追加/変更は hash に影響しない (harness に反映されないため)', async () => {
     const base = await fp([rawField()]);
-    const withMatrix = await fp([rawField(), { slug: 'm1', type: 'matrix', title: '表', position: 1 }]);
-    expect(withMatrix).toBe(base);
-    const withMatrixEdited = await fp([rawField(), { slug: 'm1', type: 'matrix', title: '別の表', position: 1 }]);
-    expect(withMatrixEdited).toBe(base);
+    const withLookup = await fp([rawField(), { slug: 'm1', type: 'lookup', title: '表', position: 1 }]);
+    expect(withLookup).toBe(base);
+    const withLookupEdited = await fp([rawField(), { slug: 'm1', type: 'lookup', title: '別の表', position: 1 }]);
+    expect(withLookupEdited).toBe(base);
   });
   it('choice の is_other_choice 自由記述行は選択肢に含めない (hash 不変)', async () => {
     const plain = await fp([rawChoiceField('q1', ['A', 'B'])]);
