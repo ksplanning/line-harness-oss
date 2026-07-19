@@ -570,6 +570,10 @@ export interface FormalooSubmissionRow {
   // migration 100 (form-post-edit 弾M): Formaloo row 編集の addressable identifier (row_slug)。
   //   NULL=legacy (webhook root.slug 未 capture) → rows-list resolver で lazy backfill。
   formaloo_row_slug: string | null;
+  // migration 103 (form-edit-mail Phase B): submit-time receipt metadata。NULL は未提供/旧回答。
+  tracking_code: string | null;
+  submit_number: string | null;
+  pdf_link: string | null;
 }
 
 /** webhook 経路: formaloo_slug から台帳を引く (回答をどの harness form に紐付けるか)。 */
@@ -589,6 +593,10 @@ export interface UpsertFormalooSubmissionInput {
   //   **write-once + null backfill**: 既存が非 null なら再送の異なる非 null でも上書きしない
   //   (COALESCE(existing, excluded))。row_slug は Formaloo 側で不変ゆえ最初に capture した値を正とする。
   rowSlug?: string | null;
+  // migration 104: Formaloo webhook / row pull で取得できた submit-time receipt metadata。
+  trackingCode?: string | null;
+  submitNumber?: string | null;
+  pdfLink?: string | null;
   /** 今回の reconcile で署名 fr_id を検証できた時だけ mapper が作る metadata 更新 intent。 */
   verifiedFriendMetadataSync?: {
     friendId: string;
@@ -678,7 +686,6 @@ async function applyVerifiedFriendMetadataSync(
     input.id, input.formId, intent.friendId,
     JSON.stringify(updates),
   ).run();
-}
 
 /**
  * 回答ミラーへ冪等 upsert。PK=submission id で dedup (N-3・順序非依存)。
@@ -693,17 +700,33 @@ export async function upsertFormalooSubmission(
   const v = input.verified ? 1 : 0;
   await db
     .prepare(
-      `INSERT INTO formaloo_submissions (id, form_id, formaloo_slug, friend_id, answers_json, submitted_at, synced_at, line_processed, verified, formaloo_row_slug)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `INSERT INTO formaloo_submissions (id, form_id, formaloo_slug, friend_id, answers_json, submitted_at, synced_at, line_processed, verified, formaloo_row_slug, tracking_code, submit_number, pdf_link)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          answers_json      = excluded.answers_json,
          friend_id         = COALESCE(excluded.friend_id, formaloo_submissions.friend_id),
          submitted_at      = excluded.submitted_at,
          synced_at         = excluded.synced_at,
          verified          = MAX(formaloo_submissions.verified, excluded.verified),
-         formaloo_row_slug = COALESCE(formaloo_submissions.formaloo_row_slug, excluded.formaloo_row_slug)`,
+         formaloo_row_slug = COALESCE(formaloo_submissions.formaloo_row_slug, excluded.formaloo_row_slug),
+         tracking_code     = COALESCE(formaloo_submissions.tracking_code, excluded.tracking_code),
+         submit_number     = COALESCE(formaloo_submissions.submit_number, excluded.submit_number),
+         pdf_link          = COALESCE(formaloo_submissions.pdf_link, excluded.pdf_link)`,
     )
-    .bind(input.id, input.formId, input.formalooSlug ?? null, input.friendId ?? null, input.answersJson, input.submittedAt, now, v, input.rowSlug ?? null)
+    .bind(
+      input.id,
+      input.formId,
+      input.formalooSlug ?? null,
+      input.friendId ?? null,
+      input.answersJson,
+      input.submittedAt,
+      now,
+      v,
+      input.rowSlug ?? null,
+      input.trackingCode ?? null,
+      input.submitNumber ?? null,
+      input.pdfLink ?? null,
+    )
     .run();
   await applyVerifiedFriendMetadataSync(db, input);
 }
@@ -826,6 +849,7 @@ export interface ClaimEditMailSendInput {
   submissionId: string;
   formId: string;
   recipientHash: string;
+  providerIdempotencyKey?: string | null;
 }
 
 /**
@@ -837,11 +861,19 @@ export interface ClaimEditMailSendInput {
 export async function claimEditMailSend(db: D1Database, input: ClaimEditMailSendInput): Promise<boolean> {
   const res = await db
     .prepare(
-      `INSERT INTO formaloo_edit_mail_sends (id, submission_id, form_id, recipient_hash, requested_at, status, attempt_count)
-       VALUES (?, ?, ?, ?, ?, 'pending', 0)
+      `INSERT INTO formaloo_edit_mail_sends
+         (id, submission_id, form_id, recipient_hash, requested_at, status, attempt_count, provider_idempotency_key)
+       VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)
        ON CONFLICT(submission_id) DO NOTHING`,
     )
-    .bind(`fem_${crypto.randomUUID()}`, input.submissionId, input.formId, input.recipientHash, jstNow())
+    .bind(
+      `fem_${crypto.randomUUID()}`,
+      input.submissionId,
+      input.formId,
+      input.recipientHash,
+      jstNow(),
+      input.providerIdempotencyKey ?? null,
+    )
     .run();
   return ((res as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
 }
@@ -852,6 +884,8 @@ export interface RecordEditMailResultInput {
   providerMessageId?: string | null;
   providerIdempotencyKey?: string | null;
   error?: string | null;
+  /** claimEditMailAttempt が送信前に count を確保済みなら true (二重加算しない)。 */
+  attemptClaimed?: boolean;
 }
 
 /**
@@ -862,14 +896,68 @@ export async function recordEditMailResult(db: D1Database, input: RecordEditMail
   await db
     .prepare(
       `UPDATE formaloo_edit_mail_sends
-         SET status = ?, attempt_count = attempt_count + 1, last_attempt_at = ?,
+         SET status = ?, attempt_count = attempt_count + ?, last_attempt_at = ?,
              provider_message_id = COALESCE(?, provider_message_id),
              provider_idempotency_key = COALESCE(?, provider_idempotency_key),
              error = ?
        WHERE submission_id = ?`,
     )
-    .bind(input.status, jstNow(), input.providerMessageId ?? null, input.providerIdempotencyKey ?? null, input.error ?? null, input.submissionId)
+    .bind(
+      input.status,
+      input.attemptClaimed ? 0 : 1,
+      jstNow(),
+      input.providerMessageId ?? null,
+      input.providerIdempotencyKey ?? null,
+      input.error ?? null,
+      input.submissionId,
+    )
     .run();
+}
+
+export interface ClaimEditMailAttemptInput {
+  submissionId: string;
+  expectedAttemptCount: number;
+  maxAttempts: number;
+  providerIdempotencyKey: string;
+}
+
+/** cron/webhook 共通: provider 呼出し前に 1 attempt を CAS 確保する。 */
+export async function claimEditMailAttempt(db: D1Database, input: ClaimEditMailAttemptInput): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `UPDATE formaloo_edit_mail_sends
+         SET attempt_count = attempt_count + 1,
+             last_attempt_at = ?,
+             status = 'pending',
+             provider_idempotency_key = COALESCE(provider_idempotency_key, ?),
+             error = NULL
+       WHERE submission_id = ?
+         AND status IN ('pending', 'failed')
+         AND attempt_count = ?
+         AND attempt_count < ?`,
+    )
+    .bind(jstNow(), input.providerIdempotencyKey, input.submissionId, input.expectedAttemptCount, input.maxAttempts)
+    .run();
+  return ((res as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
+}
+
+/** bounded sweep 用: retryable outbox を古い順に上限件数だけ返す。 */
+export async function listRetryableEditMailSends(
+  db: D1Database,
+  input: { maxAttempts: number; limit: number },
+): Promise<FormalooEditMailSendRow[]> {
+  const maxAttempts = Math.max(1, Math.trunc(input.maxAttempts));
+  const limit = Math.max(1, Math.min(100, Math.trunc(input.limit)));
+  const res = await db
+    .prepare(
+      `SELECT * FROM formaloo_edit_mail_sends
+       WHERE status IN ('pending', 'failed') AND attempt_count < ?
+       ORDER BY requested_at ASC
+       LIMIT ?`,
+    )
+    .bind(maxAttempts, limit)
+    .all<FormalooEditMailSendRow>();
+  return res.results;
 }
 
 /** outbox 1 行を submission_id で引く (冪等確認 / 送達証跡表示)。 */

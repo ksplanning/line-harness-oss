@@ -12,6 +12,8 @@ import {
   saveFormalooDefinition,
   getFormalooForm,
   claimEditMailSend,
+  claimEditMailAttempt,
+  listRetryableEditMailSends,
   recordEditMailResult,
   resolveFormEmailFieldSlug,
   bumpEditLinkEpoch,
@@ -104,6 +106,16 @@ describe('form-edit-mail-link — claimEditMailSend 冪等 (T-A2 / 二重送信�
     expect(await claimEditMailSend(DB, { submissionId: 'subA', formId: 'f1', recipientHash: 'h' })).toBe(true);
     expect(await claimEditMailSend(DB, { submissionId: 'subB', formId: 'f1', recipientHash: 'h' })).toBe(true);
   });
+
+  test('provider 冪等キーを pending 作成時に永続化する', async () => {
+    await claimEditMailSend(DB, {
+      submissionId: 'sub-key',
+      formId: 'f1',
+      recipientHash: 'h',
+      providerIdempotencyKey: 'formaloo-edit-mail/sub-key',
+    });
+    expect((await getEditMailSend(DB, 'sub-key'))?.provider_idempotency_key).toBe('formaloo-edit-mail/sub-key');
+  });
 });
 
 describe('form-edit-mail-link — recordEditMailResult 状態遷移 (T-A2)', () => {
@@ -123,6 +135,47 @@ describe('form-edit-mail-link — recordEditMailResult 状態遷移 (T-A2)', () 
     expect(row?.status).toBe('failed');
     expect(row?.error).toBe('timeout');
     expect(row?.attempt_count).toBe(1);
+  });
+});
+
+describe('form-edit-mail Phase B — bounded outbox attempt', () => {
+  test('attempt を送信前に CAS claim し、同じ expected count の並行取得を拒否する', async () => {
+    await claimEditMailSend(DB, {
+      submissionId: 'sub-cas',
+      formId: 'f1',
+      recipientHash: 'h',
+      providerIdempotencyKey: 'formaloo-edit-mail/sub-cas',
+    });
+
+    expect(await claimEditMailAttempt(DB, {
+      submissionId: 'sub-cas', expectedAttemptCount: 0, maxAttempts: 3,
+      providerIdempotencyKey: 'formaloo-edit-mail/sub-cas',
+    })).toBe(true);
+    expect(await claimEditMailAttempt(DB, {
+      submissionId: 'sub-cas', expectedAttemptCount: 0, maxAttempts: 3,
+      providerIdempotencyKey: 'formaloo-edit-mail/sub-cas',
+    })).toBe(false);
+    expect((await getEditMailSend(DB, 'sub-cas'))?.attempt_count).toBe(1);
+
+    await recordEditMailResult(DB, {
+      submissionId: 'sub-cas', status: 'failed', error: 'resend_http_500', attemptClaimed: true,
+    });
+    const row = await getEditMailSend(DB, 'sub-cas');
+    expect(row?.attempt_count).toBe(1);
+    expect(row?.status).toBe('failed');
+  });
+
+  test('pending/failed のみを古い順・limit・maxAttempts 未満で列挙する', async () => {
+    for (const id of ['old', 'new', 'sent']) {
+      await claimEditMailSend(DB, { submissionId: id, formId: 'f1', recipientHash: `h-${id}` });
+    }
+    raw.prepare("UPDATE formaloo_edit_mail_sends SET requested_at='2026-07-18T00:00:00+09:00' WHERE submission_id='old'").run();
+    raw.prepare("UPDATE formaloo_edit_mail_sends SET requested_at='2026-07-19T00:00:00+09:00' WHERE submission_id='new'").run();
+    raw.prepare("UPDATE formaloo_edit_mail_sends SET status='sent' WHERE submission_id='sent'").run();
+
+    expect((await listRetryableEditMailSends(DB, { maxAttempts: 3, limit: 1 })).map((r) => r.submission_id)).toEqual(['old']);
+    raw.prepare("UPDATE formaloo_edit_mail_sends SET attempt_count=3 WHERE submission_id='old'").run();
+    expect((await listRetryableEditMailSends(DB, { maxAttempts: 3, limit: 10 })).map((r) => r.submission_id)).toEqual(['new']);
   });
 });
 
