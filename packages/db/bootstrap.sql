@@ -950,6 +950,8 @@ CREATE TABLE rich_menu_display_rules (
   rich_menu_id    TEXT NOT NULL CHECK (length(rich_menu_id) BETWEEN 1 AND 200),
   priority        INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN -1000000 AND 1000000),
   is_active       INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+  active_from     TEXT,
+  active_until    TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );

@@ -8,6 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, '..');
 const MIGRATIONS_DIR = join(PKG_ROOT, 'migrations');
 const MIGRATION_PATH = join(MIGRATIONS_DIR, '107_rich_menu_display_rules.sql');
+const SCHEDULE_MIGRATION_PATH = join(MIGRATIONS_DIR, '112_rich_menu_rule_schedule.sql');
 const BENIGN = /duplicate column name|already exists/i;
 
 function replayAll(db: Database.Database): void {
@@ -199,5 +200,40 @@ describe('migration 107 — conditional rich menu rules', () => {
 
     expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').all())
       .toEqual([{ friend_id: 'friend-1' }]);
+  });
+});
+
+describe('migration 112 — rich menu rule schedule', () => {
+  test('adds nullable active_from and active_until columns without changing existing rule defaults', () => {
+    expect(existsSync(SCHEDULE_MIGRATION_PATH)).toBe(true);
+    if (!existsSync(SCHEDULE_MIGRATION_PATH)) return;
+
+    const sql = readFileSync(SCHEDULE_MIGRATION_PATH, 'utf8');
+    expect(sql).toMatch(/ALTER TABLE rich_menu_display_rules\s+ADD COLUMN active_from TEXT/i);
+    expect(sql).toMatch(/ALTER TABLE rich_menu_display_rules\s+ADD COLUMN active_until TEXT/i);
+    expect(sql).not.toMatch(/^\s*(DROP|RENAME|UPDATE|DELETE)\b/im);
+
+    const columns = raw.prepare('PRAGMA table_info(rich_menu_display_rules)').all() as Array<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    expect(columns).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'active_from', notnull: 0, dflt_value: null }),
+      expect.objectContaining({ name: 'active_until', notnull: 0, dflt_value: null }),
+    ]));
+
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-schedule', 'ch-schedule', 'Schedule', 'token', 'secret')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_display_rules
+       (id, account_id, name, condition_type, condition_value, rich_menu_id)
+       VALUES ('rule-legacy', 'acc-schedule', '既存相当', 'tag_exists', 'tag-1', 'menu-1')`,
+    ).run();
+    expect(raw.prepare(
+      'SELECT active_from, active_until FROM rich_menu_display_rules WHERE id = ?',
+    ).get('rule-legacy')).toEqual({ active_from: null, active_until: null });
   });
 });

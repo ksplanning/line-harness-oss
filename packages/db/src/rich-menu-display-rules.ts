@@ -20,6 +20,8 @@ export interface RichMenuDisplayRule {
   richMenuId: string;
   priority: number;
   isActive: boolean;
+  activeFrom: string | null;
+  activeUntil: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -32,6 +34,8 @@ export interface CreateRichMenuDisplayRuleInput {
   richMenuId: string;
   priority: number;
   isActive: boolean;
+  activeFrom?: string | null;
+  activeUntil?: string | null;
 }
 
 export type UpdateRichMenuDisplayRuleInput = Partial<Omit<CreateRichMenuDisplayRuleInput, 'accountId'>>;
@@ -45,6 +49,8 @@ interface RichMenuDisplayRuleRow {
   rich_menu_id: string;
   priority: number;
   is_active: number;
+  active_from: string | null;
+  active_until: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +65,8 @@ function serializeRule(row: RichMenuDisplayRuleRow): RichMenuDisplayRule {
     richMenuId: row.rich_menu_id,
     priority: row.priority,
     isActive: row.is_active === 1,
+    activeFrom: row.active_from,
+    activeUntil: row.active_until,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -102,8 +110,8 @@ export async function createRichMenuDisplayRule(
   await db
     .prepare(
       `INSERT INTO rich_menu_display_rules
-       (id, account_id, name, condition_type, condition_value, rich_menu_id, priority, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, account_id, name, condition_type, condition_value, rich_menu_id, priority, is_active, active_from, active_until)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -114,6 +122,8 @@ export async function createRichMenuDisplayRule(
       input.richMenuId,
       input.priority,
       input.isActive ? 1 : 0,
+      input.activeFrom ?? null,
+      input.activeUntil ?? null,
     )
     .run();
   return (await getRichMenuDisplayRule(db, id, input.accountId))!;
@@ -133,6 +143,8 @@ export async function updateRichMenuDisplayRule(
   if (patch.richMenuId !== undefined) { fields.push('rich_menu_id = ?'); values.push(patch.richMenuId); }
   if (patch.priority !== undefined) { fields.push('priority = ?'); values.push(patch.priority); }
   if (patch.isActive !== undefined) { fields.push('is_active = ?'); values.push(patch.isActive ? 1 : 0); }
+  if (patch.activeFrom !== undefined) { fields.push('active_from = ?'); values.push(patch.activeFrom); }
+  if (patch.activeUntil !== undefined) { fields.push('active_until = ?'); values.push(patch.activeUntil); }
 
   if (fields.length > 0) {
     fields.push("updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')");

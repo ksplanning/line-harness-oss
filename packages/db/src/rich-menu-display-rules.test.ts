@@ -78,7 +78,14 @@ describe('rich menu display rule model', () => {
       isActive: true,
     });
 
-    expect(created).toMatchObject({ accountId: 'acc-1', name: '購入済み', priority: 20, isActive: true });
+    expect(created).toMatchObject({
+      accountId: 'acc-1',
+      name: '購入済み',
+      priority: 20,
+      isActive: true,
+      activeFrom: null,
+      activeUntil: null,
+    });
     expect(await getRichMenuDisplayRule(db, created.id, 'acc-2')).toBeNull();
     expect(await updateRichMenuDisplayRule(db, created.id, 'acc-2', { name: '改ざん' })).toBeNull();
     expect(await deleteRichMenuDisplayRule(db, created.id, 'acc-2')).toBe(false);
@@ -125,5 +132,29 @@ describe('rich menu display rule model', () => {
     expect(await listRichMenuDisplayRules(db, 'acc-1')).toHaveLength(125);
     expect(await listRichMenuDisplayRules(db, 'acc-1', { activeOnly: true })).toHaveLength(124);
     expect(await listRichMenuDisplayRules(db, 'acc-2')).toEqual([]);
+  });
+
+  test('round-trips optional period bounds and clears either bound explicitly', async () => {
+    const created = await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1',
+      name: '夏キャンペーン',
+      conditionType: 'tag_exists',
+      conditionValue: 'tag-1',
+      richMenuId: 'menu-summer',
+      priority: 50,
+      isActive: true,
+      activeFrom: '2026-07-20T01:00:00.000Z',
+      activeUntil: '2026-07-31T09:00:00.000Z',
+    });
+
+    expect(created).toMatchObject({
+      activeFrom: '2026-07-20T01:00:00.000Z',
+      activeUntil: '2026-07-31T09:00:00.000Z',
+    });
+    expect(await updateRichMenuDisplayRule(db, created.id, 'acc-1', { activeUntil: null }))
+      .toMatchObject({
+        activeFrom: '2026-07-20T01:00:00.000Z',
+        activeUntil: null,
+      });
   });
 });

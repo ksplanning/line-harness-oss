@@ -145,6 +145,51 @@ describe('/api/rich-menu-display-rules CRUD', () => {
     expect(await listed.json()).toEqual({ success: true, data: [] });
   });
 
+  test('treats local date-times as JST, rejects an inverted period, and clears a bound with null', async () => {
+    const createdResponse = await call('POST', '/api/rich-menu-display-rules?accountId=acc-1', {
+      ...validRule,
+      activeFrom: '2026-07-20T10:00',
+      activeUntil: '2026-07-20T18:00',
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as {
+      data: { id: string; activeFrom: string | null; activeUntil: string | null };
+    };
+    expect(created.data).toMatchObject({
+      activeFrom: '2026-07-20T01:00:00.000Z',
+      activeUntil: '2026-07-20T09:00:00.000Z',
+    });
+
+    const invertedPatch = await call(
+      'PATCH',
+      `/api/rich-menu-display-rules/${created.data.id}?accountId=acc-1`,
+      { activeUntil: '2026-07-20T09:59' },
+    );
+    expect(invertedPatch.status).toBe(400);
+    expect(await invertedPatch.json()).toMatchObject({
+      success: false,
+      error: 'activeUntil must be greater than or equal to activeFrom',
+    });
+
+    const cleared = await call(
+      'PATCH',
+      `/api/rich-menu-display-rules/${created.data.id}?accountId=acc-1`,
+      { activeUntil: null },
+    );
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({
+      data: { activeFrom: '2026-07-20T01:00:00.000Z', activeUntil: null },
+    });
+
+    for (const body of [
+      { ...validRule, activeFrom: '2026-07-20T10:00', activeUntil: '2026-07-20T09:59' },
+      { ...validRule, activeFrom: '2026-02-30T10:00' },
+    ]) {
+      const response = await call('POST', '/api/rich-menu-display-rules?accountId=acc-1', body);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+
   test('serves tags and all fields needed to edit existing rules through the rich-menu permission scope', async () => {
     await DB.prepare("INSERT INTO tags (id, name, color) VALUES ('tag-vip', 'VIP', '#00aa00')").run();
     await DB.prepare(

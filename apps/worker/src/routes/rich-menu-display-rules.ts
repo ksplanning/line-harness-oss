@@ -47,6 +47,55 @@ function normalizeConditionValue(type: RichMenuDisplayConditionType, raw: unknow
   return value && value.length <= 200 ? value : null;
 }
 
+const DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(?:(Z)|([+-])(\d{2}):(\d{2}))?$/;
+
+function normalizeScheduleDateTime(
+  field: 'activeFrom' | 'activeUntil',
+  raw: unknown,
+): { value: string | null } | { error: string } {
+  if (raw === null || raw === undefined || raw === '') return { value: null };
+  if (typeof raw !== 'string') {
+    return { error: `${field} must be a valid date-time (JST when no offset is supplied) or null` };
+  }
+  const match = DATE_TIME_PATTERN.exec(raw.trim());
+  if (!match) {
+    return { error: `${field} must be a valid date-time (JST when no offset is supplied) or null` };
+  }
+
+  const [, yearRaw, monthRaw, dayRaw, hourRaw, minuteRaw, secondRaw = '0', millisRaw = '0', zulu, sign, offsetHourRaw, offsetMinuteRaw] = match;
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  const hour = Number(hourRaw);
+  const minute = Number(minuteRaw);
+  const second = Number(secondRaw);
+  const millis = Number(millisRaw.padEnd(3, '0'));
+  const offsetHour = zulu ? 0 : offsetHourRaw === undefined ? 9 : Number(offsetHourRaw);
+  const offsetMinute = zulu ? 0 : offsetMinuteRaw === undefined ? 0 : Number(offsetMinuteRaw);
+  if (offsetHour > 23 || offsetMinute > 59) {
+    return { error: `${field} must be a valid date-time (JST when no offset is supplied) or null` };
+  }
+  const direction = sign === '-' ? -1 : 1;
+  const offsetMs = direction * (offsetHour * 60 + offsetMinute) * 60_000;
+  const wallClockMs = Date.UTC(year, month - 1, day, hour, minute, second, millis);
+  const wallClock = new Date(wallClockMs);
+  const isValidCalendarTime = month >= 1 && month <= 12
+    && day >= 1
+    && hour <= 23
+    && minute <= 59
+    && second <= 59
+    && wallClock.getUTCFullYear() === year
+    && wallClock.getUTCMonth() === month - 1
+    && wallClock.getUTCDate() === day
+    && wallClock.getUTCHours() === hour
+    && wallClock.getUTCMinutes() === minute
+    && wallClock.getUTCSeconds() === second;
+  if (!isValidCalendarTime) {
+    return { error: `${field} must be a valid date-time (JST when no offset is supplied) or null` };
+  }
+  return { value: new Date(wallClockMs - offsetMs).toISOString() };
+}
+
 function parseFullInput(
   accountId: string,
   body: unknown,
@@ -65,6 +114,17 @@ function parseFullInput(
     return { error: 'priority must be an integer between -1000000 and 1000000' };
   }
   if (typeof input.isActive !== 'boolean') return { error: 'isActive must be boolean' };
+  const activeFrom = normalizeScheduleDateTime('activeFrom', input.activeFrom);
+  if ('error' in activeFrom) return activeFrom;
+  const activeUntil = normalizeScheduleDateTime('activeUntil', input.activeUntil);
+  if ('error' in activeUntil) return activeUntil;
+  if (
+    activeFrom.value !== null
+    && activeUntil.value !== null
+    && Date.parse(activeUntil.value) < Date.parse(activeFrom.value)
+  ) {
+    return { error: 'activeUntil must be greater than or equal to activeFrom' };
+  }
   return {
     value: {
       accountId,
@@ -74,6 +134,8 @@ function parseFullInput(
       richMenuId,
       priority: input.priority as number,
       isActive: input.isActive,
+      activeFrom: activeFrom.value,
+      activeUntil: activeUntil.value,
     },
   };
 }
@@ -158,6 +220,7 @@ richMenuDisplayRules.patch('/api/rich-menu-display-rules/:id', async (c) => {
     return c.json({ success: false, error: 'body must be an object' }, 400);
   }
   const patch = body as Record<string, unknown>;
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(patch, key);
   const merged = parseFullInput(accountId, {
     name: patch.name ?? existing.name,
     conditionType: patch.conditionType ?? existing.conditionType,
@@ -165,6 +228,8 @@ richMenuDisplayRules.patch('/api/rich-menu-display-rules/:id', async (c) => {
     richMenuId: patch.richMenuId ?? existing.richMenuId,
     priority: patch.priority ?? existing.priority,
     isActive: patch.isActive ?? existing.isActive,
+    activeFrom: has('activeFrom') ? patch.activeFrom : existing.activeFrom,
+    activeUntil: has('activeUntil') ? patch.activeUntil : existing.activeUntil,
   });
   if ('error' in merged) return c.json({ success: false, error: merged.error }, 400);
   const update: UpdateRichMenuDisplayRuleInput = {
@@ -174,6 +239,8 @@ richMenuDisplayRules.patch('/api/rich-menu-display-rules/:id', async (c) => {
     richMenuId: merged.value.richMenuId,
     priority: merged.value.priority,
     isActive: merged.value.isActive,
+    activeFrom: merged.value.activeFrom,
+    activeUntil: merged.value.activeUntil,
   };
   const updated = await updateRichMenuDisplayRule(c.env.DB, existing.id, accountId, update);
   return c.json({ success: true, data: updated });
