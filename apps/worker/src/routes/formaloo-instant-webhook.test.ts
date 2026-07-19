@@ -21,20 +21,50 @@ function form(overrides: Record<string, unknown> = {}) {
 }
 
 function makeDeps(overrides: Partial<InstantWebhookRouteDeps> = {}) {
+  let clock = 1_000_000;
+  let generation = 0;
+  let processed = 0;
+  let pullLocked = false;
+  let notBefore = 0;
   const deps = {
     getForm: vi.fn(async () => form()),
-    prepareRegistration: vi.fn(async () => undefined),
-    setRegistration: vi.fn(async () => undefined),
-    disableRegistration: vi.fn(async () => undefined),
-    clearRegistration: vi.fn(async () => undefined),
+    acquireOperationLock: vi.fn(async () => true),
+    releaseOperationLock: vi.fn(async () => undefined),
+    renewOperationLock: vi.fn(async () => true),
+    markPullPending: vi.fn(async () => { generation += 1; return true; }),
+    claimPull: vi.fn(async (_db, _id, input: { token: string; nowMs: number; leaseMs: number; cooldownMs: number }) => {
+      if (!pullLocked && generation > processed && input.nowMs >= notBefore) {
+        pullLocked = true;
+        notBefore = input.nowMs + input.cooldownMs;
+        return { claimed: true as const, generation };
+      }
+      return {
+        claimed: false as const,
+        pending: generation > processed,
+        retryAt: Math.max(input.nowMs, notBefore),
+      };
+    }),
+    renewPullLock: vi.fn(async () => true),
+    completePull: vi.fn(async (_db, _id, input: { generation: number; success: boolean }) => {
+      if (input.success) processed = Math.max(processed, input.generation);
+      pullLocked = false;
+      return true;
+    }),
+    prepareRegistration: vi.fn(async (_db, _id, registration) => registration),
+    setRegistration: vi.fn(async () => true),
+    disableRegistration: vi.fn(async () => true),
+    clearRegistration: vi.fn(async () => true),
     resolveClient: vi.fn(async () => ({ marker: 'tenant-client' })),
+    deadlineClient: vi.fn((client) => client),
     ensureRegistration: vi.fn(async () => ({ ok: true as const, webhookId: 'wh_1', created: true })),
     removeRegistration: vi.fn(async () => ({ ok: true })),
     pullInputs: vi.fn(async () => []),
     upsertSubmission: vi.fn(async () => undefined),
     linkSecret: vi.fn(() => 'friend-token-secret'),
     generateSecret: vi.fn(() => 'fixed-callback-secret'),
-    now: vi.fn(() => 1_000_000),
+    generateOperationToken: vi.fn(() => 'fixed-operation-token'),
+    now: vi.fn(() => clock),
+    sleep: vi.fn(async (ms: number) => { clock += ms; }),
     ...overrides,
   };
   return deps as unknown as InstantWebhookRouteDeps & Record<string, ReturnType<typeof vi.fn>>;
@@ -72,7 +102,7 @@ describe('管理 API — form 単位 ON/OFF', () => {
     expect(deps.prepareRegistration).toHaveBeenCalledWith(env.DB, 'fa_safe', {
       secret: 'fixed-callback-secret',
       url: callbackUrl,
-    });
+    }, 'fixed-operation-token');
     expect(deps.ensureRegistration).toHaveBeenCalledWith(
       expect.objectContaining({ marker: 'tenant-client' }),
       { formSlug: 'remote-safe-form', callbackUrl },
@@ -81,7 +111,7 @@ describe('管理 API — form 単位 ON/OFF', () => {
       webhookId: 'wh_1',
       secret: 'fixed-callback-secret',
       url: callbackUrl,
-    });
+    }, 'fixed-operation-token');
   });
 
   test('remote soft-201/read-back 失敗では D1 を有効化しない', async () => {
@@ -96,6 +126,32 @@ describe('管理 API — form 単位 ON/OFF', () => {
     }, env as never);
     expect(res.status).toBe(502);
     expect(deps.setRegistration).not.toHaveBeenCalled();
+  });
+
+  test('lock ownership 喪失後は新 owner の remote 操作を妨げない', async () => {
+    const deps = makeDeps({ setRegistration: vi.fn(async () => false) });
+    const app = createFormalooInstantWebhookRoutes(deps);
+    const res = await app.request('/api/forms-advanced/fa_safe/instant-webhook', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    }, env as never);
+
+    expect(res.status).toBe(409);
+    expect(deps.removeRegistration).not.toHaveBeenCalled();
+  });
+
+  test('同じ form の操作 lock が使用中なら remote 登録を重複実行しない', async () => {
+    const deps = makeDeps({ acquireOperationLock: vi.fn(async () => false) });
+    const app = createFormalooInstantWebhookRoutes(deps);
+    const res = await app.request('/api/forms-advanced/fa_safe/instant-webhook', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    }, env as never);
+    expect(res.status).toBe(409);
+    expect(deps.ensureRegistration).not.toHaveBeenCalled();
+    expect(deps.releaseOperationLock).not.toHaveBeenCalled();
   });
 
   test('OFF は受信を先に止め、remote DELETE 成功後に local 情報を消す', async () => {
@@ -122,7 +178,34 @@ describe('管理 API — form 単位 ON/OFF', () => {
         callbackUrl: registered.formaloo_webhook_url,
       },
     );
-    expect(deps.clearRegistration).toHaveBeenCalledWith(env.DB, 'fa_safe');
+    expect(deps.clearRegistration).toHaveBeenCalledWith(env.DB, 'fa_safe', 'fixed-operation-token');
+  });
+
+  test('POST 成否不明で remote id が無くても、OFF は保存済み URL を照合してから local を消す', async () => {
+    const uncertain = form({
+      formaloo_webhook_enabled: 0,
+      formaloo_webhook_id: null,
+      formaloo_webhook_secret: 'stored-secret',
+      formaloo_webhook_url: 'https://worker.example/formaloo/instant/fa_safe/stored-secret',
+    });
+    const deps = makeDeps({ getForm: vi.fn(async () => uncertain) });
+    const app = createFormalooInstantWebhookRoutes(deps);
+    const res = await app.request('/api/forms-advanced/fa_safe/instant-webhook', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    }, env as never);
+
+    expect(res.status).toBe(200);
+    expect(deps.removeRegistration).toHaveBeenCalledWith(
+      expect.objectContaining({ marker: 'tenant-client' }),
+      {
+        formSlug: 'remote-safe-form',
+        webhookId: null,
+        callbackUrl: uncertain.formaloo_webhook_url,
+      },
+    );
+    expect(deps.clearRegistration).toHaveBeenCalledWith(env.DB, 'fa_safe', 'fixed-operation-token');
   });
 
   test('Formaloo 接続不能でも OFF は先に成立し、cleanup 情報を保持して再試行可能', async () => {
@@ -143,7 +226,7 @@ describe('管理 API — form 単位 ON/OFF', () => {
       body: JSON.stringify({ enabled: false }),
     }, env as never);
     expect(res.status).toBe(503);
-    expect(deps.disableRegistration).toHaveBeenCalledWith(env.DB, 'fa_safe');
+    expect(deps.disableRegistration).toHaveBeenCalledWith(env.DB, 'fa_safe', 'fixed-operation-token');
     expect(deps.clearRegistration).not.toHaveBeenCalled();
     expect(deps.removeRegistration).not.toHaveBeenCalled();
   });
@@ -185,24 +268,117 @@ describe('公開受信 — payload 非依存 targeted pull', () => {
 
     expect(res.status).toBe(202);
     expect(deps.resolveClient).toHaveBeenCalledWith(expect.objectContaining({ DB: env.DB }), 'fw_tenant_a');
+    expect(deps.deadlineClient).toHaveBeenCalledWith(
+      expect.objectContaining({ marker: 'tenant-client' }),
+      5_000,
+      expect.any(AbortSignal),
+    );
     expect(deps.pullInputs).toHaveBeenCalledWith(
       expect.objectContaining({ marker: 'tenant-client' }),
       registered,
-      { friendTokenSecret: 'friend-token-secret', maxPages: 1, pageSize: 25 },
+      { friendTokenSecret: 'friend-token-secret', maxPages: 1, pageSize: 10 },
     );
     expect(deps.upsertSubmission).toHaveBeenNthCalledWith(1, env.DB, first);
     expect(deps.upsertSubmission).toHaveBeenNthCalledWith(2, env.DB, second);
   });
 
-  test('同じ form の cooldown 内連打は pull 1回、応答はどちらも2xx', async () => {
-    const deps = makeDeps({ getForm: vi.fn(async () => registered) });
+  test('同じ form の in-flight 連打は爆発させず、末尾1回の pull へ繰り越す', async () => {
+    let finishFirst!: (value: never[]) => void;
+    let releaseCooldown!: () => void;
+    let clock = 1_000_000;
+    const firstPull = new Promise<never[]>((resolve) => { finishFirst = resolve; });
+    const sleep = vi.fn(async (ms: number) => {
+      await new Promise<void>((resolve) => {
+        releaseCooldown = () => {
+          clock += ms;
+          resolve();
+        };
+      });
+    });
+    const pullInputs = vi.fn()
+      .mockImplementationOnce(async () => firstPull)
+      .mockResolvedValueOnce([] as never);
+    const deps = makeDeps({
+      getForm: vi.fn(async () => registered),
+      pullInputs,
+      now: vi.fn(() => clock),
+      sleep,
+    });
     const app = createFormalooInstantWebhookRoutes(deps);
-    const first = await app.request('/formaloo/instant/fa_safe/stored-secret', { method: 'POST' }, env as never);
-    const second = await app.request('/formaloo/instant/fa_safe/stored-secret', { method: 'POST' }, env as never);
+    const waitUntil = vi.fn();
+    const executionCtx = { waitUntil, passThroughOnException: vi.fn() } as unknown as ExecutionContext;
+    const first = await app.request(
+      '/formaloo/instant/fa_safe/stored-secret',
+      { method: 'POST' },
+      env as never,
+      executionCtx,
+    );
+    await vi.waitFor(() => expect(pullInputs).toHaveBeenCalledTimes(1));
+    const second = await app.request(
+      '/formaloo/instant/fa_safe/stored-secret',
+      { method: 'POST' },
+      env as never,
+      executionCtx,
+    );
     expect(first.status).toBe(202);
     expect(second.status).toBe(202);
     expect(await second.json()).toMatchObject({ status: 'debounced' });
-    expect(deps.pullInputs).toHaveBeenCalledTimes(1);
+    expect(waitUntil).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledWith(15_000));
+    finishFirst([]);
+    await (waitUntil.mock.calls[0]?.[0] as Promise<unknown>);
+    releaseCooldown();
+    await (waitUntil.mock.calls[1]?.[0] as Promise<unknown>);
+    expect(pullInputs).toHaveBeenCalledTimes(2);
+  });
+
+  test('別 Worker isolate 相当の route instance でも D1 claim を共有し、同時 pull を1件にする', async () => {
+    let finishFirst!: (value: never[]) => void;
+    let releaseCooldown!: () => void;
+    let clock = 1_000_000;
+    const firstPull = new Promise<never[]>((resolve) => { finishFirst = resolve; });
+    const sleep = vi.fn(async (ms: number) => {
+      await new Promise<void>((resolve) => {
+        releaseCooldown = () => {
+          clock += ms;
+          resolve();
+        };
+      });
+    });
+    const pullInputs = vi.fn()
+      .mockImplementationOnce(async () => firstPull)
+      .mockResolvedValueOnce([] as never);
+    const deps = makeDeps({
+      getForm: vi.fn(async () => registered),
+      pullInputs,
+      now: vi.fn(() => clock),
+      sleep,
+    });
+    const isolateA = createFormalooInstantWebhookRoutes(deps);
+    const isolateB = createFormalooInstantWebhookRoutes(deps);
+    const waitA = vi.fn();
+    const waitB = vi.fn();
+    const ctxA = { waitUntil: waitA, passThroughOnException: vi.fn() } as unknown as ExecutionContext;
+    const ctxB = { waitUntil: waitB, passThroughOnException: vi.fn() } as unknown as ExecutionContext;
+
+    const first = await isolateA.request(
+      '/formaloo/instant/fa_safe/stored-secret', { method: 'POST' }, env as never, ctxA,
+    );
+    await vi.waitFor(() => expect(pullInputs).toHaveBeenCalledTimes(1));
+    const second = await isolateB.request(
+      '/formaloo/instant/fa_safe/stored-secret', { method: 'POST' }, env as never, ctxB,
+    );
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(202);
+    expect(await second.json()).toMatchObject({ status: 'accepted' });
+    expect(pullInputs).toHaveBeenCalledTimes(1);
+
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledWith(15_000));
+    finishFirst([]);
+    await (waitA.mock.calls[0]?.[0] as Promise<unknown>);
+    releaseCooldown();
+    await (waitB.mock.calls[0]?.[0] as Promise<unknown>);
+    expect(pullInputs).toHaveBeenCalledTimes(2);
   });
 
   test('pull が失敗しても fail-soft で202（次回 reconcile/cron が回収）', async () => {
@@ -213,5 +389,36 @@ describe('公開受信 — payload 非依存 targeted pull', () => {
     const app = createFormalooInstantWebhookRoutes(deps);
     const res = await app.request('/formaloo/instant/fa_safe/stored-secret', { method: 'POST' }, env as never);
     expect(res.status).toBe(202);
+  });
+
+  test('attempt deadline 後に遅く D1 read が戻っても provider pull を開始しない', async () => {
+    vi.useFakeTimers();
+    try {
+      let finishCurrentForm!: (value: typeof registered) => void;
+      const currentForm = new Promise<typeof registered>((resolve) => { finishCurrentForm = resolve; });
+      const getForm = vi.fn()
+        .mockResolvedValueOnce(registered)
+        .mockImplementationOnce(async () => currentForm);
+      const deps = makeDeps({ getForm });
+      const app = createFormalooInstantWebhookRoutes(deps);
+      const waitUntil = vi.fn();
+      const executionCtx = { waitUntil, passThroughOnException: vi.fn() } as unknown as ExecutionContext;
+
+      const res = await app.request(
+        '/formaloo/instant/fa_safe/stored-secret', { method: 'POST' }, env as never, executionCtx,
+      );
+      expect(res.status).toBe(202);
+      const job = waitUntil.mock.calls[0]?.[0] as Promise<unknown>;
+      await vi.advanceTimersByTimeAsync(8_000);
+      await job;
+
+      finishCurrentForm(registered);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(deps.resolveClient).not.toHaveBeenCalled();
+      expect(deps.pullInputs).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

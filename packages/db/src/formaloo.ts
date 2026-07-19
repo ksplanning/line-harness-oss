@@ -45,6 +45,13 @@ export interface FormalooForm {
   formaloo_webhook_id: string | null;
   formaloo_webhook_secret: string | null;
   formaloo_webhook_url: string | null;
+  formaloo_webhook_lock_token: string | null;
+  formaloo_webhook_lock_until: number | null;
+  formaloo_webhook_pull_generation: number;
+  formaloo_webhook_pull_processed_generation: number;
+  formaloo_webhook_pull_lock_token: string | null;
+  formaloo_webhook_pull_lock_until: number | null;
+  formaloo_webhook_pull_not_before: number;
   created_at: string;
   updated_at: string;
 }
@@ -285,6 +292,203 @@ export async function getFormalooForm(db: D1Database, id: string): Promise<Forma
 }
 
 /**
+ * form 単位の remote webhook 操作を D1 の atomic UPDATE で直列化する。
+ * 別 isolate の同時 PUT も1件だけが changes=1 になり、request 中断時は lease 満了後に回収できる。
+ */
+export async function acquireFormalooWebhookOperationLock(
+  db: D1Database,
+  formId: string,
+  input: { token: string; nowMs: number; leaseMs: number },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_lock_token = ?,
+           formaloo_webhook_lock_until = ?
+       WHERE id = ?
+         AND (formaloo_webhook_lock_token IS NULL
+           OR formaloo_webhook_lock_until IS NULL
+           OR formaloo_webhook_lock_until <= ?)`,
+    )
+    .bind(input.token, input.nowMs + input.leaseMs, formId, input.nowMs)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/** owner token が一致する request だけが lock を解除できる。 */
+export async function releaseFormalooWebhookOperationLock(
+  db: D1Database,
+  formId: string,
+  token: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_lock_token = NULL,
+           formaloo_webhook_lock_until = NULL
+       WHERE id = ? AND formaloo_webhook_lock_token = ?`,
+    )
+    .bind(formId, token)
+    .run();
+}
+
+/** 期限内の owner だけが lease を延長できる（期限切れ token の復活は禁止）。 */
+export async function renewFormalooWebhookOperationLock(
+  db: D1Database,
+  formId: string,
+  input: { token: string; nowMs: number; leaseMs: number },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_lock_until = ?
+       WHERE id = ?
+         AND formaloo_webhook_lock_token = ?
+         AND formaloo_webhook_lock_until > ?`,
+    )
+    .bind(input.nowMs + input.leaseMs, formId, input.token, input.nowMs)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/** callback 1件を durable generation として記録する。OFF/deleted は dirty 化しない。 */
+export async function markFormalooWebhookPullPending(
+  db: D1Database,
+  formId: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_pull_generation = formaloo_webhook_pull_generation + 1
+       WHERE id = ? AND deleted = 0 AND formaloo_webhook_enabled = 1`,
+    )
+    .bind(formId)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+export type FormalooWebhookPullClaim =
+  | { claimed: true; generation: number }
+  | { claimed: false; pending: boolean; retryAt: number };
+
+/**
+ * pending generation を form-global に1 worker だけが claim する。
+ * not_before が pull 開始頻度の上限、lease が中断 worker の回収境界になる。
+ */
+export async function claimFormalooWebhookPull(
+  db: D1Database,
+  formId: string,
+  input: { token: string; nowMs: number; leaseMs: number; cooldownMs: number },
+): Promise<FormalooWebhookPullClaim> {
+  const claimed = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_pull_lock_token = ?,
+           formaloo_webhook_pull_lock_until = ?,
+           formaloo_webhook_pull_not_before = ?
+       WHERE id = ?
+         AND deleted = 0
+         AND formaloo_webhook_enabled = 1
+         AND formaloo_webhook_pull_generation > formaloo_webhook_pull_processed_generation
+         AND formaloo_webhook_pull_not_before <= ?
+         AND (formaloo_webhook_pull_lock_token IS NULL
+           OR formaloo_webhook_pull_lock_until IS NULL
+           OR formaloo_webhook_pull_lock_until <= ?)
+       RETURNING formaloo_webhook_pull_generation AS generation`,
+    )
+    .bind(
+      input.token,
+      input.nowMs + input.leaseMs,
+      input.nowMs + input.cooldownMs,
+      formId,
+      input.nowMs,
+      input.nowMs,
+    )
+    .first<{ generation: number }>();
+  if (claimed) return { claimed: true, generation: claimed.generation };
+
+  const state = await db
+    .prepare(
+      `SELECT deleted, formaloo_webhook_enabled AS enabled,
+              formaloo_webhook_pull_generation AS generation,
+              formaloo_webhook_pull_processed_generation AS processed,
+              formaloo_webhook_pull_lock_token AS lock_token,
+              formaloo_webhook_pull_lock_until AS lock_until,
+              formaloo_webhook_pull_not_before AS not_before
+       FROM formaloo_forms WHERE id = ?`,
+    )
+    .bind(formId)
+    .first<{
+      deleted: number;
+      enabled: number;
+      generation: number;
+      processed: number;
+      lock_token: string | null;
+      lock_until: number | null;
+      not_before: number;
+    }>();
+  const pending = Boolean(
+    state
+    && state.deleted === 0
+    && state.enabled === 1
+    && state.generation > state.processed,
+  );
+  const activeLockUntil = state?.lock_token && (state.lock_until ?? 0) > input.nowMs
+    ? state.lock_until ?? input.nowMs
+    : input.nowMs;
+  return {
+    claimed: false,
+    pending,
+    retryAt: pending
+      ? Math.max(input.nowMs, state?.not_before ?? input.nowMs, activeLockUntil)
+      : input.nowMs,
+  };
+}
+
+/** 期限内の pull owner だけが lease を延長できる（失効 token の復活は禁止）。 */
+export async function renewFormalooWebhookPullLock(
+  db: D1Database,
+  formId: string,
+  input: { token: string; nowMs: number; leaseMs: number },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_pull_lock_until = ?
+       WHERE id = ?
+         AND formaloo_webhook_pull_lock_token = ?
+         AND formaloo_webhook_pull_lock_until > ?`,
+    )
+    .bind(input.nowMs + input.leaseMs, formId, input.token, input.nowMs)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/**
+ * claim owner だけが generation を処理済みにできる。失敗時は世代を進めず、dirty を durable に保持する。
+ */
+export async function completeFormalooWebhookPull(
+  db: D1Database,
+  formId: string,
+  input: { token: string; generation: number; success: boolean },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_webhook_pull_processed_generation = CASE
+             WHEN ? = 1 THEN MAX(formaloo_webhook_pull_processed_generation, ?)
+             ELSE formaloo_webhook_pull_processed_generation
+           END,
+           formaloo_webhook_pull_lock_token = NULL,
+           formaloo_webhook_pull_lock_until = NULL
+       WHERE id = ? AND formaloo_webhook_pull_lock_token = ?`,
+    )
+    .bind(input.success ? 1 : 0, input.generation, formId, input.token)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/**
  * read-back で submit event=true を確認できた remote webhook だけを有効登録として保存する。
  * callback secret / URL は公開 API に直返しせず、新しい受信 route の照合にだけ使う。
  */
@@ -292,8 +496,9 @@ export async function setFormalooWebhookRegistration(
   db: D1Database,
   formId: string,
   registration: { webhookId: string; secret: string; url: string },
-): Promise<void> {
-  await db
+  operationToken: string,
+): Promise<boolean> {
+  const result = await db
     .prepare(
       `UPDATE formaloo_forms
        SET formaloo_webhook_enabled = 1,
@@ -301,7 +506,7 @@ export async function setFormalooWebhookRegistration(
            formaloo_webhook_secret = ?,
            formaloo_webhook_url = ?,
            updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND formaloo_webhook_lock_token = ?`,
     )
     .bind(
       registration.webhookId,
@@ -309,65 +514,94 @@ export async function setFormalooWebhookRegistration(
       registration.url,
       jstNow(),
       formId,
+      operationToken,
     )
     .run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 /**
  * remote POST より前に callback を OFF 状態で固定する。
- * remote 作成後に D1 の最終保存だけ失敗しても、retry は同じ URL を read-back して採用できる。
+ * 既存の組は上書きしないため、retry / lease takeover でも同じ URL を read-back して採用できる。
  */
 export async function prepareFormalooWebhookRegistration(
   db: D1Database,
   formId: string,
   registration: { secret: string; url: string },
-): Promise<void> {
+  operationToken: string,
+): Promise<{ secret: string; url: string } | null> {
   await db
     .prepare(
       `UPDATE formaloo_forms
        SET formaloo_webhook_enabled = 0,
-           formaloo_webhook_secret = ?,
-           formaloo_webhook_url = ?,
+           formaloo_webhook_secret = CASE
+             WHEN formaloo_webhook_secret IS NULL OR formaloo_webhook_url IS NULL THEN ?
+             ELSE formaloo_webhook_secret
+           END,
+           formaloo_webhook_url = CASE
+             WHEN formaloo_webhook_secret IS NULL OR formaloo_webhook_url IS NULL THEN ?
+             ELSE formaloo_webhook_url
+           END,
            updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND formaloo_webhook_lock_token = ?`,
     )
-    .bind(registration.secret, registration.url, jstNow(), formId)
+    .bind(registration.secret, registration.url, jstNow(), formId, operationToken)
     .run();
+  const stored = await db
+    .prepare(
+      `SELECT formaloo_webhook_secret AS secret, formaloo_webhook_url AS url
+       FROM formaloo_forms WHERE id = ? AND formaloo_webhook_lock_token = ?`,
+    )
+    .bind(formId, operationToken)
+    .first<{ secret: string | null; url: string | null }>();
+  return stored?.secret && stored.url ? { secret: stored.secret, url: stored.url } : null;
 }
 
 /** remote cleanup が未完でも callback を即 no-op にする。id/secret/URL は再試行用に保持する。 */
 export async function disableFormalooWebhookRegistration(
   db: D1Database,
   formId: string,
-): Promise<void> {
-  await db
+  operationToken: string,
+): Promise<boolean> {
+  const result = await db
     .prepare(
       `UPDATE formaloo_forms
        SET formaloo_webhook_enabled = 0,
+           formaloo_webhook_pull_processed_generation = formaloo_webhook_pull_generation,
+           formaloo_webhook_pull_lock_token = NULL,
+           formaloo_webhook_pull_lock_until = NULL,
+           formaloo_webhook_pull_not_before = 0,
            updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND formaloo_webhook_lock_token = ?`,
     )
-    .bind(jstNow(), formId)
+    .bind(jstNow(), formId, operationToken)
     .run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 /** remote 解除成功（404=既に無しを含む）後に local 登録を既定 OFF へ戻す。 */
 export async function clearFormalooWebhookRegistration(
   db: D1Database,
   formId: string,
-): Promise<void> {
-  await db
+  operationToken: string,
+): Promise<boolean> {
+  const result = await db
     .prepare(
       `UPDATE formaloo_forms
        SET formaloo_webhook_enabled = 0,
            formaloo_webhook_id = NULL,
            formaloo_webhook_secret = NULL,
            formaloo_webhook_url = NULL,
+           formaloo_webhook_pull_processed_generation = formaloo_webhook_pull_generation,
+           formaloo_webhook_pull_lock_token = NULL,
+           formaloo_webhook_pull_lock_until = NULL,
+           formaloo_webhook_pull_not_before = 0,
            updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND formaloo_webhook_lock_token = ?`,
     )
-    .bind(jstNow(), formId)
+    .bind(jstNow(), formId, operationToken)
     .run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 export async function getFormalooFieldMap(

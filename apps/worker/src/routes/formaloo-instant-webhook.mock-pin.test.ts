@@ -45,40 +45,74 @@ describe('D-5 mock pin — 登録→受信→targeted pull→解除', () => {
       }),
       delete: vi.fn(async () => ({ ok: true as const, status: 204, data: null })),
     };
-    const mirrored: unknown[] = [];
+    const mirrored = new Map<string, unknown>();
     const pullInputs = vi.fn(async () => [{ id: 'row_from_provider_truth' }] as never);
+    let clock = 1_000_000;
+    let generation = 0;
+    let processed = 0;
+    let pullLocked = false;
+    let notBefore = 0;
     const deps: InstantWebhookRouteDeps = {
       getForm: vi.fn(async () => ({ ...state }) as never),
+      acquireOperationLock: vi.fn(async () => true),
+      releaseOperationLock: vi.fn(async () => undefined),
+      renewOperationLock: vi.fn(async () => true),
+      markPullPending: vi.fn(async () => { generation += 1; return true; }),
+      claimPull: vi.fn(async (_db, _id, input) => {
+        if (!pullLocked && generation > processed && input.nowMs >= notBefore) {
+          pullLocked = true;
+          notBefore = input.nowMs + input.cooldownMs;
+          return { claimed: true as const, generation };
+        }
+        return {
+          claimed: false as const,
+          pending: generation > processed,
+          retryAt: Math.max(input.nowMs, notBefore),
+        };
+      }),
+      renewPullLock: vi.fn(async () => true),
+      completePull: vi.fn(async (_db, _id, input) => {
+        if (input.success) processed = Math.max(processed, input.generation);
+        pullLocked = false;
+        return true;
+      }),
       prepareRegistration: vi.fn(async (_db, _id, registration) => {
         state.formaloo_webhook_enabled = 0;
         state.formaloo_webhook_secret = registration.secret;
         state.formaloo_webhook_url = registration.url;
+        return registration;
       }),
       setRegistration: vi.fn(async (_db, _id, registration) => {
         state.formaloo_webhook_enabled = 1;
         state.formaloo_webhook_id = registration.webhookId;
         state.formaloo_webhook_secret = registration.secret;
         state.formaloo_webhook_url = registration.url;
+        return true;
       }),
       disableRegistration: vi.fn(async () => {
         state.formaloo_webhook_enabled = 0;
+        return true;
       }),
       clearRegistration: vi.fn(async () => {
         state.formaloo_webhook_enabled = 0;
         state.formaloo_webhook_id = null;
         state.formaloo_webhook_secret = null;
         state.formaloo_webhook_url = null;
+        return true;
       }),
       resolveClient: vi.fn(async () => api as never),
+      deadlineClient: vi.fn((client) => client),
       ensureRegistration: ensureFormalooInstantWebhook as never,
       removeRegistration: removeFormalooInstantWebhook as never,
       pullInputs,
       upsertSubmission: vi.fn(async (_db, input) => {
-        mirrored.push(input);
+        mirrored.set((input as { id: string }).id, input);
       }),
       linkSecret: vi.fn(() => 'mock-friend-token-secret'),
       generateSecret: vi.fn(() => 'mock-callback-secret'),
-      now: vi.fn(() => 1_000_000),
+      generateOperationToken: vi.fn(() => 'mock-operation-token'),
+      now: vi.fn(() => clock),
+      sleep: vi.fn(async (ms) => { clock += ms; }),
     };
     const app = createFormalooInstantWebhookRoutes(deps);
     const env = {
@@ -107,9 +141,9 @@ describe('D-5 mock pin — 登録→受信→targeted pull→解除', () => {
     const duplicate = await app.request(callbackPath, { method: 'POST' }, env as never);
     expect(accepted.status).toBe(202);
     expect(duplicate.status).toBe(202);
-    expect(await duplicate.json()).toMatchObject({ status: 'debounced' });
-    expect(pullInputs).toHaveBeenCalledOnce();
-    expect(mirrored).toEqual([{ id: 'row_from_provider_truth' }]);
+    expect(await duplicate.json()).toMatchObject({ status: 'accepted' });
+    expect(pullInputs).toHaveBeenCalledTimes(2);
+    expect([...mirrored.values()]).toEqual([{ id: 'row_from_provider_truth' }]);
 
     const disabled = await app.request('/api/forms-advanced/fa_disposable_b5_mock/instant-webhook', {
       method: 'PUT',
@@ -122,6 +156,6 @@ describe('D-5 mock pin — 登録→受信→targeted pull→解除', () => {
 
     const afterCleanup = await app.request(callbackPath, { method: 'POST' }, env as never);
     expect(afterCleanup.status).toBe(404);
-    expect(pullInputs).toHaveBeenCalledOnce();
+    expect(pullInputs).toHaveBeenCalledTimes(2);
   });
 });

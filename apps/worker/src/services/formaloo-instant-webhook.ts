@@ -86,9 +86,25 @@ function collectionPath(formSlug: string): string {
 
 export async function removeFormalooInstantWebhook(
   client: FormalooWebhookApi,
-  input: { formSlug: string; webhookId: string; callbackUrl: string },
+  input: { formSlug: string; webhookId: string | null; callbackUrl: string },
 ): Promise<{ ok: boolean }> {
   const path = collectionPath(input.formSlug);
+  if (!input.webhookId) {
+    // POST の response/read-back が timeout した場合も URL は D1 に先行保存済み。
+    // fresh deadline の OFF request で同 URL を列挙し、成否不明の remote を忘れず回収する。
+    const listed = await client.get(path);
+    if (!listed.ok) return { ok: listed.status === 404 };
+    const matches = remoteWebhooks(listed.data).filter((webhook) => webhook.url === input.callbackUrl);
+    for (const match of matches) {
+      const removed = await removeFormalooInstantWebhook(client, {
+        formSlug: input.formSlug,
+        webhookId: match.id,
+        callbackUrl: input.callbackUrl,
+      });
+      if (!removed.ok) return { ok: false };
+    }
+    return { ok: true };
+  }
   // spike で確認した form-scoped collection DELETE を第一経路にする。URL も渡し、別 callback を対象にしない。
   const primary = await client.request('DELETE', path, {
     id: input.webhookId,
@@ -114,7 +130,19 @@ export async function ensureFormalooInstantWebhook(
 
   const matchingBefore = remoteWebhooks(before.data).filter((webhook) => webhook.url === input.callbackUrl);
   const ready = matchingBefore.find((webhook) => webhook.submitEnabled);
-  if (ready) return { ok: true, webhookId: ready.id, created: false };
+  if (ready) {
+    // lease takeover や旧実装の並行 POST が残した同 URL 登録を1件へ収束させる。
+    for (const duplicate of matchingBefore) {
+      if (duplicate.id === ready.id) continue;
+      const removed = await removeFormalooInstantWebhook(client, {
+        formSlug: input.formSlug,
+        webhookId: duplicate.id,
+        callbackUrl: input.callbackUrl,
+      });
+      if (!removed.ok) return { ok: false, reason: 'cleanup_failed' };
+    }
+    return { ok: true, webhookId: ready.id, created: false };
+  }
 
   // 同じ callback URL の soft registration が残っていたら先に除去し、重複 POST を避ける。
   for (const stale of matchingBefore) {
@@ -135,9 +163,21 @@ export async function ensureFormalooInstantWebhook(
 
   const after = await client.get(path);
   if (after.ok) {
-    const verified = remoteWebhooks(after.data)
-      .find((webhook) => webhook.url === input.callbackUrl && webhook.submitEnabled);
-    if (verified) return { ok: true, webhookId: verified.id, created: true };
+    const matchingAfter = remoteWebhooks(after.data)
+      .filter((webhook) => webhook.url === input.callbackUrl);
+    const verified = matchingAfter.find((webhook) => webhook.submitEnabled);
+    if (verified) {
+      for (const duplicate of matchingAfter) {
+        if (duplicate.id === verified.id) continue;
+        const removed = await removeFormalooInstantWebhook(client, {
+          formSlug: input.formSlug,
+          webhookId: duplicate.id,
+          callbackUrl: input.callbackUrl,
+        });
+        if (!removed.ok) return { ok: false, reason: 'cleanup_failed' };
+      }
+      return { ok: true, webhookId: verified.id, created: true };
+    }
   }
 
   // soft-201 の remote 残骸を best-effort cleanup。D1 は有効化しない。

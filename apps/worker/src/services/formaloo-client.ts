@@ -53,6 +53,8 @@ export interface FormalooConfig {
   sleep?: (ms: number) => Promise<void>;
   /** テスト注入用 token cache (default = module singleton = per-isolate)。 */
   cache?: FormalooTokenCache;
+  /** operation 全体の deadline signal。auth / backoff / API fetch の全てへ伝播する。 */
+  signal?: AbortSignal;
 }
 
 /** fail-soft な構造化 result (throw しない / N-6)。 */
@@ -70,6 +72,7 @@ export class FormalooClient {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly cache: FormalooTokenCache;
+  private readonly signal: AbortSignal | undefined;
 
   constructor(config: FormalooConfig) {
     this.apiKey = config.apiKey;
@@ -80,6 +83,28 @@ export class FormalooClient {
     this.sleep =
       config.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     this.cache = config.cache ?? moduleTokenCache;
+    this.signal = config.signal;
+  }
+
+  /**
+   * 同じ credential / token cache / injected transport を共有し、operation 全体だけに hard deadline を付ける。
+   * AbortSignal は fetch と 429 backoff の双方を止めるため、lease より短い wall-time bound になる。
+   */
+  withDeadline(timeoutMs: number, parentSignal?: AbortSignal): FormalooClient {
+    const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs)));
+    const signals = [this.signal, parentSignal, timeoutSignal]
+      .filter((signal): signal is AbortSignal => signal !== undefined);
+    const signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+    return new FormalooClient({
+      apiKey: this.apiKey,
+      apiSecret: this.apiSecret,
+      baseUrl: this.baseUrl,
+      fetchImpl: this.fetchImpl,
+      now: this.now,
+      sleep: this.sleep,
+      cache: this.cache,
+      signal,
+    });
   }
 
   /**
@@ -98,6 +123,7 @@ export class FormalooClient {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: new URLSearchParams({ grant_type: 'client_credentials' }).toString(),
+      signal: this.signal,
     });
     if (!res.ok) throw new FormalooAuthError(`Formaloo auth failed: HTTP ${res.status}`);
     // token 抽出は JSON parse (rtk jq 破損を避ける / §15.2)
@@ -152,7 +178,7 @@ export class FormalooClient {
           continue;
         }
         if (res.status === 429 && rateAttempts < FORMALOO_MAX_RATE_LIMIT_RETRIES) {
-          await this.sleep(this.backoffMs(rateAttempts, res.headers.get('retry-after')));
+          await this.sleepWithSignal(this.backoffMs(rateAttempts, res.headers.get('retry-after')));
           rateAttempts += 1;
           res = await this.doFetch(method, path, token, body);
           continue;
@@ -196,7 +222,7 @@ export class FormalooClient {
           continue;
         }
         if (res.status === 429 && rateAttempts < FORMALOO_MAX_RATE_LIMIT_RETRIES) {
-          await this.sleep(this.backoffMs(rateAttempts, res.headers.get('retry-after')));
+          await this.sleepWithSignal(this.backoffMs(rateAttempts, res.headers.get('retry-after')));
           rateAttempts += 1;
           res = await this.doFetchForm(method, path, token, form);
           continue;
@@ -228,6 +254,7 @@ export class FormalooClient {
         Authorization: `JWT ${token}`,
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: this.signal,
     });
   }
 
@@ -245,6 +272,26 @@ export class FormalooClient {
         Authorization: `JWT ${token}`,
       },
       body: form,
+      signal: this.signal,
+    });
+  }
+
+  private async sleepWithSignal(ms: number): Promise<void> {
+    if (!this.signal) return this.sleep(ms);
+    if (this.signal.aborted) throw this.signal.reason;
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(this.signal?.reason);
+      this.signal?.addEventListener('abort', onAbort, { once: true });
+      this.sleep(ms).then(
+        () => {
+          this.signal?.removeEventListener('abort', onAbort);
+          resolve();
+        },
+        (error) => {
+          this.signal?.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      );
     });
   }
 

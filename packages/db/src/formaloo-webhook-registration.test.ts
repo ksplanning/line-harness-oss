@@ -4,11 +4,18 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test } from 'vitest';
 import {
+  acquireFormalooWebhookOperationLock,
+  claimFormalooWebhookPull,
   clearFormalooWebhookRegistration,
+  completeFormalooWebhookPull,
   createFormalooForm,
   disableFormalooWebhookRegistration,
   getFormalooForm,
+  markFormalooWebhookPullPending,
   prepareFormalooWebhookRegistration,
+  releaseFormalooWebhookOperationLock,
+  renewFormalooWebhookOperationLock,
+  renewFormalooWebhookPullLock,
   setFormalooWebhookRegistration,
 } from './formaloo.js';
 
@@ -73,8 +80,26 @@ describe('migration 106 — Formaloo outbound webhook registration', () => {
       notnull: 1,
       dflt_value: '0',
     });
-    for (const name of ['formaloo_webhook_id', 'formaloo_webhook_secret', 'formaloo_webhook_url']) {
+    for (const name of [
+      'formaloo_webhook_id',
+      'formaloo_webhook_secret',
+      'formaloo_webhook_url',
+      'formaloo_webhook_lock_token',
+      'formaloo_webhook_lock_until',
+      'formaloo_webhook_pull_lock_token',
+      'formaloo_webhook_pull_lock_until',
+    ]) {
       expect(columns.find((column) => column.name === name)).toMatchObject({ notnull: 0 });
+    }
+    for (const name of [
+      'formaloo_webhook_pull_generation',
+      'formaloo_webhook_pull_processed_generation',
+      'formaloo_webhook_pull_not_before',
+    ]) {
+      expect(columns.find((column) => column.name === name)).toMatchObject({
+        notnull: 1,
+        dflt_value: '0',
+      });
     }
 
     const form = await createFormalooForm(DB, { title: '既存フォーム' });
@@ -92,15 +117,57 @@ describe('migration 106 — Formaloo outbound webhook registration', () => {
 });
 
 describe('Formaloo webhook registration DAO', () => {
+  test('form lock は同時操作を1件に絞り、owner release または期限切れ後だけ再取得できる', async () => {
+    const form = await createFormalooForm(DB, { title: '同時登録防止フォーム' });
+    await expect(acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'operation-a', nowMs: 1_000, leaseMs: 30_000,
+    })).resolves.toBe(true);
+    await expect(acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'operation-b', nowMs: 1_001, leaseMs: 30_000,
+    })).resolves.toBe(false);
+
+    await releaseFormalooWebhookOperationLock(DB, form.id, 'wrong-owner');
+    await expect(acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'operation-b', nowMs: 1_002, leaseMs: 30_000,
+    })).resolves.toBe(false);
+
+    await expect(renewFormalooWebhookOperationLock(DB, form.id, {
+      token: 'wrong-owner', nowMs: 1_002, leaseMs: 30_000,
+    })).resolves.toBe(false);
+    await expect(renewFormalooWebhookOperationLock(DB, form.id, {
+      token: 'operation-a', nowMs: 1_002, leaseMs: 30_000,
+    })).resolves.toBe(true);
+
+    await releaseFormalooWebhookOperationLock(DB, form.id, 'operation-a');
+    await expect(acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'operation-b', nowMs: 1_003, leaseMs: 30_000,
+    })).resolves.toBe(true);
+    await expect(acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'operation-c', nowMs: 31_004, leaseMs: 30_000,
+    })).resolves.toBe(true);
+  });
+
   test('remote 作成前に callback secret/URL を OFF 状態で保存し、retry URL を固定する', async () => {
     const form = await createFormalooForm(DB, { title: '登録準備フォーム' });
+    await acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'prepare-owner', nowMs: 1_000, leaseMs: 30_000,
+    });
     await prepareFormalooWebhookRegistration(DB, form.id, {
       secret: 'pending-secret',
       url: 'https://worker.example/formaloo/instant/fa_pending/pending-secret',
-    });
+    }, 'prepare-owner');
     expect(await getFormalooForm(DB, form.id)).toMatchObject({
       formaloo_webhook_enabled: 0,
       formaloo_webhook_id: null,
+      formaloo_webhook_secret: 'pending-secret',
+      formaloo_webhook_url: 'https://worker.example/formaloo/instant/fa_pending/pending-secret',
+    });
+
+    await prepareFormalooWebhookRegistration(DB, form.id, {
+      secret: 'racing-secret-must-not-win',
+      url: 'https://worker.example/formaloo/instant/fa_pending/racing-secret-must-not-win',
+    }, 'prepare-owner');
+    expect(await getFormalooForm(DB, form.id)).toMatchObject({
       formaloo_webhook_secret: 'pending-secret',
       formaloo_webhook_url: 'https://worker.example/formaloo/instant/fa_pending/pending-secret',
     });
@@ -108,12 +175,15 @@ describe('Formaloo webhook registration DAO', () => {
 
   test('read-back 済み登録情報を保存し、解除時は全情報を消す', async () => {
     const form = await createFormalooForm(DB, { title: '即時通知フォーム' });
+    await acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'set-owner', nowMs: 1_000, leaseMs: 30_000,
+    });
 
-    await setFormalooWebhookRegistration(DB, form.id, {
+    await expect(setFormalooWebhookRegistration(DB, form.id, {
       webhookId: 'wh_remote_1',
       secret: 'generated-per-form-secret',
       url: 'https://worker.example/formaloo/instant/fa_1/generated-per-form-secret',
-    });
+    }, 'set-owner')).resolves.toBe(true);
     expect(await getFormalooForm(DB, form.id)).toMatchObject({
       formaloo_webhook_enabled: 1,
       formaloo_webhook_id: 'wh_remote_1',
@@ -121,7 +191,7 @@ describe('Formaloo webhook registration DAO', () => {
       formaloo_webhook_url: 'https://worker.example/formaloo/instant/fa_1/generated-per-form-secret',
     });
 
-    await clearFormalooWebhookRegistration(DB, form.id);
+    await expect(clearFormalooWebhookRegistration(DB, form.id, 'set-owner')).resolves.toBe(true);
     expect(await getFormalooForm(DB, form.id)).toMatchObject({
       formaloo_webhook_enabled: 0,
       formaloo_webhook_id: null,
@@ -132,17 +202,103 @@ describe('Formaloo webhook registration DAO', () => {
 
   test('remote DELETE 失敗時は受信だけ OFF にし、再 cleanup 用 id/secret/URL は保持する', async () => {
     const form = await createFormalooForm(DB, { title: '解除再試行フォーム' });
+    await acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'disable-owner', nowMs: 1_000, leaseMs: 30_000,
+    });
     await setFormalooWebhookRegistration(DB, form.id, {
       webhookId: 'wh_retry',
       secret: 'retry-secret',
       url: 'https://worker.example/formaloo/instant/fa_retry/retry-secret',
-    });
-    await disableFormalooWebhookRegistration(DB, form.id);
+    }, 'disable-owner');
+    await expect(disableFormalooWebhookRegistration(DB, form.id, 'disable-owner')).resolves.toBe(true);
     expect(await getFormalooForm(DB, form.id)).toMatchObject({
       formaloo_webhook_enabled: 0,
       formaloo_webhook_id: 'wh_retry',
       formaloo_webhook_secret: 'retry-secret',
       formaloo_webhook_url: 'https://worker.example/formaloo/instant/fa_retry/retry-secret',
     });
+  });
+
+  test('期限切れ owner の最終 write は fencing token で拒否し、新しい OFF 決定を上書きしない', async () => {
+    const form = await createFormalooForm(DB, { title: 'fencing フォーム' });
+    await acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'stale-enable', nowMs: 1_000, leaseMs: 100,
+    });
+    await prepareFormalooWebhookRegistration(DB, form.id, {
+      secret: 'stable-secret',
+      url: 'https://worker.example/formaloo/instant/fencing/stable-secret',
+    }, 'stale-enable');
+    await acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'new-disable', nowMs: 1_101, leaseMs: 100,
+    });
+    await disableFormalooWebhookRegistration(DB, form.id, 'new-disable');
+
+    await expect(setFormalooWebhookRegistration(DB, form.id, {
+      webhookId: 'wh_stale',
+      secret: 'stable-secret',
+      url: 'https://worker.example/formaloo/instant/fencing/stable-secret',
+    }, 'stale-enable')).resolves.toBe(false);
+    expect(await getFormalooForm(DB, form.id)).toMatchObject({ formaloo_webhook_enabled: 0 });
+  });
+
+  test('pull 世代は callback を永続 dirty 化し、複数 worker の claim を form 単位で1件にする', async () => {
+    const form = await createFormalooForm(DB, { title: 'pull scheduler フォーム' });
+    await acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'enable-owner', nowMs: 1_000, leaseMs: 30_000,
+    });
+    await setFormalooWebhookRegistration(DB, form.id, {
+      webhookId: 'wh_pull', secret: 'pull-secret',
+      url: 'https://worker.example/formaloo/instant/pull/pull-secret',
+    }, 'enable-owner');
+
+    await expect(markFormalooWebhookPullPending(DB, form.id)).resolves.toBe(true);
+    await expect(claimFormalooWebhookPull(DB, form.id, {
+      token: 'pull-a', nowMs: 10_000, leaseMs: 20_000, cooldownMs: 15_000,
+    })).resolves.toEqual({ claimed: true, generation: 1 });
+    await expect(markFormalooWebhookPullPending(DB, form.id)).resolves.toBe(true);
+    await expect(claimFormalooWebhookPull(DB, form.id, {
+      token: 'pull-b', nowMs: 10_001, leaseMs: 20_000, cooldownMs: 15_000,
+    })).resolves.toMatchObject({ claimed: false, pending: true });
+
+    await completeFormalooWebhookPull(DB, form.id, {
+      token: 'pull-a', generation: 1, success: true,
+    });
+    await expect(claimFormalooWebhookPull(DB, form.id, {
+      token: 'pull-b', nowMs: 24_999, leaseMs: 20_000, cooldownMs: 15_000,
+    })).resolves.toEqual({ claimed: false, pending: true, retryAt: 25_000 });
+    await expect(claimFormalooWebhookPull(DB, form.id, {
+      token: 'pull-b', nowMs: 25_000, leaseMs: 20_000, cooldownMs: 15_000,
+    })).resolves.toEqual({ claimed: true, generation: 2 });
+    await completeFormalooWebhookPull(DB, form.id, {
+      token: 'pull-b', generation: 2, success: true,
+    });
+    await expect(claimFormalooWebhookPull(DB, form.id, {
+      token: 'pull-c', nowMs: 40_000, leaseMs: 20_000, cooldownMs: 15_000,
+    })).resolves.toEqual({ claimed: false, pending: false, retryAt: 40_000 });
+  });
+
+  test('pull owner だけが lease を延長でき、失効 token は復活できない', async () => {
+    const form = await createFormalooForm(DB, { title: 'pull lease 更新フォーム' });
+    await acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'enable-owner', nowMs: 1_000, leaseMs: 30_000,
+    });
+    await setFormalooWebhookRegistration(DB, form.id, {
+      webhookId: 'wh_pull', secret: 'pull-secret',
+      url: 'https://worker.example/formaloo/instant/pull/pull-secret',
+    }, 'enable-owner');
+    await markFormalooWebhookPullPending(DB, form.id);
+    await claimFormalooWebhookPull(DB, form.id, {
+      token: 'pull-owner', nowMs: 10_000, leaseMs: 12_000, cooldownMs: 15_000,
+    });
+
+    await expect(renewFormalooWebhookPullLock(DB, form.id, {
+      token: 'wrong-owner', nowMs: 10_001, leaseMs: 12_000,
+    })).resolves.toBe(false);
+    await expect(renewFormalooWebhookPullLock(DB, form.id, {
+      token: 'pull-owner', nowMs: 10_001, leaseMs: 12_000,
+    })).resolves.toBe(true);
+    await expect(renewFormalooWebhookPullLock(DB, form.id, {
+      token: 'pull-owner', nowMs: 22_002, leaseMs: 12_000,
+    })).resolves.toBe(false);
   });
 });

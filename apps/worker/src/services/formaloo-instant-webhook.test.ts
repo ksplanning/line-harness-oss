@@ -73,6 +73,27 @@ describe('ensureFormalooInstantWebhook', () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 
+  test('同じ URL の並行登録残骸が複数あれば1件へ収束してから採用する', async () => {
+    const api = client({
+      gets: [ok({ data: { webhooks: [
+        { slug: 'wh_keep', url: callbackUrl, form_submit_events: true },
+        { slug: 'wh_duplicate', url: callbackUrl, form_submit_events: true },
+      ] } })],
+      requests: [ok()],
+    });
+
+    await expect(ensureFormalooInstantWebhook(api, { formSlug, callbackUrl })).resolves.toEqual({
+      ok: true,
+      webhookId: 'wh_keep',
+      created: false,
+    });
+    expect(api.request).toHaveBeenCalledWith('DELETE', collectionPath, {
+      id: 'wh_duplicate',
+      url: callbackUrl,
+    });
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
   test('POST 201 でも read-back の submit flag が false なら soft-201 として失敗する', async () => {
     const api = client({
       gets: [
@@ -126,5 +147,26 @@ describe('removeFormalooInstantWebhook', () => {
       callbackUrl,
     })).resolves.toEqual({ ok: true });
     expect(api.delete).toHaveBeenCalledWith(`${collectionPath}wh_gone/`);
+  });
+
+  test('POST 成否不明で id が無くても、保存済み URL の登録を列挙して解除する', async () => {
+    const api = client({
+      gets: [ok({ data: { webhooks: [
+        { slug: 'wh_uncertain', url: callbackUrl, form_submit_events: true },
+        { slug: 'wh_other', url: 'https://worker.example/other', form_submit_events: true },
+      ] } })],
+      requests: [ok()],
+    });
+    await expect(removeFormalooInstantWebhook(api, {
+      formSlug,
+      webhookId: null,
+      callbackUrl,
+    })).resolves.toEqual({ ok: true });
+    expect(api.get).toHaveBeenCalledWith(collectionPath);
+    expect(api.request).toHaveBeenCalledTimes(1);
+    expect(api.request).toHaveBeenCalledWith('DELETE', collectionPath, {
+      id: 'wh_uncertain',
+      url: callbackUrl,
+    });
   });
 });

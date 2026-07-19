@@ -172,6 +172,54 @@ describe('FormalooClient — rate-limit backoff (bounded / 地雷#2)', () => {
   });
 });
 
+describe('FormalooClient — operation deadline', () => {
+  test('withDeadline は停止した API fetch を AbortSignal で中断して fail-soft に返す', async () => {
+    let seenSignal: AbortSignal | null = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes('authorization-token')) return tokenRes();
+      seenSignal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        seenSignal?.addEventListener('abort', () => reject(seenSignal?.reason), { once: true });
+      });
+    }) as typeof fetch;
+    const client = new FormalooClient({
+      apiKey: KEY,
+      apiSecret: SECRET,
+      fetchImpl,
+      cache: new Map(),
+    });
+
+    const result = await client.withDeadline(10).get('/v3.0/forms/');
+    expect(result).toMatchObject({ ok: false, status: 0 });
+    expect(seenSignal?.aborted).toBe(true);
+  });
+
+  test('parent attempt の abort も deadline client の API fetch へ伝播する', async () => {
+    const parent = new AbortController();
+    let started!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => { started = resolve; });
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes('authorization-token')) return tokenRes();
+      started();
+      const signal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    }) as typeof fetch;
+    const client = new FormalooClient({
+      apiKey: KEY,
+      apiSecret: SECRET,
+      fetchImpl,
+      cache: new Map(),
+    });
+
+    const pending = client.withDeadline(10_000, parent.signal).get('/v3.0/forms/');
+    await fetchStarted;
+    parent.abort(new Error('attempt expired'));
+    await expect(pending).resolves.toMatchObject({ ok: false, status: 0, error: 'attempt expired' });
+  });
+});
+
 describe('FormalooClient — fail-soft (N-6)', () => {
   test('ネットワーク例外は throw せず {ok:false} を返す', async () => {
     const { client } = makeClient({ api: [async () => { throw new Error('network down'); }] });
