@@ -134,6 +134,50 @@ describe('個別チャット履歴の拡大表示', () => {
     expect(within(expandedHistory).getByText('Flex本文')).toBeTruthy()
   })
 
+  it('遅いメディア読込で高さが増えても、閲覧者が上へ動くまでは最新位置を保つ', async () => {
+    let contentHeight = 1000
+    let notifyResize: (() => void) | undefined
+    class ResizeObserverMock {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = () => callback([], this as unknown as ResizeObserver)
+      }
+
+      observe = vi.fn()
+      unobserve = vi.fn()
+      disconnect = vi.fn()
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverMock)
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.getAttribute('data-testid') === 'chat-message-history' ? contentHeight : 0 },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() { return this.getAttribute('data-testid') === 'chat-message-history' ? 300 : 0 },
+    })
+
+    try {
+      const dialog = await openExpandedHistory()
+      const history = within(dialog).getByTestId('chat-message-history') as HTMLDivElement
+      expect(history.scrollTop).toBe(1000)
+      expect(notifyResize).toBeTypeOf('function')
+
+      contentHeight = 1400
+      notifyResize?.()
+      expect(history.scrollTop).toBe(1400)
+
+      history.scrollTop = 100
+      fireEvent.scroll(history)
+      contentHeight = 1600
+      notifyResize?.()
+      expect(history.scrollTop).toBe(100)
+    } finally {
+      delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight
+      delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('× ボタンで閉じ、元の狭い表示を残す', async () => {
     await openExpandedHistory()
 

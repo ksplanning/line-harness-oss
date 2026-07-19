@@ -440,6 +440,7 @@ export default function ChatsPage() {
   const expandedHistoryDialogRef = useRef<HTMLElement | null>(null)
   const expandHistoryButtonRef = useRef<HTMLButtonElement | null>(null)
   const closeExpandedHistoryButtonRef = useRef<HTMLButtonElement | null>(null)
+  const expandedHistoryUserScrolledRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const closeExpandedHistory = useCallback(() => {
@@ -667,18 +668,24 @@ export default function ChatsPage() {
     if (!isHistoryExpanded || !chatDetail?.messages?.length) return
     const el = expandedMessagesScrollRef.current
     if (!el) return
-    el.scrollTop = el.scrollHeight
-    let userScrolled = false
+    expandedHistoryUserScrolledRef.current = false
+    const keepAtLatest = () => {
+      if (!expandedHistoryUserScrolledRef.current) el.scrollTop = el.scrollHeight
+    }
+    keepAtLatest()
     const onScroll = () => {
-      if (el.scrollHeight - el.scrollTop - el.clientHeight > 20) userScrolled = true
+      expandedHistoryUserScrolledRef.current = el.scrollHeight - el.scrollTop - el.clientHeight > 20
     }
     el.addEventListener('scroll', onScroll, { passive: true })
-    const id = window.setTimeout(() => {
-      if (!userScrolled) el.scrollTop = el.scrollHeight
-    }, 150)
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(keepAtLatest)
+    Array.from(el.children).forEach((child) => resizeObserver?.observe(child))
+    const id = window.setTimeout(keepAtLatest, 150)
     return () => {
       window.clearTimeout(id)
       el.removeEventListener('scroll', onScroll)
+      resizeObserver?.disconnect()
     }
   }, [chatDetail?.id, chatDetail?.messages?.length, isHistoryExpanded])
 
