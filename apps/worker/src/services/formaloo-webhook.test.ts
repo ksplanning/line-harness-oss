@@ -303,6 +303,32 @@ describe('parseWebhookPayload — S-1 実 Formaloo serialization live-confirm (r
     expect(p!.answers).toEqual({ RUEBj39b: token, TvIxv7XD: 'テスト太郎', oChQGxYk: 'テスト太郎' });
   });
 
+  test('D-3: matrix object / repeating array を opaque な回答値として無変換で保持し fr_id 解決も壊さない', async () => {
+    const { payload } = await realPayload();
+    // 実回答の exact shape は host 実測待ち。ここでは provider が返す JSON 構造を
+    // flatten / String 化せず透過保存する契約だけを固定する。
+    const matrixValue = {
+      row_a: { col_yes: true, col_note: '第一希望' },
+      row_b: { col_yes: false, col_note: null },
+    };
+    const repeatingValue = [
+      { name: '申込者A', quantity: 1 },
+      { name: '申込者B', quantity: 2 },
+    ];
+    Object.assign(payload.data, {
+      matrix_field_slug: matrixValue,
+      repeating_field_slug: repeatingValue,
+    });
+
+    const p = await parseWebhookPayload(payload, now, { friendTokenSecret: SECRET });
+
+    expect(p!.answers.matrix_field_slug).toEqual(matrixValue);
+    expect(p!.answers.repeating_field_slug).toEqual(repeatingValue);
+    expect(p!.answers.oChQGxYk).toBe('テスト太郎'); // 既存 scalar は不変
+    expect(p!.friendId).toBe(FRIEND);
+    expect(p!.rowSlug).toBe('IdfWDQcstLvY8nC8YmDI');
+  });
+
   test('fr_id 署名を rendered_data 配列 (alias==="fr_id") の value から復元 (本番 payload 実測)', async () => {
     const { payload } = await realPayload();
     const p = await parseWebhookPayload(payload, now, { friendTokenSecret: SECRET });

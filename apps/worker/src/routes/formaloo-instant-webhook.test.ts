@@ -3,6 +3,7 @@ import {
   createFormalooInstantWebhookRoutes,
   type InstantWebhookRouteDeps,
 } from './formaloo-instant-webhook.js';
+import { pullFriendReconcileInputs } from '../services/formaloo-row-edit.js';
 
 function form(overrides: Record<string, unknown> = {}) {
   return {
@@ -280,6 +281,62 @@ describe('公開受信 — payload 非依存 targeted pull', () => {
     );
     expect(deps.upsertSubmission).toHaveBeenNthCalledWith(1, env.DB, first);
     expect(deps.upsertSubmission).toHaveBeenNthCalledWith(2, env.DB, second);
+  });
+
+  test('D-3: callback 後の実 mapper pull が matrix/repeating を answersJson のまま upsert へ渡す', async () => {
+    const matrixValue = {
+      row_a: { option_1: true, option_2: false },
+      row_b: { option_1: false, option_2: true },
+    };
+    const repeatingValue = [
+      { order: 'A', count: 1 },
+      { order: 'B', count: 2 },
+    ];
+    const rowsClient = {
+      get: vi.fn(async () => ({
+        ok: true as const,
+        status: 200,
+        data: {
+          data: {
+            rows: [{
+              slug: 'instant_structural_row',
+              created_at: '2026-07-20T11:00:00Z',
+              data: {
+                matrix_field_slug: matrixValue,
+                repeating_field_slug: repeatingValue,
+                legacy_text_slug: '既存値',
+              },
+            }],
+          },
+        },
+      })),
+    };
+    const pullInputs = vi.fn(async (
+      _client: Parameters<InstantWebhookRouteDeps['pullInputs']>[0],
+      currentForm: Parameters<InstantWebhookRouteDeps['pullInputs']>[1],
+      opts: Parameters<InstantWebhookRouteDeps['pullInputs']>[2],
+    ) => pullFriendReconcileInputs(rowsClient, currentForm, opts));
+    const deps = makeDeps({
+      getForm: vi.fn(async () => registered),
+      pullInputs: pullInputs as InstantWebhookRouteDeps['pullInputs'],
+    });
+    const app = createFormalooInstantWebhookRoutes(deps);
+
+    const res = await app.request('/formaloo/instant/fa_safe/stored-secret', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answers: { matrix_field_slug: 'forged callback value' } }),
+    }, env as never);
+
+    expect(res.status).toBe(202);
+    expect(rowsClient.get).toHaveBeenCalledWith('/v3.0/forms/remote-safe-form/rows/?page=1&page_size=10');
+    expect(deps.upsertSubmission).toHaveBeenCalledTimes(1);
+    const input = deps.upsertSubmission.mock.calls[0][1] as { answersJson: string };
+    expect(JSON.parse(input.answersJson)).toEqual({
+      matrix_field_slug: matrixValue,
+      repeating_field_slug: repeatingValue,
+      legacy_text_slug: '既存値',
+    });
   });
 
   test('同じ form の in-flight 連打は爆発させず、末尾1回の pull へ繰り越す', async () => {

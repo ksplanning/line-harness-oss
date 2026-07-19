@@ -344,6 +344,43 @@ describe('D-2 /rows reconcile — 署名 fr_id の mapped row を friend.metadat
     });
   });
 
+  test('D-3: matrix/repeating を mirror と /rows response に無変換で残し scalar status metadata も反映する', async () => {
+    seedMappedForm('fa1', 'GMOxoMtK');
+    seedFriend('frA', { 入金確認: '未' });
+    const matrixValue = {
+      row_a: { morning: true, evening: false },
+      row_b: { morning: false, evening: true },
+    };
+    const repeatingValue = [
+      { attendee: 'A', meal: '通常' },
+      { attendee: 'B', meal: 'ベジタリアン' },
+    ];
+    const row = await signedMappedRow('structuralRow', 'frA', '済');
+    Object.assign(row.data as Record<string, unknown>, {
+      matrix_field_slug: matrixValue,
+      repeating_field_slug: repeatingValue,
+    });
+    stubFormaloo((page) => (page === 1 ? [row] : []));
+
+    const res = await call('GET', '/api/forms-advanced/fa1/rows', {
+      FORMALOO_FRIEND_TOKEN_SECRET: FRIEND_TOKEN_SECRET,
+    });
+
+    expect(res.status).toBe(200);
+    const response = await res.json() as {
+      data: { rows: Array<{ id: string; answers: Record<string, unknown> }> };
+    };
+    const responseRow = response.data.rows.find((candidate) => candidate.id === 'structuralRow');
+    expect(responseRow?.answers.matrix_field_slug).toEqual(matrixValue);
+    expect(responseRow?.answers.repeating_field_slug).toEqual(repeatingValue);
+
+    const mirrored = JSON.parse(mirrorRow('structuralRow')!.answers_json) as Record<string, unknown>;
+    expect(mirrored.matrix_field_slug).toEqual(matrixValue);
+    expect(mirrored.repeating_field_slug).toEqual(repeatingValue);
+    expect(mirrorRow('structuralRow')?.friend_id).toBe('frA');
+    expect(friendMetadata('frA')).toMatchObject({ 入金確認: '済' });
+  });
+
   test('friend-link kill-switch 中は valid token でも friend.metadata を変更しない', async () => {
     seedMappedForm('fa1', 'GMOxoMtK');
     const before = { 入金確認: '未', 備考: '手動値を保持' };

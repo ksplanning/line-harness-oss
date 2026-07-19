@@ -336,6 +336,46 @@ describe('row-status-friend-sync — verified row metadata intent', () => {
     });
   });
 
+  test('D-3: matrix/repeating の raw JSON を保ったまま fr_id と scalar status metadata を処理する', async () => {
+    const token = await signFriendToken('frA', FR_SECRET);
+    const matrixValue = {
+      item_1: { satisfied: true, note: '満足' },
+      item_2: { satisfied: false, note: null },
+    };
+    const repeatingValue = [
+      { participant: 'A', age: 20 },
+      { participant: 'B', age: 21 },
+    ];
+    const structuralMappedForm = {
+      ...FORM_H,
+      friend_metadata_mappings_json: JSON.stringify([
+        { formalooFieldKey: 'status_slug', friendMetadataKey: '申込状態' },
+        { formalooFieldKey: 'matrix_slug', friendMetadataKey: '行列回答' },
+        { formalooFieldKey: 'repeating_slug', friendMetadataKey: '繰返し回答' },
+      ]),
+    };
+    const answers = {
+      status_slug: '受付済み',
+      matrix_slug: matrixValue,
+      repeating_slug: repeatingValue,
+    };
+
+    const input = await mapFormalooListRowToUpsert({
+      slug: 'ROW_STRUCTURAL',
+      created_at: '2026-07-20T10:00:00Z',
+      data: answers,
+      rendered_data: [{ alias: 'fr_id', value: token }],
+    }, structuralMappedForm, { friendTokenSecret: FR_SECRET });
+
+    expect(JSON.parse(input!.answersJson)).toEqual(answers);
+    expect(input!.friendId).toBe('frA');
+    // metadata は scalar の status だけを反映し、object/array を `[object Object]` 化しない。
+    expect(input!.verifiedFriendMetadataSync).toEqual({
+      friendId: 'frA',
+      updates: [{ formalooFieldKey: 'status_slug', friendMetadataKey: '申込状態', value: '受付済み' }],
+    });
+  });
+
   test('改ざん token / secret 未供給は intent を返さず fail-closed', async () => {
     const token = await signFriendToken('frA', FR_SECRET);
     const tampered = `${token}x`;
