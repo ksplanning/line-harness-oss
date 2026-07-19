@@ -1,4 +1,4 @@
-import { isDecorationType, DEFAULT_RATING_STAR_COLOR, type HarnessFieldType, type RatingSubType, type ImageWidth } from '@line-crm/shared'
+import { isDecorationType, DEFAULT_RATING_STAR_COLOR, type HarnessFieldType, type RatingSubType, type ImageWidth, type VariableSubType } from '@line-crm/shared'
 
 // =============================================================================
 // パレット field 種別メタ (F-2 / T-B1) — 素人向け日本語ラベル (英語 type 名を見せない / ui-design)。
@@ -24,7 +24,9 @@ export const FIELD_TYPE_META: FieldTypeMeta[] = [
   { type: 'choice', label: '単一選択', icon: '🔘', category: '選択' },
   { type: 'dropdown', label: 'ドロップダウン', icon: '🔽', category: '選択' },
   { type: 'multiple_select', label: '複数選択', icon: '☑️', category: '選択' },
+  { type: 'choice_fetch', label: '動的選択肢', icon: '🔄', category: '選択' },
   { type: 'file', label: 'ファイル添付', icon: '📎', category: '高度' },
+  { type: 'variable', label: '計算', icon: '🧮', category: '高度' },
   // treasure-b1-palette: rating(入力)・signature(高度)・video(装飾) を additive。
   { type: 'rating', label: '評価', icon: '⭐', category: '入力' },
   { type: 'signature', label: '署名', icon: '✍️', category: '高度' },
@@ -44,6 +46,14 @@ export const RATING_SUB_TYPE_OPTIONS: { value: RatingSubType; label: string }[] 
   { value: 'like_dislike', label: '良い / 悪い' },
   { value: 'nps', label: 'NPS（0〜10）' },
   { value: 'score', label: '点数' },
+]
+
+/** Formaloo variable field で実測済みの sub_type 4 種。 */
+export const VARIABLE_SUB_TYPE_OPTIONS: { value: VariableSubType; label: string }[] = [
+  { value: 'int', label: '整数（計算しない値）' },
+  { value: 'string', label: '文字（計算しない値）' },
+  { value: 'decimal', label: '小数（計算しない値）' },
+  { value: 'formula', label: '計算式' },
 ]
 
 /**

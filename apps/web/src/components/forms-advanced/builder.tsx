@@ -24,7 +24,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { FriendFieldDefinition, HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
+import type { ChoiceFetchItem, FriendFieldDefinition, HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, VariableSubType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
 import { computeRouteTerminalWarnings, MAX_FRIEND_METADATA_MAPPINGS, validateRedirectUrl } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
@@ -35,12 +35,14 @@ import {
   hasMaxLength,
   hasRatingSubType,
   RATING_SUB_TYPE_OPTIONS,
+  VARIABLE_SUB_TYPE_OPTIONS,
   VIDEO_SIZE_PRESETS,
   isDecoration,
 } from './field-types'
 import FormPreview from './form-preview'
 import DesignPanel from './design-panel'
 import ImageFieldPanel from './image-field-panel'
+import ChoiceFetchFieldPanel from './choice-fetch-field-panel'
 import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 
@@ -69,6 +71,8 @@ export function resolveDragEnd(activeId: string, overId: string | null, fieldIds
 }
 
 export interface BuilderProps {
+  /** choice_fetch 選択肢リストの form scoped CRUD に使う harness form id。 */
+  formId?: string
   formTitle: string
   formDescription?: string | null
   status: BuilderStatus
@@ -123,7 +127,17 @@ function newField(type: HarnessFieldType): HarnessField {
     label: fieldTypeLabel(type),
     required: false,
     position: 0,
-    config: hasChoices(type) ? { choices: ['選択肢1', '選択肢2'] } : type === 'section' ? { text: '' } : type === 'video' ? { videoUrl: '' } : type === 'image' ? { imageWidth: 'medium' } : {},
+    config: hasChoices(type)
+      ? { choices: ['選択肢1', '選択肢2'] }
+      : type === 'variable'
+        ? { variableSubType: 'int' }
+        : type === 'section'
+          ? { text: '' }
+          : type === 'video'
+            ? { videoUrl: '' }
+            : type === 'image'
+              ? { imageWidth: 'medium' }
+              : {},
   }
 }
 
@@ -357,19 +371,25 @@ const MAX_SIZE_PRESETS_KB = [2048, 5120, 10240, 20480]
 const maxSizeLabel = (kb: number): string => (kb === 2048 ? '2MB（標準）' : `${Math.round(kb / 1024)}MB`)
 
 function SettingsPanel({
+  formId,
   field,
   allFields,
   logic,
   onChange,
+  onFieldConfigPatch,
+  onManagedChoiceListChange,
   onLogicChange,
   formType,
   onEnsureMultiStep,
   successPages = [],
 }: {
+  formId?: string
   field: HarnessField
   allFields: HarnessField[]
   logic: HarnessLogicRule[]
   onChange: (f: HarnessField) => void
+  onFieldConfigPatch: (fieldId: string, patch: Partial<HarnessField['config']>) => void
+  onManagedChoiceListChange?: (listId: string, next: { sourceUrl: string; items: ChoiceFetchItem[] } | null) => void
   onLogicChange: (rules: HarnessLogicRule[]) => void
   /** 表示形式 (form-route-branching R2)。jump は multi_step でのみ発火 → simple での警告/自動切替に使う。 */
   formType?: FormDisplayType
@@ -435,6 +455,87 @@ function SettingsPanel({
         )}
         {/* form-image-decoration: 差し込み画像 (upload / URL / alt / 表示幅)。先頭に置けば帯ヘッダーにもなる。 */}
         {field.type === 'image' && <ImageFieldPanel config={cfg} onChange={setCfg} />}
+      </div>
+    )
+  }
+
+  if (field.type === 'variable') {
+    const referenceFields = allFields.filter((candidate) => candidate.id !== field.id && !isDecoration(candidate.type))
+    const subType = cfg.variableSubType ?? 'int'
+    return (
+      <div className="space-y-3 text-sm" data-testid="settings-panel">
+        <div>
+          <label className="mb-1 block text-xs text-gray-500">ラベル</label>
+          <input aria-label="ラベル" value={field.label} onChange={(event) => set({ label: event.target.value })} className="w-full rounded border border-gray-300 px-2 py-1" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-500">計算の種類</label>
+          <select
+            aria-label="計算の種類"
+            value={subType}
+            onChange={(event) => {
+              const next = event.target.value as VariableSubType
+              setCfg({
+                variableSubType: next,
+                ...(next === 'formula' ? {} : { formula: undefined, decimalPlaces: undefined }),
+              })
+            }}
+            className="w-full rounded border border-gray-300 px-2 py-1"
+          >
+            {VARIABLE_SUB_TYPE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </div>
+        {subType === 'formula' && (
+          <>
+            <div>
+              <label className="mb-1 block text-xs text-gray-500">計算式</label>
+              <textarea
+                aria-label="計算式"
+                value={cfg.formula ?? ''}
+                onChange={(event) => setCfg({ formula: event.target.value })}
+                placeholder="{単価}*{数量}"
+                rows={3}
+                className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs"
+              />
+              <p className="mt-1 text-[10px] leading-snug text-gray-400">
+                下の項目ボタンで <code>{'{項目}'}</code> を挿入し、+ - * / で計算式を作ります。
+              </p>
+            </div>
+            <div>
+              <div className="mb-1 text-xs text-gray-500">他の項目を挿入</div>
+              <div className="flex flex-wrap gap-1">
+                {referenceFields.length > 0 ? referenceFields.map((reference) => (
+                  <button
+                    key={reference.id}
+                    type="button"
+                    aria-label={`${reference.label}を式に挿入`}
+                    onClick={() => setCfg({ formula: `${cfg.formula ?? ''}{${reference.id}}` })}
+                    className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-600 hover:border-gray-500"
+                  >
+                    {reference.label}
+                  </button>
+                )) : <span className="text-[10px] text-gray-400">参照できる項目がまだありません。</span>}
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-500">小数点以下の桁数</label>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                aria-label="小数点以下の桁数"
+                value={cfg.decimalPlaces ?? ''}
+                onChange={(event) => setCfg({ decimalPlaces: event.target.value === '' ? undefined : Number(event.target.value) })}
+                className="w-full rounded border border-gray-300 px-2 py-1"
+              />
+            </div>
+          </>
+        )}
+        <p className="text-[10px] leading-snug text-gray-400">
+          計算項目は回答者が入力する欄ではなく、公開フォーム側で値を保持・計算します。
+        </p>
       </div>
     )
   }
@@ -528,6 +629,16 @@ function SettingsPanel({
           className="w-full border border-gray-300 rounded px-2 py-1"
         />
       </div>
+
+      {field.type === 'choice_fetch' && (
+        <ChoiceFetchFieldPanel
+          key={`${field.id}:${cfg.choiceListId ? '' : (cfg.choicesSource ?? '')}`}
+          formId={formId}
+          config={cfg}
+          onChange={(patch) => onFieldConfigPatch(field.id, patch)}
+          onManagedListChange={onManagedChoiceListChange}
+        />
+      )}
 
       {/* treasure-b1-palette: rating の評価スタイル(sub_type)。星=既定は config.ratingSubType を未設定に写像(star drop)。 */}
       {hasRatingSubType(field.type) && (
@@ -1039,6 +1150,31 @@ export default function FormBuilder(props: BuilderProps) {
   }
 
   const updateField = (f: HarnessField) => setFields((cur) => cur.map((x) => (x.id === f.id ? f : x)))
+  const patchFieldConfig = (fieldId: string, patch: Partial<HarnessField['config']>) => {
+    setFields((current) => current.map((field) => field.id === fieldId
+      ? { ...field, config: { ...field.config, ...patch } }
+      : field))
+  }
+  const updateManagedChoiceListReferences = (
+    listId: string,
+    next: { sourceUrl: string; items: ChoiceFetchItem[] } | null,
+  ) => {
+    setFields((current) => current.map((field) => {
+      if (field.type !== 'choice_fetch') return field
+      const matchesManagedId = field.config.choiceListId === listId
+      const matchesPulledSource = next !== null && field.config.choicesSource === next.sourceUrl
+      if (!matchesManagedId && !matchesPulledSource) return field
+      return {
+        ...field,
+        config: {
+          ...field.config,
+          choiceListId: next ? listId : undefined,
+          choicesSource: next?.sourceUrl,
+          choiceFetchItems: next?.items.map((item) => ({ ...item })),
+        },
+      }
+    }))
+  }
   const deleteField = (id: string) => {
     const deletingDecoration = fields.some((field) => field.id === id && isDecoration(field.type))
     setFields((cur) => reposition(cur.filter((f) => f.id !== id)))
@@ -1692,7 +1828,7 @@ export default function FormBuilder(props: BuilderProps) {
             <div className="md:w-64 md:shrink-0" data-testid="settings">
               <div className="text-xs font-bold text-gray-500 mb-2">項目の設定</div>
               {selected ? (
-                <SettingsPanel field={selected} allFields={fields} logic={logic} onChange={updateField} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} successPages={successPages} />
+                <SettingsPanel formId={props.formId} field={selected} allFields={fields} logic={logic} onChange={updateField} onFieldConfigPatch={patchFieldConfig} onManagedChoiceListChange={updateManagedChoiceListReferences} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} successPages={successPages} />
               ) : (
                 <div className="text-xs text-gray-400">項目を選ぶと設定が表示されます</div>
               )}

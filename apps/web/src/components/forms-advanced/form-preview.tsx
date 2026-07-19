@@ -110,6 +110,25 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
           <p className="text-xs text-gray-500">ファイルを添付する項目です。実際の選択は公開フォームで行えます。</p>
         </div>
       )
+    case 'variable':
+      return (
+        <div data-testid="preview-variable" className="space-y-1 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">
+          <div>計算結果（公開フォームで自動計算）</div>
+          {field.config.variableSubType === 'formula' && field.config.formula && (
+            <code className="block break-all text-[10px] text-gray-400">{field.config.formula}</code>
+          )}
+        </div>
+      )
+    case 'choice_fetch': {
+      const items = field.config.choiceFetchItems ?? []
+      return (
+        <select id={controlId} aria-label={field.label} className={inputClassName} disabled={items.length === 0}>
+          {items.length === 0
+            ? <option>選択肢リストが未設定です</option>
+            : items.map((item, index) => <option key={`${item.value}-${index}`} value={item.value}>{item.label}</option>)}
+        </select>
+      )
+    }
     case 'rating': {
       // treasure-b1-palette: sub_type 別ウィジェット (自前描画・最小)。hosted は Formaloo の rating ウィジェットで実描画。
       const sub = field.config.ratingSubType ?? 'star'
@@ -259,6 +278,8 @@ export default function FormPreview({ title, description, fields, design, formTy
   // route-terminal-submit: 「ここで送信」凡例 + page_break の Continue のみ空画面注記。
   const hasSubmit = Array.isArray(logic) && logic.some((r) => r.action === 'submit')
   const hasPageBreak = fields.some((f) => f.type === 'page_break')
+  const hasVariable = fields.some((field) => field.type === 'variable')
+  const hasChoiceFetch = fields.some((field) => field.type === 'choice_fetch')
   // form-design (Batch D): テーマ色/ロゴ/カバーを反映。未指定は従来の LINE green 既定 (後方互換)。
   const themeColor = design?.themeColor || LINE_GREEN
   const buttonColor = design?.buttonColor || LINE_GREEN
@@ -328,6 +349,12 @@ export default function FormPreview({ title, description, fields, design, formTy
           {/* route-terminal-submit: page_break は hosted で Continue のみの空画面を1枚挟む。 */}
           {hasPageBreak && (
             <p data-testid="preview-pagebreak-note">改ページは、公開フォームでは「Continue」だけの空画面を1枚挟みます（Formaloo の仕様）。</p>
+          )}
+          {hasVariable && (
+            <p data-testid="preview-variable-note">計算項目の実際の結果は、他の回答値を使って公開フォーム側で計算されます。このプレビューでは結果を作りません。</p>
+          )}
+          {hasChoiceFetch && (
+            <p data-testid="preview-choice-fetch-note">動的選択肢は現在保存しているリストを表示しています。公開フォームでは供給URLから最新値を読み込みます。</p>
           )}
           {hasVisualDesign ? (
             <p>設定したテーマ色・ロゴ/カバーを反映しています。細かなフォント・余白は公開時に Formaloo 側で微調整されます。</p>

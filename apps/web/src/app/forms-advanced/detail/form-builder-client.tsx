@@ -146,6 +146,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
           </div>
           <FormBuilder
             key={`${form.id}:${form.builderStatus}`}
+            formId={form.id}
             formTitle={form.title}
             formDescription={form.description}
             status={form.builderStatus}
