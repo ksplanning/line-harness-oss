@@ -270,7 +270,8 @@ describe('forms-advanced PUT /:id idempotent push (T-A3 / push-idempotency / B3)
         //   mock も応答する (fr_id/fr_name hidden を present で返す = ensure は no-op present → idle)。旧 mock は GET forms を
         //   404 default にしていたが、silent-skip に依存していただけで実 Formaloo とは乖離していた (T-C3 fail-closed で顕在化)。
         return new Response(JSON.stringify({ data: { form: { slug: 'FSLUG', fields_list: [
-          { slug: 'h_fr_id', alias: 'fr_id', type: 'hidden' }, { slug: 'h_fr_name', alias: 'fr_name', type: 'hidden' },
+          { slug: 'h_fr_id', alias: 'fr_id', type: 'hidden', position: 0 },
+          { slug: 'h_fr_name', alias: 'fr_name', type: 'hidden', position: 1 },
         ] } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response('{}', { status: 404 });

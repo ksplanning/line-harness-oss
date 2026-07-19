@@ -123,11 +123,12 @@ function stubFormaloo(options: {
       return new Response(JSON.stringify({ data: { form: body } }), { status });
     }
     if (method === 'GET' && /\/v3\.0\/forms\/[^/]+\/$/.test(url)) {
-      // fr-id-hardening-round2: ensureSystemHiddenFields が読む form-state。fr_id/fr_name hidden を present で返す
+      // fr-id-hardening-round2: ensureSystemHiddenFields が読む form-state。fr_id/fr_name hidden を先頭で返す
       //   (ensure=no-op present → idle)。旧 mock は catch-all {data:{}} を返し fields_list 不在 = 読取不能だった
       //   (silent-skip に依存)。実 Formaloo は GET forms に fields_list を返すため mock を実態に合わせる (T-C3 fail-closed)。
       return new Response(JSON.stringify({ data: { form: { slug: 'FSLUG', fields_list: [
-        { slug: 'h_fr_id', alias: 'fr_id', type: 'hidden' }, { slug: 'h_fr_name', alias: 'fr_name', type: 'hidden' },
+        { slug: 'h_fr_id', alias: 'fr_id', type: 'hidden', position: 0 },
+        { slug: 'h_fr_name', alias: 'fr_name', type: 'hidden', position: 1 },
       ] } } }), { status: 200 });
     }
     return new Response(JSON.stringify({ data: {} }), { status: 200 });
