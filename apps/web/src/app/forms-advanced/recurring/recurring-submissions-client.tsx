@@ -66,10 +66,13 @@ function rowKey(item: FormalooRecurringSubmission): string {
 
 export default function RecurringSubmissionsClient({ formId }: { formId: string }) {
   const { selectedAccountId, loading: accountLoading } = useAccount()
+  const scopeToken = `${formId}\u0000${selectedAccountId ?? '<none>'}\u0000${accountLoading ? 'loading' : 'ready'}`
+  const currentScopeToken = useRef(scopeToken)
+  currentScopeToken.current = scopeToken
   const [form, setForm] = useState<FormScope | null>(null)
   const [formLoaded, setFormLoaded] = useState(false)
   const [items, setItems] = useState<FormalooRecurringSubmission[]>([])
-  const [available, setAvailable] = useState(true)
+  const [available, setAvailable] = useState(false)
   const [loading, setLoading] = useState(true)
   const [busySlug, setBusySlug] = useState<string | null>(null)
   const [confirmCancelSlug, setConfirmCancelSlug] = useState<string | null>(null)
@@ -79,6 +82,20 @@ export default function RecurringSubmissionsClient({ formId }: { formId: string 
   const [intervalJson, setIntervalJson] = useState('{}')
   const [submissionJson, setSubmissionJson] = useState('{}')
   const createKey = useRef<string | null>(null)
+
+  useEffect(() => {
+    setItems([])
+    setAvailable(false)
+    setLoading(true)
+    setBusySlug(null)
+    setConfirmCancelSlug(null)
+    setError(null)
+    setStartTime('')
+    setEndTime('')
+    setIntervalJson('{}')
+    setSubmissionJson('{}')
+    createKey.current = null
+  }, [scopeToken])
 
   useEffect(() => {
     let active = true
@@ -98,28 +115,33 @@ export default function RecurringSubmissionsClient({ formId }: { formId: string 
     return () => { active = false }
   }, [formId])
 
-  const scopeBlocked = form != null
-    && form.lineAccountId != null
+  const scopedForm = form?.id === formId ? form : null
+  const scopeBlocked = scopedForm != null
+    && scopedForm.lineAccountId != null
     && selectedAccountId != null
-    && form.lineAccountId !== selectedAccountId
+    && scopedForm.lineAccountId !== selectedAccountId
   const scopeUnknown = accountLoading
     || !formLoaded
-    || (form != null && form.lineAccountId != null && selectedAccountId == null)
-  const scopeAllowed = form != null && !scopeBlocked && !scopeUnknown
+    || scopedForm == null
+    || (scopedForm.lineAccountId != null && selectedAccountId == null)
+  const scopeAllowed = scopedForm != null && !scopeBlocked && !scopeUnknown
 
   const loadRecurring = useCallback(async () => {
+    const requestScopeToken = scopeToken
     setLoading(true)
     try {
       const result = await formalooRecurringSubmissionsApi.list(formId)
+      if (currentScopeToken.current !== requestScopeToken) return
       setItems(result.items)
       setAvailable(result.available)
       setError(null)
     } catch (cause) {
+      if (currentScopeToken.current !== requestScopeToken) return
       setError(errorMessage(cause))
     } finally {
-      setLoading(false)
+      if (currentScopeToken.current === requestScopeToken) setLoading(false)
     }
-  }, [formId])
+  }, [formId, scopeToken])
 
   useEffect(() => {
     if (scopeAllowed) void loadRecurring()
@@ -131,6 +153,7 @@ export default function RecurringSubmissionsClient({ formId }: { formId: string 
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const requestScopeToken = scopeToken
     setError(null)
     let interval: Record<string, string>
     let submissionData: Record<string, unknown>
@@ -154,6 +177,7 @@ export default function RecurringSubmissionsClient({ formId }: { formId: string 
         schedule: { interval, startTime: startIso, endTime: endIso },
         submissionData,
       })
+      if (currentScopeToken.current !== requestScopeToken) return
       setItems((current) => [created, ...current.filter((item) => item.id !== created.id)])
       createKey.current = null
       setStartTime('')
@@ -161,9 +185,10 @@ export default function RecurringSubmissionsClient({ formId }: { formId: string 
       setIntervalJson('{}')
       setSubmissionJson('{}')
     } catch (cause) {
+      if (currentScopeToken.current !== requestScopeToken) return
       setError(errorMessage(cause))
     } finally {
-      setBusySlug(null)
+      if (currentScopeToken.current === requestScopeToken) setBusySlug(null)
     }
   }
 
@@ -172,18 +197,21 @@ export default function RecurringSubmissionsClient({ formId }: { formId: string 
     status: 'resumed' | 'paused' | 'cancelled',
   ) => {
     if (!item.remoteSlug) return
+    const requestScopeToken = scopeToken
     setBusySlug(item.remoteSlug)
     setError(null)
     try {
       const updated = status === 'cancelled'
         ? await formalooRecurringSubmissionsApi.cancel(formId, item.remoteSlug)
         : await formalooRecurringSubmissionsApi.setStatus(formId, item.remoteSlug, status)
+      if (currentScopeToken.current !== requestScopeToken) return
       replaceItem(updated)
       setConfirmCancelSlug(null)
     } catch (cause) {
+      if (currentScopeToken.current !== requestScopeToken) return
       setError(errorMessage(cause))
     } finally {
-      setBusySlug(null)
+      if (currentScopeToken.current === requestScopeToken) setBusySlug(null)
     }
   }
 
@@ -234,19 +262,19 @@ export default function RecurringSubmissionsClient({ formId }: { formId: string 
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           <label className="text-xs text-gray-600" htmlFor="recurring-start">
             開始時刻
-            <input id="recurring-start" aria-label="開始時刻" type="datetime-local" required value={startTime} onChange={(event) => setStartTime(event.target.value)} disabled={!available || busySlug !== null} className="mt-1 w-full rounded border border-gray-200 px-2 py-2 text-sm" />
+            <input id="recurring-start" aria-label="開始時刻" type="datetime-local" required value={startTime} onChange={(event) => { createKey.current = null; setStartTime(event.target.value) }} disabled={!available || busySlug !== null} className="mt-1 w-full rounded border border-gray-200 px-2 py-2 text-sm" />
           </label>
           <label className="text-xs text-gray-600" htmlFor="recurring-end">
             終了時刻（任意）
-            <input id="recurring-end" aria-label="終了時刻" type="datetime-local" value={endTime} onChange={(event) => setEndTime(event.target.value)} disabled={!available || busySlug !== null} className="mt-1 w-full rounded border border-gray-200 px-2 py-2 text-sm" />
+            <input id="recurring-end" aria-label="終了時刻" type="datetime-local" value={endTime} onChange={(event) => { createKey.current = null; setEndTime(event.target.value) }} disabled={!available || busySlug !== null} className="mt-1 w-full rounded border border-gray-200 px-2 py-2 text-sm" />
           </label>
           <label className="text-xs text-gray-600" htmlFor="recurring-interval">
             間隔 JSON
-            <textarea id="recurring-interval" aria-label="間隔 JSON" rows={4} value={intervalJson} onChange={(event) => setIntervalJson(event.target.value)} disabled={!available || busySlug !== null} className="mt-1 w-full rounded border border-gray-200 px-2 py-2 font-mono text-xs" />
+            <textarea id="recurring-interval" aria-label="間隔 JSON" rows={4} value={intervalJson} onChange={(event) => { createKey.current = null; setIntervalJson(event.target.value) }} disabled={!available || busySlug !== null} className="mt-1 w-full rounded border border-gray-200 px-2 py-2 font-mono text-xs" />
           </label>
           <label className="text-xs text-gray-600" htmlFor="recurring-submission">
             回答内容 JSON
-            <textarea id="recurring-submission" aria-label="回答内容 JSON" rows={4} value={submissionJson} onChange={(event) => setSubmissionJson(event.target.value)} disabled={!available || busySlug !== null} className="mt-1 w-full rounded border border-gray-200 px-2 py-2 font-mono text-xs" />
+            <textarea id="recurring-submission" aria-label="回答内容 JSON" rows={4} value={submissionJson} onChange={(event) => { createKey.current = null; setSubmissionJson(event.target.value) }} disabled={!available || busySlug !== null} className="mt-1 w-full rounded border border-gray-200 px-2 py-2 font-mono text-xs" />
           </label>
         </div>
         <button type="submit" disabled={!available || busySlug !== null} className="mt-3 rounded bg-[#06C755] px-4 py-2 text-sm text-white disabled:opacity-50">
@@ -266,7 +294,7 @@ export default function RecurringSubmissionsClient({ formId }: { formId: string 
             <article key={item.id} data-testid={`recurring-row-${key}`} className="rounded-lg border border-gray-200 bg-white p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <span data-testid={`recurring-status-${key}`} className="rounded bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-700">
+                  <span data-testid={`recurring-status-${key}`} aria-live="polite" className="rounded bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-700">
                     {STATUS_LABEL[item.status]}
                   </span>
                   {item.syncState !== 'synced' && (
@@ -276,17 +304,17 @@ export default function RecurringSubmissionsClient({ formId }: { formId: string 
                 {item.remoteSlug && item.status !== 'cancelled' && (
                   <div className="flex flex-wrap gap-2">
                     {item.status === 'resumed' ? (
-                      <button type="button" disabled={busy} onClick={() => { void handleStatus(item, 'paused') }} className="rounded bg-gray-100 px-3 py-1 text-xs hover:bg-gray-200 disabled:opacity-50">一時停止</button>
+                      <button type="button" aria-label={`一時停止: ${key}`} disabled={busy} onClick={() => { void handleStatus(item, 'paused') }} className="rounded bg-gray-100 px-3 py-1 text-xs hover:bg-gray-200 disabled:opacity-50">一時停止</button>
                     ) : (
-                      <button type="button" disabled={busy} onClick={() => { void handleStatus(item, 'resumed') }} className="rounded bg-gray-100 px-3 py-1 text-xs hover:bg-gray-200 disabled:opacity-50">再開</button>
+                      <button type="button" aria-label={`再開: ${key}`} disabled={busy} onClick={() => { void handleStatus(item, 'resumed') }} className="rounded bg-gray-100 px-3 py-1 text-xs hover:bg-gray-200 disabled:opacity-50">再開</button>
                     )}
                     {confirmCancelSlug === item.remoteSlug ? (
                       <>
-                        <button type="button" disabled={busy} onClick={() => { void handleStatus(item, 'cancelled') }} className="rounded bg-red-600 px-3 py-1 text-xs text-white disabled:opacity-50">本当に取消</button>
-                        <button type="button" disabled={busy} onClick={() => setConfirmCancelSlug(null)} className="rounded bg-gray-100 px-3 py-1 text-xs">戻る</button>
+                        <button autoFocus type="button" aria-label={`本当に取消: ${key}`} disabled={busy} onClick={() => { void handleStatus(item, 'cancelled') }} className="rounded bg-red-600 px-3 py-1 text-xs text-white disabled:opacity-50">本当に取消</button>
+                        <button type="button" aria-label={`取消確認から戻る: ${key}`} disabled={busy} onClick={() => setConfirmCancelSlug(null)} className="rounded bg-gray-100 px-3 py-1 text-xs">戻る</button>
                       </>
                     ) : (
-                      <button type="button" disabled={busy} onClick={() => setConfirmCancelSlug(item.remoteSlug)} className="rounded bg-red-50 px-3 py-1 text-xs text-red-700 hover:bg-red-100 disabled:opacity-50">取消</button>
+                      <button type="button" aria-label={`取消: ${key}`} disabled={busy} onClick={() => setConfirmCancelSlug(item.remoteSlug)} className="rounded bg-red-50 px-3 py-1 text-xs text-red-700 hover:bg-red-100 disabled:opacity-50">取消</button>
                     )}
                   </div>
                 )}

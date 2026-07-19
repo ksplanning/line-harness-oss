@@ -46,10 +46,10 @@ describe('定期自動回答 admin client', () => {
     await waitFor(() => expect(screen.getByTestId('recurring-row-rs_1')).toBeTruthy())
     expect(screen.getByText('在庫報告')).toBeTruthy()
     expect(screen.getByTestId('recurring-status-rs_1').textContent).toBe('稼働中')
-    expect(screen.getByRole('button', { name: '一時停止' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '一時停止: rs_1' })).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '取消' }))
-    expect(screen.getByRole('button', { name: '本当に取消' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '取消: rs_1' }))
+    expect(screen.getByRole('button', { name: '本当に取消: rs_1' })).toBeTruthy()
     expect(cancelMock).not.toHaveBeenCalled()
   })
 
@@ -90,17 +90,17 @@ describe('定期自動回答 admin client', () => {
     setStatusMock.mockReturnValue(new Promise((resolve) => { resolvePause = resolve }))
     render(<RecurringSubmissionsClient formId="fa_1" />)
     await waitFor(() => expect(screen.getByTestId('recurring-status-rs_1').textContent).toBe('稼働中'))
-    fireEvent.click(screen.getByRole('button', { name: '一時停止' }))
+    fireEvent.click(screen.getByRole('button', { name: '一時停止: rs_1' }))
     expect(screen.getByTestId('recurring-status-rs_1').textContent).toBe('稼働中')
     await act(async () => { resolvePause({ ...resumed, status: 'paused' }) })
     expect(screen.getByTestId('recurring-status-rs_1').textContent).toBe('一時停止')
-    expect(screen.getByRole('button', { name: '再開' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '再開: rs_1' })).toBeTruthy()
 
     cancelMock.mockResolvedValue({ ...resumed, status: 'cancelled' })
-    fireEvent.click(screen.getByRole('button', { name: '取消' }))
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '本当に取消' })) })
+    fireEvent.click(screen.getByRole('button', { name: '取消: rs_1' }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '本当に取消: rs_1' })) })
     expect(screen.getByTestId('recurring-status-rs_1').textContent).toBe('取消済み')
-    expect(screen.queryByRole('button', { name: '再開' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '再開: rs_1' })).toBeNull()
   })
 
   test('account mismatch is fail-closed and never loads recurring data', async () => {
@@ -116,5 +116,94 @@ describe('定期自動回答 admin client', () => {
     render(<RecurringSubmissionsClient formId="fa_1" />)
     await waitFor(() => expect(listMock).toHaveBeenCalledWith('fa_1'))
     expect(screen.getByTestId('recurring-row-rs_1')).toBeTruthy()
+  })
+
+  test('a delayed list response from the previous form cannot overwrite the current form', async () => {
+    let resolvePrevious!: (value: unknown) => void
+    const previous = {
+      ...resumed,
+      id: 'frs_previous',
+      formId: 'fa_previous',
+      remoteSlug: 'rs_previous',
+    }
+    const current = {
+      ...resumed,
+      id: 'frs_current',
+      formId: 'fa_current',
+      remoteSlug: 'rs_current',
+    }
+    getFormMock.mockImplementation(async (id: string) => ({
+      id,
+      title: id === 'fa_previous' ? '前のフォーム' : '現在のフォーム',
+      lineAccountId: 'acc_a',
+    }))
+    listMock.mockImplementation((id: string) => id === 'fa_previous'
+      ? new Promise((resolve) => { resolvePrevious = resolve })
+      : Promise.resolve({ items: [current], available: true }))
+
+    const { rerender } = render(<RecurringSubmissionsClient formId="fa_previous" />)
+    await waitFor(() => expect(listMock).toHaveBeenCalledWith('fa_previous'))
+    rerender(<RecurringSubmissionsClient formId="fa_current" />)
+    await waitFor(() => expect(screen.getByTestId('recurring-row-rs_current')).toBeTruthy())
+
+    await act(async () => { resolvePrevious({ items: [previous], available: true }) })
+    expect(screen.getByTestId('recurring-row-rs_current')).toBeTruthy()
+    expect(screen.queryByTestId('recurring-row-rs_previous')).toBeNull()
+  })
+
+  test('an authorized form cannot authorize the next route before its tenant check finishes', async () => {
+    let resolveNext!: (value: unknown) => void
+    getFormMock.mockImplementation((id: string) => id === 'fa_previous'
+      ? Promise.resolve({ id, title: '前のフォーム', lineAccountId: 'acc_a' })
+      : new Promise((resolve) => { resolveNext = resolve }))
+    listMock.mockResolvedValue({ items: [resumed], available: true })
+
+    const { rerender } = render(<RecurringSubmissionsClient formId="fa_previous" />)
+    await waitFor(() => expect(listMock).toHaveBeenCalledWith('fa_previous'))
+    listMock.mockClear()
+
+    rerender(<RecurringSubmissionsClient formId="fa_other_tenant" />)
+    await act(async () => { await Promise.resolve() })
+    expect(listMock).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveNext({ id: 'fa_other_tenant', title: '別テナント', lineAccountId: 'acc_b' })
+    })
+    expect(screen.getByTestId('scope-blocked')).toBeTruthy()
+    expect(listMock).not.toHaveBeenCalled()
+  })
+
+  test('editing a failed create rotates its idempotency key while an unchanged retry keeps it', async () => {
+    const created = { ...resumed, id: 'frs_2', remoteSlug: 'rs_2', submissionData: { stock: 13 } }
+    createMock
+      .mockRejectedValueOnce({ body: { error: '一時的な失敗' } })
+      .mockRejectedValueOnce({ body: { error: '一時的な失敗' } })
+      .mockResolvedValueOnce(created)
+    render(<RecurringSubmissionsClient formId="fa_1" />)
+    await waitFor(() => expect(screen.getByTestId('recurring-create')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('開始時刻'), { target: { value: '2026-07-20T09:00' } })
+    fireEvent.change(screen.getByLabelText('間隔 JSON'), { target: { value: '{"providerKey":"providerValue"}' } })
+    fireEvent.change(screen.getByLabelText('回答内容 JSON'), { target: { value: '{"stock":12}' } })
+    await act(async () => { fireEvent.submit(screen.getByTestId('recurring-create')) })
+    const firstKey = createMock.mock.calls[0][1].idempotencyKey
+
+    await act(async () => { fireEvent.submit(screen.getByTestId('recurring-create')) })
+    expect(createMock.mock.calls[1][1].idempotencyKey).toBe(firstKey)
+
+    fireEvent.change(screen.getByLabelText('回答内容 JSON'), { target: { value: '{"stock":13}' } })
+    await act(async () => { fireEvent.submit(screen.getByTestId('recurring-create')) })
+    const editedKey = createMock.mock.calls[2][1].idempotencyKey
+    expect(editedKey).not.toBe(firstKey)
+  })
+
+  test('row actions expose their target and cancellation confirmation receives focus', async () => {
+    render(<RecurringSubmissionsClient formId="fa_1" />)
+    await waitFor(() => expect(screen.getByTestId('recurring-row-rs_1')).toBeTruthy())
+    expect(screen.getByTestId('recurring-status-rs_1').getAttribute('aria-live')).toBe('polite')
+    expect(screen.getByRole('button', { name: '一時停止: rs_1' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '取消: rs_1' }))
+    const confirm = screen.getByRole('button', { name: '本当に取消: rs_1' })
+    expect(document.activeElement).toBe(confirm)
   })
 })
