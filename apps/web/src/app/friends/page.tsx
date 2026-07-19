@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import type { Tag } from '@line-crm/shared'
+import type { FriendFieldDefinition, Tag } from '@line-crm/shared'
 import { api, downloadCsv } from '@/lib/api'
 import type { FriendListItem } from '@/lib/api'
 import { csvDateStamp } from '@/lib/download'
@@ -10,6 +10,7 @@ import FriendListTable from '@/components/friends/friend-list-table'
 import SavedSearchPanel from '@/components/friends/saved-search-panel'
 import ExportCsvButton from '@/components/shared/export-csv-button'
 import CcPromptButton from '@/components/cc-prompt-button'
+import FriendFieldDefinitionsPanel from '@/components/friends/friend-field-definitions-panel'
 import { useAccount } from '@/contexts/account-context'
 
 const ccPrompts = [
@@ -51,6 +52,7 @@ export default function FriendsPage() {
   const [savedSearchId, setSavedSearchId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
 
   const loadTags = useCallback(async () => {
     try {
@@ -58,6 +60,16 @@ export default function FriendsPage() {
       if (res.success) setAllTags(res.data)
     } catch {
       // Non-blocking — tags used for filter
+    }
+  }, [])
+
+  const loadFieldDefinitions = useCallback(async () => {
+    try {
+      const res = await api.friendFieldDefinitions.list()
+      if (res.success) setFieldDefinitions(res.data)
+    } catch {
+      // Fail-soft: definition management must not block the friend list.
+      setFieldDefinitions([])
     }
   }, [])
 
@@ -93,6 +105,10 @@ export default function FriendsPage() {
   useEffect(() => {
     loadTags()
   }, [loadTags])
+
+  useEffect(() => {
+    void loadFieldDefinitions()
+  }, [loadFieldDefinitions])
 
   // Reset the URL-style account context to page 1 in a separate effect.
   // For user-driven filter changes (search/sort/handled/tag) we reset
@@ -149,6 +165,11 @@ export default function FriendsPage() {
       <Header
         title="友だちリスト"
         description="友だちの検索や、詳細情報の確認ができます。"
+      />
+
+      <FriendFieldDefinitionsPanel
+        definitions={fieldDefinitions}
+        onRefresh={loadFieldDefinitions}
       />
 
       {/* Search + sort bar — L-step style */}

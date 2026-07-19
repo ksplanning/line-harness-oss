@@ -35,6 +35,7 @@ import type {
   EntryRouteFunnel,
   TrafficPool,
   PoolAccount,
+  FriendFieldDefinition,
 } from '@line-crm/shared'
 import { downloadBlob } from './download'
 
@@ -220,6 +221,10 @@ export interface CannedResponseData {
 }
 
 export type FriendWithTags = Friend & { tags: Tag[] }
+export type FriendFieldDefinitionInput = Pick<
+  FriendFieldDefinition,
+  'name' | 'defaultValue' | 'displayOrder' | 'isActive'
+>
 /** Friend list items, optionally hydrated with chat status (when ?includeChatStatus=true) */
 export type FriendListItem = FriendWithTags & Partial<{
   latestIncomingMessage: { content: string; messageType: string; createdAt: string } | null
@@ -229,6 +234,24 @@ export type FriendListItem = FriendWithTags & Partial<{
 }>
 
 export const api = {
+  friendFieldDefinitions: {
+    list: () =>
+      fetchApi<ApiResponse<FriendFieldDefinition[]>>('/api/friend-field-definitions'),
+    create: (input: FriendFieldDefinitionInput) =>
+      fetchApi<ApiResponse<FriendFieldDefinition>>('/api/friend-field-definitions', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    update: (id: string, patch: Partial<FriendFieldDefinitionInput>) =>
+      fetchApi<ApiResponse<FriendFieldDefinition>>(
+        `/api/friend-field-definitions/${encodeURIComponent(id)}`,
+        { method: 'PATCH', body: JSON.stringify(patch) },
+      ),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/friend-field-definitions/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+  },
   friends: {
     list: (params?: FriendListParams) => {
       const query: Record<string, string> = {}
