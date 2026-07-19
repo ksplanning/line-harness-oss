@@ -12,7 +12,13 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { jstNow, createRole, setRolePermissions } from '@line-crm/db';
+import {
+  jstNow,
+  createRole,
+  setRolePermissions,
+  acquireFormalooFormOperationLock,
+  releaseFormalooFormOperationLock,
+} from '@line-crm/db';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formsAdvanced } from './forms-advanced.js';
@@ -132,6 +138,39 @@ describe('forms-advanced CRUD (T-B1 backend)', () => {
     expect((await call('DELETE', `/api/forms-advanced/${id}`)).status).toBe(200);
     const list = await call('GET', '/api/forms-advanced');
     expect((await list.json() as { data: unknown[] }).data.length).toBe(0);
+  });
+
+  test('DELETE は未取消または未解決の定期自動回答を残してフォームを隠さない', async () => {
+    const id = await createForm('稼働中の定期回答あり');
+    raw.prepare(
+      `INSERT INTO formaloo_recurring_submissions
+       (id, form_id, idempotency_key, request_fingerprint, schedule_json,
+        submission_data_json, status, sync_state)
+       VALUES ('frs_delete_guard', ?, 'attempt', 'fingerprint', ?, '{}', 'resumed', 'synced')`,
+    ).run(id, JSON.stringify({ interval: {}, start_time: '2026-07-20T00:00:00Z' }));
+
+    const response = await call('DELETE', `/api/forms-advanced/${id}`);
+    expect(response.status).toBe(409);
+    expect((await response.json() as { error: string }).error).toContain('定期自動回答');
+    expect((raw.prepare('SELECT deleted FROM formaloo_forms WHERE id = ?').get(id) as { deleted: number }).deleted)
+      .toBe(0);
+  });
+
+  test('DELETE は同じ form の Formaloo 操作中に直列化され、フォームを隠さない', async () => {
+    const id = await createForm('定期回答の登録処理中');
+    const locked = await acquireFormalooFormOperationLock(DB, id, {
+      token: 'in-flight-create',
+      nowMs: Date.now(),
+      leaseMs: 120_000,
+    });
+    expect(locked).toBe(true);
+
+    const response = await call('DELETE', `/api/forms-advanced/${id}`);
+    expect(response.status).toBe(409);
+    expect((raw.prepare('SELECT deleted FROM formaloo_forms WHERE id = ?').get(id) as { deleted: number }).deleted)
+      .toBe(0);
+
+    await releaseFormalooFormOperationLock(DB, id, 'in-flight-create');
   });
 });
 

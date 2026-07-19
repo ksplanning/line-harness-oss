@@ -306,6 +306,7 @@ export async function acquireFormalooWebhookOperationLock(
        SET formaloo_webhook_lock_token = ?,
            formaloo_webhook_lock_until = ?
        WHERE id = ?
+         AND deleted = 0
          AND (formaloo_webhook_lock_token IS NULL
            OR formaloo_webhook_lock_until IS NULL
            OR formaloo_webhook_lock_until <= ?)`,
@@ -331,6 +332,11 @@ export async function releaseFormalooWebhookOperationLock(
     .bind(formId, token)
     .run();
 }
+
+// The columns were introduced for webhook registration, but the lock is form-scoped and is also
+// the shared serialization boundary for other Formaloo control-plane mutations.
+export const acquireFormalooFormOperationLock = acquireFormalooWebhookOperationLock;
+export const releaseFormalooFormOperationLock = releaseFormalooWebhookOperationLock;
 
 /** 期限内の owner だけが lease を延長できる（期限切れ token の復活は禁止）。 */
 export async function renewFormalooWebhookOperationLock(

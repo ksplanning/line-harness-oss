@@ -13,6 +13,7 @@ export interface FormalooRecurringSubmissionMirror {
   id: string;
   formId: string;
   idempotencyKey: string;
+  requestFingerprint: string;
   remoteSlug: string | null;
   schedule: FormalooRecurringSchedule;
   submissionData: Record<string, unknown>;
@@ -27,6 +28,7 @@ interface FormalooRecurringSubmissionRow {
   id: string;
   form_id: string;
   idempotency_key: string;
+  request_fingerprint: string;
   remote_slug: string | null;
   schedule_json: string;
   submission_data_json: string;
@@ -55,6 +57,7 @@ function serialize(row: FormalooRecurringSubmissionRow): FormalooRecurringSubmis
     id: row.id,
     formId: row.form_id,
     idempotencyKey: row.idempotency_key,
+    requestFingerprint: row.request_fingerprint,
     remoteSlug: row.remote_slug,
     schedule: parseRecord(row.schedule_json) as unknown as FormalooRecurringSchedule,
     submissionData: parseRecord(row.submission_data_json),
@@ -98,6 +101,36 @@ export async function getFormalooRecurringSubmissionByIdempotencyKey(
   return row ? serialize(row) : null;
 }
 
+export async function getFormalooRecurringSubmissionByFingerprint(
+  db: D1Database,
+  formId: string,
+  requestFingerprint: string,
+): Promise<FormalooRecurringSubmissionMirror | null> {
+  const row = await db
+    .prepare(
+      `SELECT * FROM formaloo_recurring_submissions
+       WHERE form_id = ? AND request_fingerprint = ? AND status != 'cancelled'`,
+    )
+    .bind(formId, requestFingerprint)
+    .first<FormalooRecurringSubmissionRow>();
+  return row ? serialize(row) : null;
+}
+
+export async function hasBlockingFormalooRecurringSubmissions(
+  db: D1Database,
+  formId: string,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS present FROM formaloo_recurring_submissions
+       WHERE form_id = ? AND (status != 'cancelled' OR sync_state != 'synced')
+       LIMIT 1`,
+    )
+    .bind(formId)
+    .first<{ present: number }>();
+  return row !== null;
+}
+
 export async function getFormalooRecurringSubmissionBySlug(
   db: D1Database,
   formId: string,
@@ -115,6 +148,7 @@ export async function reserveFormalooRecurringSubmission(
   input: {
     formId: string;
     idempotencyKey: string;
+    requestFingerprint: string;
     schedule: FormalooRecurringSchedule;
     submissionData: Record<string, unknown>;
     status: FormalooRecurringStatus;
@@ -123,13 +157,14 @@ export async function reserveFormalooRecurringSubmission(
   const now = jstNow();
   await db.prepare(
     `INSERT OR IGNORE INTO formaloo_recurring_submissions
-       (id, form_id, idempotency_key, schedule_json, submission_data_json, status,
+       (id, form_id, idempotency_key, request_fingerprint, schedule_json, submission_data_json, status,
         sync_state, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
   ).bind(
     `frs_${crypto.randomUUID()}`,
     input.formId,
     input.idempotencyKey,
+    input.requestFingerprint,
     JSON.stringify(input.schedule),
     JSON.stringify(input.submissionData),
     input.status,
@@ -140,6 +175,10 @@ export async function reserveFormalooRecurringSubmission(
     db,
     input.formId,
     input.idempotencyKey,
+  ) ?? await getFormalooRecurringSubmissionByFingerprint(
+    db,
+    input.formId,
+    input.requestFingerprint,
   );
   if (!row) throw new Error('recurring submission reservation failed');
   return row;
@@ -178,6 +217,7 @@ export async function completeFormalooRecurringSubmission(
   input: {
     token: string;
     remoteSlug: string;
+    requestFingerprint: string;
     schedule: FormalooRecurringSchedule;
     submissionData: Record<string, unknown>;
     status: FormalooRecurringStatus;
@@ -185,12 +225,13 @@ export async function completeFormalooRecurringSubmission(
 ): Promise<boolean> {
   const result = await db.prepare(
     `UPDATE formaloo_recurring_submissions
-     SET remote_slug = ?, schedule_json = ?, submission_data_json = ?, status = ?,
+     SET remote_slug = ?, request_fingerprint = ?, schedule_json = ?, submission_data_json = ?, status = ?,
          sync_state = 'synced', last_error = NULL,
          operation_token = NULL, operation_lock_until = NULL, updated_at = ?
      WHERE id = ? AND operation_token = ?`,
   ).bind(
     input.remoteSlug,
+    input.requestFingerprint,
     JSON.stringify(input.schedule),
     JSON.stringify(input.submissionData),
     input.status,

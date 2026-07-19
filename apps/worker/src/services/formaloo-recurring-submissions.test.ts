@@ -3,6 +3,7 @@ import {
   buildFormalooSchedule,
   changeFormalooRecurringSubmissionStatus,
   ensureFormalooRecurringSubmission,
+  fingerprintFormalooRecurringRequest,
   updateFormalooRecurringSubmission,
   type FormalooRecurringApi,
   type FormalooRecurringSubmissionRequest,
@@ -84,7 +85,36 @@ describe('buildFormalooSchedule — official ScheduleRequest contract', () => {
 });
 
 describe('Formaloo recurring-submissions provider service', () => {
+  test('request fingerprint is canonical and ignores lifecycle status', async () => {
+    const reordered = {
+      ...request,
+      schedule: {
+        ...request.schedule,
+        interval: { z: 'last', a: 'first' },
+      },
+      submission_data: { z: 2, nested: { z: true, a: false }, a: 1 },
+    };
+    const sameContent = {
+      ...reordered,
+      schedule: {
+        ...reordered.schedule,
+        interval: { a: 'first', z: 'last' },
+      },
+      submission_data: { a: 1, nested: { a: false, z: true }, z: 2 },
+      status: 'paused' as const,
+    };
+    await expect(fingerprintFormalooRecurringRequest(reordered))
+      .resolves.toBe(await fingerprintFormalooRecurringRequest(sameContent));
+    await expect(fingerprintFormalooRecurringRequest({
+      ...reordered,
+      submission_data: { ...reordered.submission_data, a: 999 },
+    })).resolves.not.toBe(await fingerprintFormalooRecurringRequest(reordered));
+  });
+
   test('GET-before-POST and detail read-back make create idempotent and detect soft-201', async () => {
+    // Hypothetical host-observed success shape used only to exercise the wired path. The official
+    // response schema does not document where a detail-path slug is returned; the no-slug case below
+    // pins the production fail-safe until the host checklist confirms this shape.
     const api = client({
       gets: [
         ok({ results: [] }),
@@ -131,8 +161,33 @@ describe('Formaloo recurring-submissions provider service', () => {
     });
   });
 
-  test('missing create-response slug is surfaced as an unknown provider outcome and never guessed', async () => {
-    const api = client({ gets: [ok({ results: [] })], posts: [ok(request, 201)] });
+  test('read-back accepts equivalent RFC3339 instants and omitted nullable end_time', async () => {
+    const api = client({
+      gets: [
+        ok({ results: [] }),
+        ok({
+          slug: 'rs_normalized',
+          ...request,
+          schedule: {
+            interval: request.schedule.interval,
+            start_time: '2026-07-20T00:00:00Z',
+          },
+        }),
+      ],
+      posts: [ok({ slug: 'rs_normalized' }, 201)],
+    });
+
+    await expect(ensureFormalooRecurringSubmission(api, request)).resolves.toMatchObject({
+      ok: true,
+      slug: 'rs_normalized',
+    });
+  });
+
+  test('missing create-response slug is surfaced as an unknown provider outcome and an id is never guessed as a slug', async () => {
+    const api = client({
+      gets: [ok({ results: [] })],
+      posts: [ok({ id: 'undocumented-identifier', ...request }, 201)],
+    });
     await expect(ensureFormalooRecurringSubmission(api, request)).resolves.toEqual({
       ok: false,
       reason: 'slug_missing',
@@ -158,9 +213,36 @@ describe('Formaloo recurring-submissions provider service', () => {
         patches: [ok({})],
         gets: [ok({ slug: 'rs_status', ...request, status })],
       });
-      await expect(changeFormalooRecurringSubmissionStatus(api, 'rs_status', status)).resolves
+      await expect(changeFormalooRecurringSubmissionStatus(
+        api,
+        'rs_status',
+        status,
+        { ...request, status },
+      )).resolves
         .toMatchObject({ ok: true, value: { status } });
       expect(api.patch).toHaveBeenCalledWith('/v3.0/recurring-submissions/rs_status/', { status });
     },
   );
+
+  test('status soft-200 is rejected when read-back changed schedule or submission identity', async () => {
+    const api = client({
+      patches: [ok({})],
+      gets: [ok({
+        slug: 'rs_status',
+        ...request,
+        submission_data: { inventory: 999 },
+        status: 'paused',
+      })],
+    });
+    await expect(changeFormalooRecurringSubmissionStatus(
+      api,
+      'rs_status',
+      'paused',
+      { ...request, status: 'paused' },
+    )).resolves.toEqual({
+      ok: false,
+      reason: 'read_back_failed',
+      candidateSlug: 'rs_status',
+    });
+  });
 });

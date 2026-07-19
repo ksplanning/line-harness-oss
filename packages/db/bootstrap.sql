@@ -528,6 +528,7 @@ CREATE TABLE formaloo_recurring_submissions (
   id                   TEXT PRIMARY KEY,
   form_id              TEXT NOT NULL REFERENCES formaloo_forms (id) ON DELETE CASCADE,
   idempotency_key      TEXT NOT NULL,
+  request_fingerprint  TEXT NOT NULL,
   remote_slug          TEXT,
   schedule_json        TEXT NOT NULL,
   submission_data_json TEXT NOT NULL DEFAULT '{}',
@@ -1347,6 +1348,10 @@ CREATE INDEX idx_formaloo_forms_account ON formaloo_forms (line_account_id, dele
 CREATE INDEX idx_formaloo_forms_folder ON formaloo_forms (folder_id);
 
 CREATE INDEX idx_formaloo_forms_slug ON formaloo_forms (formaloo_slug);
+
+CREATE UNIQUE INDEX idx_formaloo_recurring_active_fingerprint
+  ON formaloo_recurring_submissions (form_id, request_fingerprint)
+  WHERE status != 'cancelled';
 
 CREATE INDEX idx_formaloo_recurring_form
   ON formaloo_recurring_submissions (form_id, created_at DESC);

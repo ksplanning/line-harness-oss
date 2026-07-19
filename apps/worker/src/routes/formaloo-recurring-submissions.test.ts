@@ -14,6 +14,7 @@ const pendingMirror = {
   id: 'frs_1',
   formId: 'fa_1',
   idempotencyKey: 'attempt-1',
+  requestFingerprint: '1ea579b874e06603b075fe910513ee3604a507aef01df33770fbff7c5fbbb447',
   remoteSlug: null,
   schedule,
   submissionData: { stock: 8 },
@@ -57,13 +58,24 @@ function makeDeps(overrides: Partial<FormalooRecurringRouteDeps> = {}) {
     getForm: vi.fn(async (_db, id) => form(id) as never),
     listMirrors: vi.fn(async () => []),
     getByIdempotencyKey: vi.fn(async () => null),
+    getByFingerprint: vi.fn(async () => null),
     getBySlug: vi.fn(async () => null),
-    reserveMirror: vi.fn(async () => pendingMirror),
+    reserveMirror: vi.fn(async (_db, input) => ({
+      ...pendingMirror,
+      formId: input.formId,
+      idempotencyKey: input.idempotencyKey,
+      requestFingerprint: input.requestFingerprint,
+      schedule: input.schedule,
+      submissionData: input.submissionData,
+      status: input.status,
+    })),
     claimMirror: vi.fn(async () => true),
     releaseClaim: vi.fn(async () => undefined),
     completeMirror: vi.fn(async () => true),
     markFailed: vi.fn(async () => true),
     refreshMirror: vi.fn(async () => syncedMirror),
+    acquireFormLock: vi.fn(async () => true),
+    releaseFormLock: vi.fn(async () => undefined),
     resolveClient: vi.fn(async () => api as never),
     deadlineClient: vi.fn((client) => client),
     ensureRemote: vi.fn(async (_client, request) => ({
@@ -118,6 +130,7 @@ describe('form-scoped recurring submission routes', () => {
     expect(deps.completeMirror).toHaveBeenCalledWith(expect.anything(), 'frs_1', {
       token: 'operation-token',
       remoteSlug: 'rs_1',
+      requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       schedule,
       submissionData: { stock: 8 },
       status: 'resumed',
@@ -143,6 +156,30 @@ describe('form-scoped recurring submission routes', () => {
     expect(deps.ensureRemote).not.toHaveBeenCalled();
   });
 
+  test('a retry treats equivalent RFC3339 instants and omitted nullable end_time as the same request', async () => {
+    const normalizedMirror = {
+      ...syncedMirror,
+      schedule: {
+        interval: schedule.interval,
+        start_time: '2026-07-20T00:00:00.000Z',
+      },
+    };
+    const { deps } = makeDeps({
+      getByIdempotencyKey: vi.fn(async () => normalizedMirror),
+    });
+    const response = await createFormalooRecurringSubmissionRoutes(deps).request(
+      '/api/forms-advanced/fa_1/recurring-submissions',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(createBody()),
+      },
+      env() as never,
+    );
+    expect(response.status).toBe(200);
+    expect(deps.ensureRemote).not.toHaveBeenCalled();
+  });
+
   test('same idempotency key with different content is rejected instead of silently reusing it', async () => {
     const { deps } = makeDeps({ getByIdempotencyKey: vi.fn(async () => syncedMirror) });
     const response = await createFormalooRecurringSubmissionRoutes(deps).request(
@@ -155,6 +192,90 @@ describe('form-scoped recurring submission routes', () => {
       env() as never,
     );
     expect(response.status).toBe(409);
+    expect(deps.ensureRemote).not.toHaveBeenCalled();
+  });
+
+  test('a raced reservation is revalidated before a different body can use the winning ledger', async () => {
+    const { deps } = makeDeps({
+      getByIdempotencyKey: vi.fn(async () => null),
+      reserveMirror: vi.fn(async () => pendingMirror),
+    });
+    const response = await createFormalooRecurringSubmissionRoutes(deps).request(
+      '/api/forms-advanced/fa_1/recurring-submissions',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...createBody(), submissionData: { stock: 999 } }),
+      },
+      env() as never,
+    );
+    expect(response.status).toBe(409);
+    expect(deps.claimMirror).not.toHaveBeenCalled();
+    expect(deps.ensureRemote).not.toHaveBeenCalled();
+  });
+
+  test('different idempotency keys cannot race two provider creates for identical content', async () => {
+    let finishFirst!: () => void;
+    const ensureRemote = vi.fn()
+      .mockImplementationOnce(async (_client, remoteRequest) => new Promise((resolve) => {
+        finishFirst = () => resolve({
+          ok: true as const,
+          slug: 'rs_1',
+          created: true,
+          value: { slug: 'rs_1', ...remoteRequest },
+        });
+      }))
+      .mockImplementationOnce(async (_client, remoteRequest) => ({
+        ok: true as const,
+        slug: 'rs_duplicate',
+        created: true,
+        value: { slug: 'rs_duplicate', ...remoteRequest },
+      }));
+    const { deps } = makeDeps({
+      acquireFormLock: vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false),
+      ensureRemote,
+    });
+    const routes = createFormalooRecurringSubmissionRoutes(deps);
+    const firstPromise = routes.request('/api/forms-advanced/fa_1/recurring-submissions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...createBody(), idempotencyKey: 'tab-a' }),
+    }, env() as never);
+    await vi.waitFor(() => expect(ensureRemote).toHaveBeenCalledTimes(1));
+    const second = await routes.request('/api/forms-advanced/fa_1/recurring-submissions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...createBody(), idempotencyKey: 'tab-b' }),
+    }, env() as never);
+    finishFirst();
+    const first = await firstPromise;
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+    expect(ensureRemote).toHaveBeenCalledTimes(1);
+  });
+
+  test('a different key cannot bypass an unresolved identical create outcome', async () => {
+    const failed = {
+      ...pendingMirror,
+      idempotencyKey: 'first-tab',
+      syncState: 'failed' as const,
+      lastError: 'slug_missing',
+    };
+    const { deps } = makeDeps({
+      getByFingerprint: vi.fn(async () => failed),
+    });
+    const response = await createFormalooRecurringSubmissionRoutes(deps).request(
+      '/api/forms-advanced/fa_1/recurring-submissions',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...createBody(), idempotencyKey: 'second-tab' }),
+      },
+      env() as never,
+    );
+    expect(response.status).toBe(409);
+    expect(deps.claimMirror).not.toHaveBeenCalled();
     expect(deps.ensureRemote).not.toHaveBeenCalled();
   });
 
@@ -195,7 +316,10 @@ describe('form-scoped recurring submission routes', () => {
     const mirror = { ...pendingMirror, id: `frs_${formId}`, formId };
     const { deps } = makeDeps({
       getForm: vi.fn(async () => form(formId, workspaceId) as never),
-      reserveMirror: vi.fn(async () => mirror),
+      reserveMirror: vi.fn(async (_db, input) => ({
+        ...mirror,
+        requestFingerprint: input.requestFingerprint,
+      })),
       refreshMirror: vi.fn(async () => ({ ...mirror, remoteSlug: 'rs_tenant', syncState: 'synced' as const })),
     });
     const response = await createFormalooRecurringSubmissionRoutes(deps).request(
@@ -229,7 +353,12 @@ describe('form-scoped recurring submission routes', () => {
       env() as never,
     );
     expect(pausedResponse.status).toBe(200);
-    expect(deps.changeRemoteStatus).toHaveBeenCalledWith(expect.anything(), 'rs_1', 'paused');
+    expect(deps.changeRemoteStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      'rs_1',
+      'paused',
+      expect.objectContaining({ form: 'remote-fa_1', status: 'paused' }),
+    );
 
     const foreignResponse = await routes.request(
       '/api/forms-advanced/fa_other/recurring-submissions/rs_1',
@@ -264,6 +393,82 @@ describe('form-scoped recurring submission routes', () => {
       method: 'DELETE',
     }, env() as never);
     expect(cancelled.status).toBe(200);
-    expect(deps.changeRemoteStatus).toHaveBeenCalledWith(expect.anything(), 'rs_1', 'cancelled');
+    expect(deps.changeRemoteStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      'rs_1',
+      'cancelled',
+      expect.objectContaining({ form: 'remote-fa_1', status: 'cancelled' }),
+    );
+  });
+
+  test('PUT rejects an active fingerprint owned by another mirror before provider IO', async () => {
+    const conflict = { ...syncedMirror, id: 'frs_other', remoteSlug: 'rs_other' };
+    const { deps } = makeDeps({
+      getBySlug: vi.fn(async () => syncedMirror),
+      getByFingerprint: vi.fn(async () => conflict),
+    });
+    const response = await createFormalooRecurringSubmissionRoutes(deps).request(
+      '/api/forms-advanced/fa_1/recurring-submissions/rs_1',
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          schedule: createBody().schedule,
+          submissionData: { stock: 8 },
+          status: 'resumed',
+        }),
+      },
+      env() as never,
+    );
+    expect(response.status).toBe(409);
+    expect(deps.updateRemote).not.toHaveBeenCalled();
+  });
+
+  test('cancelled is terminal and cannot be resumed by a direct API caller', async () => {
+    const cancelled = { ...syncedMirror, status: 'cancelled' as const };
+    const { deps } = makeDeps({ getBySlug: vi.fn(async () => cancelled) });
+    const response = await createFormalooRecurringSubmissionRoutes(deps).request(
+      '/api/forms-advanced/fa_1/recurring-submissions/rs_1',
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'resumed' }),
+      },
+      env() as never,
+    );
+    expect(response.status).toBe(409);
+    expect(deps.changeRemoteStatus).not.toHaveBeenCalled();
+  });
+
+  test('repeated cancellation is idempotent and does not call the provider again', async () => {
+    const cancelled = { ...syncedMirror, status: 'cancelled' as const };
+    const { deps } = makeDeps({ getBySlug: vi.fn(async () => cancelled) });
+    const response = await createFormalooRecurringSubmissionRoutes(deps).request(
+      '/api/forms-advanced/fa_1/recurring-submissions/rs_1',
+      { method: 'DELETE' },
+      env() as never,
+    );
+    expect(response.status).toBe(200);
+    expect(deps.changeRemoteStatus).not.toHaveBeenCalled();
+  });
+
+  test('PUT cannot replace a cancelled recurring submission', async () => {
+    const cancelled = { ...syncedMirror, status: 'cancelled' as const };
+    const { deps } = makeDeps({ getBySlug: vi.fn(async () => cancelled) });
+    const response = await createFormalooRecurringSubmissionRoutes(deps).request(
+      '/api/forms-advanced/fa_1/recurring-submissions/rs_1',
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          schedule: createBody().schedule,
+          submissionData: { stock: 8 },
+          status: 'resumed',
+        }),
+      },
+      env() as never,
+    );
+    expect(response.status).toBe(409);
+    expect(deps.updateRemote).not.toHaveBeenCalled();
   });
 });

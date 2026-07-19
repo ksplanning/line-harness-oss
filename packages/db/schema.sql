@@ -1371,6 +1371,7 @@ CREATE TABLE IF NOT EXISTS formaloo_recurring_submissions (
   id                   TEXT PRIMARY KEY,
   form_id              TEXT NOT NULL REFERENCES formaloo_forms (id) ON DELETE CASCADE,
   idempotency_key      TEXT NOT NULL,
+  request_fingerprint  TEXT NOT NULL,
   remote_slug          TEXT,
   schedule_json        TEXT NOT NULL,
   submission_data_json TEXT NOT NULL DEFAULT '{}',
@@ -1386,5 +1387,8 @@ CREATE TABLE IF NOT EXISTS formaloo_recurring_submissions (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_formaloo_recurring_remote_slug
   ON formaloo_recurring_submissions (form_id, remote_slug)
   WHERE remote_slug IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_formaloo_recurring_active_fingerprint
+  ON formaloo_recurring_submissions (form_id, request_fingerprint)
+  WHERE status != 'cancelled';
 CREATE INDEX IF NOT EXISTS idx_formaloo_recurring_form
   ON formaloo_recurring_submissions (form_id, created_at DESC);

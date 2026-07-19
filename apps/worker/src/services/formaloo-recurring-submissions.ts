@@ -116,14 +116,16 @@ function collectRecords(root: unknown): Record<string, unknown>[] {
 
 function candidateSlug(root: unknown): string | null {
   for (const record of collectRecords(root)) {
-    const value = record.slug ?? record.id;
+    // OpenAPI does not document another identifier as interchangeable with the detail-path slug.
+    // In particular, never guess that an `id` can be used in /{slug}/.
+    const value = record.slug;
     if (typeof value === 'string' && value.length > 0) return value;
   }
   return null;
 }
 
 function normalizeRecurring(record: Record<string, unknown>): FormalooRecurringSubmission | null {
-  const slug = record.slug ?? record.id;
+  const slug = record.slug;
   if (typeof slug !== 'string' || slug.length === 0 || typeof record.form !== 'string') return null;
   const rawSchedule = asRecord(record.schedule);
   if (!rawSchedule) return null;
@@ -165,8 +167,41 @@ function canonical(value: unknown): unknown {
   );
 }
 
+export async function fingerprintFormalooRecurringRequest(
+  request: FormalooRecurringSubmissionRequest,
+): Promise<string> {
+  const identity = canonical({
+    form: request.form,
+    schedule: {
+      interval: request.schedule.interval,
+      start_time: new Date(request.schedule.start_time).toISOString(),
+      end_time: request.schedule.end_time == null
+        ? null
+        : new Date(request.schedule.end_time).toISOString(),
+    },
+    submission_data: request.submission_data,
+  });
+  const bytes = new TextEncoder().encode(JSON.stringify(identity));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function equalJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+function equalDateTime(left: string, right: string): boolean {
+  return Date.parse(left) === Date.parse(right);
+}
+
+function equalSchedule(left: FormalooSchedule, right: FormalooSchedule): boolean {
+  const leftEnd = left.end_time ?? null;
+  const rightEnd = right.end_time ?? null;
+  return equalJson(left.interval, right.interval)
+    && equalDateTime(left.start_time, right.start_time)
+    && (leftEnd === null || rightEnd === null
+      ? leftEnd === rightEnd
+      : equalDateTime(leftEnd, rightEnd));
 }
 
 function matchesRequest(
@@ -175,7 +210,7 @@ function matchesRequest(
 ): boolean {
   return value.form === expected.form
     && value.status === expected.status
-    && equalJson(value.schedule, expected.schedule)
+    && equalSchedule(value.schedule, expected.schedule)
     && equalJson(value.submission_data, expected.submission_data);
 }
 
@@ -238,12 +273,15 @@ export async function changeFormalooRecurringSubmissionStatus(
   client: FormalooRecurringApi,
   slug: string,
   status: FormalooRecurringStatus,
+  expected: FormalooRecurringSubmissionRequest,
 ): Promise<RecurringWriteResult> {
   const updated = await client.patch(detailPath(slug), { status });
   if (!updated.ok) return { ok: false, reason: 'status_failed', candidateSlug: slug };
   const readBack = await client.get(detailPath(slug));
   if (!readBack.ok) return { ok: false, reason: 'read_back_failed', candidateSlug: slug };
-  const value = recurringValues(readBack.data).find((item) => item.slug === slug && item.status === status);
+  const expectedAfterWrite = { ...expected, status };
+  const value = recurringValues(readBack.data)
+    .find((item) => item.slug === slug && matchesRequest(item, expectedAfterWrite));
   return value
     ? { ok: true, slug, created: false, value }
     : { ok: false, reason: 'read_back_failed', candidateSlug: slug };

@@ -21,6 +21,8 @@ vi.mock('@line-crm/db', () => ({
   getFormalooForm: vi.fn(),
   acquireFormalooWebhookOperationLock: vi.fn(),
   releaseFormalooWebhookOperationLock: vi.fn(),
+  acquireFormalooFormOperationLock: vi.fn(),
+  releaseFormalooFormOperationLock: vi.fn(),
   renewFormalooWebhookOperationLock: vi.fn(),
   markFormalooWebhookPullPending: vi.fn(),
   claimFormalooWebhookPull: vi.fn(),
@@ -31,6 +33,17 @@ vi.mock('@line-crm/db', () => ({
   disableFormalooWebhookRegistration: vi.fn(),
   clearFormalooWebhookRegistration: vi.fn(),
   upsertFormalooSubmission: vi.fn(),
+  listFormalooRecurringSubmissions: vi.fn().mockResolvedValue([]),
+  getFormalooRecurringSubmissionByIdempotencyKey: vi.fn(),
+  getFormalooRecurringSubmissionByFingerprint: vi.fn(),
+  getFormalooRecurringSubmissionBySlug: vi.fn(),
+  hasBlockingFormalooRecurringSubmissions: vi.fn(),
+  reserveFormalooRecurringSubmission: vi.fn(),
+  claimFormalooRecurringSubmission: vi.fn(),
+  releaseFormalooRecurringSubmissionClaim: vi.fn(),
+  completeFormalooRecurringSubmission: vi.fn(),
+  markFormalooRecurringSubmissionFailed: vi.fn(),
+  refreshFormalooRecurringSubmission: vi.fn(),
 }));
 
 import { notFoundHandler, type Env } from './index.js';

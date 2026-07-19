@@ -31,6 +31,9 @@ import {
   updateSubmissionRowSlug,
   getStaffById,
   jstNow,
+  acquireFormalooFormOperationLock,
+  releaseFormalooFormOperationLock,
+  hasBlockingFormalooRecurringSubmissions,
   type FormalooForm,
   type FormalooSubmissionRow,
 } from '@line-crm/db';
@@ -1273,29 +1276,66 @@ formsAdvanced.get('/api/forms-advanced/:id/embed', async (c) => {
 
 // DELETE /api/forms-advanced/:id — 論理削除 (N-11 tombstone)
 formsAdvanced.delete('/api/forms-advanced/:id', async (c) => {
+  const id = c.req.param('id')!;
+  const lockToken = crypto.randomUUID();
+  let lockAcquired = false;
   try {
-    const id = c.req.param('id')!;
+    lockAcquired = await acquireFormalooFormOperationLock(c.env.DB, id, {
+      token: lockToken,
+      nowMs: Date.now(),
+      leaseMs: 120_000,
+    });
+    if (!lockAcquired) {
+      const current = await getFormalooForm(c.env.DB, id);
+      if (!current || current.deleted) {
+        return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+      }
+      return c.json({ success: false, error: 'このフォームの Formaloo 操作を処理中です。完了後にもう一度お試しください' }, 409);
+    }
+
+    // Lock 後に読み直す。登録側も同じ form-scoped lock を使い、deleted=1 の form では lock を取れないため、
+    // 「登録を確認してから削除」までをひとつの直列化された操作にする。
     const form = await getFormalooForm(c.env.DB, id);
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    if (await hasBlockingFormalooRecurringSubmissions(c.env.DB, id)) {
+      return c.json({
+        success: false,
+        error: '定期自動回答をすべて取消し、Formaloo への反映確認後にフォームを削除してください',
+      }, 409);
+    }
+
+    const spSlugs = (parseDefinition(form.definition_json).successPages ?? [])
+      .map((sp) => sp.slug)
+      .filter((s): s is string => typeof s === 'string' && s.length > 0);
+
+    // D1 tombstone を remote cleanup より先に確定し、cleanup 中に lease が切れても新しい登録が始まらないようにする。
+    await softDeleteFormalooForm(c.env.DB, id);
+
     // route-terminal-phase2 (T-E4 / CX-2): form 削除で紐づく success-page (完了ページ) を明示 DELETE で回収する。
     //   Formaloo は form DELETE で SP を cascade しない (S-1 §5c) ゆえ、harness が abandon する form の SP resource
     //   が孤児として残る。remote form の削除有無と独立に SP slug を明示 DELETE (404 は成功扱い・fail-soft で
     //   本削除をブロックしない = 部分失敗は log で残余記録)。
-    const spSlugs = (parseDefinition(form.definition_json).successPages ?? [])
-      .map((sp) => sp.slug)
-      .filter((s): s is string => typeof s === 'string' && s.length > 0);
     if (spSlugs.length) {
-      const spClient = await resolveFormalooClient(c.env, form.workspace_id);
-      if (spClient) {
-        const del = await deleteSuccessPages(spClient, spSlugs);
-        if (!del.ok) console.error('DELETE /api/forms-advanced/:id — SP 孤児回収の一部失敗:', id, del.failed);
+      try {
+        const spClient = await resolveFormalooClient(c.env, form.workspace_id);
+        if (spClient) {
+          const del = await deleteSuccessPages(spClient, spSlugs);
+          if (!del.ok) console.error('DELETE /api/forms-advanced/:id — SP 孤児回収の一部失敗:', id, del.failed);
+        }
+      } catch (cleanupErr) {
+        console.error('DELETE /api/forms-advanced/:id — SP 孤児回収に失敗 (form は削除済み):', id, cleanupErr);
       }
     }
-    await softDeleteFormalooForm(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/forms-advanced/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  } finally {
+    if (lockAcquired) {
+      await releaseFormalooFormOperationLock(c.env.DB, id, lockToken).catch((releaseErr) => {
+        console.error('DELETE /api/forms-advanced/:id — form operation lock release failed:', id, releaseErr);
+      });
+    }
   }
 });
 

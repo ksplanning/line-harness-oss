@@ -1,13 +1,16 @@
 import { Hono, type Context } from 'hono';
 import {
+  acquireFormalooFormOperationLock,
   claimFormalooRecurringSubmission,
   completeFormalooRecurringSubmission,
   getFormalooForm,
+  getFormalooRecurringSubmissionByFingerprint,
   getFormalooRecurringSubmissionByIdempotencyKey,
   getFormalooRecurringSubmissionBySlug,
   listFormalooRecurringSubmissions,
   markFormalooRecurringSubmissionFailed,
   refreshFormalooRecurringSubmission,
+  releaseFormalooFormOperationLock,
   releaseFormalooRecurringSubmissionClaim,
   reserveFormalooRecurringSubmission,
   type FormalooRecurringStatus as MirrorStatus,
@@ -18,6 +21,7 @@ import {
   buildFormalooSchedule,
   changeFormalooRecurringSubmissionStatus,
   ensureFormalooRecurringSubmission,
+  fingerprintFormalooRecurringRequest,
   updateFormalooRecurringSubmission,
   type FormalooRecurringStatus,
   type FormalooRecurringSubmissionRequest,
@@ -31,6 +35,7 @@ export interface FormalooRecurringRouteDeps {
   getForm: typeof getFormalooForm;
   listMirrors: typeof listFormalooRecurringSubmissions;
   getByIdempotencyKey: typeof getFormalooRecurringSubmissionByIdempotencyKey;
+  getByFingerprint: typeof getFormalooRecurringSubmissionByFingerprint;
   getBySlug: typeof getFormalooRecurringSubmissionBySlug;
   reserveMirror: typeof reserveFormalooRecurringSubmission;
   claimMirror: typeof claimFormalooRecurringSubmission;
@@ -38,6 +43,8 @@ export interface FormalooRecurringRouteDeps {
   completeMirror: typeof completeFormalooRecurringSubmission;
   markFailed: typeof markFormalooRecurringSubmissionFailed;
   refreshMirror: typeof refreshFormalooRecurringSubmission;
+  acquireFormLock: typeof acquireFormalooFormOperationLock;
+  releaseFormLock: typeof releaseFormalooFormOperationLock;
   resolveClient: typeof resolveFormalooClient;
   deadlineClient: (client: FormalooClient) => FormalooClient;
   ensureRemote: typeof ensureFormalooRecurringSubmission;
@@ -51,6 +58,7 @@ const defaultDeps: FormalooRecurringRouteDeps = {
   getForm: getFormalooForm,
   listMirrors: listFormalooRecurringSubmissions,
   getByIdempotencyKey: getFormalooRecurringSubmissionByIdempotencyKey,
+  getByFingerprint: getFormalooRecurringSubmissionByFingerprint,
   getBySlug: getFormalooRecurringSubmissionBySlug,
   reserveMirror: reserveFormalooRecurringSubmission,
   claimMirror: claimFormalooRecurringSubmission,
@@ -58,6 +66,8 @@ const defaultDeps: FormalooRecurringRouteDeps = {
   completeMirror: completeFormalooRecurringSubmission,
   markFailed: markFormalooRecurringSubmissionFailed,
   refreshMirror: refreshFormalooRecurringSubmission,
+  acquireFormLock: acquireFormalooFormOperationLock,
+  releaseFormLock: releaseFormalooFormOperationLock,
   resolveClient: resolveFormalooClient,
   deadlineClient: (client) => client.withDeadline(PROVIDER_DEADLINE_MS),
   ensureRemote: ensureFormalooRecurringSubmission,
@@ -78,24 +88,12 @@ function statusValue(value: unknown, fallback?: FormalooRecurringStatus): Formal
   return value === 'resumed' || value === 'paused' || value === 'cancelled' ? value : undefined;
 }
 
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  const record = asRecord(value);
-  if (!record) return value;
-  return Object.fromEntries(Object.keys(record).sort().map((key) => [key, canonical(record[key])]));
-}
-
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
-}
-
 function mirrorMatches(
   mirror: FormalooRecurringSubmissionMirror,
-  request: FormalooRecurringSubmissionRequest,
+  requestFingerprint: string,
+  status: FormalooRecurringStatus,
 ): boolean {
-  return mirror.status === request.status
-    && sameJson(mirror.schedule, request.schedule)
-    && sameJson(mirror.submissionData, request.submission_data);
+  return mirror.status === status && mirror.requestFingerprint === requestFingerprint;
 }
 
 function requestFromBody(
@@ -178,70 +176,101 @@ export function createFormalooRecurringSubmissionRoutes(
       return c.json({ success: false, error: error instanceof Error ? error.message : '入力が不正です' }, 400);
     }
 
-    let mirror = await deps.getByIdempotencyKey(c.env.DB, form.id, idempotencyKey);
-    if (mirror && !mirrorMatches(mirror, request)) {
-      return c.json({ success: false, error: '同じ idempotencyKey に異なる内容は指定できません' }, 409);
-    }
-    if (mirror?.syncState === 'synced' && mirror.remoteSlug) {
-      return c.json({ success: true, data: mirror });
-    }
-    if (
-      mirror?.syncState === 'failed'
-      && !mirror.remoteSlug
-      && (mirror.lastError === 'slug_missing' || mirror.lastError === 'create_failed')
-    ) {
-      return c.json({ success: false, error: providerErrorMessage(mirror.lastError) }, 409);
-    }
-    mirror ??= await deps.reserveMirror(c.env.DB, {
-      formId: form.id,
-      idempotencyKey,
-      schedule: request.schedule,
-      submissionData: request.submission_data,
-      status: request.status as MirrorStatus,
-    });
-
     const token = deps.generateToken();
-    const claimed = await deps.claimMirror(c.env.DB, mirror.id, {
+    const nowMs = deps.now();
+    if (!await deps.acquireFormLock(c.env.DB, form.id, {
       token,
-      nowMs: deps.now(),
+      nowMs,
       leaseMs: OPERATION_LEASE_MS,
-    });
-    if (!claimed) {
-      const latest = await deps.refreshMirror(c.env.DB, mirror.id);
-      if (latest?.syncState === 'synced' && latest.remoteSlug && mirrorMatches(latest, request)) {
-        return c.json({ success: true, data: latest });
-      }
-      return c.json({ success: false, error: '定期自動回答を処理中です。少し待って再試行してください' }, 409);
+    })) {
+      return c.json({ success: false, error: 'このフォームの Formaloo 操作を処理中です。少し待って再試行してください' }, 409);
     }
 
     try {
-      const client = await deps.resolveClient(c.env, form.workspace_id);
-      if (!client) return c.json({ success: false, error: 'Formaloo 接続を確認してください' }, 503);
-      const result = await deps.ensureRemote(deps.deadlineClient(client), request, {
-        candidateSlug: mirror.remoteSlug,
-      });
-      if (!result.ok) {
-        await deps.markFailed(c.env.DB, mirror.id, {
-          token,
-          candidateSlug: result.candidateSlug,
-          error: result.reason,
-        });
-        return c.json({ success: false, error: providerErrorMessage(result.reason) }, 502);
+      const requestFingerprint = await fingerprintFormalooRecurringRequest(request);
+      const byKey = await deps.getByIdempotencyKey(c.env.DB, form.id, idempotencyKey);
+      if (byKey && !mirrorMatches(byKey, requestFingerprint, request.status)) {
+        return c.json({ success: false, error: '同じ idempotencyKey に異なる内容は指定できません' }, 409);
       }
-      const completed = await deps.completeMirror(c.env.DB, mirror.id, {
-        token,
-        remoteSlug: result.slug,
-        schedule: result.value.schedule,
-        submissionData: result.value.submission_data,
-        status: result.value.status as MirrorStatus,
+      const byFingerprint = await deps.getByFingerprint(c.env.DB, form.id, requestFingerprint);
+      let mirror = byKey ?? byFingerprint;
+      if (mirror && !mirrorMatches(mirror, requestFingerprint, request.status)) {
+        return c.json({ success: false, error: '同じ内容の定期自動回答が別の状態で存在します。一覧から操作してください' }, 409);
+      }
+      if (mirror?.syncState === 'synced' && mirror.remoteSlug) {
+        return c.json({ success: true, data: mirror });
+      }
+      if (
+        mirror?.syncState === 'failed'
+        && !mirror.remoteSlug
+        && (mirror.lastError === 'slug_missing' || mirror.lastError === 'create_failed')
+      ) {
+        return c.json({ success: false, error: providerErrorMessage(mirror.lastError) }, 409);
+      }
+      mirror ??= await deps.reserveMirror(c.env.DB, {
+        formId: form.id,
+        idempotencyKey,
+        requestFingerprint,
+        schedule: request.schedule,
+        submissionData: request.submission_data,
+        status: request.status as MirrorStatus,
       });
-      if (!completed) return c.json({ success: false, error: '台帳が更新されました。再読込してください' }, 409);
-      const saved = await deps.refreshMirror(c.env.DB, mirror.id);
-      if (!saved) return c.json({ success: false, error: '台帳の再取得に失敗しました' }, 500);
-      return c.json({ success: true, data: saved }, result.created ? 201 : 200);
+      // INSERT OR IGNORE may have returned a concurrent winner for the same key/fingerprint.
+      if (!mirrorMatches(mirror, requestFingerprint, request.status)) {
+        return c.json({ success: false, error: '同時登録された内容と一致しません。再読込してください' }, 409);
+      }
+
+      const claimed = await deps.claimMirror(c.env.DB, mirror.id, {
+        token,
+        nowMs,
+        leaseMs: OPERATION_LEASE_MS,
+      });
+      if (!claimed) {
+        const latest = await deps.refreshMirror(c.env.DB, mirror.id);
+        if (
+          latest?.syncState === 'synced'
+          && latest.remoteSlug
+          && mirrorMatches(latest, requestFingerprint, request.status)
+        ) {
+          return c.json({ success: true, data: latest });
+        }
+        return c.json({ success: false, error: '定期自動回答を処理中です。少し待って再試行してください' }, 409);
+      }
+
+      try {
+        const client = await deps.resolveClient(c.env, form.workspace_id);
+        if (!client) return c.json({ success: false, error: 'Formaloo 接続を確認してください' }, 503);
+        const result = await deps.ensureRemote(deps.deadlineClient(client), request, {
+          candidateSlug: mirror.remoteSlug,
+        });
+        if (!result.ok) {
+          await deps.markFailed(c.env.DB, mirror.id, {
+            token,
+            candidateSlug: result.candidateSlug,
+            error: result.reason,
+          });
+          return c.json({ success: false, error: providerErrorMessage(result.reason) }, 502);
+        }
+        const completed = await deps.completeMirror(c.env.DB, mirror.id, {
+          token,
+          remoteSlug: result.slug,
+          requestFingerprint,
+          schedule: result.value.schedule,
+          submissionData: result.value.submission_data,
+          status: result.value.status as MirrorStatus,
+        });
+        if (!completed) return c.json({ success: false, error: '台帳が更新されました。再読込してください' }, 409);
+        const saved = await deps.refreshMirror(c.env.DB, mirror.id);
+        if (!saved) return c.json({ success: false, error: '台帳の再取得に失敗しました' }, 500);
+        return c.json({ success: true, data: saved }, result.created ? 201 : 200);
+      } finally {
+        await deps.releaseClaim(c.env.DB, mirror.id, token).catch(() => {
+          console.error('Formaloo recurring submission claim release failed');
+        });
+      }
     } finally {
-      await deps.releaseClaim(c.env.DB, mirror.id, token).catch(() => {
-        console.error('Formaloo recurring submission claim release failed');
+      await deps.releaseFormLock(c.env.DB, form.id, token).catch(() => {
+        console.error('Formaloo form operation lock release failed');
       });
     }
   });
@@ -253,8 +282,6 @@ export function createFormalooRecurringSubmissionRoutes(
     if (!form || !form.formaloo_slug) return c.json({ success: false, error: 'Not found' }, 404);
     const slug = c.req.param('slug');
     if (!slug) return c.json({ success: false, error: 'Not found' }, 404);
-    const mirror = await deps.getBySlug(c.env.DB, form.id, slug);
-    if (!mirror) return c.json({ success: false, error: 'Not found' }, 404);
     let request: FormalooRecurringSubmissionRequest;
     try {
       request = requestFromBody(body, form.formaloo_slug);
@@ -262,34 +289,55 @@ export function createFormalooRecurringSubmissionRoutes(
       return c.json({ success: false, error: error instanceof Error ? error.message : '入力が不正です' }, 400);
     }
     const token = deps.generateToken();
-    if (!await deps.claimMirror(c.env.DB, mirror.id, { token, nowMs: deps.now(), leaseMs: OPERATION_LEASE_MS })) {
-      return c.json({ success: false, error: '定期自動回答を処理中です' }, 409);
+    const nowMs = deps.now();
+    if (!await deps.acquireFormLock(c.env.DB, form.id, { token, nowMs, leaseMs: OPERATION_LEASE_MS })) {
+      return c.json({ success: false, error: 'このフォームの Formaloo 操作を処理中です' }, 409);
     }
     try {
-      const client = await deps.resolveClient(c.env, form.workspace_id);
-      if (!client) return c.json({ success: false, error: 'Formaloo 接続を確認してください' }, 503);
-      const result = await deps.updateRemote(deps.deadlineClient(client), slug, request);
-      if (!result.ok) {
-        await deps.markFailed(c.env.DB, mirror.id, {
-          token, candidateSlug: result.candidateSlug, error: result.reason,
-        });
-        return c.json({ success: false, error: providerErrorMessage(result.reason) }, 502);
+      const mirror = await deps.getBySlug(c.env.DB, form.id, slug);
+      if (!mirror) return c.json({ success: false, error: 'Not found' }, 404);
+      if (mirror.status === 'cancelled') {
+        return c.json({ success: false, error: '取消済みの定期自動回答は変更できません' }, 409);
       }
-      const completed = await deps.completeMirror(c.env.DB, mirror.id, {
-        token,
-        remoteSlug: result.slug,
-        schedule: result.value.schedule,
-        submissionData: result.value.submission_data,
-        status: result.value.status as MirrorStatus,
-      });
-      if (!completed) return c.json({ success: false, error: '台帳が更新されました。再読込してください' }, 409);
-      const saved = await deps.refreshMirror(c.env.DB, mirror.id);
-      return saved
-        ? c.json({ success: true, data: saved })
-        : c.json({ success: false, error: '台帳の再取得に失敗しました' }, 500);
+      const requestFingerprint = await fingerprintFormalooRecurringRequest(request);
+      const conflict = await deps.getByFingerprint(c.env.DB, form.id, requestFingerprint);
+      if (conflict && conflict.id !== mirror.id) {
+        return c.json({ success: false, error: '同じ内容の定期自動回答がすでに存在します' }, 409);
+      }
+      if (!await deps.claimMirror(c.env.DB, mirror.id, { token, nowMs, leaseMs: OPERATION_LEASE_MS })) {
+        return c.json({ success: false, error: '定期自動回答を処理中です' }, 409);
+      }
+      try {
+        const client = await deps.resolveClient(c.env, form.workspace_id);
+        if (!client) return c.json({ success: false, error: 'Formaloo 接続を確認してください' }, 503);
+        const result = await deps.updateRemote(deps.deadlineClient(client), slug, request);
+        if (!result.ok) {
+          await deps.markFailed(c.env.DB, mirror.id, {
+            token, candidateSlug: result.candidateSlug, error: result.reason,
+          });
+          return c.json({ success: false, error: providerErrorMessage(result.reason) }, 502);
+        }
+        const completed = await deps.completeMirror(c.env.DB, mirror.id, {
+          token,
+          remoteSlug: result.slug,
+          requestFingerprint,
+          schedule: result.value.schedule,
+          submissionData: result.value.submission_data,
+          status: result.value.status as MirrorStatus,
+        });
+        if (!completed) return c.json({ success: false, error: '台帳が更新されました。再読込してください' }, 409);
+        const saved = await deps.refreshMirror(c.env.DB, mirror.id);
+        return saved
+          ? c.json({ success: true, data: saved })
+          : c.json({ success: false, error: '台帳の再取得に失敗しました' }, 500);
+      } finally {
+        await deps.releaseClaim(c.env.DB, mirror.id, token).catch(() => {
+          console.error('Formaloo recurring submission claim release failed');
+        });
+      }
     } finally {
-      await deps.releaseClaim(c.env.DB, mirror.id, token).catch(() => {
-        console.error('Formaloo recurring submission claim release failed');
+      await deps.releaseFormLock(c.env.DB, form.id, token).catch(() => {
+        console.error('Formaloo form operation lock release failed');
       });
     }
   });
@@ -310,37 +358,67 @@ export function createFormalooRecurringSubmissionRoutes(
     }
     const slug = c.req.param('slug');
     if (!slug) return c.json({ success: false, error: 'Not found' }, 404);
-    const mirror = await deps.getBySlug(c.env.DB, form.id, slug);
-    if (!mirror) return c.json({ success: false, error: 'Not found' }, 404);
     const token = deps.generateToken();
-    if (!await deps.claimMirror(c.env.DB, mirror.id, { token, nowMs: deps.now(), leaseMs: OPERATION_LEASE_MS })) {
-      return c.json({ success: false, error: '定期自動回答を処理中です' }, 409);
+    const nowMs = deps.now();
+    if (!await deps.acquireFormLock(c.env.DB, form.id, { token, nowMs, leaseMs: OPERATION_LEASE_MS })) {
+      return c.json({ success: false, error: 'このフォームの Formaloo 操作を処理中です' }, 409);
     }
     try {
-      const client = await deps.resolveClient(c.env, form.workspace_id);
-      if (!client) return c.json({ success: false, error: 'Formaloo 接続を確認してください' }, 503);
-      const result = await deps.changeRemoteStatus(deps.deadlineClient(client), slug, status);
-      if (!result.ok) {
-        await deps.markFailed(c.env.DB, mirror.id, {
-          token, candidateSlug: result.candidateSlug, error: result.reason,
-        });
-        return c.json({ success: false, error: providerErrorMessage(result.reason) }, 502);
+      const mirror = await deps.getBySlug(c.env.DB, form.id, slug);
+      if (!mirror) return c.json({ success: false, error: 'Not found' }, 404);
+      if (mirror.status === 'cancelled') {
+        return status === 'cancelled' && mirror.syncState === 'synced'
+          ? c.json({ success: true, data: mirror })
+          : c.json({ success: false, error: '取消済みの定期自動回答は再開・変更できません' }, 409);
       }
-      const completed = await deps.completeMirror(c.env.DB, mirror.id, {
-        token,
-        remoteSlug: result.slug,
-        schedule: result.value.schedule,
-        submissionData: result.value.submission_data,
-        status: result.value.status as MirrorStatus,
-      });
-      if (!completed) return c.json({ success: false, error: '台帳が更新されました。再読込してください' }, 409);
-      const saved = await deps.refreshMirror(c.env.DB, mirror.id);
-      return saved
-        ? c.json({ success: true, data: saved })
-        : c.json({ success: false, error: '台帳の再取得に失敗しました' }, 500);
+      if (mirror.status === status && mirror.syncState === 'synced') {
+        return c.json({ success: true, data: mirror });
+      }
+      if (!await deps.claimMirror(c.env.DB, mirror.id, { token, nowMs, leaseMs: OPERATION_LEASE_MS })) {
+        return c.json({ success: false, error: '定期自動回答を処理中です' }, 409);
+      }
+      try {
+        const client = await deps.resolveClient(c.env, form.workspace_id);
+        if (!client) return c.json({ success: false, error: 'Formaloo 接続を確認してください' }, 503);
+        const expected: FormalooRecurringSubmissionRequest = {
+          form: form.formaloo_slug,
+          schedule: mirror.schedule,
+          submission_data: mirror.submissionData,
+          status,
+        };
+        const result = await deps.changeRemoteStatus(
+          deps.deadlineClient(client),
+          slug,
+          status,
+          expected,
+        );
+        if (!result.ok) {
+          await deps.markFailed(c.env.DB, mirror.id, {
+            token, candidateSlug: result.candidateSlug, error: result.reason,
+          });
+          return c.json({ success: false, error: providerErrorMessage(result.reason) }, 502);
+        }
+        const completed = await deps.completeMirror(c.env.DB, mirror.id, {
+          token,
+          remoteSlug: result.slug,
+          requestFingerprint: mirror.requestFingerprint,
+          schedule: result.value.schedule,
+          submissionData: result.value.submission_data,
+          status: result.value.status as MirrorStatus,
+        });
+        if (!completed) return c.json({ success: false, error: '台帳が更新されました。再読込してください' }, 409);
+        const saved = await deps.refreshMirror(c.env.DB, mirror.id);
+        return saved
+          ? c.json({ success: true, data: saved })
+          : c.json({ success: false, error: '台帳の再取得に失敗しました' }, 500);
+      } finally {
+        await deps.releaseClaim(c.env.DB, mirror.id, token).catch(() => {
+          console.error('Formaloo recurring submission claim release failed');
+        });
+      }
     } finally {
-      await deps.releaseClaim(c.env.DB, mirror.id, token).catch(() => {
-        console.error('Formaloo recurring submission claim release failed');
+      await deps.releaseFormLock(c.env.DB, form.id, token).catch(() => {
+        console.error('Formaloo form operation lock release failed');
       });
     }
   };
