@@ -93,7 +93,8 @@
     "106_formaloo_webhook_registration.sql",
     "107_rich_menu_display_rules.sql",
     "108_formaloo_choice_lists.sql",
-    "109_formaloo_recurring_submissions.sql"
+    "109_formaloo_recurring_submissions.sql",
+    "111_formaloo_ai_chat_history.sql"
   ],
-  "migrationCount": 94
+  "migrationCount": 95
 }

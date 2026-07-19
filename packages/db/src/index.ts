@@ -30,6 +30,7 @@ export * from './staff';
 export * from './roles';
 export * from './formaloo';
 export * from './formaloo-recurring-submissions';
+export * from './formaloo-ai-chat';
 export * from './formaloo-folders';
 export * from './formaloo-choice-lists';
 export * from './auto-replies';
