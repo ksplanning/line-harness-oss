@@ -159,6 +159,26 @@ describe('repeating_section field OpenAPI contract', () => {
     }, (slug) => ({ REPEAT_SLUG: 'attendees', NAME_SLUG: 'name_id', EMAIL_SLUG: 'email_id' })[slug])).toEqual(field);
   });
 
+  test('pull accepts the real nested column_field object without dropping the field', () => {
+    const field = fromFormalooField({
+      slug: 'REPEAT_SLUG', type: 'repeating_section', title: '参加者', required: false, position: 3,
+      column_groups: [{
+        column_field: { slug: 'NAME_SLUG', type: 'short_text', title: '氏名', required: true },
+        slug: 'GROUP_NAME',
+        title: '氏名',
+      }],
+      min_rows: 1,
+      max_rows: 5,
+    }, (slug) => ({ REPEAT_SLUG: 'attendees', NAME_SLUG: 'name_id' })[slug]);
+
+    expect(field?.config.repeatingColumns).toEqual([
+      { columnField: 'name_id', slug: 'GROUP_NAME', title: '氏名' },
+    ]);
+    expect(toFormalooFieldPayload(field!, (id) => ({ name_id: 'NAME_SLUG' })[id])).toMatchObject({
+      column_groups: [{ column_field: 'NAME_SLUG', slug: 'GROUP_NAME', title: '氏名' }],
+    });
+  });
+
   test('rejects invalid columns, non-integer bounds, OpenAPI overflow, and min > max', () => {
     const base = { id: 'r', type: 'repeating_section', label: '明細', required: false, position: 0 };
     for (const config of [

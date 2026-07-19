@@ -15,7 +15,11 @@ const matrix = (rowTitle = '接客') => ({
 
 const repeating = (maxRows = 4) => ({
   slug: 'REPEAT', type: 'repeating_section', title: '参加者', required: false, position: 2,
-  column_groups: [{ column_field: 'NAME', slug: 'CG_NAME', title: '氏名' }],
+  column_groups: [{
+    column_field: { slug: 'NAME', type: 'short_text', title: '氏名' },
+    slug: 'CG_NAME',
+    title: '氏名',
+  }],
   min_rows: 1, max_rows: maxRows, has_other_choice: false, shuffle_choices: false,
   config: { addButtonLabel: '追加' },
 });

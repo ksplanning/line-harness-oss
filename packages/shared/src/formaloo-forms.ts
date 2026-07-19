@@ -1010,7 +1010,12 @@ export function fromFormalooField(
       repeatingColumns: Array.isArray(o.column_groups)
         ? o.column_groups.map((raw) => {
           const column = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-          const rawColumnField = typeof column.column_field === 'string' ? column.column_field : '';
+          const rawColumnField = typeof column.column_field === 'string'
+            ? column.column_field
+            : column.column_field && typeof column.column_field === 'object' && !Array.isArray(column.column_field)
+              && typeof (column.column_field as Record<string, unknown>).slug === 'string'
+              ? (column.column_field as Record<string, unknown>).slug as string
+              : '';
           return {
             columnField: (rawColumnField ? resolveId?.(rawColumnField) : undefined) ?? rawColumnField,
             ...(column.slug !== undefined ? { slug: column.slug } : {}),

@@ -26,7 +26,11 @@ describe('structural fields pull integration', () => {
       },
       {
         slug: 'REPEAT_SLUG', type: 'repeating_section', title: '参加者', required: false, position: 2,
-        column_groups: [{ column_field: 'NAME_SLUG', slug: 'GROUP_NAME', title: '氏名' }],
+        column_groups: [{
+          column_field: { slug: 'NAME_SLUG', type: 'short_text', title: '氏名', required: true },
+          slug: 'GROUP_NAME',
+          title: '氏名',
+        }],
         min_rows: 1, max_rows: 4,
       },
     ];
@@ -59,9 +63,20 @@ describe('structural fields pull integration', () => {
     });
     expect(matrixPayload).not.toHaveProperty('choice_items');
     expect(toFormalooFieldPayload(result.fields[2], (id) => slugById[id])).toMatchObject({
-      column_groups: fields[2].column_groups,
+      column_groups: [{ column_field: 'NAME_SLUG', slug: 'GROUP_NAME', title: '氏名' }],
       min_rows: 1,
       max_rows: 4,
     });
+
+    const repulled = await pullDefinitionFromFormaloo(client(fields), {
+      formalooSlug: 'FORM',
+      resolveId: (slug) => ids[slug],
+    });
+    expect(repulled.ok).toBe(true);
+    if (repulled.ok) {
+      expect(repulled.fields.map((field) => [field.id, field.type])).toContainEqual([
+        'repeat_id', 'repeating_section',
+      ]);
+    }
   });
 });
