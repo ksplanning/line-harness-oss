@@ -5,6 +5,12 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 import { signFriendToken, verifyFriendToken } from '../services/formaloo-friend-token.js';
+
+const notificationMocks = vi.hoisted(() => ({
+  notifyInternalFormSubmission: vi.fn(),
+}));
+
+vi.mock('../services/internal-submission-notifier.js', () => notificationMocks);
 import { internalFormsPublic } from './internal-forms-public.js';
 import type { Env } from '../index.js';
 
@@ -148,6 +154,11 @@ function validBody(): URLSearchParams {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  notificationMocks.notifyInternalFormSubmission.mockResolvedValue({
+    status: 'skipped',
+    reason: 'disabled',
+  });
   raw = new Database(':memory:');
   replayAll(raw);
   DB = d1(raw);
@@ -321,6 +332,7 @@ describe('internal public form GET /f/:formId', () => {
     expect(response.status).toBe(200);
     expect(html).toContain('data-channel="web"');
     expect(html).not.toContain('name="fr_id"');
+    expect(html).toContain('name="_notification_origin" value="invalid"');
   });
 });
 
@@ -438,10 +450,17 @@ describe('internal public form POST /f/:formId', () => {
     expect(html).toContain('受付完了 &lt;b&gt;ありがとうございます&lt;/b&gt;');
     expect(html).not.toContain('<b>ありがとうございます</b>');
     const submission = raw.prepare(
-      'SELECT form_id, friend_id, answers_json FROM internal_form_submissions',
-    ).get() as { form_id: string; friend_id: string; answers_json: string };
+      'SELECT id, form_id, friend_id, origin_channel, answers_json FROM internal_form_submissions',
+    ).get() as {
+      id: string;
+      form_id: string;
+      friend_id: string;
+      origin_channel: string;
+      answers_json: string;
+    };
     expect(submission.form_id).toBe('fa_internal');
     expect(submission.friend_id).toBe('friend-1');
+    expect(submission.origin_channel).toBe('line');
     expect(JSON.parse(submission.answers_json)).toEqual({
       text: '佐藤', textarea: 'よろしくお願いします', number: 2,
       email: 'sato@example.com', phone: '090-1234-5678', date: '2026-08-01',
@@ -451,6 +470,10 @@ describe('internal public form POST /f/:formId', () => {
       .toEqual({ friend_id: 'friend-1', tag_id: 'tag-1' });
     expect(raw.prepare('SELECT friend_id, scenario_id, status FROM friend_scenarios').get())
       .toEqual({ friend_id: 'friend-1', scenario_id: 'scenario-1', status: 'completed' });
+    expect(notificationMocks.notifyInternalFormSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({ DB }),
+      { formId: 'fa_internal', submissionId: submission.id },
+    );
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -467,13 +490,49 @@ describe('internal public form POST /f/:formId', () => {
     }, env());
 
     expect(response.status).toBe(200);
-    const row = raw.prepare('SELECT friend_id, answers_json FROM internal_form_submissions').get() as {
+    const row = raw.prepare('SELECT id, friend_id, origin_channel, answers_json FROM internal_form_submissions').get() as {
+      id: string;
       friend_id: string | null;
+      origin_channel: string;
       answers_json: string;
     };
     expect(row.friend_id).toBeNull();
+    expect(row.origin_channel).toBe('invalid');
     expect(JSON.parse(row.answers_json)).not.toHaveProperty('admin');
     expect(raw.prepare('SELECT COUNT(*) AS n FROM friend_tags').get()).toEqual({ n: 0 });
+    expect(notificationMocks.notifyInternalFormSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({ DB }),
+      { formId: 'fa_internal', submissionId: row.id },
+    );
+  });
+
+  test('preserves an invalid GET token through validation so it cannot become an email origin', async () => {
+    seedForm('fa_internal');
+
+    const getResponse = await app().request('/f/fa_internal?fr_id=tampered', {}, env());
+    const getHtml = await getResponse.text();
+    expect(getHtml).not.toContain('name="fr_id"');
+    expect(getHtml).toContain('name="_notification_origin" value="invalid"');
+
+    const body = validBody();
+    body.set('fr_id', 'tampered');
+    body.delete('a_0');
+    const postResponse = await app().request('/f/fa_internal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    }, env());
+
+    expect(postResponse.status).toBe(400);
+    const invalidHtml = await postResponse.text();
+    expect(invalidHtml).not.toContain('name="fr_id"');
+    expect(invalidHtml).toContain('name="_notification_origin" value="invalid"');
+
+    const corrected = validBody();
+    corrected.set('_notification_origin', 'invalid');
+    expect((await postForm('fa_internal', corrected)).status).toBe(200);
+    expect(raw.prepare('SELECT origin_channel FROM internal_form_submissions').get())
+      .toEqual({ origin_channel: 'invalid' });
   });
 
   test('別 LINE account の署名済み fr_id は送信にも紐付けない', async () => {
@@ -489,7 +548,8 @@ describe('internal public form POST /f/:formId', () => {
     const response = await postForm('fa_scoped_post', body);
 
     expect(response.status).toBe(200);
-    expect(raw.prepare('SELECT friend_id FROM internal_form_submissions').get()).toEqual({ friend_id: null });
+    expect(raw.prepare('SELECT friend_id, origin_channel FROM internal_form_submissions').get())
+      .toEqual({ friend_id: null, origin_channel: 'invalid' });
     expect(raw.prepare('SELECT COUNT(*) AS n FROM friend_tags').get()).toEqual({ n: 0 });
     expect(raw.prepare('SELECT COUNT(*) AS n FROM friend_scenarios').get()).toEqual({ n: 0 });
   });

@@ -10,6 +10,7 @@ import {
   getLineAccountById,
   jstNow,
   type FormalooForm,
+  type InternalFormOriginChannel,
 } from '@line-crm/db';
 import {
   buildRedirectTargetUrl,
@@ -20,6 +21,7 @@ import {
   type InternalFormLogicAnswers,
 } from '@line-crm/shared';
 import { signFriendToken, verifyFriendToken } from '../services/formaloo-friend-token.js';
+import { notifyInternalFormSubmission } from '../services/internal-submission-notifier.js';
 import {
   evaluateInternalFormAvailability,
   JAPAN_PREFECTURES,
@@ -918,11 +920,15 @@ function renderFormPage(
   definition: InternalFormDefinition,
   friendToken: string | null,
   channel: InternalFormChannel,
+  notificationOrigin: InternalFormOriginChannel,
   error?: string,
   currentAnswers: InternalFormLogicAnswers = {},
 ): string {
-  const hidden = friendToken
+  const hidden = friendToken !== null
     ? `<input type="hidden" name="fr_id" value="${escapeHtml(friendToken)}">`
+    : '';
+  const invalidOrigin = notificationOrigin === 'invalid'
+    ? '<input type="hidden" name="_notification_origin" value="invalid">'
     : '';
   const usesLogicRuntime = definition.logic.length > 0 || definition.formType === 'multi_step';
   const initial = evaluateInternalFormLogic(definition.fields, definition.logic, currentAnswers, channel);
@@ -960,7 +966,7 @@ function renderFormPage(
     ${errorHtml}
     <div data-internal-form data-form-type="${definition.formType}" data-channel="${channel}">
       <form method="post" action="/f/${encodeURIComponent(form.id)}"${enctype}>
-        ${hidden}${rendered}
+        ${hidden}${invalidOrigin}${rendered}
       </form>
     </div>
     ${runtimeScript()}
@@ -1180,11 +1186,15 @@ internalFormsPublic.get('/f/:formId', async (c) => {
     if (unavailable) return unavailable;
     const rawToken = c.req.query('fr_id') ?? null;
     const friend = await verifiedFriend(c, rawToken, runtime.form.line_account_id);
+    const originChannel: InternalFormOriginChannel = rawToken === null
+      ? 'embed'
+      : friend ? 'line' : 'invalid';
     return c.html(renderFormPage(
       runtime.form,
       runtime.definition,
       friend ? rawToken : null,
       friend ? 'line' : 'web',
+      originChannel,
     ));
   } catch (error) {
     console.error('GET /f/:formId error:', error);
@@ -1204,6 +1214,9 @@ internalFormsPublic.post('/f/:formId', async (c) => {
     const rawToken = typeof body.fr_id === 'string' ? body.fr_id : null;
     const friend = await verifiedFriend(c, rawToken, runtime.form.line_account_id);
     const channel: InternalFormChannel = friend ? 'line' : 'web';
+    const originChannel: InternalFormOriginChannel = friend
+      ? 'line'
+      : rawToken !== null || body._notification_origin === 'invalid' ? 'invalid' : 'embed';
     const submittedLogicAnswers = logicAnswers(runtime.definition.fields, body);
     const logicState = evaluateInternalFormLogic(
       runtime.definition.fields,
@@ -1221,6 +1234,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         runtime.definition,
         friend ? rawToken : null,
         channel,
+        originChannel,
         validation.error,
         submittedLogicAnswers,
       ), 400);
@@ -1254,6 +1268,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         definitionJson: runtime.form.definition_json,
         friendId: friend?.id ?? null,
         answers,
+        originChannel,
         maxSubmissions,
         submitStartTime: runtime.definition.operationsSettings.submitStartTime ?? null,
         submitEndTime: runtime.definition.operationsSettings.submitEndTime ?? null,
@@ -1261,6 +1276,18 @@ internalFormsPublic.post('/f/:formId', async (c) => {
       if (!submission) {
         await rollbackUploads(c.env.IMAGES, uploadedKeys);
         return submissionConflictResponse(c.env.DB, runtime);
+      }
+
+      try {
+        const notification = await notifyInternalFormSubmission(c.env, {
+          formId: runtime.form.id,
+          submissionId: submission.id,
+        });
+        if (notification.status === 'failed') {
+          console.error('internal form respondent notification failed:', notification.reason);
+        }
+      } catch (error) {
+        console.error('internal form respondent notification failed:', error);
       }
     } catch (error) {
       await rollbackUploads(c.env.IMAGES, uploadedKeys);
