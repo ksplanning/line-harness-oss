@@ -43,7 +43,7 @@ describe('formalooAiChatErrorMessage', () => {
     [{ status: 404, body: { code: 'ai_chat_disabled' } }, 'AIチャットは現在オフです。管理者が設定を有効にすると使えます'],
     [{ status: 409, body: { code: 'analysis_in_progress' } }, 'このフォームは分析中です。回答が表示されるまでお待ちください'],
     [{ status: 429, body: { code: 'daily_limit_reached' } }, '本日のAI分析上限に達しました。明日以降にもう一度お試しください'],
-    [{ status: 422, body: { code: 'no_analysis_data' } }, '分析できる確認済みの回答データがまだありません'],
+    [{ status: 422, body: { code: 'no_analysis_data' } }, '分析できる回答データがまだありません'],
     [{ status: 503, body: { code: 'analysis_data_unavailable' } }, '回答データを準備できませんでした。少し待ってからもう一度お試しください'],
     [{ status: 502, body: { code: 'ai_unavailable' } }, 'AIから回答を受け取れませんでした。少し待ってからもう一度お試しください'],
     [{ status: 429, body: { error: 'Too many requests' } }, '操作が混み合っています。少し待ってから画面を再読み込みしてください'],

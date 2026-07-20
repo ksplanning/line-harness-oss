@@ -333,7 +333,7 @@ describe('internal AI chat route with existing safety guards', () => {
     expect(d.reserveHistory).not.toHaveBeenCalled();
   });
 
-  test('releases the daily reservation when no verified answer data exists', async () => {
+  test('releases the daily reservation when no mirrored answer data exists', async () => {
     const d = deps({ listAnalysisSubmissions: vi.fn().mockResolvedValue([]) });
     const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -345,7 +345,7 @@ describe('internal AI chat route with existing safety guards', () => {
     }));
     expect(d.analyze).not.toHaveBeenCalled();
     expect(await res.json()).toMatchObject({
-      success: false, code: 'no_analysis_data', error: expect.stringContaining('回答データがまだありません'),
+      success: false, code: 'no_analysis_data', error: '分析できる回答データがまだありません',
     });
   });
 

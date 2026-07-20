@@ -16,7 +16,8 @@ interface FormalooAiAnalysisSubmissionRow {
 
 /**
  * Read the smallest useful D1 projection for AI analysis.
- * Unverified webhook rows and all respondent/submission identifiers are deliberately excluded.
+ * Prefer rows linked through verified fr_id metadata, while keeping anonymous mirror rows usable.
+ * Respondent/submission identifiers are deliberately excluded from the returned projection.
  */
 export async function listFormalooAiAnalysisSubmissions(
   db: D1Database,
@@ -27,8 +28,8 @@ export async function listFormalooAiAnalysisSubmissions(
   const result = await db.prepare(
     `SELECT answers_json, substr(submitted_at, 1, 10) AS submitted_date
      FROM formaloo_submissions
-     WHERE form_id = ? AND verified = 1
-     ORDER BY submitted_at DESC, id DESC
+     WHERE form_id = ?
+     ORDER BY CASE WHEN friend_id IS NULL THEN 1 ELSE 0 END, submitted_at DESC, id DESC
      LIMIT ?`,
   ).bind(formId, boundedLimit).all<FormalooAiAnalysisSubmissionRow>();
   return result.results.map((row) => ({

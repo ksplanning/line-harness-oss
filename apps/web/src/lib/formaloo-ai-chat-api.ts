@@ -66,7 +66,7 @@ export function formalooAiChatErrorMessage(error: unknown): string {
     return '本日のAI分析上限に達しました。明日以降にもう一度お試しください'
   }
   if (code === 'no_analysis_data') {
-    return '分析できる確認済みの回答データがまだありません'
+    return '分析できる回答データがまだありません'
   }
   if (code === 'analysis_data_unavailable') {
     return '回答データを準備できませんでした。少し待ってからもう一度お試しください'

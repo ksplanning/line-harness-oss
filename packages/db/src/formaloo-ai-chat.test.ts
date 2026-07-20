@@ -71,7 +71,7 @@ describe('migration 111 — Formaloo AI chat history', () => {
 });
 
 describe('Formaloo AI chat history DAO', () => {
-  test('loads only verified target-form answers with a hard 50-row bound and no identifiers', async () => {
+  test('loads target-form mirror rows regardless of verified flag and prioritizes friend-linked answers without exposing identifiers', async () => {
     const target = await createFormalooForm(db, { title: '分析対象', lineAccountId: 'line-a' });
     const other = await createFormalooForm(db, { title: '別フォーム', lineAccountId: 'line-a' });
     const insert = raw.prepare(
@@ -79,26 +79,56 @@ describe('Formaloo AI chat history DAO', () => {
        (id, form_id, friend_id, answers_json, submitted_at, verified)
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
+    insert.run('anonymous-new', target.id, null, '{"score":30}', '2026-07-04T00:00:00.000Z', 0);
+    insert.run('linked-old-unverified', target.id, 'friend-secret-a', '{"score":10}', '2026-07-01T00:00:00.000Z', 0);
+    insert.run('linked-new-verified', target.id, 'friend-secret-b', '{"score":20}', '2026-07-02T00:00:00.000Z', 1);
+    insert.run('anonymous-mid-verified', target.id, null, '{"score":40}', '2026-07-03T00:00:00.000Z', 1);
+    insert.run('other-form', other.id, 'friend-other', '{"score":999}', '2026-07-05T00:00:00.000Z', 1);
+
+    const rows = await listFormalooAiAnalysisSubmissions(db, target.id);
+
+    expect(rows.map((row) => JSON.parse(row.answersJson).score)).toEqual([20, 10, 30, 40]);
+    expect(Object.keys(rows[0]).sort()).toEqual(['answersJson', 'submittedDate']);
+    expect(JSON.stringify(rows)).not.toMatch(/friend-secret|linked-|anonymous-|other-form/);
+  });
+
+  test('keeps the 50-row hard bound after prioritizing friend-linked mirror answers', async () => {
+    const target = await createFormalooForm(db, { title: '上限確認', lineAccountId: 'line-a' });
+    const insert = raw.prepare(
+      `INSERT INTO formaloo_submissions
+       (id, form_id, friend_id, answers_json, submitted_at, verified)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
     for (let index = 0; index < 55; index += 1) {
       insert.run(
-        `verified-${index}`,
+        `mirror-${index}`,
         target.id,
-        `friend-${index}`,
+        null,
         JSON.stringify({ score: index }),
         new Date(Date.UTC(2026, 6, 1, 0, 0, index)).toISOString(),
-        1,
+        0,
       );
     }
-    insert.run('unverified', target.id, 'friend-secret', '{"score":999}', '2026-07-02T00:00:00.000Z', 0);
-    insert.run('other-form', other.id, 'friend-other', '{"score":888}', '2026-07-03T00:00:00.000Z', 1);
+    insert.run('linked-oldest', target.id, 'friend-priority', '{"score":-1}', '2026-06-01T00:00:00.000Z', 0);
 
     const rows = await listFormalooAiAnalysisSubmissions(db, target.id, 999);
 
     expect(rows).toHaveLength(50);
-    expect(JSON.parse(rows[0].answersJson)).toEqual({ score: 54 });
-    expect(JSON.parse(rows.at(-1)!.answersJson)).toEqual({ score: 5 });
+    expect(JSON.parse(rows[0].answersJson)).toEqual({ score: -1 });
+    expect(JSON.parse(rows.at(-1)!.answersJson)).toEqual({ score: 6 });
     expect(Object.keys(rows[0]).sort()).toEqual(['answersJson', 'submittedDate']);
-    expect(rows.every((row) => row.submittedDate === '2026-07-01')).toBe(true);
+  });
+
+  test('returns no analysis rows when the selected form has no mirrored answers', async () => {
+    const target = await createFormalooForm(db, { title: '回答なし', lineAccountId: 'line-a' });
+    const other = await createFormalooForm(db, { title: '別フォーム', lineAccountId: 'line-a' });
+    raw.prepare(
+      `INSERT INTO formaloo_submissions
+       (id, form_id, friend_id, answers_json, submitted_at, verified)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('other-only', other.id, null, '{"score":1}', '2026-07-01T00:00:00.000Z', 0);
+
+    await expect(listFormalooAiAnalysisSubmissions(db, target.id)).resolves.toEqual([]);
   });
 
   test('atomically reserves no more than the tenant daily limit', async () => {

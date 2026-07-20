@@ -378,7 +378,7 @@ export function createFormalooAiChatRoutes(injected: FormalooAiChatRouteDeps = d
     }
     if (context.sampledSubmissions === 0) {
       const code = 'no_analysis_data';
-      const message = '分析できる確認済みの回答データがまだありません';
+      const message = '分析できる回答データがまだありません';
       await deps.failHistory(c.env.DB, pending.id, {
         errorCode: code,
         errorMessage: message,
