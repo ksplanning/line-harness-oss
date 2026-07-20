@@ -52,26 +52,25 @@ async function getActiveFriendFieldDefinitions(
   }
 }
 
-function findBalancedTokenEnd(content: string, start: number): number {
-  let depth = 1;
-  let cursor = start + 2;
-  while (cursor < content.length) {
-    const nextOpen = content.indexOf('{{', cursor);
-    const nextClose = content.indexOf('}}', cursor);
-    if (nextClose === -1) return content.length;
-    if (nextOpen !== -1 && nextOpen < nextClose) {
-      depth += 1;
-      cursor = nextOpen + 2;
-      continue;
+function findRecipientTokenEnd(
+  content: string,
+  start: number,
+  fieldNames: readonly string[],
+): number {
+  if (content.startsWith('{{field:', start)) {
+    for (const fieldName of fieldNames) {
+      const exactToken = `{{field:${fieldName}}}`;
+      if (content.startsWith(exactToken, start)) return start + exactToken.length;
     }
-    depth -= 1;
-    cursor = nextClose + 2;
-    if (depth === 0) return cursor;
   }
-  return content.length;
+  const close = content.indexOf('}}', start + 2);
+  return close === -1 ? content.length : close + 2;
 }
 
-function protectOriginalRecipientTokens(content: string): {
+function protectOriginalRecipientTokens(
+  content: string,
+  fieldNames: readonly string[],
+): {
   content: string;
   restore: (value: string) => string;
 } {
@@ -91,7 +90,7 @@ function protectOriginalRecipientTokens(content: string): {
       break;
     }
     const start = Math.min(...starts);
-    const end = findBalancedTokenEnd(content, start);
+    const end = findRecipientTokenEnd(content, start, fieldNames);
     protectedContent += content.slice(cursor, start);
     protectedContent += `${prefix}${tokens.push(content.slice(start, end)) - 1}${suffix}`;
     cursor = end;
@@ -127,7 +126,10 @@ export function expandVariables(
     ? (typeof friend.metadata === 'string' ? JSON.parse(friend.metadata) as Record<string, unknown> : friend.metadata)
     : {};
   const customFields = resolvedCustomFields.get(meta);
-  const protectedRecipientTokens = protectOriginalRecipientTokens(content);
+  const protectedRecipientTokens = protectOriginalRecipientTokens(
+    content,
+    Object.keys(customFields ?? {}).sort((left, right) => right.length - left.length),
+  );
 
   // Legacy variables are expanded before the shared renderer for backwards
   // compatibility. Mask their recipient-controlled values so a value that

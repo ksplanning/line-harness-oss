@@ -261,4 +261,30 @@ describe('scenario step personalization payload', () => {
 
     expect(expandVariables(`{{field:${fieldName}}}`, { ...friend, metadata })).toBe('VALUE');
   });
+
+  test('does not let an unbalanced token-like field name consume a following legacy variable', async () => {
+    const fieldName = 'A{{B';
+    await createFriendFieldDefinition(db, {
+      name: fieldName,
+      defaultValue: '',
+      displayOrder: 0,
+      isActive: true,
+    });
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, display_name, is_following, metadata)
+       VALUES ('friend-unbalanced-name', 'U-unbalanced-name', 'Alice', 1, ?)`,
+    ).run(JSON.stringify({ [fieldName]: 'VALUE' }));
+    const friend = raw.prepare('SELECT * FROM friends WHERE id = ?').get('friend-unbalanced-name') as {
+      id: string;
+      display_name: string | null;
+      user_id: string | null;
+      metadata: string | null;
+    };
+    const metadata = await resolveMetadata(db, friend);
+
+    expect(expandVariables(
+      `{{field:${fieldName}}} / {{name}}`,
+      { ...friend, metadata },
+    )).toBe('VALUE / Alice');
+  });
 });
