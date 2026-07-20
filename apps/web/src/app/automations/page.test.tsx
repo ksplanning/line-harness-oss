@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
+  account: { selectedAccountId: 'acc-1', loading: false },
   list: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
@@ -10,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/contexts/account-context', () => ({
-  useAccount: () => ({ selectedAccountId: 'acc-1', loading: false }),
+  useAccount: () => mocks.account,
 }))
 
 vi.mock('@/components/layout/header', () => ({
@@ -34,6 +35,14 @@ vi.mock('@/lib/api', () => ({
 
 import AutomationsPage from './page'
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 const validRule = {
   id: 'rule-1',
   name: '資料請求ルール',
@@ -52,6 +61,8 @@ const validRule = {
 }
 
 beforeEach(() => {
+  mocks.account.selectedAccountId = 'acc-1'
+  mocks.account.loading = false
   mocks.list.mockResolvedValue({ success: true, data: [validRule] })
   mocks.create.mockResolvedValue({ success: true, data: validRule })
   mocks.update.mockResolvedValue({ success: true, data: validRule })
@@ -154,5 +165,34 @@ describe('AutomationsPage GUI builder', () => {
     fireEvent.click(within(card).getByRole('button', { name: '編集' }))
     expect(screen.getByText(/GUI 非対応・JSON のまま保持/)).toBeTruthy()
     expect((screen.getByLabelText('保持中のアクションJSON') as HTMLTextAreaElement).value).toBe('[null]')
+  })
+
+  it('ignores a stale list response after the selected account changes', async () => {
+    const firstAccount = deferred<{ success: true; data: typeof validRule[] }>()
+    const secondAccount = deferred<{ success: true; data: typeof validRule[] }>()
+    mocks.list.mockImplementation(({ accountId }: { accountId?: string }) => (
+      accountId === 'acc-1' ? firstAccount.promise : secondAccount.promise
+    ))
+
+    const view = render(<AutomationsPage />)
+    await waitFor(() => expect(mocks.list).toHaveBeenCalledWith({ accountId: 'acc-1' }))
+
+    mocks.account.selectedAccountId = 'acc-2'
+    view.rerender(<AutomationsPage />)
+    await waitFor(() => expect(mocks.list).toHaveBeenCalledWith({ accountId: 'acc-2' }))
+
+    const otherAccountRule = { ...validRule, id: 'rule-2', name: '別アカウントのルール', lineAccountId: 'acc-2' }
+    await act(async () => {
+      secondAccount.resolve({ success: true, data: [otherAccountRule] })
+      await secondAccount.promise
+    })
+    expect(screen.getByText('別アカウントのルール')).toBeTruthy()
+
+    await act(async () => {
+      firstAccount.resolve({ success: true, data: [validRule] })
+      await firstAccount.promise
+    })
+    expect(screen.getByText('別アカウントのルール')).toBeTruthy()
+    expect(screen.queryByText('資料請求ルール')).toBeNull()
   })
 })

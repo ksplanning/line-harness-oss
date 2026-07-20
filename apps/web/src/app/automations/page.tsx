@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Automation } from '@line-crm/shared'
 import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
@@ -112,23 +112,34 @@ export default function AutomationsPage() {
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  const loadRequestSequence = useRef(0)
 
   const loadAutomations = useCallback(async () => {
+    const requestSequence = ++loadRequestSequence.current
     setLoading(true)
     setError('')
     try {
       const res = await api.automations.list({ accountId: selectedAccountId || undefined })
+      if (requestSequence !== loadRequestSequence.current) return
       if (res.success) setAutomations(res.data)
       else setError(res.error)
     } catch {
+      if (requestSequence !== loadRequestSequence.current) return
       setError('オートメーションの読み込みに失敗しました。もう一度お試しください。')
     } finally {
-      setLoading(false)
+      if (requestSequence === loadRequestSequence.current) setLoading(false)
     }
   }, [selectedAccountId])
 
   useEffect(() => {
-    if (!accountLoading) void loadAutomations()
+    if (accountLoading) {
+      loadRequestSequence.current += 1
+      return
+    }
+    void loadAutomations()
+    return () => {
+      loadRequestSequence.current += 1
+    }
   }, [accountLoading, loadAutomations])
 
   const closeEditor = () => {
