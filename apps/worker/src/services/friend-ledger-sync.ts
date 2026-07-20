@@ -8,31 +8,46 @@ import {
   expireSheetsWebhookEvents,
   failSheetsWebhookEvent,
   finishSheetsWebhookEvent,
+  getFormalooForm,
   hasSheetsSyncAuditForWebhookEvent,
   listActiveSheetsConnectionsForSync,
   listFriendFieldDefinitions,
+  listLatestVerifiedInternalFormSubmissions,
   listSheetsSyncAudit,
   listSheetsSyncLedger,
   purgeSheetsWebhookEventTombstones,
   recordSheetsFriendLedgerHeaders,
+  recordSheetsFormAnswerHeaders,
   releaseSheetsSyncLock,
   reserveSheetsSyncSequence,
   toJstString,
+  updateLatestInternalFormSubmissionAnswersForSheets,
   updateSheetsSyncStatus,
+  type InternalFormSubmission,
   type SheetsCanonicalCellValue,
   type SheetsConnection,
+  type SheetsFormAnswerHeader,
   type SheetsSyncAuditDetailInput,
   type SheetsSyncAuditSource,
   type SheetsSyncLedgerEntry,
   type SheetsSyncLeaseGuard,
 } from '@line-crm/db';
 import {
+  buildFormAnswerColumns,
   buildFriendLedgerColumns,
   normalizeSheetCell,
+  parseFormAnswerSheetValue,
+  projectFormAnswerRow,
   projectFriendLedgerRow,
   resolveFriendLedgerHeaders,
+  type FormAnswerField,
   type FriendLedgerColumn,
 } from './friend-ledger-columns.js';
+import {
+  parseInternalFormDefinition,
+  type InternalFormField,
+} from './internal-form-runtime.js';
+import { isDecorationType } from '@line-crm/shared';
 import {
   GoogleSheetsClient,
   parseGoogleServiceAccountCredentials,
@@ -121,6 +136,14 @@ interface RowPlan {
   details: SheetsSyncAuditDetailInput[];
   imports: Record<string, string>;
   customCells: Record<string, { columnKey: string; columnIndex: number; observed: string }>;
+  answerCells: Record<string, {
+    columnKey: string;
+    columnIndex: number;
+    observed: string;
+    field: FormAnswerField;
+  }>;
+  answerImports: Record<string, unknown>;
+  answerState: InternalAnswerState | null;
   sheetUpdates: SheetsDataUpdate[];
   direction: 'to_sheets' | 'from_sheets';
   conflictResolution: 'harness_wins' | 'sheet_wins' | null;
@@ -133,6 +156,12 @@ interface RowPlan {
 interface ImportedMetadataResult {
   friend: FriendState;
   rejected: Record<string, string>;
+}
+
+interface InternalAnswerState {
+  submission: InternalFormSubmission;
+  answers: Record<string, unknown>;
+  valid: boolean;
 }
 
 const LOCK_DURATION_MS = 2 * 60_000;
@@ -157,6 +186,54 @@ function parseMetadata(raw: string): { value: Record<string, unknown>; valid: bo
   } catch {
     return { value: {}, valid: false };
   }
+}
+
+function parseInternalAnswers(submission: InternalFormSubmission): InternalAnswerState {
+  try {
+    const parsed = JSON.parse(submission.answers_json) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { submission, answers: {}, valid: false };
+    }
+    return { submission, answers: { ...(parsed as Record<string, unknown>) }, valid: true };
+  } catch {
+    return { submission, answers: {}, valid: false };
+  }
+}
+
+function formAnswerFields(fields: InternalFormField[]): FormAnswerField[] {
+  const repeatingTemplates = new Set(
+    fields
+      .filter((field) => field.type === 'repeating_section')
+      .flatMap((field) => (
+        field.config.repeatingColumns ?? []
+      ).map((column) => column.columnField)),
+  );
+  return fields.flatMap((field) => {
+    if (isDecorationType(field.type) || repeatingTemplates.has(field.id)) return [];
+    if (field.type === 'variable' && field.config.variableSubType !== 'formula') return [];
+    const type = field.type === 'variable' ? 'formula' : field.type;
+    return [{
+      fieldId: field.id,
+      header: field.label,
+      type,
+      readOnly: ['formula', 'file', 'signature', 'matrix', 'repeating_section'].includes(type),
+    }];
+  });
+}
+
+function projectAnswers(
+  formId: string,
+  activeFields: FormAnswerField[],
+  removedFields: FormAnswerField[],
+  state: InternalAnswerState | null,
+): Record<string, string> {
+  return {
+    ...projectFormAnswerRow(formId, activeFields, state?.answers ?? {}),
+    ...Object.fromEntries(removedFields.map((field) => [
+      `answer:${formId}:${field.fieldId}`,
+      '',
+    ])),
+  };
 }
 
 function serializeFriend(row: FriendRow): FriendState {
@@ -449,6 +526,15 @@ function detail(
   };
 }
 
+function answerDetail(
+  actor: string,
+  fieldName: string,
+  source: SheetsSyncAuditSource,
+  changeKind: SheetsSyncAuditDetailInput['changeKind'],
+): SheetsSyncAuditDetailInput {
+  return detail(actor, fieldName, null, null, source, changeKind);
+}
+
 async function persistPlan(
   db: D1Database,
   connection: SheetsConnection,
@@ -584,7 +670,7 @@ export async function syncFriendLedger(
     );
     if (!runningStatus) throw new Error('friend_ledger_sync_lock_lost');
     const client = makeClient(options);
-    const [allFriends, ledgerEntries, definitions, response] = await Promise.all([
+    const [allFriends, ledgerEntries, definitions, response, form] = await Promise.all([
       listFriends(options.db, options.connection.lineAccountId),
       listSheetsSyncLedger(options.db, options.connection.lineAccountId, options.connection.id),
       listFriendFieldDefinitions(options.db),
@@ -592,18 +678,117 @@ export async function syncFriendLedger(
         options.connection.spreadsheetId,
         quoteSheetName(options.connection.sheetName),
       ),
+      getFormalooForm(options.db, options.connection.formId),
     ]);
     await renewLease();
     const defaults = new Map(definitions.map((definition) => [definition.id, definition.defaultValue]));
-    const columns = buildFriendLedgerColumns(options.connection.friendFieldMappings);
+    const values = (response.values ?? []).map((row) => [...row]);
+    const friendColumns = buildFriendLedgerColumns(options.connection.friendFieldMappings);
+    const answerSetupWarnings: string[] = [];
+    const latestAnswersByFriend = new Map<string, InternalAnswerState>();
+    let activeAnswerFields: FormAnswerField[] = [];
+    let removedAnswerFields: FormAnswerField[] = [];
+    let answerHeadersToRecord: SheetsFormAnswerHeader[] = options.connection.formAnswerHeaders;
+    const newAnswerColumnKeys = new Set<string>();
+    let answerSyncEnabled = false;
+
+    if (form?.render_backend === 'internal') {
+      if (
+        form.deleted !== 0
+        || (form.line_account_id !== null && form.line_account_id !== options.connection.lineAccountId)
+      ) {
+        answerSetupWarnings.push('回答フォームの所属を確認できないため、回答列の同期をスキップしました');
+      } else {
+        const parsed = parseInternalFormDefinition(form.definition_json);
+        if (!parsed.ok) {
+          answerSetupWarnings.push(`回答フォーム定義を読み込めないため、回答列の同期をスキップしました: ${parsed.error}`);
+        } else {
+          answerSyncEnabled = true;
+          const submissions = await listLatestVerifiedInternalFormSubmissions(
+            options.db,
+            options.connection.lineAccountId,
+            options.connection.formId,
+          );
+          await renewLease();
+          for (const submission of submissions) {
+            if (submission.friend_id) {
+              const state = parseInternalAnswers(submission);
+              latestAnswersByFriend.set(submission.friend_id, state);
+              if (!state.valid) {
+                answerSetupWarnings.push('保存済み回答を安全に読み込めない友だちの回答列をスキップしました');
+              }
+            }
+          }
+
+          const definedFields = formAnswerFields(parsed.definition.fields);
+          const definedById = new Map(definedFields.map((field) => [field.fieldId, field]));
+          const ownedById = new Map(
+            options.connection.formAnswerHeaders.map((header) => [header.fieldId, header]),
+          );
+          const definedHeaderCounts = new Map<string, number>();
+          for (const field of definedFields) {
+            definedHeaderCounts.set(field.header, (definedHeaderCounts.get(field.header) ?? 0) + 1);
+          }
+          const reservedHeaders = new Set([
+            ...values[0]?.map(normalizeSheetCell).filter(Boolean) ?? [],
+            ...friendColumns.map((column) => column.header),
+            ...options.connection.formAnswerHeaders.map((header) => header.header),
+          ]);
+          const newlyOwned: SheetsFormAnswerHeader[] = [];
+          for (const field of definedFields) {
+            const owned = ownedById.get(field.fieldId);
+            if (owned) {
+              activeAnswerFields.push({ ...field, header: owned.header });
+              continue;
+            }
+            if ((definedHeaderCounts.get(field.header) ?? 0) > 1 || reservedHeaders.has(field.header)) {
+              answerSetupWarnings.push(
+                `回答見出し「${field.header.slice(0, 200)}」は既存の列と重複するため追加しませんでした`,
+              );
+              continue;
+            }
+            activeAnswerFields.push(field);
+            newlyOwned.push({ fieldId: field.fieldId, header: field.header });
+            newAnswerColumnKeys.add(`answer:${options.connection.formId}:${field.fieldId}`);
+            reservedHeaders.add(field.header);
+          }
+          removedAnswerFields = options.connection.formAnswerHeaders.flatMap((owned) => (
+            definedById.has(owned.fieldId)
+              ? []
+              : [{ fieldId: owned.fieldId, header: owned.header, type: 'removed', readOnly: true }]
+          ));
+          answerHeadersToRecord = [
+            ...options.connection.formAnswerHeaders,
+            ...newlyOwned,
+          ];
+        }
+      }
+    }
+
+    const answerFields = [...activeAnswerFields, ...removedAnswerFields];
+    const answerColumns = answerSyncEnabled
+      ? buildFormAnswerColumns(options.connection.formId, answerFields)
+      : [];
+    const answerFieldByKey = new Map(answerFields.map((field) => [
+      `answer:${options.connection.formId}:${field.fieldId}`,
+      field,
+    ]));
+    const columns = [...friendColumns, ...answerColumns];
     const knownHeaders = new Set(options.connection.friendLedgerHeaders);
     const headersToRecord = [...new Set([
       ...options.connection.friendLedgerHeaders,
-      ...columns.map((column) => column.header),
+      ...friendColumns.map((column) => column.header),
     ])];
-    const hasUnrecordedHeaders = columns.some((column) => !knownHeaders.has(column.header));
+    const hasUnrecordedHeaders = friendColumns.some((column) => !knownHeaders.has(column.header));
+    const answerHeadersChanged = JSON.stringify(answerHeadersToRecord)
+      !== JSON.stringify(options.connection.formAnswerHeaders);
+    const newGeneratedColumnKeys = new Set([
+      ...friendColumns
+        .filter((column) => !knownHeaders.has(column.header))
+        .map((column) => column.key),
+      ...newAnswerColumnKeys,
+    ]);
     const ledgerByFriend = new Map(ledgerEntries.map((entry) => [entry.recordKey, entry]));
-    const values = (response.values ?? []).map((row) => [...row]);
     const warnings: string[] = [];
     const warningSet = new Set<string>();
     const addWarning = (message: string): void => {
@@ -612,10 +797,20 @@ export async function syncFriendLedger(
       if (warnings.length < MAX_SYNC_WARNINGS) warnings.push(message);
     };
     for (const warning of options.initialWarnings ?? []) addWarning(warning);
+    for (const warning of answerSetupWarnings) addWarning(warning);
     const friends = allFriends.filter((friend) => friend.metadataValid);
     if (friends.length !== allFriends.length) {
       addWarning('保存済みの friend metadata が壊れている友だちをスキップしました');
     }
+    const projectionForFriend = (friend: FriendState): Record<string, string> => ({
+      ...projectedWithDefaults(friend, options.connection, defaults),
+      ...projectAnswers(
+        options.connection.formId,
+        activeAnswerFields,
+        removedAnswerFields,
+        latestAnswersByFriend.get(friend.id) ?? null,
+      ),
+    });
     let liveSnapshotValue: string | null = null;
     let snapshotFriend: FriendState | null = null;
     let snapshotTargetError:
@@ -746,6 +941,9 @@ export async function syncFriendLedger(
       );
       if (sequence === null) throw new Error('stale_sheets_connection_generation');
       const identityEdit = ['表示名', 'userId', '登録日'].includes(options.snapshot.header);
+      const answerEdit = columns.some((column) => (
+        column.kind === 'answer' && column.header === options.snapshot!.header
+      ));
       const auditWritten = await appendSheetsSyncAudit(options.db, options.connection.lineAccountId, {
         id: `gsa_${crypto.randomUUID()}`,
         connectionId: options.connection.id,
@@ -763,14 +961,16 @@ export async function syncFriendLedger(
         afterFingerprint: ledger?.rowFingerprint ?? null,
         errorCode: snapshotTargetError,
         webhookEventId: options.webhookEventId ?? null,
-        details: [detail(
-          actor,
-          options.snapshot.header,
-          options.snapshot.oldValueKnown ? normalizeSheetCell(options.snapshot.oldValue) : null,
-          normalizeSheetCell(options.snapshot.value),
-          options.source,
-          identityEdit ? 'identity_ignored' : 'conflict',
-        )],
+        details: [answerEdit
+          ? answerDetail(actor, options.snapshot.header, options.source, 'conflict')
+          : detail(
+            actor,
+            options.snapshot.header,
+            options.snapshot.oldValueKnown ? normalizeSheetCell(options.snapshot.oldValue) : null,
+            normalizeSheetCell(options.snapshot.value),
+            options.source,
+            identityEdit ? 'identity_ignored' : 'conflict',
+          )],
       }, lease);
       if (!auditWritten) throw new Error('stale_sheets_audit_generation');
       const finalLease = await renewLease();
@@ -847,11 +1047,23 @@ export async function syncFriendLedger(
         );
         if (!recorded) throw new Error('friend_ledger_sync_lock_lost');
       }
+      if (answerSyncEnabled && answerHeadersChanged) {
+        const lease = await renewLease();
+        const recorded = await recordSheetsFormAnswerHeaders(
+          options.db,
+          options.connection.lineAccountId,
+          options.connection.id,
+          options.connection.configVersion,
+          answerHeadersToRecord,
+          lease,
+        );
+        if (!recorded) throw new Error('friend_ledger_sync_lock_lost');
+      }
     }
     if (headerIsEmpty && !hasEstablishedDataRows) {
       if (friends.length > 0) {
         const rows = friends.map((friend) => {
-          const projection = projectedWithDefaults(friend, options.connection, defaults);
+          const projection = projectionForFriend(friend);
           return columns.map((column) => projection[column.key] ?? '');
         });
         await renewLease();
@@ -864,7 +1076,8 @@ export async function syncFriendLedger(
         const firstAppendedRow = appendedStartRow(appended, 2);
         for (let index = 0; index < friends.length; index += 1) {
           const friend = friends[index];
-          const projection = projectedWithDefaults(friend, options.connection, defaults);
+          const projection = projectionForFriend(friend);
+          const answerState = latestAnswersByFriend.get(friend.id) ?? null;
           const canonical = Object.fromEntries(
             columns.map((column) => [column.key, canonicalValue(projection[column.key] ?? '')]),
           );
@@ -875,20 +1088,27 @@ export async function syncFriendLedger(
             canonical,
             imports: {},
             customCells: {},
+            answerCells: {},
+            answerImports: {},
+            answerState,
             sheetUpdates: [],
             direction: 'to_sheets',
             conflictResolution: null,
             isAppend: true,
             details: columns
-              .filter((column) => column.kind === 'custom')
-              .map((column) => detail(actor, column.header, null, projection[column.key] ?? '', options.source, 'custom_field')),
+              .filter((column) => column.kind !== 'identity')
+              .map((column) => (
+                column.kind === 'answer'
+                  ? answerDetail(actor, column.header, options.source, 'custom_field')
+                  : detail(actor, column.header, null, projection[column.key] ?? '', options.source, 'custom_field')
+              )),
           });
         }
       }
     } else {
       let headers = effectiveRow(1);
       let resolved = resolveFriendLedgerHeaders(headers, columns);
-      if (hasUnrecordedHeaders) {
+      if (newGeneratedColumnKeys.size > 0) {
         const configuredCounts = new Map<string, number>();
         for (const column of columns) {
           configuredCounts.set(column.header, (configuredCounts.get(column.header) ?? 0) + 1);
@@ -896,7 +1116,7 @@ export async function syncFriendLedger(
         const present = new Set(headers.map(normalizeSheetCell));
         const additions = columns
           .filter((column) => (
-            !knownHeaders.has(column.header)
+            newGeneratedColumnKeys.has(column.key)
             && (configuredCounts.get(column.header) ?? 0) === 1
             && !present.has(column.header)
           ))
@@ -921,6 +1141,18 @@ export async function syncFriendLedger(
           options.connection.id,
           options.connection.configVersion,
           headersToRecord,
+          lease,
+        );
+        if (!recorded) throw new Error('friend_ledger_sync_lock_lost');
+      }
+      if (answerSyncEnabled && answerHeadersChanged) {
+        const lease = await renewLease();
+        const recorded = await recordSheetsFormAnswerHeaders(
+          options.db,
+          options.connection.lineAccountId,
+          options.connection.id,
+          options.connection.configVersion,
+          answerHeadersToRecord,
           lease,
         );
         if (!recorded) throw new Error('friend_ledger_sync_lock_lost');
@@ -1252,14 +1484,16 @@ export async function syncFriendLedger(
             ? normalizeSheetCell(targetRow[index])
             : normalizeSheetCell(orphan.canonicalSnapshot[column.key]);
           return oldValue
-            ? [detail(
-              actor,
-              column.header,
-              oldValue,
-              '',
-              options.source,
-              column.kind === 'identity' ? 'identity_sync' : 'custom_field',
-            )]
+            ? [column.kind === 'answer'
+              ? answerDetail(actor, column.header, options.source, 'custom_field')
+              : detail(
+                actor,
+                column.header,
+                oldValue,
+                '',
+                options.source,
+                column.kind === 'identity' ? 'identity_sync' : 'custom_field',
+              )]
             : [];
         });
         if (freshSafeRowNumber) {
@@ -1335,11 +1569,12 @@ export async function syncFriendLedger(
 
       for (const friend of friends) {
         const ledger = ledgerByFriend.get(friend.id) ?? null;
+        const answerState = latestAnswersByFriend.get(friend.id) ?? null;
         const matchingRows = positions.get(friend.lineUserId) ?? [];
         if (matchingRows.length > 1) continue;
         const rowMatchedByUserId = matchingRows.length === 1;
         let rowNumber = matchingRows.length === 1 ? matchingRows[0] : null;
-        const projection = projectedWithDefaults(friend, options.connection, defaults);
+        const projection = projectionForFriend(friend);
         if (
           !rowNumber
           && userIdIndex !== undefined
@@ -1393,20 +1628,30 @@ export async function syncFriendLedger(
             ignoredIdentityEdits += columns.filter((column) => column.kind === 'identity').length;
           }
           plans.push({
-            friend, rowNumber, ledger, canonical, imports: {}, customCells: {}, sheetUpdates: [],
+            friend, rowNumber, ledger, canonical, imports: {}, customCells: {},
+            answerCells: {}, answerImports: {}, answerState, sheetUpdates: [],
             direction: 'to_sheets', conflictResolution: restoredDeletedRow ? 'harness_wins' : null, isAppend: true,
             details: columns
-              .filter((column) => restoredDeletedRow || column.kind === 'custom')
-              .map((column) => detail(
-              actor,
-              column.header,
-              restoredDeletedRow ? projection[column.key] ?? '' : null,
-              restoredDeletedRow ? '' : projection[column.key] ?? '',
-              options.source,
-              restoredDeletedRow
-                ? column.kind === 'identity' ? 'identity_ignored' : 'conflict'
-                : 'custom_field',
-            )),
+              .filter((column) => restoredDeletedRow || column.kind !== 'identity')
+              .map((column) => (
+                column.kind === 'answer'
+                  ? answerDetail(
+                    actor,
+                    column.header,
+                    options.source,
+                    restoredDeletedRow ? 'conflict' : 'custom_field',
+                  )
+                  : detail(
+                    actor,
+                    column.header,
+                    restoredDeletedRow ? projection[column.key] ?? '' : null,
+                    restoredDeletedRow ? '' : projection[column.key] ?? '',
+                    options.source,
+                    restoredDeletedRow
+                      ? column.kind === 'identity' ? 'identity_ignored' : 'conflict'
+                      : 'custom_field',
+                  )
+              )),
           });
           continue;
         }
@@ -1415,6 +1660,8 @@ export async function syncFriendLedger(
         const details: SheetsSyncAuditDetailInput[] = [];
         const imports: Record<string, string> = {};
         const customCells: RowPlan['customCells'] = {};
+        const answerCells: RowPlan['answerCells'] = {};
+        const answerImports: Record<string, unknown> = {};
         const sheetUpdates: SheetsDataUpdate[] = [];
         const canonical: Record<string, SheetsCanonicalCellValue> = {};
         let direction: RowPlan['direction'] = 'to_sheets';
@@ -1492,6 +1739,153 @@ export async function syncFriendLedger(
                 options.source,
                 'identity_ignored',
               ));
+            }
+            continue;
+          }
+
+          if (column.kind === 'answer') {
+            const field = answerFieldByKey.get(column.key);
+            if (!field) {
+              canonical[column.key] = ledger?.canonicalSnapshot[column.key] ?? canonicalValue(expected);
+              continue;
+            }
+            answerCells[field.fieldId] = {
+              columnKey: column.key,
+              columnIndex,
+              observed,
+              field,
+            };
+            const baseline = ledger
+              ? normalizeSheetCell(ledger.canonicalSnapshot[column.key])
+              : expected;
+            if (!isNotifiedCell(rowNumber, columnIndex)) {
+              canonical[column.key] = ledger?.canonicalSnapshot[column.key] ?? canonicalValue(expected);
+              continue;
+            }
+            if (answerState && !answerState.valid) {
+              canonical[column.key] = ledger?.canonicalSnapshot[column.key] ?? canonicalValue(observed);
+              if (signedSnapshot && options.webhookEventId) {
+                direction = 'from_sheets';
+                auditOutcome = 'skipped';
+                auditErrorCode = 'invalid_internal_answer_payload';
+                details.push(answerDetail(actor, column.header, options.source, 'conflict'));
+              }
+              continue;
+            }
+            if (!answerState && observed !== expected) {
+              canonical[column.key] = canonicalValue(expected);
+              sheetUpdates.push({
+                range: cellRange(options.connection.sheetName, rowNumber, columnIndex),
+                values: [[expected]],
+              });
+              addWarning('回答がない行のシート編集は取り込まず、回答列を元に戻しました');
+              details.push(answerDetail(actor, column.header, options.source, 'conflict'));
+              direction = 'to_sheets';
+              conflictResolution = 'harness_wins';
+              continue;
+            }
+            if (
+              signedSnapshot?.oldValueKnown
+              && ledger
+              && signedSnapshot.oldValue !== baseline
+              && signedSnapshot.liveValue !== signedSnapshot.value
+            ) {
+              canonical[column.key] = ledger.canonicalSnapshot[column.key] ?? canonicalValue(expected);
+              direction = 'from_sheets';
+              conflictResolution = 'sheet_wins';
+              auditOutcome = 'skipped';
+              auditErrorCode = 'stale_webhook_event';
+              addWarning(`保護のため、古い編集通知（「${column.header}」）をスキップしました`);
+              details.push(answerDetail(actor, column.header, options.source, 'conflict'));
+              continue;
+            }
+            if (!rowMatchedByUserId) {
+              canonical[column.key] = canonicalValue(expected);
+              if (observed !== expected) {
+                sheetUpdates.push({
+                  range: cellRange(options.connection.sheetName, rowNumber, columnIndex),
+                  values: [[expected]],
+                });
+                details.push(answerDetail(actor, column.header, options.source, 'conflict'));
+                direction = 'to_sheets';
+                conflictResolution = 'harness_wins';
+              }
+              continue;
+            }
+            if (expected === observed) {
+              canonical[column.key] = canonicalValue(expected);
+              if (signedSnapshot?.oldValueKnown && signedSnapshot.oldValue !== observed) {
+                direction = 'from_sheets';
+                details.push(answerDetail(actor, column.header, options.source, 'custom_field'));
+              }
+              continue;
+            }
+
+            const harnessChanged = expected !== baseline;
+            const sheetChanged = observed !== baseline;
+            const bothChanged = harnessChanged && sheetChanged && expected !== observed;
+            let importSheet = false;
+            let pushHarness = false;
+            if (!ledger) {
+              importSheet = options.connection.syncDirection === 'from_sheets';
+              pushHarness = options.connection.syncDirection !== 'from_sheets';
+            } else if (bothChanged) {
+              importSheet = options.connection.syncDirection !== 'to_sheets';
+              pushHarness = !importSheet;
+              conflictResolution = importSheet ? 'sheet_wins' : 'harness_wins';
+            } else if (sheetChanged) {
+              importSheet = options.connection.syncDirection !== 'to_sheets';
+              pushHarness = !importSheet;
+            } else if (harnessChanged) {
+              pushHarness = options.connection.syncDirection !== 'from_sheets';
+              importSheet = !pushHarness;
+            }
+
+            if (importSheet) {
+              const parsed = parseFormAnswerSheetValue(
+                field,
+                observed,
+                answerState?.answers[field.fieldId],
+              );
+              if (!parsed.ok) {
+                const message = parsed.reason === 'read_only'
+                  ? `回答列「${column.header}」はシートから変更できないため元に戻しました`
+                  : `回答列「${column.header}」の入力形式が正しくないため元に戻しました`;
+                addWarning(message);
+                canonical[column.key] = canonicalValue(expected);
+                sheetUpdates.push({
+                  range: cellRange(options.connection.sheetName, rowNumber, columnIndex),
+                  values: [[expected]],
+                });
+                details.push(answerDetail(actor, column.header, options.source, 'conflict'));
+                direction = 'to_sheets';
+                conflictResolution = 'harness_wins';
+              } else {
+                answerImports[field.fieldId] = parsed.value;
+                importedFields += 1;
+                direction = 'from_sheets';
+                canonical[column.key] = canonicalValue(observed);
+                details.push(answerDetail(
+                  actor,
+                  column.header,
+                  options.source,
+                  bothChanged ? 'conflict' : 'custom_field',
+                ));
+              }
+            } else {
+              canonical[column.key] = canonicalValue(expected);
+              if (pushHarness) {
+                sheetUpdates.push({
+                  range: cellRange(options.connection.sheetName, rowNumber, columnIndex),
+                  values: [[expected]],
+                });
+                details.push(answerDetail(
+                  actor,
+                  column.header,
+                  options.source,
+                  bothChanged ? 'conflict' : 'custom_field',
+                ));
+              }
             }
             continue;
           }
@@ -1609,7 +2003,8 @@ export async function syncFriendLedger(
           }
         }
         plans.push({
-          friend, rowNumber, ledger, canonical, details, imports, customCells, sheetUpdates,
+          friend, rowNumber, ledger, canonical, details, imports, customCells,
+          answerCells, answerImports, answerState, sheetUpdates,
           direction, conflictResolution, isAppend: false, webhookEventId, auditOutcome, auditErrorCode,
         });
       }
@@ -1690,6 +2085,108 @@ export async function syncFriendLedger(
       ) {
         plan.direction = 'to_sheets';
         plan.conflictResolution = null;
+      }
+
+      const answerImportIds = Object.keys(plan.answerImports);
+      if (answerImportIds.length > 0) {
+        let answerUpdated = false;
+        if (plan.answerState?.valid) {
+          const nextAnswers = { ...plan.answerState.answers, ...plan.answerImports };
+          const nextAnswersJson = JSON.stringify(nextAnswers);
+          const lease = await renewLease();
+          answerUpdated = await updateLatestInternalFormSubmissionAnswersForSheets(options.db, {
+            lineAccountId: options.connection.lineAccountId,
+            connectionId: options.connection.id,
+            connectionVersion: options.connection.configVersion,
+            formId: options.connection.formId,
+            friendId: plan.friend.id,
+            submissionId: plan.answerState.submission.id,
+            expectedAnswersJson: plan.answerState.submission.answers_json,
+            answers: nextAnswers,
+            lease,
+          });
+          if (answerUpdated) {
+            plan.answerState = {
+              submission: {
+                ...plan.answerState.submission,
+                answers_json: nextAnswersJson,
+              },
+              answers: nextAnswers,
+              valid: true,
+            };
+            latestAnswersByFriend.set(plan.friend.id, plan.answerState);
+            const acceptedProjection = projectAnswers(
+              options.connection.formId,
+              activeAnswerFields,
+              removedAnswerFields,
+              plan.answerState,
+            );
+            for (const fieldId of answerImportIds) {
+              const cell = plan.answerCells[fieldId];
+              if (!cell) continue;
+              const accepted = acceptedProjection[cell.columnKey] ?? '';
+              plan.canonical[cell.columnKey] = canonicalValue(accepted);
+              if (accepted !== cell.observed) {
+                rejectedUpdates.push({
+                  range: cellRange(options.connection.sheetName, plan.rowNumber, cell.columnIndex),
+                  values: [[accepted]],
+                });
+              }
+            }
+          }
+        }
+
+        if (!answerUpdated) {
+          await renewLease();
+          const latest = await listLatestVerifiedInternalFormSubmissions(
+            options.db,
+            options.connection.lineAccountId,
+            options.connection.formId,
+          );
+          await renewLease();
+          const latestSubmission = latest.find((submission) => submission.friend_id === plan.friend.id);
+          const latestState = latestSubmission ? parseInternalAnswers(latestSubmission) : null;
+          plan.answerState = latestState;
+          if (latestState) latestAnswersByFriend.set(plan.friend.id, latestState);
+          else latestAnswersByFriend.delete(plan.friend.id);
+          importedFields -= answerImportIds.length;
+          plan.answerImports = {};
+          const rejectedHeaders = new Set(answerImportIds.flatMap((fieldId) => {
+            const cell = plan.answerCells[fieldId];
+            return cell ? [cell.field.header] : [];
+          }));
+          plan.details = plan.details.filter((entry) => !rejectedHeaders.has(entry.fieldName));
+          const authoritative = projectAnswers(
+            options.connection.formId,
+            activeAnswerFields,
+            removedAnswerFields,
+            latestState,
+          );
+          for (const fieldId of answerImportIds) {
+            const cell = plan.answerCells[fieldId];
+            if (!cell) continue;
+            const latestValue = authoritative[cell.columnKey] ?? '';
+            plan.canonical[cell.columnKey] = canonicalValue(latestValue);
+            if (latestValue !== cell.observed) {
+              rejectedUpdates.push({
+                range: cellRange(options.connection.sheetName, plan.rowNumber, cell.columnIndex),
+                values: [[latestValue]],
+              });
+            }
+          }
+          for (const header of rejectedHeaders) {
+            plan.details.push(answerDetail(actor, header, options.source, 'conflict'));
+          }
+          plan.direction = 'to_sheets';
+          plan.conflictResolution = 'harness_wins';
+          if (!latestState) {
+            addWarning('回答がない行のシート編集は取り込まず、回答列を元に戻しました');
+          } else if (!latestState.valid) {
+            addWarning('保存済み回答を安全に読み込めないため、シート編集を取り込みませんでした');
+          } else {
+            addWarning('回答の再回答または同時更新を検知したため、シートには最新回答を戻しました');
+          }
+        }
       }
       if (rejectedUpdates.length > 0) {
         await renewLease();

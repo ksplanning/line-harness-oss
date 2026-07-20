@@ -1,6 +1,7 @@
 import type { SheetCellValue } from './google-sheets.js';
 
 export const FRIEND_LEDGER_IDENTITY_HEADERS = ['表示名', 'userId', '登録日'] as const;
+const MAX_FORM_ANSWER_SHEET_CELL_LENGTH = 49_000;
 
 export interface FriendFieldMapping {
   fieldId: string;
@@ -10,9 +11,28 @@ export interface FriendFieldMapping {
 export interface FriendLedgerColumn {
   key: string;
   header: string;
-  kind: 'identity' | 'custom';
+  kind: 'identity' | 'custom' | 'answer';
   readOnly: boolean;
 }
+
+export interface FormAnswerField {
+  fieldId: string;
+  header: string;
+  type?: string;
+  readOnly?: boolean;
+}
+
+export type FormAnswerSheetValueParseResult =
+  | { ok: true; value: unknown }
+  | {
+      ok: false;
+      reason:
+        | 'read_only'
+        | 'invalid_number'
+        | 'invalid_boolean'
+        | 'invalid_json'
+        | 'container_type_mismatch';
+    };
 
 export interface FriendLedgerHeaderWarning {
   code: 'missing_header' | 'duplicate_header' | 'configured_header_collision';
@@ -48,6 +68,18 @@ export function buildFriendLedgerColumns(mappings: FriendFieldMapping[]): Friend
       readOnly: false,
     })),
   ];
+}
+
+export function buildFormAnswerColumns(
+  formId: string,
+  fields: FormAnswerField[],
+): FriendLedgerColumn[] {
+  return fields.map((field) => ({
+    key: `answer:${formId}:${field.fieldId}`,
+    header: field.header,
+    kind: 'answer' as const,
+    readOnly: field.readOnly === true,
+  }));
 }
 
 export function resolveFriendLedgerHeaders(
@@ -120,6 +152,83 @@ export function projectFriendLedgerRow(
     projection[`field:${mapping.fieldId}`] = normalizeSheetCell(friend.metadata[mapping.header]);
   }
   return projection;
+}
+
+export function projectFormAnswerRow(
+  formId: string,
+  fields: FormAnswerField[],
+  answers: Record<string, unknown>,
+): Record<string, string> {
+  return Object.fromEntries(fields.map((field) => [
+    `answer:${formId}:${field.fieldId}`,
+    projectFormAnswerValue(field, answers[field.fieldId]),
+  ]));
+}
+
+function projectFormAnswerValue(field: FormAnswerField, value: unknown): string {
+  if (field.type === 'signature') {
+    return normalizeSheetCell(value) ? '[署名あり]' : '';
+  }
+  if (field.type === 'file') {
+    if (Array.isArray(value)) {
+      return value.length > 0 ? `[添付ファイル ${value.length}件]` : '';
+    }
+    return normalizeSheetCell(value) ? '[添付ファイルあり]' : '';
+  }
+  const normalized = normalizeSheetCell(value);
+  return normalized.length > MAX_FORM_ANSWER_SHEET_CELL_LENGTH
+    ? `[回答が長いため省略（${normalized.length}文字）]`
+    : normalized;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function parseFormAnswerSheetValue(
+  field: FormAnswerField,
+  observed: string,
+  current: unknown,
+): FormAnswerSheetValueParseResult {
+  if (field.readOnly === true) return { ok: false, reason: 'read_only' };
+  if (normalizeSheetCell(current).length > MAX_FORM_ANSWER_SHEET_CELL_LENGTH) {
+    return { ok: false, reason: 'read_only' };
+  }
+
+  const trimmed = observed.trim();
+  if (field.type === 'number') {
+    if (!trimmed) return { ok: false, reason: 'invalid_number' };
+    const value = Number(trimmed);
+    return Number.isFinite(value)
+      ? { ok: true, value }
+      : { ok: false, reason: 'invalid_number' };
+  }
+  if (field.type === 'yes_no') {
+    const normalized = trimmed.toLowerCase();
+    if (normalized === 'true') return { ok: true, value: true };
+    if (normalized === 'false') return { ok: true, value: false };
+    return { ok: false, reason: 'invalid_boolean' };
+  }
+
+  const currentIsArray = Array.isArray(current) || field.type === 'multiple_select';
+  const currentIsObject = isJsonObject(current);
+  if (currentIsArray || currentIsObject) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(observed) as unknown;
+    } catch {
+      return { ok: false, reason: 'invalid_json' };
+    }
+    if (
+      (currentIsArray && !Array.isArray(parsed))
+      || (currentIsObject && !isJsonObject(parsed))
+    ) {
+      return { ok: false, reason: 'container_type_mismatch' };
+    }
+    return { ok: true, value: parsed };
+  }
+
+  return { ok: true, value: observed };
 }
 
 export function mergeFriendProjectionIntoRow(

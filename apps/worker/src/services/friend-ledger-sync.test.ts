@@ -119,6 +119,76 @@ function metadata(friendId = 'friend-ayako'): Record<string, unknown> {
   return JSON.parse(row.metadata) as Record<string, unknown>;
 }
 
+type AnswerFieldFixture = {
+  id: string;
+  label: string;
+  type?: string;
+  position: number;
+};
+
+function answerFieldConfig(type = 'text'): Record<string, unknown> {
+  if (type === 'choice' || type === 'dropdown' || type === 'multiple_select') {
+    return { choices: ['A', 'B', 'C', 'D'] };
+  }
+  if (type === 'section') return { text: '補足' };
+  return {};
+}
+
+function enableInternalAnswerForm(fields: AnswerFieldFixture[]): void {
+  const definition = {
+    fields: fields.map((field) => ({
+      id: field.id,
+      label: field.label,
+      type: field.type ?? 'text',
+      required: false,
+      position: field.position,
+      config: answerFieldConfig(field.type),
+    })),
+    logic: [],
+  };
+  raw.prepare(`INSERT INTO formaloo_forms
+    (id, title, definition_json, render_backend, line_account_id)
+    VALUES ('friend-ledger', '回答フォーム', ?, 'internal', 'acc-1')`).run(JSON.stringify(definition));
+}
+
+function updateInternalAnswerFields(fields: AnswerFieldFixture[]): void {
+  raw.prepare(`UPDATE formaloo_forms SET definition_json=? WHERE id='friend-ledger'`).run(JSON.stringify({
+    fields: fields.map((field) => ({
+      id: field.id,
+      label: field.label,
+      type: field.type ?? 'text',
+      required: false,
+      position: field.position,
+      config: answerFieldConfig(field.type),
+    })),
+    logic: [],
+  }));
+}
+
+function insertInternalAnswer(
+  id: string,
+  answers: Record<string, unknown>,
+  submittedAt: string,
+  friendId: string | null = 'friend-ayako',
+): void {
+  raw.prepare(`INSERT INTO internal_form_submissions
+    (id, form_id, friend_id, answers_json, submitted_at, created_at)
+    VALUES (?, 'friend-ledger', ?, ?, ?, ?)`).run(
+    id,
+    friendId,
+    JSON.stringify(answers),
+    submittedAt,
+    submittedAt,
+  );
+}
+
+function latestInternalAnswers(): Record<string, unknown> {
+  const row = raw.prepare(`SELECT answers_json FROM internal_form_submissions
+    WHERE form_id='friend-ledger' AND friend_id='friend-ayako'
+    ORDER BY julianday(submitted_at) DESC, rowid DESC LIMIT 1`).get() as { answers_json: string };
+  return JSON.parse(row.answers_json) as Record<string, unknown>;
+}
+
 async function run(
   source: 'manual' | 'polling' | 'webhook' = 'manual',
   actor = 'owner',
@@ -211,6 +281,221 @@ describe('friend ledger bidirectional sync', () => {
     expect(second).toMatchObject({ appendedRows: 0, updatedRows: 0, importedFields: 0 });
     expect(client.writes).toHaveLength(writesAfterFirst);
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger').get()).toEqual({ count: 1 });
+  });
+
+  test('joins the latest verified internal-form answers to the right of each friend row', async () => {
+    enableInternalAnswerForm([
+      { id: 'name', label: '申込者名', position: 0 },
+      { id: 'section', label: '補足見出し', type: 'section', position: 1 },
+      { id: 'plan', label: '希望プラン', type: 'dropdown', position: 2 },
+    ]);
+    insertInternalAnswer('answer-old', { name: '旧回答', plan: 'A' }, '2026-07-20T11:00:00+09:00');
+    insertInternalAnswer('answer-latest', { name: '山田花子', plan: 'B' }, '2026-07-21T11:00:00+09:00');
+    insertInternalAnswer('answer-anonymous', { name: '匿名' }, '2026-07-21T12:00:00+09:00', null);
+
+    const first = await run();
+    const second = await run('polling', 'system_poll');
+
+    expect(client.values).toEqual([
+      ['表示名', 'userId', '登録日', '入金確認', '申込者名', '希望プラン'],
+      ['あやこ', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '未', '山田花子', 'B'],
+    ]);
+    expect(client.values[0]).not.toContain('補足見出し');
+    expect(first).toMatchObject({ appendedRows: 1, status: 'success' });
+    expect(second).toMatchObject({ appendedRows: 0, updatedRows: 0 });
+    expect(client.values.slice(1).filter((row) => row.includes('U_AYAKO'))).toHaveLength(1);
+  });
+
+  test('scopes a common internal form through the connection account', async () => {
+    enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
+    raw.prepare(`UPDATE formaloo_forms SET line_account_id=NULL
+      WHERE id='friend-ledger'`).run();
+    insertInternalAnswer('answer-common', { name: '共通フォーム回答' }, '2026-07-21T11:00:00+09:00');
+
+    const result = await run();
+
+    expect(result.status).toBe('success');
+    expect(client.values[0]).toEqual(['表示名', 'userId', '登録日', '入金確認', '申込者名']);
+    expect(client.values[1][4]).toBe('共通フォーム回答');
+    expect(client.values.flat()).not.toContain('U_OTHER');
+  });
+
+  test('keeps the W4a friend ledger unchanged for a Formaloo-rendered form', async () => {
+    raw.prepare(`INSERT INTO formaloo_forms
+      (id, title, definition_json, render_backend, line_account_id)
+      VALUES ('friend-ledger', 'Formalooフォーム', ?, 'formaloo', 'acc-1')`).run(JSON.stringify({
+      fields: [{ id: 'name', label: '申込者名', type: 'text', required: false, position: 0, config: {} }],
+      logic: [],
+    }));
+    insertInternalAnswer('answer-ignored', { name: '出してはいけない回答' }, '2026-07-21T11:00:00+09:00');
+
+    const result = await run();
+
+    expect(result.status).toBe('success');
+    expect(client.values).toEqual([
+      ['表示名', 'userId', '登録日', '入金確認'],
+      ['あやこ', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '未'],
+    ]);
+    expect(client.values.flat()).not.toContain('出してはいけない回答');
+    expect(JSON.parse((raw.prepare(`SELECT form_answer_headers_json AS headers
+      FROM sheets_connections WHERE id=?`).get(connection.id) as { headers: string }).headers))
+      .toEqual([]);
+  });
+
+  test('updates a re-answer in the same row by heading after company columns are inserted and reordered', async () => {
+    enableInternalAnswerForm([
+      { id: 'name', label: '申込者名', position: 0 },
+      { id: 'plan', label: '希望プラン', type: 'dropdown', position: 1 },
+    ]);
+    insertInternalAnswer('answer-first', { name: '山田花子', plan: 'A' }, '2026-07-21T10:00:00+09:00');
+    await run();
+    client.values = [
+      ['自社担当', '希望プラン', 'userId', '登録日', '入金確認', '表示名', '申込者名'],
+      ['営業部', 'A', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '未', 'あやこ', '山田花子'],
+    ];
+    insertInternalAnswer('answer-second', { name: '山田太郎', plan: 'C' }, '2026-07-21T12:00:00+09:00');
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result).toMatchObject({ appendedRows: 0, updatedRows: 1 });
+    expect(client.values).toEqual([
+      ['自社担当', '希望プラン', 'userId', '登録日', '入金確認', '表示名', '申込者名'],
+      ['営業部', 'C', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '未', 'あやこ', '山田太郎'],
+    ]);
+    expect(client.values.slice(1).filter((row) => row[2] === 'U_AYAKO')).toHaveLength(1);
+  });
+
+  test('appends a newly built answer field but warns instead of recreating a renamed sheet heading', async () => {
+    enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
+    insertInternalAnswer('answer-first', { name: '山田花子' }, '2026-07-21T10:00:00+09:00');
+    await run();
+    updateInternalAnswerFields([
+      { id: 'name', label: '申込者名', position: 0 },
+      { id: 'plan', label: '希望プラン', type: 'dropdown', position: 1 },
+    ]);
+    insertInternalAnswer('answer-second', { name: '山田太郎', plan: 'C' }, '2026-07-21T11:00:00+09:00');
+    await run('polling', 'system_poll');
+    expect(client.values[0]).toEqual(['表示名', 'userId', '登録日', '入金確認', '申込者名', '希望プラン']);
+
+    client.values[0][4] = '申込者名（変更）';
+    insertInternalAnswer('answer-third', { name: '更新後', plan: 'D' }, '2026-07-21T12:00:00+09:00');
+    const result = await run('polling', 'system_poll');
+
+    expect(result.status).toBe('warning');
+    expect(result.warnings.join(' ')).toContain('申込者名');
+    expect(client.values[0]).toEqual(['表示名', 'userId', '登録日', '入金確認', '申込者名（変更）', '希望プラン']);
+    expect(client.values[1][4]).toBe('山田太郎');
+    expect(client.values[1][5]).toBe('D');
+  });
+
+  test('imports a sheet answer edit into the latest submission without creating a duplicate or logging answer PII', async () => {
+    enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
+    insertInternalAnswer('answer-first', { name: '山田花子', keep: '保持' }, '2026-07-21T10:00:00+09:00');
+    await run();
+    client.values[1][4] = 'シート編集値';
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result).toMatchObject({ appendedRows: 0, importedFields: 1 });
+    expect(latestInternalAnswers()).toEqual({ name: 'シート編集値', keep: '保持' });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM internal_form_submissions
+      WHERE form_id='friend-ledger' AND friend_id='friend-ayako'`).get()).toEqual({ count: 1 });
+    expect(raw.prepare(`SELECT old_value, new_value FROM sheets_sync_audit_details
+      WHERE column_name='申込者名' ORDER BY rowid DESC LIMIT 1`).get()).toEqual({
+      old_value: null,
+      new_value: null,
+    });
+  });
+
+  test('does not claim or overwrite a pre-existing company column with the same name as a new answer field', async () => {
+    enableInternalAnswerForm([{ id: 'owner', label: '自社担当', position: 0 }]);
+    insertInternalAnswer('answer-first', { owner: 'フォーム回答' }, '2026-07-21T10:00:00+09:00');
+    client.values = [['自社担当'], ['営業部']];
+
+    const result = await run();
+
+    expect(result.status).toBe('warning');
+    expect(result.warnings.join(' ')).toContain('自社担当');
+    expect(client.values[0]).toEqual(['自社担当', '表示名', 'userId', '登録日', '入金確認']);
+    expect(client.values[1][0]).toBe('営業部');
+    expect(client.values.flat()).not.toContain('フォーム回答');
+    expect(JSON.parse((raw.prepare(`SELECT form_answer_headers_json AS headers
+      FROM sheets_connections WHERE id=?`).get(connection.id) as { headers: string }).headers))
+      .toEqual([]);
+  });
+
+  test('does not fabricate a partial submission when an unanswered row is edited in Sheets', async () => {
+    enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
+    await run();
+    raw.prepare('DELETE FROM sheets_sync_ledger WHERE connection_id=?').run(connection.id);
+    client.values[1][4] = '回答がないのに編集';
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result.status).toBe('warning');
+    expect(result.importedFields).toBe(0);
+    expect(result.warnings.join(' ')).toContain('回答');
+    expect(client.values[1][4]).toBe('');
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM internal_form_submissions
+      WHERE form_id='friend-ledger'`).get()).toEqual({ count: 0 });
+  });
+
+  test('leaves the sheet answer untouched when the latest stored answer JSON is malformed', async () => {
+    enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
+    insertInternalAnswer('answer-first', { name: '壊す前の回答' }, '2026-07-21T10:00:00+09:00');
+    await run();
+    raw.prepare(`UPDATE internal_form_submissions SET answers_json='{broken'
+      WHERE id='answer-first'`).run();
+    const writesBefore = client.writes.length;
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result.status).toBe('warning');
+    expect(result.warnings.join(' ')).toContain('保存済み回答');
+    expect(client.values[1][4]).toBe('壊す前の回答');
+    expect(client.writes).toHaveLength(writesBefore);
+    expect(raw.prepare(`SELECT answers_json FROM internal_form_submissions
+      WHERE id='answer-first'`).get()).toEqual({ answers_json: '{broken' });
+  });
+
+  test('keeps a newer re-answer authoritative when it races a sheet answer import', async () => {
+    enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
+    insertInternalAnswer('answer-first', { name: '最初の回答' }, '2026-07-21T10:00:00+09:00');
+    await run();
+    client.values[1][4] = 'シート編集';
+    let raced = false;
+    db = d1(raw, (sql) => {
+      if (raced || !sql.includes('UPDATE internal_form_submissions')) return;
+      raced = true;
+      insertInternalAnswer('answer-raced', { name: '直前の再回答' }, '2026-07-21T12:00:00+09:00');
+    });
+
+    const result = await run('polling', 'system_poll');
+
+    expect(raced).toBe(true);
+    expect(result.importedFields).toBe(0);
+    expect(latestInternalAnswers()).toEqual({ name: '直前の再回答' });
+    expect(client.values[1][4]).toBe('直前の再回答');
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM internal_form_submissions
+      WHERE form_id='friend-ledger' AND friend_id='friend-ayako'`).get()).toEqual({ count: 2 });
+  });
+
+  test('clears an owned answer cell after the field is removed without exposing its value in audit details', async () => {
+    enableInternalAnswerForm([{ id: 'secret', label: '秘密の回答', position: 0 }]);
+    insertInternalAnswer('answer-first', { secret: '消す値' }, '2026-07-21T10:00:00+09:00');
+    await run();
+    updateInternalAnswerFields([]);
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result.updatedRows).toBe(1);
+    expect(client.values[0][4]).toBe('秘密の回答');
+    expect(client.values[1][4]).toBe('');
+    expect(raw.prepare(`SELECT old_value, new_value FROM sheets_sync_audit_details
+      WHERE column_name='秘密の回答' ORDER BY rowid DESC LIMIT 1`).get()).toEqual({
+      old_value: null,
+      new_value: null,
+    });
   });
 
   test('rebuilds a cleared heading row without duplicating established friend rows', async () => {
