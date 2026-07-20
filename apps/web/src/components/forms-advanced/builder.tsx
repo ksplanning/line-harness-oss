@@ -40,6 +40,7 @@ import {
   isDecoration,
   isRepeatingColumnType,
   isScalarReferenceType,
+  type FieldTypeHelp,
 } from './field-types'
 import FormPreview from './form-preview'
 import DesignPanel from './design-panel'
@@ -48,6 +49,8 @@ import ChoiceFetchFieldPanel from './choice-fetch-field-panel'
 import StructuralFieldPanel from './structural-field-panel'
 import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
+import { HelpIcon } from '@/components/shared/icons'
+import { popoverPlacement, type PopoverPlacement } from '@/lib/help/popover-placement'
 
 const LINE_GREEN = '#06C755'
 const EMPTY_FIELD_DEFINITIONS: readonly FriendFieldDefinition[] = []
@@ -244,38 +247,147 @@ export function CanvasDropLayout({
   )
 }
 
+function PartsHelpContent({ help }: { help: FieldTypeHelp }) {
+  return (
+    <dl className="space-y-2 text-xs leading-relaxed text-gray-600">
+      <div>
+        <dt className="font-semibold text-gray-800">機能</dt>
+        <dd>{help.summary}</dd>
+      </div>
+      <div>
+        <dt className="font-semibold text-gray-800">使い方</dt>
+        <dd>{help.howTo}</dd>
+      </div>
+      <div>
+        <dt className="font-semibold text-gray-800">使用例</dt>
+        <dd>{help.example}</dd>
+      </div>
+    </dl>
+  )
+}
+
+/** 共通 HelpPopover と同じクリック・画面端反転・Esc/外側クリック契約を、パーツ固有の3層説明へ適用する。 */
+function FieldHelpPopover({ label, help }: { label: string; help: FieldTypeHelp }) {
+  const [open, setOpen] = useState(false)
+  const [narrowViewport, setNarrowViewport] = useState(false)
+  const [placement, setPlacement] = useState<PopoverPlacement>({ horizontal: 'left', vertical: 'below' })
+  const rootRef = useRef<HTMLSpanElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const closeOutside = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    const closeWithEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('mousedown', closeOutside)
+    window.addEventListener('keydown', closeWithEscape)
+    return () => {
+      window.removeEventListener('mousedown', closeOutside)
+      window.removeEventListener('keydown', closeWithEscape)
+    }
+  }, [open])
+
+  const toggle = () => {
+    if (!open && rootRef.current && typeof window !== 'undefined') {
+      const isNarrow = window.innerWidth > 0 && window.innerWidth < 768
+      const rect = rootRef.current.getBoundingClientRect()
+      setNarrowViewport(isNarrow)
+      if (!isNarrow) {
+        setPlacement(popoverPlacement(
+          { left: rect.left, bottom: rect.bottom },
+          { width: window.innerWidth || 0, height: window.innerHeight || 0 },
+        ))
+      }
+    }
+    setOpen((current) => !current)
+  }
+
+  return (
+    <span ref={rootRef} className="absolute right-1 top-1 inline-flex">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={`${label}の説明を見る`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        className="inline-flex min-h-[32px] min-w-[32px] items-center justify-center rounded-full text-gray-400 hover:text-green-600 focus:outline-none focus:ring-2 focus:ring-green-500"
+      >
+        <HelpIcon className="h-4 w-4" />
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label={`${label}の説明`}
+          className={`${narrowViewport ? 'fixed inset-x-4 top-1/2 w-auto -translate-y-1/2' : `absolute ${placement.horizontal === 'right' ? 'right-0' : 'left-0'} ${placement.vertical === 'above' ? 'bottom-9' : 'top-9'} w-64`} z-40 max-h-[70vh] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 shadow-lg`}
+        >
+          <p className="mb-2 text-xs font-semibold text-gray-900">{label}</p>
+          <PartsHelpContent help={help} />
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="mt-2 min-h-[32px] text-[11px] text-gray-400 hover:text-gray-700"
+          >
+            閉じる
+          </button>
+        </div>
+      )}
+    </span>
+  )
+}
+
+function AdvancedFieldGuide({ type }: { type: HarnessFieldType }) {
+  const meta = FIELD_TYPE_META.find((item) => item.type === type)
+  if (!meta || meta.category !== '高度') return null
+
+  return (
+    <section
+      role="region"
+      aria-label={`${meta.label}の使い方ガイド`}
+      className="mb-3 rounded-lg border border-green-200 bg-green-50 p-3"
+    >
+      <p className="mb-2 text-xs font-bold text-green-800">使い方ガイド</p>
+      <PartsHelpContent help={meta.help} />
+    </section>
+  )
+}
+
 // ── パレット項目 (click-to-add = 素人/375px 向け + drag = desktop) ──
 function PaletteItem({
   type,
   label,
   icon,
-  description,
+  help,
   onAdd,
 }: {
   type: HarnessFieldType
   label: string
   icon: string
-  description?: string
+  help: FieldTypeHelp
   onAdd: () => void
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `palette:${type}` })
   return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      onClick={onAdd}
-      aria-label={`${label}を追加`}
-      className="w-full flex items-start gap-2 px-3 py-2 text-left text-sm bg-white border border-gray-200 rounded-lg hover:border-gray-400 hover:bg-gray-50 cursor-grab"
-      style={{ opacity: isDragging ? 0.5 : 1 }}
-      {...attributes}
-      {...listeners}
-    >
-      <span className="mt-0.5" aria-hidden>{icon}</span>
-      <span className="min-w-0">
-        <span className="block">{label}</span>
-        {description && <span className="mt-0.5 block text-[10px] leading-snug text-gray-500">{description}</span>}
-      </span>
-    </button>
+    <div className="relative">
+      <button
+        ref={setNodeRef}
+        type="button"
+        onClick={onAdd}
+        aria-label={`${label}を追加`}
+        className="w-full flex items-start gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 pr-10 text-left text-sm hover:border-gray-400 hover:bg-gray-50 cursor-grab"
+        style={{ opacity: isDragging ? 0.5 : 1 }}
+        {...attributes}
+        {...listeners}
+      >
+        <span className="mt-0.5" aria-hidden>{icon}</span>
+        <span className="min-w-0">
+          <span className="block">{label}</span>
+          <span className="mt-0.5 block text-[10px] leading-snug text-gray-500">{help.summary}</span>
+        </span>
+      </button>
+      <FieldHelpPopover label={label} help={help} />
+    </div>
   )
 }
 
@@ -1862,8 +1974,8 @@ export default function FormBuilder(props: BuilderProps) {
                 <div key={cat} className="mb-2">
                   <div className="text-[10px] text-gray-400 mb-1">{cat}</div>
                   <div className="grid grid-cols-2 md:grid-cols-1 gap-1">
-                    {FIELD_TYPE_META.filter((m) => m.category === cat).map((m) => (
-                      <PaletteItem key={m.type} type={m.type} label={m.label} icon={m.icon} description={m.description} onAdd={() => addField(m.type)} />
+                    {FIELD_TYPE_META.filter((m) => m.category === cat && m.paletteVisible !== false).map((m) => (
+                      <PaletteItem key={m.type} type={m.type} label={m.label} icon={m.icon} help={m.help} onAdd={() => addField(m.type)} />
                     ))}
                   </div>
                 </div>
@@ -1885,7 +1997,10 @@ export default function FormBuilder(props: BuilderProps) {
             <div className="md:w-64 md:shrink-0" data-testid="settings">
               <div className="text-xs font-bold text-gray-500 mb-2">項目の設定</div>
               {selected ? (
-                <SettingsPanel formId={props.formId} field={selected} allFields={fields} logic={logic} onChange={updateField} onFieldConfigPatch={patchFieldConfig} onManagedChoiceListChange={updateManagedChoiceListReferences} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} successPages={successPages} />
+                <>
+                  <AdvancedFieldGuide type={selected.type} />
+                  <SettingsPanel formId={props.formId} field={selected} allFields={fields} logic={logic} onChange={updateField} onFieldConfigPatch={patchFieldConfig} onManagedChoiceListChange={updateManagedChoiceListReferences} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} successPages={successPages} />
+                </>
               ) : (
                 <div className="text-xs text-gray-400">項目を選ぶと設定が表示されます</div>
               )}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * treasure-e1-field-parts (D-4) — live hosted 表示まで確認できた入力型だけを
- * パレット・共通設定・プレビューへ公開する。
+ * treasure-e1-field-parts (D-4) — live hosted 表示まで確認できた入力型を
+ * 共通設定・プレビューへ公開する。city は既存 field の後方互換のみ維持する。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
@@ -16,25 +16,19 @@ const ADOPTED_FIELDS = [
   {
     type: 'yes_no',
     label: 'はい/いいえ',
-    description: '「はい」か「いいえ」で答えてもらう項目です',
+    summary: '「はい」か「いいえ」で答えてもらえます。',
     category: '選択',
   },
   {
     type: 'time',
     label: '時刻',
-    description: '時刻だけを入力してもらう項目です',
+    summary: '時刻だけを入力してもらえます。',
     category: '入力',
   },
   {
     type: 'website',
     label: 'URL',
-    description: 'ホームページなどのURLを入力してもらう項目です',
-    category: '入力',
-  },
-  {
-    type: 'city',
-    label: '市区町村',
-    description: '市区町村を入力してもらう項目です',
+    summary: 'ホームページなどのURL（ページの住所）を入力してもらえます。',
     category: '入力',
   },
 ] as const
@@ -62,27 +56,28 @@ function field(type: string, label: string): HarnessField {
 }
 
 describe('E1 field parts — パレット公開範囲', () => {
-  it('hosted 表示を確認できた4型だけに日本語ラベルと日常語の説明を持たせる', () => {
+  it('新規追加できる3型に日本語ラベルと日常語の説明を持たせる', () => {
     const byType = Object.fromEntries(FIELD_TYPE_META.map((meta) => [String(meta.type), meta]))
 
     for (const expected of ADOPTED_FIELDS) {
       expect(byType[expected.type]).toMatchObject({
         label: expected.label,
-        description: expected.description,
         category: expected.category,
       })
+      expect(byType[expected.type].help.summary).toBe(expected.summary)
       expect(fieldTypeLabel(expected.type as HarnessField['type'])).toBe(expected.label)
     }
   })
 
-  it('パレットに4型の追加ボタンと非エンジニア向け説明を表示する', () => {
+  it('パレットに3型の追加ボタンと非エンジニア向け説明を表示する', () => {
     render(<FormBuilder {...base()} />)
     const palette = screen.getByTestId('palette')
 
     for (const expected of ADOPTED_FIELDS) {
       expect(within(palette).getByLabelText(`${expected.label}を追加`)).toBeTruthy()
-      expect(within(palette).getByText(expected.description)).toBeTruthy()
+      expect(within(palette).getByText(expected.summary)).toBeTruthy()
     }
+    expect(within(palette).queryByLabelText('市区町村を追加')).toBeNull()
   })
 
   it('hosted 非描画の日時(datetime)・国(country)はパレットと公開メタに出さない', () => {
