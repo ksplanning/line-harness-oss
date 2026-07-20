@@ -144,7 +144,10 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
 
   if (isUnauthenticatedPath(path)) {
     // Key by IP for unauthenticated endpoints
-    key = `ip:${getClientIp(c)}`;
+    // Postal lookup is an additive public API, so its burst traffic must not
+    // consume the pre-existing form/webhook allowance for the same visitor.
+    const namespace = path === '/api/postal-lookup' ? 'postal:' : '';
+    key = `ip:${namespace}${getClientIp(c)}`;
     max = UNAUTHENTICATED_MAX;
     windowMs = UNAUTHENTICATED_WINDOW;
   } else {

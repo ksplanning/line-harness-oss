@@ -10,6 +10,7 @@ function app() {
   a.post('/formaloo/instant/:formId/:secret', (c) => c.json({ success: true }));
   a.get('/formaloo/choices/:formId/:listId', (c) => c.json([]));
   a.get('/api/postal-lookup', (c) => c.json({ pref: '大阪府', city: '高槻市', town: '' }));
+  a.post('/api/forms/:id/submit', (c) => c.json({ success: true }));
   return a;
 }
 
@@ -105,5 +106,24 @@ describe('postal lookup は常に unauthenticated IP bucket', () => {
       lastStatus = res.status;
     }
     expect(lastStatus).toBe(429);
+  });
+
+  test('postal lookup の連打が同じ IP の既存 form submit 枠を消費しない', async () => {
+    const ip = '192.0.2.110';
+    const a = app();
+
+    for (let i = 0; i < 100; i++) {
+      const res = await a.request('/api/postal-lookup?zip=5690000', {
+        headers: { 'cf-connecting-ip': ip },
+      }, env);
+      expect(res.status).toBe(200);
+    }
+
+    const formSubmit = await a.request('/api/forms/form-a/submit', {
+      method: 'POST',
+      headers: { 'cf-connecting-ip': ip },
+    }, env);
+
+    expect(formSubmit.status).toBe(200);
   });
 });
