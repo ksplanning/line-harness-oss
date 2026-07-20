@@ -748,6 +748,14 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **orphan Formaloo 掃除**: 上記「form-publish-invest 調査残骸」節に記録（3件とも harness 側 404 済み・Formaloo remote 側は本セッションの鍵アクセス制約により削除未達で残置）。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_043000_selfform-w1-backbone.md`（Box working folder 386663013201・box_file_id_md=2358410942140 / box_file_id_html=2358414383338）。**Discord投稿はchannel未allowlistedで失敗**（`/discord:access`承認要・本文は用意済み・REPORT参照）。
 
+## selfform-w2-full-parts — 自前フォーム配信 W2 全パーツ拡張（2026-07-21 closer / status: completed）
+- **やったこと**: W1 背骨の続き。残り入力型（rating/signature/file/matrix/repeating_section/計算(variable)/yes_no/time/website）+装飾型（section/page_break/video/image）+全入力型プレースホルダー設定+文字数制限（複数行込・リアルタイム残り文字数カウンター）+既定選択肢（choice/dropdown/multiple_select）+internal限定パーツ（datetime/国/郵便番号/都道府県/日本の市区町村/町名番地/建物名部屋番号）を internal renderer に実装。migration追加なし（既存 `internal_form_submissions`/`formaloo_forms.definition_json` に格納・migrations diff 0 実測）。main 統合 SHA `0dc6bdbcdf978cd21714a909fde266c6aeb323ca`（origin+piecemaker dual-push・3ref一致確認済み）。
+- **4面デプロイ**: ks worker Version `35202880-b64f-4989-9f9d-bdb96d9fad47` / ks admin hash `f226906a`（VITE_LIFF_ID=1656331577-LBR4Xooz dist grep焼き込み確認）/ piecemaker worker Version `b853ec80-121d-4f12-bab7-d2f97b345148` / piecemaker admin hash `336d3e9c`（VITE_LIFF_ID=2010750380-zPyzob9G dist grep焼き込み確認）。4面 health 200。
+- **deployed実機検証（piecemaker・API直接・代表subset）**: 使い捨てフォーム `fa_6ac324b7-0aeb-423b-9de3-68f1ea33d7dd` で text(placeholder+min2/max20+残文字数カウンタ実測「残り20文字」)/textarea(同様「残り30文字」)/dropdown(既定選択肢「Bコース」selected実描画)/yes_no/datetime(internal限定・`type="datetime-local"`実描画)/country(internal限定・placeholder実描画)を実施。公開GET 200→フィールドHTML実描画確認→正常送信200(完了メッセージ「送信ありがとうございました」)→admin `/rows`でlabel解決込み全値read-back一致(`f_text`〜`f_country`全て期待値と一致)→異常系(名前1文字)で400+日本語エラー「お名前(架空) は2文字以上で入力してください」確認→DELETE→GET 404+admin GET 404で完全撤収。本番3フォーム不接触。
+- **正直な残課題**: matrix/repeating_section/rating/signature/file(R2)/計算(variable)/装飾型(section/video/image/page_break)/prefecture等の残り住所系は本ラウンドでは個別の deployed 実描画確認を省略した（`internal-forms-public.ts` の型別レンダリングコード読解 + `internal-forms-public.w2.test.ts`(8 tests)含む既存 vitest 全green で代替）。将来 owner 立会で追加パーツを深堀りする場合は同じ使い捨てフォーム手順（本 REPORT 記載の API 手順）を再利用できる。
+- **suite green**: worker 2750/2750・shared 477/477・db 505/505。保護4ファイル（formaloo-public/webhook/row-edit/friend-token）は `git diff --name-only 281bc2e..af8bca0` で 0 hit（byte不変）。W1 基本9型は既存回帰テストに含まれ無退行。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_060500_selfform-w2-full-parts.md`。
+
 ## 自動応答まわりの owner 要望 (2026-07-21 04:4x 登録)
 - **自動応答センター統合 (改修・selfform 波の後に設計提示)**: 自動返信ルール/よくある質問/資料AI の3画面を「受付階層」1画面に統合 — ①機械ルール(安全弁・定型・エスカレーション) → ②AI回答(FAQ+資料=統合ナレッジ) → ③自信なし→人間へ(下書き)。owner 洞察「FAQもナレッジの一つ・機械ルールはナレッジではない(=安全弁)」を設計原則に。どの層で返ったかの可視化込み
 - **オートメーション画面の JSON 直書き → GUI 化**: owner 明示「一番最後も最後で良い」— 最低優先で登録 (イベント→アクションを日常語で組める picker 形式)
