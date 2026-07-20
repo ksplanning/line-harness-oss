@@ -101,5 +101,5 @@
     "115_messages_log_delivery_type_test.sql",
     "121_faq_bot_draft_defaults.sql"
   ],
-  "migrationCount": 99
+  "migrationCount": 100
 }
