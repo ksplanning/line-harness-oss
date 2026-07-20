@@ -10,6 +10,7 @@ const GOOGLE_SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4';
 const JWT_LIFETIME_SECONDS = 3600;
 const TOKEN_REFRESH_SKEW_MS = 60_000;
+const MAX_FETCH_ERROR_DETAIL_LENGTH = 160;
 
 export interface GoogleServiceAccountCredentials {
   clientEmail: string;
@@ -51,17 +52,20 @@ export class GoogleSheetsError extends Error {
   readonly status: number;
   readonly operation: GoogleSheetsOperation;
   readonly category: GoogleSheetsErrorCategory;
+  readonly detail?: string;
 
   constructor(
     operation: GoogleSheetsOperation,
     status: number,
     category: GoogleSheetsErrorCategory,
+    detail?: string,
   ) {
     super(`Google Sheets ${operation} request failed`);
     this.name = 'GoogleSheetsError';
     this.status = status;
     this.operation = operation;
     this.category = category;
+    if (detail) this.detail = detail;
   }
 }
 
@@ -180,6 +184,21 @@ function sheetsFailureCategory(status: number): GoogleSheetsErrorCategory {
   return 'sheet_permission';
 }
 
+function fetchErrorDetail(cause: unknown): string {
+  const error = typeof cause === 'object' && cause !== null
+    ? cause as { name?: unknown; message?: unknown }
+    : null;
+  const name = typeof error?.name === 'string' && error.name.trim() ? error.name : 'Error';
+  const message = typeof error?.message === 'string' && error.message.trim()
+    ? error.message
+    : 'Fetch failed';
+  return `${name}: ${message}`
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_FETCH_ERROR_DETAIL_LENGTH);
+}
+
 export class GoogleSheetsClient {
   private readonly credentials: GoogleServiceAccountCredentials;
   private readonly fetchImpl: typeof fetch;
@@ -188,8 +207,11 @@ export class GoogleSheetsClient {
   private cachedToken: CachedToken | null = null;
 
   constructor(options: GoogleSheetsClientOptions) {
+    if (options.credentials.tokenUri !== GOOGLE_TOKEN_URL) {
+      throw new Error('Google service account credentials are invalid');
+    }
     this.credentials = options.credentials;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.now = options.now ?? Date.now;
     this.webCrypto = options.webCrypto ?? crypto;
   }
@@ -201,7 +223,7 @@ export class GoogleSheetsClient {
     const claims = {
       iss: this.credentials.clientEmail,
       scope: GOOGLE_SHEETS_SCOPE,
-      aud: this.credentials.tokenUri,
+      aud: GOOGLE_TOKEN_URL,
       iat: issuedAt,
       exp: issuedAt + JWT_LIFETIME_SECONDS,
     };
@@ -234,16 +256,17 @@ export class GoogleSheetsClient {
     const assertion = await this.createAssertion();
     let response: Response;
     try {
-      response = await this.fetchImpl(this.credentials.tokenUri, {
+      response = await this.fetchImpl(GOOGLE_TOKEN_URL, {
         method: 'POST',
+        redirect: 'manual',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
           assertion,
         }).toString(),
       });
-    } catch {
-      throw new GoogleSheetsError('token', 0, 'network');
+    } catch (error) {
+      throw new GoogleSheetsError('token', 0, 'network', fetchErrorDetail(error));
     }
     if (!response.ok) {
       throw new GoogleSheetsError('token', response.status, tokenFailureCategory(response.status));
@@ -269,14 +292,15 @@ export class GoogleSheetsClient {
     try {
       response = await this.fetchImpl(url, {
         ...init,
+        redirect: 'manual',
         headers: {
           Authorization: `Bearer ${accessToken}`,
           ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
           ...init.headers,
         },
       });
-    } catch {
-      throw new GoogleSheetsError(operation, 0, 'network');
+    } catch (error) {
+      throw new GoogleSheetsError(operation, 0, 'network', fetchErrorDetail(error));
     }
     if (!response.ok) {
       throw new GoogleSheetsError(operation, response.status, sheetsFailureCategory(response.status));

@@ -183,7 +183,7 @@ sheetsConnections.delete(`${BASE_PATH}/:id`, async (c) => {
 });
 
 // POST /api/integrations/google-sheets/connections/:id/test
-// Exactly one A1 read. Cell contents and Google error bodies are never returned/logged.
+// Exactly one A1 read. Cell contents and Google response bodies are never returned/logged.
 sheetsConnections.post(`${BASE_PATH}/:id/test`, async (c) => {
   const denied = ownerGate(c, OWNER_MESSAGE);
   if (denied) return denied;
@@ -217,16 +217,27 @@ sheetsConnections.post(`${BASE_PATH}/:id/test`, async (c) => {
     await client.readValues(connection.spreadsheetId, quotedA1SheetName(connection.sheetName));
     return c.json({ success: true, data: { ok: true } });
   } catch (error) {
-    const detail = error instanceof GoogleSheetsError
-      ? { category: error.category, operation: error.operation, status: error.status }
+    const failure: {
+      category: GoogleSheetsErrorCategory;
+      operation: GoogleSheetsError['operation'];
+      status: number;
+      detail?: string;
+    } = error instanceof GoogleSheetsError
+      ? {
+          category: error.category,
+          operation: error.operation,
+          status: error.status,
+          ...(error.detail ? { detail: error.detail } : {}),
+        }
       : { category: 'network' as const, operation: 'read' as const, status: 0 };
-    console.error('Google Sheets connection test failed', detail);
+    console.error('Google Sheets connection test failed', failure);
     return c.json({
       success: true,
       data: {
         ok: false,
-        category: detail.category,
-        message: CONNECTION_TEST_MESSAGES[detail.category],
+        category: failure.category,
+        message: CONNECTION_TEST_MESSAGES[failure.category],
+        ...(failure.detail ? { detail: failure.detail } : {}),
       },
     });
   }

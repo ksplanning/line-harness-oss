@@ -317,10 +317,10 @@ describe('Sheets connection test API', () => {
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain('SENTINEL_GOOGLE_BODY');
   });
 
-  test('fetch 例外は通信エラーを返し内部例外を隠す', async () => {
+  test('fetch 例外は安全な短い detail を API 応答とログへ返す', async () => {
     const id = await createOne();
-    const sentinel = 'SENTINEL_NETWORK_FAILURE';
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error(sentinel); }));
+    const cause = 'Network connection lost';
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError(cause); }));
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`);
@@ -328,13 +328,16 @@ describe('Sheets connection test API', () => {
     const body = await response.json();
     expect(body).toEqual({
       success: true,
-      data: { ok: false, category: 'network', message: CONNECTION_ERRORS.network },
+      data: {
+        ok: false,
+        category: 'network',
+        message: CONNECTION_ERRORS.network,
+        detail: `TypeError: ${cause}`,
+      },
     });
-    expect(JSON.stringify(body)).not.toContain(sentinel);
     expect(consoleError).toHaveBeenCalledWith('Google Sheets connection test failed', {
-      category: 'network', operation: 'token', status: 0,
+      category: 'network', operation: 'token', status: 0, detail: `TypeError: ${cause}`,
     });
-    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(sentinel);
   });
 
   test('database failure is a 500 instead of a misleading not-found response', async () => {

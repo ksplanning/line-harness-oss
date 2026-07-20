@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import {
   GoogleSheetsClient,
   GoogleSheetsError,
@@ -31,6 +31,8 @@ beforeAll(async () => {
   publicKey = pair.publicKey;
 });
 
+afterEach(() => vi.unstubAllGlobals());
+
 function credentialsJson(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     type: 'service_account',
@@ -54,6 +56,7 @@ describe('GoogleSheetsClient — WebCrypto service account JWT', () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input)).toBe(TOKEN_URL);
       expect(init?.method).toBe('POST');
+      expect(init?.redirect).toBe('manual');
       expect(new Headers(init?.headers).get('content-type')).toContain('application/x-www-form-urlencoded');
 
       const params = new URLSearchParams(String(init?.body));
@@ -87,6 +90,58 @@ describe('GoogleSheetsClient — WebCrypto service account JWT', () => {
     await expect(client.getAccessToken()).resolves.toBe('ACCESS-1');
     await expect(client.getAccessToken()).resolves.toBe('ACCESS-1');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('Workers の receiver-sensitive な global fetch を正しい receiver で呼ぶ', async () => {
+    let receiver: unknown;
+    const workerFetch = vi.fn(function (this: unknown) {
+      receiver = this;
+      if (this !== globalThis) throw new TypeError('Illegal invocation');
+      return Promise.resolve(jsonResponse({ access_token: 'ACCESS-WORKER', expires_in: 3600 }));
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', workerFetch);
+    const client = new GoogleSheetsClient({
+      credentials: parseGoogleServiceAccountCredentials(credentialsJson()),
+      now: () => FIXED_NOW,
+    });
+
+    await expect(client.getAccessToken()).resolves.toBe('ACCESS-WORKER');
+    expect(receiver).toBe(globalThis);
+    expect(workerFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('token fetch 例外の name/message を短い network detail に保持する', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError(`Network connection lost\n${'x'.repeat(200)}`);
+    }) as unknown as typeof fetch;
+    const client = new GoogleSheetsClient({
+      credentials: parseGoogleServiceAccountCredentials(credentialsJson()),
+      fetchImpl,
+      now: () => FIXED_NOW,
+    });
+
+    const error = await client.getAccessToken().catch((cause: unknown) => cause as GoogleSheetsError);
+    expect(error).toMatchObject({
+      name: 'GoogleSheetsError',
+      operation: 'token',
+      status: 0,
+      category: 'network',
+    });
+    expect(error.detail).toMatch(/^TypeError: Network connection lost x+$/);
+    expect(error.detail).not.toContain('\n');
+    expect(error.detail?.length).toBeLessThanOrEqual(160);
+  });
+
+  test('直接組み立てた credentials でも OAuth 宛先の差し替えを拒否する', () => {
+    const credentials = {
+      ...parseGoogleServiceAccountCredentials(credentialsJson()),
+      tokenUri: 'https://attacker.example/token',
+    };
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    expect(() => new GoogleSheetsClient({ credentials, fetchImpl }))
+      .toThrowError('Google service account credentials are invalid');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test('literal \\n の秘密鍵を正規化し Workers 互換経路で JWT を署名する', async () => {
@@ -175,6 +230,8 @@ describe('GoogleSheetsClient — Sheets API v4 contracts', () => {
     expect(apiCalls).toHaveLength(3);
     expect(apiCalls.map((call) => call.init.method)).toEqual(['POST', 'GET', 'PUT']);
     for (const call of apiCalls) {
+      expect(new URL(call.url).origin).toBe('https://sheets.googleapis.com');
+      expect(call.init.redirect).toBe('manual');
       expect(new Headers(call.init.headers).get('authorization')).toBe('Bearer ACCESS-2');
     }
     expect(apiCalls[0].url).toBe(
