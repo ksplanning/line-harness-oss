@@ -23,6 +23,7 @@ import { resolveFormalooClient } from './services/formaloo-client.js';
 import { runFormalooDriftCheck } from './services/formaloo-drift.js';
 import { runFormalooEditMailOutbox } from './services/formaloo-edit-mail.js';
 import { runFriendLedgerPolling } from './services/friend-ledger-sync.js';
+import { processDueFollowerImports } from './services/follower-import.js';
 import { runExpirer } from './services/booking-expirer.js';
 import { processDueEventReminders } from './services/event-booking-reminders.js';
 import { runEventBookingExpirer } from './services/event-booking-expirer.js';
@@ -38,6 +39,7 @@ import { permissionMiddleware } from './middleware/permission-middleware.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
+import { followerImports } from './routes/follower-imports.js';
 import { friendFieldDefinitions } from './routes/friend-field-definitions.js';
 import { tags } from './routes/tags.js';
 import { scenarios } from './routes/scenarios.js';
@@ -310,6 +312,7 @@ app.use('*', permissionMiddleware);
 // Mount route groups — MVP & Round 2
 app.route('/', webhook);
 app.route('/', friends);
+app.route('/', followerImports);
 app.route('/', friendFieldDefinitions);
 app.route('/', tags);
 app.route('/', scenarios);
@@ -802,6 +805,16 @@ async function scheduled(
   // 条件付きリッチメニューは15分境界で期間またぎをqueue化し、5分tickごとに最大20人だけ処理する。
   // checkpoint が遅延tickを回収し、タグ/metadata変更と一括再適用も同じ bounded worker で扱う。
   if (event.cron === '*/5 * * * *') {
+    try {
+      const result = await processDueFollowerImports(env.DB);
+      if (result.attempted > 0) {
+        console.log(
+          `[follower-imports] attempted=${result.attempted} completed=${result.completed} failed=${result.failed} retrying=${result.retrying}`,
+        );
+      }
+    } catch {
+      console.error('[follower-imports] worker error');
+    }
     try {
       const result = await runFriendLedgerPolling({
         db: env.DB,

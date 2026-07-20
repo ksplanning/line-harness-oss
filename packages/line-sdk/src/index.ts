@@ -1,4 +1,5 @@
-export { LineClient } from './client.js';
+export { LineApiError, LineClient } from './client.js';
+export type { FollowerIdsPage } from './client.js';
 export { verifySignature } from './webhook.js';
 export {
   textMessage,

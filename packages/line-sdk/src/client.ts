@@ -18,6 +18,24 @@ export interface FollowersInsight {
   blocks?: number;
 }
 
+export interface FollowerIdsPage {
+  userIds: string[];
+  next?: string;
+}
+
+/** LINE API failure with a machine-readable HTTP status for fail-closed callers. */
+export class LineApiError extends Error {
+  readonly name = 'LineApiError';
+
+  constructor(
+    public readonly status: number,
+    public readonly statusText: string,
+    public readonly responseBody: string,
+  ) {
+    super(`LINE API error: ${status} ${statusText} — ${responseBody}`);
+  }
+}
+
 export class LineClient {
   constructor(private readonly channelAccessToken: string) {}
 
@@ -46,9 +64,7 @@ export class LineClient {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(
-        `LINE API error: ${res.status} ${res.statusText} — ${text}`,
-      );
+      throw new LineApiError(res.status, res.statusText, text);
     }
 
     // Some endpoints (e.g. push, reply) return an empty body with 200.
@@ -71,6 +87,18 @@ export class LineClient {
       `/v2/bot/profile/${encodeURIComponent(userId)}`,
     );
     return data as UserProfile;
+  }
+
+  /**
+   * Enumerate follower IDs for verified/premium LINE Official Accounts.
+   * `next` is passed back as `start` unchanged so callers can persist and resume.
+   */
+  async getFollowerIds(start?: string, limit = 1000): Promise<FollowerIdsPage> {
+    const query = new URLSearchParams();
+    if (start) query.set('start', start);
+    query.set('limit', String(limit));
+    const { data } = await this.request('GET', `/v2/bot/followers/ids?${query.toString()}`);
+    return data as FollowerIdsPage;
   }
 
   // ─── Messaging ───────────────────────────────────────────────────────────
