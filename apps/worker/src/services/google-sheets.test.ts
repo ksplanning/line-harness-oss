@@ -226,6 +226,40 @@ describe('GoogleSheetsClient — WebCrypto service account JWT', () => {
 });
 
 describe('GoogleSheetsClient — Sheets API v4 contracts', () => {
+  test('batch update preserves unrelated columns by sending only named ranges', async () => {
+    const apiCalls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+      if (String(input) === TOKEN_URL) {
+        return jsonResponse({ access_token: 'ACCESS-BATCH', expires_in: 3600 });
+      }
+      apiCalls.push({ url: String(input), init });
+      return jsonResponse({ spreadsheetId: 'sheet/id', totalUpdatedRows: 2 });
+    }) as unknown as typeof fetch;
+    const client = new GoogleSheetsClient({
+      credentials: parseGoogleServiceAccountCredentials(credentialsJson()),
+      fetchImpl,
+      now: () => FIXED_NOW,
+    });
+
+    await client.batchUpdateValues('sheet/id', [
+      { range: "'友だち台帳'!B2", values: [['済']] },
+      { range: "'友だち台帳'!E2", values: [['あやこ']] },
+    ]);
+
+    expect(apiCalls).toHaveLength(1);
+    expect(apiCalls[0].url).toBe(
+      'https://sheets.googleapis.com/v4/spreadsheets/sheet%2Fid/values:batchUpdate',
+    );
+    expect(apiCalls[0].init.method).toBe('POST');
+    expect(JSON.parse(String(apiCalls[0].init.body))).toEqual({
+      valueInputOption: 'RAW',
+      data: [
+        { range: "'友だち台帳'!B2", majorDimension: 'ROWS', values: [['済']] },
+        { range: "'友だち台帳'!E2", majorDimension: 'ROWS', values: [['あやこ']] },
+      ],
+    });
+  });
+
   test('append/read/update が正しい URL・method・Bearer・ValueRange を送る', async () => {
     const apiCalls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {

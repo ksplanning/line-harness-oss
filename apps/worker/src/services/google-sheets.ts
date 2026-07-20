@@ -41,7 +41,19 @@ export interface UpdateValuesResponse {
   updatedCells?: number;
 }
 
-export type GoogleSheetsOperation = 'token' | 'append' | 'read' | 'update';
+export interface SheetsDataUpdate {
+  range: string;
+  values: SheetCellValue[][];
+}
+
+export interface BatchUpdateValuesResponse {
+  spreadsheetId: string;
+  totalUpdatedRows?: number;
+  totalUpdatedColumns?: number;
+  totalUpdatedCells?: number;
+}
+
+export type GoogleSheetsOperation = 'token' | 'append' | 'read' | 'update' | 'batch_update';
 export type GoogleSheetsErrorCategory =
   | 'key_format'
   | 'auth_rejected'
@@ -334,6 +346,20 @@ export class GoogleSheetsClient {
     return this.request('update', url, {
       method: 'PUT',
       body: JSON.stringify(valueRange(values)),
+    });
+  }
+
+  batchUpdateValues(spreadsheetId: string, data: SheetsDataUpdate[]): Promise<BatchUpdateValuesResponse> {
+    const url = `${GOOGLE_SHEETS_API}/spreadsheets/${encodePathPart(spreadsheetId)}/values:batchUpdate`;
+    return this.request('batch_update', url, {
+      method: 'POST',
+      body: JSON.stringify({
+        valueInputOption: 'RAW',
+        data: data.map((entry) => ({
+          range: entry.range,
+          ...valueRange(entry.values),
+        })),
+      }),
     });
   }
 }
