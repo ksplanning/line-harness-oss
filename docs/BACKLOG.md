@@ -732,3 +732,14 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 
 - 現行のステップ本文は外部依存なしの Unicode 絵文字パレットを使う。LINE 純正絵文字の Messaging API 形式（`productId` / `emojiId` を持つ `emojis`）は本件の対象外。
 - 将来対応する場合は、Unicode 本文とは別の message object 構築・管理画面 picker・LINE 実機検証が必要。owner の明示依頼なしに自動着手しない。
+
+## 🔄 方針転換 (2026-07-21 owner 号令): Formaloo 修繕停止・自前フォームへ全振り
+- owner 原文「もうFormalooから完全移行するのでFormalooのフォームの修繕は不要でLineハーネス内のフォームビルダーで全て実装すればいい」
+- 停止 lane: publish-ux-frid-sync-fix (fr_id 同期修理/2段階公開UX/受付開始表示)・dropdown-default-choice (Formaloo hosted preselect spike) — **要件は selfform W2/W3 へ移管** (自前 renderer では全て自由に実装可能)
+- 移管された要件: 既定選択肢 (W2)・公開確認モーダル+受付期間表示 (W3)・複数行文字数制限+リアルタイム残り文字数 (W2)・郵便番号自動補完 (postal-lookup→W3 統合)・日時/国/日本の住所パーツ (W2)
+- Formaloo サポート照会 (バグ2件+AI開放) は**送信不要化** (移行方針)。fr_id 同期警告は owner に「無視で OK (公開は妨げない)」案内済み・修理しない
+- **orphan Formaloo 掃除 (42sybm / zlm1qh / round3 の l7doyq の計3件) は selfform-w1 closer に移管**
+
+## 自動応答まわりの owner 要望 (2026-07-21 04:4x 登録)
+- **自動応答センター統合 (改修・selfform 波の後に設計提示)**: 自動返信ルール/よくある質問/資料AI の3画面を「受付階層」1画面に統合 — ①機械ルール(安全弁・定型・エスカレーション) → ②AI回答(FAQ+資料=統合ナレッジ) → ③自信なし→人間へ(下書き)。owner 洞察「FAQもナレッジの一つ・機械ルールはナレッジではない(=安全弁)」を設計原則に。どの層で返ったかの可視化込み
+- **オートメーション画面の JSON 直書き → GUI 化**: owner 明示「一番最後も最後で良い」— 最低優先で登録 (イベント→アクションを日常語で組める picker 形式)
