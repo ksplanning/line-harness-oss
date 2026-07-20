@@ -1,6 +1,7 @@
 import {
   appendSheetsSyncAudit,
   claimSheetsSyncLock,
+  clearSheetsSyncLedgerRowNumbers,
   listActiveSheetsConnectionsForSync,
   listFriendFieldDefinitions,
   listSheetsSyncAudit,
@@ -269,7 +270,10 @@ async function persistPlan(
   now: string,
 ): Promise<void> {
   const nextFingerprint = await fingerprint(plan.canonical);
-  const changed = plan.isAppend || plan.details.length > 0 || plan.ledger?.rowFingerprint !== nextFingerprint;
+  const changed = plan.isAppend
+    || plan.details.length > 0
+    || plan.ledger?.rowFingerprint !== nextFingerprint
+    || plan.ledger?.sheetRowNumber !== plan.rowNumber;
   const needsBaseline = !plan.ledger;
   if (!changed && !needsBaseline) return;
   const sequence = await reserveSheetsSyncSequence(
@@ -443,20 +447,44 @@ export async function syncFriendLedger(
           positions.set(userId, rows);
         }
         for (const [userId, rows] of positions) {
-          if (rows.length > 1) warnings.push(`userId「${userId}」の行が重複しています`);
+          if (rows.length > 1) warnings.push('userId が重複している行があります');
         }
+      }
+      const exactRowOwner = new Map<number, string>();
+      for (const friend of friends) {
+        const rows = positions.get(friend.lineUserId) ?? [];
+        if (rows.length === 1) exactRowOwner.set(rows[0], friend.id);
       }
 
       for (const friend of friends) {
         const ledger = ledgerByFriend.get(friend.id) ?? null;
         const matchingRows = positions.get(friend.lineUserId) ?? [];
+        if (matchingRows.length > 1) continue;
         let rowNumber = matchingRows.length === 1 ? matchingRows[0] : null;
-        if (!rowNumber && ledger?.sheetRowNumber && values[ledger.sheetRowNumber - 1]) {
-          rowNumber = ledger.sheetRowNumber;
-        }
         const projection = projectedWithDefaults(friend, options.connection, defaults);
+        if (
+          !rowNumber
+          && userIdIndex !== undefined
+          && ledger?.sheetRowNumber
+          && values[ledger.sheetRowNumber - 1]
+          && !exactRowOwner.has(ledger.sheetRowNumber)
+        ) {
+          const oldRow = values[ledger.sheetRowNumber - 1] ?? [];
+          const identityChecks = [
+            ['identity:displayName', resolved.indexByKey['identity:displayName']],
+            ['identity:registeredAt', resolved.indexByKey['identity:registeredAt']],
+          ] as const;
+          const available = identityChecks.filter(([, index]) => index !== undefined);
+          if (
+            available.length > 0
+            && available.every(([key, index]) => normalizeSheetCell(oldRow[index!]) === projection[key])
+          ) rowNumber = ledger.sheetRowNumber;
+        }
         if (!rowNumber) {
-          if (userIdIndex === undefined) continue;
+          if (userIdIndex === undefined || ledger) {
+            warnings.push('userId から安全に行を特定できない友だちをスキップしました');
+            continue;
+          }
           const nextRow = rowForProjection(headers.length, projection, columns, resolved.indexByKey);
           await client.appendValues(
             options.connection.spreadsheetId,
@@ -490,7 +518,7 @@ export async function syncFriendLedger(
           const expected = projection[column.key] ?? '';
           const columnIndex = resolved.indexByKey[column.key];
           if (columnIndex === undefined) {
-            canonical[column.key] = canonicalValue(expected);
+            canonical[column.key] = ledger?.canonicalSnapshot[column.key] ?? canonicalValue(expected);
             continue;
           }
           const observed = normalizeSheetCell(sheetRow[columnIndex]);
@@ -521,6 +549,10 @@ export async function syncFriendLedger(
           const baseline = ledger
             ? normalizeSheetCell(ledger.canonicalSnapshot[column.key])
             : expected;
+          if (expected === observed) {
+            canonical[column.key] = canonicalValue(expected);
+            continue;
+          }
           const harnessChanged = expected !== baseline;
           const sheetChanged = observed !== baseline;
           const bothChanged = harnessChanged && sheetChanged && expected !== observed;
@@ -579,6 +611,14 @@ export async function syncFriendLedger(
       plans.filter((plan) => plan.sheetUpdates.length > 0).map((plan) => plan.rowNumber),
     ).size;
     const completedAt = toJstString(nowFactory());
+    if (plans.some((plan) => plan.ledger && plan.ledger.sheetRowNumber !== plan.rowNumber)) {
+      await clearSheetsSyncLedgerRowNumbers(
+        options.db,
+        options.connection.lineAccountId,
+        options.connection.id,
+        options.connection.configVersion,
+      );
+    }
     for (const plan of plans) {
       plan.friend = await saveImportedMetadata(
         options.db,

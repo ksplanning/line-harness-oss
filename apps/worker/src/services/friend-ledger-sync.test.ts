@@ -168,6 +168,44 @@ describe('friend ledger bidirectional sync', () => {
     expect(client.values[1]).toEqual(['営業部', '済', '2026-07-20T10:00:00+09:00', 'あやこ', 'U_AYAKO']);
   });
 
+  test('reassigns ledger row positions safely after friends are reordered by exact userId', async () => {
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-b', 'U_B', 'びー', 'acc-1', '{"入金確認":"済"}',
+              '2026-07-20T11:00:00+09:00', '2026-07-20T11:00:00+09:00')`).run();
+    await run();
+    client.values = [client.values[0], client.values[2], client.values[1]];
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result).toMatchObject({ importedFields: 0, ignoredIdentityEdits: 0 });
+    expect(raw.prepare(`SELECT record_key, sheet_row_number FROM sheets_sync_ledger
+      ORDER BY record_key`).all()).toEqual([
+      { record_key: 'friend-ayako', sheet_row_number: 3 },
+      { record_key: 'friend-b', sheet_row_number: 2 },
+    ]);
+  });
+
+  test('skips an unsafe old-row fallback when userIds are ambiguous after a reorder', async () => {
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-b', 'U_B', 'びー', 'acc-1', '{"入金確認":"B"}',
+              '2026-07-20T11:00:00+09:00', '2026-07-20T11:00:00+09:00')`).run();
+    await run();
+    client.values = [
+      client.values[0],
+      ['びー', 'tampered-b', '2026-07-20T11:00:00+09:00', 'B'],
+      ['あやこ', 'tampered-a', '2026-07-20T10:00:00+09:00', '未'],
+    ];
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result.status).toBe('warning');
+    expect(result.importedFields).toBe(0);
+    expect(metadata()).toMatchObject({ 入金確認: '未' });
+    expect(metadata('friend-b')).toMatchObject({ 入金確認: 'B' });
+  });
+
   test('imports selected custom cells but restores and audits edited identity cells', async () => {
     await run();
     client.values[1][0] = '改ざん名';
@@ -222,6 +260,19 @@ describe('friend ledger bidirectional sync', () => {
       .toEqual({ conflict_resolution: 'sheet_wins' });
   });
 
+  test('treats equal Harness and sheet changes as convergence, not a fake import', async () => {
+    await run();
+    raw.prepare(`UPDATE friends SET metadata='{"入金確認":"同値"}',
+      updated_at='2026-07-21T11:00:00+09:00' WHERE id='friend-ayako'`).run();
+    client.values[1][3] = '同値';
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result).toMatchObject({ importedFields: 0, updatedRows: 0 });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_audit_details
+      WHERE old_value = new_value`).get()).toEqual({ count: 0 });
+  });
+
   test('treats a renamed selected heading as a warning and never imports the lookalike column', async () => {
     await run();
     client.values[0][3] = '入金済み';
@@ -234,5 +285,23 @@ describe('friend ledger bidirectional sync', () => {
     expect(metadata()).toMatchObject({ 入金確認: '未' });
     expect(raw.prepare('SELECT last_sync_status, last_sync_warning FROM sheets_connections WHERE id=?').get(connection.id))
       .toMatchObject({ last_sync_status: 'warning', last_sync_warning: expect.stringContaining('入金確認') });
+  });
+
+  test('does not advance a custom-field baseline while its heading is missing', async () => {
+    await run();
+    raw.prepare(`UPDATE friends SET metadata='{"入金確認":"ハーネス更新"}',
+      updated_at='2026-07-21T11:00:00+09:00' WHERE id='friend-ayako'`).run();
+    client.values[0][3] = '入金済み';
+    await run('polling', 'system_poll');
+    expect((raw.prepare(`SELECT canonical_snapshot_json FROM sheets_sync_ledger
+      WHERE record_key='friend-ayako'`).get() as { canonical_snapshot_json: string }).canonical_snapshot_json)
+      .toContain('未');
+
+    client.values[0][3] = '入金確認';
+    const restored = await run('polling', 'system_poll');
+
+    expect(restored.importedFields).toBe(0);
+    expect(client.values[1][3]).toBe('ハーネス更新');
+    expect(metadata()).toMatchObject({ 入金確認: 'ハーネス更新' });
   });
 });
