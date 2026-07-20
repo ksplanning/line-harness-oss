@@ -189,6 +189,26 @@ describe('詳細画面 scope 照合', () => {
     await waitFor(() => expect(sharePanelProps.current?.isOwner).toBe(true))
   })
 
+  it('配信方式を切り替えた直後に共有情報も新しい backend で読み直す', async () => {
+    getMock.mockResolvedValue(form('acc_A'))
+    shareMock
+      .mockResolvedValueOnce({ published: true, publicUrl: 'https://formaloo.example.test/f', gsheetConnected: false })
+      .mockResolvedValue({ published: true, publicUrl: 'https://api.example.test/f/fa1', gsheetConnected: false })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(sharePanelProps.current?.share).toEqual(expect.objectContaining({
+      publicUrl: 'https://formaloo.example.test/f',
+    })))
+
+    await act(async () => {
+      await (builderProps.current?.onRenderBackendChange as (backend: string) => Promise<void>)('internal')
+    })
+
+    await waitFor(() => expect(sharePanelProps.current?.share).toEqual(expect.objectContaining({
+      publicUrl: 'https://api.example.test/f/fa1',
+    })))
+    expect(shareMock).toHaveBeenCalledTimes(2)
+  })
+
   it('P2 fail-closed: account 未確定 (selectedAccountId=null) で account-scoped form は描画せず hold', async () => {
     mockAccount.selectedAccountId = null
     getMock.mockResolvedValue(form('acc_B'))

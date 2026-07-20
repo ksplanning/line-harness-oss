@@ -117,6 +117,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
     try {
       const confirmed = await formsAdvancedApi.setRenderBackend(id, next)
       setRenderBackend(confirmed)
+      await loadShare()
       setNotice(confirmed === 'internal' ? '自前配信 (β) に切り替えました' : 'Formaloo 配信に切り替えました')
     } catch (error) {
       setNotice('配信方式の変更に失敗しました')
