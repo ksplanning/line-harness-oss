@@ -577,25 +577,27 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 
 ---
 
-# ai-chat-rewire — Workers AI host 1回実射チェックリスト
+# ai-chat-verified-fix — Workers AI host 再実射チェックリスト
 
 ## 目的と現在地
 
-- AIチャットが Formaloo AI ではなく Cloudflare Workers AI から実回答を返すことを、approved host で1回だけ確認する。
-- sandbox からのAI実射は 0 回。本番3フォームへの接触も 0 回。この欄は host 担当者が同一 revision を反映した後に埋める。
+- 旧 revision の closer 実射では、使い捨てフォームの回答がミラーへ2件入っていても `verified=1` 行がなく、分析は `422 no_analysis_data` で LLM に到達しなかった。
+- 修理後の同一 revision で、`verified=0` の実回答ミラーから Cloudflare Workers AI が実回答を返すことを approved host で1回だけ再確認する。
+- sandbox からのAI実射は 0 回。本番3フォームへの接触も 0 回。この欄は host 担当者が査読済み revision を反映した後に埋める。
 - OpenAI の鍵、回答全文、友だちID、submission ID は記録しない。`providerStatus`、token数、所要時間、件数だけを残す。
 
 ## 実射前
 
 1. 査読済み deployment SHA と対象テナント（KS または Piecemaker の片方）を記録する。もう片方へ結果を流用しない。
-2. 本番3フォームを避け、削除可能な検証フォームを1つ使う。確認済みミラー回答を2件だけ用意し、項目は満足度・NPS・選択肢などの構造化回答だけにする。氏名、電話、メール、住所、自由記述を入れない。
-3. 対象 Worker に `AI` binding、`AI_MODEL_ID`、`FORMALOO_AI_CHAT_ENABLED=true` があることを値非表示で確認する。OpenAI 鍵の有無はログへ出さない。
-4. 対象フォームに5分以内の `pending` 履歴がなく、その日のテナント日次上限に1回分の空きがあることを read-only で確認する。
+2. 本番3フォームを避け、削除可能な検証フォームを1つ使う。満足度・NPS・選択肢などの構造化回答を2件だけ送信し、氏名、電話、メール、住所、自由記述は入れない。
+3. 通常の `/rows` reconcile を1回行い、ミラーの `total=2` と、対象2行が `verified=0` のままであることを read-only で確認する。分析のために `verified` を手動更新しない。IDや回答全文は記録しない。
+4. 対象 Worker に `AI` binding、`AI_MODEL_ID`、`FORMALOO_AI_CHAT_ENABLED=true` があることを値非表示で確認する。OpenAI 鍵の有無はログへ出さない。
+5. 対象フォームに5分以内の `pending` 履歴がなく、その日のテナント日次上限に1回分の空きがあることを read-only で確認する。
 
 ## 1回だけ実射
 
 1. host 側の開始時刻を記録し、管理画面から「このフォームの満足度の傾向は？」を1回だけ送る。二重クリックせず、処理中に送信ボタンが無効になることを確認する。
-2. 完了時刻を記録し、開始から完了までの所要時間を秒で算出する。HTTP 200 だけでなく、画面に質問に対応した日常語の実回答が表示され、再読込後も履歴へ戻ることを確認する。
+2. `422 no_analysis_data` にならず HTTP 200 になることを確認する。完了時刻を記録し、開始から完了までの所要時間を秒で算出する。画面に質問に対応した日常語の実回答が表示され、再読込後も履歴へ戻ることまで確認する。
 3. 保存履歴の `status=completed`、`providerStatus=workers_ai`、`answer.sampleSize=2` を確認する。`providerStatus=openai` または失敗なら Workers AI 実射の PASS にせず、追加送信せず査読へ戻す。
 4. `answer.usage.inputTokens` と `outputTokens` がある場合、既定係数では次で無料枠消費の目安を出す。
 
@@ -610,7 +612,8 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 ## host 記録欄
 
 - [ ] deployment SHA / tenant / 実行者 / JST 実行時刻を記録した。
-- [ ] 実回答と履歴復元を確認した。所要時間: `___ 秒`。
+- [ ] reconcile 後 `total=2` / 対象2行 `verified=0` を確認し、手動昇格していない。
+- [ ] HTTP 200（`422 no_analysis_data` 不発）/ 実回答 / 履歴復元を確認した。所要時間: `___ 秒`。
 - [ ] `providerStatus=workers_ai` / `sampleSize=2` を確認した。
 - [ ] input tokens: `___` / output tokens: `___` / 推定 neurons: `___` / 無料枠の推定割合: `___ %`（usage なしの場合は算出不能）。
 - [ ] 実射は合計1回、秘密値記録0、本番3フォーム接触0、cleanup完了。
