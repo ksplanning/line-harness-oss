@@ -157,7 +157,7 @@ describe('tryFaqReply', () => {
   test('miss records unmatched with top_score and sends handoff when configured', async () => {
     const settings = stmt({
       first: vi.fn().mockResolvedValue({
-        value: JSON.stringify({ enabled: true, threshold: 0.95, handoffMessage: '担当者に確認します', maxRepliesPerDay: 5 }),
+        value: JSON.stringify({ enabled: true, threshold: 0.95, handoffMessage: '担当者に確認します', maxRepliesPerDay: 5, answerMode: 'auto' }),
       }),
     });
     const log = stmt();
@@ -181,10 +181,42 @@ describe('tryFaqReply', () => {
     expect(String((db.prepare as ReturnType<typeof vi.fn>).mock.calls[1][0])).toContain("'faq_handoff'");
   });
 
+  test('draft miss records unmatched but never sends a configured handoff message', async () => {
+    const settings = stmt({
+      first: vi.fn().mockResolvedValue({
+        value: JSON.stringify({
+          enabled: true,
+          threshold: 0.95,
+          handoffMessage: '担当者に確認します',
+          maxRepliesPerDay: 5,
+          answerMode: 'draft',
+        }),
+      }),
+    });
+    const db = dbWithStatements(settings);
+
+    await expect(tryFaqReply(db, lineClient, {
+      friend,
+      incomingText: '営業時間',
+      lineAccountId: 'acc-1',
+      replyToken: 'reply-token',
+    })).resolves.toEqual({ replied: false, handoff: false });
+
+    expect(recordUnmatchedQuestion).toHaveBeenCalledWith(db, {
+      lineAccountId: 'acc-1',
+      friendId: 'friend-1',
+      question: '営業時間',
+      topScore: expect.any(Number),
+    });
+    expect(lineClient.replyMessage).not.toHaveBeenCalled();
+    expect(insertAiFaqDraft).not.toHaveBeenCalled();
+    expect(db.prepare).toHaveBeenCalledTimes(1);
+  });
+
   test('maxRepliesPerDay forces handoff even when FAQ would hit', async () => {
     const settings = stmt({
       first: vi.fn().mockResolvedValue({
-        value: JSON.stringify({ enabled: true, threshold: 0.6, handoffMessage: '担当者に引き継ぎます', maxRepliesPerDay: 1 }),
+        value: JSON.stringify({ enabled: true, threshold: 0.6, handoffMessage: '担当者に引き継ぎます', maxRepliesPerDay: 1, answerMode: 'auto' }),
       }),
     });
     // R1-I2: 上限到達を db helper の返り値で表現 (24h に既に 1 回返信済み・上限 1)。

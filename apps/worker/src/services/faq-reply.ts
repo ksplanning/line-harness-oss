@@ -181,6 +181,10 @@ export async function tryFaqReply(
     topScore: detail.topScore,
   });
 
+  if (settings.answerMode === 'draft') {
+    return { replied: false, handoff: false };
+  }
+
   if (settings.handoffMessage) {
     await lineClient.replyMessage(opts.replyToken, [buildMessage('text', settings.handoffMessage)]);
     await logFaqOutgoing(db, opts.friend.id, 'faq_handoff', settings.handoffMessage);
