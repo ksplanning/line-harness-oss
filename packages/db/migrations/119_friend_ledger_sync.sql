@@ -105,6 +105,14 @@ CREATE INDEX IF NOT EXISTS idx_sheets_sync_webhook_events_lifecycle
 CREATE INDEX IF NOT EXISTS idx_sheets_sync_webhook_events_terminal
   ON sheets_sync_webhook_events (status, completed_at, sequence);
 
+-- Keep row ownership when settings change without moving to another sheet.
+-- This lets a later poll scrub a friend deleted between save and sync. A real
+-- target move discards the old sheet's row coordinates instead.
+CREATE TRIGGER IF NOT EXISTS trg_sheets_sync_ledger_connection_changed
+AFTER UPDATE OF config_version, spreadsheet_id, sheet_name ON sheets_connections
+WHEN NEW.config_version <> OLD.config_version
+BEGIN DELETE FROM sheets_sync_ledger WHERE connection_id = NEW.id AND (NEW.spreadsheet_id <> OLD.spreadsheet_id OR NEW.sheet_name <> OLD.sheet_name); UPDATE sheets_sync_ledger SET connection_version = NEW.config_version, version = version + 1 WHERE connection_id = NEW.id AND NEW.spreadsheet_id = OLD.spreadsheet_id AND NEW.sheet_name = OLD.sheet_name; END;
+
 -- A settings generation change or removal invalidates the signed target. Clear
 -- transient values and editor identity immediately instead of stranding PII in
 -- a queue that is no longer eligible for polling.

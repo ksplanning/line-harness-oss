@@ -337,7 +337,7 @@ describe('Sheets connections DB helper', () => {
     expect(await getSheetsConnection(db, 'acc-2', first.id)).toBeNull();
   });
 
-  test('every account-scoped settings save advances its generation and resets the old row ledger', async () => {
+  test('advances settings generation while preserving same-sheet ownership and resets it after a target move', async () => {
     const created = await createSheetsConnection(db, {
       lineAccountId: 'acc-1', formId: 'form-1', spreadsheetId: 'sheet-old',
       sheetName: '旧', syncDirection: 'to_sheets',
@@ -351,12 +351,10 @@ describe('Sheets connections DB helper', () => {
       spreadsheetId: 'sheet-old', sheetName: '旧', syncDirection: 'bidirectional',
     });
     expect(directionOnly?.configVersion).toBe(2);
-    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger WHERE connection_id=?').get(created.id))
-      .toEqual({ count: 0 });
-    raw.prepare(`INSERT INTO sheets_sync_ledger
-      (connection_id, connection_version, record_key, row_fingerprint, last_synced_at,
-       last_sync_direction, last_applied_sequence)
-      VALUES (?, 2, 'record-2', 'fingerprint-2', '2026-07-20T00:01:00+09:00', 'to_sheets', 2)`).run(created.id);
+    expect(raw.prepare(`SELECT record_key, connection_version FROM sheets_sync_ledger
+      WHERE connection_id=?`).get(created.id)).toEqual({
+      record_key: 'record-1', connection_version: 2,
+    });
 
     const updated = await updateSheetsConnection(db, 'acc-1', created.id, {
       spreadsheetId: 'sheet-new', sheetName: '新', syncDirection: 'from_sheets',

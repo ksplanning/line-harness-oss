@@ -1813,6 +1813,11 @@ CREATE TRIGGER trg_sheets_sync_audit_no_update
 BEFORE UPDATE ON sheets_sync_audit_log
 BEGIN SELECT RAISE(ABORT, 'sheets_sync_audit_log is append-only'); END;
 
+CREATE TRIGGER trg_sheets_sync_ledger_connection_changed
+AFTER UPDATE OF config_version, spreadsheet_id, sheet_name ON sheets_connections
+WHEN NEW.config_version <> OLD.config_version
+BEGIN DELETE FROM sheets_sync_ledger WHERE connection_id = NEW.id AND (NEW.spreadsheet_id <> OLD.spreadsheet_id OR NEW.sheet_name <> OLD.sheet_name); UPDATE sheets_sync_ledger SET connection_version = NEW.config_version, version = version + 1 WHERE connection_id = NEW.id AND NEW.spreadsheet_id = OLD.spreadsheet_id AND NEW.sheet_name = OLD.sheet_name; END;
+
 CREATE TRIGGER trg_sheets_sync_ledger_version_insert
 BEFORE INSERT ON sheets_sync_ledger
 WHEN NOT EXISTS (SELECT 1 FROM sheets_connections WHERE id = NEW.connection_id AND config_version = NEW.connection_version AND is_active = 1 AND deleted_at IS NULL)

@@ -591,6 +591,11 @@ CREATE INDEX IF NOT EXISTS idx_sheets_sync_webhook_events_lifecycle
 CREATE INDEX IF NOT EXISTS idx_sheets_sync_webhook_events_terminal
   ON sheets_sync_webhook_events (status, completed_at, sequence);
 
+CREATE TRIGGER IF NOT EXISTS trg_sheets_sync_ledger_connection_changed
+AFTER UPDATE OF config_version, spreadsheet_id, sheet_name ON sheets_connections
+WHEN NEW.config_version <> OLD.config_version
+BEGIN DELETE FROM sheets_sync_ledger WHERE connection_id = NEW.id AND (NEW.spreadsheet_id <> OLD.spreadsheet_id OR NEW.sheet_name <> OLD.sheet_name); UPDATE sheets_sync_ledger SET connection_version = NEW.config_version, version = version + 1 WHERE connection_id = NEW.id AND NEW.spreadsheet_id = OLD.spreadsheet_id AND NEW.sheet_name = OLD.sheet_name; END;
+
 CREATE TRIGGER IF NOT EXISTS trg_sheets_sync_webhook_events_connection_changed
 AFTER UPDATE OF config_version, friend_ledger_enabled, is_active, deleted_at, line_account_id
 ON sheets_connections

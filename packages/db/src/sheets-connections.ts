@@ -504,21 +504,7 @@ export async function updateSheetsConnection(
   // Every accepted settings write advances the generation. D1 serializes the
   // increments, so concurrent owner tabs remain last-write-wins without a false
   // not-found response. Old workers then fail the ledger version triggers.
-  const result = (await db.batch([
-    update,
-    db.prepare(
-      `DELETE FROM sheets_sync_ledger
-       WHERE connection_id = ?
-         AND EXISTS (
-           SELECT 1 FROM sheets_connections
-           WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
-             AND (
-               sync_lock_token IS NULL OR sync_lock_expires_at IS NULL
-               OR julianday(sync_lock_expires_at) <= julianday(?)
-             )
-         )`,
-    ).bind(id, id, lineAccountId, now),
-  ]))[0];
+  const result = await update.run();
   if ((result.meta.changes ?? 0) !== 1) return null;
   return getSheetsConnection(db, lineAccountId, id);
 }
