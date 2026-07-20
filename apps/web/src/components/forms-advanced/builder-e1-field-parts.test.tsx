@@ -80,13 +80,13 @@ describe('E1 field parts — パレット公開範囲', () => {
     expect(within(palette).queryByLabelText('市区町村を追加')).toBeNull()
   })
 
-  it('hosted 非描画の日時(datetime)・国(country)はパレットと公開メタに出さない', () => {
+  it('日時(datetime)・国(country)は Formaloo パレットに出さず、自前配信専用メタとして持つ', () => {
     render(<FormBuilder {...base()} />)
     const palette = screen.getByTestId('palette')
-    const publishedTypes = FIELD_TYPE_META.map((meta) => String(meta.type))
+    const byType = Object.fromEntries(FIELD_TYPE_META.map((meta) => [String(meta.type), meta]))
 
-    expect(publishedTypes).not.toContain('datetime')
-    expect(publishedTypes).not.toContain('country')
+    expect(byType.datetime).toMatchObject({ label: '日時', internalOnly: true })
+    expect(byType.country).toMatchObject({ label: '国', internalOnly: true })
     expect(within(palette).queryByLabelText('日時を追加')).toBeNull()
     expect(within(palette).queryByLabelText('国を追加')).toBeNull()
   })

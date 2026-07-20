@@ -23,6 +23,8 @@ export interface FieldTypeMeta {
   category: FieldCategory
   /** false は既存 field の表示・編集用メタだけを残し、パレットからの新規追加を止める。 */
   paletteVisible?: boolean
+  /** 自前配信でのみ新規追加できる field。Formaloo のパレットと payload には混ぜない。 */
+  internalOnly?: boolean
   /** パレットと高度パーツの設定欄が共有する、3層の説明正本。 */
   help: FieldTypeHelp
 }
@@ -99,6 +101,62 @@ export const FIELD_TYPE_META: FieldTypeMeta[] = [
       summary: '世界の都市名から英語で選んでもらう項目です。',
       howTo: '日本の住所入力には向いていません。既存フォームの内容を確認するときだけ使い、日本の住所入力には「1行テキスト」を使ってください。',
       example: '例：海外向けフォームで居住都市を選んでもらう',
+    },
+  },
+  {
+    type: 'datetime', label: '日時', icon: '🗓️', category: '入力', paletteVisible: false, internalOnly: true,
+    help: {
+      summary: '日付と時刻をまとめて入力してもらえます。',
+      howTo: '予約日時や面談日時など、日にちと時刻の両方が必要な質問に使います。何の日時かを質問文で伝えます。',
+      example: '例：オンライン面談の希望日時を入力してもらう',
+    },
+  },
+  {
+    type: 'country', label: '国', icon: '🌏', category: '入力', paletteVisible: false, internalOnly: true,
+    help: {
+      summary: '国名を入力してもらえます。',
+      howTo: '海外の住所や居住国を確認するときに使います。日本国内だけのフォームでは省いて構いません。',
+      example: '例：現在住んでいる国を入力してもらう',
+    },
+  },
+  {
+    type: 'postal_code', label: '郵便番号', icon: '〒', category: '入力', paletteVisible: false, internalOnly: true,
+    help: {
+      summary: '日本の郵便番号を入力してもらえます。',
+      howTo: '住所を聞くときに、都道府県より前へ置きます。7桁の郵便番号を入力してもらいます。',
+      example: '例：1000001 のように郵便番号を入力してもらう',
+    },
+  },
+  {
+    type: 'prefecture', label: '都道府県', icon: '🗾', category: '入力', paletteVisible: false, internalOnly: true,
+    help: {
+      summary: '日本の都道府県を入力してもらえます。',
+      howTo: '配送先や来店地域を確認するときに使います。市区町村より前へ置くと答えやすくなります。',
+      example: '例：東京都と入力してもらう',
+    },
+  },
+  {
+    type: 'address_city', label: '市区町村（日本）', icon: '🏙️', category: '入力', paletteVisible: false, internalOnly: true,
+    help: {
+      summary: '日本の市区町村を入力してもらえます。',
+      howTo: '住所を都道府県と番地に分けて集めるときに使います。区や町村まで入力してもらいます。',
+      example: '例：千代田区と入力してもらう',
+    },
+  },
+  {
+    type: 'address_street', label: '町名・番地', icon: '🏠', category: '入力', paletteVisible: false, internalOnly: true,
+    help: {
+      summary: '町名と番地を入力してもらえます。',
+      howTo: '市区町村の次に置き、町名から番地までを聞きます。建物名は次の専用パーツへ分けられます。',
+      example: '例：丸の内1-1-1 と入力してもらう',
+    },
+  },
+  {
+    type: 'address_building', label: '建物名・部屋番号', icon: '🏢', category: '入力', paletteVisible: false, internalOnly: true,
+    help: {
+      summary: '建物名や部屋番号を入力してもらえます。',
+      howTo: '住所の最後に置きます。戸建てなどで不要な人もいるため、通常は任意項目にします。',
+      example: '例：サンプルビル301号室と入力してもらう',
     },
   },
   {
@@ -301,6 +359,13 @@ export function fieldTypeLabel(type: HarnessFieldType): string {
 }
 export function fieldTypeIcon(type: HarnessFieldType): string {
   return FIELD_TYPE_META.find((m) => m.type === type)?.icon ?? '❓'
+}
+
+/** 配信先ごとの新規追加可否。既存 field の表示・編集可否とは分けて判定する。 */
+export function isPaletteFieldForBackend(meta: FieldTypeMeta, backend: 'formaloo' | 'internal'): boolean {
+  if (meta.internalOnly) return backend === 'internal'
+  if (meta.type === 'choice_fetch') return backend === 'formaloo'
+  return meta.paletteVisible !== false
 }
 
 /** 種別が「選択肢を持つ」か (choice/dropdown/multiple_select)。 */

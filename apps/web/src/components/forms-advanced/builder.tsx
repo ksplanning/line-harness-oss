@@ -32,6 +32,7 @@ import {
   fieldTypeLabel,
   fieldTypeIcon,
   hasChoices,
+  hasLength,
   hasMaxLength,
   hasRatingSubType,
   RATING_SUB_TYPE_OPTIONS,
@@ -40,6 +41,7 @@ import {
   isDecoration,
   isRepeatingColumnType,
   isScalarReferenceType,
+  isPaletteFieldForBackend,
   type FieldTypeHelp,
 } from './field-types'
 import FormPreview from './form-preview'
@@ -532,6 +534,7 @@ function SettingsPanel({
   formType,
   onEnsureMultiStep,
   successPages = [],
+  renderBackend,
 }: {
   formId?: string
   field: HarnessField
@@ -547,6 +550,8 @@ function SettingsPanel({
   onEnsureMultiStep?: () => void
   /** route-terminal-phase2 (Track 2 / T-F1): submit rule の per-route 完了ページ候補 (successPages)。 */
   successPages?: SuccessPageSpec[]
+  /** 自前配信だけで有効な設定を Formaloo 編集画面へ露出しない。 */
+  renderBackend: RenderBackend
 }) {
   const cfg = field.config
   const set = (patch: Partial<HarnessField>) => onChange({ ...field, ...patch })
@@ -691,7 +696,17 @@ function SettingsPanel({
   }
 
   if (field.type === 'matrix' || field.type === 'repeating_section') {
-    return <StructuralFieldPanel field={field} allFields={allFields} onChange={onChange} />
+    return (
+      <div className="space-y-3">
+        <StructuralFieldPanel field={field} allFields={allFields} onChange={onChange} />
+        {renderBackend === 'internal' && (
+          <div>
+            <label className="mb-1 block text-xs text-gray-500">プレースホルダー</label>
+            <input aria-label="プレースホルダー" value={cfg.placeholder ?? ''} onChange={(e) => setCfg({ placeholder: e.target.value || undefined })} className="w-full rounded border border-gray-300 px-2 py-1" />
+          </div>
+        )}
+      </div>
+    )
   }
 
   const rulesForField = logic.filter((r) => r.sourceFieldId === field.id)
@@ -767,6 +782,18 @@ function SettingsPanel({
         <label className="block text-xs text-gray-500 mb-1">ラベル</label>
         <input aria-label="ラベル" value={field.label} onChange={(e) => set({ label: e.target.value })} className="w-full border border-gray-300 rounded px-2 py-1" />
       </div>
+
+      {renderBackend === 'internal' && (
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">プレースホルダー</label>
+          <input
+            aria-label="プレースホルダー"
+            value={cfg.placeholder ?? ''}
+            onChange={(e) => setCfg({ placeholder: e.target.value || undefined })}
+            className="w-full border border-gray-300 rounded px-2 py-1"
+          />
+        </div>
+      )}
       <label className="flex items-center gap-2">
         <input type="checkbox" aria-label="必須" checked={field.required} onChange={(e) => set({ required: e.target.checked })} />
         <span>必須項目にする</span>
@@ -815,7 +842,13 @@ function SettingsPanel({
       {/* 最大文字数は一行テキストのみ (OD-2: Formaloo hosted が max_length を enforce する唯一の型)。
           複数行の最大文字数欄・全型の最小文字数欄は Formaloo 非対応の no-op ゆえ撤去 (OD-3)。
           既存 config.minLength/maxLength の型・保存値は後方互換で残置 (push は最大のみ)。 */}
-      {hasMaxLength(field.type) && (
+      {renderBackend === 'internal' && hasLength(field.type) && (
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">最小文字数</label>
+          <input type="number" min={0} aria-label="最小文字数" value={cfg.minLength ?? ''} onChange={(e) => setCfg({ minLength: e.target.value === '' ? undefined : Number(e.target.value) })} className="w-full border border-gray-300 rounded px-2 py-1" />
+        </div>
+      )}
+      {(hasMaxLength(field.type) || (renderBackend === 'internal' && hasLength(field.type))) && (
         <div>
           <label className="block text-xs text-gray-500 mb-1">最大文字数</label>
           <input type="number" aria-label="最大文字数" value={cfg.maxLength ?? ''} onChange={(e) => setCfg({ maxLength: e.target.value === '' ? undefined : Number(e.target.value) })} className="w-full border border-gray-300 rounded px-2 py-1" />
@@ -832,17 +865,61 @@ function SettingsPanel({
                   aria-label={`選択肢${i + 1}`}
                   value={choice}
                   onChange={(e) => {
+                    const previous = choice
                     const next = [...(cfg.choices ?? [])]
                     next[i] = e.target.value
-                    setCfg({ choices: next })
+                    setCfg({
+                      choices: next,
+                      ...(cfg.defaultValue === previous ? { defaultValue: e.target.value || undefined } : {}),
+                      ...(cfg.defaultValues?.includes(previous)
+                        ? { defaultValues: cfg.defaultValues.map((value) => value === previous ? e.target.value : value).filter(Boolean) }
+                        : {}),
+                    })
                   }}
                   className="flex-1 border border-gray-300 rounded px-2 py-1"
                 />
-                <button type="button" aria-label={`選択肢${i + 1}を削除`} onClick={() => setCfg({ choices: (cfg.choices ?? []).filter((_, j) => j !== i) })} className="text-gray-400 hover:text-red-600 px-1">✕</button>
+                <button
+                  type="button"
+                  aria-label={`選択肢${i + 1}を削除`}
+                  onClick={() => setCfg({
+                    choices: (cfg.choices ?? []).filter((_, j) => j !== i),
+                    ...(cfg.defaultValue === choice ? { defaultValue: undefined } : {}),
+                    ...(cfg.defaultValues?.includes(choice) ? { defaultValues: cfg.defaultValues.filter((value) => value !== choice) } : {}),
+                  })}
+                  className="text-gray-400 hover:text-red-600 px-1"
+                >✕</button>
               </div>
             ))}
           </div>
           <button type="button" onClick={() => setCfg({ choices: [...(cfg.choices ?? []), `選択肢${(cfg.choices?.length ?? 0) + 1}`] })} className="mt-1 text-xs" style={{ color: LINE_GREEN }}>＋ 選択肢を追加</button>
+          {renderBackend === 'internal' && field.type !== 'multiple_select' && (
+            <div className="mt-2">
+              <label className="block text-xs text-gray-500 mb-1">既定選択肢</label>
+              <select aria-label="既定選択肢" value={cfg.defaultValue ?? ''} onChange={(e) => setCfg({ defaultValue: e.target.value || undefined })} className="w-full border border-gray-300 rounded px-2 py-1">
+                <option value="">（選択なし）</option>
+                {(cfg.choices ?? []).map((choice, i) => <option key={`${choice}-${i}`} value={choice}>{choice}</option>)}
+              </select>
+            </div>
+          )}
+          {renderBackend === 'internal' && field.type === 'multiple_select' && (
+            <div className="mt-2 space-y-1">
+              <div className="text-xs text-gray-500">既定選択肢</div>
+              {(cfg.choices ?? []).map((choice, i) => {
+                const defaults = cfg.defaultValues ?? []
+                return (
+                  <label key={`${choice}-${i}`} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      aria-label={`既定選択肢: ${choice}`}
+                      checked={defaults.includes(choice)}
+                      onChange={(e) => setCfg({ defaultValues: e.target.checked ? [...defaults, choice] : defaults.filter((value) => value !== choice) })}
+                    />
+                    <span>{choice}</span>
+                  </label>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -910,7 +987,8 @@ function SettingsPanel({
       })()}
 
       {/* 条件分岐 (R1 / T-B2 GUI + form-route-branching jump) */}
-      <div className="pt-2 border-t border-gray-100">
+      {renderBackend === 'formaloo' ? (
+        <div className="pt-2 border-t border-gray-100">
         <div className="text-xs text-gray-500 mb-1">条件分岐（この項目の回答で他項目を出し分け）</div>
         {/* R3: 既存 show/hide の実質ルート活用案内 (文言のみ・機能追加なし)。 */}
         <div className="text-[10px] text-gray-400 mb-1 leading-snug">
@@ -1009,7 +1087,12 @@ function SettingsPanel({
           {/* route-terminal-submit: 「ここで送信」は他 field を要さず追加可 (入力1項目でも可)。 */}
           <button type="button" onClick={addSubmitRule} className="text-xs" style={{ color: LINE_GREEN }}>＋「ここで送信」を追加</button>
         </div>
-      </div>
+        </div>
+      ) : (
+        <p data-testid="internal-logic-note" className="border-t border-gray-100 pt-2 text-[10px] leading-snug text-gray-400">
+          条件分岐は自前配信の次段階で対応します。現在は項目の入力・保存だけを設定できます。
+        </p>
+      )}
     </div>
   )
 }
@@ -1265,9 +1348,10 @@ export default function FormBuilder(props: BuilderProps) {
     setRenderBackendSaving(true)
     try {
       await props.onRenderBackendChange(next)
-    } catch {
+    } catch (error) {
       setRenderBackend(previous)
-      setRenderBackendError('配信方式の変更に失敗しました。時間をおいて再度お試しください。')
+      const body = (error as { body?: { error?: string } })?.body
+      setRenderBackendError(body?.error ?? '配信方式の変更に失敗しました。時間をおいて再度お試しください。')
     } finally {
       setRenderBackendSaving(false)
     }
@@ -1523,7 +1607,7 @@ export default function FormBuilder(props: BuilderProps) {
           <textarea aria-label="フォーム説明" rows={1} value={description} onChange={(e) => setDescription(e.target.value)} className="w-full resize-y rounded border border-gray-300 bg-white px-2 py-1 text-sm" />
         </label>
         <span className="text-xs text-white px-2 py-0.5 rounded" style={{ backgroundColor: statusColor }}>{statusLabel}</span>
-        {(() => {
+        {renderBackend === 'formaloo' && (() => {
           // drift/sync 単一 badge (優先順位: 競合>更新あり>未同期>自動反映 / formSyncBadge 共有)。
           const b = formSyncBadge({ driftStatus: props.driftStatus, syncStatus: props.syncStatus ?? 'idle' })
           if (!b) return null
@@ -1910,7 +1994,7 @@ export default function FormBuilder(props: BuilderProps) {
 
       {/* ① 今すぐ同期リカバリ: sync_status=out_of_sync のとき、原因 (syncError) + 再送ヘルプ + 「今すぐ同期」を
           目立つ位置に出す。ボタンは既存の保存/push 経路 (handleSave) を再実行するだけ (新経路を作らず状態機械を壊さない)。 */}
-      {props.syncStatus === 'out_of_sync' && (
+      {renderBackend === 'formaloo' && props.syncStatus === 'out_of_sync' && (
         <div data-testid="sync-recovery" role="status" className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           <span className="font-medium">未同期です。</span>
           {props.syncError && <span data-testid="sync-recovery-cause">原因: {props.syncError}</span>}
@@ -2017,7 +2101,7 @@ export default function FormBuilder(props: BuilderProps) {
                 <div key={cat} className="mb-2">
                   <div className="text-[10px] text-gray-400 mb-1">{cat}</div>
                   <div className="grid grid-cols-2 md:grid-cols-1 gap-1">
-                    {FIELD_TYPE_META.filter((m) => m.category === cat && m.paletteVisible !== false).map((m) => (
+                    {FIELD_TYPE_META.filter((m) => m.category === cat && isPaletteFieldForBackend(m, renderBackend)).map((m) => (
                       <PaletteItem key={m.type} type={m.type} label={m.label} icon={m.icon} help={m.help} onAdd={() => addField(m.type)} />
                     ))}
                   </div>
@@ -2042,7 +2126,7 @@ export default function FormBuilder(props: BuilderProps) {
               {selected ? (
                 <>
                   <AdvancedFieldGuide type={selected.type} />
-                  <SettingsPanel formId={props.formId} field={selected} allFields={fields} logic={logic} onChange={updateField} onFieldConfigPatch={patchFieldConfig} onManagedChoiceListChange={updateManagedChoiceListReferences} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} successPages={successPages} />
+                  <SettingsPanel formId={props.formId} field={selected} allFields={fields} logic={logic} onChange={updateField} onFieldConfigPatch={patchFieldConfig} onManagedChoiceListChange={updateManagedChoiceListReferences} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} successPages={successPages} renderBackend={renderBackend} />
                 </>
               ) : (
                 <div className="text-xs text-gray-400">項目を選ぶと設定が表示されます</div>
@@ -2070,7 +2154,7 @@ export default function FormBuilder(props: BuilderProps) {
                 </div>
               </details>
             )}
-            <FormPreview title={title} description={description} fields={fields} design={previewDesign} formType={formType} logic={logic} />
+            <FormPreview title={title} description={description} fields={fields} design={previewDesign} formType={formType} logic={logic} renderBackend={renderBackend} />
           </div>
         )}
       </div>

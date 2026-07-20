@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DEFAULT_RATING_STAR_COLOR, DEFAULT_VIDEO_HEIGHT, IMAGE_WIDTH_TO_MAXWIDTH } from '@line-crm/shared'
 import type { HarnessField, HarnessLogicRule, FormDesign, FormDisplayType } from '@line-crm/shared'
 import { fieldTypeIcon, isDecoration } from './field-types'
@@ -17,6 +17,8 @@ export interface FormPreviewProps {
   formType?: FormDisplayType
   /** logic (jump 注記用)。jump rule があれば「ページへ飛ぶ分岐は1問ずつ表示で動作」注記。 */
   logic?: HarnessLogicRule[]
+  /** 配信先。自前配信でだけ有効な入力自由化をプレビューへ反映する。 */
+  renderBackend?: 'formaloo' | 'internal'
 }
 
 // 入力可能プレビュー (②): type できる control の見た目 (白背景・濃い文字)。
@@ -24,17 +26,31 @@ const inputClassName = 'w-full rounded-lg border border-gray-300 bg-white px-3 p
 // file は type 対象でない (実選択は公開フォーム) ため read-only 表示のまま。
 const disabledClassName = 'w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500 disabled:cursor-not-allowed disabled:opacity-100'
 
-function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratingStarColor?: string }) {
+function PreviewControl({ field, ratingStarColor, renderBackend }: { field: HarnessField; ratingStarColor?: string; renderBackend: 'formaloo' | 'internal' }) {
   const controlId = `preview-control-${field.id}`
   const choices = field.config.choices ?? []
   // ② プレビュー入力可能化: 入力値は local state のみ (どこにも送信しない = form/submit 無し)。
   //   自前描画ゆえ、hosted で不可能な「残り文字数ライブカウンター」もプレビュー内で提供できる (text の maxLength)。
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(() => renderBackend === 'internal' ? (field.config.defaultValue ?? '') : '')
+  const [selectedValues, setSelectedValues] = useState<string[]>(() => renderBackend === 'internal' ? (field.config.defaultValues ?? []) : [])
+  const placeholder = renderBackend === 'internal' ? field.config.placeholder : undefined
+
+  useEffect(() => {
+    if (renderBackend !== 'internal') return
+    if (field.type === 'choice' || field.type === 'dropdown') setValue(field.config.defaultValue ?? '')
+  }, [field.id, field.type, field.config.defaultValue, renderBackend])
+
+  useEffect(() => {
+    if (renderBackend === 'internal' && field.type === 'multiple_select') {
+      setSelectedValues(field.config.defaultValues ?? [])
+    }
+  }, [field.id, field.type, field.config.defaultValues, renderBackend])
 
   switch (field.type) {
     case 'text': {
       const max = typeof field.config.maxLength === 'number' ? field.config.maxLength : undefined
-      const over = max !== undefined && value.length > max
+      const count = Array.from(value).length
+      const over = max !== undefined && count > max
       return (
         <div className="space-y-1">
           <input
@@ -42,34 +58,53 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
             aria-label={field.label}
             type="text"
             value={value}
+            placeholder={placeholder}
+            minLength={renderBackend === 'internal' ? field.config.minLength : undefined}
             maxLength={max}
             onChange={(e) => setValue(e.target.value)}
             className={inputClassName}
           />
           {max !== undefined && (
             <p data-testid="preview-char-counter" className={`text-xs ${over ? 'text-red-500' : 'text-gray-400'}`}>
-              残り {Math.max(0, max - value.length)} 文字
+              残り {Math.max(0, max - count)} 文字
             </p>
           )}
         </div>
       )
     }
-    case 'textarea':
-      return <textarea id={controlId} aria-label={field.label} rows={3} value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+    case 'textarea': {
+      const max = renderBackend === 'internal' && typeof field.config.maxLength === 'number' ? field.config.maxLength : undefined
+      const count = Array.from(value).length
+      return (
+        <div className="space-y-1">
+          <textarea id={controlId} aria-label={field.label} rows={3} value={value} placeholder={placeholder} minLength={renderBackend === 'internal' ? field.config.minLength : undefined} maxLength={max} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+          {max !== undefined && <p data-testid="preview-char-counter" className="text-xs text-gray-400">残り {Math.max(0, max - count)} 文字</p>}
+        </div>
+      )
+    }
     case 'number':
-      return <input id={controlId} aria-label={field.label} type="number" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="number" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
     case 'email':
-      return <input id={controlId} aria-label={field.label} type="email" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="email" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
     case 'phone':
-      return <input id={controlId} aria-label={field.label} type="tel" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="tel" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
     case 'date':
-      return <input id={controlId} aria-label={field.label} type="date" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="date" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
     case 'time':
-      return <input id={controlId} aria-label={field.label} type="time" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="time" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
     case 'website':
-      return <input id={controlId} aria-label={field.label} type="url" value={value} onChange={(e) => setValue(e.target.value)} placeholder="https://example.com" className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="url" value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder ?? 'https://example.com'} className={inputClassName} />
     case 'city':
-      return <input id={controlId} aria-label={field.label} type="text" value={value} onChange={(e) => setValue(e.target.value)} placeholder="例: 千代田区" className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="text" value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder ?? '例: 千代田区'} className={inputClassName} />
+    case 'datetime':
+      return <input id={controlId} aria-label={field.label} type="datetime-local" value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder} className={inputClassName} />
+    case 'country':
+    case 'postal_code':
+    case 'prefecture':
+    case 'address_city':
+    case 'address_street':
+    case 'address_building':
+      return <input id={controlId} aria-label={field.label} type="text" value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder} className={inputClassName} />
     case 'yes_no':
       return (
         <div id={controlId} role="group" aria-label={field.label} className="space-y-2">
@@ -97,7 +132,7 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
           {choices.map((choice, index) => (
             <label key={`${choice}-${index}`} className="flex items-center gap-2 text-sm text-gray-700">
               <span className="sr-only">プレビュー </span>
-              <input type="radio" name={`preview-${field.id}`} className="h-4 w-4 accent-[#06C755]" />
+              <input aria-label={`${field.label}: ${choice}`} type="radio" name={`preview-${field.id}`} value={choice} checked={renderBackend === 'internal' ? value === choice : undefined} onChange={renderBackend === 'internal' ? () => setValue(choice) : undefined} className="h-4 w-4 accent-[#06C755]" />
               <span>{choice}</span>
             </label>
           ))}
@@ -105,8 +140,9 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
       )
     case 'dropdown':
       return (
-        <select id={controlId} aria-label={field.label} className={inputClassName}>
-          {choices.map((choice, index) => <option key={`${choice}-${index}`}>{choice}</option>)}
+        <select id={controlId} aria-label={field.label} value={renderBackend === 'internal' ? value : undefined} onChange={renderBackend === 'internal' ? (event) => setValue(event.target.value) : undefined} className={inputClassName}>
+          {renderBackend === 'internal' && <option value="">{placeholder ?? '選択してください'}</option>}
+          {choices.map((choice, index) => <option key={`${choice}-${index}`} value={choice}>{choice}</option>)}
         </select>
       )
     case 'multiple_select':
@@ -115,7 +151,15 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
           {choices.map((choice, index) => (
             <label key={`${choice}-${index}`} className="flex items-center gap-2 text-sm text-gray-700">
               <span className="sr-only">プレビュー </span>
-              <input type="checkbox" className="h-4 w-4 accent-[#06C755]" />
+              <input
+                aria-label={`${field.label}: ${choice}`}
+                type="checkbox"
+                checked={renderBackend === 'internal' ? selectedValues.includes(choice) : undefined}
+                onChange={renderBackend === 'internal'
+                  ? (event) => setSelectedValues((current) => event.target.checked ? [...current, choice] : current.filter((value) => value !== choice))
+                  : undefined}
+                className="h-4 w-4 accent-[#06C755]"
+              />
               <span>{choice}</span>
             </label>
           ))}
@@ -291,7 +335,7 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
 //   非退行: textColor 未設定 (design 無し / 未指定) は inline style を付けず従来 gray クラスのまま。
 //   section は自前の固定 light box (bg-[#F0FFF6]) を持つため、box を fieldColor へ追随させて
 //   textColor(=light) を載せる (fieldColor↔textColor は番人テストで >=4.5 保証ゆえ常に可読)。
-function PreviewField({ field, themeColor, textColor, fieldColor, ratingStarColor }: { field: HarnessField; themeColor: string; textColor?: string; fieldColor?: string; ratingStarColor?: string }) {
+function PreviewField({ field, themeColor, textColor, fieldColor, ratingStarColor, renderBackend }: { field: HarnessField; themeColor: string; textColor?: string; fieldColor?: string; ratingStarColor?: string; renderBackend: 'formaloo' | 'internal' }) {
   const textStyle = textColor ? { color: textColor } : undefined
   if (isDecoration(field.type)) {
     if (field.type === 'section') {
@@ -381,12 +425,12 @@ function PreviewField({ field, themeColor, textColor, fieldColor, ratingStarColo
       )}
       {/* ② 一行テキストの maxLength は入力に実際に効かせ、「残り N 文字」ライブカウンターを PreviewControl 内に表示。
           hosted 公開フォームは「N文字まで」静的注記+超過エラーで実効 (下の忠実性注記で開示)。 */}
-      <PreviewControl field={field} ratingStarColor={ratingStarColor} />
+      <PreviewControl field={field} ratingStarColor={ratingStarColor} renderBackend={renderBackend} />
     </div>
   )
 }
 
-export default function FormPreview({ title, description, fields, design, formType, logic }: FormPreviewProps) {
+export default function FormPreview({ title, description, fields, design, formType, logic, renderBackend = 'formaloo' }: FormPreviewProps) {
   const isMultiStep = formType === 'multi_step'
   const hasJump = Array.isArray(logic) && logic.some((r) => r.action === 'jump')
   // route-terminal-submit: 「ここで送信」凡例 + page_break の Continue のみ空画面注記。
@@ -435,7 +479,7 @@ export default function FormPreview({ title, description, fields, design, formTy
         </header>
 
         <div className="space-y-5 border-t border-gray-100 px-5 py-5" style={textColor ? { color: textColor } : undefined}>
-          {fields.map((field) => <PreviewField key={field.id} field={field} themeColor={themeColor} textColor={textColor} fieldColor={fieldColor} ratingStarColor={ratingStarColor} />)}
+          {fields.map((field) => <PreviewField key={field.id} field={field} themeColor={themeColor} textColor={textColor} fieldColor={fieldColor} ratingStarColor={ratingStarColor} renderBackend={renderBackend} />)}
 
           <button
             type="button"

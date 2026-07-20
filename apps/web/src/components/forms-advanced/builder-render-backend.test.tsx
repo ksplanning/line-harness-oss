@@ -44,12 +44,12 @@ describe('FormBuilder — 配信方式', () => {
   })
 
   it('rolls back the selector and shows an honest error when PATCH fails', async () => {
-    const onRenderBackendChange = vi.fn().mockRejectedValue(new Error('failed'))
+    const onRenderBackendChange = vi.fn().mockRejectedValue({ body: { error: 'この項目があるため切り替えられません' } })
     render(<FormBuilder {...base({ onRenderBackendChange })} />)
 
     fireEvent.change(screen.getByLabelText('配信方式'), { target: { value: 'internal' } })
 
     await waitFor(() => expect((screen.getByLabelText('配信方式') as HTMLSelectElement).value).toBe('formaloo'))
-    expect(screen.getByRole('alert').textContent).toContain('配信方式の変更に失敗しました')
+    expect(screen.getByRole('alert').textContent).toContain('この項目があるため切り替えられません')
   })
 })

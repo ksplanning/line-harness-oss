@@ -128,7 +128,8 @@ export default function FormBuilderClient({ id }: { id: string }) {
       await loadShare()
       setNotice(confirmed === 'internal' ? '自前配信 (β) に切り替えました' : 'Formaloo 配信に切り替えました')
     } catch (error) {
-      setNotice('配信方式の変更に失敗しました')
+      const body = (error as { body?: { error?: string } })?.body
+      setNotice(body?.error ?? '配信方式の変更に失敗しました')
       throw error
     }
   }
@@ -195,8 +196,8 @@ export default function FormBuilderClient({ id }: { id: string }) {
             syncStatus={form.syncStatus}
             syncError={form.syncError}
             driftStatus={form.driftStatus}
-            publicUrl={form.publicUrl}
-            embedCode={form.embedCode}
+            publicUrl={renderBackend === 'internal' ? (share?.publicUrl ?? null) : form.publicUrl}
+            embedCode={renderBackend === 'internal' ? null : form.embedCode}
             onSave={handleSave}
             onRenderBackendChange={handleRenderBackendChange}
             onSubmitForReview={withErr(() => formsAdvancedApi.submitForReview(id))}

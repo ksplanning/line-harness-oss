@@ -214,6 +214,8 @@ describe('詳細画面 scope 照合', () => {
     await waitFor(() => expect(sharePanelProps.current?.share).toEqual(expect.objectContaining({
       publicUrl: 'https://api.example.test/f/fa1',
     })))
+    expect(builderProps.current?.publicUrl).toBe('https://api.example.test/f/fa1')
+    expect(builderProps.current?.embedCode).toBeNull()
     expect(sharePanelProps.current?.isOwner).toBe(false)
     expect(screen.queryByTestId('instant-webhook-settings')).toBeNull()
   })
