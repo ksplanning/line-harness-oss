@@ -90,9 +90,37 @@ describe('internal-only form field schema', () => {
       position: 0,
     } as const;
 
-    expect(validateHarnessField({ ...base, config: { placeholder: 123 } }).ok).toBe(false);
-    expect(validateHarnessField({ ...base, config: { defaultValue: ['A'] } }).ok).toBe(false);
-    expect(validateHarnessField({ ...base, config: { defaultValues: ['A', 1] } }).ok).toBe(false);
+    expect(validateHarnessField({ ...base, config: { placeholder: 123 } }, { allowInternalOnly: true }).ok).toBe(false);
+    expect(validateHarnessField({ ...base, config: { defaultValue: ['A'] } }, { allowInternalOnly: true }).ok).toBe(false);
+    expect(validateHarnessField({ ...base, config: { defaultValues: ['A', 1] } }, { allowInternalOnly: true }).ok).toBe(false);
+  });
+
+  test('keeps the legacy Formaloo validator byte contract by dropping internal config keys', () => {
+    const result = validateHarnessField({
+      id: 'choice',
+      type: 'choice',
+      label: '希望',
+      required: false,
+      position: 0,
+      config: {
+        choices: ['A', 'B'],
+        placeholder: '選んでください',
+        defaultValue: 'A',
+        defaultValues: ['A'],
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      field: {
+        id: 'choice',
+        type: 'choice',
+        label: '希望',
+        required: false,
+        position: 0,
+        config: { choices: ['A', 'B'] },
+      },
+    });
   });
 
   test.each(EXPECTED_INTERNAL_TYPES)('%s fails closed before Formaloo serialization', (type) => {

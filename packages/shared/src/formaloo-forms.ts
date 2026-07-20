@@ -664,19 +664,23 @@ export function validateHarnessField(
     if (typeof rawCfg.description !== 'string') return { ok: false, error: 'config.description must be string' };
     config.description = rawCfg.description;
   }
-  if (rawCfg.placeholder !== undefined) {
-    if (typeof rawCfg.placeholder !== 'string') return { ok: false, error: 'config.placeholder must be string' };
-    config.placeholder = rawCfg.placeholder;
-  }
-  if (rawCfg.defaultValue !== undefined) {
-    if (typeof rawCfg.defaultValue !== 'string') return { ok: false, error: 'config.defaultValue must be string' };
-    config.defaultValue = rawCfg.defaultValue;
-  }
-  if (rawCfg.defaultValues !== undefined) {
-    if (!Array.isArray(rawCfg.defaultValues) || !rawCfg.defaultValues.every((value) => typeof value === 'string')) {
-      return { ok: false, error: 'config.defaultValues must be string[]' };
+  // Formaloo validator の既存 byte contract では未知 config は drop する。自前配信を明示した時だけ
+  // internal renderer 固有設定を検証・保持し、Formaloo の definition_json / field_map に混ぜない。
+  if (options.allowInternalOnly === true) {
+    if (rawCfg.placeholder !== undefined) {
+      if (typeof rawCfg.placeholder !== 'string') return { ok: false, error: 'config.placeholder must be string' };
+      config.placeholder = rawCfg.placeholder;
     }
-    config.defaultValues = [...rawCfg.defaultValues];
+    if (rawCfg.defaultValue !== undefined) {
+      if (typeof rawCfg.defaultValue !== 'string') return { ok: false, error: 'config.defaultValue must be string' };
+      config.defaultValue = rawCfg.defaultValue;
+    }
+    if (rawCfg.defaultValues !== undefined) {
+      if (!Array.isArray(rawCfg.defaultValues) || !rawCfg.defaultValues.every((value) => typeof value === 'string')) {
+        return { ok: false, error: 'config.defaultValues must be string[]' };
+      }
+      config.defaultValues = [...rawCfg.defaultValues];
+    }
   }
   // treasure-b1-palette: rating の sub_type は 5 enum whitelist で正規化 (M-21 未知素通し禁止)。
   //   未定義は既定 star 扱いで config に載せない (既存 form byte 不変 = maxSizeKb と同型)。
