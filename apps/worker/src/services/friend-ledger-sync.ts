@@ -719,6 +719,7 @@ export async function syncFriendLedger(
     };
     const plans: RowPlan[] = [];
     const removedRowNumbers = new Set<number>();
+    const preclearedRowKeys = new Set<string>();
     let appendedRows = 0;
     let importedFields = 0;
     let ignoredIdentityEdits = 0;
@@ -934,6 +935,34 @@ export async function syncFriendLedger(
           if (rows.length > 1) addWarning('userId が重複している行があります');
         }
       }
+      const movedLedgerKeys = ledgerEntries.flatMap((entry) => {
+        const ledgerUserId = normalizeSheetCell(entry.canonicalSnapshot['identity:lineUserId']);
+        const currentRows = ledgerUserId ? positions.get(ledgerUserId) ?? [] : [];
+        return entry.sheetRowNumber !== null
+          && currentRows.length === 1
+          && entry.sheetRowNumber !== currentRows[0]
+          ? [entry.recordKey]
+          : [];
+      });
+      if (movedLedgerKeys.length > 0) {
+        const lease = await renewLease();
+        const cleared = await clearSheetsSyncLedgerRowNumbers(
+          options.db,
+          options.connection.lineAccountId,
+          options.connection.id,
+          options.connection.configVersion,
+          movedLedgerKeys,
+          lease,
+        );
+        if (!cleared) throw new Error('friend_ledger_row_preclear_failed');
+        for (const entry of ledgerEntries) {
+          if (movedLedgerKeys.includes(entry.recordKey)) {
+            entry.sheetRowNumber = null;
+            entry.version += 1;
+            preclearedRowKeys.add(entry.recordKey);
+          }
+        }
+      }
       const exactRowOwner = new Map<number, string>();
       for (const friend of friends) {
         const rows = positions.get(friend.lineUserId) ?? [];
@@ -1033,7 +1062,15 @@ export async function syncFriendLedger(
         ledger: SheetsSyncLedgerEntry,
         rowNumber: number,
       ): Promise<SheetsSyncLedgerEntry> => {
-        if (ledger.sheetRowNumber === rowNumber) return ledger;
+        if (
+          ledger.sheetRowNumber === rowNumber
+          && ledger.canonicalSnapshot['system:pendingRemoval'] === true
+        ) return ledger;
+        const stagedCanonical = {
+          ...ledger.canonicalSnapshot,
+          'system:pendingRemoval': true,
+        };
+        const stagedFingerprint = await fingerprint(stagedCanonical);
         const observedAt = toJstString(nowFactory());
         const lease = await renewLease();
         const sequence = await reserveSheetsSyncSequence(
@@ -1059,8 +1096,8 @@ export async function syncFriendLedger(
             harnessUpdatedAt: null,
             sheetObservedAt: observedAt,
             beforeFingerprint: ledger.rowFingerprint,
-            afterFingerprint: ledger.rowFingerprint,
-            errorCode: 'friend_removed_row_located',
+            afterFingerprint: stagedFingerprint,
+            errorCode: 'friend_removal_staged',
             webhookEventId: null,
             details: [],
           },
@@ -1069,8 +1106,8 @@ export async function syncFriendLedger(
             connectionVersion: options.connection.configVersion,
             recordKey: ledger.recordKey,
             sheetRowNumber: rowNumber,
-            rowFingerprint: ledger.rowFingerprint,
-            canonicalSnapshot: ledger.canonicalSnapshot,
+            rowFingerprint: stagedFingerprint,
+            canonicalSnapshot: stagedCanonical,
             harnessUpdatedAt: ledger.harnessUpdatedAt,
             sheetObservedAt: observedAt,
             lastSyncedAt: observedAt,
@@ -1082,6 +1119,8 @@ export async function syncFriendLedger(
         return {
           ...ledger,
           sheetRowNumber: rowNumber,
+          rowFingerprint: stagedFingerprint,
+          canonicalSnapshot: stagedCanonical,
           sheetObservedAt: observedAt,
           lastSyncedAt: observedAt,
           lastSyncDirection: 'to_sheets',
@@ -1106,11 +1145,14 @@ export async function syncFriendLedger(
           return index === undefined ? [] : [{ column, index }];
         });
         const matchingRows = positions.get(lineUserId) ?? [];
-        const recordedRow = orphan.sheetRowNumber && orphan.sheetRowNumber >= 2
+        const recordedRow = orphan.sheetRowNumber
+          && orphan.sheetRowNumber >= 2
+          && values[orphan.sheetRowNumber - 1] !== undefined
           ? effectiveRow(orphan.sheetRowNumber)
           : null;
         const recordedRowAlreadyBlank = Boolean(
           recordedRow
+          && orphan.canonicalSnapshot['system:pendingRemoval'] === true
           && ownedColumns.length === columns.length
           && ownedColumns.every(({ index }) => normalizeSheetCell(recordedRow[index]) === ''),
         );
@@ -1126,12 +1168,74 @@ export async function syncFriendLedger(
           continue;
         }
 
-        const locatedLedger = safeRowNumber
-          ? await locateRemovedLedgerRow(orphan, safeRowNumber)
+        await renewLease();
+        const [freshResponse, freshFriends] = await Promise.all([
+          client.readValues(
+            options.connection.spreadsheetId,
+            quoteSheetName(options.connection.sheetName),
+          ),
+          listFriends(options.db, options.connection.lineAccountId),
+        ]);
+        await renewLease();
+        const freshOwnerByRecord = freshFriends.find((friend) => friend.id === orphan.recordKey);
+        const freshOwners = freshFriends.filter((friend) => friend.lineUserId === lineUserId);
+        if (freshOwnerByRecord) {
+          addWarning('削除済み友だちの確認中にハーネス側が更新されたため、シートを消去しませんでした');
+          await auditUnsafeRemovedLedger(orphan, lineUserId);
+          continue;
+        }
+        if (freshOwners.length === 1) {
+          await commitRemovedLedger(orphan, 'friend_recreated_in_harness', [
+            detail(actor, 'userId', lineUserId, lineUserId, options.source, 'identity_sync'),
+          ]);
+          continue;
+        }
+        const freshValues = (freshResponse.values ?? []).map((row) => [...row]);
+        const freshHeaders = freshValues[0] ?? [];
+        const headersUnchanged = freshHeaders.length === headers.length
+          && freshHeaders.every((value, index) => normalizeSheetCell(value) === normalizeSheetCell(headers[index]));
+        const freshResolved = resolveFriendLedgerHeaders(freshHeaders, columns);
+        const freshOwnedColumns = columns.flatMap((column) => {
+          const index = freshResolved.indexByKey[column.key];
+          return index === undefined ? [] : [{ column, index }];
+        });
+        const freshUserIdIndex = freshResolved.indexByKey['identity:lineUserId'];
+        const freshMatchingRows = freshUserIdIndex === undefined
+          ? []
+          : freshValues.flatMap((row, index) => (
+            index > 0 && normalizeSheetCell(row[freshUserIdIndex]) === lineUserId ? [index + 1] : []
+          ));
+        const freshSafeRowNumber = freshMatchingRows.length === 1 ? freshMatchingRows[0] : null;
+        const freshRecordedRow = orphan.sheetRowNumber && orphan.sheetRowNumber >= 2
+          ? freshValues[orphan.sheetRowNumber - 1] ?? null
+          : null;
+        const freshRecordedRowAlreadyBlank = Boolean(
+          freshRecordedRow
+          && orphan.canonicalSnapshot['system:pendingRemoval'] === true
+          && freshOwnedColumns.length === columns.length
+          && freshOwnedColumns.every(({ index }) => normalizeSheetCell(freshRecordedRow[index]) === ''),
+        );
+        if (
+          freshOwners.length > 1
+          || !headersUnchanged
+          || freshOwnedColumns.length !== columns.length
+          || freshMatchingRows.length > 1
+          || freshSafeRowNumber !== safeRowNumber
+          || (!freshSafeRowNumber && !freshRecordedRowAlreadyBlank)
+        ) {
+          addWarning('削除済み友だちの消去直前に行・列の変更を検知したため、シートを消去しませんでした');
+          await auditUnsafeRemovedLedger(orphan, lineUserId);
+          continue;
+        }
+
+        const locatedLedger = freshSafeRowNumber
+          ? await locateRemovedLedgerRow(orphan, freshSafeRowNumber)
           : orphan;
-        const targetRow = safeRowNumber ? effectiveRow(safeRowNumber) : recordedRow!;
-        const removalDetails = ownedColumns.flatMap(({ column, index }) => {
-          const oldValue = safeRowNumber
+        const targetRow = freshSafeRowNumber
+          ? freshValues[freshSafeRowNumber - 1]
+          : freshRecordedRow!;
+        const removalDetails = freshOwnedColumns.flatMap(({ column, index }) => {
+          const oldValue = freshSafeRowNumber
             ? normalizeSheetCell(targetRow[index])
             : normalizeSheetCell(orphan.canonicalSnapshot[column.key]);
           return oldValue
@@ -1145,13 +1249,12 @@ export async function syncFriendLedger(
             )]
             : [];
         });
-        if (safeRowNumber) {
-          const userIdColumnIndex = resolved.indexByKey['identity:lineUserId'];
-          const clearUpdates = ownedColumns.flatMap(({ index }) => (
+        if (freshSafeRowNumber) {
+          const clearUpdates = freshOwnedColumns.flatMap(({ index }) => (
             normalizeSheetCell(targetRow[index]) === ''
               ? []
               : [{
-                range: cellRange(options.connection.sheetName, safeRowNumber, index),
+                range: cellRange(options.connection.sheetName, freshSafeRowNumber, index),
                 values: [['']],
                 index,
               }]
@@ -1159,19 +1262,56 @@ export async function syncFriendLedger(
           // Keep userId until every other owned cell is blank. If a request or
           // process fails between phases, the next poll can still find the row
           // by its exact identity and safely resume.
-          const contentUpdates = clearUpdates.filter((update) => update.index !== userIdColumnIndex);
-          const identityUpdate = clearUpdates.filter((update) => update.index === userIdColumnIndex);
+          const contentUpdates = clearUpdates.filter((update) => update.index !== freshUserIdIndex);
+          const identityUpdate = clearUpdates.filter((update) => update.index === freshUserIdIndex);
           if (contentUpdates.length > 0) {
             await renewLease();
             await client.batchUpdateValues(options.connection.spreadsheetId, contentUpdates);
           }
           if (identityUpdate.length > 0) {
             await renewLease();
+            const [identityResponse, identityFriends] = await Promise.all([
+              client.readValues(
+                options.connection.spreadsheetId,
+                quoteSheetName(options.connection.sheetName),
+              ),
+              listFriends(options.db, options.connection.lineAccountId),
+            ]);
+            await renewLease();
+            const identityValues = identityResponse.values ?? [];
+            const identityHeaders = identityValues[0] ?? [];
+            const identityHeaderStable = identityHeaders.length === freshHeaders.length
+              && identityHeaders.every((value, index) => (
+                normalizeSheetCell(value) === normalizeSheetCell(freshHeaders[index])
+              ));
+            const identityUserRows = identityHeaderStable && freshUserIdIndex !== undefined
+              ? identityValues.flatMap((row, index) => (
+                index > 0 && normalizeSheetCell(row[freshUserIdIndex]) === lineUserId ? [index + 1] : []
+              ))
+              : [];
+            const restoredRecord = identityFriends.some((friend) => friend.id === orphan.recordKey);
+            const replacementOwners = identityFriends.filter((friend) => friend.lineUserId === lineUserId);
+            if (
+              restoredRecord
+              || replacementOwners.length > 1
+              || identityUserRows.length !== 1
+              || identityUserRows[0] !== freshSafeRowNumber
+            ) {
+              addWarning('削除済み友だちの消去中に行・列またはハーネス側の変更を検知し、userId は残しました');
+              await auditUnsafeRemovedLedger(locatedLedger, lineUserId);
+              continue;
+            }
+            if (replacementOwners.length === 1) {
+              await commitRemovedLedger(locatedLedger, 'friend_recreated_in_harness', [
+                detail(actor, 'userId', lineUserId, lineUserId, options.source, 'identity_sync'),
+              ]);
+              continue;
+            }
             await client.batchUpdateValues(options.connection.spreadsheetId, identityUpdate);
           }
           if (clearUpdates.length > 0) {
-            for (const { index } of clearUpdates) values[safeRowNumber - 1][index] = '';
-            removedRowNumbers.add(safeRowNumber);
+            for (const { index } of clearUpdates) values[freshSafeRowNumber - 1][index] = '';
+            removedRowNumbers.add(freshSafeRowNumber);
           }
         }
         if (removalDetails.length === 0) {
@@ -1473,7 +1613,9 @@ export async function syncFriendLedger(
     for (const rowNumber of removedRowNumbers) updatedRowNumbers.add(rowNumber);
     const completedAt = toJstString(nowFactory());
     const movedPlans = plans.filter(
-      (plan) => plan.ledger && plan.ledger.sheetRowNumber !== plan.rowNumber,
+      (plan) => plan.ledger
+        && plan.ledger.sheetRowNumber !== plan.rowNumber
+        && !preclearedRowKeys.has(plan.friend.id),
     );
     if (movedPlans.length > 0) {
       const lease = await renewLease();

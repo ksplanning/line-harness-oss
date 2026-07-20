@@ -512,7 +512,7 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
         },
       );
       if (!queued) return c.json({ success: false, error: '接続設定が更新されました' }, 409);
-      if (queued.status === 'pending') {
+      if (queued.status === 'pending' && c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
         const work = drainFriendLedgerWebhookEvents({
           db: c.env.DB,
           connection,

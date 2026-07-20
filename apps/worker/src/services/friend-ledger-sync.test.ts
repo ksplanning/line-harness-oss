@@ -66,9 +66,12 @@ class FakeSheetsClient {
   values: SheetCellValue[][] = [];
   readonly writes: Array<{ kind: 'update' | 'append' | 'batch'; range?: string }> = [];
   afterWrite?: (kind: 'update' | 'append' | 'batch') => void | Promise<void>;
+  afterRead?: () => void | Promise<void>;
 
   async readValues() {
-    return { majorDimension: 'ROWS' as const, values: this.values.map((row) => [...row]) };
+    const response = { majorDimension: 'ROWS' as const, values: this.values.map((row) => [...row]) };
+    await this.afterRead?.();
+    return response;
   }
 
   async updateValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
@@ -431,6 +434,94 @@ describe('friend ledger bidirectional sync', () => {
       WHERE record_key='friend-ayako'`).get()).toEqual({
       sheet_row_number: null, canonical_snapshot_json: '{}',
     });
+  });
+
+  test('does not tombstone a blank row without a durable pending-removal marker', async () => {
+    await run();
+    client.values[1] = ['', '', '', ''];
+    raw.prepare(`DELETE FROM friends WHERE id='friend-ayako'`).run();
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result.status).toBe('warning');
+    expect(raw.prepare(`SELECT sheet_row_number, canonical_snapshot_json
+      FROM sheets_sync_ledger WHERE record_key='friend-ayako'`).get()).toMatchObject({
+      sheet_row_number: 2,
+      canonical_snapshot_json: expect.stringContaining('U_AYAKO'),
+    });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE record_key='friend-ayako' ORDER BY apply_sequence DESC LIMIT 1`).get()).toEqual({
+      outcome: 'skipped', error_code: 'unsafe_deleted_friend_row',
+    });
+  });
+
+  test('releases all shifted ledger row slots before locating a deleted friend', async () => {
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-b', 'U_B', 'びー', 'acc-1', '{"入金確認":"B"}',
+              '2026-07-20T11:00:00+09:00', '2026-07-20T11:00:00+09:00')`).run();
+    await run();
+    client.values.splice(1, 0, ['外部行', 'U_EXTERNAL', '外部日付', '外部値']);
+    raw.prepare(`DELETE FROM friends WHERE id='friend-ayako'`).run();
+
+    await expect(run('polling', 'system_poll')).resolves.toMatchObject({ status: 'success' });
+
+    expect(client.values).toEqual([
+      ['表示名', 'userId', '登録日', '入金確認'],
+      ['外部行', 'U_EXTERNAL', '外部日付', '外部値'],
+      ['', '', '', ''],
+      ['びー', 'U_B', '2026-07-20T11:00:00+09:00', 'B'],
+    ]);
+    expect(raw.prepare(`SELECT record_key, sheet_row_number FROM sheets_sync_ledger
+      ORDER BY record_key`).all()).toEqual([
+      { record_key: 'friend-ayako', sheet_row_number: null },
+      { record_key: 'friend-b', sheet_row_number: 4 },
+    ]);
+  });
+
+  test('does not clear when a row moves between the initial read and destructive preflight', async () => {
+    await run();
+    client.values.push(['外部行', 'U_EXTERNAL', '外部日付', '外部値']);
+    raw.prepare(`DELETE FROM friends WHERE id='friend-ayako'`).run();
+    client.afterRead = () => {
+      client.afterRead = undefined;
+      client.values.splice(1, 0, client.values.pop()!);
+    };
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result.status).toBe('warning');
+    expect(client.values.slice(1)).toEqual([
+      ['外部行', 'U_EXTERNAL', '外部日付', '外部値'],
+      ['あやこ', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '未'],
+    ]);
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE record_key='friend-ayako' ORDER BY apply_sequence DESC LIMIT 1`).get()).toEqual({
+      outcome: 'skipped', error_code: 'unsafe_deleted_friend_row',
+    });
+  });
+
+  test('rechecks the recovery userId after content clear before erasing identity', async () => {
+    await run();
+    client.values.push(['外部行', 'U_EXTERNAL', '外部日付', '外部値']);
+    raw.prepare(`DELETE FROM friends WHERE id='friend-ayako'`).run();
+    let moved = false;
+    client.afterWrite = (kind) => {
+      if (kind === 'batch' && !moved) {
+        moved = true;
+        [client.values[1], client.values[2]] = [client.values[2], client.values[1]];
+      }
+    };
+
+    const interrupted = await run('polling', 'system_poll');
+
+    expect(interrupted.status).toBe('warning');
+    expect(client.values[1]).toEqual(['外部行', 'U_EXTERNAL', '外部日付', '外部値']);
+    expect(client.values[2]).toEqual(['', 'U_AYAKO', '', '']);
+    client.afterWrite = undefined;
+    await run('polling', 'system_poll');
+    expect(client.values[1]).toEqual(['外部行', 'U_EXTERNAL', '外部日付', '外部値']);
+    expect(client.values[2]).toEqual(['', '', '', '']);
   });
 
   test('adopts the existing row for a recreated friend with the same userId without clearing it', async () => {

@@ -412,11 +412,10 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
       payload_json: JSON.stringify({ range: payload.range, snapshot: payload.snapshot }),
       status: 'pending',
     });
-    expect(service.drainFriendLedgerWebhookEvents).toHaveBeenCalledWith(expect.objectContaining({
-      connection: expect.objectContaining({ id: 'conn-a', lineAccountId: 'acc-1' }),
-      credentialsJson: undefined,
-    }));
+    expect(service.drainFriendLedgerWebhookEvents).not.toHaveBeenCalled();
     expect(service.syncFriendLedger).not.toHaveBeenCalled();
+    expect(raw.prepare(`SELECT attempts FROM sheets_sync_webhook_events
+      WHERE event_id=?`).get(payload.eventId)).toEqual({ attempts: 0 });
   });
 
   test('rejects an oversized webhook before signature work or DB access', async () => {
