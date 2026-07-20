@@ -728,3 +728,7 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 ## form-publish-invest 調査残骸 (2026-07-20 / 要削除)
 - **🔵 REQUIRED-BACKLOG**: Formaloo 側 scratch form `42sybm` (DELETE-ME-form-publish-invest-e2e / fa_3d4f6568 の remote・harness 側は 404 済み) — 調査 agent が権限物理拒否で Formaloo 側を削除できず残置 (テスト項目のみ・PII なし)。publish-ux-frid-sync-fix の closer 工程で B 鍵により削除+404 確認 (live-checklist に明記済み)
 - **🔵 REQUIRED-BACKLOG 追記 (round2)**: Formaloo 側 scratch form `zlm1qh` (round2 再現用・fa_7f8e6636 の remote・harness 側 404 済み) も同様に残置 — publish-ux-frid-sync-fix closer で 42sybm と併せて削除+404 確認
+## step-text-variables-emoji — LINE 純正絵文字（任意・自動着手禁止）
+
+- 現行のステップ本文は外部依存なしの Unicode 絵文字パレットを使う。LINE 純正絵文字の Messaging API 形式（`productId` / `emojiId` を持つ `emojis`）は本件の対象外。
+- 将来対応する場合は、Unicode 本文とは別の message object 構築・管理画面 picker・LINE 実機検証が必要。owner の明示依頼なしに自動着手しない。
