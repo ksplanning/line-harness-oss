@@ -8,6 +8,7 @@ import Toggle from '@/components/shared/toggle'
 import EditDialog, { type FaqDraft } from '@/components/faqs/edit-dialog'
 import BulkImportDialog from '@/components/faqs/bulk-import-dialog'
 import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
+import type { FriendFieldDefinition } from '@line-crm/shared'
 
 interface Faq {
   id: string
@@ -39,6 +40,13 @@ interface FaqBotSettings {
   maxRepliesPerDay: number
   // 'draft'=AIは草案を作るだけで送信しない / 'auto'=お客さまへ自動送信。
   answerMode: 'draft' | 'auto'
+  personalContext: {
+    enabled: boolean
+    /** null=有効な全項目、[]=対象なし。 */
+    selectedCustomFieldIds: string[] | null
+    includeFormAnswers: boolean
+    maxTokens: number
+  }
 }
 
 const DEFAULT_SETTINGS: FaqBotSettings = {
@@ -50,6 +58,12 @@ const DEFAULT_SETTINGS: FaqBotSettings = {
   // 安全側の既定。未取得状態で誤って自動送信化しないよう 'draft' 始点
   // (実値は GET 応答で上書きされる — settings.get の answerMode をそのまま保持)。
   answerMode: 'draft',
+  personalContext: {
+    enabled: true,
+    selectedCustomFieldIds: null,
+    includeFormAnswers: true,
+    maxTokens: 1200,
+  },
 }
 
 type Tab = 'faqs' | 'unmatched' | 'settings'
@@ -79,6 +93,7 @@ export default function FaqsPage() {
   const [editing, setEditing] = useState<FaqDraft | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
+  const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
   // 「自動で送信する」に切り替える時だけ出す行内確認 (native window.confirm は使わない / M-16)。
   const [confirmAutoMode, setConfirmAutoMode] = useState(false)
 
@@ -95,15 +110,28 @@ export default function FaqsPage() {
     setConfirmAutoMode(false)
     try {
       const accountId = selectedAccountId || undefined
-      const [faqRes, unmatchedRes] = await Promise.all([
+      const fieldDefinitionsRequest = api.friendFieldDefinitions?.list?.()
+      const [faqRes, unmatchedRes, fieldDefinitionsRes] = await Promise.all([
         api.faqs.list({ accountId }),
         api.faqs.unmatched({ accountId }),
+        fieldDefinitionsRequest ?? Promise.resolve(null),
       ])
       if (faqRes.success) setFaqs(faqRes.data)
       if (unmatchedRes.success) setUnmatched(unmatchedRes.data)
+      if (fieldDefinitionsRes?.success) setFieldDefinitions(fieldDefinitionsRes.data)
+      else setFieldDefinitions([])
       if (selectedAccountId) {
         const setRes = await api.faqs.settings.get({ accountId: selectedAccountId })
-        if (setRes.success) setSettings({ ...DEFAULT_SETTINGS, ...setRes.data })
+        if (setRes.success) {
+          setSettings({
+            ...DEFAULT_SETTINGS,
+            ...setRes.data,
+            personalContext: {
+              ...DEFAULT_SETTINGS.personalContext,
+              ...setRes.data.personalContext,
+            },
+          })
+        }
       } else {
         setSettings(DEFAULT_SETTINGS)
       }
@@ -188,6 +216,27 @@ export default function FaqsPage() {
   }
 
   const thresholdPct = Math.round(settings.threshold * 100)
+  const activeFieldDefinitions = fieldDefinitions.filter((definition) => definition.isActive)
+
+  const updatePersonalContext = (patch: Partial<FaqBotSettings['personalContext']>) => {
+    setSettings((current) => ({
+      ...current,
+      personalContext: { ...current.personalContext, ...patch },
+    }))
+  }
+
+  const toggleCustomField = (fieldId: string) => {
+    const activeIds = activeFieldDefinitions.map((definition) => definition.id)
+    const selected = settings.personalContext.selectedCustomFieldIds === null
+      ? activeIds
+      : settings.personalContext.selectedCustomFieldIds.filter((id) => activeIds.includes(id))
+    const next = selected.includes(fieldId)
+      ? selected.filter((id) => id !== fieldId)
+      : [...selected, fieldId]
+    updatePersonalContext({
+      selectedCustomFieldIds: activeIds.length > 0 && next.length === activeIds.length ? null : next,
+    })
+  }
 
   return (
     <div>
@@ -501,6 +550,99 @@ export default function FaqsPage() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* 質問者本人の登録情報 */}
+          <div className="bg-white border border-gray-200 rounded-lg p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-800">質問者本人の登録情報を答えに使う</h3>
+                <p className="mt-1 text-xs text-gray-500 leading-relaxed">
+                  表示名・選んだカスタム項目・過去のフォーム回答を、その人への回答だけに使います。他の人の情報は検索しません。
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                aria-label="本人情報を回答に使う"
+                checked={settings.personalContext.enabled}
+                onChange={(event) => updatePersonalContext({ enabled: event.target.checked })}
+                className="mt-1 h-5 w-5 shrink-0 accent-green-500"
+              />
+            </div>
+
+            <fieldset
+              disabled={!settings.personalContext.enabled}
+              className="mt-4 space-y-4 disabled:opacity-50"
+            >
+              <div>
+                <p className="text-xs font-medium text-gray-700">使うカスタム項目</p>
+                <label className="mt-2 flex min-h-[36px] items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    aria-label="すべてのカスタム項目"
+                    checked={settings.personalContext.selectedCustomFieldIds === null}
+                    onChange={() => updatePersonalContext({
+                      selectedCustomFieldIds: settings.personalContext.selectedCustomFieldIds === null ? [] : null,
+                    })}
+                    className="h-4 w-4 accent-green-500"
+                  />
+                  すべてのカスタム項目
+                </label>
+                {activeFieldDefinitions.length === 0 ? (
+                  <p className="mt-2 text-xs text-gray-400">有効なカスタム項目はありません。</p>
+                ) : (
+                  <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                    {activeFieldDefinitions.map((definition) => (
+                      <label key={definition.id} className="flex min-h-[36px] items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          aria-label={definition.name}
+                          checked={
+                            settings.personalContext.selectedCustomFieldIds === null
+                            || settings.personalContext.selectedCustomFieldIds.includes(definition.id)
+                          }
+                          onChange={() => toggleCustomField(definition.id)}
+                          className="h-4 w-4 accent-green-500"
+                        />
+                        {definition.name}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <label className="flex min-h-[36px] items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  aria-label="過去のフォーム回答を含める"
+                  checked={settings.personalContext.includeFormAnswers}
+                  onChange={(event) => updatePersonalContext({ includeFormAnswers: event.target.checked })}
+                  className="h-4 w-4 accent-green-500"
+                />
+                過去のフォーム回答を含める（直近3件の要旨）
+              </label>
+
+              <div>
+                <label htmlFor="faq-personal-context-max-tokens" className="block text-xs font-medium text-gray-700">
+                  本人情報の最大トークン数
+                </label>
+                <input
+                  id="faq-personal-context-max-tokens"
+                  aria-label="本人情報の最大トークン数"
+                  type="number"
+                  min={128}
+                  max={2000}
+                  value={settings.personalContext.maxTokens}
+                  onChange={(event) => updatePersonalContext({
+                    maxTokens: Math.max(128, Math.min(2000, Number(event.target.value) || 128)),
+                  })}
+                  className="mt-2 w-32 border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+                <p className="mt-1 text-[11px] text-gray-500">
+                  本人情報を一度に渡しすぎないための上限です（128〜2000）。
+                </p>
+              </div>
+            </fieldset>
           </div>
 
           {/* ② しきい値 */}

@@ -38,6 +38,12 @@ const baseSettings = (answerMode: 'auto' | 'draft') => ({
   autoReplyNotice: '※この返信は自動応答です',
   maxRepliesPerDay: 7,
   answerMode,
+  personalContext: {
+    enabled: true,
+    selectedCustomFieldIds: null,
+    includeFormAnswers: true,
+    maxTokens: 1200,
+  },
 })
 
 const openSettingsTab = async (answerMode: 'auto' | 'draft') => {
@@ -80,6 +86,12 @@ describe('/faqs 設定タブ — 回答モード切替 (下書き / 自動送信
       autoReplyNotice: '※この返信は自動応答です',
       maxRepliesPerDay: 7,
       answerMode: 'draft',
+      personalContext: {
+        enabled: true,
+        selectedCustomFieldIds: null,
+        includeFormAnswers: true,
+        maxTokens: 1200,
+      },
     })
   })
 
