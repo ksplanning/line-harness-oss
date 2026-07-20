@@ -132,6 +132,7 @@ beforeEach(async () => {
     sheetName: '友だち台帳',
     syncDirection: 'bidirectional',
     friendFieldMappings: [{ fieldId: 'field-paid', header: '入金確認' }],
+    friendLedgerEnabled: true,
   });
 });
 

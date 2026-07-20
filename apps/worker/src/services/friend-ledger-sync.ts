@@ -327,6 +327,13 @@ function makeClient(options: SyncFriendLedgerOptions): FriendLedgerSheetsClient 
 export async function syncFriendLedger(
   options: SyncFriendLedgerOptions,
 ): Promise<FriendLedgerSyncResult> {
+  if (!options.connection.friendLedgerEnabled) {
+    const warnings = ['友だち台帳の同期設定が有効ではありません'];
+    return {
+      status: 'warning', warning: warnings[0], warnings,
+      appendedRows: 0, updatedRows: 0, importedFields: 0, ignoredIdentityEdits: 0,
+    };
+  }
   const nowFactory = options.now ?? (() => new Date());
   const started = nowFactory();
   const startedAt = toJstString(started);
