@@ -21,6 +21,7 @@ export interface SheetsConnection {
   configVersion: number;
   friendFieldMappings: SheetsFriendFieldMapping[];
   friendLedgerEnabled: boolean;
+  friendLedgerHeaders: string[];
   lastSyncAt: string | null;
   lastSyncStatus: SheetsSyncStatus;
   lastSyncWarning: string | null;
@@ -42,6 +43,7 @@ interface SheetsConnectionRow {
   config_version: number;
   friend_field_mappings_json: string;
   friend_ledger_enabled: number;
+  friend_ledger_headers_json: string;
   last_sync_at: string | null;
   last_sync_status: SheetsSyncStatus;
   last_sync_warning: string | null;
@@ -210,6 +212,17 @@ function parseFriendFieldMappings(value: string): SheetsFriendFieldMapping[] {
   }
 }
 
+function parseStringArray(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function parseCanonicalSnapshot(value: string): Record<string, SheetsCanonicalCellValue> {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -303,6 +316,7 @@ function serialize(row: SheetsConnectionRow): SheetsConnection {
     configVersion: row.config_version,
     friendFieldMappings: parseFriendFieldMappings(row.friend_field_mappings_json),
     friendLedgerEnabled: row.friend_ledger_enabled === 1,
+    friendLedgerHeaders: parseStringArray(row.friend_ledger_headers_json),
     lastSyncAt: row.last_sync_at,
     lastSyncStatus: row.last_sync_status,
     lastSyncWarning: row.last_sync_warning,
@@ -316,7 +330,8 @@ function serialize(row: SheetsConnectionRow): SheetsConnection {
 const ACTIVE_SELECT = `
   SELECT id, line_account_id, form_id, spreadsheet_id, sheet_name,
          sync_direction, conflict_policy, conflict_clock, config_version,
-         friend_field_mappings_json, friend_ledger_enabled, last_sync_at, last_sync_status,
+         friend_field_mappings_json, friend_ledger_enabled, friend_ledger_headers_json,
+         last_sync_at, last_sync_status,
          last_sync_warning, last_sync_error_code,
          is_active, created_at, updated_at
   FROM sheets_connections
@@ -399,11 +414,26 @@ export async function updateSheetsConnection(
   input: UpdateSheetsConnectionInput,
 ): Promise<SheetsConnection | null> {
   const now = jstNow();
+  const mappingsJson = input.friendFieldMappings === undefined
+    ? null
+    : JSON.stringify(input.friendFieldMappings);
   const update = db.prepare(
     `UPDATE sheets_connections
      SET spreadsheet_id = ?, sheet_name = ?, sync_direction = ?,
          friend_field_mappings_json = COALESCE(?, friend_field_mappings_json),
          friend_ledger_enabled = COALESCE(?, friend_ledger_enabled),
+         friend_ledger_headers_json = CASE
+           WHEN spreadsheet_id <> ? OR sheet_name <> ? THEN '[]'
+           WHEN ? IS NULL THEN friend_ledger_headers_json
+           ELSE COALESCE((
+             SELECT json_group_array(value)
+             FROM json_each(friend_ledger_headers_json)
+             WHERE value IN ('表示名', 'userId', '登録日')
+                OR value IN (
+                  SELECT json_extract(value, '$.header') FROM json_each(?)
+                )
+           ), '[]')
+         END,
          config_version = config_version + 1, updated_at = ?
      WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
        AND (
@@ -414,8 +444,12 @@ export async function updateSheetsConnection(
     input.spreadsheetId,
     input.sheetName,
     input.syncDirection,
-    input.friendFieldMappings === undefined ? null : JSON.stringify(input.friendFieldMappings),
+    mappingsJson,
     input.friendLedgerEnabled === undefined ? null : input.friendLedgerEnabled ? 1 : 0,
+    input.spreadsheetId,
+    input.sheetName,
+    mappingsJson,
+    mappingsJson,
     now,
     id,
     lineAccountId,
@@ -555,6 +589,38 @@ export async function listActiveSheetsConnectionsForSync(
   return result.results.map(serialize);
 }
 
+export async function recordSheetsFriendLedgerHeaders(
+  db: D1Database,
+  lineAccountId: string,
+  id: string,
+  configVersion: number,
+  headers: string[],
+  lease?: SheetsSyncLeaseGuard,
+): Promise<boolean> {
+  const normalized = [...new Set(headers.filter((header) => header.length > 0))];
+  const result = await db.prepare(
+    `UPDATE sheets_connections
+     SET friend_ledger_headers_json = ?
+     WHERE id = ? AND line_account_id = ? AND config_version = ?
+       AND is_active = 1 AND deleted_at IS NULL
+       AND (
+         ? IS NULL OR (
+           sync_lock_token = ? AND sync_lock_expires_at IS NOT NULL
+           AND julianday(sync_lock_expires_at) > julianday(?)
+         )
+       )`,
+  ).bind(
+    JSON.stringify(normalized),
+    id,
+    lineAccountId,
+    configVersion,
+    lease?.token ?? null,
+    lease?.token ?? null,
+    lease?.now ?? null,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
 export async function claimSheetsSyncLock(
   db: D1Database,
   lineAccountId: string,
@@ -631,12 +697,16 @@ export async function clearSheetsSyncLedgerRowNumbers(
   lineAccountId: string,
   connectionId: string,
   connectionVersion: number,
+  recordKeys: string[],
   lease?: SheetsSyncLeaseGuard,
 ): Promise<boolean> {
+  const uniqueRecordKeys = [...new Set(recordKeys)];
+  if (uniqueRecordKeys.length === 0) return true;
   const result = await db.prepare(
     `UPDATE sheets_sync_ledger
      SET sheet_row_number = NULL, version = version + 1
      WHERE connection_id = ? AND connection_version = ?
+       AND record_key IN (SELECT value FROM json_each(?))
        AND EXISTS (
          SELECT 1 FROM sheets_connections c
          WHERE c.id = sheets_sync_ledger.connection_id
@@ -652,13 +722,14 @@ export async function clearSheetsSyncLedgerRowNumbers(
   ).bind(
     connectionId,
     connectionVersion,
+    JSON.stringify(uniqueRecordKeys),
     lineAccountId,
     connectionVersion,
     lease?.token ?? null,
     lease?.token ?? null,
     lease?.now ?? null,
   ).run();
-  return (result.meta.changes ?? 0) > 0;
+  return (result.meta.changes ?? 0) === uniqueRecordKeys.length;
 }
 
 export async function upsertSheetsSyncLedger(

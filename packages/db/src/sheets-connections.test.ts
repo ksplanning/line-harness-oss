@@ -30,6 +30,7 @@ interface FriendLedgerConnectionContract {
   configVersion: number;
   friendFieldMappings: FriendFieldMapping[];
   friendLedgerEnabled: boolean;
+  friendLedgerHeaders: string[];
   lastSyncAt: string | null;
   lastSyncStatus: SheetsSyncStatus;
   lastSyncWarning: string | null;
@@ -134,6 +135,14 @@ interface FriendLedgerDbContract {
     db: D1Database,
     limit: number,
   ): Promise<FriendLedgerConnectionContract[]>;
+  recordSheetsFriendLedgerHeaders(
+    db: D1Database,
+    lineAccountId: string,
+    id: string,
+    configVersion: number,
+    headers: string[],
+    lease?: { token: string; now: string },
+  ): Promise<boolean>;
   claimSheetsSyncLock(
     db: D1Database,
     lineAccountId: string,
@@ -154,6 +163,7 @@ interface FriendLedgerDbContract {
     lineAccountId: string,
     connectionId: string,
     connectionVersion: number,
+    recordKeys: string[],
     lease?: { token: string; now: string },
   ): Promise<boolean>;
   listSheetsSyncLedger(
@@ -353,6 +363,7 @@ describe('Sheets connections DB helper', () => {
     expect(created).toMatchObject({
       friendFieldMappings: initialMappings,
       friendLedgerEnabled: true,
+      friendLedgerHeaders: [],
       lastSyncAt: null,
       lastSyncStatus: 'idle',
       lastSyncWarning: null,
@@ -360,6 +371,13 @@ describe('Sheets connections DB helper', () => {
     });
     expect(raw.prepare('SELECT friend_field_mappings_json FROM sheets_connections WHERE id = ?').get(created.id))
       .toEqual({ friend_field_mappings_json: JSON.stringify(initialMappings) });
+    await friendLedgerDb.recordSheetsFriendLedgerHeaders(
+      db,
+      'acc-1',
+      created.id,
+      1,
+      ['表示名', 'userId', '登録日', '契約状況', '利用プラン'],
+    );
 
     const renamedSnapshot = [{ fieldId: 'field-contract', header: '契約状況（選択時）' }];
     const updated = await friendLedgerDb.updateSheetsConnection(db, 'acc-1', created.id, {
@@ -372,9 +390,23 @@ describe('Sheets connections DB helper', () => {
       friendFieldMappings: renamedSnapshot,
       syncDirection: 'from_sheets',
       configVersion: 2,
+      friendLedgerHeaders: ['表示名', 'userId', '登録日'],
     });
     expect(raw.prepare('SELECT friend_field_mappings_json FROM sheets_connections WHERE id = ?').get(created.id))
       .toEqual({ friend_field_mappings_json: JSON.stringify(renamedSnapshot) });
+
+    const movedTarget = await friendLedgerDb.updateSheetsConnection(db, 'acc-1', created.id, {
+      spreadsheetId: 'sheet-new',
+      sheetName: '新台帳',
+      syncDirection: 'from_sheets',
+      friendFieldMappings: renamedSnapshot,
+    });
+    expect(movedTarget).toMatchObject({
+      spreadsheetId: 'sheet-new',
+      sheetName: '新台帳',
+      configVersion: 3,
+      friendLedgerHeaders: [],
+    });
   });
 
   test('updates observable sync status without changing settings generation and remains tenant-scoped', async () => {
@@ -516,6 +548,10 @@ describe('Sheets connections DB helper', () => {
       db, 'acc-1', created.id, status,
       { token: 'stale-worker', now: '2026-07-21T10:01:00+09:00' },
     )).resolves.toBeNull();
+    await expect(friendLedgerDb.recordSheetsFriendLedgerHeaders(
+      db, 'acc-1', created.id, 1, ['表示名', 'userId'],
+      { token: 'stale-worker', now: '2026-07-21T10:01:00+09:00' },
+    )).resolves.toBe(false);
     const guardedReserve = reserveSheetsSyncSequence as unknown as (
       ...args: [D1Database, string, string, number, { token: string; now: string }]
     ) => Promise<number | null>;
@@ -531,6 +567,12 @@ describe('Sheets connections DB helper', () => {
       db, 'acc-1', created.id, 1,
       { token: 'current-worker', now: '2026-07-21T10:01:00+09:00' },
     )).resolves.toBe(1);
+    await expect(friendLedgerDb.recordSheetsFriendLedgerHeaders(
+      db, 'acc-1', created.id, 1, ['表示名', 'userId'],
+      { token: 'current-worker', now: '2026-07-21T10:01:00+09:00' },
+    )).resolves.toBe(true);
+    await expect(friendLedgerDb.getActiveSheetsConnectionById(db, created.id))
+      .resolves.toMatchObject({ friendLedgerHeaders: ['表示名', 'userId'] });
   });
 
   test('binds a sync lock to the captured settings generation and blocks target changes while held', async () => {
@@ -626,14 +668,14 @@ describe('Sheets connections DB helper', () => {
       });
     }
 
-    await expect(friendLedgerDb.clearSheetsSyncLedgerRowNumbers(db, 'acc-2', created.id, 1))
+    await expect(friendLedgerDb.clearSheetsSyncLedgerRowNumbers(db, 'acc-2', created.id, 1, ['friend-a']))
       .resolves.toBe(false);
-    await expect(friendLedgerDb.clearSheetsSyncLedgerRowNumbers(db, 'acc-1', created.id, 2))
+    await expect(friendLedgerDb.clearSheetsSyncLedgerRowNumbers(db, 'acc-1', created.id, 2, ['friend-a']))
       .resolves.toBe(false);
-    await expect(friendLedgerDb.clearSheetsSyncLedgerRowNumbers(db, 'acc-1', created.id, 1))
+    await expect(friendLedgerDb.clearSheetsSyncLedgerRowNumbers(db, 'acc-1', created.id, 1, ['friend-a']))
       .resolves.toBe(true);
     expect(raw.prepare('SELECT sheet_row_number FROM sheets_sync_ledger WHERE connection_id=?').all(created.id))
-      .toEqual([{ sheet_row_number: null }, { sheet_row_number: null }]);
+      .toEqual([{ sheet_row_number: null }, { sheet_row_number: 3 }]);
   });
 
   test('appends and lists parent audit events with immutable per-column details under tenant scope', async () => {

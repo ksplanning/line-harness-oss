@@ -11,6 +11,13 @@ ALTER TABLE sheets_connections
   ADD COLUMN friend_ledger_enabled INTEGER NOT NULL DEFAULT 0
   CHECK (friend_ledger_enabled IN (0, 1));
 
+-- Remembers which Harness-owned headings were generated. This remains valid
+-- even when there are zero friends (and therefore no ledger rows), so a later
+-- owner rename is warned about instead of silently creating a replacement.
+ALTER TABLE sheets_connections
+  ADD COLUMN friend_ledger_headers_json TEXT NOT NULL DEFAULT '[]'
+  CHECK (json_valid(friend_ledger_headers_json) AND json_type(friend_ledger_headers_json) = 'array');
+
 ALTER TABLE sheets_connections ADD COLUMN last_sync_at TEXT;
 
 ALTER TABLE sheets_connections

@@ -64,6 +64,7 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
     for (const additiveColumn of [
       'friend_field_mappings_json',
       'friend_ledger_enabled',
+      'friend_ledger_headers_json',
       'last_sync_status',
       'canonical_snapshot_json',
       'sheets_sync_audit_details',
@@ -82,6 +83,7 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
     expect(columns(raw, 'sheets_connections')).toEqual(expect.arrayContaining([
       'friend_field_mappings_json',
       'friend_ledger_enabled',
+      'friend_ledger_headers_json',
       'last_sync_at',
       'last_sync_status',
       'last_sync_warning',
@@ -89,11 +91,13 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
       'sync_lock_token',
       'sync_lock_expires_at',
     ]));
-    expect(raw.prepare(`SELECT friend_field_mappings_json, friend_ledger_enabled, last_sync_at, last_sync_status,
+    expect(raw.prepare(`SELECT friend_field_mappings_json, friend_ledger_enabled, friend_ledger_headers_json,
+      last_sync_at, last_sync_status,
       last_sync_warning, last_sync_error_code, sync_lock_token, sync_lock_expires_at
       FROM sheets_connections WHERE id = 'connection-1'`).get()).toEqual({
       friend_field_mappings_json: '[]',
       friend_ledger_enabled: 0,
+      friend_ledger_headers_json: '[]',
       last_sync_at: null,
       last_sync_status: 'idle',
       last_sync_warning: null,
