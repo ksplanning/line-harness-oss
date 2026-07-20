@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AUTOMATION_ACTION_DEFINITIONS,
   AUTOMATION_ACTION_TYPES,
+  AUTOMATION_FIXED_TRIGGER_DEFINITIONS,
   AUTOMATION_TRIGGER_DEFINITIONS,
   buildAutomationRuleChanges,
   decodeAutomationRule,
@@ -11,16 +12,6 @@ import {
   serializeAutomationRule,
   type AutomationRuleSource,
 } from './automation-rule-builder'
-
-const expectedTriggerKinds = [
-  'friend_add',
-  'tag_change',
-  'score_threshold',
-  'cv_fire',
-  'message_received',
-  'calendar_booked',
-  'incoming_webhook.*',
-]
 
 const expectedActionTypes = [
   'add_tag',
@@ -40,8 +31,11 @@ const bytePinnedSource: AutomationRuleSource = {
 }
 
 describe('automation builder registries', () => {
-  it('covers every declared trigger, including the incoming webhook family', () => {
-    expect(AUTOMATION_TRIGGER_DEFINITIONS.map((definition) => definition.kind)).toEqual(expectedTriggerKinds)
+  it('exposes the exhaustive fixed-trigger map plus the incoming webhook family', () => {
+    expect(AUTOMATION_TRIGGER_DEFINITIONS).toEqual([
+      ...Object.values(AUTOMATION_FIXED_TRIGGER_DEFINITIONS),
+      { kind: 'incoming_webhook.*', label: '外部Webhook受信' },
+    ])
   })
 
   it('covers every action implemented by the worker switch', () => {

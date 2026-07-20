@@ -11,13 +11,24 @@ export interface AutomationTriggerDefinition {
   label: string
 }
 
+type AutomationFixedTriggerDefinitions = {
+  readonly [EventType in FixedAutomationEventType]: {
+    readonly kind: EventType
+    readonly label: string
+  }
+}
+
+export const AUTOMATION_FIXED_TRIGGER_DEFINITIONS = {
+  friend_add: { kind: 'friend_add', label: '友だち追加' },
+  tag_change: { kind: 'tag_change', label: 'タグ変更' },
+  score_threshold: { kind: 'score_threshold', label: 'スコア閾値' },
+  cv_fire: { kind: 'cv_fire', label: 'CV発火' },
+  message_received: { kind: 'message_received', label: 'メッセージ受信' },
+  calendar_booked: { kind: 'calendar_booked', label: 'カレンダー予約' },
+} satisfies AutomationFixedTriggerDefinitions
+
 export const AUTOMATION_TRIGGER_DEFINITIONS: readonly AutomationTriggerDefinition[] = [
-  { kind: 'friend_add', label: '友だち追加' },
-  { kind: 'tag_change', label: 'タグ変更' },
-  { kind: 'score_threshold', label: 'スコア閾値' },
-  { kind: 'cv_fire', label: 'CV発火' },
-  { kind: 'message_received', label: 'メッセージ受信' },
-  { kind: 'calendar_booked', label: 'カレンダー予約' },
+  ...Object.values(AUTOMATION_FIXED_TRIGGER_DEFINITIONS),
   { kind: 'incoming_webhook.*', label: '外部Webhook受信' },
 ]
 
