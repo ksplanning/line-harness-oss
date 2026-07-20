@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>REPORT: REPORT_2026-07-21_045259_emoji-picker-everywhere</title>
+<style id="ksplanning-tokens">
+:root {
+  --color-bg: #f7f8fa;
+  --color-card: #ffffff;
+  --color-fg: #14181f;
+  --color-fg-muted: #5b6573;
+  --color-fg-soft: #8893a4;
+  --color-border: #e3e7ee;
+  --color-border-strong: #c9d0db;
+  --color-ok: #1f9d55;
+  --color-ok-soft: #e3f6ec;
+  --color-warn: #d39200;
+  --color-warn-soft: #fcf3dc;
+  --color-alert: #c53030;
+  --color-alert-soft: #fbe5e5;
+  --color-accent: #1f3a8a;
+  --color-accent-soft: #e1e8fb;
+  --color-grid-line: rgba(31,58,138,0.18);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow-card: 0 1px 0 rgba(20,24,31,0.04), 0 8px 24px rgba(20,24,31,0.06);
+  --shadow-hero: 0 2px 4px rgba(20,24,31,0.04), 0 18px 40px rgba(31,58,138,0.10);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  padding: var(--space-6);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.hero {
+  background: linear-gradient(135deg, #ffffff 0%, #f0f3fb 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-6) var(--space-8);
+  margin-bottom: var(--space-6);
+  box-shadow: var(--shadow-hero);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: var(--space-6);
+}
+.hero .label {
+  color: var(--color-fg-soft);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.hero .title {
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin-top: var(--space-2);
+  color: var(--color-fg);
+}
+.hero .meta {
+  color: var(--color-fg-muted);
+  font-size: 13px;
+  margin-top: var(--space-2);
+}
+.hero .score-wrap {
+  text-align: right;
+}
+.score {
+  font-family: var(--font-mono);
+  font-size: 52px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.score.ok    { color: var(--color-ok); }
+.score.warn  { color: var(--color-warn); }
+.score.alert { color: var(--color-alert); }
+.score-delta {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-fg-muted);
+  margin-top: var(--space-2);
+}
+.score-delta.up   { color: var(--color-ok); }
+.score-delta.down { color: var(--color-alert); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.badge.ok    { background: var(--color-ok-soft);    color: var(--color-ok); }
+.badge.warn  { background: var(--color-warn-soft);  color: var(--color-warn); }
+.badge.alert { background: var(--color-alert-soft); color: var(--color-alert); }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: var(--space-4);
+}
+section.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+section.card header.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+section.card h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--color-fg-soft);
+  text-transform: uppercase;
+}
+section.card pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+section.card .empty {
+  color: var(--color-fg-soft);
+  font-style: italic;
+  font-size: 13px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table th, table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+table th {
+  color: var(--color-fg-soft);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+td.num { font-family: var(--font-mono); text-align: right; }
+
+.sparkline {
+  display: inline-block;
+  font-family: var(--font-mono);
+  letter-spacing: 1px;
+  color: var(--color-accent);
+}
+
+details {
+  margin-top: var(--space-4);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-card);
+}
+details summary {
+  cursor: pointer;
+  color: var(--color-accent);
+  font-weight: 600;
+  font-size: 13px;
+  list-style: none;
+}
+details summary::-webkit-details-marker { display: none; }
+details summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  transition: transform 0.15s ease;
+}
+details[open] summary::before { transform: rotate(90deg); }
+details section { margin-top: var(--space-3); }
+
+footer {
+  margin-top: var(--space-8);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-fg-soft);
+  font-size: 12px;
+}
+footer code {
+  font-family: var(--font-mono);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+@media (max-width: 600px) {
+  body { padding: var(--space-3); font-size: 14px; }
+  .hero {
+    grid-template-columns: 1fr;
+    padding: var(--space-4);
+    gap: var(--space-3);
+  }
+  .hero .score-wrap { text-align: left; }
+  .hero .title { font-size: 22px; }
+  .score { font-size: 40px; }
+  .grid { grid-template-columns: 1fr; gap: var(--space-3); }
+  section.card { padding: var(--space-4); }
+  details { padding: var(--space-3) var(--space-4); }
+}
+</style>
+<style id="ksplanning-report-extra">
+  .meta-table th { width: 32%; vertical-align: top; }
+  .meta-table td { word-break: break-word; }
+  .meta-table td.placeholder { color: var(--color-fg-soft); font-style: italic; }
+  .commit-table th, .commit-table td { font-size: 12px; }
+  .commit-table td.hash code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+  ul.files {
+    margin: var(--space-3) 0 0 0;
+    padding-left: var(--space-5);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .markdown-body {
+    font-size: 14px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .markdown-body code {
+    font-family: var(--font-mono);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+  .badge.completed { background: var(--color-ok-soft);    color: var(--color-ok); }
+  .badge.partial   { background: var(--color-warn-soft);  color: var(--color-warn); }
+  .badge.pending_owner_confirmation { background: var(--color-warn-soft); color: var(--color-warn); }
+  .badge.blocked   { background: var(--color-alert-soft); color: var(--color-alert); }
+  .score.completed { color: var(--color-ok); }
+  .score.partial,
+  .score.pending_owner_confirmation { color: var(--color-warn); }
+  .score.blocked   { color: var(--color-alert); }
+  .grid.single { grid-template-columns: 1fr; }
+  section.card[data-kind="links"] ul { margin: 0; padding-left: var(--space-5); }
+  section.card[data-kind="links"] li { margin: var(--space-1) 0; font-size: 13px; }
+</style>
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <div class="label">CLOSE-OUT REPORT</div>
+      <div class="title">全テキスト入力(友だちへ届く文章を書く欄)へ絵文字ピッカー+変数挿入ボタンを展開する</div>
+      <div class="meta">line-harness-ks · REPORT_2026-07-21_045259_emoji-picker-everywhere · <span class="badge completed">COMPLETED</span> · purpose_done: true</div>
+    </div>
+    <div class="score-wrap">
+      <div class="score completed">5/5</div>
+      <div class="score-delta">完走</div>
+    </div>
+  </header>
+
+  <section class="card" data-kind="frontmatter">
+    <header class="card-head"><h2>メタ情報</h2></header>
+    <table class="meta-table">
+      <tr><th>app</th><td>line-harness-ks</td></tr>
+      <tr><th>Box (.md)</th><td><a href="https://app.box.com/file/2358427580417">2358427580417</a></td></tr>
+      <tr><th>Box (.html)</th><td><a href="https://app.box.com/file/2358437039404">2358437039404</a></td></tr>
+      <tr><th>owner 発言原文</th><td>絵文字の入力機能がどこにもありません　全てのテキスト入力の入力項目の横に絵文字入力用のポップアップ選択入力ボタンとかって実装出来ますか　他に良いアイデアあればお願いします / (追加)絵文字だけじゃなく、変数も同じようにテキスト入力のとこに配備して</td></tr>
+      <tr><th>ui_case</th><td>true</td></tr>
+      <tr><th>visual-qa-council</th><td>false</td></tr>
+      <tr><th>browser-evaluator click 確認</th><td>false</td></tr>
+      <tr><th>skills_read</th><td>purpose-ready-check,test-driven-development closer-workflow,harness-contracts arscontexta</td></tr>
+    </table>
+  </section>
+
+  <section class="card" data-kind="conclusion">
+    <header class="card-head"><h2>結論</h2></header>
+    <div class="markdown-body">emoji-picker-everywhere は reviewer Round 1 合格 (desk 独立再実行 / done 5/5)、main へ land 済み (6 commits, 現 main ad385f9)、両テナント (line-harness-ks / piecemaker) へ dual-push 済み。**deploy は本 closer 起動前に W1 closer が完了済み**であり、本 closer は deployed 実測検証 (config marker grep) を実施して両テナントの本番配信 asset に新コードが含まれることを確認した。</div>
+  </section>
+  <section class="card" data-kind="changes">
+    <header class="card-head"><h2>変更内容</h2></header>
+    <details open>
+      <summary>0 commits / 4 files changed</summary>
+      
+      <ul class="files"><li>`apps/web/src/components/shared/personalized-text-editor.tsx` を単一正本の共通部品として新設 (`variables-and-emoji` / `emoji-only` の 2 モード、カーソル位置挿入、44px タップ領域、最近使った絵文字 localStorage 永続化、OS ショートカット tip)</li><li>一斉配信 (message-block-editor)・友だち追加あいさつ・テンプレート・テンプレパック等の全対象欄へ展開 (surface inventory は verification-log で対象13面/間接2件/対象外10件を理由付きで列挙。forms-advanced・internal form renderer は仕様通り不接触)</li><li>対象コミット (main d5a631c 系譜・6 commits): b586ad7 (共通部品化) → b4b2c4b (campaign editors) → 3a3184e (compact message inputs) → 45a7932 (compact surfaces hardening) → c41b965 (message composition surfaces) → d5a631c (host live checklist)</li><li>Generator-LLM: codex (全 commit trailer 確認済み)</li></ul>
+    </details>
+  </section>
+  <section class="card" data-kind="verified">
+    <header class="card-head"><h2>確認したこと</h2></header>
+    <div class="markdown-body">1. **査読**: review-history.md「### emoji-picker-everywhere Round 1」= 合格。desk が独立 checkout で D-1〜D-5 を再実行し web vitest 1285件中1284 PASS (唯一の失敗 instant-webhook-settings.test.tsx は本 diff 無関係の並走保護ファイルの負荷依存 flake)、tsc --noEmit exit 0、static export 63 pages exit 0、保護8パス diff 0 を確認済み\n2. **独立検証 (done_conditions充足)**: 実装者 = Codex (Generator-LLM: codex trailer)。closer (Claude) が別ベンダーとして独立検証実施。tasks.md 末尾 D-1〜D-5 を diff/review-history/live-checklist と突合: D-1 (共通部品化・regression不変) = review-history 記載の RTL 12ケース+既存ステップ編集の IME/Enter送信/ref保持確認で PASS。D-2 (棚卸し+全対象欄設置) = verification-log 13面列挙+PASSで確認 (直接内容は review-history 引用に依拠・closer 自身は追加 code read で emoji-picker-surfaces.test.ts の非ブロッキング所見= source grep 型在庫ガードで実render非保証だが代表面はRTLで別途検証済み、を確認)。PASS。D-3 (最近使った絵文字+OStip) = live-checklist 記載の重複排除/8件上限/順序確認+ソース上の RECENT_EMOJIS_STORAGE_KEY 実装確認。PASS。D-4 (suite green+保護ファイル不接触) = review-history記載の1284/1285 (残り1件は無関係flake)・tsc 0・保護diff 0。PASS。D-5 (live-checklist 3面+owner日常語) = <code>.sola/live-checklist.md</code> 実読で一斉配信/友だち追加あいさつ/テンプレートの3手順+owner日常語「文章を書く欄ぜんぶに絵文字ボタンが付きました」を確認。PASS。**5/5 全pass。done_conditions_verified_by: claude (実装者 codex と別ベンダー)**\n3. **deployed 実測検証 (本 closer 実施分)**: 両テナント admin の deploy-hash 付き production URL (<code>https://405c130a.line-harness-ks-admin.pages.dev</code> / <code>https://ae5c5927.line-harness-piecemaker-admin.pages.dev</code>) が 200 応答。<code>/broadcasts</code> <code>/template-packs</code> <code>/templates</code> の各静的 chunk を実際に fetch し、共通チャンク <code>4543-de7f99473d6d7480.js</code> に personalized-text-editor.tsx 実装の一意 marker (<code>localStorage key: line-crm:recent-emojis</code>) が **両テナント共通で 1 hit** 存在することを実測確認 (grep count=1 / ks・piecemaker 双方)。同一 hash のビルド成果物であることも確認 (chunk ファイル名一致) — 古い bundle でないこと・両テナントで一致した新コードが配信中であることを確認済み\n4. builder.test.tsx の高負荷依存 timeout は BACKLOG「test-hygiene」節に既記載済み (単体 69/69 PASS 実証済み・今回 closer が新規追記した事項なし)\n5. <code>.sola/live-checklist.md</code> の作業中一時的な git 未コミット conflict marker (969-1142行) は closer 確認時点では既に解消済み (committed HEAD版・現在のワーキングツリー共に conflict marker 無し) を確認。他レーンの並走編集による一過性状態であり本案件の commit には影響なし</div>
+  </section>
+  <section class="card" data-kind="owner-await">
+    <header class="card-head"><h2>owner 確認待ち項目</h2></header>
+    <div class="markdown-body">なし (deploy済み・実装済み・技術的完了。owner による実 LINE 内での実操作確認は任意 = 既に「あやこ実受信+owner 目視済み」を land 前に実証済みのため追加の owner 確認をブロッキングとしない)</div>
+  </section>
+
+  <section class="card" data-kind="open">
+    <header class="card-head"><h2>未解決</h2></header>
+    <div class="markdown-body">- builder.test.tsx の負荷依存 timeout (BACKLOG「test-hygiene」節・既記載・次の web 触り lane に同乗予定)\n- visual-qa-council / browser-evaluator は本案件で実行対象外 (deploy済み UI の owner 実受信実証を land 前に完了済みのため今回 closer は config marker grep による deployed 検証のみ実施。ブラウザ実機の新規スクショは未取得)</div>
+  </section>
+  <section class="card" data-kind="next">
+    <header class="card-head"><h2>次の一手</h2></header>
+    <div class="markdown-body">- 特になし。次の web 触り案件で builder.test.tsx timeout 修理を同乗させる (BACKLOG 記載済み)</div>
+  </section>
+
+  <section class="card" data-kind="links">
+    <header class="card-head"><h2>関連リンク</h2></header>
+    <ul>
+      <li>handoff: <code>/root/.openclaw/workspace/.ars-state/handoff-20260721-061000-emoji-picker-everywhere.json</code></li><li>Box folder: <a href="https://app.box.com/folder/386663013201">386663013201</a></li>
+    </ul>
+  </section>
+
+  <footer>
+    生成: 2026-07-21 04:57 JST · commit <code>debcc89a50</code> · workspace workspace
+  </footer>
+</body>
+</html>
