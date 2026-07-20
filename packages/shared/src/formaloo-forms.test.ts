@@ -22,9 +22,9 @@ import {
 } from './formaloo-forms';
 
 describe('formaloo-forms — field 種別 whitelist subset (N-13)', () => {
-  test('入力 subset は 16 種 (treasure-b4: matrix/repeating_section additive)', () => {
+  test('入力 subset は 20 種 (treasure-b4 + treasure-e1 additive)', () => {
     expect([...FORMALOO_FIELD_TYPES].sort()).toEqual(
-      ['text', 'textarea', 'choice', 'dropdown', 'multiple_select', 'number', 'email', 'phone', 'date', 'file', 'rating', 'signature', 'variable', 'choice_fetch', 'matrix', 'repeating_section'].sort(),
+      ['text', 'textarea', 'choice', 'dropdown', 'multiple_select', 'number', 'email', 'phone', 'date', 'file', 'rating', 'signature', 'variable', 'choice_fetch', 'matrix', 'repeating_section', 'yes_no', 'time', 'website', 'city'].sort(),
     );
     expect(FORMALOO_FIELD_TYPES).not.toContain('lookup');
   });

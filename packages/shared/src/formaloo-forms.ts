@@ -16,6 +16,12 @@ import type { SuccessPageSpec } from './form-success-page';
 import { buildImageDescriptionHtml, parseImageDescription, isImageWidth, isSafeImageUrl, type ImageWidth } from './form-image';
 import { validateImageUpload, type FormDesignImageUpload } from './form-design';
 
+/**
+ * treasure-e1-field-parts: OpenAPI enum・scratch GET read-back・hosted 表示まで一致した入力型。
+ * `datetime` / `country` は API 上は存在するが hosted 本文に描画されなかったため、推測で設定を補わず除外する。
+ */
+export const FORMALOO_E1_FIELD_TYPES = ['yes_no', 'time', 'website', 'city'] as const;
+
 /** harness 側 field 種別 (MVP subset / 素人向け日本語ラベルは web が付与)。 */
 export const FORMALOO_FIELD_TYPES = [
   'text',
@@ -37,6 +43,8 @@ export const FORMALOO_FIELD_TYPES = [
   // treasure-b4-structural: 行列アンケート + 複数行入力コンテナ。
   'matrix',
   'repeating_section',
+  // treasure-e1-field-parts: live hosted 表示まで確認できた不足入力パーツ。
+  ...FORMALOO_E1_FIELD_TYPES,
 ] as const;
 
 // treasure-b1-palette: video は装飾 (回答なし・required 常時 false) だが Formaloo type は oembed (下 HARNESS_TO_FORMALOO_TYPE)。
@@ -185,6 +193,10 @@ export const HARNESS_TO_FORMALOO_TYPE: Record<HarnessFieldType, string> = {
   choice_fetch: 'choice_fetch',
   matrix: 'matrix',
   repeating_section: 'repeating_section',
+  yes_no: 'yes_no',
+  time: 'time',
+  website: 'website',
+  city: 'city',
   section: 'meta',
   page_break: 'meta',
   video: 'oembed',
