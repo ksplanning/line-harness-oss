@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import {
   getForms,
   getFormsWithStats,
+  getLegacyFormsUsage,
   getFormById,
   createForm,
   updateForm,
@@ -74,6 +75,18 @@ forms.get('/api/forms', async (c) => {
     });
   } catch (err) {
     console.error('GET /api/forms error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/forms/legacy/usage — sidebar の旧「フォーム回答」導線を fail-safe に判定する件数。
+// 2 段 path にして、公開 LIFF 定義 GET (/api/forms/:id) とは分離し、通常の staff auth を通す。
+forms.get('/api/forms/legacy/usage', async (c) => {
+  try {
+    const usage = await getLegacyFormsUsage(c.env.DB);
+    return c.json({ success: true, data: usage });
+  } catch (err) {
+    console.error('GET /api/forms/legacy/usage error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

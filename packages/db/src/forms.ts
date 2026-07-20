@@ -39,6 +39,32 @@ export async function getForms(db: D1Database): Promise<Form[]> {
   return result.results;
 }
 
+export interface LegacyFormsUsage {
+  formCount: number;
+  submissionCount: number;
+}
+
+/**
+ * 旧・簡易フォーム機能の利用実態を deployment-local DB だけで集計する。
+ * ks / piecemaker は同じコードを各 DB に対して実行するため、片側にデータが残る場合も
+ * そのテナントの sidebar を安全側で維持できる。
+ */
+export async function getLegacyFormsUsage(db: D1Database): Promise<LegacyFormsUsage> {
+  const row = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM forms) AS form_count,
+         (SELECT COUNT(*) FROM form_submissions) AS submission_count`,
+    )
+    .first<{ form_count: number; submission_count: number }>();
+
+  if (!row) throw new Error('Legacy forms usage query returned no row');
+  return {
+    formCount: row.form_count,
+    submissionCount: row.submission_count,
+  };
+}
+
 export interface FormUsedByAccount {
   id: string;
   name: string;

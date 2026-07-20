@@ -652,6 +652,8 @@ export const api = {
   forms: {
     list: () =>
       fetchApi<ApiResponse<Array<{ id: string; name: string }>>>('/api/forms'),
+    legacyUsage: () =>
+      fetchApi<ApiResponse<{ formCount: number; submissionCount: number }>>('/api/forms/legacy/usage'),
   },
 
   accountSettings: {

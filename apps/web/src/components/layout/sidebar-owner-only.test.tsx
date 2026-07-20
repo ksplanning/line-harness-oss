@@ -5,10 +5,11 @@
  *   出さない (owner 専用判定を custom-role 分岐より先に評価する / spec §2 導線隠し)。
  *   高機能フォーム (/forms-advanced) は forms_advanced 権限で見えるので、両者の差で回帰を固定する。
  */
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, waitFor, cleanup } from '@testing-library/react'
 
 const staffMe = vi.fn()
+const legacyUsage = vi.fn()
 vi.mock('next/link', () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
 }))
@@ -19,11 +20,17 @@ vi.mock('@/contexts/account-context', () => ({
 vi.mock('@/lib/api', () => ({
   api: {
     staff: { me: (...a: unknown[]) => staffMe(...a) },
+    forms: { legacyUsage: (...a: unknown[]) => legacyUsage(...a) },
     inbox: { unanswered: { count: vi.fn().mockResolvedValue({ success: true, data: { total: 0 } }) } },
   },
 }))
 
 import Sidebar from './sidebar'
+
+beforeEach(() => {
+  // 既存 owner-only tests は legacy 利用ありのテナントとして導線を維持する。
+  legacyUsage.mockResolvedValue({ success: true, data: { formCount: 1, submissionCount: 0 } })
+})
 
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
@@ -57,5 +64,44 @@ describe('M1 Sidebar owner 専用導線', () => {
     render(<Sidebar />)
     await waitFor(() => expect(screen.getAllByText('友だち管理').length).toBeGreaterThan(0))
     expect(screen.queryByText('フォーム連携キー')).toBeNull()
+  })
+})
+
+describe('D-1 Sidebar legacy フォーム回答の fail-safe 表示', () => {
+  beforeEach(() => {
+    staffMe.mockResolvedValue({
+      success: true,
+      data: { id: 'o1', name: 'owner', email: null, role: 'owner', roleId: null, permissions: [] },
+    })
+  })
+
+  it('forms と submissions が共に 0 件なら「フォーム回答」を隠す', async () => {
+    legacyUsage.mockResolvedValue({ success: true, data: { formCount: 0, submissionCount: 0 } })
+
+    render(<Sidebar />)
+
+    await waitFor(() => expect(legacyUsage).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.queryByText('フォーム回答')).toBeNull())
+  })
+
+  it.each([
+    { formCount: 1, submissionCount: 0 },
+    { formCount: 0, submissionCount: 1 },
+  ])('legacy データが残る場合は「フォーム回答」を維持する (%o)', async (counts) => {
+    legacyUsage.mockResolvedValue({ success: true, data: counts })
+
+    render(<Sidebar />)
+
+    await waitFor(() => expect(legacyUsage).toHaveBeenCalledOnce())
+    expect(screen.getAllByText('フォーム回答').length).toBeGreaterThan(0)
+  })
+
+  it('利用実態 API が失敗した場合は安全側で「フォーム回答」を維持する', async () => {
+    legacyUsage.mockRejectedValue(new Error('network unavailable'))
+
+    render(<Sidebar />)
+
+    await waitFor(() => expect(legacyUsage).toHaveBeenCalledOnce())
+    expect(screen.getAllByText('フォーム回答').length).toBeGreaterThan(0)
   })
 })

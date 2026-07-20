@@ -7,6 +7,7 @@ import { useAccount } from '@/contexts/account-context'
 import type { AccountWithStats } from '@/contexts/account-context'
 import { countryFlag } from '@/lib/country-flag'
 import { NAV_FEATURE } from '@/lib/nav-permissions'
+import { api as webApi } from '@/lib/api'
 
 const appVersion = process.env.APP_VERSION || '0.0.0'
 const appCommitSha = process.env.APP_COMMIT_SHA || 'local'
@@ -219,6 +220,8 @@ export default function Sidebar() {
   // /api/staff/me の解決済み権限 (G64)。custom role の人の nav 出し分けに使う。
   const [permissions, setPermissions] = useState<string[] | null>(null)
   const [hasCustomRole, setHasCustomRole] = useState(false)
+  // API が 2 件数とも 0 と確定するまでは表示を維持する (取得失敗・不正応答は fail-safe)。
+  const [showLegacyFormSubmissions, setShowLegacyFormSubmissions] = useState(true)
 
   useEffect(() => {
     setStaffName(localStorage.getItem('lh_staff_name'))
@@ -238,6 +241,26 @@ export default function Sidebar() {
         }
       } catch {
         // 取得失敗時は built-in ルールにフォールバック (localStorage の role)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await webApi.forms.legacyUsage()
+        if (
+          !cancelled &&
+          res.success &&
+          res.data.formCount === 0 &&
+          res.data.submissionCount === 0
+        ) {
+          setShowLegacyFormSubmissions(false)
+        }
+      } catch {
+        // 利用実態を確認できない場合は旧ページを残す (データを隠さない安全側)。
       }
     })()
     return () => { cancelled = true }
@@ -300,6 +323,8 @@ export default function Sidebar() {
               </div>
             )}
             {section.items.filter((item) => {
+              // legacy forms / submissions が共に 0 と確定した deployment だけ旧導線を隠す。
+              if (item.href === '/form-submissions' && !showLegacyFormSubmissions) return false
               // F6-1: Formaloo キー管理は owner 専用。custom-role 分岐 **より先** に評価し、forms_advanced を
               //   持つ custom-role 非 owner にも owner 専用リンクを出さない (導線隠し / spec §2)。
               //   enforcement は worker の ownerGate が正典 (ここは UX)。
