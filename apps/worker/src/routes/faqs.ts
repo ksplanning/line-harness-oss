@@ -87,7 +87,7 @@ function normalizeSettings(input: FaqBotSettingsInput) {
 }
 
 function parseStoredSettings(value: string | null | undefined) {
-  if (!value) return normalizeSettings({});
+  if (value === null || value === undefined) return normalizeSettings({});
   const failSafe = () => ({
     ...normalizeSettings({}),
     personalContext: normalizeFaqPersonalContextSettings(null),

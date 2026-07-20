@@ -11,7 +11,7 @@ function statefulDb(initial: string | null = null) {
         bind(...args: unknown[]) {
           return {
             async first() {
-              return isSelect && stored ? { value: stored } : null;
+              return isSelect && stored !== null ? { value: stored } : null;
             },
             async run() {
               const json = args.find((value) => typeof value === 'string' && value.startsWith('{'));
@@ -149,6 +149,23 @@ describe('faq-bot personal context settings', () => {
 
   test('壊れた保存JSONはruntimeと同じく本人contextをfail-safe OFFで返す', async () => {
     const { db } = statefulDb('{');
+    const response = await app(db).request(
+      '/api/account-settings/faq-bot?accountId=account-a',
+    );
+    const body = await response.json() as {
+      data: { personalContext: Record<string, unknown> };
+    };
+
+    expect(body.data.personalContext).toEqual({
+      enabled: false,
+      selectedCustomFieldIds: [],
+      includeFormAnswers: false,
+      maxTokens: 1_200,
+    });
+  });
+
+  test('空文字の保存値も未保存扱いせずruntimeと同じくfail-safe OFFで返す', async () => {
+    const { db } = statefulDb('');
     const response = await app(db).request(
       '/api/account-settings/faq-bot?accountId=account-a',
     );
