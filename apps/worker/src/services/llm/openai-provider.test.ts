@@ -30,6 +30,7 @@ describe('OpenAiProvider', () => {
     )).resolves.toEqual({
       text: 'OpenAI の回答',
       usage: { inputTokens: 11, outputTokens: 7 },
+      provider: 'openai',
     });
 
     expect(request).toHaveBeenCalledTimes(1);

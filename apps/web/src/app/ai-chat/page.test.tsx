@@ -9,7 +9,7 @@ const m = vi.hoisted(() => ({
   analyze: vi.fn(),
   errorMessage: vi.fn((error: unknown) => {
     const status = (error as { status?: number })?.status
-    if (status === 402) return 'Formaloo のAI利用枠が足りません。利用状況を確認してください'
+    if (status === 502) return 'AIから回答を受け取れませんでした。少し待ってからもう一度お試しください'
     if (status === 429) return '本日のAI分析上限に達しました。明日以降にもう一度お試しください'
     if (status === 504) return '回答に時間がかかりました。少し待ってからもう一度お試しください'
     return 'AI分析に失敗しました。少し待ってからもう一度お試しください'
@@ -36,8 +36,8 @@ const formB = { id: 'fa_2', title: 'B社アンケート', formalooSlug: 'remote-
 const completed = {
   id: 'fac_1', tenantScope: 'tenant-a', lineAccountId: 'line-a', formId: 'fa_1',
   question: '今週の傾向は？', answer: { summary: '回答が増えています' },
-  answerText: '回答が増えています', analysisSlug: 'analysis_1', status: 'completed',
-  providerStatus: 'completed', errorCode: null, errorMessage: null,
+  answerText: '回答が増えています', analysisSlug: 'internal_1', status: 'completed',
+  providerStatus: 'workers_ai', errorCode: null, errorMessage: null,
   creditsConsumed: true, creditReserved: true,
   createdAt: '2026-07-20T10:00:00.000+09:00', updatedAt: '2026-07-20T10:00:01.000+09:00',
 }
@@ -48,8 +48,9 @@ const failed = {
   answer: null,
   answerText: null,
   status: 'failed',
-  errorMessage: 'Formaloo から回答を受け取れませんでした。連続実行せず、管理者に確認してください',
-  errorCode: 'provider_unknown_failure',
+  providerStatus: 'failed',
+  errorMessage: 'AIから回答を受け取れませんでした。少し待ってからもう一度お試しください',
+  errorCode: 'ai_unavailable',
 }
 
 beforeEach(() => {
@@ -72,6 +73,7 @@ describe('AI chat grandma UX and history', () => {
     expect(screen.getByRole('button', { name: '今週の回答の傾向は？' })).toBeTruthy()
     expect(await screen.findByText('回答が増えています')).toBeTruthy()
     expect(screen.getAllByText('今週の傾向は？')).toHaveLength(2)
+    expect(screen.getByText('Cloudflare AI')).toBeTruthy()
   })
 
   test('example button fills the question box', async () => {
@@ -98,13 +100,13 @@ describe('AI chat grandma UX and history', () => {
     expect(await screen.findByText('回答が増えています')).toBeTruthy()
   })
 
-  test('surfaces a credit error in everyday language and allows retry', async () => {
-    m.analyze.mockRejectedValue(Object.assign(new Error('API error'), { status: 402 }))
+  test('surfaces an AI connection error in everyday language and allows retry', async () => {
+    m.analyze.mockRejectedValue(Object.assign(new Error('API error'), { status: 502 }))
     render(<Page />)
     const textbox = await screen.findByRole('textbox', { name: 'AIへの質問' })
     fireEvent.change(textbox, { target: { value: '分析して' } })
     fireEvent.click(screen.getByRole('button', { name: 'AIに聞く' }))
-    expect(await screen.findByText('Formaloo のAI利用枠が足りません。利用状況を確認してください')).toBeTruthy()
+    expect(await screen.findByText('AIから回答を受け取れませんでした。少し待ってからもう一度お試しください')).toBeTruthy()
     expect((screen.getByRole('button', { name: 'AIに聞く' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
@@ -157,8 +159,8 @@ describe('AI chat grandma UX and history', () => {
     fireEvent.change(textbox, { target: { value: '失敗した質問' } })
     fireEvent.click(screen.getByRole('button', { name: 'AIに聞く' }))
 
-    expect(await screen.findByText(failed.errorMessage)).toBeTruthy()
-    expect(screen.getByText('AIクレジットを使用')).toBeTruthy()
+    expect((await screen.findAllByText(failed.errorMessage)).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('本日のAI利用枠を使用')).toBeTruthy()
     expect(m.history).toHaveBeenCalledTimes(2)
   })
 

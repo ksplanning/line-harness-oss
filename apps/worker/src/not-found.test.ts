@@ -45,6 +45,8 @@ vi.mock('@line-crm/db', () => ({
   completeFormalooRecurringSubmission: vi.fn(),
   markFormalooRecurringSubmissionFailed: vi.fn(),
   refreshFormalooRecurringSubmission: vi.fn(),
+  getFormalooFieldMap: vi.fn().mockResolvedValue([]),
+  listFormalooAiAnalysisSubmissions: vi.fn().mockResolvedValue([]),
   listFormalooAiChatHistory: vi.fn().mockResolvedValue([]),
   reserveFormalooAiChatHistory: vi.fn(),
   hasPendingFormalooAiChatHistory: vi.fn().mockResolvedValue(false),

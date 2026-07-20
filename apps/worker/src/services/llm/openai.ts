@@ -62,7 +62,7 @@ export class OpenAiProvider implements LlmProvider {
     const usage = typeof inputTokens === 'number' && typeof outputTokens === 'number'
       ? { inputTokens, outputTokens }
       : undefined;
-    return { text, usage };
+    return { text, usage, provider: 'openai' };
   }
 
   async embed(_text: string): Promise<number[]> {

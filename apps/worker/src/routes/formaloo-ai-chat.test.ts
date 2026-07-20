@@ -1,19 +1,14 @@
-import { describe, expect, test, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { FormalooAiChatHistory } from '@line-crm/db';
-import type { FormalooClient } from '../services/formaloo-client.js';
+import type { LlmProvider } from '../services/llm/llm-provider.js';
 import {
+  buildFormalooAiPrompt,
   createFormalooAiChatRoutes,
-  parseFormalooAiRequestContract,
-  runFormalooAiAnalysis,
+  projectFormalooAiContext,
+  runInternalFormalooAiAnalysis,
   type FormalooAiChatRouteDeps,
-  type FormalooAiRequestContract,
 } from './formaloo-ai-chat.js';
-
-const contract: FormalooAiRequestContract = {
-  // Synthetic mock keys only. The official POST schema is intentionally not inferred.
-  body: { form_reference: '{{form_slug}}', question_text: '{{prompt}}' },
-  slug: { source: 'response', path: 'slug' },
-};
 
 function history(overrides: Partial<FormalooAiChatHistory> = {}): FormalooAiChatHistory {
   return {
@@ -28,35 +23,62 @@ function history(overrides: Partial<FormalooAiChatHistory> = {}): FormalooAiChat
 
 function form(overrides: Record<string, unknown> = {}) {
   return {
-    id: 'fa_1', deleted: 0, formaloo_slug: 'remote-form-1', workspace_id: 'fw_1',
+    id: 'fa_1', deleted: 0, formaloo_slug: null, workspace_id: null,
     line_account_id: 'line-a', ...overrides,
   } as never;
 }
+
+function llm(overrides: Partial<LlmProvider> = {}): LlmProvider {
+  return {
+    generate: vi.fn().mockResolvedValue({
+      text: '回答は増加傾向です',
+      usage: { inputTokens: 100, outputTokens: 20 },
+    }),
+    embed: vi.fn().mockResolvedValue([]),
+    ...overrides,
+  };
+}
+
+const safeFields = [
+  { id: 'score-id', form_id: 'fa_1', formaloo_field_slug: 'score', field_type: 'number', label: '満足度', position: 0 },
+  { id: 'comment-id', form_id: 'fa_1', formaloo_field_slug: 'comment', field_type: 'textarea', label: '感想', position: 1 },
+] as never;
+
+const safeSubmissions = [
+  { answersJson: JSON.stringify({ score: 5, comment: '使いやすいです' }), submittedDate: '2026-07-20' },
+  { answersJson: JSON.stringify({ score: 3, comment: '少し迷いました' }), submittedDate: '2026-07-19' },
+];
 
 function deps(overrides: Partial<FormalooAiChatRouteDeps> = {}): FormalooAiChatRouteDeps {
   const pending = history();
   return {
     getLineAccount: vi.fn().mockResolvedValue({ id: 'line-a', is_active: 1 } as never),
     getForm: vi.fn().mockResolvedValue(form()),
+    getFieldMap: vi.fn().mockResolvedValue(safeFields),
+    listAnalysisSubmissions: vi.fn().mockResolvedValue(safeSubmissions),
     listHistory: vi.fn().mockResolvedValue([pending]),
     reserveHistory: vi.fn().mockResolvedValue(pending),
     hasPendingHistory: vi.fn().mockResolvedValue(false),
     completeHistory: vi.fn().mockResolvedValue(history({
-      status: 'completed', analysisSlug: 'analysis_1', answer: { summary: '回答が増えています' },
-      answerText: '回答が増えています', creditsConsumed: true, providerStatus: 'completed',
+      status: 'completed', analysisSlug: 'internal_1',
+      answer: { summary: '回答は増加傾向です', sampleSize: 2, provider: 'workers_ai' },
+      answerText: '回答は増加傾向です', creditsConsumed: true, providerStatus: 'workers_ai',
     })),
     failHistory: vi.fn().mockResolvedValue(history({ status: 'failed' })),
-    resolveClient: vi.fn().mockResolvedValue({}),
-    deadlineClient: vi.fn((client) => client),
+    createRuntime: vi.fn().mockReturnValue({ provider: llm(), timeoutMs: 8000 }),
     analyze: vi.fn().mockResolvedValue({
-      ok: true, slug: 'analysis_1', result: { summary: '回答が増えています' },
-      answerText: '回答が増えています', providerStatus: 'completed', creditsConsumed: true,
+      answerText: '回答は増加傾向です',
+      answer: {
+        summary: '回答は増加傾向です', sampleSize: 2, provider: 'workers_ai',
+        usage: { inputTokens: 100, outputTokens: 20 },
+      },
+      providerStatus: 'workers_ai',
     }),
-    loadContract: vi.fn().mockReturnValue({ ok: true, contract }),
     tenantScope: vi.fn().mockReturnValue('worker-a'),
+    analysisId: vi.fn().mockReturnValue('internal_1'),
     now: vi.fn().mockReturnValue('2026-07-20T10:00:00.000+09:00'),
     ...overrides,
-  };
+  } as FormalooAiChatRouteDeps;
 }
 
 const enabledEnv = {
@@ -65,116 +87,143 @@ const enabledEnv = {
   FORMALOO_AI_CHAT_DAILY_LIMIT: '3',
 };
 
-describe('Formaloo AI provider adapter', () => {
-  test('uses only the configured mock body, then polls documented statuses until completed', async () => {
-    const post = vi.fn().mockResolvedValue({ ok: true, status: 201, data: { slug: 'analysis_1' } });
-    const get = vi.fn()
-      .mockResolvedValueOnce({ ok: true, status: 200, data: { slug: 'analysis_1', status: 'created', result: {} } })
-      .mockResolvedValueOnce({
-        ok: true, status: 200,
-        data: { slug: 'analysis_1', status: 'completed', result: { summary: '回答が増えています' }, errors: {} },
-      });
-    const client = { post, get } as unknown as FormalooClient;
+afterEach(() => {
+  vi.useRealTimers();
+});
 
-    const result = await runFormalooAiAnalysis(client, contract, {
-      formSlug: 'remote-form-1', prompt: '今週の傾向は？',
-      sleep: vi.fn().mockResolvedValue(undefined), maxPolls: 3,
-    });
-
-    expect(post).toHaveBeenCalledWith('/v3.0/custom-prompt-analyzes/', {
-      form_reference: 'remote-form-1', question_text: '今週の傾向は？',
-    });
-    expect(get).toHaveBeenNthCalledWith(1, '/v3.0/custom-prompt-results/analysis_1/');
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({
-      ok: true, slug: 'analysis_1', providerStatus: 'completed',
-      result: { summary: '回答が増えています' }, answerText: '回答が増えています',
-      creditsConsumed: true,
-    });
-  });
-
-  test('surfaces defensive 402 handling without claiming it is an official endpoint contract', async () => {
-    const client = {
-      post: vi.fn().mockResolvedValue({ ok: false, status: 402, error: 'provider body hidden' }),
-      get: vi.fn(),
-    } as unknown as FormalooClient;
-    await expect(runFormalooAiAnalysis(client, contract, {
-      formSlug: 'remote-form-1', prompt: '分析して', sleep: vi.fn(),
-    })).resolves.toMatchObject({
-      ok: false, code: 'credits_exhausted', httpStatus: 402, creditsConsumed: false,
-    });
-  });
-
-  test('keeps the credit reservation when an issued POST has an ambiguous 5xx outcome', async () => {
-    const client = {
-      post: vi.fn().mockResolvedValue({ ok: false, status: 500, error: 'provider body hidden' }),
-      get: vi.fn(),
-    } as unknown as FormalooClient;
-    await expect(runFormalooAiAnalysis(client, contract, {
-      formSlug: 'remote-form-1', prompt: '分析して', sleep: vi.fn(),
-    })).resolves.toMatchObject({
-      ok: false, code: 'provider_issue_failed', httpStatus: 502, creditsConsumed: true,
-    });
-  });
-
-  test('fails explicitly when the undocumented POST response does not expose the configured slug', async () => {
-    const client = {
-      post: vi.fn().mockResolvedValue({ ok: true, status: 201, data: null }),
-      get: vi.fn(),
-    } as unknown as FormalooClient;
-    await expect(runFormalooAiAnalysis(client, contract, {
-      formSlug: 'remote-form-1', prompt: '分析して', sleep: vi.fn(),
-    })).resolves.toMatchObject({
-      ok: false, code: 'contract_mismatch', httpStatus: 502, creditsConsumed: true,
-    });
-  });
-
-  test('bounds in-progress polling and reports a visible timeout', async () => {
-    const client = {
-      post: vi.fn().mockResolvedValue({ ok: true, status: 201, data: { slug: 'analysis_1' } }),
-      get: vi.fn().mockResolvedValue({
-        ok: true, status: 200, data: { slug: 'analysis_1', status: 'in_progress', result: {} },
+describe('D1 answer projection for internal AI', () => {
+  test('resolves labels while excluding PII fields, unknown keys, identifiers, and sensitive values', () => {
+    const fields = [
+      ...safeFields,
+      { id: 'mail-id', formaloo_field_slug: 'mail', field_type: 'email', label: 'メールアドレス', position: 2 },
+      { id: 'phone-id', formaloo_field_slug: 'phone', field_type: 'phone', label: '電話番号', position: 3 },
+      { id: 'file-id', formaloo_field_slug: 'file', field_type: 'file', label: '添付資料', position: 4 },
+      { id: 'name-id', formaloo_field_slug: 'name', field_type: 'text', label: 'お名前', position: 5 },
+      { id: 'plain-name-id', formaloo_field_slug: 'plain_name', field_type: 'choice', label: '名前', position: 6 },
+      { id: 'english-name-id', formaloo_field_slug: 'english_name', field_type: 'choice', label: 'Full name', position: 7 },
+      { id: 'opaque', formaloo_field_slug: 'fr_id', field_type: 'choice', label: '回答者', position: 8 },
+      { id: 'dob-id', formaloo_field_slug: 'dob', field_type: 'date', label: 'DOB', position: 9 },
+      { id: 'mobile-id', formaloo_field_slug: 'mobile', field_type: 'choice', label: 'Mobile', position: 10 },
+    ] as never;
+    const context = projectFormalooAiContext(fields, [{
+      submittedDate: '2026-07-20',
+      answersJson: JSON.stringify({
+        score: 5,
+        comment: '氏名は山田太郎です。住所は東京都渋谷区神宮前1-2-3です',
+        mail: 'private@example.test', phone: '09011112222', file: 'secret.pdf',
+        name: '山田太郎', plain_name: '山田太郎', english_name: 'Taro Yamada',
+        fr_id: 'fr_secret', dob: '1990-01-02', mobile: '090-1111-2222',
+        unknown_slug: 'do-not-send',
       }),
-    } as unknown as FormalooClient;
-    await expect(runFormalooAiAnalysis(client, contract, {
-      formSlug: 'remote-form-1', prompt: '分析して', sleep: vi.fn().mockResolvedValue(undefined), maxPolls: 2,
-    })).resolves.toMatchObject({
-      ok: false, code: 'poll_timeout', httpStatus: 504, analysisSlug: 'analysis_1', creditsConsumed: true,
-    });
+    }]);
+    const serialized = JSON.stringify(context);
+
+    expect(context.sampledSubmissions).toBe(1);
+    expect(context.includedFields).toEqual(['満足度']);
+    expect(serialized).toContain('満足度');
+    expect(serialized).not.toMatch(/private@example|09011112222|090-1111|1990-01-02|山田太郎|東京都|Taro Yamada|secret\.pdf|fr_secret|unknown_slug/);
+    expect(serialized).not.toMatch(/score-id|comment-id|friend-secret|submission-1/i);
   });
 
-  test('requires host-confirmed form and prompt placeholders', () => {
-    expect(parseFormalooAiRequestContract(JSON.stringify(contract))).toMatchObject({ ok: true });
-    expect(parseFormalooAiRequestContract(JSON.stringify({ body: { only: '{{prompt}}' }, slug: contract.slug })))
-      .toMatchObject({ ok: false, code: 'contract_unconfigured' });
-    expect(parseFormalooAiRequestContract(JSON.stringify({
-      body: { '{{form_slug}}': 'a key is not a value', prompt: '{{prompt}}' }, slug: contract.slug,
-    }))).toMatchObject({ ok: false, code: 'contract_unconfigured' });
+  test('never sends free-form text fields without a future explicit opt-in', () => {
+    const context = projectFormalooAiContext(safeFields, safeSubmissions);
+
+    expect(context.includedFields).toEqual(['満足度']);
+    expect(JSON.stringify(context)).not.toMatch(/感想|使いやすい|少し迷い/);
   });
 
-  test('does not reinterpret placeholder-like text inside the administrator question', async () => {
-    const post = vi.fn().mockResolvedValue({ ok: true, status: 201, data: { slug: 'analysis_1' } });
-    const client = {
-      post,
-      get: vi.fn().mockResolvedValue({
-        ok: true, status: 200,
-        data: { slug: 'analysis_1', status: 'completed', result: { summary: '完了' } },
-      }),
-    } as unknown as FormalooClient;
-    const prompt = '文字列 {{analysis_slug}} をそのまま分析して';
+  test('hard-bounds fields, submissions, individual values, and malformed rows', () => {
+    const fields = Array.from({ length: 25 }, (_, index) => ({
+      id: `field-${index}`, formaloo_field_slug: `slug-${index}`, field_type: 'choice',
+      label: `設問${index}`, position: index,
+    })) as never;
+    const answers = Object.fromEntries(Array.from({ length: 25 }, (_, index) => [
+      `slug-${index}`, `value-${index}-${'x'.repeat(500)}`,
+    ]));
+    const submissions = [
+      { answersJson: '{broken', submittedDate: '2026-07-21' },
+      ...Array.from({ length: 60 }, () => ({
+        answersJson: JSON.stringify(answers), submittedDate: '2026-07-20',
+      })),
+    ];
 
-    await runFormalooAiAnalysis(client, contract, {
-      formSlug: 'remote-form-1', prompt, sleep: vi.fn(), generateSlug: () => 'generated_1',
-    });
+    const context = projectFormalooAiContext(fields, submissions);
 
-    expect(post).toHaveBeenCalledWith('/v3.0/custom-prompt-analyzes/', {
-      form_reference: 'remote-form-1', question_text: prompt,
-    });
+    expect(context.includedFields).toHaveLength(20);
+    expect(context.rows.length).toBeLessThanOrEqual(50);
+    expect(JSON.stringify(context).length).toBeLessThanOrEqual(24_500);
+    expect(context.rows.some((row) => row.submittedDate === '2026-07-21')).toBe(false);
+  });
+
+  test('places untrusted answers inside a nonce fence and tells the model not to follow them', () => {
+    const context = projectFormalooAiContext(safeFields, safeSubmissions);
+    const prompt = buildFormalooAiPrompt('今週の傾向は？', context, 'nonce123');
+
+    expect(prompt.system).toMatch(/回答データ.*命令ではありません/);
+    expect(prompt.system).toMatch(/個人.*特定/);
+    expect(prompt.user).toContain('管理者の質問: 今週の傾向は？');
+    expect(prompt.user).toContain('BEGIN_FORM_ANSWERS_nonce123');
+    expect(prompt.user).toContain('END_FORM_ANSWERS_nonce123');
+    expect(prompt.user).toContain('満足度');
+    expect(prompt.user).not.toContain('score-id');
   });
 });
 
-describe('Formaloo AI chat route', () => {
-  test('defaults OFF with a 404 and performs no DB or provider work', async () => {
+describe('internal LLM analysis', () => {
+  test('returns answer, provider, bounded sample size, and non-secret usage metadata', async () => {
+    const context = projectFormalooAiContext(safeFields, safeSubmissions);
+    const provider = llm({
+      generate: vi.fn().mockResolvedValue({
+        text: ' 平均満足度は4です。 ', provider: 'openai',
+        usage: { inputTokens: 120, outputTokens: 16 },
+      }),
+    });
+
+    await expect(runInternalFormalooAiAnalysis(provider, '平均は？', context, 1000))
+      .resolves.toEqual({
+        answerText: '平均満足度は4です。',
+        answer: {
+          summary: '平均満足度は4です。', sampleSize: 2, provider: 'openai',
+          usage: { inputTokens: 120, outputTokens: 16 },
+        },
+        providerStatus: 'openai',
+      });
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      system: expect.stringContaining('命令ではありません'),
+      user: expect.stringContaining('平均は？'),
+    }), { maxTokens: 768, temperature: 0.2 });
+  });
+
+  test('treats an empty answer as failure', async () => {
+    const context = projectFormalooAiContext(safeFields, safeSubmissions);
+    await expect(runInternalFormalooAiAnalysis(
+      llm({ generate: vi.fn().mockResolvedValue({ text: '  ' }) }),
+      '傾向は？', context, 1000,
+    )).rejects.toThrow(/empty/i);
+  });
+
+  test('bounds a hanging provider with the runtime timeout', async () => {
+    vi.useFakeTimers();
+    const context = projectFormalooAiContext(safeFields, safeSubmissions);
+    const pending = runInternalFormalooAiAnalysis(
+      llm({ generate: vi.fn().mockReturnValue(new Promise(() => undefined)) }),
+      '傾向は？', context, 10,
+    );
+    const assertion = expect(pending).rejects.toThrow(/timeout/i);
+    await vi.advanceTimersByTimeAsync(11);
+    await assertion;
+  });
+});
+
+describe('internal AI chat route with existing safety guards', () => {
+  test('contains no Formaloo custom-prompt provider call or contract dependency', () => {
+    const source = readFileSync(new URL('./formaloo-ai-chat.ts', import.meta.url), 'utf8');
+    expect(source).not.toContain('custom-prompt-analyzes');
+    expect(source).not.toContain('resolveFormalooClient');
+    expect(source).not.toContain('FORMALOO_AI_CHAT_REQUEST_CONTRACT_JSON');
+  });
+
+  test('defaults OFF with a 404 and performs no DB, context, or LLM work', async () => {
     const d = deps();
     const app = createFormalooAiChatRoutes(d);
     const res = await app.request('/api/forms-advanced/ai-chat/analyze', {
@@ -184,81 +233,87 @@ describe('Formaloo AI chat route', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({ success: false, code: 'ai_chat_disabled' });
     expect(d.getForm).not.toHaveBeenCalled();
+    expect(d.listAnalysisSubmissions).not.toHaveBeenCalled();
     expect(d.analyze).not.toHaveBeenCalled();
   });
 
-  test('resolves the stored form/workspace, reserves a credit, polls, and saves the answer', async () => {
+  test('reads the D1 mirror, runs the shared LLM, and saves the existing history shape', async () => {
     const d = deps();
     const app = createFormalooAiChatRoutes(d);
     const res = await app.request('/api/forms-advanced/ai-chat/analyze', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '今週の傾向は？' }),
     }, enabledEnv);
+
     expect(res.status).toBe(200);
-    expect(d.resolveClient).toHaveBeenCalledWith(expect.objectContaining({ DB: enabledEnv.DB }), 'fw_1');
     expect(d.reserveHistory).toHaveBeenCalledWith(enabledEnv.DB, expect.objectContaining({
       tenantScope: 'worker-a', lineAccountId: 'line-a', formId: 'fa_1',
       question: '今週の傾向は？', dailyLimit: 3,
     }));
-    expect(d.analyze).toHaveBeenCalledWith(expect.anything(), contract, {
-      formSlug: 'remote-form-1', prompt: '今週の傾向は？',
-    });
+    expect(d.getFieldMap).toHaveBeenCalledWith(enabledEnv.DB, 'fa_1');
+    expect(d.listAnalysisSubmissions).toHaveBeenCalledWith(enabledEnv.DB, 'fa_1');
+    expect(d.analyze).toHaveBeenCalledWith(
+      expect.anything(), '今週の傾向は？', expect.objectContaining({ sampledSubmissions: 2 }), 8000,
+    );
     expect(d.completeHistory).toHaveBeenCalledWith(enabledEnv.DB, 'fac_1', expect.objectContaining({
-      analysisSlug: 'analysis_1', answerText: '回答が増えています', providerStatus: 'completed',
+      analysisSlug: 'internal_1', answerText: '回答は増加傾向です', providerStatus: 'workers_ai',
     }));
     expect(await res.json()).toMatchObject({ success: true, data: { status: 'completed' } });
   });
 
-  test('rejects a form from another selected account without calling Formaloo', async () => {
+  test('does not require a Formaloo slug or client for a form that already has D1 answers', async () => {
+    const d = deps({ getForm: vi.fn().mockResolvedValue(form({ formaloo_slug: null })) });
+    const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
+    }, enabledEnv);
+    expect(res.status).toBe(200);
+    expect(d.analyze).toHaveBeenCalledTimes(1);
+  });
+
+  test('rejects a form from another selected account before reading answers or calling the LLM', async () => {
     const d = deps({ getForm: vi.fn().mockResolvedValue(form({ line_account_id: 'line-b' })) });
-    const app = createFormalooAiChatRoutes(d);
-    const res = await app.request('/api/forms-advanced/ai-chat/analyze', {
+    const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
     }, enabledEnv);
     expect(res.status).toBe(404);
-    expect(d.resolveClient).not.toHaveBeenCalled();
+    expect(d.listAnalysisSubmissions).not.toHaveBeenCalled();
     expect(d.analyze).not.toHaveBeenCalled();
   });
 
   test.each([
     ['missing', null],
     ['inactive', { id: 'line-a', is_active: 0 }],
-  ] as const)('rejects a %s selected account even when the form is shared', async (_label, account) => {
-    const d = deps({
-      getLineAccount: vi.fn().mockResolvedValue(account as never),
-      getForm: vi.fn().mockResolvedValue(form({ line_account_id: null })),
-    });
-    const app = createFormalooAiChatRoutes(d);
-    const res = await app.request('/api/forms-advanced/ai-chat/analyze', {
+  ] as const)('rejects a %s selected account before form and LLM work', async (_label, account) => {
+    const d = deps({ getLineAccount: vi.fn().mockResolvedValue(account as never) });
+    const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'made-up', prompt: '分析して' }),
+      body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
     }, enabledEnv);
     expect(res.status).toBe(404);
     expect(d.getForm).not.toHaveBeenCalled();
-    expect(d.resolveClient).not.toHaveBeenCalled();
     expect(d.analyze).not.toHaveBeenCalled();
   });
 
-  test('returns a daily-limit message before provider execution', async () => {
+  test('returns a daily-limit message before answer or provider execution', async () => {
     const d = deps({ reserveHistory: vi.fn().mockResolvedValue(null) });
-    const app = createFormalooAiChatRoutes(d);
-    const res = await app.request('/api/forms-advanced/ai-chat/analyze', {
+    const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
     }, enabledEnv);
     expect(res.status).toBe(429);
     expect(await res.json()).toMatchObject({ success: false, code: 'daily_limit_reached' });
+    expect(d.listAnalysisSubmissions).not.toHaveBeenCalled();
     expect(d.analyze).not.toHaveBeenCalled();
   });
 
-  test('returns an in-progress message when the atomic reservation detects a duplicate analysis', async () => {
+  test('returns an in-progress message when the atomic reservation detects a duplicate', async () => {
     const d = deps({
       reserveHistory: vi.fn().mockResolvedValue(null),
       hasPendingHistory: vi.fn().mockResolvedValue(true),
     });
-    const app = createFormalooAiChatRoutes(d);
-    const res = await app.request('/api/forms-advanced/ai-chat/analyze', {
+    const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
     }, enabledEnv);
@@ -267,41 +322,66 @@ describe('Formaloo AI chat route', () => {
     expect(d.analyze).not.toHaveBeenCalled();
   });
 
-  test('ends the pending history conservatively when the provider adapter throws', async () => {
+  test('fails before reservation when no internal LLM runtime is configured', async () => {
+    const d = deps({ createRuntime: vi.fn().mockReturnValue(null) });
+    const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
+    }, enabledEnv);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ success: false, code: 'ai_unavailable' });
+    expect(d.reserveHistory).not.toHaveBeenCalled();
+  });
+
+  test('releases the daily reservation when no verified answer data exists', async () => {
+    const d = deps({ listAnalysisSubmissions: vi.fn().mockResolvedValue([]) });
+    const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
+    }, enabledEnv);
+    expect(res.status).toBe(422);
+    expect(d.failHistory).toHaveBeenCalledWith(enabledEnv.DB, 'fac_1', expect.objectContaining({
+      errorCode: 'no_analysis_data', creditsConsumed: false,
+    }));
+    expect(d.analyze).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({
+      success: false, code: 'no_analysis_data', error: expect.stringContaining('回答データがまだありません'),
+    });
+  });
+
+  test('releases the reservation with a daily-language error when D1 context preparation fails', async () => {
+    const d = deps({ listAnalysisSubmissions: vi.fn().mockRejectedValue(new Error('db detail hidden')) });
+    const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
+    }, enabledEnv);
+    expect(res.status).toBe(503);
+    expect(d.failHistory).toHaveBeenCalledWith(enabledEnv.DB, 'fac_1', expect.objectContaining({
+      errorCode: 'analysis_data_unavailable', creditsConsumed: false,
+    }));
+    expect(JSON.stringify(await res.json())).not.toContain('db detail hidden');
+  });
+
+  test('ends pending history conservatively and returns daily language when the LLM is unavailable', async () => {
     const d = deps({ analyze: vi.fn().mockRejectedValue(new Error('provider detail hidden')) });
-    const app = createFormalooAiChatRoutes(d);
-    const res = await app.request('/api/forms-advanced/ai-chat/analyze', {
+    const res = await createFormalooAiChatRoutes(d).request('/api/forms-advanced/ai-chat/analyze', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
     }, enabledEnv);
     expect(res.status).toBe(502);
     expect(d.failHistory).toHaveBeenCalledWith(enabledEnv.DB, 'fac_1', expect.objectContaining({
-      errorCode: 'provider_unknown_failure', creditsConsumed: true,
+      errorCode: 'ai_unavailable', creditsConsumed: true,
     }));
-    expect(await res.json()).toMatchObject({ success: false, code: 'provider_unknown_failure' });
+    const body = await res.json();
+    expect(body).toMatchObject({
+      success: false, code: 'ai_unavailable', error: expect.stringContaining('少し待ってから'),
+    });
+    expect(JSON.stringify(body)).not.toContain('provider detail hidden');
   });
 
-  test.each([
-    [{ ok: false, code: 'credits_exhausted', message: '利用枠がありません', httpStatus: 402, creditsConsumed: false }, 402],
-    [{ ok: false, code: 'poll_timeout', message: '時間がかかりました', httpStatus: 504, creditsConsumed: true, analysisSlug: 'a1' }, 504],
-  ] as const)('stores and returns a visible provider failure %#', async (outcome, status) => {
-    const d = deps({ analyze: vi.fn().mockResolvedValue(outcome) });
-    const app = createFormalooAiChatRoutes(d);
-    const res = await app.request('/api/forms-advanced/ai-chat/analyze', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ formId: 'fa_1', lineAccountId: 'line-a', prompt: '分析して' }),
-    }, enabledEnv);
-    expect(res.status).toBe(status);
-    expect(d.failHistory).toHaveBeenCalledWith(enabledEnv.DB, 'fac_1', expect.objectContaining({
-      errorCode: outcome.code, creditsConsumed: outcome.creditsConsumed,
-    }));
-    expect(await res.json()).toMatchObject({ success: false, code: outcome.code });
-  });
-
-  test('lists history only after validating the selected form/account scope', async () => {
+  test('lists history only after validating selected form/account scope', async () => {
     const d = deps();
-    const app = createFormalooAiChatRoutes(d);
-    const res = await app.request(
+    const res = await createFormalooAiChatRoutes(d).request(
       '/api/forms-advanced/ai-chat/history?formId=fa_1&lineAccountId=line-a&limit=20',
       undefined,
       enabledEnv,
@@ -318,8 +398,7 @@ describe('Formaloo AI chat route', () => {
       getLineAccount: vi.fn().mockResolvedValue(null),
       getForm: vi.fn().mockResolvedValue(form({ line_account_id: null })),
     });
-    const app = createFormalooAiChatRoutes(d);
-    const res = await app.request(
+    const res = await createFormalooAiChatRoutes(d).request(
       '/api/forms-advanced/ai-chat/history?formId=fa_1&lineAccountId=made-up',
       undefined,
       enabledEnv,

@@ -1,5 +1,42 @@
 import { jstNow } from './utils.js';
 
+const MAX_AI_ANALYSIS_SUBMISSIONS = 50;
+const AI_CHAT_PENDING_TTL_MS = 5 * 60_000;
+
+export interface FormalooAiAnalysisSubmission {
+  answersJson: string;
+  /** Day precision is enough for trends and avoids sending exact respondent timestamps. */
+  submittedDate: string;
+}
+
+interface FormalooAiAnalysisSubmissionRow {
+  answers_json: string;
+  submitted_date: string;
+}
+
+/**
+ * Read the smallest useful D1 projection for AI analysis.
+ * Unverified webhook rows and all respondent/submission identifiers are deliberately excluded.
+ */
+export async function listFormalooAiAnalysisSubmissions(
+  db: D1Database,
+  formId: string,
+  limit = MAX_AI_ANALYSIS_SUBMISSIONS,
+): Promise<FormalooAiAnalysisSubmission[]> {
+  const boundedLimit = Math.max(1, Math.min(MAX_AI_ANALYSIS_SUBMISSIONS, Math.floor(limit)));
+  const result = await db.prepare(
+    `SELECT answers_json, substr(submitted_at, 1, 10) AS submitted_date
+     FROM formaloo_submissions
+     WHERE form_id = ? AND verified = 1
+     ORDER BY submitted_at DESC, id DESC
+     LIMIT ?`,
+  ).bind(formId, boundedLimit).all<FormalooAiAnalysisSubmissionRow>();
+  return result.results.map((row) => ({
+    answersJson: row.answers_json,
+    submittedDate: row.submitted_date,
+  }));
+}
+
 export type FormalooAiChatHistoryStatus = 'pending' | 'completed' | 'failed';
 
 export interface FormalooAiChatHistory {
@@ -104,6 +141,20 @@ export async function reserveFormalooAiChatHistory(
   const day = now.slice(0, 10);
   const dayStart = `${day}T00:00:00.000+09:00`;
   const nextDayStart = `${nextJstDate(day)}T00:00:00.000+09:00`;
+  const parsedNow = Date.parse(now);
+  const staleBefore = Number.isFinite(parsedNow)
+    ? new Date(parsedNow - AI_CHAT_PENDING_TTL_MS).toISOString()
+    : now;
+  await db.prepare(
+    `UPDATE formaloo_ai_chat_history
+     SET status = 'failed', provider_status = 'interrupted',
+         error_code = 'analysis_interrupted',
+         error_message = '前回の分析が中断されました。もう一度お試しください',
+         credits_consumed = 1, credit_reserved = 1, updated_at = ?
+     WHERE tenant_scope = ?
+       AND status = 'pending'
+       AND julianday(updated_at) < julianday(?)`,
+  ).bind(now, input.tenantScope, staleBefore).run();
   const result = await db.prepare(
     `INSERT INTO formaloo_ai_chat_history (
        id, tenant_scope, line_account_id, form_id, question, status,
@@ -157,16 +208,17 @@ export async function completeFormalooAiChatHistory(
   },
 ): Promise<FormalooAiChatHistory | null> {
   const now = input.now ?? jstNow();
-  await db.prepare(
+  const result = await db.prepare(
     `UPDATE formaloo_ai_chat_history
      SET answer_json = ?, answer_text = ?, analysis_slug = ?, status = 'completed',
          provider_status = ?, error_code = NULL, error_message = NULL,
          credits_consumed = 1, credit_reserved = 1, updated_at = ?
-     WHERE id = ?`,
+     WHERE id = ? AND status = 'pending'`,
   ).bind(
     JSON.stringify(input.answer), input.answerText, input.analysisSlug,
     input.providerStatus, now, id,
   ).run();
+  if ((result.meta.changes ?? 0) !== 1) return null;
   return getById(db, id);
 }
 
@@ -184,15 +236,16 @@ export async function failFormalooAiChatHistory(
 ): Promise<FormalooAiChatHistory | null> {
   const now = input.now ?? jstNow();
   const consumed = input.creditsConsumed ? 1 : 0;
-  await db.prepare(
+  const result = await db.prepare(
     `UPDATE formaloo_ai_chat_history
      SET analysis_slug = ?, status = 'failed', provider_status = ?, error_code = ?, error_message = ?,
          credits_consumed = ?, credit_reserved = ?, updated_at = ?
-     WHERE id = ?`,
+     WHERE id = ? AND status = 'pending'`,
   ).bind(
     input.analysisSlug ?? null, input.providerStatus ?? null, input.errorCode,
     input.errorMessage, consumed, consumed, now, id,
   ).run();
+  if ((result.meta.changes ?? 0) !== 1) return null;
   return getById(db, id);
 }
 

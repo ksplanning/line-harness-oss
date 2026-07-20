@@ -23,6 +23,12 @@ function displayTime(value: string): string {
     : date.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+function providerLabel(status: string | null): string {
+  if (status === 'workers_ai') return 'Cloudflare AI'
+  if (status === 'openai') return 'OpenAI'
+  return 'AI'
+}
+
 export default function FormalooAiChatPage() {
   const { selectedAccountId, loading: accountLoading } = useAccount()
   const [forms, setForms] = useState<AdvancedForm[]>([])
@@ -259,7 +265,9 @@ export default function FormalooAiChatPage() {
                   <p className="whitespace-pre-wrap">{activeItem.question}</p>
                 </div>
                 <div className="mr-auto max-w-[90%] rounded-2xl rounded-bl-sm border border-gray-200 bg-gray-50 px-4 py-3 text-base leading-7 text-gray-800">
-                  <p className="mb-1 text-xs font-semibold text-green-700">Formaloo AI</p>
+                  <p className="mb-1 text-xs font-semibold text-green-700">
+                    {providerLabel(activeItem.providerStatus)}
+                  </p>
                   <p className="whitespace-pre-wrap">
                     {activeItem.status === 'completed'
                       ? activeItem.answerText
@@ -268,7 +276,7 @@ export default function FormalooAiChatPage() {
                         : '分析しています…'}
                   </p>
                   {activeItem.creditsConsumed && (
-                    <p className="mt-2 text-xs text-gray-500">AIクレジットを使用</p>
+                    <p className="mt-2 text-xs text-gray-500">本日のAI利用枠を使用</p>
                   )}
                 </div>
               </>

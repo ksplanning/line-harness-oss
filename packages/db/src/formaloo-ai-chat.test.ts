@@ -7,6 +7,7 @@ import { createFormalooForm } from './formaloo.js';
 import {
   completeFormalooAiChatHistory,
   failFormalooAiChatHistory,
+  listFormalooAiAnalysisSubmissions,
   listFormalooAiChatHistory,
   reserveFormalooAiChatHistory,
 } from './formaloo-ai-chat.js';
@@ -70,6 +71,36 @@ describe('migration 111 — Formaloo AI chat history', () => {
 });
 
 describe('Formaloo AI chat history DAO', () => {
+  test('loads only verified target-form answers with a hard 50-row bound and no identifiers', async () => {
+    const target = await createFormalooForm(db, { title: '分析対象', lineAccountId: 'line-a' });
+    const other = await createFormalooForm(db, { title: '別フォーム', lineAccountId: 'line-a' });
+    const insert = raw.prepare(
+      `INSERT INTO formaloo_submissions
+       (id, form_id, friend_id, answers_json, submitted_at, verified)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    for (let index = 0; index < 55; index += 1) {
+      insert.run(
+        `verified-${index}`,
+        target.id,
+        `friend-${index}`,
+        JSON.stringify({ score: index }),
+        new Date(Date.UTC(2026, 6, 1, 0, 0, index)).toISOString(),
+        1,
+      );
+    }
+    insert.run('unverified', target.id, 'friend-secret', '{"score":999}', '2026-07-02T00:00:00.000Z', 0);
+    insert.run('other-form', other.id, 'friend-other', '{"score":888}', '2026-07-03T00:00:00.000Z', 1);
+
+    const rows = await listFormalooAiAnalysisSubmissions(db, target.id, 999);
+
+    expect(rows).toHaveLength(50);
+    expect(JSON.parse(rows[0].answersJson)).toEqual({ score: 54 });
+    expect(JSON.parse(rows.at(-1)!.answersJson)).toEqual({ score: 5 });
+    expect(Object.keys(rows[0]).sort()).toEqual(['answersJson', 'submittedDate']);
+    expect(rows.every((row) => row.submittedDate === '2026-07-01')).toBe(true);
+  });
+
   test('atomically reserves no more than the tenant daily limit', async () => {
     const form = await createFormalooForm(db, { title: 'アンケート', lineAccountId: 'line-a' });
     const base = {
@@ -111,6 +142,47 @@ describe('Formaloo AI chat history DAO', () => {
 
     expect([first, duplicate].filter(Boolean)).toHaveLength(1);
     expect(otherForm).not.toBeNull();
+  });
+
+  test('expires an interrupted pending row without releasing its daily reservation or allowing a late overwrite', async () => {
+    const form = await createFormalooForm(db, { title: '中断復旧', lineAccountId: 'line-a' });
+    const base = {
+      tenantScope: 'tenant-a', lineAccountId: 'line-a', formId: form.id, dailyLimit: 2,
+    };
+    const interrupted = await reserveFormalooAiChatHistory(db, {
+      ...base, question: '中断した質問', now: '2026-07-20T10:00:00.000+09:00',
+    });
+
+    await expect(reserveFormalooAiChatHistory(db, {
+      ...base, question: '早すぎる再送', now: '2026-07-20T10:04:59.000+09:00',
+    })).resolves.toBeNull();
+
+    const retry = await reserveFormalooAiChatHistory(db, {
+      ...base, question: '5分後の再送', now: '2026-07-20T10:05:01.000+09:00',
+    });
+    expect(retry).toMatchObject({ status: 'pending', creditReserved: true });
+
+    const rows = await listFormalooAiChatHistory(db, {
+      tenantScope: 'tenant-a', lineAccountId: 'line-a', formId: form.id,
+    });
+    const expired = rows.find((row) => row.id === interrupted!.id);
+    expect(expired).toMatchObject({
+      status: 'failed', errorCode: 'analysis_interrupted', providerStatus: 'interrupted',
+      creditsConsumed: true, creditReserved: true,
+    });
+
+    await expect(completeFormalooAiChatHistory(db, interrupted!.id, {
+      analysisSlug: 'too_late', answer: { summary: '古い回答' }, answerText: '古い回答',
+      providerStatus: 'workers_ai', now: '2026-07-20T10:05:02.000+09:00',
+    })).resolves.toBeNull();
+    await expect(failFormalooAiChatHistory(db, interrupted!.id, {
+      errorCode: 'too_late', errorMessage: '古い失敗', creditsConsumed: false,
+      now: '2026-07-20T10:05:03.000+09:00',
+    })).resolves.toBeNull();
+    const unchanged = (await listFormalooAiChatHistory(db, {
+      tenantScope: 'tenant-a', lineAccountId: 'line-a', formId: form.id,
+    })).find((row) => row.id === interrupted!.id);
+    expect(unchanged).toMatchObject({ status: 'failed', errorCode: 'analysis_interrupted' });
   });
 
   test('a pre-credit failure releases the reservation, while an issued analysis remains counted', async () => {

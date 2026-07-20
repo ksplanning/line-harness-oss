@@ -21,6 +21,8 @@ export interface LlmGenerateResult {
   text: string;
   /** provider がトークン数を返せない場合 undefined (呼び手は「判別不能=退避」で fail-safe)。 */
   usage?: LlmUsage;
+  /** Optional generation origin for history/operations metadata; existing Workers results omit it. */
+  provider?: 'workers_ai' | 'openai';
 }
 
 export interface LlmGenerateOptions {
