@@ -14,6 +14,7 @@ import {
   type FormOperationsSettings,
   type FormRedirect,
   type HarnessField,
+  type HarnessFieldConfig,
   type HarnessFieldType,
   type HarnessLogicRule,
   type SuccessPageSpec,
@@ -50,9 +51,30 @@ export const JAPAN_PREFECTURES = [
 
 const JAPAN_PREFECTURE_SET = new Set<string>(JAPAN_PREFECTURES);
 
-export type InternalFormField = Omit<HarnessField, 'type'> & {
+export interface PostalAutofillConfig {
+  zipField: string;
+  prefField: string;
+  cityField: string;
+  townField: string;
+}
+
+export type InternalFormField = Omit<HarnessField, 'type' | 'config'> & {
   type: SupportedInternalFieldType;
+  config: HarnessFieldConfig & { postalAutofill?: PostalAutofillConfig };
 };
+
+function parsePostalAutofill(raw: unknown): PostalAutofillConfig | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const keys = ['zipField', 'prefField', 'cityField', 'townField'] as const;
+  if (keys.some((key) => typeof value[key] !== 'string' || !(value[key] as string).trim())) return null;
+  return {
+    zipField: (value.zipField as string).trim(),
+    prefField: (value.prefField as string).trim(),
+    cityField: (value.cityField as string).trim(),
+    townField: (value.townField as string).trim(),
+  };
+}
 
 export interface InternalFormDefinition {
   fields: InternalFormField[];
@@ -441,7 +463,20 @@ export function parseInternalFormDefinition(
     if (ids.has(result.field.id)) return { ok: false, error: '項目IDが重複しています' };
     ids.add(result.field.id);
 
-    const field = result.field as InternalFormField;
+    const rawConfig = item && typeof item === 'object' && !Array.isArray(item)
+      ? (item as { config?: unknown }).config
+      : undefined;
+    const rawPostal = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig)
+      ? (rawConfig as Record<string, unknown>).postalAutofill
+      : undefined;
+    const postalAutofill = rawPostal === undefined ? undefined : parsePostalAutofill(rawPostal);
+    if (rawPostal !== undefined && !postalAutofill) {
+      return { ok: false, error: '郵便番号自動入力の項目設定が正しくありません' };
+    }
+    const field = {
+      ...result.field,
+      config: { ...result.field.config, ...(postalAutofill ? { postalAutofill } : {}) },
+    } as InternalFormField;
     const configError = validatePerFieldDefinition(field);
     if (configError) return { ok: false, error: configError };
     fields.push(field);
@@ -451,6 +486,19 @@ export function parseInternalFormDefinition(
   const relationshipError = validateDefinitionRelationships(fields);
   if (relationshipError) return { ok: false, error: relationshipError };
 
+  const fieldForPostal = new Map(fields.map((field) => [field.id, field]));
+  for (const field of fields) {
+    const postal = field.config.postalAutofill;
+    if (!postal) continue;
+    const referencedIds = [postal.zipField, postal.prefField, postal.cityField, postal.townField];
+    if (
+      postal.zipField !== field.id
+      || new Set(referencedIds).size !== referencedIds.length
+      || referencedIds.some((id) => fieldForPostal.get(id)?.type !== 'text')
+    ) {
+      return { ok: false, error: '郵便番号自動入力の項目設定が正しくありません' };
+    }
+  }
   const successPages = normalizeSuccessPages(raw.successPages);
   const successPageIds = new Set(successPages.map((page) => page.id));
   const fieldById = new Map(fields.map((field) => [field.id, field]));

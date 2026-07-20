@@ -531,4 +531,64 @@ describe('internal form definition and availability', () => {
       visibleFieldIds: ['kind'],
     })).toEqual({ ok: true, answers: { kind: '個人' } });
   });
+
+  test('keeps a valid native postal autofill mapping on the zip field', () => {
+    const result = parseInternalFormDefinition(JSON.stringify({
+      fields: [
+        {
+          id: 'zip', type: 'text', label: '郵便番号', required: true, position: 0,
+          config: { postalAutofill: { zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town' } },
+        },
+        { id: 'pref', type: 'text', label: '都道府県', required: true, position: 1, config: {} },
+        { id: 'city', type: 'text', label: '市区町村', required: true, position: 2, config: {} },
+        { id: 'town', type: 'text', label: '町域', required: false, position: 3, config: {} },
+      ],
+      logic: [],
+    }));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.definition.fields[0].config.postalAutofill).toEqual({
+      zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town',
+    });
+  });
+
+  test.each([
+    [
+      'missing target',
+      { zipField: 'zip', prefField: 'missing', cityField: 'city', townField: 'town' },
+    ],
+    [
+      'duplicate target',
+      { zipField: 'zip', prefField: 'pref', cityField: 'pref', townField: 'town' },
+    ],
+  ])('rejects an invalid postal mapping: %s', (_name, postalAutofill) => {
+    const result = parseInternalFormDefinition(JSON.stringify({
+      fields: [
+        { id: 'zip', type: 'text', label: '郵便番号', required: true, position: 0, config: { postalAutofill } },
+        { id: 'pref', type: 'text', label: '都道府県', required: true, position: 1, config: {} },
+        { id: 'city', type: 'text', label: '市区町村', required: true, position: 2, config: {} },
+        { id: 'town', type: 'text', label: '町域', required: false, position: 3, config: {} },
+      ],
+      logic: [],
+    }));
+
+    expect(result).toEqual({ ok: false, error: '郵便番号自動入力の項目設定が正しくありません' });
+  });
+
+  test('rejects a postal mapping whose destination is not a text field', () => {
+    const result = parseInternalFormDefinition(JSON.stringify({
+      fields: [
+        {
+          id: 'zip', type: 'text', label: '郵便番号', required: true, position: 0,
+          config: { postalAutofill: { zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town' } },
+        },
+        { id: 'pref', type: 'dropdown', label: '都道府県', required: true, position: 1, config: { choices: ['大阪府'] } },
+        { id: 'city', type: 'text', label: '市区町村', required: true, position: 2, config: {} },
+        { id: 'town', type: 'text', label: '町域', required: false, position: 3, config: {} },
+      ],
+      logic: [],
+    }));
+
+    expect(result).toEqual({ ok: false, error: '郵便番号自動入力の項目設定が正しくありません' });
+  });
 });
