@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
 import {
   createSheetsConnection,
+  getActiveSheetsConnectionById,
   getSheetsConnection,
+  listFriendFieldDefinitions,
   listSheetsConnections,
   softDeleteSheetsConnection,
   updateSheetsConnection,
@@ -14,6 +16,11 @@ import {
   parseGoogleServiceAccountCredentials,
   type GoogleSheetsErrorCategory,
 } from '../services/google-sheets.js';
+import {
+  listFriendLedgerAudit,
+  syncFriendLedger,
+} from '../services/friend-ledger-sync.js';
+import { verifySheetsWebhookSignature } from '../services/sheets-webhook-signature.js';
 import type { Env } from '../index.js';
 
 export const sheetsConnections = new Hono<Env>();
@@ -28,6 +35,8 @@ const CONNECTION_TEST_MESSAGES: Record<GoogleSheetsErrorCategory, string> = {
   network: 'Google に接続できませんでした。時間をおいて、もう一度接続テストをしてください。',
 };
 const VALID_DIRECTIONS = new Set<SheetsSyncDirection>(['to_sheets', 'from_sheets', 'bidirectional']);
+const IDENTITY_HEADERS = new Set(['表示名', 'userId', '登録日']);
+const MAX_SELECTED_FIELDS = 50;
 
 interface ConnectionInput {
   lineAccountId?: unknown;
@@ -35,12 +44,14 @@ interface ConnectionInput {
   spreadsheetId?: unknown;
   sheetName?: unknown;
   syncDirection?: unknown;
+  selectedFieldIds?: unknown;
 }
 
 type ValidSettings = {
   spreadsheetId: string;
   sheetName: string;
   syncDirection: SheetsSyncDirection;
+  selectedFieldIds?: string[];
 };
 
 type ValidCreate = ValidSettings & {
@@ -69,7 +80,20 @@ function validateSettings(body: ConnectionInput): ValidationResult<ValidSettings
   if (!VALID_DIRECTIONS.has(syncDirection)) {
     return { ok: false, error: '同期方向を選択してください' };
   }
-  return { ok: true, value: { spreadsheetId, sheetName, syncDirection } };
+  let selectedFieldIds: string[] | undefined;
+  if (body.selectedFieldIds !== undefined) {
+    if (!Array.isArray(body.selectedFieldIds) || body.selectedFieldIds.length > MAX_SELECTED_FIELDS) {
+      return { ok: false, error: '同期するカスタムフィールドを正しく選択してください' };
+    }
+    selectedFieldIds = body.selectedFieldIds.map(cleanString);
+    if (
+      selectedFieldIds.some((id) => !id || id.length > 200)
+      || new Set(selectedFieldIds).size !== selectedFieldIds.length
+    ) {
+      return { ok: false, error: '同期するカスタムフィールドを正しく選択してください' };
+    }
+  }
+  return { ok: true, value: { spreadsheetId, sheetName, syncDirection, selectedFieldIds } };
 }
 
 function validateCreate(body: ConnectionInput): ValidationResult<ValidCreate> {
@@ -110,6 +134,60 @@ function quotedA1SheetName(sheetName: string): string {
   return `'${sheetName.replace(/'/g, "''")}'!A1:A1`;
 }
 
+interface FriendLedgerWebhookPayload {
+  version: 1;
+  connectionId: string;
+  spreadsheetId: string;
+  sheetName: string;
+  range: { rowStart: number; rowEnd: number; columnStart: number; columnEnd: number };
+  actor: string;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseWebhookPayload(value: unknown): FriendLedgerWebhookPayload | null {
+  if (!isPlainObject(value) || value.version !== 1 || !isPlainObject(value.range)) return null;
+  const rawRange = value.range;
+  const connectionId = cleanString(value.connectionId);
+  const spreadsheetId = cleanString(value.spreadsheetId);
+  const sheetName = cleanString(value.sheetName);
+  const actor = cleanString(value.actor) || 'google_sheets_editor';
+  const rangeValues = ['rowStart', 'rowEnd', 'columnStart', 'columnEnd'] as const;
+  if (
+    !connectionId || connectionId.length > 200
+    || !spreadsheetId || spreadsheetId.length > 512
+    || !sheetName || sheetName.length > 200
+    || actor.length > 320
+    || rangeValues.some((key) => !Number.isSafeInteger(rawRange[key]) || Number(rawRange[key]) < 1)
+  ) return null;
+  const range = {
+    rowStart: Number(rawRange.rowStart),
+    rowEnd: Number(rawRange.rowEnd),
+    columnStart: Number(rawRange.columnStart),
+    columnEnd: Number(rawRange.columnEnd),
+  };
+  if (range.rowStart > range.rowEnd || range.columnStart > range.columnEnd) return null;
+  return { version: 1, connectionId, spreadsheetId, sheetName, range, actor };
+}
+
+async function resolveFriendFieldMappings(
+  db: D1Database,
+  selectedFieldIds: string[] | undefined,
+): Promise<ValidationResult<{ fieldId: string; header: string }[] | undefined>> {
+  if (selectedFieldIds === undefined) return { ok: true, value: undefined };
+  const selected = new Set(selectedFieldIds);
+  const definitions = await listFriendFieldDefinitions(db, { activeOnly: true });
+  const mappings = definitions
+    .filter((definition) => selected.has(definition.id))
+    .map((definition) => ({ fieldId: definition.id, header: definition.name }));
+  if (mappings.length !== selected.size || mappings.some((mapping) => IDENTITY_HEADERS.has(mapping.header))) {
+    return { ok: false, error: '選択したカスタムフィールドを同期できません。項目の状態を確認してください' };
+  }
+  return { ok: true, value: mappings };
+}
+
 // GET /api/integrations/google-sheets/connections?lineAccountId=&formId=
 sheetsConnections.get(BASE_PATH, async (c) => {
   const denied = ownerGate(c, OWNER_MESSAGE);
@@ -137,7 +215,17 @@ sheetsConnections.post(BASE_PATH, async (c) => {
       .bind(validated.value.lineAccountId)
       .first<{ ok: number }>();
     if (!account) return c.json({ success: false, error: 'LINE アカウントが見つかりません' }, 400);
-    const created = await createSheetsConnection(c.env.DB, validated.value);
+    const mappings = await resolveFriendFieldMappings(c.env.DB, validated.value.selectedFieldIds ?? []);
+    if (!mappings.ok) return c.json({ success: false, error: mappings.error }, 400);
+    const created = await createSheetsConnection(c.env.DB, {
+      lineAccountId: validated.value.lineAccountId,
+      formId: validated.value.formId,
+      spreadsheetId: validated.value.spreadsheetId,
+      sheetName: validated.value.sheetName,
+      syncDirection: validated.value.syncDirection,
+      friendFieldMappings: mappings.value ?? [],
+      friendLedgerEnabled: true,
+    });
     return c.json({ success: true, data: created }, 201);
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
@@ -156,9 +244,22 @@ sheetsConnections.patch(`${BASE_PATH}/:id`, async (c) => {
   const validated = validateScopedSettings(await readJson(c));
   if (!validated.ok) return c.json({ success: false, error: validated.error }, 400);
   try {
-    const { lineAccountId, ...settings } = validated.value;
-    const updated = await updateSheetsConnection(c.env.DB, lineAccountId, c.req.param('id'), settings);
-    if (!updated) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    const mappings = await resolveFriendFieldMappings(c.env.DB, validated.value.selectedFieldIds);
+    if (!mappings.ok) return c.json({ success: false, error: mappings.error }, 400);
+    const updated = await updateSheetsConnection(c.env.DB, validated.value.lineAccountId, c.req.param('id'), {
+      spreadsheetId: validated.value.spreadsheetId,
+      sheetName: validated.value.sheetName,
+      syncDirection: validated.value.syncDirection,
+      friendFieldMappings: mappings.value,
+      friendLedgerEnabled: true,
+    });
+    if (!updated) {
+      const existing = await getSheetsConnection(c.env.DB, validated.value.lineAccountId, c.req.param('id'));
+      if (existing) {
+        return c.json({ success: false, error: '同期中です。少し待ってからもう一度保存してください' }, 409);
+      }
+      return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    }
     return c.json({ success: true, data: updated });
   } catch {
     console.error('PATCH Google Sheets connection failed');
@@ -174,7 +275,13 @@ sheetsConnections.delete(`${BASE_PATH}/:id`, async (c) => {
   if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
   try {
     const deleted = await softDeleteSheetsConnection(c.env.DB, lineAccountId.value, c.req.param('id'));
-    if (!deleted) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    if (!deleted) {
+      const existing = await getSheetsConnection(c.env.DB, lineAccountId.value, c.req.param('id'));
+      if (existing) {
+        return c.json({ success: false, error: '同期中です。少し待ってからもう一度削除してください' }, 409);
+      }
+      return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    }
     return c.json({ success: true, data: null });
   } catch {
     console.error('DELETE Google Sheets connection failed');
@@ -240,5 +347,104 @@ sheetsConnections.post(`${BASE_PATH}/:id/test`, async (c) => {
         ...(failure.detail ? { detail: failure.detail } : {}),
       },
     });
+  }
+});
+
+// POST /api/integrations/google-sheets/connections/:id/sync
+sheetsConnections.post(`${BASE_PATH}/:id/sync`, async (c) => {
+  const denied = ownerGate(c, OWNER_MESSAGE);
+  if (denied) return denied;
+  const lineAccountId = validateLineAccountId(c.req.query('lineAccountId'));
+  if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+  try {
+    const connection = await getSheetsConnection(c.env.DB, lineAccountId.value, c.req.param('id'));
+    if (!connection) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    if (!connection.friendLedgerEnabled) {
+      return c.json({ success: false, error: '友だち台帳の同期設定を保存してください' }, 409);
+    }
+    if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+      return c.json({ success: false, error: SETUP_MESSAGE }, 503);
+    }
+    const result = await syncFriendLedger({
+      db: c.env.DB,
+      connection,
+      credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+      source: 'manual',
+      actor: c.get('staff').id,
+    });
+    return c.json({ success: true, data: result });
+  } catch {
+    console.error('Manual friend ledger sync failed');
+    return c.json({ success: false, error: '手動同期に失敗しました' }, 500);
+  }
+});
+
+// GET /api/integrations/google-sheets/connections/:id/audit
+sheetsConnections.get(`${BASE_PATH}/:id/audit`, async (c) => {
+  const denied = ownerGate(c, OWNER_MESSAGE);
+  if (denied) return denied;
+  const lineAccountId = validateLineAccountId(c.req.query('lineAccountId'));
+  if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+  try {
+    const connection = await getSheetsConnection(c.env.DB, lineAccountId.value, c.req.param('id'));
+    if (!connection) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    const audit = await listFriendLedgerAudit({
+      db: c.env.DB,
+      lineAccountId: lineAccountId.value,
+      connectionId: connection.id,
+      limit: 50,
+    });
+    return c.json({ success: true, data: audit });
+  } catch {
+    console.error('GET friend ledger audit failed');
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// Apps Script sends only a signed range notification. Cell contents are fetched
+// from Google after verification, so untrusted request data never becomes CRM data.
+sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', async (c) => {
+  const rawBody = await c.req.text();
+  const signature = c.req.header('X-Sheets-Signature') ?? '';
+  const timestamp = c.req.header('X-Sheets-Timestamp') ?? '';
+  const verified = await verifySheetsWebhookSignature({
+    rawBody,
+    signature,
+    timestamp,
+    secret: c.env.SHEETS_WEBHOOK_SECRET,
+  });
+  if (!verified) return c.json({ success: false, error: '署名を確認できません' }, 401);
+
+  let payload: FriendLedgerWebhookPayload | null = null;
+  try {
+    payload = parseWebhookPayload(JSON.parse(rawBody) as unknown);
+  } catch {
+    // Invalid JSON is intentionally handled only after the signature check.
+  }
+  if (!payload) return c.json({ success: false, error: '通知の形式が正しくありません' }, 400);
+  if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    return c.json({ success: false, error: SETUP_MESSAGE }, 503);
+  }
+
+  try {
+    const connection = await getActiveSheetsConnectionById(c.env.DB, payload.connectionId);
+    if (
+      !connection
+      || !connection.friendLedgerEnabled
+      || connection.spreadsheetId !== payload.spreadsheetId
+      || connection.sheetName !== payload.sheetName
+    ) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    await syncFriendLedger({
+      db: c.env.DB,
+      connection,
+      credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+      source: 'webhook',
+      actor: payload.actor,
+      range: payload.range,
+    });
+    return c.json({ success: true }, 202);
+  } catch {
+    console.error('Friend ledger webhook sync failed');
+    return c.json({ success: false, error: '同期通知を処理できませんでした' }, 500);
   }
 });

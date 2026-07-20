@@ -22,6 +22,7 @@ import { processDueReminders } from './services/booking-reminders.js';
 import { resolveFormalooClient } from './services/formaloo-client.js';
 import { runFormalooDriftCheck } from './services/formaloo-drift.js';
 import { runFormalooEditMailOutbox } from './services/formaloo-edit-mail.js';
+import { runFriendLedgerPolling } from './services/friend-ledger-sync.js';
 import { runExpirer } from './services/booking-expirer.js';
 import { processDueEventReminders } from './services/event-booking-reminders.js';
 import { runEventBookingExpirer } from './services/event-booking-expirer.js';
@@ -236,6 +237,9 @@ export type Env = {
     // Self-hosted Google Sheets: service-account JSON is supplied only through
     // `wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON` (never a toml var).
     GOOGLE_SERVICE_ACCOUNT_JSON?: string;
+    // Apps Script friend-ledger notifications use an independent HMAC secret.
+    // Both values stay in Worker secrets and must never be written to wrangler vars.
+    SHEETS_WEBHOOK_SECRET?: string;
     // fr-id-capture-fix (T-C3/D-4): publish 経路の friend system hidden field (fr_id/fr_name) 冪等 auto-push の
     //   kill-switch。未設定/其他 = 有効 (既定・両テナント共通 publish で alias='fr_id'/'fr_name' の hidden field を
     //   冪等 ensure)。'1' = auto-push を短絡 (byte 同等 / rollback = Layer A land 済の現状へ完全復帰)。
@@ -798,6 +802,20 @@ async function scheduled(
   // 条件付きリッチメニューは15分境界で期間またぎをqueue化し、5分tickごとに最大20人だけ処理する。
   // checkpoint が遅延tickを回収し、タグ/metadata変更と一括再適用も同じ bounded worker で扱う。
   if (event.cron === '*/5 * * * *') {
+    try {
+      const result = await runFriendLedgerPolling({
+        db: env.DB,
+        credentialsJson: env.GOOGLE_SERVICE_ACCOUNT_JSON,
+        maxConnections: 10,
+      });
+      if (result.attempted > 0) {
+        console.log(
+          `[friend-ledger-sync] attempted=${result.attempted} succeeded=${result.succeeded} warnings=${result.warnings} failed=${result.failed}`,
+        );
+      }
+    } catch {
+      console.error('[friend-ledger-sync] polling error');
+    }
     const scheduledAt = new Date(event.scheduledTime);
     if (scheduledAt.getUTCMinutes() % 15 === 0) {
       try {

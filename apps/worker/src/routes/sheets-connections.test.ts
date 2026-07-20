@@ -195,6 +195,62 @@ describe('Sheets connections CRUD API', () => {
     await createOne();
     expect((await call('POST', '/api/integrations/google-sheets/connections', validInput)).status).toBe(409);
   });
+
+  test('snapshots only selected active custom-field headings and rejects unsafe selections', async () => {
+    raw.prepare(`INSERT INTO friend_field_definitions
+      (id, name, default_value, display_order, is_active)
+      VALUES
+      ('field-plan', '利用プラン', '', 1, 1),
+      ('field-note', '担当メモ', '', 2, 1),
+      ('field-old', '旧項目', '', 3, 0),
+      ('field-identity', 'userId', '', 4, 1)`).run();
+
+    const created = await call('POST', '/api/integrations/google-sheets/connections', {
+      ...validInput,
+      selectedFieldIds: ['field-note', 'field-plan'],
+    });
+    expect(created.status).toBe(201);
+    const body = await created.json() as { data: { id: string; friendFieldMappings: unknown[] } };
+    expect(body.data.friendFieldMappings).toEqual([
+      { fieldId: 'field-plan', header: '利用プラン' },
+      { fieldId: 'field-note', header: '担当メモ' },
+    ]);
+    expect(body.data).toMatchObject({ friendLedgerEnabled: true });
+
+    const unsafeCases = [
+      ['field-old'],
+      ['missing'],
+      ['field-identity'],
+      ['field-plan', 'field-plan'],
+    ];
+    for (const selectedFieldIds of unsafeCases) {
+      const response = await call('PATCH', `/api/integrations/google-sheets/connections/${body.data.id}`, {
+        lineAccountId: 'acc-1',
+        spreadsheetId: validInput.spreadsheetId,
+        sheetName: validInput.sheetName,
+        syncDirection: validInput.syncDirection,
+        selectedFieldIds,
+      });
+      expect(response.status).toBe(400);
+    }
+  });
+
+  test('asks the owner to retry settings changes while a sync holds the target lock', async () => {
+    const id = await createOne();
+    raw.prepare(`UPDATE sheets_connections
+      SET sync_lock_token='running-sync', sync_lock_expires_at='2099-01-01T00:00:00+09:00'
+      WHERE id=?`).run(id);
+
+    const patch = await call('PATCH', `/api/integrations/google-sheets/connections/${id}`, {
+      lineAccountId: 'acc-1', spreadsheetId: 'new-sheet', sheetName: '台帳', syncDirection: 'to_sheets',
+    });
+    const remove = await call('DELETE', `/api/integrations/google-sheets/connections/${id}?lineAccountId=acc-1`);
+
+    expect(patch.status).toBe(409);
+    expect(remove.status).toBe(409);
+    expect(raw.prepare('SELECT spreadsheet_id, is_active FROM sheets_connections WHERE id=?').get(id))
+      .toEqual({ spreadsheet_id: validInput.spreadsheetId, is_active: 1 });
+  });
 });
 
 describe('Sheets connection test API', () => {
