@@ -928,3 +928,38 @@ test "$invalid_status" = 400
 - [ ] `messages_log` の test 分離、月間上限への1通加算、通常統計・dedup非混入が PASS。
 - [ ] 最低5系統と流入経路の画面にテスト送信導線があり、追加実射0が PASS。
 - [ ] sandbox 実射0、秘密値記録0、確認用データ cleanup が PASS。
+---
+
+# selfform-w4-sheets-foundation — host live checklist
+
+## 目的と安全条件
+
+この lane の sandbox では Google へ実射していない。査読済み revision、migration 114、Worker、Web を approved host へ反映した後、実サービスアカウントで read 疎通を 1 回だけ確認する。
+
+- 本番 3 フォームと既存スプレッドシートには触れない。個人情報を含まない空の scratch spreadsheet と検証用 form ID だけを使う。
+- JSON private key、access token、サービスアカウントのメール、スプレッドシート ID、セル値をログ・スクリーンショット・証跡へ残さない。
+- shell は `set +x`。JSON 本文をコマンド引数、環境表示、ファイル差分へ出さない。
+- 接続テストは Sheets API の `A1:A1` read を 1 回行うだけ。append/update と同期エンジンはこの live check では実行しない。
+
+## 事前確認
+
+- [ ] migration は `114_sheets_connections.sql` だけが新規適用され、予約済み 113/W1 に依存していない。
+- [ ] 査読済み deployment SHA、対象 tenant、実行者、JST 実行時刻を、秘密値を含めず記録した。
+- [ ] `docs/google-sheets-service-account-setup.md` の手順で Google Sheets API、実サービスアカウント、JSON key、scratch sheet の「編集者」共有を準備した。
+- [ ] trusted host で `GOOGLE_SERVICE_ACCOUNT_JSON` を Wrangler の対話入力から登録し、JSON 本文を履歴や出力へ出していない。
+
+## 管理画面で read 疎通を 1 回
+
+1. owner で `/settings/sheets` を開き、検証用 LINE アカウントを選ぶ。
+2. 検証用 form ID、scratch spreadsheet ID、正確なシート名、同期方向「双方向」を登録する。
+3. 「接続テスト」を **1 回だけ**押す。連打しない。
+4. 「接続できました（先頭セルを 1 回読み取りました）」が表示されることを確認する。
+5. ブラウザの Network では Harness API の成功だけを確認する。Google access token、秘密値、セル値を開発者ツールからコピーしない。
+6. 証跡には deployment SHA、JST 時刻、`PASS: read 1回` だけを記録し、アカウント名・各 ID・セル内容は記録しない。
+
+## cleanup と PASS 記録
+
+- [ ] 管理画面で検証用接続を削除し、一覧から消えることを確認した。
+- [ ] scratch spreadsheet の共有から実サービスアカウントを外した。検証専用 key/service account なら組織ルールに従って無効化・削除した。
+- [ ] 本番 3 フォーム接触 0、実データ write 0、秘密値記録 0、セル値記録 0。
+- [ ] `PASS: read 1回` または、失敗理由を秘密値なしの `FAIL/BLOCKED` で記録した。
