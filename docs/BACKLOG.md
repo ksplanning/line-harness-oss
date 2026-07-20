@@ -724,3 +724,7 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **status: blocked**（行列機能はまだowner案内できる完成度に達していない。繰り返しセクションは案内可）。
 - 詳細: REPORT（本closer・Box working folder 386663013201・box_file_idはBox upload後追記）。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-20_HHMMSS_treasure-e1-field-parts.md`（Box working folder 386663013201・box_file_idはBox upload後追記）。
+
+## form-publish-invest 調査残骸 (2026-07-20 / 要削除)
+- **🔵 REQUIRED-BACKLOG**: Formaloo 側 scratch form `42sybm` (DELETE-ME-form-publish-invest-e2e / fa_3d4f6568 の remote・harness 側は 404 済み) — 調査 agent が権限物理拒否で Formaloo 側を削除できず残置 (テスト項目のみ・PII なし)。publish-ux-frid-sync-fix の closer 工程で B 鍵により削除+404 確認 (live-checklist に明記済み)
+- **🔵 REQUIRED-BACKLOG 追記 (round2)**: Formaloo 側 scratch form `zlm1qh` (round2 再現用・fa_7f8e6636 の remote・harness 側 404 済み) も同様に残置 — publish-ux-frid-sync-fix closer で 42sybm と併せて削除+404 確認
