@@ -214,6 +214,52 @@ describe('internal form render backend selector', () => {
       })).status).toBe(404);
     }
   });
+
+  test('rejects a backend switch when the saved definition is incompatible with the destination', async () => {
+    seedForm('internal-only-form', 'internal', {
+      definition: {
+        fields: [{ id: 'appointment', type: 'datetime', label: '日時', required: true, position: 0, config: {} }],
+        logic: [],
+      },
+    });
+    seedForm('branched-form', 'formaloo', {
+      definition: {
+        ...DEFINITION,
+        logic: [{ id: 'rule', sourceFieldId: 'name', operator: 'equals', value: 'A', action: 'show', targetFieldId: 'contact' }],
+      },
+    });
+    seedForm('internal-config-form', 'internal', {
+      definition: {
+        fields: [{ id: 'name', type: 'text', label: '名前', required: true, position: 0, config: { placeholder: '入力例' } }],
+        logic: [],
+      },
+    });
+
+    const toFormaloo = await call('PATCH', '/api/forms-advanced/internal-only-form/render-backend', {
+      renderBackend: 'formaloo',
+    });
+    expect(toFormaloo.status).toBe(409);
+    expect(await toFormaloo.json()).toMatchObject({ error: expect.stringMatching(/切り替えられません/) });
+
+    const toInternal = await call('PATCH', '/api/forms-advanced/branched-form/render-backend', {
+      renderBackend: 'internal',
+    });
+    expect(toInternal.status).toBe(409);
+    expect(await toInternal.json()).toMatchObject({ error: expect.stringMatching(/切り替えられません/) });
+
+    const configToFormaloo = await call('PATCH', '/api/forms-advanced/internal-config-form/render-backend', {
+      renderBackend: 'formaloo',
+    });
+    expect(configToFormaloo.status).toBe(409);
+    expect(await configToFormaloo.json()).toMatchObject({ error: expect.stringMatching(/切り替えられません/) });
+
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('internal-only-form'))
+      .toEqual({ render_backend: 'internal' });
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('branched-form'))
+      .toEqual({ render_backend: 'formaloo' });
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('internal-config-form'))
+      .toEqual({ render_backend: 'internal' });
+  });
 });
 
 describe('internal definition save boundary', () => {

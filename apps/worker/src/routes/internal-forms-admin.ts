@@ -10,6 +10,7 @@ import {
   type InternalFormSubmission,
 } from '@line-crm/db';
 import {
+  isInternalOnlyFieldType,
   normalizeFormCopy,
   validateHarnessField,
   type HarnessField,
@@ -146,6 +147,22 @@ function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+function formalooSwitchError(definitionJson: string): string | null {
+  const definition = definitionObject(definitionJson);
+  if (!definition || !Array.isArray(definition.fields)) return '保存済みフォーム定義を読み込めません';
+  for (const candidate of definition.fields) {
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const field = candidate as { type?: unknown; config?: unknown };
+    if (isInternalOnlyFieldType(field.type)) return '自前フォーム専用の入力項目が含まれています';
+    if (field.config === null || typeof field.config !== 'object' || Array.isArray(field.config)) continue;
+    const config = field.config as Record<string, unknown>;
+    const internalConfig = ['placeholder', 'defaultValue', 'defaultValues', 'minLength'].some((key) => hasOwn(config, key))
+      || (field.type === 'textarea' && hasOwn(config, 'maxLength'));
+    if (internalConfig) return '自前フォーム専用の入力設定が含まれています';
+  }
+  return null;
+}
+
 async function rejectInternalFormalooMutation(c: Context<Env>, next: Next) {
   try {
     const form = await getInternalForm(c.env.DB, c.req.param('id')!);
@@ -181,6 +198,22 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/render-backend', async (c) => 
     const renderBackend = body?.renderBackend;
     if (renderBackend !== 'formaloo' && renderBackend !== 'internal') {
       return c.json({ success: false, error: 'renderBackend は formaloo または internal を指定してください' }, 400);
+    }
+    if (renderBackend === form.render_backend) {
+      return c.json({ success: true, data: { renderBackend } });
+    }
+
+    const incompatibility = renderBackend === 'internal'
+      ? (() => {
+          const parsed = parseInternalFormDefinition(form.definition_json);
+          return parsed.ok ? null : parsed.error;
+        })()
+      : formalooSwitchError(form.definition_json);
+    if (incompatibility) {
+      return c.json({
+        success: false,
+        error: `現在のフォーム定義では配信先を切り替えられません: ${incompatibility}`,
+      }, 409);
     }
 
     if (!await setFormRenderBackend(c.env.DB, id, renderBackend)) return notFound(c);
@@ -224,7 +257,7 @@ internalFormsAdmin.put('/api/forms-advanced/:id/internal-definition', async (c, 
       const validation = validateHarnessField({
         ...(raw && typeof raw === 'object' ? raw : {}),
         position: typeof position === 'number' ? position : index,
-      });
+      }, { allowInternalOnly: true });
       if (!validation.ok) {
         return c.json({ success: false, error: `フィールド ${index + 1}: ${validation.error}` }, 400);
       }
