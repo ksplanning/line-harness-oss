@@ -53,6 +53,7 @@ function parseA1(range: string): { row: number; column: number } {
 class FakeSheetsClient {
   values: SheetCellValue[][] = [];
   readonly writes: Array<{ kind: 'update' | 'append' | 'batch'; range?: string }> = [];
+  afterWrite?: (kind: 'update' | 'append' | 'batch') => void | Promise<void>;
 
   async readValues() {
     return { majorDimension: 'ROWS' as const, values: this.values.map((row) => [...row]) };
@@ -61,18 +62,21 @@ class FakeSheetsClient {
   async updateValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
     this.writes.push({ kind: 'update', range });
     this.apply(range, values);
+    await this.afterWrite?.('update');
     return { spreadsheetId: 'sheet-1', updatedRows: values.length };
   }
 
   async appendValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
     this.writes.push({ kind: 'append', range });
     this.values.push(...values.map((row) => [...row]));
+    await this.afterWrite?.('append');
     return { spreadsheetId: 'sheet-1' };
   }
 
   async batchUpdateValues(_spreadsheetId: string, data: SheetsDataUpdate[]) {
     this.writes.push({ kind: 'batch' });
     for (const update of data) this.apply(update.range, update.values);
+    await this.afterWrite?.('batch');
     return { spreadsheetId: 'sheet-1', totalUpdatedRows: data.length };
   }
 
@@ -138,6 +142,28 @@ beforeEach(async () => {
 });
 
 describe('friend ledger bidirectional sync', () => {
+  test('stops before publishing state when another worker takes the lease between sheet writes', async () => {
+    let stolen = false;
+    client.afterWrite = (kind) => {
+      if (kind !== 'update' || stolen) return;
+      stolen = true;
+      raw.prepare(`UPDATE sheets_connections
+        SET sync_lock_token='new-worker', sync_lock_expires_at='2026-07-21T13:00:00+09:00',
+            last_sync_status='warning', last_sync_warning='新しいワーカーの状態'
+        WHERE id=?`).run(connection.id);
+    };
+
+    await expect(run()).rejects.toThrow('friend_ledger_sync_lock_lost');
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger').get()).toEqual({ count: 0 });
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_audit_log').get()).toEqual({ count: 0 });
+    expect(raw.prepare(`SELECT sync_lock_token, last_sync_status, last_sync_warning
+      FROM sheets_connections WHERE id=?`).get(connection.id)).toEqual({
+      sync_lock_token: 'new-worker',
+      last_sync_status: 'warning',
+      last_sync_warning: '新しいワーカーの状態',
+    });
+  });
+
   test('creates headings/full rows once, stays tenant-scoped, and writes nothing on an identical retry', async () => {
     const first = await run();
     expect(client.values).toEqual([

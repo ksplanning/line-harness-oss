@@ -16,6 +16,7 @@ import {
   type SheetsSyncAuditDetailInput,
   type SheetsSyncAuditSource,
   type SheetsSyncLedgerEntry,
+  type SheetsSyncLeaseGuard,
 } from '@line-crm/db';
 import {
   buildFriendLedgerColumns,
@@ -182,10 +183,11 @@ async function listFriends(db: D1Database, lineAccountId: string): Promise<Frien
 
 async function saveImportedMetadata(
   db: D1Database,
-  lineAccountId: string,
+  connection: SheetsConnection,
   friend: FriendState,
   imports: Record<string, string>,
   updatedAt: string,
+  renewLease: () => Promise<SheetsSyncLeaseGuard>,
 ): Promise<ImportedMetadataResult> {
   if (Object.keys(imports).length === 0) return { friend, rejected: {} };
   const originalValues = Object.fromEntries(
@@ -195,23 +197,43 @@ async function saveImportedMetadata(
   const rejected: Record<string, string> = {};
   let current = friend;
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const lease = await renewLease();
     const merged = { ...current.metadata, ...pending };
     const nextRaw = JSON.stringify(merged);
     const result = await db.prepare(
       `UPDATE friends
        SET metadata = ?, updated_at = ?
-       WHERE id = ? AND line_account_id = ? AND metadata IS ?`,
-    ).bind(nextRaw, updatedAt, current.id, lineAccountId, current.metadataRaw).run();
+       WHERE id = ? AND line_account_id = ? AND metadata IS ?
+         AND EXISTS (
+           SELECT 1 FROM sheets_connections c
+           WHERE c.id = ? AND c.line_account_id = ? AND c.config_version = ?
+             AND c.sync_lock_token = ? AND c.sync_lock_expires_at IS NOT NULL
+             AND julianday(c.sync_lock_expires_at) > julianday(?)
+             AND c.is_active = 1 AND c.deleted_at IS NULL
+         )`,
+    ).bind(
+      nextRaw,
+      updatedAt,
+      current.id,
+      connection.lineAccountId,
+      current.metadataRaw,
+      connection.id,
+      connection.lineAccountId,
+      connection.configVersion,
+      lease.token,
+      lease.now,
+    ).run();
     if ((result.meta.changes ?? 0) === 1) {
       return {
         friend: { ...current, metadataRaw: nextRaw, metadata: merged, updatedAt },
         rejected,
       };
     }
+    await renewLease();
     const latest = await db.prepare(
       `SELECT id, line_user_id, display_name, metadata, created_at, updated_at
        FROM friends WHERE id = ? AND line_account_id = ?`,
-    ).bind(current.id, lineAccountId).first<FriendRow>();
+    ).bind(current.id, connection.lineAccountId).first<FriendRow>();
     if (!latest) throw new Error('friend_missing_during_sync');
     current = serializeFriend(latest);
     for (const header of Object.keys(pending)) {
@@ -290,6 +312,7 @@ async function persistPlan(
   connection: SheetsConnection,
   plan: RowPlan,
   now: string,
+  renewLease: () => Promise<SheetsSyncLeaseGuard>,
 ): Promise<void> {
   const nextFingerprint = await fingerprint(plan.canonical);
   const changed = plan.isAppend
@@ -298,11 +321,13 @@ async function persistPlan(
     || plan.ledger?.sheetRowNumber !== plan.rowNumber;
   const needsBaseline = !plan.ledger;
   if (!changed && !needsBaseline) return;
+  const lease = await renewLease();
   const sequence = await reserveSheetsSyncSequence(
     db,
     connection.lineAccountId,
     connection.id,
     connection.configVersion,
+    lease,
   );
   if (sequence === null) throw new Error('stale_sheets_connection_generation');
   const auditWritten = await appendSheetsSyncAudit(db, connection.lineAccountId, {
@@ -324,7 +349,7 @@ async function persistPlan(
       ? 'identity_read_only'
       : null,
     details: plan.details,
-  });
+  }, lease);
   if (!auditWritten) throw new Error('stale_sheets_audit_generation');
   const ledgerWritten = await upsertSheetsSyncLedger(db, connection.lineAccountId, {
     connectionId: connection.id,
@@ -338,7 +363,7 @@ async function persistPlan(
     lastSyncedAt: now,
     lastSyncDirection: plan.direction,
     lastAppliedSequence: sequence,
-  });
+  }, lease);
   if (!ledgerWritten) throw new Error('stale_sheets_ledger_generation');
 }
 
@@ -383,14 +408,37 @@ export async function syncFriendLedger(
     };
   }
 
+  const renewLease = async (): Promise<SheetsSyncLeaseGuard> => {
+    const leaseTime = nowFactory();
+    const leaseNow = toJstString(leaseTime);
+    const renewed = await claimSheetsSyncLock(
+      options.db,
+      options.connection.lineAccountId,
+      options.connection.id,
+      lockToken,
+      leaseNow,
+      toJstString(new Date(leaseTime.getTime() + LOCK_DURATION_MS)),
+      options.connection.configVersion,
+    );
+    if (!renewed) throw new Error('friend_ledger_sync_lock_lost');
+    return { token: lockToken, now: leaseNow };
+  };
+
   let failure: unknown;
   try {
-    await updateSheetsSyncStatus(options.db, options.connection.lineAccountId, options.connection.id, {
+    const runningStatus = await updateSheetsSyncStatus(
+      options.db,
+      options.connection.lineAccountId,
+      options.connection.id,
+      {
       status: 'running',
       lastSyncAt: options.connection.lastSyncAt,
       warning: null,
       errorCode: null,
-    });
+      },
+      { token: lockToken, now: startedAt },
+    );
+    if (!runningStatus) throw new Error('friend_ledger_sync_lock_lost');
     const client = makeClient(options);
     const [friends, ledgerEntries, definitions, response] = await Promise.all([
       listFriends(options.db, options.connection.lineAccountId),
@@ -401,6 +449,7 @@ export async function syncFriendLedger(
         quoteSheetName(options.connection.sheetName),
       ),
     ]);
+    await renewLease();
     const defaults = new Map(definitions.map((definition) => [definition.id, definition.defaultValue]));
     const columns = buildFriendLedgerColumns(options.connection.friendFieldMappings);
     const ledgerByFriend = new Map(ledgerEntries.map((entry) => [entry.recordKey, entry]));
@@ -414,6 +463,7 @@ export async function syncFriendLedger(
     const headerIsEmpty = values.length === 0 || !(values[0] ?? []).some((cell) => normalizeSheetCell(cell));
     if (headerIsEmpty) {
       const headers = columns.map((column) => column.header);
+      await renewLease();
       await client.updateValues(
         options.connection.spreadsheetId,
         blockRange(options.connection.sheetName, 1, headers.length),
@@ -424,6 +474,7 @@ export async function syncFriendLedger(
           const projection = projectedWithDefaults(friend, options.connection, defaults);
           return columns.map((column) => projection[column.key] ?? '');
         });
+        await renewLease();
         await client.appendValues(
           options.connection.spreadsheetId,
           `${quoteSheetName(options.connection.sheetName)}!A:${columnLabel(Math.max(0, headers.length - 1))}`,
@@ -509,6 +560,7 @@ export async function syncFriendLedger(
             continue;
           }
           const nextRow = rowForProjection(headers.length, projection, columns, resolved.indexByKey);
+          await renewLease();
           await client.appendValues(
             options.connection.spreadsheetId,
             `${quoteSheetName(options.connection.sheetName)}!A:${columnLabel(Math.max(0, headers.length - 1))}`,
@@ -631,6 +683,7 @@ export async function syncFriendLedger(
 
     const allSheetUpdates = plans.flatMap((plan) => plan.sheetUpdates);
     if (allSheetUpdates.length > 0) {
+      await renewLease();
       await client.batchUpdateValues(options.connection.spreadsheetId, allSheetUpdates);
     }
     const updatedRowNumbers = new Set(
@@ -638,20 +691,24 @@ export async function syncFriendLedger(
     );
     const completedAt = toJstString(nowFactory());
     if (plans.some((plan) => plan.ledger && plan.ledger.sheetRowNumber !== plan.rowNumber)) {
-      await clearSheetsSyncLedgerRowNumbers(
+      const lease = await renewLease();
+      const cleared = await clearSheetsSyncLedgerRowNumbers(
         options.db,
         options.connection.lineAccountId,
         options.connection.id,
         options.connection.configVersion,
+        lease,
       );
+      if (!cleared) throw new Error('friend_ledger_sync_lock_lost');
     }
     for (const plan of plans) {
       const imported = await saveImportedMetadata(
         options.db,
-        options.connection.lineAccountId,
+        options.connection,
         plan.friend,
         plan.imports,
         completedAt,
+        renewLease,
       );
       plan.friend = imported.friend;
       const rejectedUpdates: SheetsDataUpdate[] = [];
@@ -677,20 +734,29 @@ export async function syncFriendLedger(
         plan.conflictResolution = 'harness_wins';
       }
       if (rejectedUpdates.length > 0) {
+        await renewLease();
         await client.batchUpdateValues(options.connection.spreadsheetId, rejectedUpdates);
         updatedRowNumbers.add(plan.rowNumber);
       }
-      await persistPlan(options.db, options.connection, plan, completedAt);
+      await persistPlan(options.db, options.connection, plan, completedAt, renewLease);
     }
 
     const status = warnings.length > 0 ? 'warning' : 'success';
     const warning = warnings.length > 0 ? warnings.join(' / ') : null;
-    await updateSheetsSyncStatus(options.db, options.connection.lineAccountId, options.connection.id, {
-      status,
-      lastSyncAt: completedAt,
-      warning,
-      errorCode: warnings.length > 0 ? 'friend_ledger_warning' : null,
-    });
+    const finalLease = await renewLease();
+    const statusUpdated = await updateSheetsSyncStatus(
+      options.db,
+      options.connection.lineAccountId,
+      options.connection.id,
+      {
+        status,
+        lastSyncAt: completedAt,
+        warning,
+        errorCode: warnings.length > 0 ? 'friend_ledger_warning' : null,
+      },
+      finalLease,
+    );
+    if (!statusUpdated) throw new Error('friend_ledger_sync_lock_lost');
     return {
       status,
       warning,
@@ -708,17 +774,16 @@ export async function syncFriendLedger(
       lastSyncAt: failedAt,
       warning: null,
       errorCode: 'friend_ledger_sync_failed',
-    }).catch(() => null);
+    }, { token: lockToken, now: failedAt }).catch(() => null);
     throw error;
   } finally {
-    await releaseSheetsSyncLock(
+    const released = await releaseSheetsSyncLock(
       options.db,
       options.connection.lineAccountId,
       options.connection.id,
       lockToken,
-    ).catch(() => {
-      if (!failure) throw new Error('friend_ledger_lock_release_failed');
-    });
+    ).catch(() => false);
+    if (!released && !failure) throw new Error('friend_ledger_lock_release_failed');
   }
 }
 
