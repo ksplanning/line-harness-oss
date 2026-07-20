@@ -89,7 +89,7 @@ export default function SheetsSettingsPage() {
       return next
     })
     try {
-      await sheetsConnectionsApi.update(id, input)
+      await sheetsConnectionsApi.update(accountId, id, input)
       await refreshIfCurrent(accountId)
     } catch (cause) {
       if (activeAccount.current === accountId) setError(errorMessage(cause))
@@ -110,7 +110,7 @@ export default function SheetsSettingsPage() {
       return next
     })
     try {
-      await sheetsConnectionsApi.remove(id)
+      await sheetsConnectionsApi.remove(accountId, id)
       await refreshIfCurrent(accountId)
     } catch (cause) {
       if (activeAccount.current === accountId) setError(errorMessage(cause))
@@ -127,7 +127,7 @@ export default function SheetsSettingsPage() {
     testVersions.current[id] = testVersion
     setTestResults((current) => ({ ...current, [id]: 'testing' }))
     try {
-      const ok = await sheetsConnectionsApi.test(id)
+      const ok = await sheetsConnectionsApi.test(accountId, id)
       if (activeAccount.current === accountId && testVersions.current[id] === testVersion) {
         setTestResults((current) => ({ ...current, [id]: ok ? 'ok' : 'ng' }))
       }

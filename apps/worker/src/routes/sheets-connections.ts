@@ -40,6 +40,8 @@ type ValidCreate = ValidSettings & {
   formId: string;
 };
 
+type ValidScopedSettings = ValidSettings & { lineAccountId: string };
+
 type ValidationResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function cleanString(value: unknown): string {
@@ -75,6 +77,21 @@ function validateCreate(body: ConnectionInput): ValidationResult<ValidCreate> {
     return { ok: false, error: 'フォーム ID を正しく入力してください' };
   }
   return { ok: true, value: { lineAccountId, formId, ...settings.value } };
+}
+
+function validateLineAccountId(value: unknown): ValidationResult<string> {
+  const lineAccountId = cleanString(value);
+  return lineAccountId && lineAccountId.length <= 200
+    ? { ok: true, value: lineAccountId }
+    : { ok: false, error: 'LINE アカウントを選択してください' };
+}
+
+function validateScopedSettings(body: ConnectionInput): ValidationResult<ValidScopedSettings> {
+  const settings = validateSettings(body);
+  if (!settings.ok) return settings;
+  const lineAccountId = validateLineAccountId(body.lineAccountId);
+  if (!lineAccountId.ok) return lineAccountId;
+  return { ok: true, value: { lineAccountId: lineAccountId.value, ...settings.value } };
 }
 
 async function readJson(c: Parameters<typeof ownerGate>[0]): Promise<Record<string, unknown>> {
@@ -128,10 +145,11 @@ sheetsConnections.post(BASE_PATH, async (c) => {
 sheetsConnections.patch(`${BASE_PATH}/:id`, async (c) => {
   const denied = ownerGate(c, OWNER_MESSAGE);
   if (denied) return denied;
-  const validated = validateSettings(await readJson(c));
+  const validated = validateScopedSettings(await readJson(c));
   if (!validated.ok) return c.json({ success: false, error: validated.error }, 400);
   try {
-    const updated = await updateSheetsConnection(c.env.DB, c.req.param('id'), validated.value);
+    const { lineAccountId, ...settings } = validated.value;
+    const updated = await updateSheetsConnection(c.env.DB, lineAccountId, c.req.param('id'), settings);
     if (!updated) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
     return c.json({ success: true, data: updated });
   } catch {
@@ -144,8 +162,10 @@ sheetsConnections.patch(`${BASE_PATH}/:id`, async (c) => {
 sheetsConnections.delete(`${BASE_PATH}/:id`, async (c) => {
   const denied = ownerGate(c, OWNER_MESSAGE);
   if (denied) return denied;
+  const lineAccountId = validateLineAccountId(c.req.query('lineAccountId'));
+  if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
   try {
-    const deleted = await softDeleteSheetsConnection(c.env.DB, c.req.param('id'));
+    const deleted = await softDeleteSheetsConnection(c.env.DB, lineAccountId.value, c.req.param('id'));
     if (!deleted) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
     return c.json({ success: true, data: null });
   } catch {
@@ -159,7 +179,15 @@ sheetsConnections.delete(`${BASE_PATH}/:id`, async (c) => {
 sheetsConnections.post(`${BASE_PATH}/:id/test`, async (c) => {
   const denied = ownerGate(c, OWNER_MESSAGE);
   if (denied) return denied;
-  const connection = await getSheetsConnection(c.env.DB, c.req.param('id')).catch(() => null);
+  const lineAccountId = validateLineAccountId(c.req.query('lineAccountId'));
+  if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+  let connection: Awaited<ReturnType<typeof getSheetsConnection>>;
+  try {
+    connection = await getSheetsConnection(c.env.DB, lineAccountId.value, c.req.param('id'));
+  } catch {
+    console.error('GET Google Sheets connection for test failed');
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
   if (!connection) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
   if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
     return c.json({ success: false, error: SETUP_MESSAGE }, 503);

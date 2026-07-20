@@ -19,20 +19,32 @@ let DB: D1Database;
 let serviceAccountJson: string;
 
 function d1(db: Database.Database): D1Database {
+  interface MockStatement {
+    bind(...args: unknown[]): MockStatement;
+    first<T>(): Promise<T | null>;
+    all<T>(): Promise<{ results: T[] }>;
+    run(): Promise<{ meta: { changes: number } }>;
+    __exec(): { meta: { changes: number } };
+  }
+  const prepare = (sql: string): MockStatement => {
+    const statement = db.prepare(sql);
+    let params: unknown[] = [];
+    const api: MockStatement = {
+      bind(...args: unknown[]) { params = args; return api; },
+      async first<T>() { return (statement.get(...(params as never[])) as T) ?? null; },
+      async all<T>() { return { results: statement.all(...(params as never[])) as T[] }; },
+      async run() { return api.__exec(); },
+      __exec() {
+        const result = statement.run(...(params as never[]));
+        return { meta: { changes: result.changes } };
+      },
+    };
+    return api;
+  };
   return {
-    prepare(sql: string) {
-      const statement = db.prepare(sql);
-      let params: unknown[] = [];
-      const api = {
-        bind(...args: unknown[]) { params = args; return api; },
-        async first<T>() { return (statement.get(...(params as never[])) as T) ?? null; },
-        async all<T>() { return { results: statement.all(...(params as never[])) as T[] }; },
-        async run() {
-          const result = statement.run(...(params as never[]));
-          return { meta: { changes: result.changes } };
-        },
-      };
-      return api;
+    prepare,
+    async batch(statements: MockStatement[]) {
+      return db.transaction((items: MockStatement[]) => items.map((item) => item.__exec()))(statements);
     },
   } as unknown as D1Database;
 }
@@ -150,14 +162,14 @@ describe('Sheets connections CRUD API', () => {
     expect((await other.json() as { data: unknown[] }).data).toEqual([]);
 
     const updated = await call('PATCH', `/api/integrations/google-sheets/connections/${id}`, {
-      spreadsheetId: 'New_sheet-ID', sheetName: '集計', syncDirection: 'from_sheets',
+      lineAccountId: 'acc-1', spreadsheetId: 'New_sheet-ID', sheetName: '集計', syncDirection: 'from_sheets',
     });
     expect(updated.status).toBe(200);
     expect(await updated.json()).toMatchObject({ data: { id, spreadsheetId: 'New_sheet-ID', sheetName: '集計', syncDirection: 'from_sheets' } });
 
-    expect((await call('DELETE', `/api/integrations/google-sheets/connections/${id}`)).status).toBe(200);
+    expect((await call('DELETE', `/api/integrations/google-sheets/connections/${id}?lineAccountId=acc-1`)).status).toBe(200);
     expect((await call('PATCH', `/api/integrations/google-sheets/connections/${id}`, {
-      spreadsheetId: 'x', sheetName: 'x', syncDirection: 'to_sheets',
+      lineAccountId: 'acc-1', spreadsheetId: 'x', sheetName: 'x', syncDirection: 'to_sheets',
     })).status).toBe(404);
     expect(raw.prepare('SELECT is_active, deleted_at FROM sheets_connections WHERE id=?').get(id))
       .toMatchObject({ is_active: 0, deleted_at: expect.any(String) });
@@ -192,7 +204,7 @@ describe('Sheets connection test API', () => {
       return new Response(JSON.stringify({ range: '回答!A1', values: [['SENTINEL_CELL_VALUE']] }), { status: 200 });
     }));
 
-    const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test`);
+    const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`);
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).toEqual({ success: true, data: { ok: true } });
@@ -204,12 +216,12 @@ describe('Sheets connection test API', () => {
 
   test('missing/invalid secret fails closed without echoing credentials', async () => {
     const id = await createOne();
-    const missing = await call('POST', `/api/integrations/google-sheets/connections/${id}/test`, undefined, OWNER, {
+    const missing = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`, undefined, OWNER, {
       GOOGLE_SERVICE_ACCOUNT_JSON: undefined,
     });
     expect(missing.status).toBe(503);
     const sentinel = 'SENTINEL_PRIVATE_KEY';
-    const invalid = await call('POST', `/api/integrations/google-sheets/connections/${id}/test`, undefined, OWNER, {
+    const invalid = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`, undefined, OWNER, {
       GOOGLE_SERVICE_ACCOUNT_JSON: JSON.stringify({ private_key: sentinel }),
     });
     expect(invalid.status).toBe(503);
@@ -224,10 +236,46 @@ describe('Sheets connection test API', () => {
       }
       return new Response(JSON.stringify({ error: 'SENTINEL_GOOGLE_BODY' }), { status: 403 });
     }));
-    const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test`);
+    const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`);
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).toEqual({ success: true, data: { ok: false } });
     expect(JSON.stringify(body)).not.toContain('SENTINEL_GOOGLE_BODY');
+  });
+
+  test('database failure is a 500 instead of a misleading not-found response', async () => {
+    const brokenDb = {
+      prepare(sql: string) {
+        if (/sheets_connections/i.test(sql)) throw new Error('SENTINEL_DB_FAILURE');
+        return DB.prepare(sql);
+      },
+    } as unknown as D1Database;
+    const response = await call(
+      'POST',
+      '/api/integrations/google-sheets/connections/any-id/test?lineAccountId=acc-1',
+      undefined,
+      OWNER,
+      { DB: brokenDb },
+    );
+
+    expect(response.status).toBe(500);
+    expect(JSON.stringify(await response.json())).not.toContain('SENTINEL_DB_FAILURE');
+  });
+
+  test('patch/delete/test cannot cross the selected LINE account boundary', async () => {
+    const id = await createOne();
+    const patch = await call('PATCH', `/api/integrations/google-sheets/connections/${id}`, {
+      lineAccountId: 'acc-2', spreadsheetId: 'wrong', sheetName: 'wrong', syncDirection: 'to_sheets',
+    });
+    expect(patch.status).toBe(404);
+    expect((raw.prepare('SELECT spreadsheet_id FROM sheets_connections WHERE id=?').get(id) as { spreadsheet_id: string }).spreadsheet_id)
+      .toBe(validInput.spreadsheetId);
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-2`)).status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await call('DELETE', `/api/integrations/google-sheets/connections/${id}?lineAccountId=acc-2`)).status).toBe(404);
+    expect(raw.prepare('SELECT is_active FROM sheets_connections WHERE id=?').get(id)).toEqual({ is_active: 1 });
   });
 });

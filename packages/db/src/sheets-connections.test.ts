@@ -15,20 +15,26 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, '..');
 
 function d1(db: Database.Database): D1Database {
+  type MockStatement = D1PreparedStatement & { __exec: () => { meta: { changes: number } } };
+  const prepare = (sql: string): MockStatement => {
+    const statement = db.prepare(sql);
+    let params: unknown[] = [];
+    const api = {
+      bind(...args: unknown[]) { params = args; return api; },
+      async first<T>() { return (statement.get(...(params as never[])) as T) ?? null; },
+      async all<T>() { return { results: statement.all(...(params as never[])) as T[] }; },
+      async run() { return api.__exec(); },
+      __exec() {
+        const result = statement.run(...(params as never[]));
+        return { meta: { changes: result.changes } };
+      },
+    } as unknown as MockStatement;
+    return api;
+  };
   return {
-    prepare(sql: string) {
-      const statement = db.prepare(sql);
-      let params: unknown[] = [];
-      const api = {
-        bind(...args: unknown[]) { params = args; return api; },
-        async first<T>() { return (statement.get(...(params as never[])) as T) ?? null; },
-        async all<T>() { return { results: statement.all(...(params as never[])) as T[] }; },
-        async run() {
-          const result = statement.run(...(params as never[]));
-          return { meta: { changes: result.changes } };
-        },
-      };
-      return api;
+    prepare,
+    async batch(statements: MockStatement[]) {
+      return db.transaction((items: MockStatement[]) => items.map((item) => item.__exec()))(statements);
     },
   } as unknown as D1Database;
 }
@@ -60,7 +66,7 @@ describe('Sheets connections DB helper', () => {
       sheetName: '回答3', syncDirection: 'from_sheets',
     });
 
-    expect(await getSheetsConnection(db, first.id)).toMatchObject({
+    expect(await getSheetsConnection(db, 'acc-1', first.id)).toMatchObject({
       id: first.id,
       lineAccountId: 'acc-1',
       formId: 'form-1',
@@ -68,18 +74,31 @@ describe('Sheets connections DB helper', () => {
       sheetName: '回答',
       syncDirection: 'bidirectional',
       conflictPolicy: 'last_write_wins',
+      configVersion: 1,
       isActive: true,
     });
     expect((await listSheetsConnections(db, 'acc-1')).map((item) => item.formId).sort()).toEqual(['form-1', 'form-2']);
     expect((await listSheetsConnections(db, 'acc-1', 'form-2')).map((item) => item.formId)).toEqual(['form-2']);
+    expect(await getSheetsConnection(db, 'acc-2', first.id)).toBeNull();
   });
 
-  test('update changes only mutable sheet settings', async () => {
+  test('update is account-scoped and resets the old row ledger only when the target changes', async () => {
     const created = await createSheetsConnection(db, {
       lineAccountId: 'acc-1', formId: 'form-1', spreadsheetId: 'sheet-old',
       sheetName: '旧', syncDirection: 'to_sheets',
     });
-    const updated = await updateSheetsConnection(db, created.id, {
+    raw.prepare(`INSERT INTO sheets_sync_ledger
+      (connection_id, connection_version, record_key, row_fingerprint, last_synced_at, last_sync_direction)
+      VALUES (?, 1, 'record-1', 'fingerprint-1', '2026-07-20T00:00:00+09:00', 'to_sheets')`).run(created.id);
+
+    const directionOnly = await updateSheetsConnection(db, 'acc-1', created.id, {
+      spreadsheetId: 'sheet-old', sheetName: '旧', syncDirection: 'bidirectional',
+    });
+    expect(directionOnly?.configVersion).toBe(1);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger WHERE connection_id=?').get(created.id))
+      .toEqual({ count: 1 });
+
+    const updated = await updateSheetsConnection(db, 'acc-1', created.id, {
       spreadsheetId: 'sheet-new', sheetName: '新', syncDirection: 'from_sheets',
     });
     expect(updated).toMatchObject({
@@ -89,8 +108,14 @@ describe('Sheets connections DB helper', () => {
       spreadsheetId: 'sheet-new',
       sheetName: '新',
       syncDirection: 'from_sheets',
+      configVersion: 2,
     });
-    expect(await updateSheetsConnection(db, 'missing', {
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger WHERE connection_id=?').get(created.id))
+      .toEqual({ count: 0 });
+    expect(await updateSheetsConnection(db, 'acc-2', created.id, {
+      spreadsheetId: 'wrong-account', sheetName: 'x', syncDirection: 'bidirectional',
+    })).toBeNull();
+    expect(await updateSheetsConnection(db, 'acc-1', 'missing', {
       spreadsheetId: 'x', sheetName: 'x', syncDirection: 'bidirectional',
     })).toBeNull();
   });
@@ -100,11 +125,12 @@ describe('Sheets connections DB helper', () => {
       lineAccountId: 'acc-1', formId: 'form-1', spreadsheetId: 'sheet-1',
       sheetName: '回答', syncDirection: 'bidirectional',
     });
-    expect(await softDeleteSheetsConnection(db, created.id)).toBe(true);
-    expect(await getSheetsConnection(db, created.id)).toBeNull();
+    expect(await softDeleteSheetsConnection(db, 'acc-2', created.id)).toBe(false);
+    expect(await softDeleteSheetsConnection(db, 'acc-1', created.id)).toBe(true);
+    expect(await getSheetsConnection(db, 'acc-1', created.id)).toBeNull();
     expect(await listSheetsConnections(db, 'acc-1')).toEqual([]);
     expect(raw.prepare('SELECT is_active, deleted_at FROM sheets_connections WHERE id=?').get(created.id))
       .toMatchObject({ is_active: 0, deleted_at: expect.any(String) });
-    expect(await softDeleteSheetsConnection(db, created.id)).toBe(false);
+    expect(await softDeleteSheetsConnection(db, 'acc-1', created.id)).toBe(false);
   });
 });

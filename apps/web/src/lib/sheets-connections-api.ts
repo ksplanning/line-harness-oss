@@ -50,20 +50,24 @@ export const sheetsConnectionsApi = {
     })).data
   },
 
-  async update(id: string, input: UpdateSheetsConnectionInput): Promise<SheetsConnection> {
+  async update(lineAccountId: string, id: string, input: UpdateSheetsConnectionInput): Promise<SheetsConnection> {
     return (await fetchApi<Envelope<SheetsConnection>>(`${BASE_PATH}/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      body: JSON.stringify(input),
+      body: JSON.stringify({ lineAccountId, ...input }),
     })).data
   },
 
-  async remove(id: string): Promise<void> {
-    await fetchApi<Envelope<null>>(`${BASE_PATH}/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  async remove(lineAccountId: string, id: string): Promise<void> {
+    await fetchApi<Envelope<null>>(
+      `${BASE_PATH}/${encodeURIComponent(id)}?lineAccountId=${encodeURIComponent(lineAccountId)}`,
+      { method: 'DELETE' },
+    )
   },
 
-  async test(id: string): Promise<boolean> {
-    return (await fetchApi<Envelope<{ ok: boolean }>>(`${BASE_PATH}/${encodeURIComponent(id)}/test`, {
-      method: 'POST',
-    })).data.ok
+  async test(lineAccountId: string, id: string): Promise<boolean> {
+    return (await fetchApi<Envelope<{ ok: boolean }>>(
+      `${BASE_PATH}/${encodeURIComponent(id)}/test?lineAccountId=${encodeURIComponent(lineAccountId)}`,
+      { method: 'POST' },
+    )).data.ok
   },
 }

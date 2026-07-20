@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, '..');
@@ -17,9 +17,25 @@ function columns(db: Database.Database, table: string): string[] {
 beforeEach(() => {
   raw = new Database(':memory:');
   raw.pragma('foreign_keys = ON');
-  raw.exec(readFileSync(join(PKG_ROOT, 'schema.sql'), 'utf8'));
+  // A real pre-114 starting point: migration 114 must create every contract itself.
+  raw.exec(`
+    CREATE TABLE line_accounts (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      channel_access_token TEXT NOT NULL,
+      channel_secret TEXT NOT NULL
+    );
+    CREATE TABLE formaloo_forms (
+      id TEXT PRIMARY KEY,
+      gsheet_connected INTEGER NOT NULL DEFAULT 0,
+      gsheet_url TEXT
+    );
+  `);
   if (existsSync(MIGRATION_PATH)) raw.exec(readFileSync(MIGRATION_PATH, 'utf8'));
 });
+
+afterEach(() => raw.close());
 
 describe('migration 114 — self-hosted Google Sheets foundation', () => {
   test('114 migration exists and is additive-only', () => {
@@ -37,20 +53,53 @@ describe('migration 114 — self-hosted Google Sheets foundation', () => {
   test('creates connection settings, row ledger, and append-only audit contracts', () => {
     expect(columns(raw, 'sheets_connections')).toEqual([
       'id', 'line_account_id', 'form_id', 'spreadsheet_id', 'sheet_name',
-      'sync_direction', 'conflict_policy', 'is_active', 'created_at', 'updated_at', 'deleted_at',
+      'sheet_timestamp_column', 'sync_direction', 'conflict_policy', 'config_version',
+      'is_active', 'created_at', 'updated_at', 'deleted_at',
     ]);
     expect(columns(raw, 'sheets_sync_ledger')).toEqual([
-      'connection_id', 'record_key', 'sheet_row_number', 'row_fingerprint',
-      'harness_updated_at', 'sheet_updated_at', 'last_synced_at', 'last_sync_direction', 'version',
+      'connection_id', 'connection_version', 'record_key', 'sheet_row_number', 'row_fingerprint',
+      'harness_updated_at', 'sheet_updated_at', 'sheet_observed_at', 'last_synced_at',
+      'last_sync_direction', 'version',
     ]);
     expect(columns(raw, 'sheets_sync_audit_log')).toEqual([
-      'id', 'connection_id', 'record_key', 'sheet_row_number', 'direction', 'action', 'outcome',
-      'conflict_resolution', 'harness_updated_at', 'sheet_updated_at', 'before_fingerprint',
-      'after_fingerprint', 'error_code', 'created_at',
+      'id', 'connection_id', 'connection_version', 'line_account_id', 'form_id',
+      'spreadsheet_id', 'sheet_name', 'record_key', 'sheet_row_number', 'direction',
+      'action', 'outcome', 'conflict_resolution', 'harness_updated_at', 'sheet_updated_at',
+      'sheet_observed_at', 'before_fingerprint', 'after_fingerprint', 'error_code', 'created_at',
     ]);
     const auditColumns = raw.prepare('PRAGMA table_info(sheets_sync_audit_log)').all()
       .map((row) => (row as { name: string }).name);
     expect(auditColumns).not.toContain('updated_at');
+  });
+
+  test('makes audit rows immutable and keeps target snapshots after a LINE account is deleted', () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-1', 'channel-1', 'A', 'token', 'secret')`).run();
+    raw.prepare(`INSERT INTO sheets_connections
+      (id, line_account_id, form_id, spreadsheet_id, sheet_name)
+      VALUES ('connection-1', 'acc-1', 'form-1', 'sheet-1', '回答')`).run();
+    raw.prepare(`INSERT INTO sheets_sync_audit_log
+      (id, connection_id, connection_version, line_account_id, form_id, spreadsheet_id,
+       sheet_name, direction, action, outcome)
+      VALUES ('audit-1', 'connection-1', 1, 'acc-1', 'form-1', 'sheet-1',
+              '回答', 'to_sheets', 'append', 'applied')`).run();
+
+    expect(() => raw.prepare(`UPDATE sheets_sync_audit_log SET outcome='failed' WHERE id='audit-1'`).run())
+      .toThrow(/append-only/i);
+    expect(() => raw.prepare(`DELETE FROM sheets_sync_audit_log WHERE id='audit-1'`).run())
+      .toThrow(/append-only/i);
+    expect(() => raw.prepare(`DELETE FROM line_accounts WHERE id='acc-1'`).run()).not.toThrow();
+    expect(raw.prepare('SELECT line_account_id, is_active, deleted_at FROM sheets_connections WHERE id=?').get('connection-1'))
+      .toMatchObject({ line_account_id: null, is_active: 0, deleted_at: expect.any(String) });
+    expect(raw.prepare('SELECT spreadsheet_id, sheet_name FROM sheets_sync_audit_log WHERE id=?').get('audit-1'))
+      .toEqual({ spreadsheet_id: 'sheet-1', sheet_name: '回答' });
+  });
+
+  test('defines a dedicated hidden-column clock instead of treating poll time as sheet write time', () => {
+    const sql = readFileSync(MIGRATION_PATH, 'utf8');
+    expect(sql).toContain("DEFAULT '__line_harness_updated_at'");
+    expect(sql).toMatch(/hidden timestamp column[\s\S]+sheet_updated_at/i);
+    expect(sql).toMatch(/must never be used for LWW[\s\S]+sheet_observed_at/i);
   });
 
   test('enforces direction and last-write-wins policy at the database boundary', () => {
