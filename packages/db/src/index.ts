@@ -48,6 +48,7 @@ export * from './campaigns';
 export * from './template-packs';
 export * from './rich-menu-analytics';
 export * from './lp-hosting';
+export * from './sheets-connections';
 
 /**
  * Thin wrapper around D1Database.

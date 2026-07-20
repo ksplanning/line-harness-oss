@@ -96,7 +96,8 @@
     "109_formaloo_recurring_submissions.sql",
     "111_formaloo_ai_chat_history.sql",
     "112_rich_menu_rule_schedule.sql",
+    "114_sheets_connections.sql",
     "115_messages_log_delivery_type_test.sql"
   ],
-  "migrationCount": 97
+  "migrationCount": 98
 }
