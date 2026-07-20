@@ -1006,3 +1006,34 @@ test "$invalid_status" = 400
 - [ ] 変数を解決できるあいさつとテンプレートでは「変数を挿入」も表示され、絵文字と共存する。
 - [ ] 最近使った順、重複なし、OS tip、390px 幅でのタップ操作が PASS。
 - [ ] レイアウト崩れなし、実送信0、本番3フォーム接触0、確認用編集の保存0。
+# sheets-workers-jwt-fix — host live checklist
+
+## owner 日常語
+
+Cloudflare Workers でも Google の秘密鍵に入っている改行を正しく読めるように直しました。接続できない場合も、「鍵の形式」「Google 認証」「シートの共有権限」「通信」のどこで止まったかを、安全な短い文で確認できます。
+
+査読済み版を再デプロイした後、残してある接続設定で「接続テスト」を 1 回だけ押し、「接続できました」と表示されれば修理完了です。
+
+## host closer の実行条件
+
+- sandbox では Google への実射、Worker のデプロイ、secret の読出し・再登録を行わない。
+- 査読で承認された revision を Piecemaker Worker へ再デプロイする。migration と Web の変更は不要。
+- `GOOGLE_SERVICE_ACCOUNT_JSON` は binding 名の存在だけを確認し、JSON、秘密鍵、サービスアカウントのメールを表示・記録しない。
+- 既存 owner 接続 `gsc_4881ef88-e6e4-415e-ab62-c24106c09015` をそのまま使う。スプレッドシート ID、シート名、セル値は証跡へ残さない。
+- 接続テストは `A1:A1` の read を 1 回だけ行う。append/update と同期エンジンは実行しない。
+
+## 再デプロイ → 既存接続の再テスト
+
+1. 査読済み revision を Piecemaker Worker へ再デプロイし、deployment SHA と JST 実施時刻だけを記録する。
+2. owner で `/settings/sheets` を開き、接続 ID が `gsc_4881ef88` で始まる既存設定を確認する。設定を作り直さない。
+3. 「接続テスト」を 1 回だけ押す。
+4. 画面に「接続できました（先頭セルを 1 回読み取りました）」と表示され、Harness API が status 200、body が `{"success":true,"data":{"ok":true}}` であることを確認する。
+5. 失敗した場合は、応答の `category` と日常語 `message`、Worker log の `category / operation / status` だけを記録する。Google response body や caught error、秘密値は記録しない。
+
+## PASS 記録
+
+- [ ] 査読済み revision の Worker 再デプロイが完了した。
+- [ ] 既存接続 `gsc_4881ef88-e6e4-415e-ab62-c24106c09015` を作り直さず再利用した。
+- [ ] 接続テスト 1 回で `ok:true` と「接続できました」を確認した。
+- [ ] Google への read は 1 回、write は 0 回、同期エンジン実行は 0 回だった。
+- [ ] 秘密鍵、token、サービスアカウントのメール、スプレッドシート ID、シート名、セル値を証跡へ残していない。
