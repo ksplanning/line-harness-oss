@@ -14,13 +14,38 @@ function client(fields: unknown[]): FormalooClient {
 }
 
 describe('structural fields pull integration', () => {
+  test('keeps matrix from the real GET choice_items array without bulk_choices', async () => {
+    const choiceItems = [
+      { slug: 'GOOD', title: '良い', position: 0, provider_hint: { color: 'green' } },
+      { slug: 'BAD', title: '悪い', position: 1 },
+    ];
+    const result = await pullDefinitionFromFormaloo(client([{
+      slug: 'MATRIX_SLUG', type: 'matrix', title: '満足度', required: true, position: 0,
+      choice_items: choiceItems,
+      choice_groups: [{ ref_id: 'ROW_REF', slug: 'ROW', title: '接客', json_key: 'service' }],
+    }]), {
+      formalooSlug: 'FORM',
+      resolveId: () => 'matrix_id',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.fields.map((field) => [field.id, field.type])).toContainEqual(['matrix_id', 'matrix']);
+    expect(result.fields[0]?.config.matrixChoiceItems).toEqual({
+      column_1: choiceItems[0],
+      column_2: choiceItems[1],
+    });
+  });
+
   test('matrix/repeating survive form detail pull with id/slug maps and re-emit symmetrically', async () => {
     const fields = [
       { slug: 'NAME_SLUG', type: 'short_text', title: '氏名', required: true, position: 0 },
       {
         slug: 'MATRIX_SLUG', type: 'matrix', title: '満足度', required: true, position: 1,
-        choice_items: { good: { title: '良い', slug: 'GOOD' }, bad: { title: '悪い' } },
-        bulk_choices: ['良い', '悪い'],
+        choice_items: [
+          { slug: 'GOOD', title: '良い', position: 0 },
+          { slug: 'BAD', title: '悪い', position: 1 },
+        ],
         choice_groups: [{ ref_id: 'ROW_REF', slug: 'ROW', title: '接客', json_key: 'service' }],
         shuffle_choices: true,
       },
@@ -47,6 +72,9 @@ describe('structural fields pull integration', () => {
     expect(result.fields.map((field) => [field.id, field.type])).toEqual([
       ['name_id', 'text'], ['matrix_id', 'matrix'], ['repeat_id', 'repeating_section'],
     ]);
+    expect(JSON.stringify(result.fields[0])).toBe(
+      '{"id":"name_id","type":"text","label":"氏名","required":true,"position":0,"config":{}}',
+    );
     expect(result.fieldSlugById).toEqual({
       name_id: 'NAME_SLUG', matrix_id: 'MATRIX_SLUG', repeat_id: 'REPEAT_SLUG',
     });

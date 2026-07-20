@@ -499,7 +499,17 @@ function cloneFormalooJsonObject(value: unknown): FormalooJsonObject | null {
 }
 
 function matrixChoiceItems(value: unknown): FormalooJsonObject | null {
-  const out = cloneFormalooJsonObject(value);
+  const normalized = Array.isArray(value)
+    ? value.length > 0 && value.every((item) => (
+      item !== null
+      && typeof item === 'object'
+      && !Array.isArray(item)
+      && typeof (item as Record<string, unknown>).title === 'string'
+    ))
+      ? Object.fromEntries(value.map((item, index) => [`column_${index + 1}`, item]))
+      : null
+    : value;
+  const out = cloneFormalooJsonObject(normalized);
   if (!out || Object.keys(out).length === 0) return null;
   for (const item of Object.values(out)) {
     if (
@@ -709,6 +719,9 @@ export function validateHarnessField(
     config.choiceFetchItems = (items as ChoiceFetchItem[]).map((item) => ({ label: item.label, value: item.value }));
   }
   if (rawCfg.matrixChoiceItems !== undefined) {
+    if (Array.isArray(rawCfg.matrixChoiceItems)) {
+      return { ok: false, error: 'config.matrixChoiceItems must be a non-empty JSON object' };
+    }
     const items = matrixChoiceItems(rawCfg.matrixChoiceItems);
     if (!items) return { ok: false, error: 'config.matrixChoiceItems must be a non-empty JSON object' };
     config.matrixChoiceItems = items;
