@@ -1,24 +1,35 @@
 import { Hono, type Context, type Next } from 'hono';
 import {
+  countInternalFormSubmissionsForForm,
   getFormalooFieldMap,
   getFormalooForm,
   getInternalFormSubmission,
   listInternalFormSubmissions,
   saveFormalooDefinition,
   setFormRenderBackend,
+  updateFormalooBuilderStatus,
   type FormalooForm,
   type InternalFormSubmission,
 } from '@line-crm/db';
 import {
   isInternalOnlyFieldType,
-  normalizeFormDesign,
+  mergeFormOperationsSettings,
   normalizeFormCopy,
+  normalizeFormDesign,
+  normalizeFormRedirect,
+  normalizeSuccessPages,
+  validateFormOperationsSettingsPatch,
   validateHarnessField,
   type FormDesign,
+  type FormOperationsSettingsPatch,
   type HarnessField,
 } from '@line-crm/shared';
 import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/form-image-upload.js';
-import { parseInternalFormDefinition } from '../services/internal-form-runtime.js';
+import {
+  evaluateInternalFormAvailability,
+  parseInternalFormDefinition,
+} from '../services/internal-form-runtime.js';
+import { validateFormRedirectInput } from '../services/formaloo-redirect.js';
 import type { Env } from '../index.js';
 
 export const internalFormsAdmin = new Hono<Env>();
@@ -128,6 +139,73 @@ async function getInternalForm(db: D1Database, formId: string): Promise<Formaloo
   const form = await getFormalooForm(db, formId);
   if (!form || form.deleted || form.render_backend !== 'internal') return null;
   return form;
+}
+
+function jsonObject(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function publicBase(c: Context<Env>): string {
+  return (c.env.WORKER_URL || new URL(c.req.url).origin).replace(/\/+$/, '');
+}
+
+async function serializeInternalForm(c: Context<Env>, form: FormalooForm) {
+  const parsed = parseInternalFormDefinition(form.definition_json);
+  if (!parsed.ok) throw new Error(parsed.error);
+  const raw = jsonObject(form.definition_json);
+  const submitCount = await countInternalFormSubmissionsForForm(c.env.DB, form.id);
+  const published = form.builder_status === 'published';
+  const base = publicBase(c);
+  return {
+    id: form.id,
+    title: form.title,
+    description: form.description,
+    formalooSlug: form.formaloo_slug,
+    builderStatus: form.builder_status,
+    publishedAt: form.published_at,
+    submitCount,
+    onSubmitTagId: form.on_submit_tag_id,
+    onSubmitScenarioId: form.on_submit_scenario_id,
+    submitMessage: form.submit_message,
+    allowPostEdit: form.allow_post_edit,
+    allowEditMail: form.allow_edit_mail,
+    editMailFieldId: null,
+    fields: parsed.definition.fields,
+    logic: parsed.definition.logic,
+    logicFingerprint: null,
+    design: parsed.definition.design,
+    formType: parsed.definition.formType,
+    localizationJa: raw.localizationJa === true,
+    formRedirect: parsed.definition.formRedirect,
+    successPages: parsed.definition.successPages,
+    operationsSettings: parsed.definition.operationsSettings,
+    friendMetadataMappings: [],
+    publicUrl: published ? `${base}/f/${encodeURIComponent(form.id)}` : null,
+    embedCode: null,
+    syncStatus: 'idle',
+    syncError: null,
+    driftStatus: 'none',
+    driftDetectedAt: null,
+    driftHasWarnings: false,
+    lineAccountId: form.line_account_id,
+    workspaceId: form.workspace_id,
+    folderId: form.folder_id,
+    updatedAt: form.updated_at,
+    internalAvailability: evaluateInternalFormAvailability(parsed.definition, submitCount),
+  };
+}
+
+async function loadInternalOrNext(c: Context<Env>, next: Next) {
+  const form = await getInternalForm(c.env.DB, c.req.param('id')!);
+  if (!form) return { form: null, response: await next() } as const;
+  return { form, response: null } as const;
 }
 
 function notFound(c: Context<Env>) {
@@ -355,6 +433,180 @@ internalFormsAdmin.put('/api/forms-advanced/:id/internal-definition', async (c, 
   }
 });
 
+// Internal definitions are authoritative in D1. These exact-path handlers sit
+// before formsAdvanced so no Formaloo sync state or network request is touched.
+internalFormsAdmin.get('/api/forms-advanced/:id', async (c, next) => {
+  try {
+    const loaded = await loadInternalOrNext(c, next);
+    if (!loaded.form) return loaded.response;
+    return c.json({ success: true, data: await serializeInternalForm(c, loaded.form) });
+  } catch (error) {
+    console.error('GET internal /api/forms-advanced/:id error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+internalFormsAdmin.put('/api/forms-advanced/:id', async (c, next) => {
+  try {
+    const loaded = await loadInternalOrNext(c, next);
+    if (!loaded.form) return loaded.response;
+    const form = loaded.form;
+    const body = await c.req.json<Record<string, unknown>>()
+      .catch(() => ({} as Record<string, unknown>));
+    if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
+      return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
+    }
+    if (body.description !== undefined && body.description !== null && typeof body.description !== 'string') {
+      return c.json({ success: false, error: '説明の形式が不正です' }, 400);
+    }
+    if (body.formType !== undefined && body.formType !== 'simple' && body.formType !== 'multi_step') {
+      return c.json({ success: false, error: '表示形式が不正です' }, 400);
+    }
+    const redirectCheck = validateFormRedirectInput(body.formRedirect);
+    if (!redirectCheck.ok) return c.json({ success: false, error: redirectCheck.error }, 400);
+
+    const previous = jsonObject(form.definition_json);
+    let operationsPatch: FormOperationsSettingsPatch = {};
+    if (body.operationsSettings !== undefined) {
+      const validation = validateFormOperationsSettingsPatch(body.operationsSettings);
+      if (!validation.ok) return c.json({ success: false, error: validation.error }, 400);
+      operationsPatch = validation.patch;
+    }
+    const operationsSettings = body.operationsSettings === undefined
+      ? previous.operationsSettings
+      : mergeFormOperationsSettings(previous.operationsSettings, operationsPatch);
+    const rawFields = body.fields === undefined ? previous.fields : body.fields;
+    const fieldsWithPositions = Array.isArray(rawFields)
+      ? rawFields.map((field, index) => (
+        field && typeof field === 'object' && !Array.isArray(field)
+          ? { ...field, position: typeof (field as { position?: unknown }).position === 'number'
+            ? (field as { position: number }).position
+            : index }
+          : field
+      ))
+      : rawFields;
+    const candidate: Record<string, unknown> = {
+      ...previous,
+      fields: fieldsWithPositions,
+      logic: body.logic === undefined ? previous.logic : body.logic,
+      design: body.design === undefined
+        ? previous.design
+        : { ...normalizeFormDesign(previous.design), ...normalizeFormDesign(body.design) },
+      formType: body.formType === undefined ? previous.formType : body.formType,
+      formCopy: body.formCopy === undefined ? previous.formCopy : normalizeFormCopy(body.formCopy),
+      formRedirect: body.formRedirect === undefined ? previous.formRedirect : normalizeFormRedirect(body.formRedirect),
+      successPages: body.successPages === undefined ? previous.successPages : normalizeSuccessPages(body.successPages),
+      operationsSettings,
+    };
+    if (operationsSettings && typeof operationsSettings === 'object'
+      && Object.keys(operationsSettings as object).length === 0) delete candidate.operationsSettings;
+
+    const parsed = parseInternalFormDefinition(JSON.stringify(candidate));
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const designProvided = hasOwn(body, 'design');
+    const designImagesProvided = hasOwn(body, 'designImages');
+    const uploadOrigin = new URL(c.req.url).origin;
+    const imageResult = await resolveInBodyImageUploads(
+      parsed.definition.fields,
+      (dataUrl) => uploadImageDataUrlToR2(c.env, dataUrl, form.id, uploadOrigin),
+      designProvided || designImagesProvided
+        ? {
+            design: parsed.definition.design,
+            designImages: designImagesProvided ? body.designImages : undefined,
+          }
+        : undefined,
+    );
+    if (!imageResult.ok) {
+      return c.json({ success: false, error: '画像の保存に失敗しました (サイズ/形式)' }, 400);
+    }
+
+    candidate.fields = parsed.definition.fields;
+    candidate.logic = parsed.definition.logic;
+    candidate.design = imageResult.design ?? parsed.definition.design;
+    candidate.formType = parsed.definition.formType;
+    candidate.formRedirect = parsed.definition.formRedirect;
+    candidate.successPages = parsed.definition.successPages;
+    candidate.formCopy = normalizeFormCopy(candidate.formCopy);
+    const definitionJson = JSON.stringify(candidate);
+    if (definitionJson.includes('data:image')) {
+      return c.json({ success: false, error: '画像の保存に失敗しました (サイズ/形式)' }, 400);
+    }
+
+    const existingMap = await getFormalooFieldMap(c.env.DB, form.id);
+    const existingSlugs = new Map(existingMap.map((row) => [row.id, row.formaloo_field_slug]));
+    await saveFormalooDefinition(c.env.DB, form.id, {
+      definitionJson,
+      fields: parsed.definition.fields.map((field) => ({
+        id: field.id,
+        formalooFieldSlug: existingSlugs.get(field.id) ?? null,
+        fieldType: field.type,
+        label: field.label,
+        position: field.position,
+        configJson: JSON.stringify(field.config),
+      })),
+      title: typeof body.title === 'string' ? body.title.trim() : form.title,
+      description: body.description === undefined
+        ? form.description
+        : (typeof body.description === 'string' && body.description.trim() ? body.description : null),
+    });
+    const updated = await getInternalForm(c.env.DB, form.id);
+    return c.json({ success: true, data: await serializeInternalForm(c, updated!) });
+  } catch (error) {
+    console.error('PUT internal /api/forms-advanced/:id error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+internalFormsAdmin.post('/api/forms-advanced/:id/submit-for-review', async (c, next) => {
+  try {
+    const loaded = await loadInternalOrNext(c, next);
+    if (!loaded.form) return loaded.response;
+    return c.json({
+      success: false,
+      error: '自前配信は公開確認画面から直接公開してください',
+    }, 409);
+  } catch (error) {
+    console.error('POST internal submit-for-review error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+internalFormsAdmin.post('/api/forms-advanced/:id/publish', async (c, next) => {
+  try {
+    const loaded = await loadInternalOrNext(c, next);
+    if (!loaded.form) return loaded.response;
+    if (!['draft', 'in_review', 'published'].includes(loaded.form.builder_status)) {
+      return c.json({ success: false, error: 'この状態から公開できません' }, 409);
+    }
+    if (loaded.form.builder_status !== 'published') {
+      await updateFormalooBuilderStatus(c.env.DB, loaded.form.id, 'published');
+    }
+    const updated = await getInternalForm(c.env.DB, loaded.form.id);
+    return c.json({ success: true, data: await serializeInternalForm(c, updated!) });
+  } catch (error) {
+    console.error('POST internal publish error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+internalFormsAdmin.post('/api/forms-advanced/:id/unpublish', async (c, next) => {
+  try {
+    const loaded = await loadInternalOrNext(c, next);
+    if (!loaded.form) return loaded.response;
+    if (loaded.form.builder_status !== 'draft' && loaded.form.builder_status !== 'published') {
+      return c.json({ success: false, error: 'この状態から下書きに戻せません' }, 409);
+    }
+    if (loaded.form.builder_status !== 'draft') {
+      await updateFormalooBuilderStatus(c.env.DB, loaded.form.id, 'draft');
+    }
+    const updated = await getInternalForm(c.env.DB, loaded.form.id);
+    return c.json({ success: true, data: await serializeInternalForm(c, updated!) });
+  } catch (error) {
+    console.error('POST internal unpublish error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // These routes depend on Formaloo or its D1 mirror. Internal forms must never fall
 // through to them, while Formaloo forms continue to the existing handlers byte-for-byte.
 internalFormsAdmin.get('/api/forms-advanced/:id/export.csv', rejectInternalFormalooMutation);
@@ -372,17 +624,21 @@ internalFormsAdmin.get('/api/forms-advanced/:id/share', async (c, next) => {
     if (!form) return next();
 
     const published = form.builder_status === 'published';
-    const base = (c.env.WORKER_URL || new URL(c.req.url).origin).replace(/\/+$/, '');
+    const base = publicBase(c);
+    const parsed = parseInternalFormDefinition(form.definition_json);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 409);
+    const submitCount = await countInternalFormSubmissionsForForm(c.env.DB, id);
     return c.json({
       success: true,
       data: {
         published,
         publicUrl: published ? `${base}/f/${encodeURIComponent(id)}` : null,
-        lineDistUrl: null,
+        lineDistUrl: published ? `${base}/fo/${encodeURIComponent(id)}` : null,
         iframeCode: null,
         scriptCode: null,
         gsheetConnected: false,
         gsheetUrl: null,
+        internalAvailability: evaluateInternalFormAvailability(parsed.definition, submitCount),
       },
     });
   } catch (error) {

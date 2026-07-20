@@ -249,6 +249,7 @@ beforeEach(() => {
 
 afterEach(() => {
   raw.close();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -681,6 +682,96 @@ describe('internal answer admin read path', () => {
 });
 
 describe('internal hosting provider boundary', () => {
+  test('definition save stays local and returns an internally consistent admin view', async () => {
+    seedForm('internal-form', 'internal');
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-form'").run();
+    const externalFetch = vi.fn(async () => { throw new Error('Formaloo must not run'); });
+    vi.stubGlobal('fetch', externalFetch);
+    bindingOverrides = { FORMALOO_API_KEY: 'unused', FORMALOO_API_SECRET: 'unused' };
+
+    const response = await call('PUT', '/api/forms-advanced/internal-form', {
+      title: '自前フォーム',
+      description: '自社で受付します',
+      fields: DEFINITION.fields,
+      logic: [],
+      formType: 'simple',
+      design: { themeColor: '#123456', backgroundColor: '#F0F0F0' },
+      operationsSettings: {
+        maxSubmitCount: 2,
+        submitStartTime: '2026-07-25T00:00:00+09:00',
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      data: {
+        id: 'internal-form', title: '自前フォーム', builderStatus: 'draft',
+        syncStatus: 'idle', syncError: null, publicUrl: null,
+        design: { themeColor: '#123456', backgroundColor: '#F0F0F0' },
+        operationsSettings: { maxSubmitCount: 2, submitStartTime: '2026-07-25T00:00:00+09:00' },
+      },
+    });
+    const stored = JSON.parse((raw.prepare(
+      "SELECT definition_json FROM formaloo_forms WHERE id = 'internal-form'",
+    ).get() as { definition_json: string }).definition_json);
+    expect(stored).toMatchObject({ formType: 'simple', design: { themeColor: '#123456' } });
+    expect(externalFetch).not.toHaveBeenCalled();
+  });
+
+  test('publishes a draft directly, is retry-safe, exposes honest upcoming state, and unpublishes locally', async () => {
+    seedForm('internal-form', 'internal', {
+      definition: {
+        ...DEFINITION,
+        operationsSettings: { submitStartTime: '2099-07-25T00:00:00+09:00' },
+      },
+    });
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft', published_at = NULL WHERE id = 'internal-form'").run();
+    const externalFetch = vi.fn(async () => { throw new Error('Formaloo must not run'); });
+    vi.stubGlobal('fetch', externalFetch);
+
+    const published = await call('POST', '/api/forms-advanced/internal-form/publish');
+    expect(published.status).toBe(200);
+    expect(await published.json()).toMatchObject({
+      success: true,
+      data: {
+        builderStatus: 'published',
+        publicUrl: 'https://api.example.test/f/internal-form',
+        internalAvailability: { status: 'upcoming', message: '受付開始前・7月25日から' },
+      },
+    });
+    expect((await call('POST', '/api/forms-advanced/internal-form/publish')).status).toBe(200);
+
+    const share = await call('GET', '/api/forms-advanced/internal-form/share');
+    expect(await share.json()).toMatchObject({
+      data: {
+        published: true,
+        publicUrl: 'https://api.example.test/f/internal-form',
+        lineDistUrl: 'https://api.example.test/fo/internal-form',
+        internalAvailability: { status: 'upcoming' },
+      },
+    });
+
+    const unpublished = await call('POST', '/api/forms-advanced/internal-form/unpublish');
+    expect(unpublished.status).toBe(200);
+    expect(await unpublished.json()).toMatchObject({
+      success: true,
+      data: { builderStatus: 'draft', publicUrl: null },
+    });
+    expect(externalFetch).not.toHaveBeenCalled();
+  });
+
+  test('does not introduce a review step for internal forms', async () => {
+    seedForm('internal-form', 'internal');
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-form'").run();
+    const response = await call('POST', '/api/forms-advanced/internal-form/submit-for-review');
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: '自前配信は公開確認画面から直接公開してください',
+    });
+  });
+
   test('share exposes only the published local /f URL without Formaloo, embed, or Sheets data', async () => {
     seedForm('internal-form', 'internal');
     const externalFetch = vi.fn(async () => new Response('{}', { status: 200 }));
@@ -698,11 +789,12 @@ describe('internal hosting provider boundary', () => {
       data: {
         published: true,
         publicUrl: 'https://internal.example.test/base/f/internal-form',
-        lineDistUrl: null,
+        lineDistUrl: 'https://internal.example.test/base/fo/internal-form',
         iframeCode: null,
         scriptCode: null,
         gsheetConnected: false,
         gsheetUrl: null,
+        internalAvailability: { status: 'open', message: null },
       },
     });
 
@@ -784,6 +876,7 @@ describe('auth, permission, and Formaloo passthrough regression', () => {
   });
 
   test.each([
+    ['PUT', '/api/forms-advanced/formaloo-form', { title: '' }],
     ['POST', '/api/forms-advanced/formaloo-form/reapply-hosted', undefined],
     ['PATCH', '/api/forms-advanced/formaloo-form/rows/formaloo-sub', { answers: { name: '変更' } }],
     ['POST', '/api/forms-advanced/formaloo-form/import', { csv: '' }],
@@ -801,6 +894,21 @@ describe('auth, permission, and Formaloo passthrough regression', () => {
 
     expect(stacked.status).toBe(existingStatus);
     expect(await stacked.text()).toBe(existingBody);
+  });
+
+  test('formaloo publish transition response remains byte-identical through the pre-router', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-21T04:30:00.000Z'));
+    seedForm('formaloo-form', 'formaloo');
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'in_review', published_at = NULL WHERE id = 'formaloo-form'").run();
+    const existing = await call('POST', '/api/forms-advanced/formaloo-form/publish', undefined, { withInternalRouter: false });
+    const expectedStatus = existing.status;
+    const expectedBody = await existing.text();
+
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'in_review', published_at = NULL WHERE id = 'formaloo-form'").run();
+    const stacked = await call('POST', '/api/forms-advanced/formaloo-form/publish');
+    expect(stacked.status).toBe(expectedStatus);
+    expect(await stacked.text()).toBe(expectedBody);
   });
 
   test('index mounts the pre-router before formsAdvanced', () => {
