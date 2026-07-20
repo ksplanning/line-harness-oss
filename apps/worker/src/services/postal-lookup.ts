@@ -92,6 +92,13 @@ export function createPostalLookupService(options: PostalLookupOptions = {}) {
       if (
         typeof candidate !== 'object' ||
         candidate === null ||
+        typeof candidate.address1 !== 'string' ||
+        typeof candidate.address2 !== 'string' ||
+        typeof candidate.address3 !== 'string'
+      ) {
+        throw new PostalLookupUpstreamError();
+      }
+      if (
         candidate.address1 !== result.address1 ||
         candidate.address2 !== result.address2 ||
         candidate.address3 !== result.address3

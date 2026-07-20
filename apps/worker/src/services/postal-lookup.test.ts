@@ -104,6 +104,22 @@ describe('postal lookup service', () => {
     });
   });
 
+  test('2件目以降の候補も JSON shape を検証する', async () => {
+    const first = ZIPCLOUD_ADDRESS_RESPONSE.results[0];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        message: null,
+        results: [first, { ...first, address2: 42 }],
+        status: 200,
+      }),
+    );
+    const lookup = createPostalLookupService({ fetchImpl });
+
+    await expect(lookup('5690000')).rejects.toMatchObject({
+      name: 'PostalLookupUpstreamError',
+    });
+  });
+
   test('同じ郵便番号の正常結果を再利用して upstream 呼出しを減らす', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
       async () => Response.json(ZIPCLOUD_ADDRESS_RESPONSE),
