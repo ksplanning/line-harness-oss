@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { api } from '@/lib/api';
 import PersonalizedTextEditor from './personalized-text-editor';
@@ -194,6 +194,39 @@ describe('PersonalizedTextEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
 
     expect(screen.getByRole('button', { name: '最近使った絵文字 🌸 を挿入' })).toBeTruthy();
+  });
+
+  test('単一行入力でもカーソル挿入し、既存の keydown と外部 ref を保つ', async () => {
+    const onKeyDown = vi.fn();
+
+    function SingleLineHarness() {
+      const [value, setValue] = useState('返信です');
+      const inputRef = useRef<HTMLInputElement>(null);
+      return (
+        <PersonalizedTextEditor
+          value={value}
+          onChange={setValue}
+          mode="emoji-only"
+          multiline={false}
+          ariaLabel="単一行メッセージ"
+          inputRef={inputRef}
+          inputProps={{ onKeyDown }}
+        />
+      );
+    }
+
+    render(<SingleLineHarness />);
+    const input = screen.getByRole('textbox', { name: '単一行メッセージ' }) as HTMLInputElement;
+    expect(input.tagName).toBe('INPUT');
+    input.focus();
+    input.setSelectionRange(2, 2);
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
+    fireEvent.click(screen.getByRole('button', { name: '絵文字 😊 を挿入' }));
+    await waitFor(() => expect(input.value).toBe('返信😊です'));
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onKeyDown).toHaveBeenCalledTimes(1);
   });
 
   test('カスタム項目 API が失敗しても、名前変数と絵文字と通常入力は使える', async () => {

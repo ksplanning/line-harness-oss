@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import type { InputHTMLAttributes, Ref, TextareaHTMLAttributes } from 'react'
 import type { FriendFieldDefinition } from '@line-crm/shared'
 import { api } from '@/lib/api'
 
@@ -12,6 +13,13 @@ interface PersonalizedTextEditorProps {
   placeholder?: string
   rows?: number
   className?: string
+  containerClassName?: string
+  multiline?: boolean
+  disabled?: boolean
+  textareaRef?: Ref<HTMLTextAreaElement>
+  inputRef?: Ref<HTMLInputElement>
+  textareaProps?: Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'aria-label' | 'className' | 'disabled' | 'onChange' | 'placeholder' | 'rows' | 'value'>
+  inputProps?: Omit<InputHTMLAttributes<HTMLInputElement>, 'aria-label' | 'className' | 'disabled' | 'onChange' | 'placeholder' | 'type' | 'value'>
 }
 
 const RECENT_EMOJIS_STORAGE_KEY = 'line-crm:recent-emojis'
@@ -26,6 +34,11 @@ function readRecentEmojis(): string[] | null {
   } catch {
     return null
   }
+}
+
+function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
+  if (typeof ref === 'function') ref(value)
+  else if (ref) ref.current = value
 }
 
 const EMOJI_CATEGORIES = [
@@ -54,8 +67,15 @@ export default function PersonalizedTextEditor({
   placeholder,
   rows = 4,
   className = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y',
+  containerClassName = 'space-y-2',
+  multiline = true,
+  disabled = false,
+  textareaRef,
+  inputRef,
+  textareaProps,
+  inputProps,
 }: PersonalizedTextEditorProps) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fieldRef = useRef<HTMLTextAreaElement | HTMLInputElement>(null)
   const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
   const [variablesOpen, setVariablesOpen] = useState(false)
   const [emojiOpen, setEmojiOpen] = useState(false)
@@ -98,17 +118,17 @@ export default function PersonalizedTextEditor({
   }, [variablesOpen, emojiOpen])
 
   const insertAtSelection = (text: string) => {
-    const textarea = textareaRef.current
-    const start = textarea?.selectionStart ?? value.length
-    const end = textarea?.selectionEnd ?? start
+    const field = fieldRef.current
+    const start = field?.selectionStart ?? value.length
+    const end = field?.selectionEnd ?? start
     const nextValue = `${value.slice(0, start)}${text}${value.slice(end)}`
     const nextCaret = start + text.length
     onChange(nextValue)
     setVariablesOpen(false)
     setEmojiOpen(false)
     requestAnimationFrame(() => {
-      textarea?.focus()
-      textarea?.setSelectionRange(nextCaret, nextCaret)
+      field?.focus()
+      field?.setSelectionRange(nextCaret, nextCaret)
     })
   }
 
@@ -128,7 +148,7 @@ export default function PersonalizedTextEditor({
   const activeEmojiCategory = EMOJI_CATEGORIES.find((category) => category.id === emojiCategory)!
 
   return (
-    <div className="space-y-2">
+    <div className={containerClassName}>
       <div className="relative flex flex-wrap gap-2">
         {variablesEnabled && (
           <button
@@ -256,15 +276,37 @@ export default function PersonalizedTextEditor({
         )}
       </div>
 
-      <textarea
-        ref={textareaRef}
-        aria-label={ariaLabel}
-        className={className}
-        rows={rows}
-        placeholder={placeholder}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      {multiline ? (
+        <textarea
+          {...textareaProps}
+          ref={(element) => {
+            fieldRef.current = element
+            assignRef(textareaRef, element)
+          }}
+          aria-label={ariaLabel}
+          className={className}
+          disabled={disabled}
+          rows={rows}
+          placeholder={placeholder}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      ) : (
+        <input
+          {...inputProps}
+          ref={(element) => {
+            fieldRef.current = element
+            assignRef(inputRef, element)
+          }}
+          type="text"
+          aria-label={ariaLabel}
+          className={className}
+          disabled={disabled}
+          placeholder={placeholder}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
       {variablesEnabled && (
         <p className="text-xs text-gray-400">
           「友だちの名前」は送信時に表示名へ置き換わります。名前がない場合は「お客様」になります。
