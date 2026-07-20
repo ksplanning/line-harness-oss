@@ -764,7 +764,7 @@ export async function claimNextSheetsWebhookEvent(
 ): Promise<SheetsWebhookEvent | null> {
   await db.prepare(
     `UPDATE sheets_sync_webhook_events
-     SET status = 'dead', payload_json = NULL, actor = 'redacted',
+     SET status = 'dead', payload_json = NULL, actor = 'redacted', actor_kind = 'unavailable',
          processing_token = NULL, processing_expires_at = NULL,
          completed_at = ?, last_error_code = 'webhook_event_expired'
      WHERE line_account_id = ? AND connection_id = ? AND status = 'pending'
@@ -772,7 +772,7 @@ export async function claimNextSheetsWebhookEvent(
   ).bind(input.now, lineAccountId, connectionId, input.maxAttempts, input.discardBefore).run();
   const row = await db.prepare(
     `UPDATE sheets_sync_webhook_events
-     SET processing_token = ?, processing_expires_at = ?, attempts = attempts + 1
+     SET processing_token = ?, processing_expires_at = ?
      WHERE sequence = (
        SELECT e.sequence
        FROM sheets_sync_webhook_events e
@@ -787,6 +787,10 @@ export async function claimNextSheetsWebhookEvent(
          AND c.line_account_id = e.line_account_id
          AND c.config_version = e.connection_version
          AND c.friend_ledger_enabled = 1 AND c.is_active = 1 AND c.deleted_at IS NULL
+         AND (
+           c.sync_lock_token IS NULL OR c.sync_lock_expires_at IS NULL
+           OR julianday(c.sync_lock_expires_at) <= julianday(?)
+         )
        ORDER BY e.sequence ASC
        LIMIT 1
      )
@@ -801,6 +805,7 @@ export async function claimNextSheetsWebhookEvent(
     connectionId,
     connectionVersion,
     input.maxAttempts,
+    input.now,
     input.now,
     input.now,
   ).first<SheetsWebhookEventRow>();
@@ -822,7 +827,7 @@ export async function finishSheetsWebhookEvent(
 ): Promise<boolean> {
   const result = await db.prepare(
     `UPDATE sheets_sync_webhook_events
-     SET status = ?, payload_json = NULL, actor = 'redacted',
+     SET status = ?, payload_json = NULL, actor = 'redacted', actor_kind = 'unavailable',
          processing_token = NULL, processing_expires_at = NULL,
          completed_at = ?, last_error_code = ?
      WHERE connection_id = ? AND connection_version = ? AND event_id = ?
@@ -854,18 +859,12 @@ export async function deferSheetsWebhookEvent(
   input: {
     processingToken: string;
     availableAt: string;
-    completedAt: string;
     errorCode: string;
-    maxAttempts: number;
   },
 ): Promise<boolean> {
   const result = await db.prepare(
     `UPDATE sheets_sync_webhook_events
-     SET status = CASE WHEN attempts >= ? THEN 'dead' ELSE 'pending' END,
-         payload_json = CASE WHEN attempts >= ? THEN NULL ELSE payload_json END,
-         actor = CASE WHEN attempts >= ? THEN 'redacted' ELSE actor END,
-         available_at = ?, processing_token = NULL, processing_expires_at = NULL,
-         completed_at = CASE WHEN attempts >= ? THEN ? ELSE NULL END,
+     SET available_at = ?, processing_token = NULL, processing_expires_at = NULL,
          last_error_code = ?
      WHERE connection_id = ? AND connection_version = ? AND event_id = ?
        AND line_account_id = ? AND status = 'pending' AND processing_token = ?
@@ -875,6 +874,51 @@ export async function deferSheetsWebhookEvent(
            AND c.line_account_id = sheets_sync_webhook_events.line_account_id
        )`,
   ).bind(
+    input.availableAt,
+    input.errorCode,
+    connectionId,
+    connectionVersion,
+    eventId,
+    lineAccountId,
+    input.processingToken,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+export async function failSheetsWebhookEvent(
+  db: D1Database,
+  lineAccountId: string,
+  connectionId: string,
+  connectionVersion: number,
+  eventId: string,
+  input: {
+    processingToken: string;
+    availableAt: string;
+    completedAt: string;
+    errorCode: string;
+    maxAttempts: number;
+  },
+): Promise<SheetsWebhookEventStatus | null> {
+  const row = await db.prepare(
+    `UPDATE sheets_sync_webhook_events
+     SET attempts = attempts + 1,
+         status = CASE WHEN attempts + 1 >= ? THEN 'dead' ELSE 'pending' END,
+         payload_json = CASE WHEN attempts + 1 >= ? THEN NULL ELSE payload_json END,
+         actor = CASE WHEN attempts + 1 >= ? THEN 'redacted' ELSE actor END,
+         actor_kind = CASE WHEN attempts + 1 >= ? THEN 'unavailable' ELSE actor_kind END,
+         available_at = ?, processing_token = NULL, processing_expires_at = NULL,
+         completed_at = CASE WHEN attempts + 1 >= ? THEN ? ELSE NULL END,
+         last_error_code = ?
+     WHERE connection_id = ? AND connection_version = ? AND event_id = ?
+       AND line_account_id = ? AND status = 'pending' AND processing_token = ?
+       AND EXISTS (
+         SELECT 1 FROM sheets_connections c
+         WHERE c.id = sheets_sync_webhook_events.connection_id
+           AND c.line_account_id = sheets_sync_webhook_events.line_account_id
+       )
+     RETURNING status`,
+  ).bind(
+    input.maxAttempts,
     input.maxAttempts,
     input.maxAttempts,
     input.maxAttempts,
@@ -887,8 +931,8 @@ export async function deferSheetsWebhookEvent(
     eventId,
     lineAccountId,
     input.processingToken,
-  ).run();
-  return (result.meta.changes ?? 0) === 1;
+  ).first<{ status: SheetsWebhookEventStatus }>();
+  return row?.status ?? null;
 }
 
 export async function claimSheetsSyncLock(
@@ -1162,4 +1206,22 @@ export async function listSheetsSyncAudit(
     detailsByAudit.set(row.audit_id, details);
   }
   return auditResult.results.map((row) => serializeAudit(row, detailsByAudit.get(row.id) ?? []));
+}
+
+export async function hasSheetsSyncAuditForWebhookEvent(
+  db: D1Database,
+  lineAccountId: string,
+  connectionId: string,
+  connectionVersion: number,
+  webhookEventId: string,
+): Promise<boolean> {
+  const row = await db.prepare(
+    `SELECT 1 AS present
+     FROM sheets_sync_audit_log
+     WHERE line_account_id = ? AND connection_id = ? AND connection_version = ?
+       AND webhook_event_id = ?
+     LIMIT 1`,
+  ).bind(lineAccountId, connectionId, connectionVersion, webhookEventId)
+    .first<{ present: number }>();
+  return row?.present === 1;
 }

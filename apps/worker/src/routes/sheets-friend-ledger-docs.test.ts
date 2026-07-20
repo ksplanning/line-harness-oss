@@ -9,7 +9,7 @@ const SCRIPT_PATH = join(ROOT, 'docs/google-sheets-friend-ledger-onedit.gs');
 const GUIDE_PATH = join(ROOT, 'docs/google-sheets-friend-ledger-sync-setup.md');
 
 describe('Google Sheets friend ledger owner handoff documents', () => {
-  test('the copy-once Apps Script installs an edit trigger and signs only a range notification', () => {
+  test('the copy-once Apps Script signs an idempotent single-cell edit snapshot', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
 
     for (const required of [
@@ -23,6 +23,11 @@ describe('Google Sheets friend ledger owner handoff documents', () => {
       'X-Sheets-Timestamp',
       'SHEETS_WEBHOOK_SECRET',
       'Utilities.sleep',
+      'Utilities.getUuid',
+      'event.value',
+      'event.oldValue',
+      'oldValueKnown',
+      'actorKind',
     ]) {
       expect(script).toContain(required);
     }

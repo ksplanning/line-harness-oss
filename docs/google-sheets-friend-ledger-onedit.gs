@@ -3,7 +3,8 @@
  *
  * このファイル全体を Apps Script にコピペし、先にスクリプト
  * プロパティを設定してから installFriendLedgerSync() を 1 回実行します。
- * セル値は送信せず、編集範囲だけを署名して通知します。
+ * 単一セルの編集前後値と一意な通知 ID をまとめて署名します。
+ * 複数セルの貼り付けは、5 分ごとの安全なポーリングで反映します。
  */
 
 var FRIEND_LEDGER_PROPERTY_NAMES = [
@@ -60,11 +61,17 @@ function friendLedgerOnEdit(event) {
     spreadsheet.getId() !== values.SHEETS_SPREADSHEET_ID ||
     sheet.getName() !== values.SHEETS_SHEET_NAME
   ) return;
+  if (event.range.getNumRows() !== 1 || event.range.getNumColumns() !== 1) return;
 
   var timestamp = new Date().toISOString();
-  var actor = Session.getActiveUser().getEmail() || 'google_sheets_editor';
+  var actorEmail = Session.getActiveUser().getEmail();
+  var actor = actorEmail || 'google_sheets_editor_unavailable';
+  var actorKind = actorEmail ? 'google_email' : 'unavailable';
+  var oldValueKnown = event.oldValue !== undefined;
   var payload = JSON.stringify({
-    version: 1,
+    version: 2,
+    eventId: Utilities.getUuid(),
+    occurredAt: timestamp,
     connectionId: values.SHEETS_CONNECTION_ID,
     spreadsheetId: spreadsheet.getId(),
     sheetName: sheet.getName(),
@@ -74,24 +81,36 @@ function friendLedgerOnEdit(event) {
       columnStart: event.range.getColumn(),
       columnEnd: event.range.getLastColumn()
     },
-    actor: actor
+    snapshot: {
+      rowNumber: event.range.getRow(),
+      columnNumber: event.range.getColumn(),
+      value: event.value === undefined ? '' : event.value,
+      oldValue: oldValueKnown ? event.oldValue : null,
+      oldValueKnown: oldValueKnown
+    },
+    actor: actor,
+    actorKind: actorKind
   });
   var signature = hmacHex_(timestamp + '.' + payload, values.SHEETS_WEBHOOK_SECRET);
   var response;
   var status = 0;
   for (var attempt = 0; attempt < 3; attempt += 1) {
-    response = UrlFetchApp.fetch(values.SHEETS_WEBHOOK_URL, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: payload,
-      headers: {
-        'X-Sheets-Signature': signature,
-        'X-Sheets-Timestamp': timestamp
-      },
-      muteHttpExceptions: true
-    });
-    status = response.getResponseCode();
-    if ([409, 429, 503].indexOf(status) === -1 || attempt === 2) break;
+    try {
+      response = UrlFetchApp.fetch(values.SHEETS_WEBHOOK_URL, {
+        method: 'post',
+        contentType: 'application/json',
+        payload: payload,
+        headers: {
+          'X-Sheets-Signature': signature,
+          'X-Sheets-Timestamp': timestamp
+        },
+        muteHttpExceptions: true
+      });
+      status = response.getResponseCode();
+    } catch (error) {
+      status = 0;
+    }
+    if ([0, 409, 429, 503].indexOf(status) === -1 || attempt === 2) break;
     Utilities.sleep(1000 * Math.pow(2, attempt));
   }
   if (status < 200 || status >= 300) {

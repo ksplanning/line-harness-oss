@@ -578,12 +578,21 @@ describe('Sheets connections DB helper', () => {
       eventId: input.eventId,
       actor: input.actor,
       payload: input.payload,
-      attempts: 1,
+      attempts: 0,
       processingToken: claimInput.token,
     }));
     await expect(friendLedgerDb.claimNextSheetsWebhookEvent(
       db, 'acc-1', created.id, 1, { ...claimInput, token: 'claim-token-2' },
     )).resolves.toBeNull();
+    const reclaimed = {
+      ...claimInput,
+      token: 'claim-token-2',
+      now: '2026-07-21T10:02:02+09:00',
+      expiresAt: '2026-07-21T10:04:02+09:00',
+    };
+    await expect(friendLedgerDb.claimNextSheetsWebhookEvent(
+      db, 'acc-1', created.id, 1, reclaimed,
+    )).resolves.toEqual(expect.objectContaining({ processingToken: reclaimed.token }));
     await expect(friendLedgerDb.finishSheetsWebhookEvent(
       db, 'acc-2', created.id, 1, input.eventId,
       {
@@ -601,16 +610,17 @@ describe('Sheets connections DB helper', () => {
     await expect(friendLedgerDb.finishSheetsWebhookEvent(
       db, 'acc-1', created.id, 1, input.eventId,
       {
-        processingToken: claimInput.token,
+        processingToken: reclaimed.token,
         status: 'applied', completedAt: '2026-07-21T10:00:02+09:00', errorCode: null,
       },
     )).resolves.toBe(true);
     await expect(friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, input))
       .resolves.toEqual({ sequence: 1, status: 'applied', enqueued: false });
-    expect(raw.prepare(`SELECT status, payload_json, actor, attempts, processing_token
+    expect(raw.prepare(`SELECT status, payload_json, actor, actor_kind, attempts, processing_token
       FROM sheets_sync_webhook_events
       WHERE connection_id=? AND event_id=?`).get(created.id, input.eventId)).toEqual({
-      status: 'applied', payload_json: null, actor: 'redacted', attempts: 1, processing_token: null,
+      status: 'applied', payload_json: null, actor: 'redacted', actor_kind: 'unavailable',
+      attempts: 0, processing_token: null,
     });
 
     await friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, {

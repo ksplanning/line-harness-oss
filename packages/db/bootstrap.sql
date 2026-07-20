@@ -1212,7 +1212,7 @@ CREATE TABLE sheets_sync_ledger (
 CREATE TABLE sheets_sync_webhook_events (
   sequence           INTEGER PRIMARY KEY AUTOINCREMENT,
   connection_id      TEXT NOT NULL REFERENCES sheets_connections (id) ON DELETE CASCADE,
-  line_account_id    TEXT NOT NULL,
+  line_account_id    TEXT NOT NULL REFERENCES line_accounts (id) ON DELETE CASCADE,
   connection_version INTEGER NOT NULL CHECK (connection_version >= 1),
   event_id            TEXT NOT NULL CHECK (length(event_id) BETWEEN 16 AND 200),
   actor               TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 320),
@@ -1228,7 +1228,14 @@ CREATE TABLE sheets_sync_webhook_events (
   completed_at        TEXT,
   last_error_code     TEXT,
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  UNIQUE (connection_id, event_id)
+  UNIQUE (connection_id, event_id),
+  CHECK ((processing_token IS NULL) = (processing_expires_at IS NULL)),
+  CHECK (
+    (status = 'pending' AND payload_json IS NOT NULL AND completed_at IS NULL)
+    OR
+    (status IN ('applied', 'dead') AND payload_json IS NULL
+      AND processing_token IS NULL AND completed_at IS NOT NULL)
+  )
 );
 
 CREATE TABLE staff (
@@ -1813,7 +1820,7 @@ WHEN NEW.config_version <> OLD.config_version
   OR NEW.line_account_id IS NOT OLD.line_account_id
 BEGIN
   UPDATE sheets_sync_webhook_events
-  SET status = 'dead', payload_json = NULL, actor = 'redacted',
+  SET status = 'dead', payload_json = NULL, actor = 'redacted', actor_kind = 'unavailable',
       processing_token = NULL, processing_expires_at = NULL,
       completed_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'),
       last_error_code = 'connection_changed'

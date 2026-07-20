@@ -3,9 +3,18 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test } from 'vitest';
-import { createSheetsConnection, getSheetsConnection, type SheetsConnection } from '@line-crm/db';
+import {
+  createSheetsConnection,
+  enqueueSheetsWebhookEvent,
+  getSheetsConnection,
+  type SheetsConnection,
+} from '@line-crm/db';
 import type { SheetCellValue, SheetsDataUpdate } from './google-sheets.js';
-import { syncFriendLedger } from './friend-ledger-sync.js';
+import {
+  drainFriendLedgerWebhookEvents,
+  syncFriendLedger,
+  type FriendLedgerWebhookSnapshot,
+} from './friend-ledger-sync.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
@@ -106,6 +115,8 @@ async function run(
   source: 'manual' | 'polling' | 'webhook' = 'manual',
   actor = 'owner',
   range?: { rowStart: number; rowEnd: number; columnStart: number; columnEnd: number },
+  snapshot?: FriendLedgerWebhookSnapshot,
+  webhookEventId?: string,
 ) {
   connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
   return syncFriendLedger({
@@ -115,6 +126,8 @@ async function run(
     source,
     actor,
     range,
+    snapshot,
+    webhookEventId,
     now: () => new Date('2026-07-21T03:00:00.000Z'),
   });
 }
@@ -457,6 +470,163 @@ describe('friend ledger bidirectional sync', () => {
     const polling = await run('polling', 'system_poll');
     expect(polling.importedFields).toBe(1);
     expect(metadata('friend-b')).toMatchObject({ 入金確認: 'B sheet' });
+  });
+
+  test('imports the signed single-cell snapshot instead of a later sheet reread', async () => {
+    await run();
+    client.values[1][3] = 'さらに後の編集';
+
+    const result = await run(
+      'webhook',
+      'editor-snapshot@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      { rowNumber: 2, columnNumber: 4, value: '署名済み編集', oldValue: '未', oldValueKnown: true },
+      'event-snapshot-0001',
+    );
+
+    expect(result.importedFields).toBe(1);
+    expect(metadata()).toMatchObject({ 入金確認: '署名済み編集' });
+    expect(raw.prepare(`SELECT webhook_event_id FROM sheets_sync_audit_log
+      WHERE webhook_event_id IS NOT NULL`).get()).toEqual({ webhook_event_id: 'event-snapshot-0001' });
+    expect(raw.prepare(`SELECT actor, old_value, new_value FROM sheets_sync_audit_details
+      WHERE source='webhook' ORDER BY created_at DESC LIMIT 1`).get()).toEqual({
+      actor: 'editor-snapshot@example.test', old_value: '未', new_value: '署名済み編集',
+    });
+  });
+
+  test('logs and skips an out-of-order snapshot after a newer edit already won', async () => {
+    await run();
+    client.values[1][3] = '新しい編集';
+    await run(
+      'webhook',
+      'newer@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      { rowNumber: 2, columnNumber: 4, value: '新しい編集', oldValue: '中間値', oldValueKnown: true },
+      'event-newer-0000001',
+    );
+
+    const stale = await run(
+      'webhook',
+      'older@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      { rowNumber: 2, columnNumber: 4, value: '中間値', oldValue: '未', oldValueKnown: true },
+      'event-older-0000001',
+    );
+
+    expect(stale.status).toBe('warning');
+    expect(stale.warnings.join(' ')).toContain('古い編集通知');
+    expect(metadata()).toMatchObject({ 入金確認: '新しい編集' });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE webhook_event_id='event-older-0000001'`).get()).toEqual({
+      outcome: 'skipped', error_code: 'stale_webhook_event',
+    });
+  });
+
+  test('leases, applies, and redacts a durable signed webhook event', async () => {
+    await run();
+    client.values[1][3] = 'live-after-edit';
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+    await enqueueSheetsWebhookEvent(db, 'acc-1', connection.id, connection.configVersion, {
+      eventId: 'event-durable-000001',
+      actor: 'durable-editor@example.test',
+      actorKind: 'google_email',
+      occurredAt: '2026-07-21T03:00:00.000Z',
+      payload: {
+        range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+        snapshot: {
+          rowNumber: 2, columnNumber: 4, value: 'durable-value', oldValue: '未', oldValueKnown: true,
+        },
+      },
+      receivedAt: '2026-07-21T12:00:00+09:00',
+    });
+
+    const drained = await drainFriendLedgerWebhookEvents({
+      db,
+      connection,
+      client,
+      maxEvents: 5,
+      now: () => new Date('2026-07-21T03:00:01.000Z'),
+    });
+
+    expect(drained).toMatchObject({ attempted: 1, applied: 1, deferred: 0, dead: 0 });
+    expect(metadata()).toMatchObject({ 入金確認: 'durable-value' });
+    expect(raw.prepare(`SELECT status, actor, payload_json, attempts, processing_token
+      FROM sheets_sync_webhook_events WHERE event_id='event-durable-000001'`).get()).toEqual({
+      status: 'applied', actor: 'redacted', payload_json: null, attempts: 0, processing_token: null,
+    });
+  });
+
+  test('does not spend retry attempts while a manual sync owns the connection lock', async () => {
+    await run();
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+    await enqueueSheetsWebhookEvent(db, 'acc-1', connection.id, connection.configVersion, {
+      eventId: 'event-busy-000000001',
+      actor: 'busy-editor@example.test',
+      actorKind: 'google_email',
+      occurredAt: '2026-07-21T03:00:00.000Z',
+      payload: {
+        range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+        snapshot: { rowNumber: 2, columnNumber: 4, value: '待機', oldValue: '未', oldValueKnown: true },
+      },
+      receivedAt: '2026-07-21T12:00:00+09:00',
+    });
+    raw.prepare(`UPDATE sheets_connections
+      SET sync_lock_token='manual-owner', sync_lock_expires_at='2026-07-21T12:02:00+09:00'
+      WHERE id=?`).run(connection.id);
+
+    const drained = await drainFriendLedgerWebhookEvents({
+      db,
+      connection,
+      client,
+      maxEvents: 1,
+      now: () => new Date('2026-07-21T03:00:01.000Z'),
+    });
+
+    expect(drained).toMatchObject({ attempted: 0, applied: 0, deferred: 0, dead: 0 });
+    expect(raw.prepare(`SELECT status, attempts, processing_token FROM sheets_sync_webhook_events
+      WHERE event_id='event-busy-000000001'`).get()).toEqual({
+      status: 'pending', attempts: 0, processing_token: null,
+    });
+  });
+
+  test('finishes a recovered event when its immutable audit already proves application', async () => {
+    await run();
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+    const eventId = 'event-recovery-000001';
+    await enqueueSheetsWebhookEvent(db, 'acc-1', connection.id, connection.configVersion, {
+      eventId,
+      actor: 'recovered-editor@example.test',
+      actorKind: 'google_email',
+      occurredAt: '2026-07-21T03:00:00.000Z',
+      payload: {
+        range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+        snapshot: { rowNumber: 2, columnNumber: 4, value: '再実行しない', oldValue: '未', oldValueKnown: true },
+      },
+      receivedAt: '2026-07-21T12:00:00+09:00',
+    });
+    raw.prepare(`INSERT INTO sheets_sync_audit_log
+      (id, connection_id, connection_version, apply_sequence, line_account_id, form_id,
+       spreadsheet_id, sheet_name, record_key, sheet_row_number, direction, action, outcome,
+       webhook_event_id)
+      VALUES ('audit-recovered', ?, ?, 999, 'acc-1', 'friend-ledger', 'sheet-1', '友だち台帳',
+              'friend-ayako', 2, 'from_sheets', 'update', 'applied', ?)`).run(
+      connection.id,
+      connection.configVersion,
+      eventId,
+    );
+
+    const drained = await drainFriendLedgerWebhookEvents({
+      db,
+      connection,
+      client,
+      maxEvents: 1,
+      now: () => new Date('2026-07-21T03:00:01.000Z'),
+    });
+
+    expect(drained).toMatchObject({ attempted: 1, applied: 1 });
+    expect(metadata()).toMatchObject({ 入金確認: '未' });
+    expect(raw.prepare(`SELECT status, payload_json FROM sheets_sync_webhook_events
+      WHERE event_id=?`).get(eventId)).toEqual({ status: 'applied', payload_json: null });
   });
 
   test('treats equal Harness and sheet changes as convergence, not a fake import', async () => {

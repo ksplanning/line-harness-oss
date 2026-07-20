@@ -11,10 +11,14 @@ import type { Env } from '../index.js';
 
 const service = vi.hoisted(() => ({
   syncFriendLedger: vi.fn(),
+  drainFriendLedgerWebhookEvents: vi.fn(),
   listFriendLedgerAudit: vi.fn(),
 }));
 
-vi.mock('../services/friend-ledger-sync.js', () => service);
+vi.mock('../services/friend-ledger-sync.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/friend-ledger-sync.js')>()),
+  ...service,
+}));
 
 import { sheetsConnections } from './sheets-connections.js';
 
@@ -140,6 +144,9 @@ beforeEach(() => {
   seedConnection('conn-b', 'acc-2', 'sheet-b');
   vi.spyOn(Date, 'now').mockReturnValue(Date.parse(WEBHOOK_TIMESTAMP));
   service.syncFriendLedger.mockReset().mockResolvedValue({ status: 'success', warning: null });
+  service.drainFriendLedgerWebhookEvents.mockReset().mockResolvedValue({
+    attempted: 1, applied: 1, deferred: 0, dead: 0,
+  });
   service.listFriendLedgerAudit.mockReset().mockResolvedValue([]);
 });
 
@@ -327,6 +334,62 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
 
     expect(response.status).toBe(409);
     expect(response.headers.get('Retry-After')).toBe('2');
+  });
+
+  test('durably accepts one signed cell snapshot once before attempting background sync', async () => {
+    const payload = {
+      version: 2,
+      eventId: 'event-route-00000001',
+      occurredAt: WEBHOOK_TIMESTAMP,
+      connectionId: 'conn-a',
+      spreadsheetId: 'sheet-a',
+      sheetName: '友だち台帳',
+      range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      snapshot: {
+        rowNumber: 2,
+        columnNumber: 4,
+        value: '編集後',
+        oldValue: '編集前',
+        oldValueKnown: true,
+      },
+      actor: 'editor-v2@example.test',
+      actorKind: 'google_email',
+    };
+    const body = JSON.stringify(payload);
+    const headers = {
+      'X-Sheets-Signature': await hmacHex(body, WEBHOOK_TIMESTAMP),
+      'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+    };
+
+    const first = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+      body,
+      headers,
+      env: { GOOGLE_SERVICE_ACCOUNT_JSON: undefined },
+    });
+    const duplicate = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+      body,
+      headers,
+      env: { GOOGLE_SERVICE_ACCOUNT_JSON: undefined },
+    });
+
+    expect({ status: first.status, body: await first.clone().text() }).toEqual({
+      status: 202,
+      body: JSON.stringify({ success: true }),
+    });
+    expect(duplicate.status).toBe(202);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_webhook_events
+      WHERE connection_id='conn-a' AND event_id=?`).get(payload.eventId)).toEqual({ count: 1 });
+    expect(raw.prepare(`SELECT actor_kind, payload_json, status FROM sheets_sync_webhook_events
+      WHERE event_id=?`).get(payload.eventId)).toEqual({
+      actor_kind: 'google_email',
+      payload_json: JSON.stringify({ range: payload.range, snapshot: payload.snapshot }),
+      status: 'pending',
+    });
+    expect(service.drainFriendLedgerWebhookEvents).toHaveBeenCalledWith(expect.objectContaining({
+      connection: expect.objectContaining({ id: 'conn-a', lineAccountId: 'acc-1' }),
+      credentialsJson: undefined,
+    }));
+    expect(service.syncFriendLedger).not.toHaveBeenCalled();
   });
 
   test('rejects an oversized webhook before signature work or DB access', async () => {

@@ -1,7 +1,12 @@
 import {
   appendSheetsSyncAudit,
+  claimNextSheetsWebhookEvent,
   claimSheetsSyncLock,
   clearSheetsSyncLedgerRowNumbers,
+  deferSheetsWebhookEvent,
+  failSheetsWebhookEvent,
+  finishSheetsWebhookEvent,
+  hasSheetsSyncAuditForWebhookEvent,
   listActiveSheetsConnectionsForSync,
   listFriendFieldDefinitions,
   listSheetsSyncAudit,
@@ -65,6 +70,19 @@ export interface FriendLedgerEditRange {
   columnEnd: number;
 }
 
+export interface FriendLedgerWebhookSnapshot {
+  rowNumber: number;
+  columnNumber: number;
+  value: SheetCellValue;
+  oldValue: SheetCellValue;
+  oldValueKnown: boolean;
+}
+
+export interface FriendLedgerWebhookEventPayload {
+  range: FriendLedgerEditRange;
+  snapshot: FriendLedgerWebhookSnapshot;
+}
+
 export interface SyncFriendLedgerOptions {
   db: D1Database;
   connection: SheetsConnection;
@@ -74,6 +92,8 @@ export interface SyncFriendLedgerOptions {
   actor: string;
   now?: () => Date;
   range?: FriendLedgerEditRange;
+  snapshot?: FriendLedgerWebhookSnapshot;
+  webhookEventId?: string;
 }
 
 export interface FriendLedgerSyncResult {
@@ -99,6 +119,9 @@ interface RowPlan {
   direction: 'to_sheets' | 'from_sheets';
   conflictResolution: 'harness_wins' | 'sheet_wins' | null;
   isAppend: boolean;
+  webhookEventId?: string | null;
+  auditOutcome?: 'applied' | 'skipped' | 'failed';
+  auditErrorCode?: string | null;
 }
 
 interface ImportedMetadataResult {
@@ -108,6 +131,13 @@ interface ImportedMetadataResult {
 
 const LOCK_DURATION_MS = 2 * 60_000;
 const MAX_SYNC_WARNINGS = 20;
+const WEBHOOK_EVENT_CLAIM_MS = 2 * 60_000;
+const WEBHOOK_EVENT_RETENTION_MS = 24 * 60 * 60_000;
+const WEBHOOK_EVENT_RETRY_MS = 30_000;
+const MAX_WEBHOOK_EVENT_ATTEMPTS = 5;
+const MAX_WEBHOOK_EVENTS_PER_DRAIN = 20;
+const MAX_GOOGLE_SHEET_ROWS = 10_000_000;
+const MAX_GOOGLE_SHEET_COLUMNS = 18_278;
 
 function parseMetadata(raw: string): { value: Record<string, unknown>; valid: boolean } {
   try {
@@ -188,6 +218,62 @@ function canonicalValue(value: unknown): SheetsCanonicalCellValue {
     return value;
   }
   return normalizeSheetCell(value);
+}
+
+function isSheetCellValue(value: unknown): value is SheetCellValue {
+  return value === null
+    || typeof value === 'string'
+    || typeof value === 'number'
+    || typeof value === 'boolean';
+}
+
+function isPositiveCellIndex(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 1;
+}
+
+export function parseFriendLedgerWebhookEventPayload(
+  value: unknown,
+): FriendLedgerWebhookEventPayload | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const object = value as Record<string, unknown>;
+  if (!object.range || typeof object.range !== 'object' || Array.isArray(object.range)) return null;
+  if (!object.snapshot || typeof object.snapshot !== 'object' || Array.isArray(object.snapshot)) return null;
+  const range = object.range as Record<string, unknown>;
+  const snapshot = object.snapshot as Record<string, unknown>;
+  if (
+    !isPositiveCellIndex(range.rowStart)
+    || !isPositiveCellIndex(range.rowEnd)
+    || !isPositiveCellIndex(range.columnStart)
+    || !isPositiveCellIndex(range.columnEnd)
+    || Number(range.rowEnd) > MAX_GOOGLE_SHEET_ROWS
+    || Number(range.columnEnd) > MAX_GOOGLE_SHEET_COLUMNS
+    || range.rowStart !== range.rowEnd
+    || range.columnStart !== range.columnEnd
+    || !isPositiveCellIndex(snapshot.rowNumber)
+    || !isPositiveCellIndex(snapshot.columnNumber)
+    || snapshot.rowNumber !== range.rowStart
+    || snapshot.columnNumber !== range.columnStart
+    || !isSheetCellValue(snapshot.value)
+    || !isSheetCellValue(snapshot.oldValue)
+    || typeof snapshot.oldValueKnown !== 'boolean'
+    || (typeof snapshot.value === 'string' && snapshot.value.length > 50_000)
+    || (typeof snapshot.oldValue === 'string' && snapshot.oldValue.length > 50_000)
+  ) return null;
+  return {
+    range: {
+      rowStart: range.rowStart,
+      rowEnd: range.rowEnd,
+      columnStart: range.columnStart,
+      columnEnd: range.columnEnd,
+    },
+    snapshot: {
+      rowNumber: snapshot.rowNumber,
+      columnNumber: snapshot.columnNumber,
+      value: snapshot.value,
+      oldValue: snapshot.oldValue,
+      oldValueKnown: snapshot.oldValueKnown,
+    },
+  };
 }
 
 async function fingerprint(snapshot: Record<string, SheetsCanonicalCellValue>): Promise<string> {
@@ -369,15 +455,16 @@ async function persistPlan(
     sheetRowNumber: plan.rowNumber,
     direction: plan.direction,
     action: plan.isAppend ? 'append' : plan.conflictResolution ? 'conflict' : changed ? 'update' : 'read',
-    outcome: changed || plan.isAppend ? 'applied' : 'skipped',
+    outcome: plan.auditOutcome ?? (changed || plan.isAppend ? 'applied' : 'skipped'),
     conflictResolution: plan.conflictResolution,
     harnessUpdatedAt: plan.friend.updatedAt,
     sheetObservedAt: now,
     beforeFingerprint: plan.ledger?.rowFingerprint ?? null,
     afterFingerprint: nextFingerprint,
-    errorCode: plan.details.some((entry) => entry.changeKind === 'identity_ignored')
+    errorCode: plan.auditErrorCode ?? (plan.details.some((entry) => entry.changeKind === 'identity_ignored')
       ? 'identity_read_only'
-      : null,
+      : null),
+    webhookEventId: plan.webhookEventId ?? null,
     details: plan.details,
   }, lease);
   if (!auditWritten) throw new Error('stale_sheets_audit_generation');
@@ -490,6 +577,19 @@ export async function syncFriendLedger(
     const hasUnrecordedHeaders = columns.some((column) => !knownHeaders.has(column.header));
     const ledgerByFriend = new Map(ledgerEntries.map((entry) => [entry.recordKey, entry]));
     const values = (response.values ?? []).map((row) => [...row]);
+    let liveSnapshotValue: string | null = null;
+    if (options.source === 'webhook' && options.snapshot) {
+      const rowIndex = options.snapshot.rowNumber - 1;
+      const columnIndex = options.snapshot.columnNumber - 1;
+      liveSnapshotValue = normalizeSheetCell(values[rowIndex]?.[columnIndex]);
+    }
+    const effectiveRow = (rowNumber: number): SheetCellValue[] => {
+      const row = [...(values[rowNumber - 1] ?? [])];
+      if (options.source === 'webhook' && options.snapshot?.rowNumber === rowNumber) {
+        row[options.snapshot.columnNumber - 1] = options.snapshot.value;
+      }
+      return row;
+    };
     const warnings: string[] = [];
     const warningSet = new Set<string>();
     const addWarning = (message: string): void => {
@@ -512,8 +612,25 @@ export async function syncFriendLedger(
         && columnIndex + 1 >= options.range.columnStart
         && columnIndex + 1 <= options.range.columnEnd;
     };
+    const snapshotForCell = (
+      rowNumber: number,
+      columnIndex: number,
+    ): { value: string; oldValue: string; oldValueKnown: boolean; liveValue: string } | null => {
+      if (
+        options.source !== 'webhook'
+        || !options.snapshot
+        || options.snapshot.rowNumber !== rowNumber
+        || options.snapshot.columnNumber !== columnIndex + 1
+      ) return null;
+      return {
+        value: normalizeSheetCell(options.snapshot.value),
+        oldValue: normalizeSheetCell(options.snapshot.oldValue),
+        oldValueKnown: options.snapshot.oldValueKnown,
+        liveValue: liveSnapshotValue ?? '',
+      };
+    };
 
-    const headerIsEmpty = values.length === 0 || !(values[0] ?? []).some((cell) => normalizeSheetCell(cell));
+    const headerIsEmpty = values.length === 0 || !effectiveRow(1).some((cell) => normalizeSheetCell(cell));
     if (headerIsEmpty) {
       const headers = columns.map((column) => column.header);
       await renewLease();
@@ -571,7 +688,7 @@ export async function syncFriendLedger(
         }
       }
     } else {
-      let headers = values[0] ?? [];
+      let headers = effectiveRow(1);
       let resolved = resolveFriendLedgerHeaders(headers, columns);
       if (hasUnrecordedHeaders) {
         const configuredCounts = new Map<string, number>();
@@ -617,7 +734,7 @@ export async function syncFriendLedger(
       const positions = new Map<string, number[]>();
       if (userIdIndex !== undefined) {
         for (let index = 1; index < values.length; index += 1) {
-          const userId = normalizeSheetCell(values[index]?.[userIdIndex]);
+          const userId = normalizeSheetCell(effectiveRow(index + 1)[userIdIndex]);
           if (!userId) continue;
           const rows = positions.get(userId) ?? [];
           rows.push(index + 1);
@@ -644,10 +761,10 @@ export async function syncFriendLedger(
           !rowNumber
           && userIdIndex !== undefined
           && ledger?.sheetRowNumber
-          && values[ledger.sheetRowNumber - 1]
+          && (values[ledger.sheetRowNumber - 1] || options.snapshot?.rowNumber === ledger.sheetRowNumber)
           && !exactRowOwner.has(ledger.sheetRowNumber)
         ) {
-          const oldRow = values[ledger.sheetRowNumber - 1] ?? [];
+          const oldRow = effectiveRow(ledger.sheetRowNumber);
           const identityChecks = [
             ['identity:displayName', resolved.indexByKey['identity:displayName']],
             ['identity:registeredAt', resolved.indexByKey['identity:registeredAt']],
@@ -660,7 +777,7 @@ export async function syncFriendLedger(
         }
         if (!rowNumber) {
           const priorRow = ledger?.sheetRowNumber
-            ? values[ledger.sheetRowNumber - 1]
+            ? effectiveRow(ledger.sheetRowNumber)
             : undefined;
           const priorRowIsBlank = !priorRow?.some((cell) => normalizeSheetCell(cell) !== '');
           const priorRowOwner = ledger?.sheetRowNumber
@@ -711,7 +828,7 @@ export async function syncFriendLedger(
           continue;
         }
 
-        const sheetRow = values[rowNumber - 1] ?? [];
+        const sheetRow = effectiveRow(rowNumber);
         const details: SheetsSyncAuditDetailInput[] = [];
         const imports: Record<string, string> = {};
         const customCells: RowPlan['customCells'] = {};
@@ -719,6 +836,9 @@ export async function syncFriendLedger(
         const canonical: Record<string, SheetsCanonicalCellValue> = {};
         let direction: RowPlan['direction'] = 'to_sheets';
         let conflictResolution: RowPlan['conflictResolution'] = null;
+        let webhookEventId: string | null = null;
+        let auditOutcome: RowPlan['auditOutcome'];
+        let auditErrorCode: string | null | undefined;
 
         for (const column of columns) {
           const expected = projection[column.key] ?? '';
@@ -728,6 +848,8 @@ export async function syncFriendLedger(
             continue;
           }
           const observed = normalizeSheetCell(sheetRow[columnIndex]);
+          const signedSnapshot = snapshotForCell(rowNumber, columnIndex);
+          if (signedSnapshot && options.webhookEventId) webhookEventId = options.webhookEventId;
           if (column.kind === 'identity') {
             canonical[column.key] = canonicalValue(expected);
             if (observed !== expected) {
@@ -750,7 +872,14 @@ export async function syncFriendLedger(
                 ignoredIdentityEdits += 1;
                 const message = `保護列「${column.header}」の変更を取り込みませんでした`;
                 addWarning(message);
-                details.push(detail(actor, column.header, expected, observed, options.source, 'identity_ignored'));
+                details.push(detail(
+                  actor,
+                  column.header,
+                  signedSnapshot?.oldValueKnown ? signedSnapshot.oldValue : expected,
+                  observed,
+                  options.source,
+                  'identity_ignored',
+                ));
               }
             }
             continue;
@@ -763,6 +892,29 @@ export async function syncFriendLedger(
             : expected;
           if (!isNotifiedCell(rowNumber, columnIndex)) {
             canonical[column.key] = ledger?.canonicalSnapshot[column.key] ?? canonicalValue(expected);
+            continue;
+          }
+
+          if (
+            signedSnapshot?.oldValueKnown
+            && ledger
+            && signedSnapshot.oldValue !== baseline
+            && signedSnapshot.liveValue !== signedSnapshot.value
+          ) {
+            canonical[column.key] = ledger.canonicalSnapshot[column.key] ?? canonicalValue(expected);
+            direction = 'from_sheets';
+            conflictResolution = 'sheet_wins';
+            auditOutcome = 'skipped';
+            auditErrorCode = 'stale_webhook_event';
+            addWarning(`保護のため、古い編集通知（「${column.header}」）をスキップしました`);
+            details.push(detail(
+              actor,
+              column.header,
+              signedSnapshot.oldValue,
+              signedSnapshot.value,
+              options.source,
+              'conflict',
+            ));
             continue;
           }
 
@@ -782,6 +934,20 @@ export async function syncFriendLedger(
 
           if (expected === observed) {
             canonical[column.key] = canonicalValue(expected);
+            if (
+              signedSnapshot?.oldValueKnown
+              && signedSnapshot.oldValue !== observed
+            ) {
+              direction = 'from_sheets';
+              details.push(detail(
+                actor,
+                column.header,
+                signedSnapshot.oldValue,
+                observed,
+                options.source,
+                'custom_field',
+              ));
+            }
             continue;
           }
           const harnessChanged = expected !== baseline;
@@ -810,7 +976,11 @@ export async function syncFriendLedger(
             direction = 'from_sheets';
             canonical[column.key] = canonicalValue(observed);
             details.push(detail(
-              actor, column.header, expected, observed, options.source,
+              actor,
+              column.header,
+              signedSnapshot?.oldValueKnown ? signedSnapshot.oldValue : expected,
+              observed,
+              options.source,
               bothChanged ? 'conflict' : 'custom_field',
             ));
           } else {
@@ -829,7 +999,7 @@ export async function syncFriendLedger(
         }
         plans.push({
           friend, rowNumber, ledger, canonical, details, imports, customCells, sheetUpdates,
-          direction, conflictResolution, isAppend: false,
+          direction, conflictResolution, isAppend: false, webhookEventId, auditOutcome, auditErrorCode,
         });
       }
     }
@@ -962,6 +1132,166 @@ export async function syncFriendLedger(
   }
 }
 
+export interface DrainFriendLedgerWebhookEventsOptions {
+  db: D1Database;
+  connection: SheetsConnection;
+  client?: FriendLedgerSheetsClient;
+  credentialsJson?: string;
+  maxEvents: number;
+  now?: () => Date;
+}
+
+export interface FriendLedgerWebhookDrainResult {
+  attempted: number;
+  applied: number;
+  deferred: number;
+  dead: number;
+  exhausted: boolean;
+}
+
+export async function drainFriendLedgerWebhookEvents(
+  options: DrainFriendLedgerWebhookEventsOptions,
+): Promise<FriendLedgerWebhookDrainResult> {
+  const nowFactory = options.now ?? (() => new Date());
+  const limit = Math.max(1, Math.min(MAX_WEBHOOK_EVENTS_PER_DRAIN, Math.trunc(options.maxEvents)));
+  const result: FriendLedgerWebhookDrainResult = {
+    attempted: 0,
+    applied: 0,
+    deferred: 0,
+    dead: 0,
+    exhausted: false,
+  };
+  for (let index = 0; index < limit; index += 1) {
+    const claimTime = nowFactory();
+    const claimToken = `gswe_${crypto.randomUUID()}`;
+    const event = await claimNextSheetsWebhookEvent(
+      options.db,
+      options.connection.lineAccountId,
+      options.connection.id,
+      options.connection.configVersion,
+      {
+        token: claimToken,
+        now: toJstString(claimTime),
+        expiresAt: toJstString(new Date(claimTime.getTime() + WEBHOOK_EVENT_CLAIM_MS)),
+        discardBefore: toJstString(new Date(claimTime.getTime() - WEBHOOK_EVENT_RETENTION_MS)),
+        maxAttempts: MAX_WEBHOOK_EVENT_ATTEMPTS,
+      },
+    );
+    if (!event) break;
+    result.attempted += 1;
+    const alreadyApplied = await hasSheetsSyncAuditForWebhookEvent(
+      options.db,
+      options.connection.lineAccountId,
+      options.connection.id,
+      options.connection.configVersion,
+      event.eventId,
+    );
+    if (alreadyApplied) {
+      const finished = await finishSheetsWebhookEvent(
+        options.db,
+        options.connection.lineAccountId,
+        options.connection.id,
+        options.connection.configVersion,
+        event.eventId,
+        {
+          processingToken: claimToken,
+          status: 'applied',
+          completedAt: toJstString(nowFactory()),
+          errorCode: null,
+        },
+      );
+      if (finished) result.applied += 1;
+      continue;
+    }
+    const payload = parseFriendLedgerWebhookEventPayload(event.payload);
+    if (!payload) {
+      const completedAt = toJstString(nowFactory());
+      const finished = await finishSheetsWebhookEvent(
+        options.db,
+        options.connection.lineAccountId,
+        options.connection.id,
+        options.connection.configVersion,
+        event.eventId,
+        {
+          processingToken: claimToken,
+          status: 'dead',
+          completedAt,
+          errorCode: 'invalid_webhook_event_payload',
+        },
+      );
+      if (finished) result.dead += 1;
+      continue;
+    }
+    try {
+      const synced = await syncFriendLedger({
+        db: options.db,
+        connection: options.connection,
+        client: options.client,
+        credentialsJson: options.credentialsJson,
+        source: 'webhook',
+        actor: event.actorKind === 'google_email' ? event.actor : 'google_sheets_editor_unavailable',
+        range: payload.range,
+        snapshot: payload.snapshot,
+        webhookEventId: event.eventId,
+        now: nowFactory,
+      });
+      if (synced.busy) {
+        const retryAt = new Date(nowFactory().getTime() + WEBHOOK_EVENT_RETRY_MS);
+        const deferred = await deferSheetsWebhookEvent(
+          options.db,
+          options.connection.lineAccountId,
+          options.connection.id,
+          options.connection.configVersion,
+          event.eventId,
+          {
+            processingToken: claimToken,
+            availableAt: toJstString(retryAt),
+            errorCode: 'friend_ledger_sync_busy',
+          },
+        );
+        if (deferred) result.deferred += 1;
+        break;
+      }
+      const finished = await finishSheetsWebhookEvent(
+        options.db,
+        options.connection.lineAccountId,
+        options.connection.id,
+        options.connection.configVersion,
+        event.eventId,
+        {
+          processingToken: claimToken,
+          status: 'applied',
+          completedAt: toJstString(nowFactory()),
+          errorCode: null,
+        },
+      );
+      if (!finished) throw new Error('webhook_event_claim_lost');
+      result.applied += 1;
+    } catch {
+      const failureTime = nowFactory();
+      const status = await failSheetsWebhookEvent(
+        options.db,
+        options.connection.lineAccountId,
+        options.connection.id,
+        options.connection.configVersion,
+        event.eventId,
+        {
+          processingToken: claimToken,
+          availableAt: toJstString(new Date(failureTime.getTime() + WEBHOOK_EVENT_RETRY_MS)),
+          completedAt: toJstString(failureTime),
+          errorCode: 'friend_ledger_webhook_sync_failed',
+          maxAttempts: MAX_WEBHOOK_EVENT_ATTEMPTS,
+        },
+      );
+      if (status === 'dead') result.dead += 1;
+      else result.deferred += 1;
+      break;
+    }
+  }
+  result.exhausted = result.attempted >= limit;
+  return result;
+}
+
 export interface RunFriendLedgerPollingOptions {
   db: D1Database;
   credentialsJson?: string;
@@ -981,6 +1311,17 @@ export async function runFriendLedgerPolling(
   for (const connection of connections) {
     summary.attempted += 1;
     try {
+      const webhookEvents = await drainFriendLedgerWebhookEvents({
+        db: options.db,
+        connection,
+        client,
+        maxEvents: 10,
+        now: options.now,
+      });
+      if (webhookEvents.deferred > 0 || webhookEvents.exhausted) {
+        summary.warnings += 1;
+        continue;
+      }
       const result = await syncFriendLedger({
         db: options.db,
         connection,

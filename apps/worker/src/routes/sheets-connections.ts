@@ -1,11 +1,13 @@
 import { Hono } from 'hono';
 import {
   createSheetsConnection,
+  enqueueSheetsWebhookEvent,
   getActiveSheetsConnectionById,
   getSheetsConnection,
   listFriendFieldDefinitions,
   listSheetsConnections,
   softDeleteSheetsConnection,
+  toJstString,
   updateSheetsConnection,
   type SheetsSyncDirection,
 } from '@line-crm/db';
@@ -17,8 +19,11 @@ import {
   type GoogleSheetsErrorCategory,
 } from '../services/google-sheets.js';
 import {
+  drainFriendLedgerWebhookEvents,
   listFriendLedgerAudit,
+  parseFriendLedgerWebhookEventPayload,
   syncFriendLedger,
+  type FriendLedgerWebhookEventPayload,
 } from '../services/friend-ledger-sync.js';
 import { verifySheetsWebhookSignature } from '../services/sheets-webhook-signature.js';
 import type { Env } from '../index.js';
@@ -135,7 +140,7 @@ function quotedA1SheetName(sheetName: string): string {
   return `'${sheetName.replace(/'/g, "''")}'!A1:A1`;
 }
 
-interface FriendLedgerWebhookPayload {
+interface FriendLedgerWebhookPayloadV1 {
   version: 1;
   connectionId: string;
   spreadsheetId: string;
@@ -144,12 +149,25 @@ interface FriendLedgerWebhookPayload {
   actor: string;
 }
 
+interface FriendLedgerWebhookPayloadV2 extends FriendLedgerWebhookEventPayload {
+  version: 2;
+  eventId: string;
+  occurredAt: string;
+  connectionId: string;
+  spreadsheetId: string;
+  sheetName: string;
+  actor: string;
+  actorKind: 'google_email' | 'unavailable';
+}
+
+type FriendLedgerWebhookPayload = FriendLedgerWebhookPayloadV1 | FriendLedgerWebhookPayloadV2;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function parseWebhookPayload(value: unknown): FriendLedgerWebhookPayload | null {
-  if (!isPlainObject(value) || value.version !== 1 || !isPlainObject(value.range)) return null;
+export function parseWebhookPayload(value: unknown): FriendLedgerWebhookPayload | null {
+  if (!isPlainObject(value) || !isPlainObject(value.range)) return null;
   const rawRange = value.range;
   const connectionId = cleanString(value.connectionId);
   const spreadsheetId = cleanString(value.spreadsheetId);
@@ -170,7 +188,32 @@ function parseWebhookPayload(value: unknown): FriendLedgerWebhookPayload | null 
     columnEnd: Number(rawRange.columnEnd),
   };
   if (range.rowStart > range.rowEnd || range.columnStart > range.columnEnd) return null;
-  return { version: 1, connectionId, spreadsheetId, sheetName, range, actor };
+  if (value.version === 1) {
+    return { version: 1, connectionId, spreadsheetId, sheetName, range, actor };
+  }
+  if (value.version !== 2) return null;
+  const eventId = cleanString(value.eventId);
+  const occurredAt = cleanString(value.occurredAt);
+  const actorKind = value.actorKind;
+  const eventPayload = parseFriendLedgerWebhookEventPayload({ range, snapshot: value.snapshot });
+  if (
+    !eventPayload
+    || !/^[A-Za-z0-9_-]{16,200}$/.test(eventId)
+    || !Number.isFinite(Date.parse(occurredAt))
+    || (actorKind !== 'google_email' && actorKind !== 'unavailable')
+  ) return null;
+  return {
+    version: 2,
+    eventId,
+    occurredAt,
+    connectionId,
+    spreadsheetId,
+    sheetName,
+    range: eventPayload.range,
+    snapshot: eventPayload.snapshot,
+    actor,
+    actorKind,
+  };
 }
 
 async function resolveFriendFieldMappings(
@@ -402,8 +445,8 @@ sheetsConnections.get(`${BASE_PATH}/:id/audit`, async (c) => {
   }
 });
 
-// Apps Script sends only a signed range notification. Cell contents are fetched
-// from Google after verification, so untrusted request data never becomes CRM data.
+// v2 signs one exact cell snapshot and durably accepts it before attempting sync.
+// The legacy range-only v1 path remains temporarily for already-installed scripts.
 sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', async (c) => {
   const declaredLength = Number(c.req.header('Content-Length'));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_FRIEND_LEDGER_WEBHOOK_BYTES) {
@@ -430,8 +473,8 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
     // Invalid JSON is intentionally handled only after the signature check.
   }
   if (!payload) return c.json({ success: false, error: '通知の形式が正しくありません' }, 400);
-  if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    return c.json({ success: false, error: SETUP_MESSAGE }, 503);
+  if (payload.version === 2 && payload.occurredAt !== timestamp) {
+    return c.json({ success: false, error: '通知時刻が一致しません' }, 400);
   }
 
   try {
@@ -442,6 +485,41 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
       || connection.spreadsheetId !== payload.spreadsheetId
       || connection.sheetName !== payload.sheetName
     ) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    if (payload.version === 2) {
+      const acceptedAt = toJstString(new Date());
+      const queued = await enqueueSheetsWebhookEvent(
+        c.env.DB,
+        connection.lineAccountId,
+        connection.id,
+        connection.configVersion,
+        {
+          eventId: payload.eventId,
+          actor: payload.actor,
+          actorKind: payload.actorKind,
+          occurredAt: payload.occurredAt,
+          payload: { range: payload.range, snapshot: payload.snapshot },
+          receivedAt: acceptedAt,
+        },
+      );
+      if (!queued) return c.json({ success: false, error: '接続設定が更新されました' }, 409);
+      if (queued.status === 'pending') {
+        const work = drainFriendLedgerWebhookEvents({
+          db: c.env.DB,
+          connection,
+          credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+          maxEvents: 1,
+        }).catch(() => undefined);
+        try {
+          c.executionCtx.waitUntil(work);
+        } catch {
+          await work;
+        }
+      }
+      return c.json({ success: true }, 202);
+    }
+    if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+      return c.json({ success: false, error: SETUP_MESSAGE }, 503);
+    }
     const result = await syncFriendLedger({
       db: c.env.DB,
       connection,
