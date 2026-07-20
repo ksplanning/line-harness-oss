@@ -28,8 +28,10 @@ describe('T-F2 PBKDF2 password', () => {
 
   it('hash / salt を書き換えると verify=false (改竄検知)', async () => {
     const rec = await hashPassword('pw-123456')
-    expect(await verifyPassword('pw-123456', { ...rec, password_hash: rec.password_hash.replace(/.$/, '0') })).toBe(false)
-    expect(await verifyPassword('pw-123456', { ...rec, password_salt: rec.password_salt.replace(/.$/, '0') })).toBe(false)
+    const changedHash = `${rec.password_hash.slice(0, -1)}${rec.password_hash.endsWith('0') ? '1' : '0'}`
+    const changedSalt = `${rec.password_salt.slice(0, -1)}${rec.password_salt.endsWith('0') ? '1' : '0'}`
+    expect(await verifyPassword('pw-123456', { ...rec, password_hash: changedHash })).toBe(false)
+    expect(await verifyPassword('pw-123456', { ...rec, password_salt: changedSalt })).toBe(false)
   })
 
   it('同じ平文でも salt がランダムで hash が毎回変わる', async () => {
@@ -51,11 +53,11 @@ describe('T-F2 PBKDF2 password', () => {
 
   // ── P0 防波堤: Cloudflare Workers の PBKDF2 iterations 上限 100,000 を超えると本番で全ログイン 500。
   //    Node テストには上限が無く挙動テストでは検出できないので、定数を機械的に固定する。
-  it('PBKDF2_ITERATIONS は Workers 上限 (100,000) 以下 (超えると本番 500 / 2026-07-07 P0 再発防止)', () => {
+  it('PBKDF2_ITERATIONS は Workers 上限 (100,000) 以下 (超えると本番 500 / 2026-07-07 P0 再発防止)', async () => {
     expect(CLOUDFLARE_WORKERS_PBKDF2_MAX_ITERATIONS).toBe(100_000)
     expect(PBKDF2_ITERATIONS).toBeLessThanOrEqual(CLOUDFLARE_WORKERS_PBKDF2_MAX_ITERATIONS)
     expect(PBKDF2_ITERATIONS).toBeGreaterThanOrEqual(100_000) // 上限ちょうどを使う (強度最大)
-    expect(hashPasswordDefaultIterations()).resolves.toBe(PBKDF2_ITERATIONS)
+    await expect(hashPasswordDefaultIterations()).resolves.toBe(PBKDF2_ITERATIONS)
   })
 
   it('verify は保存された iterations で検証する (前方互換 = 旧 iterations のハッシュも壊れない)', async () => {
