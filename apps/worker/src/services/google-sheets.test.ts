@@ -89,6 +89,54 @@ describe('GoogleSheetsClient — WebCrypto service account JWT', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test('literal \\n の秘密鍵を正規化し Workers 互換経路で JWT を署名する', async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const assertion = new URLSearchParams(String(init?.body)).get('assertion');
+      expect(assertion).toBeTruthy();
+      const [headerPart, claimsPart, signaturePart] = assertion!.split('.');
+      expect(await crypto.subtle.verify(
+        { name: 'RSASSA-PKCS1-v1_5' },
+        publicKey,
+        Buffer.from(signaturePart, 'base64url'),
+        new TextEncoder().encode(`${headerPart}.${claimsPart}`),
+      )).toBe(true);
+      return jsonResponse({ access_token: 'ACCESS-LITERAL-NEWLINES', expires_in: 3600 });
+    }) as unknown as typeof fetch;
+    const credentials = parseGoogleServiceAccountCredentials(credentialsJson({
+      private_key: privateKeyPem.replace(/\n/g, '\\n'),
+    }));
+
+    expect(credentials.privateKey).toBe(privateKeyPem.trim());
+    await expect(new GoogleSheetsClient({
+      credentials,
+      fetchImpl,
+      now: () => FIXED_NOW,
+    }).getAccessToken()).resolves.toBe('ACCESS-LITERAL-NEWLINES');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('不正 PEM は token fetch 前に鍵形式エラーとして拒否する', async () => {
+    const sentinel = 'NOT-BASE64!';
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const client = new GoogleSheetsClient({
+      credentials: parseGoogleServiceAccountCredentials(credentialsJson({
+        private_key: `-----BEGIN PRIVATE KEY-----\n${sentinel}\n-----END PRIVATE KEY-----`,
+      })),
+      fetchImpl,
+      now: () => FIXED_NOW,
+    });
+
+    const error = await client.getAccessToken().catch((cause: unknown) => cause as GoogleSheetsError);
+    expect(error).toMatchObject({
+      name: 'GoogleSheetsError',
+      operation: 'token',
+      status: 0,
+      category: 'key_format',
+    });
+    expect(error.message).not.toContain(sentinel);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   test('不正な secret JSON は値を露出せず拒否する', () => {
     const sentinel = 'DO-NOT-ECHO-PRIVATE-KEY';
     expect(() => parseGoogleServiceAccountCredentials(JSON.stringify({ private_key: sentinel })))

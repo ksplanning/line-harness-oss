@@ -41,16 +41,28 @@ export interface UpdateValuesResponse {
 }
 
 export type GoogleSheetsOperation = 'token' | 'append' | 'read' | 'update';
+export type GoogleSheetsErrorCategory =
+  | 'key_format'
+  | 'auth_rejected'
+  | 'sheet_permission'
+  | 'network'
+  | 'unknown';
 
 export class GoogleSheetsError extends Error {
   readonly status: number;
   readonly operation: GoogleSheetsOperation;
+  readonly category: GoogleSheetsErrorCategory;
 
-  constructor(operation: GoogleSheetsOperation, status: number) {
+  constructor(
+    operation: GoogleSheetsOperation,
+    status: number,
+    category: GoogleSheetsErrorCategory = 'unknown',
+  ) {
     super(`Google Sheets ${operation} request failed`);
     this.name = 'GoogleSheetsError';
     this.status = status;
     this.operation = operation;
+    this.category = category;
   }
 }
 
@@ -62,11 +74,19 @@ interface ServiceAccountJson {
   token_uri?: unknown;
 }
 
+function normalizePrivateKey(privateKey: string): string {
+  return privateKey
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+}
+
 export function parseGoogleServiceAccountCredentials(raw: string): GoogleServiceAccountCredentials {
   try {
     const parsed = JSON.parse(raw) as ServiceAccountJson;
     const clientEmail = typeof parsed.client_email === 'string' ? parsed.client_email.trim() : '';
-    const privateKey = typeof parsed.private_key === 'string' ? parsed.private_key.trim() : '';
+    const privateKey = typeof parsed.private_key === 'string' ? normalizePrivateKey(parsed.private_key) : '';
     const privateKeyId = typeof parsed.private_key_id === 'string' ? parsed.private_key_id.trim() : '';
     const tokenUri = typeof parsed.token_uri === 'string' && parsed.token_uri.trim()
       ? parsed.token_uri.trim()
@@ -119,12 +139,23 @@ function utf8Base64Url(value: string): string {
 }
 
 function decodePkcs8Pem(pem: string): Uint8Array {
-  const body = pem
-    .replace('-----BEGIN PRIVATE KEY-----', '')
-    .replace('-----END PRIVATE KEY-----', '')
-    .replace(/\s/g, '');
-  if (!body) throw new Error('invalid private key');
-  const binary = atob(body);
+  const match = /^-----BEGIN PRIVATE KEY-----\n([\s\S]+)\n-----END PRIVATE KEY-----$/.exec(
+    normalizePrivateKey(pem),
+  );
+  if (!match) throw new Error('invalid private key');
+  const body = match[1].replace(/[\t\n\r ]/g, '');
+  if (!body || !/^[A-Za-z0-9+/]+={0,2}$/.test(body)) {
+    throw new Error('invalid private key');
+  }
+  const unpadded = body.replace(/=+$/, '');
+  const existingPadding = body.length - unpadded.length;
+  if (unpadded.length % 4 === 1) throw new Error('invalid private key');
+  const requiredPadding = (4 - (unpadded.length % 4)) % 4;
+  if (existingPadding !== 0 && existingPadding !== requiredPadding) {
+    throw new Error('invalid private key');
+  }
+  const binary = atob(`${unpadded}${'='.repeat(requiredPadding)}`);
+  if (!binary) throw new Error('invalid private key');
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return bytes;
@@ -166,24 +197,23 @@ export class GoogleSheetsClient {
       exp: issuedAt + JWT_LIFETIME_SECONDS,
     };
     const unsigned = `${utf8Base64Url(JSON.stringify(header))}.${utf8Base64Url(JSON.stringify(claims))}`;
-    let key: CryptoKey;
     try {
-      key = await this.webCrypto.subtle.importKey(
+      const key = await this.webCrypto.subtle.importKey(
         'pkcs8',
         decodePkcs8Pem(this.credentials.privateKey),
         { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
         false,
         ['sign'],
       );
+      const signature = await this.webCrypto.subtle.sign(
+        { name: 'RSASSA-PKCS1-v1_5' },
+        key,
+        new TextEncoder().encode(unsigned),
+      );
+      return `${unsigned}.${base64Url(new Uint8Array(signature))}`;
     } catch {
-      throw new GoogleSheetsError('token', 0);
+      throw new GoogleSheetsError('token', 0, 'key_format');
     }
-    const signature = await this.webCrypto.subtle.sign(
-      { name: 'RSASSA-PKCS1-v1_5' },
-      key,
-      new TextEncoder().encode(unsigned),
-    );
-    return `${unsigned}.${base64Url(new Uint8Array(signature))}`;
   }
 
   async getAccessToken(): Promise<string> {
