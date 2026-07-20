@@ -148,6 +148,12 @@ interface FriendLedgerDbContract {
     id: string,
     token: string,
   ): Promise<boolean>;
+  clearSheetsSyncLedgerRowNumbers(
+    db: D1Database,
+    lineAccountId: string,
+    connectionId: string,
+    connectionVersion: number,
+  ): Promise<boolean>;
   listSheetsSyncLedger(
     db: D1Database,
     lineAccountId: string,
@@ -426,6 +432,15 @@ describe('Sheets connections DB helper', () => {
     expect(new Set(all.map((item) => item.lineAccountId))).toEqual(new Set(['acc-1', 'acc-2']));
     await expect(friendLedgerDb.listActiveSheetsConnectionsForSync(db, 1))
       .resolves.toHaveLength(1);
+
+    await friendLedgerDb.updateSheetsSyncStatus(db, 'acc-1', first.id, {
+      status: 'success', lastSyncAt: '2026-07-21T10:10:00+09:00', warning: null, errorCode: null,
+    });
+    await friendLedgerDb.updateSheetsSyncStatus(db, 'acc-2', second.id, {
+      status: 'success', lastSyncAt: '2026-07-21T10:00:00+09:00', warning: null, errorCode: null,
+    });
+    await expect(friendLedgerDb.listActiveSheetsConnectionsForSync(db, 1))
+      .resolves.toEqual([expect.objectContaining({ id: second.id })]);
   });
 
   test('resolves an active connection by signed webhook id without exposing a soft-deleted target', async () => {
@@ -545,6 +560,39 @@ describe('Sheets connections DB helper', () => {
     expect(raw.prepare(`SELECT canonical_snapshot_json FROM sheets_sync_ledger
       WHERE connection_id = ? AND record_key = ?`).get(created.id, 'friend-ayako'))
       .toEqual({ canonical_snapshot_json: JSON.stringify(next.canonicalSnapshot) });
+
+    await expect(friendLedgerDb.upsertSheetsSyncLedger(db, 'acc-1', {
+      ...initial,
+      rowFingerprint: 'stale-fingerprint',
+      lastAppliedSequence: 1,
+    })).resolves.toBe(false);
+    await expect(friendLedgerDb.listSheetsSyncLedger(db, 'acc-1', created.id)).resolves.toEqual([
+      { ...next, version: 2 },
+    ]);
+  });
+
+  test('clears row positions only for the owning active generation before a safe reorder', async () => {
+    const created = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'friends-reorder', spreadsheetId: 'sheet-friends',
+      sheetName: '友だち台帳', syncDirection: 'bidirectional', friendLedgerEnabled: true,
+    });
+    for (const [recordKey, row] of [['friend-a', 2], ['friend-b', 3]] as const) {
+      await friendLedgerDb.upsertSheetsSyncLedger(db, 'acc-1', {
+        connectionId: created.id, connectionVersion: 1, recordKey, sheetRowNumber: row,
+        rowFingerprint: `fingerprint-${recordKey}`, canonicalSnapshot: {}, harnessUpdatedAt: null,
+        sheetObservedAt: null, lastSyncedAt: '2026-07-21T10:00:00+09:00',
+        lastSyncDirection: 'to_sheets', lastAppliedSequence: row,
+      });
+    }
+
+    await expect(friendLedgerDb.clearSheetsSyncLedgerRowNumbers(db, 'acc-2', created.id, 1))
+      .resolves.toBe(false);
+    await expect(friendLedgerDb.clearSheetsSyncLedgerRowNumbers(db, 'acc-1', created.id, 2))
+      .resolves.toBe(false);
+    await expect(friendLedgerDb.clearSheetsSyncLedgerRowNumbers(db, 'acc-1', created.id, 1))
+      .resolves.toBe(true);
+    expect(raw.prepare('SELECT sheet_row_number FROM sheets_sync_ledger WHERE connection_id=?').all(created.id))
+      .toEqual([{ sheet_row_number: null }, { sheet_row_number: null }]);
   });
 
   test('appends and lists parent audit events with immutable per-column details under tenant scope', async () => {

@@ -520,7 +520,8 @@ export async function listActiveSheetsConnectionsForSync(
   limit: number,
 ): Promise<SheetsConnection[]> {
   const result = await db.prepare(
-    `${ACTIVE_SELECT} AND friend_ledger_enabled = 1 ORDER BY updated_at ASC, id ASC LIMIT ?`,
+    `${ACTIVE_SELECT} AND friend_ledger_enabled = 1
+     ORDER BY COALESCE(last_sync_at, '') ASC, id ASC LIMIT ?`,
   ).bind(boundedLimit(limit)).all<SheetsConnectionRow>();
   return result.results.map(serialize);
 }
@@ -595,6 +596,27 @@ export async function listSheetsSyncLedger(
   return result.results.map(serializeLedger);
 }
 
+/** Releases unique row slots before exact userId matches are reassigned. */
+export async function clearSheetsSyncLedgerRowNumbers(
+  db: D1Database,
+  lineAccountId: string,
+  connectionId: string,
+  connectionVersion: number,
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE sheets_sync_ledger
+     SET sheet_row_number = NULL, version = version + 1
+     WHERE connection_id = ? AND connection_version = ?
+       AND EXISTS (
+         SELECT 1 FROM sheets_connections c
+         WHERE c.id = sheets_sync_ledger.connection_id
+           AND c.line_account_id = ? AND c.config_version = ?
+           AND c.is_active = 1 AND c.deleted_at IS NULL
+       )`,
+  ).bind(connectionId, connectionVersion, lineAccountId, connectionVersion).run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
 export async function upsertSheetsSyncLedger(
   db: D1Database,
   lineAccountId: string,
@@ -620,7 +642,8 @@ export async function upsertSheetsSyncLedger(
        last_synced_at = excluded.last_synced_at,
        last_sync_direction = excluded.last_sync_direction,
        last_applied_sequence = excluded.last_applied_sequence,
-       version = sheets_sync_ledger.version + 1`,
+       version = sheets_sync_ledger.version + 1
+     WHERE excluded.last_applied_sequence > sheets_sync_ledger.last_applied_sequence`,
   ).bind(
     entry.recordKey,
     entry.sheetRowNumber,
