@@ -2,6 +2,7 @@ import {
   countRecentFaqReplies,
   getActiveFaqsForMatch,
   incrementFaqHitCount,
+  insertAiFaqDraft,
   jstNow,
   recordUnmatchedQuestion,
   type Faq,
@@ -123,6 +124,18 @@ export async function tryFaqReply(
   const detail = matchFaqDetailed(opts.incomingText, faqs, settings.threshold);
 
   if (detail.match && !overLimit) {
+    if (settings.answerMode === 'draft') {
+      await insertAiFaqDraft(db, {
+        lineAccountId: opts.lineAccountId,
+        friendId: opts.friend.id,
+        question: opts.incomingText,
+        draftAnswer: detail.match.faq.answer,
+        evidenceFaqIds: [detail.match.faq.id],
+      });
+      await incrementFaqHitCount(db, detail.match.faq.id);
+      return { replied: false, handoff: false };
+    }
+
     const answer = `${detail.match.faq.answer}${settings.autoReplyNotice ? `\n${settings.autoReplyNotice}` : ''}`;
     await lineClient.replyMessage(opts.replyToken, [buildMessage('text', answer)]);
     await incrementFaqHitCount(db, detail.match.faq.id);

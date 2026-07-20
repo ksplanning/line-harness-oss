@@ -131,6 +131,37 @@ describe('tryFaqReply — account gate + AI RAG (T-A2)', () => {
     expect(countUnmatched()).toBe(0);
   });
 
+  test('決定的 match + draft → FAQ 回答を草案保存し replyMessage は 0 回', async () => {
+    seed(raw, { answerMode: 'draft', threshold: 0.6 });
+    const res = await tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか'));
+
+    expect(res).toEqual({ replied: false, handoff: false });
+    expect(lineClient.replyMessage).not.toHaveBeenCalled();
+    expect(countDrafts()).toBe(1);
+    expect(countFaqOutgoing()).toBe(0);
+    expect(countUnmatched()).toBe(0);
+    const draft = raw.prepare(
+      `SELECT question, draft_answer, evidence_faq_ids, status FROM ai_faq_drafts LIMIT 1`,
+    ).get() as { question: string; draft_answer: string; evidence_faq_ids: string; status: string };
+    expect(draft).toEqual({
+      question: '営業時間は何時ですか',
+      draft_answer: '平日は10時から19時までです',
+      evidence_faq_ids: '["fq1"]',
+      status: 'pending',
+    });
+  });
+
+  test('決定的 match + explicit auto → 従来どおり即返信し草案は作らない', async () => {
+    seed(raw, { answerMode: 'auto', threshold: 0.6 });
+    const res = await tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか'));
+
+    expect(res).toEqual({ replied: true, handoff: false });
+    expect(lineClient.replyMessage).toHaveBeenCalledTimes(1);
+    expect(countDrafts()).toBe(0);
+    expect(countFaqOutgoing()).toBe(1);
+    expect(countUnmatched()).toBe(0);
+  });
+
   test('根拠なし (floor 未満) → recordUnmatchedQuestion 退避 / replyMessage 0 / provider 未呼出', async () => {
     seed(raw, { answerMode: 'auto' });
     const mock = new MockLlmProvider({ text: 'なにか' });

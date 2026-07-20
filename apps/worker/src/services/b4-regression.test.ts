@@ -2,7 +2,7 @@
  * D-1 / D-2 / D-3 (Phase B B-4) — 送信安全・回帰・cross-account/秘密漏洩 の機械 assert。
  *  D-1: 現在形不変 (crons 正定義2本 (2026-07-11 解禁)/FAQ_BOT_ENABLED スイッチ="true" go-live 承認/binding 意図形/webhook gate) + chunks 結線後も
  *       FAQ_BOT_ENABLED=false/account gate 閉で embed/generate/replyMessage 全 0 (RAG 配線が送信を漏らさない)。
- *  D-2: faq-match/faq-fts/faq-reply byte-identical + faq Dice floor 尺度不変 (baseline green/tsc は runner が担保)。
+ *  D-2: faq-match/faq-fts byte-identical + faq Dice floor 尺度不変 (baseline green/tsc は runner が担保)。
  *  D-3: embed 入力=chunk/質問のみ・buildRagPrompt に秘密値/内部識別子なし・Vectorize metadata は account/doc id のみ。
  */
 import { execFileSync } from 'node:child_process';
@@ -153,11 +153,10 @@ describe('D-1 — dark-ship byte-identical + chunks 結線後も送信ゼロ', (
   });
 });
 
-describe('D-2 — faq 経路 byte-identical + Dice floor 尺度不変', () => {
+describe('D-2 — matcher/retrieval byte-identical + Dice floor 尺度不変', () => {
   test.each([
     'apps/worker/src/services/faq-match.ts',
     'apps/worker/src/services/faq-fts.ts',
-    'apps/worker/src/services/faq-reply.ts',
   ])('%s が origin/main と byte-identical', (p) => {
     expect(unchangedVsMain(p)).toBe(true);
   });

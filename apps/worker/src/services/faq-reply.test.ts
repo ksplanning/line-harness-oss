@@ -4,6 +4,7 @@ vi.mock('@line-crm/db', () => ({
   countRecentFaqReplies: vi.fn(),
   getActiveFaqsForMatch: vi.fn(),
   incrementFaqHitCount: vi.fn(),
+  insertAiFaqDraft: vi.fn(),
   jstNow: vi.fn(() => '2026-07-02T12:00:00+09:00'),
   recordUnmatchedQuestion: vi.fn(),
 }));
@@ -16,6 +17,7 @@ import {
   countRecentFaqReplies,
   getActiveFaqsForMatch,
   incrementFaqHitCount,
+  insertAiFaqDraft,
   recordUnmatchedQuestion,
 } from '@line-crm/db';
 import { buildMessage } from './step-delivery.js';
@@ -119,6 +121,39 @@ describe('tryFaqReply', () => {
     expect(String((db.prepare as ReturnType<typeof vi.fn>).mock.calls[1][0])).toContain("'faq_bot'");
   });
 
+  test('deterministic hit defaults to draft when answerMode is missing and never sends', async () => {
+    const settings = stmt({
+      first: vi.fn().mockResolvedValue({
+        value: JSON.stringify({
+          enabled: true,
+          threshold: 0.6,
+          autoReplyNotice: '※自動返信です',
+          handoffMessage: '',
+          maxRepliesPerDay: 5,
+        }),
+      }),
+    });
+    const db = dbWithStatements(settings);
+
+    await expect(tryFaqReply(db, lineClient, {
+      friend,
+      incomingText: '開店時間は？',
+      lineAccountId: 'acc-1',
+      replyToken: 'reply-token',
+    })).resolves.toEqual({ replied: false, handoff: false });
+
+    expect(lineClient.replyMessage).not.toHaveBeenCalled();
+    expect(insertAiFaqDraft).toHaveBeenCalledWith(db, {
+      lineAccountId: 'acc-1',
+      friendId: 'friend-1',
+      question: '開店時間は？',
+      draftAnswer: '10時からです',
+      evidenceFaqIds: ['faq-1'],
+    });
+    expect(incrementFaqHitCount).toHaveBeenCalledWith(db, 'faq-1');
+    expect(db.prepare).toHaveBeenCalledTimes(1);
+  });
+
   test('miss records unmatched with top_score and sends handoff when configured', async () => {
     const settings = stmt({
       first: vi.fn().mockResolvedValue({
@@ -187,6 +222,32 @@ describe('tryFaqReply', () => {
     })).resolves.toEqual({ replied: false, handoff: false });
 
     expect(recordUnmatchedQuestion).toHaveBeenCalled();
+    expect(lineClient.replyMessage).not.toHaveBeenCalled();
+  });
+
+  test('zero FAQs keeps the existing unmatched escalation path without sending', async () => {
+    const settings = stmt({
+      first: vi.fn().mockResolvedValue({
+        value: JSON.stringify({ enabled: true, threshold: 0.6, handoffMessage: '', maxRepliesPerDay: 5 }),
+      }),
+    });
+    vi.mocked(getActiveFaqsForMatch).mockResolvedValue([]);
+    const db = dbWithStatements(settings);
+
+    await expect(tryFaqReply(db, lineClient, {
+      friend,
+      incomingText: 'まだ登録されていない質問',
+      lineAccountId: 'acc-1',
+      replyToken: 'reply-token',
+    })).resolves.toEqual({ replied: false, handoff: false });
+
+    expect(recordUnmatchedQuestion).toHaveBeenCalledWith(db, {
+      lineAccountId: 'acc-1',
+      friendId: 'friend-1',
+      question: 'まだ登録されていない質問',
+      topScore: null,
+    });
+    expect(insertAiFaqDraft).not.toHaveBeenCalled();
     expect(lineClient.replyMessage).not.toHaveBeenCalled();
   });
 });

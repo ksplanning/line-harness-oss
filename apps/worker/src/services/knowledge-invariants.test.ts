@@ -1,6 +1,6 @@
 /**
  * D-1 / D-2 / D-3 / D-4 (Phase B B-3) — 不可侵 assert (機械検証)。
- *  D-1: 送信安全 byte-identical (faq-reply/faq-ai/faq-fts/faq-match/runtime) + chunks を live RAG に非結線 +
+ *  D-1: matcher/retrieval byte-identical + faq-reply の送信 verb 制約 + chunks を live RAG に非結線 +
  *       normalize/ngrams・buildQuerySearchText 再利用 (自前再実装なし) + packages/db→apps/worker 逆流禁止。
  *  D-2: wrangler 現在形不変 (crons 正定義2本 (2026-07-11 解禁) / FAQ_BOT_ENABLED スイッチ="true" go-live 承認 /
  *       SSRF backstop / binding 意図形) + webhook gate + 既存 outbound fetch ファイル無改変 (dark-ship)。
@@ -26,19 +26,18 @@ function unchangedVsMain(repoRelPath: string): boolean {
 }
 const readRepo = (p: string) => readFileSync(join(REPO, p), 'utf8');
 
-describe('D-1 (B-4 再編) — 送信安全 byte-identical + orchestrator 非結線 + chunk は runFaqAiAnswer 内で結線', () => {
+describe('D-1 (B-4 再編) — matcher/retrieval byte-identical + orchestrator 非結線 + chunk は runFaqAiAnswer 内で結線', () => {
   // ⚠️ B-4 は faq-ai.ts / runtime.ts を意図的に改修する (chunks live 結線が目的 / 地雷 B4-7)。回帰 assert は
-  //    faq-match / faq-fts / faq-reply (orchestrator) byte-identical + 送信安全 (gate/crons/FAQ_BOT_ENABLED) に
-  //    組み替える (spec §7)。faq-ai/runtime の floor 不変は faq-fts-invariants.test.ts が担保。
+  //    faq-match / faq-fts byte-identical + faq-reply の送信 verb 制約 + 送信安全 (gate/crons/FAQ_BOT_ENABLED) に
+  //    組み替える (spec §7)。faq-reply は answerMode 対応で意図的に変更されるため、時限式の main 比較から外す。
   test.each([
-    'apps/worker/src/services/faq-reply.ts',
     'apps/worker/src/services/faq-fts.ts',
     'apps/worker/src/services/faq-match.ts',
-  ])('%s が origin/main と byte-identical (送信安全 unchanged)', (p) => {
+  ])('%s が origin/main と byte-identical', (p) => {
     expect(unchangedVsMain(p)).toBe(true);
   });
 
-  test('orchestrator (faq-reply.ts) は chunk を直接 import せず新 reply/push/multicast を足さない (送信面不変)', () => {
+  test('orchestrator (faq-reply.ts) は chunk を直接 import せず push/multicast を持たない', () => {
     const src = readRepo('apps/worker/src/services/faq-reply.ts');
     expect(src).not.toContain('knowledge.js');
     expect(src).not.toContain('retrieveChunkEvidence');
