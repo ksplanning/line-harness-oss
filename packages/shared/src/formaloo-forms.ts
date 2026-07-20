@@ -47,6 +47,18 @@ export const FORMALOO_FIELD_TYPES = [
   ...FORMALOO_E1_FIELD_TYPES,
 ] as const;
 
+/** internal renderer 専用入力型。Formaloo API へは決して serialize しない。 */
+export const INTERNAL_ONLY_FIELD_TYPES = [
+  'datetime',
+  'country',
+  'postal_code',
+  'prefecture',
+  'address_city',
+  'address_street',
+  'address_building',
+] as const;
+export type InternalOnlyFieldType = (typeof INTERNAL_ONLY_FIELD_TYPES)[number];
+
 // treasure-b1-palette: video は装飾 (回答なし・required 常時 false) だが Formaloo type は oembed (下 HARNESS_TO_FORMALOO_TYPE)。
 // form-image-decoration: image は装飾 (差し込み画像)。Formaloo type=meta/section で description に canonical <img>
 //   (spike S-1 実証: files/=401・field 直添付黙殺ゆえ section description の <img> だけが hosted 描画)。
@@ -96,7 +108,8 @@ export const DEFAULT_VIDEO_HEIGHT = '250px';
 /** videoHeight の受理形式 (CSS 注入防止で自由文字列を通さない / 2〜4 桁 px|vw のみ)。 */
 const VIDEO_HEIGHT_PATTERN = /^\d{2,4}(px|vw)$/;
 
-export type HarnessFieldType = (typeof FORMALOO_FIELD_TYPES)[number] | HarnessDecorationType;
+export type FormalooFieldType = (typeof FORMALOO_FIELD_TYPES)[number];
+export type HarnessFieldType = FormalooFieldType | InternalOnlyFieldType | HarnessDecorationType;
 
 // =============================================================================
 // fr-id-capture-fix (R3 / T-C1): LINE friend 識別のための system hidden field 単一正本。
@@ -174,8 +187,13 @@ export function isDecorationType(t: string): t is HarnessDecorationType {
   return (DECORATION_FIELD_TYPES as readonly string[]).includes(t);
 }
 
+/** internal renderer 専用入力型かを unknown から安全に絞り込む。 */
+export function isInternalOnlyFieldType(value: unknown): value is InternalOnlyFieldType {
+  return typeof value === 'string' && (INTERNAL_ONLY_FIELD_TYPES as readonly string[]).includes(value);
+}
+
 /** harness 種別 → Formaloo field type 名 (実 API 名 / R10)。 */
-export const HARNESS_TO_FORMALOO_TYPE: Record<HarnessFieldType, string> = {
+export const HARNESS_TO_FORMALOO_TYPE: Record<FormalooFieldType | HarnessDecorationType, string> = {
   text: 'short_text',
   textarea: 'long_text',
   choice: 'choice',
@@ -231,6 +249,12 @@ export interface HarnessFieldConfig {
   text?: string;
   /** 入力項目の補足説明 (Help text / Formaloo field description)。全入力型で表示。section 本文(text)とは別欄。 */
   description?: string;
+  /** internal renderer の入力欄に表示する placeholder。補足説明とは別物。 */
+  placeholder?: string;
+  /** internal renderer の単一選択型に使う既定値。Formaloo payload には送らない。 */
+  defaultValue?: string;
+  /** internal renderer の複数選択型に使う既定値。Formaloo payload には送らない。 */
+  defaultValues?: string[];
   /**
    * choice/dropdown/multiple_select の選択肢を title+slug で additive 保持 (form-route-branching)。
    * pull 時に Formaloo `choice_items[].slug` を取り込む (全項目が slug を持つ完全形の時のみ)。既存 `choices`(title のみ) は不変。
@@ -438,6 +462,7 @@ export interface FormalooLogicObject {
 function isFieldType(v: unknown): v is HarnessFieldType {
   return typeof v === 'string' && (
     (FORMALOO_FIELD_TYPES as readonly string[]).includes(v)
+    || (INTERNAL_ONLY_FIELD_TYPES as readonly string[]).includes(v)
     || (DECORATION_FIELD_TYPES as readonly string[]).includes(v)
   );
 }
@@ -635,6 +660,20 @@ export function validateHarnessField(
     if (typeof rawCfg.description !== 'string') return { ok: false, error: 'config.description must be string' };
     config.description = rawCfg.description;
   }
+  if (rawCfg.placeholder !== undefined) {
+    if (typeof rawCfg.placeholder !== 'string') return { ok: false, error: 'config.placeholder must be string' };
+    config.placeholder = rawCfg.placeholder;
+  }
+  if (rawCfg.defaultValue !== undefined) {
+    if (typeof rawCfg.defaultValue !== 'string') return { ok: false, error: 'config.defaultValue must be string' };
+    config.defaultValue = rawCfg.defaultValue;
+  }
+  if (rawCfg.defaultValues !== undefined) {
+    if (!Array.isArray(rawCfg.defaultValues) || !rawCfg.defaultValues.every((value) => typeof value === 'string')) {
+      return { ok: false, error: 'config.defaultValues must be string[]' };
+    }
+    config.defaultValues = [...rawCfg.defaultValues];
+  }
   // treasure-b1-palette: rating の sub_type は 5 enum whitelist で正規化 (M-21 未知素通し禁止)。
   //   未定義は既定 star 扱いで config に載せない (既存 form byte 不変 = maxSizeKb と同型)。
   if (rawCfg.ratingSubType !== undefined) {
@@ -796,6 +835,9 @@ export function toFormalooFieldPayload(
   field: HarnessField,
   resolveSlug?: (harnessFieldId: string) => string | undefined,
 ): Record<string, unknown> {
+  if (isInternalOnlyFieldType(field.type)) {
+    throw new Error(`internal-only field type cannot be serialized to Formaloo: ${field.type}`);
+  }
   if (field.type === 'section') {
     return {
       type: 'meta',
