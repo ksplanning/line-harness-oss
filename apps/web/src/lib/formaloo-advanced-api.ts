@@ -6,6 +6,7 @@ import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, Form
 // =============================================================================
 
 export type BuilderStatus = 'draft' | 'in_review' | 'published'
+export type RenderBackend = 'formaloo' | 'internal'
 
 export interface AdvancedForm {
   id: string
@@ -128,6 +129,26 @@ export const formsAdvancedApi = {
   },
   async get(id: string): Promise<AdvancedForm> {
     return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}`)).data
+  },
+  // Internal hosting is additive: keep the long-standing form response byte-compatible
+  // and read/write the backend through its own small endpoint.
+  async getRenderBackend(id: string): Promise<RenderBackend> {
+    return (
+      await fetchApi<Envelope<{ renderBackend: RenderBackend }>>(
+        `/api/forms-advanced/${encodeURIComponent(id)}/render-backend`,
+      )
+    ).data.renderBackend
+  },
+  async setRenderBackend(id: string, renderBackend: RenderBackend): Promise<RenderBackend> {
+    return (
+      await fetchApi<Envelope<{ renderBackend: RenderBackend }>>(
+        `/api/forms-advanced/${encodeURIComponent(id)}/render-backend`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ renderBackend }),
+        },
+      )
+    ).data.renderBackend
   },
   // F6-2: lineAccountId(=選択アカウント) + workspaceId(owner 選択時のみ) を渡す。workspace_id の確定は
   // server 権威 (client 指定は owner の active 値のみ採用・非 owner の明示は 403)。

@@ -52,6 +52,23 @@ describe('formsAdvancedApi.saveDefinition — metadata payload', () => {
   })
 })
 
+describe('formsAdvancedApi render backend — separate additive endpoint', () => {
+  it('GET reads the backend without changing the existing form response', async () => {
+    fetchApi.mockResolvedValue({ success: true, data: { renderBackend: 'internal' } })
+    await expect(formsAdvancedApi.getRenderBackend('fa/a')).resolves.toBe('internal')
+    expect(fetchApi).toHaveBeenCalledWith(`/api/forms-advanced/${encodeURIComponent('fa/a')}/render-backend`)
+  })
+
+  it('PATCH sends only the selected backend', async () => {
+    fetchApi.mockResolvedValue({ success: true, data: { renderBackend: 'internal' } })
+    await expect(formsAdvancedApi.setRenderBackend('fa1', 'internal')).resolves.toBe('internal')
+    const [url, opts] = fetchApi.mock.calls[0]
+    expect(url).toBe('/api/forms-advanced/fa1/render-backend')
+    expect((opts as { method: string }).method).toBe('PATCH')
+    expect(JSON.parse((opts as { body: string }).body)).toEqual({ renderBackend: 'internal' })
+  })
+})
+
 describe('formalooAccountBindingsApi', () => {
   it('list → GET /api/formaloo-account-bindings', async () => {
     await formalooAccountBindingsApi.list()

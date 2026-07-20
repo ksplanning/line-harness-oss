@@ -47,7 +47,7 @@ import DesignPanel from './design-panel'
 import ImageFieldPanel from './image-field-panel'
 import ChoiceFetchFieldPanel from './choice-fetch-field-panel'
 import StructuralFieldPanel from './structural-field-panel'
-import type { BuilderStatus } from '@/lib/formaloo-advanced-api'
+import type { BuilderStatus, RenderBackend } from '@/lib/formaloo-advanced-api'
 import { formSyncBadge } from '@/lib/formaloo-sync-badge'
 import { HelpIcon } from '@/components/shared/icons'
 import { popoverPlacement, type PopoverPlacement } from '@/lib/help/popover-placement'
@@ -108,6 +108,9 @@ export interface BuilderProps {
   initialEditMailFieldId?: string | null
   /** treasure-b2-form-settings: form 単位の運用制御。未設定は従来挙動 (すべて OFF / 無制限)。 */
   initialOperationsSettings?: FormOperationsSettings
+  /** 自前配信 W1: 既存フォームは Formaloo が既定。定義保存とは別 endpoint で切り替える。 */
+  initialRenderBackend?: RenderBackend
+  onRenderBackendChange?: (renderBackend: RenderBackend) => Promise<void> | void
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
   onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
@@ -1230,6 +1233,9 @@ export default function FormBuilder(props: BuilderProps) {
   }
   const [selectedId, setSelectedId] = useState<string | null>(props.initialFields[0]?.id ?? null)
   const [saving, setSaving] = useState(false)
+  const [renderBackend, setRenderBackend] = useState<RenderBackend>(props.initialRenderBackend ?? 'formaloo')
+  const [renderBackendSaving, setRenderBackendSaving] = useState(false)
+  const [renderBackendError, setRenderBackendError] = useState<string | null>(null)
   const [confirmPublish, setConfirmPublish] = useState(false)
   const [reimportConfirm, setReimportConfirm] = useState(false)
   const [reimporting, setReimporting] = useState(false)
@@ -1249,6 +1255,23 @@ export default function FormBuilder(props: BuilderProps) {
   )
 
   const reposition = (list: HarnessField[]) => list.map((f, i) => ({ ...f, position: i }))
+
+  const changeRenderBackend = async (next: RenderBackend) => {
+    if (next === renderBackend || renderBackendSaving) return
+    const previous = renderBackend
+    setRenderBackend(next)
+    setRenderBackendError(null)
+    if (!props.onRenderBackendChange) return
+    setRenderBackendSaving(true)
+    try {
+      await props.onRenderBackendChange(next)
+    } catch {
+      setRenderBackend(previous)
+      setRenderBackendError('配信方式の変更に失敗しました。時間をおいて再度お試しください。')
+    } finally {
+      setRenderBackendSaving(false)
+    }
+  }
 
   const addField = (type: HarnessFieldType, index?: number) => {
     const f = newField(type, fieldsRef.current)
@@ -1546,6 +1569,26 @@ export default function FormBuilder(props: BuilderProps) {
         {props.status === 'published' && props.onUnpublish && (
           <button type="button" onClick={props.onUnpublish} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200">非公開に戻す</button>
         )}
+      </div>
+
+      <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="render-backend-section">
+        <label className="block text-xs font-medium text-gray-600">
+          配信方式
+          <select
+            aria-label="配信方式"
+            value={renderBackend}
+            disabled={renderBackendSaving}
+            onChange={(event) => void changeRenderBackend(event.target.value as RenderBackend)}
+            className="mt-1 block w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm md:w-64"
+          >
+            <option value="formaloo">Formaloo</option>
+            <option value="internal">自前配信 (β)</option>
+          </select>
+        </label>
+        <p className="mt-1 text-[10px] leading-snug text-gray-400">
+          自前配信では、このフォームを自社サーバーから公開し、回答も自社データベースへ保存します。
+        </p>
+        {renderBackendError && <p role="alert" className="mt-1 text-xs text-red-600">{renderBackendError}</p>}
       </div>
 
       {/* treasure-b2-form-settings: Formaloo の form-meta と公開導線を form 単位で制御する。

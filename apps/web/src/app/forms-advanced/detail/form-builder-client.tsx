@@ -6,7 +6,7 @@ import Header from '@/components/layout/header'
 import FormBuilder from '@/components/forms-advanced/builder'
 import SharePanel from '@/components/forms-advanced/share-panel'
 import InstantWebhookSettings from '@/components/forms-advanced/instant-webhook-settings'
-import { formsAdvancedApi, type AdvancedForm, type ShareInfo } from '@/lib/formaloo-advanced-api'
+import { formsAdvancedApi, type AdvancedForm, type RenderBackend, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import type { FriendFieldDefinition, HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettingsPatch } from '@line-crm/shared'
@@ -15,6 +15,7 @@ import type { FriendFieldDefinition, HarnessField, HarnessLogicRule, FormDesign,
 export default function FormBuilderClient({ id }: { id: string }) {
   const { selectedAccountId } = useAccount()
   const [form, setForm] = useState<AdvancedForm | null>(null)
+  const [renderBackend, setRenderBackend] = useState<RenderBackend>('formaloo')
   const [share, setShare] = useState<ShareInfo | null>(null)
   const [isOwner, setIsOwner] = useState(false)
   const [connecting, setConnecting] = useState(false)
@@ -30,7 +31,12 @@ export default function FormBuilderClient({ id }: { id: string }) {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setForm(await formsAdvancedApi.get(id))
+      const [loadedForm, loadedRenderBackend] = await Promise.all([
+        formsAdvancedApi.get(id),
+        formsAdvancedApi.getRenderBackend(id).catch((): RenderBackend => 'formaloo'),
+      ])
+      setForm(loadedForm)
+      setRenderBackend(loadedRenderBackend)
       setError(null)
       await loadShare()
       try {
@@ -107,6 +113,17 @@ export default function FormBuilderClient({ id }: { id: string }) {
     }
   }
 
+  const handleRenderBackendChange = async (next: RenderBackend) => {
+    try {
+      const confirmed = await formsAdvancedApi.setRenderBackend(id, next)
+      setRenderBackend(confirmed)
+      setNotice(confirmed === 'internal' ? '自前配信 (β) に切り替えました' : 'Formaloo 配信に切り替えました')
+    } catch (error) {
+      setNotice('配信方式の変更に失敗しました')
+      throw error
+    }
+  }
+
   // F6-2 表示スコープ照合 (Codex B#3): 別アカウント向け form (lineAccountId != null かつ 選択アカウント不一致)
   //   は表示しない。NULL 共通は全アカウントで許容。これは表示フィルタであり、API 直打ちは防げない (N-17)。
   const scopeBlocked =
@@ -159,6 +176,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialSuccessPages={form.successPages ?? undefined}
             initialFriendMetadataMappings={form.friendMetadataMappings ?? undefined}
             initialOperationsSettings={form.operationsSettings ?? undefined}
+            initialRenderBackend={renderBackend}
             fieldDefinitions={fieldDefinitions}
             initialAllowPostEdit={form.allowPostEdit}
             initialAllowEditMail={form.allowEditMail}
@@ -169,6 +187,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             publicUrl={form.publicUrl}
             embedCode={form.embedCode}
             onSave={handleSave}
+            onRenderBackendChange={handleRenderBackendChange}
             onSubmitForReview={withErr(() => formsAdvancedApi.submitForReview(id))}
             onPublish={withErr(() => formsAdvancedApi.publish(id))}
             onUnpublish={withErr(() => formsAdvancedApi.unpublish(id))}

@@ -12,6 +12,8 @@ import type { ReactNode } from 'react'
 const builderProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: 'acc_A' }
 const getMock = vi.fn()
+const getRenderBackendMock = vi.fn()
+const setRenderBackendMock = vi.fn()
 const shareMock = vi.fn()
 const saveDefinitionMock = vi.fn()
 const fetchApiMock = vi.fn()
@@ -29,6 +31,8 @@ vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
 vi.mock('@/lib/formaloo-advanced-api', () => ({
   formsAdvancedApi: {
     get: (...a: unknown[]) => getMock(...a),
+    getRenderBackend: (...a: unknown[]) => getRenderBackendMock(...a),
+    setRenderBackend: (...a: unknown[]) => setRenderBackendMock(...a),
     share: (...a: unknown[]) => shareMock(...a),
     saveDefinition: (...a: unknown[]) => saveDefinitionMock(...a),
   },
@@ -42,9 +46,11 @@ function form(lineAccountId: string | null) {
 }
 
 beforeEach(() => {
-  getMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); fetchApiMock.mockReset()
+  getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); fetchApiMock.mockReset()
   builderProps.current = undefined
   mockAccount.selectedAccountId = 'acc_A'
+  getRenderBackendMock.mockResolvedValue('formaloo')
+  setRenderBackendMock.mockImplementation(async (_id: string, backend: string) => backend)
   shareMock.mockResolvedValue({ published: false, publicUrl: null, iframeCode: null, scriptCode: null, gsheetConnected: false, gsheetUrl: null })
   fetchApiMock.mockImplementation(async (path: string) => (
     path === '/api/friend-field-definitions'
@@ -115,6 +121,37 @@ describe('詳細画面 scope 照合', () => {
     expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', {
       fields: [], logic: [], title: '新タイトル', description: '',
     })
+  })
+
+  it('配信方式を別 endpoint から読み、builder に復元する', async () => {
+    getMock.mockResolvedValue(form('acc_A'))
+    getRenderBackendMock.mockResolvedValue('internal')
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(builderProps.current?.initialRenderBackend).toBe('internal'))
+    expect(getRenderBackendMock).toHaveBeenCalledWith('fa1')
+  })
+
+  it('builder の配信方式変更を専用 endpoint にだけ保存する', async () => {
+    getMock.mockResolvedValue(form('acc_A'))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+
+    await act(async () => {
+      await (builderProps.current?.onRenderBackendChange as (backend: string) => Promise<void>)('internal')
+    })
+
+    expect(setRenderBackendMock).toHaveBeenCalledWith('fa1', 'internal')
+    expect(saveDefinitionMock).not.toHaveBeenCalled()
+  })
+
+  it('配信方式の読込だけ失敗した場合は既定 Formaloo のままフォームを表示する', async () => {
+    getMock.mockResolvedValue(form('acc_A'))
+    getRenderBackendMock.mockRejectedValue(new Error('backend unavailable'))
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+    expect(builderProps.current?.initialRenderBackend).toBe('formaloo')
   })
 
   it('P2 fail-closed: account 未確定 (selectedAccountId=null) で account-scoped form は描画せず hold', async () => {
