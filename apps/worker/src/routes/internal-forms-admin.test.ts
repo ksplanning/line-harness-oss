@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import { createRole, jstNow, setRolePermissions } from '@line-crm/db';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
+import { formalooInstantWebhook } from './formaloo-instant-webhook.js';
 import { formsAdvanced } from './forms-advanced.js';
 import { internalFormsAdmin } from './internal-forms-admin.js';
 import type { Env } from '../index.js';
@@ -87,6 +88,7 @@ function app(withInternalRouter = true) {
   hono.use('*', permissionMiddleware);
   if (withInternalRouter) hono.route('/', internalFormsAdmin);
   hono.route('/', formsAdvanced);
+  hono.route('/', formalooInstantWebhook);
   return hono;
 }
 
@@ -251,6 +253,25 @@ describe('internal answer admin read path', () => {
     expect(externalFetch).not.toHaveBeenCalled();
   });
 
+  test('list honors the existing q/from/to/sort controls with a filtered total', async () => {
+    const searched = await call(
+      'GET',
+      `/api/forms-advanced/internal-form/rows?q=${encodeURIComponent('二郎')}&sort=asc&page=1&pageSize=25`,
+    );
+    expect(searched.status).toBe(200);
+    expect((await searched.json() as { data: { rows: Array<{ id: string }>; total: number } }).data)
+      .toMatchObject({ rows: [{ id: 'sub-2' }], total: 1 });
+
+    const ranged = await call(
+      'GET',
+      `/api/forms-advanced/internal-form/rows?from=${encodeURIComponent('2026-07-01T09:30:00+09:00')}&to=${encodeURIComponent('2026-07-02T11:00:00+09:00')}&sort=asc&page=1&pageSize=25`,
+    );
+    expect(ranged.status).toBe(200);
+    const rangeData = (await ranged.json() as { data: { rows: Array<{ id: string }>; total: number } }).data;
+    expect(rangeData.total).toBe(2);
+    expect(rangeData.rows.map((row) => row.id)).toEqual(['sub-2', 'sub-3']);
+  });
+
   test('detail is local-only, non-editable, and scoped to the selected form', async () => {
     const response = await call('GET', '/api/forms-advanced/internal-form/rows/sub-2');
     expect(response.status).toBe(200);
@@ -288,6 +309,75 @@ describe('internal answer admin read path', () => {
   });
 });
 
+describe('internal hosting provider boundary', () => {
+  test('share exposes only the published local /f URL without Formaloo, embed, or Sheets data', async () => {
+    seedForm('internal-form', 'internal');
+    const externalFetch = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', externalFetch);
+    bindingOverrides = {
+      WORKER_URL: 'https://internal.example.test/base/',
+      FORMALOO_API_KEY: 'must-not-be-used',
+      FORMALOO_API_SECRET: 'must-not-be-used',
+    };
+
+    const published = await call('GET', '/api/forms-advanced/internal-form/share');
+    expect(published.status).toBe(200);
+    expect(await published.json()).toEqual({
+      success: true,
+      data: {
+        published: true,
+        publicUrl: 'https://internal.example.test/base/f/internal-form',
+        lineDistUrl: null,
+        iframeCode: null,
+        scriptCode: null,
+        gsheetConnected: false,
+        gsheetUrl: null,
+      },
+    });
+
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-form'").run();
+    const draft = await call('GET', '/api/forms-advanced/internal-form/share');
+    expect(draft.status).toBe(200);
+    expect(await draft.json()).toMatchObject({
+      success: true,
+      data: { published: false, publicUrl: null },
+    });
+    expect(externalFetch).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['POST', '/api/forms-advanced/internal-form/reapply-hosted', undefined],
+    ['PATCH', '/api/forms-advanced/internal-form/rows/formaloo-sub', { answers: { name: '変更' } }],
+    ['POST', '/api/forms-advanced/internal-form/import', { csv: 'name\n一郎' }],
+    ['POST', '/api/forms-advanced/internal-form/rows/bulk-delete', { ids: ['formaloo-sub'] }],
+    ['POST', '/api/forms-advanced/internal-form/gsheet/connect', undefined],
+    ['PUT', '/api/forms-advanced/internal-form/instant-webhook', { enabled: true }],
+  ] as const)('%s %s is 409 before any Formaloo request', async (method, path, body) => {
+    seedForm('internal-form', 'internal');
+    seedFormalooSubmission('formaloo-sub', 'internal-form');
+    raw.prepare("UPDATE formaloo_forms SET allow_post_edit = 1 WHERE id = 'internal-form'").run();
+    const externalFetch = vi.fn(async () => new Response(JSON.stringify({ data: {} }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', externalFetch);
+    bindingOverrides = {
+      FORMALOO_API_KEY: 'must-not-be-used',
+      FORMALOO_API_SECRET: 'must-not-be-used',
+      FORM_POST_EDIT_ENABLED: 'true',
+      WORKER_PUBLIC_URL: 'https://worker.example.test',
+    };
+
+    const response = await call(method, path, body);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: '自前配信では Formaloo 専用操作を利用できません',
+    });
+    expect(externalFetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('auth, permission, and Formaloo passthrough regression', () => {
   test('selector remains authenticated and uses the existing forms_advanced permission gate', async () => {
     seedForm('internal-form', 'internal');
@@ -306,6 +396,7 @@ describe('auth, permission, and Formaloo passthrough regression', () => {
     '/api/forms-advanced/formaloo-form/rows?page=1&pageSize=25',
     '/api/forms-advanced/formaloo-form/rows/formaloo-sub',
     '/api/forms-advanced/formaloo-form/stats',
+    '/api/forms-advanced/formaloo-form/share',
   ])('formaloo response status/body is identical with the pre-router: %s', async (path) => {
     seedForm('formaloo-form', 'formaloo');
     seedFormalooSubmission('formaloo-sub', 'formaloo-form');
@@ -314,6 +405,26 @@ describe('auth, permission, and Formaloo passthrough regression', () => {
     const existingStatus = existing.status;
     const existingBody = await existing.text();
     const stacked = await call('GET', path);
+
+    expect(stacked.status).toBe(existingStatus);
+    expect(await stacked.text()).toBe(existingBody);
+  });
+
+  test.each([
+    ['POST', '/api/forms-advanced/formaloo-form/reapply-hosted', undefined],
+    ['PATCH', '/api/forms-advanced/formaloo-form/rows/formaloo-sub', { answers: { name: '変更' } }],
+    ['POST', '/api/forms-advanced/formaloo-form/import', { csv: '' }],
+    ['POST', '/api/forms-advanced/formaloo-form/rows/bulk-delete', { ids: [] }],
+    ['POST', '/api/forms-advanced/formaloo-form/gsheet/connect', undefined],
+    ['PUT', '/api/forms-advanced/formaloo-form/instant-webhook', { enabled: 'invalid' }],
+  ] as const)('formaloo mutation response is byte-identical with the pre-router: %s %s', async (method, path, body) => {
+    seedForm('formaloo-form', 'formaloo');
+    seedFormalooSubmission('formaloo-sub', 'formaloo-form');
+
+    const existing = await call(method, path, body, { withInternalRouter: false });
+    const existingStatus = existing.status;
+    const existingBody = await existing.text();
+    const stacked = await call(method, path, body);
 
     expect(stacked.status).toBe(existingStatus);
     expect(await stacked.text()).toBe(existingBody);
