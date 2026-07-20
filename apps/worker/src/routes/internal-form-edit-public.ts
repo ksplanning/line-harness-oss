@@ -312,8 +312,12 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
       formId: resolved.value.payload.formId,
       submissionId: resolved.value.payload.rowRef,
       expectedEditVersion,
+      expectedEditLinkEpoch: resolved.value.payload.epoch,
       answers: merged,
     });
+    if (result.status === 'revoked') {
+      return c.html(renderInvalidPage(), 403, PRIVATE_HEADERS);
+    }
     if (result.status === 'conflict') {
       return c.html(renderDocument('更新できませんでした', '<section class="result"><h1>回答が先に更新されています</h1><p>ページを再読み込みして、最新の回答を確認してください。</p></section>'), 409, PRIVATE_HEADERS);
     }

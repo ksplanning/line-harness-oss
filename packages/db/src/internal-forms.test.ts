@@ -69,6 +69,11 @@ beforeEach(() => {
     `INSERT INTO formaloo_forms (id, title, definition_json)
      VALUES ('fa_internal', '申込フォーム', '{"fields":[],"logic":[]}')`,
   ).run();
+  raw.prepare(
+    `INSERT INTO internal_form_notification_settings
+       (form_id, enabled, edit_link_epoch, created_at, updated_at)
+     VALUES ('fa_internal', 1, 4, '2026-07-21T00:00:00+09:00', '2026-07-21T00:00:00+09:00')`,
+  ).run();
 });
 
 describe('internal form persistence', () => {
@@ -628,6 +633,7 @@ describe('internal form persistence', () => {
       formId: 'fa_internal',
       submissionId: created.id,
       expectedEditVersion: 0,
+      expectedEditLinkEpoch: 4,
       answers: { name: '変更後' },
     });
     expect(updated).toMatchObject({
@@ -643,6 +649,7 @@ describe('internal form persistence', () => {
       formId: 'fa_internal',
       submissionId: created.id,
       expectedEditVersion: 0,
+      expectedEditLinkEpoch: 4,
       answers: { name: '競合書き込み' },
     });
     expect(conflict).toMatchObject({
@@ -655,6 +662,32 @@ describe('internal form persistence', () => {
     });
   });
 
+  test('atomically rejects a revoked edit-link epoch without mutating the submission', async () => {
+    const created = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '元の回答' },
+    });
+    raw.prepare(
+      'UPDATE internal_form_notification_settings SET edit_link_epoch = 5 WHERE form_id = ?',
+    ).run('fa_internal');
+
+    expect(await updateInternalFormSubmissionAnswers(DB, {
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 0,
+      expectedEditLinkEpoch: 4,
+      answers: { name: '失効済みリンクからの更新' },
+    })).toEqual({
+      status: 'revoked',
+      submission: expect.objectContaining({
+        answers_json: '{"name":"元の回答"}',
+        edit_version: 0,
+      }),
+    });
+    expect(await getInternalFormSubmission(DB, 'fa_internal', created.id))
+      .toMatchObject({ answers_json: '{"name":"元の回答"}', edit_version: 0 });
+  });
+
   test('does not update a submission through another form scope', async () => {
     const created = await createInternalFormSubmission(DB, {
       formId: 'fa_internal',
@@ -665,6 +698,7 @@ describe('internal form persistence', () => {
       formId: 'fa_other',
       submissionId: created.id,
       expectedEditVersion: 0,
+      expectedEditLinkEpoch: 4,
       answers: { name: '越境更新' },
     })).toEqual({ status: 'conflict', submission: null });
     expect(await getInternalFormSubmission(DB, 'fa_internal', created.id))

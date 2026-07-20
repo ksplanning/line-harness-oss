@@ -103,6 +103,21 @@ function bindings(db = DB): Env['Bindings'] {
   } as Env['Bindings'];
 }
 
+function rotateEpochBeforeSubmissionUpdate(): D1Database {
+  let rotated = false;
+  return {
+    prepare(sql: string) {
+      if (!rotated && /^\s*UPDATE internal_form_submissions\b/.test(sql)) {
+        raw.prepare(
+          'UPDATE internal_form_notification_settings SET edit_link_epoch = edit_link_epoch + 1 WHERE form_id = ?',
+        ).run('form-1');
+        rotated = true;
+      }
+      return DB.prepare(sql);
+    },
+  } as D1Database;
+}
+
 function app(): Hono<Env> {
   const hono = new Hono<Env>();
   hono.route('/', internalFormEditPublic);
@@ -310,5 +325,24 @@ describe('POST /ife/:token', () => {
     ).get('ifs-1') as { answers_json: string; edit_version: number };
     expect(stored.edit_version).toBe(4);
     expect(JSON.parse(stored.answers_json)).toMatchObject({ name: '先に更新済み' });
+  });
+
+  test('returns 403 without mutation when the edit link is revoked immediately before UPDATE', async () => {
+    seedForm();
+    seedSubmission();
+
+    const response = await app().request(`/ife/${await token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ editVersion: '3', a_0: '失効後の更新', a_1: 'new@example.test' }),
+    }, bindings(rotateEpochBeforeSubmissionUpdate()));
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get('Cache-Control')).toMatch(/no-store/);
+    const stored = raw.prepare(
+      'SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?',
+    ).get('ifs-1') as { answers_json: string; edit_version: number };
+    expect(stored.edit_version).toBe(3);
+    expect(JSON.parse(stored.answers_json)).toEqual(originalAnswers);
   });
 });

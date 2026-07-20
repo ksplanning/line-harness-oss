@@ -29,7 +29,8 @@ export interface UpdateLatestInternalFormSubmissionAnswersForSheetsInput {
 
 export type UpdateInternalFormSubmissionAnswersResult =
   | { status: 'updated'; submission: InternalFormSubmission }
-  | { status: 'conflict'; submission: InternalFormSubmission | null };
+  | { status: 'conflict'; submission: InternalFormSubmission | null }
+  | { status: 'revoked'; submission: InternalFormSubmission };
 
 export async function setFormRenderBackend(
   db: D1Database,
@@ -518,6 +519,7 @@ export async function updateInternalFormSubmissionAnswers(
     formId: string;
     submissionId: string;
     expectedEditVersion: number;
+    expectedEditLinkEpoch: number;
     answers: Record<string, unknown>;
   },
 ): Promise<UpdateInternalFormSubmissionAnswersResult> {
@@ -526,6 +528,12 @@ export async function updateInternalFormSubmissionAnswers(
       `UPDATE internal_form_submissions
        SET answers_json = ?, edit_version = edit_version + 1
        WHERE id = ? AND form_id = ? AND edit_version = ?
+         AND EXISTS (
+           SELECT 1
+           FROM internal_form_notification_settings AS notification_settings
+           WHERE notification_settings.form_id = internal_form_submissions.form_id
+             AND notification_settings.edit_link_epoch = ?
+         )
        RETURNING *`,
     )
     .bind(
@@ -533,12 +541,23 @@ export async function updateInternalFormSubmissionAnswers(
       input.submissionId,
       input.formId,
       input.expectedEditVersion,
+      input.expectedEditLinkEpoch,
     )
     .first<InternalFormSubmission>();
   if (updated) return { status: 'updated', submission: updated };
+
+  const submission = await getInternalFormSubmission(db, input.formId, input.submissionId);
+  if (!submission) return { status: 'conflict', submission: null };
+  const currentEpoch = await db
+    .prepare('SELECT edit_link_epoch FROM internal_form_notification_settings WHERE form_id = ?')
+    .bind(input.formId)
+    .first<{ edit_link_epoch: number }>();
+  if (!currentEpoch || currentEpoch.edit_link_epoch !== input.expectedEditLinkEpoch) {
+    return { status: 'revoked', submission };
+  }
   return {
     status: 'conflict',
-    submission: await getInternalFormSubmission(db, input.formId, input.submissionId),
+    submission,
   };
 }
 
