@@ -381,7 +381,7 @@ export default function AutomationsPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {automations.map((automation) => {
             const decoded = decodeAutomationRule(automationSource(automation))
-            const actions = Array.isArray(automation.actions) ? automation.actions : []
+            const actions = decoded.supported ? decoded.model.actions : []
             const sendMsgWithTemplate = actions.filter(
               (action) => action.type === 'send_message' && typeof action.params.template_id === 'string' && action.params.template_id,
             ).length

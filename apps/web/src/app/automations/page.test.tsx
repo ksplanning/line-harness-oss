@@ -133,4 +133,26 @@ describe('AutomationsPage GUI builder', () => {
     fireEvent.click(within(card).getByRole('button', { name: '削除' }))
     await waitFor(() => expect(mocks.delete).toHaveBeenCalledWith('future-rule'))
   })
+
+  it('keeps a structurally invalid action array visible in fail-safe mode', async () => {
+    mocks.list.mockResolvedValue({
+      success: true,
+      data: [{
+        ...validRule,
+        id: 'malformed-rule',
+        name: '壊れたアクション形式',
+        actions: [null],
+        actionsJson: '[null]',
+        jsonIssues: ['actions_unsupported_shape'],
+      }],
+    })
+
+    render(<AutomationsPage />)
+
+    const card = (await screen.findByText('壊れたアクション形式')).closest('article')!
+    expect(within(card).getByText('GUI非対応')).toBeTruthy()
+    fireEvent.click(within(card).getByRole('button', { name: '編集' }))
+    expect(screen.getByText(/GUI 非対応・JSON のまま保持/)).toBeTruthy()
+    expect((screen.getByLabelText('保持中のアクションJSON') as HTMLTextAreaElement).value).toBe('[null]')
+  })
 })

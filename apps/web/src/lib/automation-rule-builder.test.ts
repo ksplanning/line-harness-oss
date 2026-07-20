@@ -116,6 +116,8 @@ describe('automation JSON safety', () => {
     ['unknown condition', { eventType: 'friend_add', conditionsJson: '{"future":true}', actionsJson: '[]' }],
     ['broken actions JSON', { eventType: 'friend_add', conditionsJson: '{}', actionsJson: '[' }],
     ['non-array actions', { eventType: 'friend_add', conditionsJson: '{}', actionsJson: '{}' }],
+    ['null action item', { eventType: 'friend_add', conditionsJson: '{}', actionsJson: '[null]' }],
+    ['null action params', { eventType: 'friend_add', conditionsJson: '{}', actionsJson: '[{"type":"send_message","params":null}]' }],
     ['unknown action', { eventType: 'friend_add', conditionsJson: '{}', actionsJson: '[{"type":"future","params":{}}]' }],
     ['unknown action parameter', { eventType: 'friend_add', conditionsJson: '{}', actionsJson: '[{"type":"add_tag","params":{"tagId":"vip","future":true}}]' }],
   ] satisfies Array<[string, AutomationRuleSource]>)('fails safe for %s and retains its source', (_label, source) => {
