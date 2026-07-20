@@ -189,6 +189,46 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
     expect(messages.map((message) => message.text).join('')).toBe(text);
   });
 
+  test('keeps an edit URL whole when its original position crosses a chunk boundary', async () => {
+    mockLineSubmission();
+    dbMocks.getInternalFormNotificationSettings.mockResolvedValue({
+      ...settings,
+      messageTemplate: `${'a'.repeat(4_990)}{{編集リンク}}`,
+    });
+
+    await notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' });
+
+    const messages = lineMocks.pushMessage.mock.calls[0]?.[1] as Array<{ type: string; text: string }>;
+    expect(messages.some((message) => /https:\/\/worker\.example\.test\/ife\/[A-Za-z0-9._-]+/.test(message.text)))
+      .toBe(true);
+    expect(messages.every((message) => message.text.length <= 5_000)).toBe(true);
+  });
+
+  test('preserves an edit URL that would otherwise fall inside the omitted middle', async () => {
+    mockLineSubmission();
+    dbMocks.getInternalFormNotificationSettings.mockResolvedValue({
+      ...settings,
+      messageTemplate: '{{回答:お名前}}{{編集リンク}}{{回答:別の連絡先}}',
+    });
+    dbMocks.getInternalFormSubmission.mockResolvedValue({
+      ...baseSubmission,
+      origin_channel: 'line',
+      friend_id: 'friend-1',
+      answers_json: JSON.stringify({
+        name: 'a'.repeat(22_000),
+        email: 'hanako@example.test',
+        other_email: 'b'.repeat(8_000),
+      }),
+    });
+
+    await notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' });
+
+    const messages = lineMocks.pushMessage.mock.calls[0]?.[1] as Array<{ type: string; text: string }>;
+    expect(messages).toHaveLength(5);
+    expect(messages.some((message) => /https:\/\/worker\.example\.test\/ife\/[A-Za-z0-9._-]+/.test(message.text)))
+      .toBe(true);
+  });
+
   test('caps a very long default answer at five messages while preserving the edit link', async () => {
     mockLineSubmission();
     dbMocks.getInternalFormNotificationSettings.mockResolvedValue({ ...settings, messageTemplate: '' });

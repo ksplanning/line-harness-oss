@@ -40,7 +40,41 @@ function chunkEnd(text: string, start: number, maxCodeUnits: number): number {
   return end;
 }
 
-function splitLineText(text: string): LineTextMessage[] {
+function splitLineText(text: string, editUrl?: string): LineTextMessage[] {
+  if (text.length <= LINE_TEXT_MAX_CODE_UNITS) return [{ type: 'text', text }];
+
+  if (editUrl && text.includes(editUrl)) {
+    const content = text.split(editUrl).join('');
+    const editLinkSuffix = `\n\n編集リンク\n${editUrl}`;
+    const finalContentCapacity = LINE_TEXT_MAX_CODE_UNITS - editLinkSuffix.length;
+    const messages: LineTextMessage[] = [];
+    let cursor = 0;
+
+    while (
+      content.length - cursor > finalContentCapacity
+      && messages.length < LINE_PUSH_MAX_MESSAGES - 1
+    ) {
+      const end = chunkEnd(content, cursor, LINE_TEXT_MAX_CODE_UNITS);
+      messages.push({ type: 'text', text: content.slice(cursor, end) });
+      cursor = end;
+    }
+
+    if (content.length - cursor <= finalContentCapacity) {
+      messages.push({ type: 'text', text: `${content.slice(cursor)}${editLinkSuffix}` });
+      return messages;
+    }
+
+    const tailCapacity = finalContentCapacity - LINE_TRUNCATION_NOTICE.length;
+    let tailStart = Math.max(cursor, content.length - tailCapacity);
+    const firstCodeUnit = content.charCodeAt(tailStart);
+    if (firstCodeUnit >= 0xdc00 && firstCodeUnit <= 0xdfff) tailStart += 1;
+    messages.push({
+      type: 'text',
+      text: `${LINE_TRUNCATION_NOTICE}${content.slice(tailStart)}${editLinkSuffix}`,
+    });
+    return messages;
+  }
+
   const fullCapacity = LINE_TEXT_MAX_CODE_UNITS * LINE_PUSH_MAX_MESSAGES;
   if (text.length <= fullCapacity) {
     const messages: LineTextMessage[] = [];
@@ -177,16 +211,14 @@ export async function notifyInternalFormSubmission(
       }
       accessToken = account.channel_access_token;
     }
-    const messages = splitLineText(rendered.text);
+    const messages = splitLineText(rendered.text, editUrl);
     try {
       await new LineClient(accessToken).pushMessage(friend!.line_user_id, messages);
     } catch {
       return { status: 'failed', channel: 'line', reason: 'line_push_failed' };
     }
     try {
-      const safeLogText = splitLineText(redactEditLink(rendered.text, editUrl))
-        .map((message) => message.text)
-        .join('\n');
+      const safeLogText = redactEditLink(messages.map((message) => message.text).join('\n'), editUrl);
       await logLineNotification(env.DB, friend!.id, friend!.line_account_id, safeLogText);
     } catch (error) {
       console.error('internal form notification log failed:', error);
