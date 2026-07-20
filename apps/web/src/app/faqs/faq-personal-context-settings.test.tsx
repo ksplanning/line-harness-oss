@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
   unmatched: vi.fn(),
   settingsGet: vi.fn(),
   settingsPut: vi.fn(),
+  personalContextFields: vi.fn(),
   fieldDefinitionsList: vi.fn(),
   accountId: 'account-a',
 }))
@@ -24,6 +25,7 @@ vi.mock('@/lib/api', () => ({ api: {
   faqs: {
     list: (...args: unknown[]) => m.list(...args),
     unmatched: (...args: unknown[]) => m.unmatched(...args),
+    personalContextFields: (...args: unknown[]) => m.personalContextFields(...args),
     settings: {
       get: (...args: unknown[]) => m.settingsGet(...args),
       put: (...args: unknown[]) => m.settingsPut(...args),
@@ -59,6 +61,12 @@ async function openSettings() {
   m.unmatched.mockResolvedValue({ success: true, data: [] })
   m.settingsGet.mockResolvedValue({ success: true, data: baseSettings })
   m.settingsPut.mockResolvedValue({ success: true, data: baseSettings })
+  m.personalContextFields.mockResolvedValue({
+    success: true,
+    data: definitions
+      .filter((definition) => definition.isActive)
+      .map(({ id, name }) => ({ id, name })),
+  })
   m.fieldDefinitionsList.mockResolvedValue({ success: true, data: definitions })
   render(<FaqsPage />)
   await waitFor(() => expect(m.settingsGet).toHaveBeenCalled())
@@ -82,6 +90,8 @@ describe('/faqs 設定タブ — 質問者本人の登録情報', () => {
     expect(screen.queryByLabelText('無効項目')).toBeNull()
     expect((screen.getByLabelText('過去のフォーム回答を含める') as HTMLInputElement).checked).toBe(true)
     expect((screen.getByLabelText('本人情報の最大トークン数') as HTMLInputElement).value).toBe('1200')
+    expect(m.personalContextFields).toHaveBeenCalledTimes(1)
+    expect(m.fieldDefinitionsList).not.toHaveBeenCalled()
   })
 
   it('custom対象・フォーム回答・token上限を変更し、既存設定と一緒に保存する', async () => {

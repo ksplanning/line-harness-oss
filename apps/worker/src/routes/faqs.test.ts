@@ -9,6 +9,7 @@ const dbMocks = {
   deleteFaq: vi.fn(),
   getFaqById: vi.fn(),
   getFaqs: vi.fn(),
+  listFriendFieldDefinitions: vi.fn(),
   getUnmatchedById: vi.fn(),
   getUnmatchedQuestions: vi.fn(),
   markUnmatchedResolved: vi.fn(),
@@ -78,6 +79,28 @@ describe('FAQ routes', () => {
     expect(body.data[0]).not.toHaveProperty('searchText');
     expect(body.data[0]).not.toHaveProperty('search_text');
     expect(JSON.stringify(body.data[0])).not.toContain('IDXMARKER'); // 値も漏れない
+  });
+
+  test('GET /api/faqs/personal-context-fields はFAQ権限向けに有効な項目名だけ返す', async () => {
+    dbMocks.listFriendFieldDefinitions.mockResolvedValue([{
+      id: 'field-payment',
+      name: '入金状態',
+      defaultValue: '非公開の既定値',
+      displayOrder: 1,
+      isActive: true,
+      createdAt: '2026-07-21T00:00:00+09:00',
+      updatedAt: '2026-07-21T00:00:00+09:00',
+    }]);
+
+    const res = await setupApp().request('/api/faqs/personal-context-fields');
+    const body = await res.json() as { data: Array<Record<string, unknown>> };
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.listFriendFieldDefinitions).toHaveBeenCalledWith(expect.anything(), {
+      activeOnly: true,
+    });
+    expect(body.data).toEqual([{ id: 'field-payment', name: '入金状態' }]);
+    expect(JSON.stringify(body.data)).not.toContain('非公開の既定値');
   });
 
   test('POST /api/faqs validates required fields and creates FAQ', async () => {

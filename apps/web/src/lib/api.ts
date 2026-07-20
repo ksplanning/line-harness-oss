@@ -1095,6 +1095,10 @@ export const api = {
         createdAt: string;
       }>>>('/api/faqs/unmatched' + query)
     },
+    personalContextFields: () =>
+      fetchApi<ApiResponse<Array<{ id: string; name: string }>>>(
+        '/api/faqs/personal-context-fields',
+      ),
     createFromUnmatched: (id: string, body: {
       answer: string;
       variants?: string[];

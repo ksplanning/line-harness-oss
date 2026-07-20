@@ -4,6 +4,7 @@ import {
   deleteFaq,
   getFaqById,
   getFaqs,
+  listFriendFieldDefinitions,
   getUnmatchedById,
   getUnmatchedQuestions,
   markUnmatchedResolved,
@@ -113,6 +114,20 @@ faqs.get('/api/faqs', async (c) => {
     return c.json({ success: true, data: rows.map(serializeFaq) });
   } catch (err) {
     console.error('GET /api/faqs error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+faqs.get('/api/faqs/personal-context-fields', async (c) => {
+  try {
+    const definitions = await listFriendFieldDefinitions(c.env.DB, { activeOnly: true });
+    return c.json({
+      success: true,
+      // FAQ operators need labels for selection, not default values or audit timestamps.
+      data: definitions.map(({ id, name }) => ({ id, name })),
+    });
+  } catch (err) {
+    console.error('GET /api/faqs/personal-context-fields error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

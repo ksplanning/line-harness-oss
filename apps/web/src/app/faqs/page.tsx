@@ -8,7 +8,11 @@ import Toggle from '@/components/shared/toggle'
 import EditDialog, { type FaqDraft } from '@/components/faqs/edit-dialog'
 import BulkImportDialog from '@/components/faqs/bulk-import-dialog'
 import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
-import type { FriendFieldDefinition } from '@line-crm/shared'
+
+interface PersonalContextFieldOption {
+  id: string
+  name: string
+}
 
 interface Faq {
   id: string
@@ -93,7 +97,7 @@ export default function FaqsPage() {
   const [editing, setEditing] = useState<FaqDraft | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
-  const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
+  const [fieldDefinitions, setFieldDefinitions] = useState<PersonalContextFieldOption[]>([])
   // 「自動で送信する」に切り替える時だけ出す行内確認 (native window.confirm は使わない / M-16)。
   const [confirmAutoMode, setConfirmAutoMode] = useState(false)
 
@@ -110,7 +114,7 @@ export default function FaqsPage() {
     setConfirmAutoMode(false)
     try {
       const accountId = selectedAccountId || undefined
-      const fieldDefinitionsRequest = api.friendFieldDefinitions?.list?.()
+      const fieldDefinitionsRequest = api.faqs.personalContextFields?.()
       const [faqRes, unmatchedRes, fieldDefinitionsRes] = await Promise.all([
         api.faqs.list({ accountId }),
         api.faqs.unmatched({ accountId }),
@@ -216,7 +220,7 @@ export default function FaqsPage() {
   }
 
   const thresholdPct = Math.round(settings.threshold * 100)
-  const activeFieldDefinitions = fieldDefinitions.filter((definition) => definition.isActive)
+  const activeFieldDefinitions = fieldDefinitions
 
   const updatePersonalContext = (patch: Partial<FaqBotSettings['personalContext']>) => {
     setSettings((current) => ({
