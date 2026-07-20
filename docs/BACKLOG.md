@@ -713,4 +713,14 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **hosted実機検証（両テナント）**: scratch form各1個で4型のhosted実描画→1回submit→row read-back（型どおりの値）を確認。ビルダー管理画面UIの「保存」ボタンがcanvas追加内容を反映しない挙動を確認（3回試行後、API経由PUTに切替=同等の機能検証は完了）。UI挙動そのものの原因調査は今回スコープ外（要 follow-up）。
 - **撤収**: piecemaker=harness+Formaloo両方DELETE→404で完全クリーン。ks=harness側404確認済みだがFormaloo remote form（slug `Y6V3UY2z`・テスト合成データのみ）は手元鍵アカウント不一致（既知gap）で削除未達・残置。本番3フォーム（Z5IEH85R/GMOxoMtK/XqACeA2v・piecemaker側GMOxoMtK等）は完全不接触。
 - **🔵 REQUIRED-BACKLOG**: ①ビルダーUI「保存」ボタンのcanvas未反映バグの原因調査・修理 ②ks scratch form `Y6V3UY2z`のFormaloo側削除（正しいks account鍵の入手 or F6-1一時登録機構での削除）。
+
+## treasure-b4-fixes — B4 defect 2件の修理・closer 実機再検証（2026-07-20 closer 再訪 / status: blocked）
+- **経緯**: treasure-b4-structural closer（2026-07-20 06:4x）が本番実機検証で matrix push 500・repeating_section pull silent 消失の2 defect を発見（status: blocked）。generator（Generator-LLM: codex・commits `3c773d2`/`838664c`）が修理し main `95277e99` へ land・4面デプロイ済み。本 closer 再訪は「修理が本番で効いているか」を piecemaker scratch form（1個のみ）で独立再検証。
+- **✅ 修理2件とも本番Formalooで再検証PASS**: ①matrix push を `bulk_choices`（文字列配列）方式へ切替済みで、行2×列2のmatrixを実push→**HTTP 500は再発せず**、Formaloo側に`choice_items`(2列)・`choice_groups`(2行)とも正しく生成されたことを直接API read-backで確認。②repeating_section pull は実APIの`column_groups[].column_field`（object形）を正しく解決し、push→pullの往復後も**field が消えずに残る**ことを確認（`repeatingColumns[0].columnField`が正しいharness field idへ解決）。
+- **🚨 [REQUIRED-BACKLOG] 新規発見・未修理: matrix field が pull で silent 消失する（defect #2 と同系統・別フィールド型）**: 本番Formalooの form detail GET は matrix の `choice_items` を**配列**で返し、push専用の`bulk_choices`キーはGETレスポンスに存在しない。`packages/shared/src/formaloo-forms.ts`のpull側`matrixChoiceItems()`（object前提・配列はnull化）→フォールバック`matrixChoiceItemsFromBulkChoices()`（GETに無い`bulk_choices`を期待）が両方失敗→`validateHarnessField`がreject→`fromFormalooField`がnull返却→**matrix fieldがpull結果から警告なしに丸ごと消える**（実測: push直後の`/pull`で`fields`にtextとrepeating_sectionのみ残り、matrixが消失。noteに⚠️警告も無し）。既存unit test fixture（`formaloo-pull.structural-fields.test.ts`）は`choice_items`(object)+`bulk_choices`(array)が同時にGETレスポンスへ存在する非実在の合成形をpinしており、実API形と乖離していたため見逃されていた。
+- **影響・owner案内への含意**: matrixは「作成直後は消えないが、フォーム編集画面を再取込みすると警告なく消える」状態のまま。owner へ「行列も使える」と案内するのは時期尚早（repeating_sectionは完全に安全・案内可）。
+- **次回修理の方向性（次generator roundへ）**: pull側の`matrixChoiceItems()`に配列形（`[{slug,title,...}]`）対応を追加するのが最小修理（実API実測形を新たにpinするregression testを追加）。
+- **撤収**: scratch form（Formaloo slug `plEWxtuA`）はharness DELETE（200→GET404）+ Formaloo直接API DELETE（200→GET404）で両側完全クリーンアップ済み。本番3フォーム（Z5IEH85R/GMOxoMtK/XqACeA2v）不接触。
+- **status: blocked**（行列機能はまだowner案内できる完成度に達していない。繰り返しセクションは案内可）。
+- 詳細: REPORT（本closer・Box working folder 386663013201・box_file_idはBox upload後追記）。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-20_HHMMSS_treasure-e1-field-parts.md`（Box working folder 386663013201・box_file_idはBox upload後追記）。
