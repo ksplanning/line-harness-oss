@@ -63,6 +63,8 @@ describe('SheetsConnectionsPanel', () => {
     expect(screen.getByTestId('sheets-item-gsc_1').textContent).toContain('form-1')
     expect(screen.getByTestId('sheets-item-gsc_1').textContent).toContain('回答')
     expect(screen.getByTestId('sheets-item-gsc_1').textContent).toContain('双方向')
+    expect(screen.getByTestId('sheets-item-gsc_1').textContent).toContain('接続ID: gsc_1')
+    expect(screen.getByTestId('sheets-item-gsc_1').textContent).toContain('シートID: sheet_1')
     fireEvent.click(screen.getByTestId('sheets-test-gsc_1'))
     expect(p.onTest).toHaveBeenCalledWith('gsc_1')
     fireEvent.click(screen.getByTestId('sheets-remove-gsc_1'))

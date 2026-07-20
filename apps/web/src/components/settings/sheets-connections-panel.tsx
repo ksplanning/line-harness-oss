@@ -156,7 +156,8 @@ export default function SheetsConnectionsPanel({
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-gray-900">フォーム: {connection.formId}</p>
                       <p className="truncate text-xs text-gray-500">シート: {connection.sheetName}</p>
-                      <p className="truncate text-xs text-gray-600">ID: {connection.spreadsheetId}</p>
+                      <p className="truncate text-xs text-gray-600">接続ID: {connection.id}</p>
+                      <p className="truncate text-xs text-gray-600">シートID: {connection.spreadsheetId}</p>
                       <p className="mt-1 text-xs text-gray-500">同期: {DIRECTION_LABELS[connection.syncDirection]}</p>
                       <p className="mt-1 text-xs text-gray-500">
                         同期項目: {mappings.length > 0 ? mappings.map((mapping) => mapping.header).join(' / ') : '未選択'}
