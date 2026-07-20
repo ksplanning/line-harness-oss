@@ -70,7 +70,8 @@ function visitTemplateTokens(
   return rendered;
 }
 
-function answerFields(
+/** Return fields that are stored as top-level notification answers. */
+export function getInternalSubmissionNotificationAnswerFields(
   fields: readonly InternalSubmissionNotificationField[],
 ): InternalSubmissionNotificationField[] {
   const repeatingColumnFieldIds = new Set(
@@ -87,7 +88,7 @@ function fieldsByLabel(
   fields: readonly InternalSubmissionNotificationField[],
 ): Map<string, InternalSubmissionNotificationField[]> {
   const result = new Map<string, InternalSubmissionNotificationField[]>();
-  for (const field of answerFields(fields)) {
+  for (const field of getInternalSubmissionNotificationAnswerFields(fields)) {
     const matches = result.get(field.label) ?? [];
     matches.push(field);
     result.set(field.label, matches);
@@ -250,7 +251,7 @@ function defaultNotificationText(input: RenderInternalSubmissionNotificationInpu
   const formTitle = input.formTitle.trim();
   const salutation = displayName ? `${displayName}さん、` : '';
   const form = formTitle ? `「${formTitle}」への` : '';
-  const lines = answerFields(input.fields).map((field) => {
+  const lines = getInternalSubmissionNotificationAnswerFields(input.fields).map((field) => {
     const value = hasOwn(input.answers, field.id) ? input.answers[field.id] : undefined;
     return `${field.label.trim() || field.id}: ${formatAnswer(value, field)}`;
   });
@@ -352,7 +353,9 @@ function sampleAnswers(
   fields: readonly InternalSubmissionNotificationField[],
 ): Readonly<Record<string, unknown>> {
   const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  for (const field of answerFields(fields)) result[field.id] = sampleAnswer(field, fields);
+  for (const field of getInternalSubmissionNotificationAnswerFields(fields)) {
+    result[field.id] = sampleAnswer(field, fields);
+  }
   return result;
 }
 

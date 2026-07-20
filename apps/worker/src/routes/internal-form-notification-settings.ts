@@ -5,7 +5,10 @@ import {
   getInternalFormNotificationSettings,
   upsertInternalFormNotificationSettings,
 } from '@line-crm/db';
-import { validateInternalSubmissionNotificationTemplate } from '@line-crm/shared';
+import {
+  getInternalSubmissionNotificationAnswerFields,
+  validateInternalSubmissionNotificationTemplate,
+} from '@line-crm/shared';
 import { parseInternalFormDefinition } from '../services/internal-form-runtime.js';
 import type { Env } from '../index.js';
 
@@ -77,10 +80,12 @@ internalFormNotificationSettings.put(
       const recipientEmailFieldId = typeof body.recipientEmailFieldId === 'string'
         ? body.recipientEmailFieldId
         : null;
-      const recipientField = definition.definition.fields.find(
+      const recipientField = getInternalSubmissionNotificationAnswerFields(
+        definition.definition.fields,
+      ).find(
         (field) => field.id === recipientEmailFieldId && field.type === 'email',
       );
-      if (body.enabled && !recipientField) {
+      if (!recipientField && (body.enabled || recipientEmailFieldId !== null)) {
         return c.json({
           success: false,
           error: '自動通知を有効にするには、回答者本人のメール項目を選んでください',

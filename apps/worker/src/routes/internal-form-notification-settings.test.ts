@@ -122,6 +122,37 @@ describe('internal submission notification settings API', () => {
     expect(dbMocks.upsertInternalFormNotificationSettings).not.toHaveBeenCalled();
   });
 
+  test('rejects an email field used only as a repeating-section column', async () => {
+    dbMocks.getFormalooForm.mockResolvedValue({
+      ...internalForm,
+      definition_json: JSON.stringify({
+        fields: [
+          { id: 'row_mail', type: 'email', label: '同行者メール', required: false, position: 0, config: {} },
+          {
+            id: 'participants',
+            type: 'repeating_section',
+            label: '同行者',
+            required: false,
+            position: 1,
+            config: { repeatingColumns: [{ columnField: 'row_mail', title: 'メール' }] },
+          },
+        ],
+        logic: [],
+      }),
+    });
+
+    for (const enabled of [true, false]) {
+      const response = await app().request('/api/forms-advanced/form-1/submission-notification', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, recipientEmailFieldId: 'row_mail', messageTemplate: null }),
+      }, env());
+
+      expect(response.status).toBe(400);
+    }
+    expect(dbMocks.upsertInternalFormNotificationSettings).not.toHaveBeenCalled();
+  });
+
   test('rejects an ambiguous answer variable instead of silently choosing one duplicate label', async () => {
     dbMocks.getFormalooForm.mockResolvedValue({
       ...internalForm,

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  isDecorationType,
+  getInternalSubmissionNotificationAnswerFields,
   previewInternalSubmissionNotification,
   type InternalSubmissionNotificationField,
 } from '@line-crm/shared';
@@ -29,7 +29,8 @@ function requestError(error: unknown, fallback: string): string {
 function uniqueAnswerFields(
   fields: readonly InternalSubmissionNotificationField[],
 ): InternalSubmissionNotificationField[] {
-  const answers = fields.filter((field) => !isDecorationType(field.type) && field.label.trim());
+  const answers = getInternalSubmissionNotificationAnswerFields(fields)
+    .filter((field) => field.label.trim());
   const counts = new Map<string, number>();
   for (const field of answers) counts.set(field.label, (counts.get(field.label) ?? 0) + 1);
   return answers.filter((field) => counts.get(field.label) === 1);
@@ -50,9 +51,13 @@ export default function InternalSubmissionNotificationSettings({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingCaretRef = useRef<number | null>(null);
 
-  const emailFields = useMemo(
-    () => fields.filter((field) => field.type === 'email'),
+  const answerFields = useMemo(
+    () => getInternalSubmissionNotificationAnswerFields(fields),
     [fields],
+  );
+  const emailFields = useMemo(
+    () => answerFields.filter((field) => field.type === 'email'),
+    [answerFields],
   );
   const emailFieldsRef = useRef(emailFields);
   emailFieldsRef.current = emailFields;
@@ -237,7 +242,7 @@ export default function InternalSubmissionNotificationSettings({
                 </button>
               ))}
             </div>
-            {fields.some((field) => !isDecorationType(field.type) && field.label.trim()
+            {answerFields.some((field) => field.label.trim()
               && !variableFields.includes(field)) && (
               <p className="mt-1 text-[11px] text-amber-600">
                 同じ名前の回答項目は取り違え防止のため変数にできません。項目名を別々にしてください。

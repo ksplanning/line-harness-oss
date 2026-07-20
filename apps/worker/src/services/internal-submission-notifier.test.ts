@@ -308,4 +308,41 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
       .resolves.toEqual({ status: 'skipped', reason: 'invalid_recipient_field' });
     expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
   });
+
+  test('stale settings cannot address an email field used only inside repeating rows', async () => {
+    dbMocks.getFormalooForm.mockResolvedValue({
+      ...form,
+      definition_json: JSON.stringify({
+        fields: [
+          { id: 'row_email', type: 'email', label: '同行者メール', required: false, position: 0, config: {} },
+          {
+            id: 'participants',
+            type: 'repeating_section',
+            label: '同行者',
+            required: false,
+            position: 1,
+            config: { repeatingColumns: [{ columnField: 'row_email', title: 'メール' }] },
+          },
+        ],
+        logic: [],
+      }),
+    });
+    dbMocks.getInternalFormNotificationSettings.mockResolvedValue({
+      ...settings,
+      recipientEmailFieldId: 'row_email',
+      messageTemplate: null,
+    });
+    dbMocks.getInternalFormSubmission.mockResolvedValue({
+      ...baseSubmission,
+      answers_json: JSON.stringify({
+        row_email: 'third-party@example.test',
+        participants: [{ row_email: 'third-party@example.test' }],
+      }),
+    });
+
+    await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
+      .resolves.toEqual({ status: 'skipped', reason: 'invalid_recipient_field' });
+    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+    expect(lineMocks.pushMessage).not.toHaveBeenCalled();
+  });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  getInternalSubmissionNotificationAnswerFields,
   previewInternalSubmissionNotification,
   renderInternalSubmissionNotification,
   validateInternalSubmissionNotificationTemplate,
@@ -185,6 +186,22 @@ describe('internal submission answer formatting', () => {
 });
 
 describe('repeating-section column scope', () => {
+  test('exports the canonical top-level answer-field boundary', () => {
+    const fields = [
+      field('row_email', '行内メール', 'email'),
+      field('heading', '見出し', 'section'),
+      field('contact_email', '本人メール', 'email'),
+      field('participants', '参加者', 'repeating_section', {
+        repeatingColumns: [{ columnField: 'row_email', title: 'メール' }],
+      }),
+    ];
+
+    expect(getInternalSubmissionNotificationAnswerFields(fields).map(({ id }) => id)).toEqual([
+      'contact_email',
+      'participants',
+    ]);
+  });
+
   test('keeps referenced column fields out of top-level variables, defaults and samples', () => {
     let sampleChoiceReads = 0;
     const repeatingChoiceConfig = {

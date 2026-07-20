@@ -6,7 +6,10 @@ import {
   getLineAccountById,
   jstNow,
 } from '@line-crm/db';
-import { renderInternalSubmissionNotification } from '@line-crm/shared';
+import {
+  getInternalSubmissionNotificationAnswerFields,
+  renderInternalSubmissionNotification,
+} from '@line-crm/shared';
 import { LineClient } from '@line-crm/line-sdk';
 import { parseInternalFormDefinition } from './internal-form-runtime.js';
 import { createInternalFormEditUrl } from './internal-form-edit.js';
@@ -227,7 +230,9 @@ export async function notifyInternalFormSubmission(
   }
 
   if (origin !== 'embed') return { status: 'skipped', reason: 'invalid_origin' };
-  const recipientField = definition.definition.fields.find(
+  const recipientField = getInternalSubmissionNotificationAnswerFields(
+    definition.definition.fields,
+  ).find(
     (field) => field.id === settings.recipientEmailFieldId && field.type === 'email',
   );
   if (!recipientField) return { status: 'skipped', reason: 'invalid_recipient_field' };

@@ -19,8 +19,9 @@ function field(
   id: string,
   label: string,
   type: InternalSubmissionNotificationField['type'] = 'text',
+  config: InternalSubmissionNotificationField['config'] = {},
 ): InternalSubmissionNotificationField {
-  return { id, label, type, config: {} };
+  return { id, label, type, config };
 }
 
 const fields = [
@@ -39,12 +40,12 @@ const initialSettings = {
   editLinkEpoch: 2,
 };
 
-function renderEditor() {
+function renderEditor(editorFields: readonly InternalSubmissionNotificationField[] = fields) {
   return render(
     <InternalSubmissionNotificationSettings
       formId="form-1"
       formTitle="参加申込"
-      fields={fields}
+      fields={editorFields}
     />,
   );
 }
@@ -90,6 +91,22 @@ describe('InternalSubmissionNotificationSettings', () => {
     expect(preview.textContent).toContain('お名前: サンプル回答');
     expect(preview.textContent).toContain('メールアドレス: sample@example.com');
     expect(preview.textContent).toContain('https://example.test/edit/sample');
+  });
+
+  test('does not offer a repeating-row email field as a variable or respondent destination', async () => {
+    renderEditor([
+      field('contact_email', '本人メール', 'email'),
+      field('row_email', '同行者メール', 'email'),
+      field('participants', '同行者', 'repeating_section', {
+        repeatingColumns: [{ columnField: 'row_email', title: 'メール' }],
+      }),
+    ]);
+
+    await screen.findByRole('heading', { name: '回答後の自動通知' });
+    expect(screen.getByRole('option', { name: '本人メール' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: '同行者メール' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '{{回答:同行者メール}} を差し込む' })).toBeNull();
+    expect(screen.getByRole('button', { name: '{{回答:同行者}} を差し込む' })).toBeTruthy();
   });
 
   test('inserts an answer token at the caret without reordering RTL text', async () => {
