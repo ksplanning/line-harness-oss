@@ -48,12 +48,12 @@
 
 ## 実施記録
 
-- 実施日時: 未実施（査読・preview deploy 後）
-- 実装 revision: 査読時の lane HEAD を記入
-- preview 環境: 未記入
-- 実施者: 未記入
-- 結果: 未実施 / PASS / FAIL
-- 備考・失敗時の再現手順: 未記入
+- 実施日時: 2026-07-21 05:54 JST
+- 実装 revision: main af8bca0 (deploy済み)
+- 環境: piecemaker 本番 (使い捨てフォーム fa_6ac324b7-... / API 経由・本番3フォーム不接触)
+- 実施者: closer (curl API 直接検証・代表パーツ subset)
+- 結果: PASS (代表 subset)
+- 備考: 全21パーツの網羅目視は未実施。代表として text(placeholder+min2/max20+残文字数カウンタ実測)/textarea(placeholder+min/max+カウンタ)/dropdown(既定選択肢Bコース selected実描画)/yes_no/datetime(internal限定・type=datetime-local描画)/country(internal限定・placeholder描画)を実施。公開ページ実GET(200)→フィールドHTML実描画確認→正常送信(200・完了メッセージ)→admin `/rows`でlabel解決込み全値read-back一致→異常系(名前1文字)で400+日本語エラー(文字数不足)を確認→DELETE→GET 404+admin 404で完全撤収。matrix/repeating_section/rating/signature/file/計算/装飾型(section/video/image/page_break)/prefecture等住所系は本ラウンドでは個別描画確認を省略(型別ロジックはrender-internal-forms-public.tsのコード読解+既存vitest greenで代替)。
 
 ---
 
