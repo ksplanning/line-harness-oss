@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
@@ -98,6 +98,8 @@ export default function FaqsPage() {
   const [bulkOpen, setBulkOpen] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
   const [fieldDefinitions, setFieldDefinitions] = useState<PersonalContextFieldOption[]>([])
+  const [settingsReadyAccountId, setSettingsReadyAccountId] = useState<string | null>(null)
+  const loadGeneration = useRef(0)
   // 「自動で送信する」に切り替える時だけ出す行内確認 (native window.confirm は使わない / M-16)。
   const [confirmAutoMode, setConfirmAutoMode] = useState(false)
 
@@ -107,25 +109,33 @@ export default function FaqsPage() {
     '（アカウント未選択）'
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current
+    const requestedAccountId = selectedAccountId
     setLoading(true)
     setError('')
+    setSettingsReadyAccountId(null)
     // account 切替時に前アカウントの「自動送信にしますか？」確認を残さない
     // (パネル残存 → 別アカウントを誤って auto 化する cross-account 事故の防止)。
     setConfirmAutoMode(false)
     try {
-      const accountId = selectedAccountId || undefined
+      const accountId = requestedAccountId || undefined
       const fieldDefinitionsRequest = api.faqs.personalContextFields?.()
+      const safeFieldDefinitionsRequest = fieldDefinitionsRequest
+        ? fieldDefinitionsRequest.catch(() => null)
+        : Promise.resolve(null)
       const [faqRes, unmatchedRes, fieldDefinitionsRes] = await Promise.all([
         api.faqs.list({ accountId }),
         api.faqs.unmatched({ accountId }),
-        fieldDefinitionsRequest ?? Promise.resolve(null),
+        safeFieldDefinitionsRequest,
       ])
+      if (generation !== loadGeneration.current) return
       if (faqRes.success) setFaqs(faqRes.data)
       if (unmatchedRes.success) setUnmatched(unmatchedRes.data)
       if (fieldDefinitionsRes?.success) setFieldDefinitions(fieldDefinitionsRes.data)
       else setFieldDefinitions([])
-      if (selectedAccountId) {
-        const setRes = await api.faqs.settings.get({ accountId: selectedAccountId })
+      if (requestedAccountId) {
+        const setRes = await api.faqs.settings.get({ accountId: requestedAccountId })
+        if (generation !== loadGeneration.current) return
         if (setRes.success) {
           setSettings({
             ...DEFAULT_SETTINGS,
@@ -135,14 +145,17 @@ export default function FaqsPage() {
               ...setRes.data.personalContext,
             },
           })
+          setSettingsReadyAccountId(requestedAccountId)
+        } else {
+          setError('設定の読み込みに失敗しました')
         }
       } else {
         setSettings(DEFAULT_SETTINGS)
       }
     } catch {
-      setError('読み込みに失敗しました')
+      if (generation === loadGeneration.current) setError('読み込みに失敗しました')
     } finally {
-      setLoading(false)
+      if (generation === loadGeneration.current) setLoading(false)
     }
   }, [selectedAccountId])
 
@@ -206,14 +219,20 @@ export default function FaqsPage() {
 
   const saveSettings = async () => {
     if (!selectedAccountId) { setError('LINEアカウントを選択してください'); return }
+    if (settingsReadyAccountId !== selectedAccountId) {
+      setError('設定の読み込みが完了してから保存してください')
+      return
+    }
+    const generation = loadGeneration.current
+    const accountId = selectedAccountId
     setError('')
     setNotice('')
     setSavingSettings(true)
     try {
-      await api.faqs.settings.put({ accountId: selectedAccountId, ...settings })
-      setNotice('保存しました')
+      await api.faqs.settings.put({ accountId, ...settings })
+      if (generation === loadGeneration.current) setNotice('保存しました')
     } catch {
-      setError('保存に失敗しました')
+      if (generation === loadGeneration.current) setError('保存に失敗しました')
     } finally {
       setSavingSettings(false)
     }
@@ -722,7 +741,11 @@ export default function FaqsPage() {
           <div className="flex justify-end">
             <button
               onClick={saveSettings}
-              disabled={savingSettings}
+              disabled={
+                savingSettings
+                || !selectedAccountId
+                || settingsReadyAccountId !== selectedAccountId
+              }
               className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50"
               style={{ backgroundColor: '#06C755' }}
             >

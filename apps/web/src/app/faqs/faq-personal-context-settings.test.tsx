@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const m = vi.hoisted(() => ({
   list: vi.fn(),
@@ -56,10 +56,15 @@ const definitions = [
   { id: 'field-inactive', name: '無効項目', defaultValue: '', displayOrder: 3, isActive: false, createdAt: '', updatedAt: '' },
 ]
 
-async function openSettings() {
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((next) => { resolve = next })
+  return { promise, resolve }
+}
+
+function primeBaseRequests() {
   m.list.mockResolvedValue({ success: true, data: [] })
   m.unmatched.mockResolvedValue({ success: true, data: [] })
-  m.settingsGet.mockResolvedValue({ success: true, data: baseSettings })
   m.settingsPut.mockResolvedValue({ success: true, data: baseSettings })
   m.personalContextFields.mockResolvedValue({
     success: true,
@@ -67,6 +72,11 @@ async function openSettings() {
       .filter((definition) => definition.isActive)
       .map(({ id, name }) => ({ id, name })),
   })
+}
+
+async function openSettings() {
+  primeBaseRequests()
+  m.settingsGet.mockResolvedValue({ success: true, data: baseSettings })
   m.fieldDefinitionsList.mockResolvedValue({ success: true, data: definitions })
   render(<FaqsPage />)
   await waitFor(() => expect(m.settingsGet).toHaveBeenCalled())
@@ -125,5 +135,81 @@ describe('/faqs 設定タブ — 質問者本人の登録情報', () => {
       accountId: 'account-a',
       personalContext: expect.objectContaining({ enabled: false }),
     }))
+  })
+
+  it('設定GET完了前は初期ONを保存できず、取得したOFFを表示してから保存可能にする', async () => {
+    primeBaseRequests()
+    const pending = deferred<{ success: true; data: typeof baseSettings }>()
+    m.settingsGet.mockReturnValue(pending.promise)
+
+    render(<FaqsPage />)
+    fireEvent.click(screen.getByText('設定'))
+    const save = screen.getByText('設定を保存') as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    fireEvent.click(save)
+    expect(m.settingsPut).not.toHaveBeenCalled()
+
+    pending.resolve({
+      success: true,
+      data: {
+        ...baseSettings,
+        personalContext: { ...baseSettings.personalContext, enabled: false },
+      },
+    })
+    await waitFor(() => {
+      expect((screen.getByLabelText('本人情報を回答に使う') as HTMLInputElement).checked).toBe(false)
+      expect(save.disabled).toBe(false)
+    })
+  })
+
+  it('account切替後に届いた古い設定応答を捨て、現在accountの設定だけを保存する', async () => {
+    primeBaseRequests()
+    const accountA = deferred<{ success: true; data: typeof baseSettings }>()
+    const accountBSettings = {
+      ...baseSettings,
+      threshold: 0.55,
+      personalContext: { ...baseSettings.personalContext, enabled: false },
+    }
+    m.settingsGet.mockImplementation(({ accountId }: { accountId: string }) => (
+      accountId === 'account-a'
+        ? accountA.promise
+        : Promise.resolve({ success: true, data: accountBSettings })
+    ))
+
+    const view = render(<FaqsPage />)
+    await waitFor(() => expect(m.settingsGet).toHaveBeenCalledWith({ accountId: 'account-a' }))
+    m.accountId = 'account-b'
+    view.rerender(<FaqsPage />)
+    await waitFor(() => expect(m.settingsGet).toHaveBeenCalledWith({ accountId: 'account-b' }))
+    fireEvent.click(screen.getByText('設定'))
+    await waitFor(() => expect(
+      (screen.getByLabelText('本人情報を回答に使う') as HTMLInputElement).checked,
+    ).toBe(false))
+
+    await act(async () => {
+      accountA.resolve({ success: true, data: baseSettings })
+      await accountA.promise
+    })
+    expect((screen.getByLabelText('本人情報を回答に使う') as HTMLInputElement).checked).toBe(false)
+
+    fireEvent.click(screen.getByText('設定を保存'))
+    await waitFor(() => expect(m.settingsPut).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'account-b',
+      threshold: 0.55,
+      personalContext: expect.objectContaining({ enabled: false }),
+    })))
+  })
+
+  it('項目名APIだけ失敗してもFAQ設定本体の読み込みと保存を止めない', async () => {
+    primeBaseRequests()
+    m.personalContextFields.mockRejectedValue(new Error('field options unavailable'))
+    m.settingsGet.mockResolvedValue({ success: true, data: baseSettings })
+
+    render(<FaqsPage />)
+    await waitFor(() => expect(m.settingsGet).toHaveBeenCalled())
+    fireEvent.click(screen.getByText('設定'))
+
+    expect((screen.getByText('設定を保存') as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByText('読み込みに失敗しました')).toBeNull()
   })
 })
