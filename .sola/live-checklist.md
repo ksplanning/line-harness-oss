@@ -699,3 +699,34 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 - [ ] matrix の bulk-only push、実 GET の array-only read-back、pull、編集画面再読込、再保存、再pullで field と2×2順序が残った。
 - [ ] scratch form を harness / Formaloo の両方から削除し、両方の GET 404 を確認した。
 - [ ] sandbox 実射0、本番3フォーム接触0、個人情報0、秘密値記録0、重複作成0。
+
+---
+
+# matrix-jsonkey-null-fix — host live checklist
+
+## できるようになること
+
+行列が編集画面で消える不具合の残りの原因を直しました
+
+## 対象と安全条件
+
+- sandbox から Formaloo へ実射しない。査読済みの同一 revision を approved host へ反映してから確認する。
+- 個人情報を含まず確実に削除できる新規 scratch form 1個だけを使う。本番3フォーム `Z5IEH85R` / `GMOxoMtK` / `XqACeA2v` には GET を含めて触れない。
+- token、API key、cookie、生の form/field slug は画面・コマンド出力・証跡へ残さない。HTTP 200だけでPASSにせず、field の残存、行列の内容、再取込み後の状態まで照合する。
+- 失敗時は追加の保存や作成を止め、scratch form の remote/local 対応を確認してから撤収する。
+
+## scratch form push → pull → 残存 → 再取込み → 撤収
+
+1. deployment SHA、tenant、実行者、JST実行時刻を記録し、scratch form に行2件・列2件の matrix field を追加して1回だけ保存する。
+2. Formaloo form detail GET の read-back で、同じ matrix の `choice_items` が2列の配列、`bulk_choices` が不在、`choice_groups` が2行で各 `json_key` が `null` の複合実形であることを確認する。実値や slug は記録しない。
+3. 同じ form を pull し、matrix field 自体と2列・2行・見出し順が残ることを確認する。
+4. 編集画面で再取込み・再読込し、同じ matrix が残ることを確認する。1回だけ再保存して再pullし、matrix と2×2の順序が再び残ることを確認する。
+5. scratch form を harness と Formaloo の両方から削除し、それぞれ GET 404 を確認する。途中失敗でもこの撤収を完了する。
+
+## PASS 記録
+
+- [ ] deployment SHA / tenant / 実行者 / JST実行時刻を記録した。
+- [ ] 実 GET で `choice_items` 配列と `choice_groups[].json_key:null` が同時に存在することを確認した。
+- [ ] pull、編集画面の再取込み・再読込、再保存・再pullの全段で matrix field と2×2の順序が残った。
+- [ ] scratch form を harness / Formaloo の両方から削除し、両方の GET 404 を確認した。
+- [ ] sandbox 実射0、本番3フォーム接触0、個人情報0、秘密値記録0、重複作成0。

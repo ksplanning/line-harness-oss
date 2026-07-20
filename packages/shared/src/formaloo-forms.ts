@@ -547,6 +547,7 @@ function matrixChoiceGroups(value: unknown): MatrixChoiceGroup[] | null {
     const group = raw as Record<string, unknown>;
     if (typeof group.title !== 'string' || !group.title.trim()) return null;
     for (const key of ['refId', 'slug', 'jsonKey'] as const) {
+      if (key === 'jsonKey' && group[key] === null) continue;
       if (group[key] !== undefined && typeof group[key] !== 'string') return null;
     }
     out.push({

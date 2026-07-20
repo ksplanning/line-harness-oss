@@ -14,6 +14,32 @@ function client(fields: unknown[]): FormalooClient {
 }
 
 describe('structural fields pull integration', () => {
+  test('keeps matrix from the real GET compound shape when choice group json_key is null', async () => {
+    const choiceItems = [
+      { slug: 'GOOD', title: '良い', position: 0 },
+      { slug: 'BAD', title: '悪い', position: 1 },
+    ];
+    const result = await pullDefinitionFromFormaloo(client([{
+      slug: 'MATRIX_SLUG', type: 'matrix', title: '満足度', required: true, position: 0,
+      choice_items: choiceItems,
+      choice_groups: [{ ref_id: 'ROW_REF', slug: 'ROW', title: '接客', json_key: null }],
+    }]), {
+      formalooSlug: 'FORM',
+      resolveId: () => 'matrix_id',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.fields.map((field) => [field.id, field.type])).toContainEqual(['matrix_id', 'matrix']);
+    expect(result.fields[0]?.config.matrixChoiceItems).toEqual({
+      column_1: choiceItems[0],
+      column_2: choiceItems[1],
+    });
+    expect(result.fields[0]?.config.matrixChoiceGroups).toEqual([
+      { refId: 'ROW_REF', slug: 'ROW', title: '接客' },
+    ]);
+  });
+
   test('keeps matrix from the real GET choice_items array without bulk_choices', async () => {
     const choiceItems = [
       { slug: 'GOOD', title: '良い', position: 0, provider_hint: { color: 'green' } },
