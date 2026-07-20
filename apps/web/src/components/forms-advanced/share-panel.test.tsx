@@ -3,7 +3,7 @@
  * SharePanel (F-5 / T-E1) component test。
  *   - published: iframe/script 埋め込みコードを表示 (T-B3 gate 接続)
  *   - 未公開: 「公開すると発行されます」案内 / コードは出さない (N-7)
- *   - Sheets 連携ボタンは owner のみ / クリックで onConnectSheets
+ *   - Sheets 再同期ボタンは owner のみ / クリックで onConnectSheets
  *   - 連携済みはシートリンク表示
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
@@ -58,17 +58,29 @@ describe('SharePanel — 埋め込みコード (T-E1)', () => {
   })
 })
 
-describe('SharePanel — Sheets 連携 (T-E1 / N-9)', () => {
-  it('owner はSheets連携ボタンが出て、クリックで onConnectSheets', () => {
+describe('SharePanel — Sheets 再同期 (T-E1 / N-9 / admin-ui-cleanup D-2)', () => {
+  it('未接続でも実態どおり再同期ボタンを出し、クリックで onConnectSheets', () => {
     const p = base()
     render(<SharePanel {...p} />)
-    fireEvent.click(screen.getByText('Googleスプレッドシートと連携'))
+
+    expect(screen.getByTestId('gsheet-sync-description').textContent).toContain('回答を再同期')
+    expect(screen.queryByText('Googleスプレッドシートと連携')).toBeNull()
+    fireEvent.click(screen.getByText('再同期する'))
     expect(p.onConnectSheets).toHaveBeenCalled()
   })
 
-  it('非 owner にはSheets連携ボタンが出ない', () => {
+  it('未接続 note は Formaloo ダッシュボードでの初回接続手順を正直に案内する', () => {
+    render(<SharePanel {...base()} />)
+
+    const note = screen.getByTestId('gsheet-unconnected-note').textContent ?? ''
+    expect(note).toContain('初回接続')
+    expect(note).toContain('Formaloo ダッシュボード')
+    expect(note).toContain('Google Sheets 連携')
+  })
+
+  it('非 owner にはSheets再同期ボタンが出ない', () => {
     render(<SharePanel {...base({ isOwner: false })} />)
-    expect(screen.queryByText('Googleスプレッドシートと連携')).toBeNull()
+    expect(screen.queryByText('再同期する')).toBeNull()
   })
 
   it('連携済みはシートリンクと再同期ボタンを出す', () => {
@@ -76,6 +88,13 @@ describe('SharePanel — Sheets 連携 (T-E1 / N-9)', () => {
     expect(screen.getByTestId('gsheet-connected')).toBeTruthy()
     expect(screen.getByText('シートを開く')).toBeTruthy()
     expect(screen.getByText('再同期する')).toBeTruthy()
+  })
+
+  it('再同期中は処理中の文言を出し、ボタンを無効化する', () => {
+    render(<SharePanel {...base({ connecting: true })} />)
+
+    const button = screen.getByText('再同期中…') as HTMLButtonElement
+    expect(button.disabled).toBe(true)
   })
 
   it('share が null なら何も描画しない', () => {

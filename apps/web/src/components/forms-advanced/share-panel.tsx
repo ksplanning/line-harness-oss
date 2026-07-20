@@ -4,9 +4,9 @@ import { useState } from 'react'
 import type { ShareInfo } from '@/lib/formaloo-advanced-api'
 
 // =============================================================================
-// SharePanel (F-5 / T-E1) — HP 埋め込みコード提示 + Google Sheets 連携 (presentational)。
+// SharePanel (F-5 / T-E1) — HP 埋め込みコード提示 + Google Sheets 再同期 (presentational)。
 //   埋め込みコード (iframe/script) は published のみ表示 (T-B3 publish gate 接続 / N-7)。
-//   未公開は「公開すると使えます」案内。Sheets 連携ボタンは owner のみ (PII 外部出力 / N-9)。
+//   未公開は「公開すると使えます」案内。Sheets 再同期ボタンは owner のみ (PII 外部出力 / N-9)。
 //   owner 向け anti-generic: 既存管理画面トーン。コピーは navigator.clipboard (無い環境は select 促し)。
 // =============================================================================
 
@@ -86,9 +86,12 @@ export default function SharePanel({ share, isOwner, connecting, onConnectSheets
         )}
       </section>
 
-      {/* Google Sheets 連携 */}
+      {/* Google Sheets 再同期 */}
       <section className="space-y-2 border-t border-gray-100 pt-3">
-        <div className="text-xs font-medium text-gray-700">スプレッドシート連携</div>
+        <div className="text-xs font-medium text-gray-700">Google Sheets 再同期</div>
+        <p className="text-xs leading-relaxed text-gray-500" data-testid="gsheet-sync-description">
+          Formaloo で接続済みの Google スプレッドシートへ回答を再同期します。この画面から初回接続はできません。
+        </p>
         {share.gsheetConnected ? (
           <div className="flex items-center gap-2 text-xs text-gray-600" data-testid="gsheet-connected">
             <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: LINE_GREEN }} />
@@ -96,11 +99,13 @@ export default function SharePanel({ share, isOwner, connecting, onConnectSheets
             {share.gsheetUrl && <a href={share.gsheetUrl} target="_blank" rel="noreferrer" className="text-blue-600 underline">シートを開く</a>}
           </div>
         ) : (
-          <div className="text-xs text-gray-500">未連携</div>
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800" data-testid="gsheet-unconnected-note">
+            未接続です。初回接続は Formaloo ダッシュボードで対象フォームを開き、「Google Sheets 連携」から設定してください。
+          </div>
         )}
         {isOwner && (
           <button type="button" onClick={onConnectSheets} disabled={connecting} className="min-h-[40px] rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
-            {connecting ? '連携中…' : share.gsheetConnected ? '再同期する' : 'Googleスプレッドシートと連携'}
+            {connecting ? '再同期中…' : '再同期する'}
           </button>
         )}
       </section>

@@ -135,6 +135,7 @@ describe('T-E1 POST /gsheet/connect (owner gated / fail-soft)', () => {
     const d = (await res.json() as { data: { connected: boolean; note: string } }).data;
     expect(d.connected).toBe(false);
     expect(d.note).toContain('未設定');
+    expect(d.note).toContain('再同期');
     const row = raw.prepare(`SELECT gsheet_connected FROM formaloo_forms WHERE id='fa1'`).get() as { gsheet_connected: number };
     expect(row.gsheet_connected).toBe(0);
   });

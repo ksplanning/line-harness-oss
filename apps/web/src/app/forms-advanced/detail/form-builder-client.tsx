@@ -101,7 +101,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
       await loadShare()
     } catch (e) {
       const body = (e as { body?: { error?: string } })?.body
-      setNotice(body?.error ?? 'スプレッドシート連携に失敗しました')
+      setNotice(body?.error ?? 'スプレッドシートの再同期に失敗しました')
     } finally {
       setConnecting(false)
     }

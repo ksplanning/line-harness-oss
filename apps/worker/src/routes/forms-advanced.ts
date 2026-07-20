@@ -1915,7 +1915,7 @@ formsAdvanced.get('/api/forms-advanced/:id/share', async (c) => {
   }
 });
 
-// POST /api/forms-advanced/:id/gsheet/connect — Google Sheets 連携トリガ (owner gated / fail-soft)
+// POST /api/forms-advanced/:id/gsheet/connect — Google Sheets 再同期トリガ (owner gated / fail-soft)
 formsAdvanced.post('/api/forms-advanced/:id/gsheet/connect', async (c) => {
   try {
     const denied = ownerGate(c);
@@ -1926,7 +1926,7 @@ formsAdvanced.post('/api/forms-advanced/:id/gsheet/connect', async (c) => {
 
     let connected = false;
     let gsheetUrl: string | null = null;
-    let note = 'Formaloo 認証情報が未設定のため連携できませんでした（S-1 で本番連携）';
+    let note = 'Formaloo 認証情報が未設定のため再同期できませんでした';
     // F6-2: form.workspace_id で多鍵解決。NULL(legacy) → env 単一鍵 fallback (byte-equivalent) /
     // 登録 active → 暗号文鍵 / 未登録・無効化・復号失敗 → null (env silent fallback しない = 誤送信防止)。fail-soft 契約不変。
     const client = await resolveFormalooClient(c.env, form.workspace_id);
@@ -1935,10 +1935,10 @@ formsAdvanced.post('/api/forms-advanced/:id/gsheet/connect', async (c) => {
       if (r.ok) {
         connected = true;
         gsheetUrl = r.data?.data?.gsheet_url ?? r.data?.data?.url ?? null;
-        note = 'Google スプレッドシートと連携しました（回答が同期されます）';
+        note = 'Google スプレッドシートの回答を再同期しました';
       } else {
         // tier 制約等の失敗は owner に案内 (G-7 / fail-soft)
-        note = `連携に失敗しました（HTTP ${r.status}）。プランのシート連携可否・接続設定をご確認ください。`;
+        note = `再同期に失敗しました（HTTP ${r.status}）。初回接続は Formaloo ダッシュボードの Google Sheets 連携から設定してください。`;
       }
     }
     await setFormalooGsheetState(c.env.DB, id, { connected, url: gsheetUrl });
