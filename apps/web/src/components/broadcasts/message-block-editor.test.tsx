@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** flex-builder-silent-fail-fix — broadcast 側の作り直し導線と正常経路。 */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { buildModelToFlex } from '@/lib/flex-builder/to-flex'
 import type { MessageBlock } from '@/lib/api'
@@ -9,6 +9,13 @@ import type { MessageBlock } from '@/lib/api'
 vi.mock('@/components/shared/image-uploader', () => ({ default: () => null }))
 vi.mock('@/components/flex-preview', () => ({ default: () => <div data-testid="flex-preview" /> }))
 vi.mock('./broadcast-media-inputs', () => ({ default: () => null }))
+vi.mock('@/lib/api', () => ({
+  api: {
+    friendFieldDefinitions: {
+      list: vi.fn(async () => ({ success: true, data: [] })),
+    },
+  },
+}))
 vi.mock('@/components/flex-builder/flex-builder-modal', () => ({
   default: ({ initialModel }: { initialModel?: unknown }) => (
     <div
@@ -25,7 +32,10 @@ const oldText = '切替前のテキスト本文'
 const rebuildPrompt = '今の本文はそのままではビジュアル編集できません。新しくビジュアルで作り直しますか？（今のテキストは破棄されます）'
 const rebuildGuidance = '今の本文はそのままではビジュアル編集できません。本文を残す場合は、下の「上級者向け」で編集してください。'
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 function renderEditor(content: string) {
   const onChange = vi.fn()
@@ -149,5 +159,27 @@ describe('broadcast Flex ビルダーの正常経路', () => {
     expect(screen.queryByRole('alertdialog', { name: 'Flexを新しく作り直す確認' })).toBeNull()
     expect((await screen.findByRole('dialog', { name: 'Flexビジュアルビルダー' })).getAttribute('data-initial-model')).toBe('existing')
     expect(onChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('一斉配信のテキスト入力', () => {
+  it('絵文字ボタンをタップすると現在のカーソル位置へ挿入する', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0))
+
+    function Harness() {
+      const [block, setBlock] = useState<MessageBlock>({ type: 'text', content: '配信です' })
+      return <MessageBlockEditor block={block} onChange={setBlock} linkableEvents={[]} />
+    }
+
+    render(<Harness />)
+    const textarea = screen.getByRole('textbox', { name: '配信メッセージ内容' }) as HTMLTextAreaElement
+    textarea.focus()
+    textarea.setSelectionRange(2, 2)
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }))
+    fireEvent.click(screen.getByRole('button', { name: '絵文字 🎉 を挿入' }))
+
+    await waitFor(() => expect(textarea.value).toBe('配信🎉です'))
   })
 })

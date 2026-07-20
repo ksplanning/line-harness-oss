@@ -12,6 +12,7 @@ import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
 import { flexToModel } from '@/lib/flex-builder/from-flex'
 import { imageLinkToFlexJson } from '@/lib/flex-builder/image-link'
 import { PencilIcon, TrashIcon, PaletteIcon } from '@/components/shared/icons'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 import type { BuilderModel, LinkSpec } from '@/lib/flex-builder/types'
 
 const NEW_MEDIA_TYPES: MediaMessageType[] = ['video', 'audio', 'imagemap', 'richvideo']
@@ -185,12 +186,14 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
                 </p>
               </div>
             )}
-            <textarea
+            <PersonalizedTextEditor
+              mode="emoji-only"
+              ariaLabel="配信メッセージ内容"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
               rows={4}
               placeholder="配信するメッセージを入力..."
               value={block.content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={setContent}
             />
           </>
         )}

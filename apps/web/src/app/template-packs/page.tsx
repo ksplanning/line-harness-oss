@@ -9,6 +9,7 @@ import { flexToModel } from '@/lib/flex-builder/from-flex'
 import { validateFlex } from '@/lib/flex-builder/validate'
 import type { BuilderModel } from '@/lib/flex-builder/types'
 import TestSendDialog from '@/components/shared/test-send-dialog'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 
 function formatDate(iso: string): string {
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/)
@@ -282,9 +283,11 @@ function PackEditor({ packId, accountId, onBack }: { packId: string | 'new'; acc
                   </span>
                   <div className="flex-1 min-w-0">
                     {it.messageType === 'text' ? (
-                      <textarea
+                      <PersonalizedTextEditor
+                        mode="emoji-only"
+                        ariaLabel="テンプレパックのテキスト内容"
                         value={it.messageContent}
-                        onChange={(e) => setText(it.key, e.target.value)}
+                        onChange={(messageContent) => setText(it.key, messageContent)}
                         rows={2}
                         placeholder="こんにちは！初めまして…"
                         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"

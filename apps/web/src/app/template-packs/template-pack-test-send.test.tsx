@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => ({ selectedAccountId: 'acc-pack' }) }))
 vi.mock('@/components/layout/header', () => ({
@@ -35,12 +35,18 @@ vi.mock('@/lib/api', () => ({
       update: vi.fn(async () => ({ success: true, data: {} })),
       remove: vi.fn(),
     },
+    friendFieldDefinitions: {
+      list: vi.fn(async () => ({ success: true, data: [] })),
+    },
   },
 }))
 
 import TemplatePacksPage from './page'
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 describe('テンプレパックのテスト送信', () => {
   it('保存前の吹き出し列を選択中アカウントへ渡す', async () => {
@@ -59,5 +65,22 @@ describe('テンプレパックのテスト送信', () => {
       { type: 'text', content: 'パック1通目' },
       { type: 'text', content: 'パック2通目' },
     ])
+  })
+
+  it('テキスト吹き出しのカーソル位置へ絵文字を挿入する', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0))
+    render(<TemplatePacksPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /最初のパックを作る/ }))
+    fireEvent.click(screen.getByRole('button', { name: /テキスト吹き出しを追加/ }))
+    const textarea = screen.getByRole('textbox', { name: 'テンプレパックのテキスト内容' }) as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: 'ありがとう' } })
+    textarea.focus()
+    textarea.setSelectionRange(5, 5)
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }))
+    fireEvent.click(screen.getByRole('button', { name: '絵文字 😊 を挿入' }))
+
+    await waitFor(() => expect(textarea.value).toBe('ありがとう😊'))
   })
 })
