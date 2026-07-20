@@ -117,6 +117,21 @@ describe('saveFormalooDefinition — title/description present-key 更新 (T-B7)
     expect(saved?.title).toBe('保持タイトル');
     expect(saved?.description).toBe('保持説明');
   });
+
+  test('定義の置換とdraft化を同じform行の更新で確定する', async () => {
+    const form = await createFormalooForm(DB, { title: '公開中' });
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'published' WHERE id = ?").run(form.id);
+
+    await saveFormalooDefinition(DB, form.id, {
+      definitionJson: '{"fields":[],"logic":[],"version":2}',
+      fields: [],
+      builderStatus: 'draft',
+    });
+
+    const saved = await getFormalooForm(DB, form.id);
+    expect(saved?.definition_json).toBe('{"fields":[],"logic":[],"version":2}');
+    expect(saved?.builder_status).toBe('draft');
+  });
 });
 
 describe('isActiveFormalooWorkspace — 参照整合性', () => {

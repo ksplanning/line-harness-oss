@@ -653,6 +653,8 @@ export async function saveFormalooDefinition(
     editMailFieldSlug?: string | null;
     // row-status-friend-sync: canonical JSON array。present-key 更新 (未指定は変えない)。
     friendMetadataMappingsJson?: string;
+    // internal renderer: definition_json と同じ UPDATE で draft を確定し、公開中の定義差替えを防ぐ。
+    builderStatus?: 'draft' | 'in_review' | 'published';
   },
 ): Promise<void> {
   const now = jstNow();
@@ -698,6 +700,10 @@ export async function saveFormalooDefinition(
   if (params.friendMetadataMappingsJson !== undefined) {
     sets.push('friend_metadata_mappings_json = ?');
     vals.push(params.friendMetadataMappingsJson);
+  }
+  if (params.builderStatus !== undefined) {
+    sets.push('builder_status = ?');
+    vals.push(params.builderStatus);
   }
   vals.push(id);
   await db.prepare(`UPDATE formaloo_forms SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
