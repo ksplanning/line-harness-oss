@@ -13,12 +13,19 @@ vi.mock('@/lib/api', () => ({
   },
 }));
 
-function Harness({ initial = '' }: { initial?: string }) {
+function Harness({
+  initial = '',
+  mode,
+}: {
+  initial?: string;
+  mode?: 'variables-and-emoji' | 'emoji-only';
+}) {
   const [value, setValue] = useState(initial);
   return (
     <PersonalizedTextEditor
       value={value}
       onChange={setValue}
+      mode={mode}
       ariaLabel="ステップのメッセージ内容"
       placeholder="メッセージ内容を入力..."
     />
@@ -36,6 +43,7 @@ const activeDefinition = {
 };
 
 beforeEach(() => {
+  window.localStorage.clear();
   vi.mocked(api.friendFieldDefinitions.list).mockResolvedValue({
     success: true,
     data: [
@@ -122,6 +130,70 @@ describe('PersonalizedTextEditor', () => {
 
     await waitFor(() => expect(textarea.value).toBe('A😀😊B'));
     await waitFor(() => expect(textarea.selectionStart).toBe(5));
+  });
+
+  test('絵文字のみモードは変数を表示・取得せず、RTL 本文のタップ位置へ絵文字を挿入する', async () => {
+    const rtlText = 'שלום بالعالم';
+    const insertionPoint = 'שלום'.length;
+    render(
+      <div dir="rtl">
+        <Harness initial={rtlText} mode="emoji-only" />
+      </div>,
+    );
+
+    const textarea = screen.getByRole('textbox', { name: 'ステップのメッセージ内容' }) as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.setSelectionRange(insertionPoint, insertionPoint);
+
+    expect(screen.queryByRole('button', { name: '変数を挿入' })).toBeNull();
+    expect(api.friendFieldDefinitions.list).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
+    fireEvent.click(screen.getByRole('button', { name: '絵文字 🎉 を挿入' }));
+
+    await waitFor(() => expect(textarea.value).toBe('שלום🎉 بالعالم'));
+    await waitFor(() => expect(textarea.selectionStart).toBe(insertionPoint + '🎉'.length));
+  });
+
+  test('ピッカー内に OS ショートカット tip を表示する', () => {
+    render(<Harness mode="emoji-only" />);
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
+
+    expect(screen.getByText('PC は Win+. / Mac は Ctrl+Cmd+Space でも入力できます')).toBeTruthy();
+  });
+
+  test('端末内の最近使った絵文字を先頭行へ出し、選択順・重複排除・最大8件を保存する', async () => {
+    window.localStorage.setItem(
+      'line-crm:recent-emojis',
+      JSON.stringify(['🎉', '😊', '😂', '🥰', '😍', '😄', '😉', '😢']),
+    );
+    render(<Harness mode="emoji-only" />);
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
+    const dialog = screen.getByRole('dialog', { name: '絵文字を選ぶ' });
+    const recentLabel = screen.getByText('最近使った');
+    const categoryTabs = screen.getByRole('tablist', { name: '絵文字カテゴリ' });
+    expect(dialog.contains(recentLabel)).toBe(true);
+    expect(recentLabel.compareDocumentPosition(categoryTabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字 😭 を挿入' }));
+
+    await waitFor(() => {
+      expect(JSON.parse(window.localStorage.getItem('line-crm:recent-emojis') ?? '[]')).toEqual([
+        '😭', '🎉', '😊', '😂', '🥰', '😍', '😄', '😉',
+      ]);
+    });
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
+    expect(screen.getByRole('button', { name: '最近使った絵文字 😭 を挿入' })).toBeTruthy();
+  });
+
+  test('別の入力欄で更新された最近使った絵文字を、ピッカーを開く時に読み直す', () => {
+    render(<Harness mode="emoji-only" />);
+    window.localStorage.setItem('line-crm:recent-emojis', JSON.stringify(['🌸']));
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
+
+    expect(screen.getByRole('button', { name: '最近使った絵文字 🌸 を挿入' })).toBeTruthy();
   });
 
   test('カスタム項目 API が失敗しても、名前変数と絵文字と通常入力は使える', async () => {
