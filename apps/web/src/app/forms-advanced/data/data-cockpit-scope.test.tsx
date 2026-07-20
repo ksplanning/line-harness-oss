@@ -145,14 +145,24 @@ describe('自前配信の回答表示', () => {
     expect(rowMock).toHaveBeenCalledWith('fa1', 'row_internal')
   })
 
-  it('backend 取得失敗は formaloo にフォールバックし、既存 owner 操作と説明を保つ', async () => {
+  it('backend 取得失敗は fail-closed にし、Formaloo 専用 owner 操作を出さない', async () => {
     getMock.mockResolvedValue(form(null))
     getRenderBackendMock.mockRejectedValue(new Error('backend unavailable'))
 
     render(<DataCockpitClient id="fa1" />)
 
     await waitFor(() => expect(screen.getByTestId('data-cockpit')).toBeTruthy())
-    expect(screen.getByTestId('header-description').textContent).toBe('回答の検索・集計・CSV 出し入れができます')
-    expect(cockpitProps.current?.isOwner).toBe(true)
+    expect(screen.getByTestId('header-description').textContent).toContain('配信方式を確認できません')
+    expect(cockpitProps.current?.isOwner).toBe(false)
+  })
+
+  it('backend の不正値も Formaloo と推測せず owner 操作を出さない', async () => {
+    getMock.mockResolvedValue(form(null))
+    getRenderBackendMock.mockResolvedValue('unexpected')
+
+    render(<DataCockpitClient id="fa1" />)
+
+    await waitFor(() => expect(screen.getByTestId('data-cockpit')).toBeTruthy())
+    expect(cockpitProps.current?.isOwner).toBe(false)
   })
 })

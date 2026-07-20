@@ -19,6 +19,7 @@ import { csvDateStamp, safeFilenamePart } from '@/lib/download'
 import { formatJstMinute } from '@/lib/datetime'
 
 const DEFAULT_QUERY: RowsQuery = { sort: 'desc', page: 1, pageSize: 25 }
+type RenderBackendState = 'unknown' | 'formaloo' | 'internal'
 
 /** slug → field ラベル (無ければ slug 自身)。回答詳細の read-only 表示を分かりやすくする。 */
 function labelForSlug(detail: RowDetail, slug: string): string {
@@ -35,7 +36,7 @@ export default function DataCockpitClient({ id }: { id: string }) {
   const [stats, setStats] = useState<FormStats | null>(null)
   const [filters, setFilters] = useState<SavedFilter[]>([])
   const [isOwner, setIsOwner] = useState(false)
-  const [renderBackend, setRenderBackend] = useState<'formaloo' | 'internal'>('formaloo')
+  const [renderBackend, setRenderBackend] = useState<RenderBackendState>('unknown')
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState<string | null>(null)
   const [query, setQuery] = useState<RowsQuery>(DEFAULT_QUERY)
@@ -60,13 +61,15 @@ export default function DataCockpitClient({ id }: { id: string }) {
 
   const load = useCallback(async () => {
     setLoading(true)
-    setRenderBackend('formaloo')
+    setRenderBackend('unknown')
     try {
       const [form, backend] = await Promise.all([
         formsAdvancedApi.get(id).catch(() => null),
         formsAdvancedApi.getRenderBackend(id)
-          .then((value) => value === 'internal' ? 'internal' as const : 'formaloo' as const)
-          .catch(() => 'formaloo' as const),
+          .then((value): RenderBackendState => (
+            value === 'internal' || value === 'formaloo' ? value : 'unknown'
+          ))
+          .catch((): RenderBackendState => 'unknown'),
         refreshStats(),
         formalooDataApi.listFilters(id).then(setFilters).catch(() => setFilters([])),
         loadRows(DEFAULT_QUERY),
@@ -142,7 +145,9 @@ export default function DataCockpitClient({ id }: { id: string }) {
     !loading && (formAccountId === undefined || (formAccountId != null && selectedAccountId == null))
   const headerDescription = renderBackend === 'internal'
     ? '自前回答の検索・集計ができます'
-    : '回答の検索・集計・CSV 出し入れができます'
+    : renderBackend === 'formaloo'
+      ? '回答の検索・集計・CSV 出し入れができます'
+      : '回答を表示しています（配信方式を確認できません）'
 
   if (scopeBlocked || scopeUnknown) {
     return (

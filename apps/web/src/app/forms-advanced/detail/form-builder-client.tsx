@@ -158,9 +158,11 @@ export default function FormBuilderClient({ id }: { id: string }) {
           {notice && (
             <div className="mb-3 text-xs px-3 py-2 rounded bg-gray-50 border border-gray-200 text-gray-700">{notice}</div>
           )}
-          <div className="mb-4">
-            <InstantWebhookSettings formId={form.id} />
-          </div>
+          {renderBackend === 'formaloo' && (
+            <div className="mb-4">
+              <InstantWebhookSettings formId={form.id} />
+            </div>
+          )}
           <FormBuilder
             key={`${form.id}:${form.builderStatus}`}
             formId={form.id}
@@ -204,7 +206,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             }}
           />
           <div className="mt-4">
-            <SharePanel share={share} isOwner={isOwner} connecting={connecting} onConnectSheets={handleConnectSheets} />
+            <SharePanel share={share} isOwner={isOwner && renderBackend === 'formaloo'} connecting={connecting} onConnectSheets={handleConnectSheets} />
           </div>
         </>
       ) : null}

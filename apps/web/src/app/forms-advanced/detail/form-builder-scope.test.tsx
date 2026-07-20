@@ -10,6 +10,7 @@ import { render, screen, waitFor, cleanup, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
 const builderProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
+const sharePanelProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: 'acc_A' }
 const getMock = vi.fn()
 const getRenderBackendMock = vi.fn()
@@ -26,7 +27,12 @@ vi.mock('@/components/forms-advanced/builder', () => ({
     return <div data-testid="form-builder" />
   },
 }))
-vi.mock('@/components/forms-advanced/share-panel', () => ({ default: () => null }))
+vi.mock('@/components/forms-advanced/share-panel', () => ({
+  default: (props: Record<string, unknown>) => {
+    sharePanelProps.current = props
+    return null
+  },
+}))
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
 vi.mock('@/lib/formaloo-advanced-api', () => ({
   formsAdvancedApi: {
@@ -48,6 +54,7 @@ function form(lineAccountId: string | null) {
 beforeEach(() => {
   getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); fetchApiMock.mockReset()
   builderProps.current = undefined
+  sharePanelProps.current = undefined
   mockAccount.selectedAccountId = 'acc_A'
   getRenderBackendMock.mockResolvedValue('formaloo')
   setRenderBackendMock.mockImplementation(async (_id: string, backend: string) => backend)
@@ -152,6 +159,34 @@ describe('詳細画面 scope 照合', () => {
 
     await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
     expect(builderProps.current?.initialRenderBackend).toBe('formaloo')
+  })
+
+  it('自前配信では local 公開 URL を表示しつつ Formaloo 専用 Sheets 操作を隠す', async () => {
+    getMock.mockResolvedValue(form('acc_A'))
+    getRenderBackendMock.mockResolvedValue('internal')
+    shareMock.mockResolvedValue({
+      published: true,
+      publicUrl: 'https://api.example.test/f/fa1',
+      lineDistUrl: null,
+      iframeCode: null,
+      scriptCode: null,
+      gsheetConnected: false,
+      gsheetUrl: null,
+    })
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(sharePanelProps.current?.share).toEqual(expect.objectContaining({
+      publicUrl: 'https://api.example.test/f/fa1',
+    })))
+    expect(sharePanelProps.current?.isOwner).toBe(false)
+    expect(screen.queryByTestId('instant-webhook-settings')).toBeNull()
+  })
+
+  it('Formaloo 配信の owner は既存共有操作を維持する', async () => {
+    getMock.mockResolvedValue(form('acc_A'))
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(sharePanelProps.current?.isOwner).toBe(true))
   })
 
   it('P2 fail-closed: account 未確定 (selectedAccountId=null) で account-scoped form は描画せず hold', async () => {
