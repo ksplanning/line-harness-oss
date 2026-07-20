@@ -162,6 +162,9 @@ interface FriendLedgerWebhookPayloadV2 extends FriendLedgerWebhookEventPayload {
 
 type FriendLedgerWebhookPayload = FriendLedgerWebhookPayloadV1 | FriendLedgerWebhookPayloadV2;
 
+const MAX_GOOGLE_SHEET_ROWS = 10_000_000;
+const MAX_GOOGLE_SHEET_COLUMNS = 18_278;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -187,7 +190,12 @@ export function parseWebhookPayload(value: unknown): FriendLedgerWebhookPayload 
     columnStart: Number(rawRange.columnStart),
     columnEnd: Number(rawRange.columnEnd),
   };
-  if (range.rowStart > range.rowEnd || range.columnStart > range.columnEnd) return null;
+  if (
+    range.rowStart > range.rowEnd
+    || range.columnStart > range.columnEnd
+    || range.rowEnd > MAX_GOOGLE_SHEET_ROWS
+    || range.columnEnd > MAX_GOOGLE_SHEET_COLUMNS
+  ) return null;
   if (value.version === 1) {
     return { version: 1, connectionId, spreadsheetId, sheetName, range, actor };
   }
@@ -202,6 +210,8 @@ export function parseWebhookPayload(value: unknown): FriendLedgerWebhookPayload 
     || !Number.isFinite(Date.parse(occurredAt))
     || (actorKind !== 'google_email' && actorKind !== 'unavailable')
   ) return null;
+  const hasGoogleEmail = actorKind === 'google_email'
+    && /^[^@\s]+@[^@\s]+$/.test(actor);
   return {
     version: 2,
     eventId,
@@ -211,8 +221,8 @@ export function parseWebhookPayload(value: unknown): FriendLedgerWebhookPayload 
     sheetName,
     range: eventPayload.range,
     snapshot: eventPayload.snapshot,
-    actor,
-    actorKind,
+    actor: hasGoogleEmail ? actor : 'google_sheets_editor_unavailable',
+    actorKind: hasGoogleEmail ? 'google_email' : 'unavailable',
   };
 }
 

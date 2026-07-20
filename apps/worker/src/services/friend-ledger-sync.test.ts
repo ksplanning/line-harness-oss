@@ -12,6 +12,9 @@ import {
 import type { SheetCellValue, SheetsDataUpdate } from './google-sheets.js';
 import {
   drainFriendLedgerWebhookEvents,
+  parseFriendLedgerTimestamp,
+  parseFriendLedgerWebhookEventPayload,
+  runFriendLedgerPolling,
   syncFriendLedger,
   type FriendLedgerWebhookSnapshot,
 } from './friend-ledger-sync.js';
@@ -160,6 +163,13 @@ beforeEach(async () => {
 });
 
 describe('friend ledger bidirectional sync', () => {
+  test('interprets legacy offsetless connection timestamps as JST', () => {
+    expect(parseFriendLedgerTimestamp('2026-07-21T12:00:00.000'))
+      .toBe(Date.parse('2026-07-21T12:00:00.000+09:00'));
+    expect(parseFriendLedgerTimestamp('2026-07-21T03:00:00.000Z'))
+      .toBe(Date.parse('2026-07-21T03:00:00.000Z'));
+  });
+
   test('stops before publishing state when another worker takes the lease between sheet writes', async () => {
     let stolen = false;
     client.afterWrite = (kind) => {
@@ -352,6 +362,97 @@ describe('friend ledger bidirectional sync', () => {
     ]);
   });
 
+  test('clears only owned cells for a Harness-deleted friend and completes after a DB-failure replay', async () => {
+    await run();
+    client.values[0].push('会社の数式');
+    client.values[1].push('=KEEP_ME()');
+    client.values.splice(1, 0, ['外部行', 'U_EXTERNAL', '外部日付', '外部値', '=KEEP_EXTERNAL()']);
+    raw.prepare(`DELETE FROM friends WHERE id='friend-ayako'`).run();
+    let ledgerCommits = 0;
+    db = d1(raw, (sql) => {
+      if (sql.includes('INSERT INTO sheets_sync_ledger') && ++ledgerCommits === 2) {
+        throw new Error('simulated ledger commit failure');
+      }
+    });
+
+    await expect(run('polling', 'system_poll')).rejects.toThrow('simulated ledger commit failure');
+    expect(client.values[1]).toEqual(['外部行', 'U_EXTERNAL', '外部日付', '外部値', '=KEEP_EXTERNAL()']);
+    expect(client.values[2]).toEqual(['', '', '', '', '=KEEP_ME()']);
+
+    await expect(run('polling', 'system_poll')).resolves.toMatchObject({ status: 'success' });
+    expect(raw.prepare(`SELECT sheet_row_number, canonical_snapshot_json
+      FROM sheets_sync_ledger WHERE record_key='friend-ayako'`).get()).toEqual({
+      sheet_row_number: null,
+      canonical_snapshot_json: '{}',
+    });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE record_key='friend-ayako' ORDER BY apply_sequence DESC LIMIT 1`).get()).toEqual({
+      outcome: 'applied', error_code: 'friend_removed_from_harness',
+    });
+  });
+
+  test('keeps deleted-friend data when its sheet userId is duplicated and records the unsafe skip', async () => {
+    await run();
+    client.values.push([...client.values[1]]);
+    raw.prepare(`DELETE FROM friends WHERE id='friend-ayako'`).run();
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result.status).toBe('warning');
+    expect(client.values.slice(1).map((row) => row[1])).toEqual(['U_AYAKO', 'U_AYAKO']);
+    expect(raw.prepare(`SELECT sheet_row_number, canonical_snapshot_json
+      FROM sheets_sync_ledger WHERE record_key='friend-ayako'`).get()).toMatchObject({
+      sheet_row_number: 2,
+      canonical_snapshot_json: expect.stringContaining('U_AYAKO'),
+    });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE record_key='friend-ayako' ORDER BY apply_sequence DESC LIMIT 1`).get()).toEqual({
+      outcome: 'skipped', error_code: 'unsafe_deleted_friend_row',
+    });
+  });
+
+  test('keeps userId as a recovery anchor until other deleted-friend cells are cleared', async () => {
+    await run();
+    raw.prepare(`DELETE FROM friends WHERE id='friend-ayako'`).run();
+    let interrupted = false;
+    client.afterWrite = (kind) => {
+      if (kind === 'batch' && !interrupted) {
+        interrupted = true;
+        throw new Error('simulated clear interruption');
+      }
+    };
+
+    await expect(run('polling', 'system_poll')).rejects.toThrow('simulated clear interruption');
+    expect(client.values[1]).toEqual(['', 'U_AYAKO', '', '']);
+    client.afterWrite = undefined;
+    await run('polling', 'system_poll');
+    expect(client.values[1]).toEqual(['', '', '', '']);
+    expect(raw.prepare(`SELECT sheet_row_number, canonical_snapshot_json FROM sheets_sync_ledger
+      WHERE record_key='friend-ayako'`).get()).toEqual({
+      sheet_row_number: null, canonical_snapshot_json: '{}',
+    });
+  });
+
+  test('adopts the existing row for a recreated friend with the same userId without clearing it', async () => {
+    await run();
+    raw.prepare(`DELETE FROM friends WHERE id='friend-ayako'`).run();
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-ayako-new', 'U_AYAKO', 'あやこ再登録', 'acc-1', '{"入金確認":"再登録"}',
+              '2026-07-21T11:00:00+09:00', '2026-07-21T11:00:00+09:00')`).run();
+
+    await run('polling', 'system_poll');
+
+    expect(client.values[1]).toEqual([
+      'あやこ再登録', 'U_AYAKO', '2026-07-21T11:00:00+09:00', '再登録',
+    ]);
+    expect(raw.prepare(`SELECT record_key, sheet_row_number, canonical_snapshot_json
+      FROM sheets_sync_ledger ORDER BY record_key`).all()).toEqual([
+      { record_key: 'friend-ayako', sheet_row_number: null, canonical_snapshot_json: '{}' },
+      expect.objectContaining({ record_key: 'friend-ayako-new', sheet_row_number: 2 }),
+    ]);
+  });
+
   test('imports selected custom cells but restores and audits edited identity cells', async () => {
     await run();
     client.values[1][0] = '改ざん名';
@@ -480,7 +581,10 @@ describe('friend ledger bidirectional sync', () => {
       'webhook',
       'editor-snapshot@example.test',
       { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
-      { rowNumber: 2, columnNumber: 4, value: '署名済み編集', oldValue: '未', oldValueKnown: true },
+      {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: '署名済み編集', oldValue: '未', oldValueKnown: true,
+      },
       'event-snapshot-0001',
     );
 
@@ -494,6 +598,180 @@ describe('friend ledger bidirectional sync', () => {
     });
   });
 
+  test('audits and skips a signed edit after its friend row moved', async () => {
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-b', 'U_B', 'びー', 'acc-1', '{"入金確認":"B"}',
+              '2026-07-20T11:00:00+09:00', '2026-07-20T11:00:00+09:00')`).run();
+    await run();
+    client.values = [
+      client.values[0],
+      client.values[2],
+      [...client.values[1].slice(0, 3), 'Aの編集'],
+    ];
+
+    const result = await run(
+      'webhook',
+      'delayed-editor@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: 'Aの編集', oldValue: '未', oldValueKnown: true,
+      },
+      'event-moved-row-0001',
+    );
+
+    expect(result.status).toBe('warning');
+    expect(result.importedFields).toBe(0);
+    expect(metadata()).toMatchObject({ 入金確認: '未' });
+    expect(metadata('friend-b')).toMatchObject({ 入金確認: 'B' });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE webhook_event_id='event-moved-row-0001'`).get()).toEqual({
+      outcome: 'skipped', error_code: 'stale_webhook_target',
+    });
+
+    await run('polling', 'system_poll');
+    expect(metadata()).toMatchObject({ 入金確認: 'Aの編集' });
+  });
+
+  test('audits and skips signed edits to an unselected company-owned column', async () => {
+    await run();
+    client.values[0].push('社内メモ');
+    client.values[1].push('会社だけの値');
+
+    const result = await run(
+      'webhook',
+      'editor@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 5, columnEnd: 5 },
+      {
+        rowNumber: 2, columnNumber: 5, header: '社内メモ', rowUserId: 'U_AYAKO',
+        value: '編集後', oldValue: '会社だけの値', oldValueKnown: true,
+      },
+      'event-unselected-001',
+    );
+
+    expect(result).toMatchObject({ status: 'warning', importedFields: 0 });
+    expect(metadata()).toMatchObject({ 入金確認: '未', 未選択: '保持' });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE webhook_event_id='event-unselected-001'`).get()).toEqual({
+      outcome: 'skipped', error_code: 'unselected_webhook_column',
+    });
+  });
+
+  test('audits and skips a signed edit when the row userId is duplicated', async () => {
+    await run();
+    client.values.push(['複製', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '複製値']);
+
+    const result = await run(
+      'webhook',
+      'editor@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: '編集後', oldValue: '未', oldValueKnown: true,
+      },
+      'event-duplicate-user-1',
+    );
+
+    expect(result).toMatchObject({ status: 'warning', importedFields: 0 });
+    expect(metadata()).toMatchObject({ 入金確認: '未' });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE webhook_event_id='event-duplicate-user-1'`).get()).toEqual({
+      outcome: 'skipped', error_code: 'unsafe_webhook_identity',
+    });
+  });
+
+  test('does not let an old unknown-before-value event overwrite the current sheet value', async () => {
+    await run();
+    client.values[1][3] = '現在値B';
+
+    const stale = await run(
+      'webhook',
+      'editor@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: '古い値A', oldValue: null, oldValueKnown: false,
+      },
+      'event-unknown-old-001',
+    );
+
+    expect(stale).toMatchObject({ status: 'warning', importedFields: 0 });
+    expect(metadata()).toMatchObject({ 入金確認: '未' });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE webhook_event_id='event-unknown-old-001'`).get()).toEqual({
+      outcome: 'skipped', error_code: 'stale_webhook_event',
+    });
+    await run('polling', 'system_poll');
+    expect(metadata()).toMatchObject({ 入金確認: '現在値B' });
+  });
+
+  test('audits a protected identity edit even when its signed value already equals Harness', async () => {
+    await run();
+
+    const result = await run(
+      'webhook',
+      'editor@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 1, columnEnd: 1 },
+      {
+        rowNumber: 2, columnNumber: 1, header: '表示名', rowUserId: 'U_AYAKO',
+        value: 'あやこ', oldValue: '一時的な改変', oldValueKnown: true,
+      },
+      'event-identity-noop-1',
+    );
+
+    expect(result).toMatchObject({ status: 'warning', ignoredIdentityEdits: 1 });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE webhook_event_id='event-identity-noop-1'`).get()).toEqual({
+      outcome: 'skipped', error_code: 'identity_read_only',
+    });
+  });
+
+  test('classifies a protected identity webhook as ignored before any ledger baseline exists', async () => {
+    client.values = [
+      ['表示名', 'userId', '登録日', '入金確認'],
+      ['改変名', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '未'],
+    ];
+
+    const result = await run(
+      'webhook',
+      'editor@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 1, columnEnd: 1 },
+      {
+        rowNumber: 2, columnNumber: 1, header: '表示名', rowUserId: 'U_AYAKO',
+        value: '改変名', oldValue: 'あやこ', oldValueKnown: true,
+      },
+      'event-identity-first-1',
+    );
+
+    expect(result).toMatchObject({ status: 'warning', ignoredIdentityEdits: 1 });
+    expect(client.values[1][0]).toBe('あやこ');
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE webhook_event_id='event-identity-first-1'`).get()).toEqual({
+      outcome: 'skipped', error_code: 'identity_read_only',
+    });
+  });
+
+  test('rejects impossible signed cell coordinates without allocating a padded sheet', () => {
+    expect(parseFriendLedgerWebhookEventPayload({
+      range: {
+        rowStart: Number.MAX_SAFE_INTEGER,
+        rowEnd: Number.MAX_SAFE_INTEGER,
+        columnStart: 4,
+        columnEnd: 4,
+      },
+      snapshot: {
+        rowNumber: Number.MAX_SAFE_INTEGER,
+        columnNumber: 4,
+        header: '入金確認',
+        rowUserId: 'U_AYAKO',
+        value: 'private',
+        oldValue: 'old',
+        oldValueKnown: true,
+      },
+    })).toBeNull();
+  });
+
   test('logs and skips an out-of-order snapshot after a newer edit already won', async () => {
     await run();
     client.values[1][3] = '新しい編集';
@@ -501,7 +779,10 @@ describe('friend ledger bidirectional sync', () => {
       'webhook',
       'newer@example.test',
       { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
-      { rowNumber: 2, columnNumber: 4, value: '新しい編集', oldValue: '中間値', oldValueKnown: true },
+      {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: '新しい編集', oldValue: '中間値', oldValueKnown: true,
+      },
       'event-newer-0000001',
     );
 
@@ -509,7 +790,10 @@ describe('friend ledger bidirectional sync', () => {
       'webhook',
       'older@example.test',
       { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
-      { rowNumber: 2, columnNumber: 4, value: '中間値', oldValue: '未', oldValueKnown: true },
+      {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: '中間値', oldValue: '未', oldValueKnown: true,
+      },
       'event-older-0000001',
     );
 
@@ -530,11 +814,12 @@ describe('friend ledger bidirectional sync', () => {
       eventId: 'event-durable-000001',
       actor: 'durable-editor@example.test',
       actorKind: 'google_email',
-      occurredAt: '2026-07-21T03:00:00.000Z',
+      occurredAt: connection.updatedAt,
       payload: {
         range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
         snapshot: {
-          rowNumber: 2, columnNumber: 4, value: 'durable-value', oldValue: '未', oldValueKnown: true,
+          rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+          value: 'durable-value', oldValue: '未', oldValueKnown: true,
         },
       },
       receivedAt: '2026-07-21T12:00:00+09:00',
@@ -566,7 +851,10 @@ describe('friend ledger bidirectional sync', () => {
       occurredAt: '2026-07-21T03:00:00.000Z',
       payload: {
         range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
-        snapshot: { rowNumber: 2, columnNumber: 4, value: '待機', oldValue: '未', oldValueKnown: true },
+        snapshot: {
+          rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+          value: '待機', oldValue: '未', oldValueKnown: true,
+        },
       },
       receivedAt: '2026-07-21T12:00:00+09:00',
     });
@@ -600,7 +888,10 @@ describe('friend ledger bidirectional sync', () => {
       occurredAt: '2026-07-21T03:00:00.000Z',
       payload: {
         range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
-        snapshot: { rowNumber: 2, columnNumber: 4, value: '再実行しない', oldValue: '未', oldValueKnown: true },
+        snapshot: {
+          rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+          value: '再実行しない', oldValue: '未', oldValueKnown: true,
+        },
       },
       receivedAt: '2026-07-21T12:00:00+09:00',
     });
@@ -627,6 +918,68 @@ describe('friend ledger bidirectional sync', () => {
     expect(metadata()).toMatchObject({ 入金確認: '未' });
     expect(raw.prepare(`SELECT status, payload_json FROM sheets_sync_webhook_events
       WHERE event_id=?`).get(eventId)).toEqual({ status: 'applied', payload_json: null });
+  });
+
+  test('redacts expired webhook PII even while Google credentials are unavailable', async () => {
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+    await enqueueSheetsWebhookEvent(db, 'acc-1', connection.id, connection.configVersion, {
+      eventId: 'event-no-creds-000001',
+      actor: 'no-creds-editor@example.test',
+      actorKind: 'google_email',
+      occurredAt: '2026-07-19T03:00:00.000Z',
+      payload: {
+        range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+        snapshot: {
+          rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+          value: 'private', oldValue: null, oldValueKnown: false,
+        },
+      },
+      receivedAt: '2026-07-19T12:00:00+09:00',
+    });
+
+    await expect(runFriendLedgerPolling({
+      db,
+      credentialsJson: undefined,
+      maxConnections: 10,
+      now: () => new Date('2026-07-21T03:00:00.000Z'),
+    })).resolves.toEqual({ attempted: 0, succeeded: 0, warnings: 0, failed: 0 });
+    expect(raw.prepare(`SELECT status, actor, payload_json FROM sheets_sync_webhook_events
+      WHERE event_id='event-no-creds-000001'`).get()).toEqual({
+      status: 'dead', actor: 'redacted', payload_json: null,
+    });
+  });
+
+  test('keeps a skipped webhook warning observable after the same cron cycle polls', async () => {
+    await run();
+    client.values[0].push('社内メモ');
+    client.values[1].push('会社の値');
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+    await enqueueSheetsWebhookEvent(db, 'acc-1', connection.id, connection.configVersion, {
+      eventId: 'event-cron-warning-01',
+      actor: 'editor@example.test',
+      actorKind: 'google_email',
+      occurredAt: connection.updatedAt,
+      payload: {
+        range: { rowStart: 2, rowEnd: 2, columnStart: 5, columnEnd: 5 },
+        snapshot: {
+          rowNumber: 2, columnNumber: 5, header: '社内メモ', rowUserId: 'U_AYAKO',
+          value: '編集値', oldValue: '会社の値', oldValueKnown: true,
+        },
+      },
+      receivedAt: '2026-07-21T12:00:00+09:00',
+    });
+
+    await expect(runFriendLedgerPolling({
+      db,
+      client,
+      maxConnections: 10,
+      now: () => new Date('2026-07-21T03:00:01.000Z'),
+    })).resolves.toMatchObject({ attempted: 1, warnings: 1, failed: 0 });
+    expect(raw.prepare(`SELECT last_sync_status, last_sync_warning FROM sheets_connections
+      WHERE id=?`).get(connection.id)).toEqual({
+      last_sync_status: 'warning',
+      last_sync_warning: expect.stringContaining('選ばれていない列'),
+    });
   });
 
   test('treats equal Harness and sheet changes as convergence, not a fake import', async () => {

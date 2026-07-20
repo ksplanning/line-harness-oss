@@ -3,7 +3,9 @@ import {
   claimNextSheetsWebhookEvent,
   claimSheetsSyncLock,
   clearSheetsSyncLedgerRowNumbers,
+  commitSheetsSyncRow,
   deferSheetsWebhookEvent,
+  expireSheetsWebhookEvents,
   failSheetsWebhookEvent,
   finishSheetsWebhookEvent,
   hasSheetsSyncAuditForWebhookEvent,
@@ -11,12 +13,12 @@ import {
   listFriendFieldDefinitions,
   listSheetsSyncAudit,
   listSheetsSyncLedger,
+  purgeSheetsWebhookEventTombstones,
   recordSheetsFriendLedgerHeaders,
   releaseSheetsSyncLock,
   reserveSheetsSyncSequence,
   toJstString,
   updateSheetsSyncStatus,
-  upsertSheetsSyncLedger,
   type SheetsCanonicalCellValue,
   type SheetsConnection,
   type SheetsSyncAuditDetailInput,
@@ -73,6 +75,8 @@ export interface FriendLedgerEditRange {
 export interface FriendLedgerWebhookSnapshot {
   rowNumber: number;
   columnNumber: number;
+  header: string;
+  rowUserId: string | null;
   value: SheetCellValue;
   oldValue: SheetCellValue;
   oldValueKnown: boolean;
@@ -94,6 +98,8 @@ export interface SyncFriendLedgerOptions {
   range?: FriendLedgerEditRange;
   snapshot?: FriendLedgerWebhookSnapshot;
   webhookEventId?: string;
+  webhookTargetError?: 'stale_webhook_generation';
+  initialWarnings?: string[];
 }
 
 export interface FriendLedgerSyncResult {
@@ -133,6 +139,7 @@ const LOCK_DURATION_MS = 2 * 60_000;
 const MAX_SYNC_WARNINGS = 20;
 const WEBHOOK_EVENT_CLAIM_MS = 2 * 60_000;
 const WEBHOOK_EVENT_RETENTION_MS = 24 * 60 * 60_000;
+const WEBHOOK_TOMBSTONE_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const WEBHOOK_EVENT_RETRY_MS = 30_000;
 const MAX_WEBHOOK_EVENT_ATTEMPTS = 5;
 const MAX_WEBHOOK_EVENTS_PER_DRAIN = 20;
@@ -231,6 +238,13 @@ function isPositiveCellIndex(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 1;
 }
 
+/** Legacy SQLite rows may omit an offset even though their wall clock is JST. */
+export function parseFriendLedgerTimestamp(value: string): number {
+  const trimmed = value.trim();
+  const offsetless = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed);
+  return Date.parse(offsetless ? `${trimmed.replace(' ', 'T')}+09:00` : trimmed);
+}
+
 export function parseFriendLedgerWebhookEventPayload(
   value: unknown,
 ): FriendLedgerWebhookEventPayload | null {
@@ -253,6 +267,14 @@ export function parseFriendLedgerWebhookEventPayload(
     || !isPositiveCellIndex(snapshot.columnNumber)
     || snapshot.rowNumber !== range.rowStart
     || snapshot.columnNumber !== range.columnStart
+    || typeof snapshot.header !== 'string'
+    || !snapshot.header.trim()
+    || snapshot.header.length > 200
+    || (snapshot.rowUserId !== null && (
+      typeof snapshot.rowUserId !== 'string'
+      || !snapshot.rowUserId.trim()
+      || snapshot.rowUserId.length > 200
+    ))
     || !isSheetCellValue(snapshot.value)
     || !isSheetCellValue(snapshot.oldValue)
     || typeof snapshot.oldValueKnown !== 'boolean'
@@ -269,6 +291,8 @@ export function parseFriendLedgerWebhookEventPayload(
     snapshot: {
       rowNumber: snapshot.rowNumber,
       columnNumber: snapshot.columnNumber,
+      header: snapshot.header.trim(),
+      rowUserId: snapshot.rowUserId === null ? null : snapshot.rowUserId.trim(),
       value: snapshot.value,
       oldValue: snapshot.oldValue,
       oldValueKnown: snapshot.oldValueKnown,
@@ -446,42 +470,43 @@ async function persistPlan(
     lease,
   );
   if (sequence === null) throw new Error('stale_sheets_connection_generation');
-  const auditWritten = await appendSheetsSyncAudit(db, connection.lineAccountId, {
-    id: `gsa_${crypto.randomUUID()}`,
-    connectionId: connection.id,
-    connectionVersion: connection.configVersion,
-    applySequence: sequence,
-    recordKey: plan.friend.id,
-    sheetRowNumber: plan.rowNumber,
-    direction: plan.direction,
-    action: plan.isAppend ? 'append' : plan.conflictResolution ? 'conflict' : changed ? 'update' : 'read',
-    outcome: plan.auditOutcome ?? (changed || plan.isAppend ? 'applied' : 'skipped'),
-    conflictResolution: plan.conflictResolution,
-    harnessUpdatedAt: plan.friend.updatedAt,
-    sheetObservedAt: now,
-    beforeFingerprint: plan.ledger?.rowFingerprint ?? null,
-    afterFingerprint: nextFingerprint,
-    errorCode: plan.auditErrorCode ?? (plan.details.some((entry) => entry.changeKind === 'identity_ignored')
-      ? 'identity_read_only'
-      : null),
-    webhookEventId: plan.webhookEventId ?? null,
-    details: plan.details,
+  const committed = await commitSheetsSyncRow(db, connection.lineAccountId, {
+    audit: {
+      id: `gsa_${crypto.randomUUID()}`,
+      connectionId: connection.id,
+      connectionVersion: connection.configVersion,
+      applySequence: sequence,
+      recordKey: plan.friend.id,
+      sheetRowNumber: plan.rowNumber,
+      direction: plan.direction,
+      action: plan.isAppend ? 'append' : plan.conflictResolution ? 'conflict' : changed ? 'update' : 'read',
+      outcome: plan.auditOutcome ?? (changed || plan.isAppend ? 'applied' : 'skipped'),
+      conflictResolution: plan.conflictResolution,
+      harnessUpdatedAt: plan.friend.updatedAt,
+      sheetObservedAt: now,
+      beforeFingerprint: plan.ledger?.rowFingerprint ?? null,
+      afterFingerprint: nextFingerprint,
+      errorCode: plan.auditErrorCode ?? (plan.details.some((entry) => entry.changeKind === 'identity_ignored')
+        ? 'identity_read_only'
+        : null),
+      webhookEventId: plan.webhookEventId ?? null,
+      details: plan.details,
+    },
+    ledger: {
+      connectionId: connection.id,
+      connectionVersion: connection.configVersion,
+      recordKey: plan.friend.id,
+      sheetRowNumber: plan.rowNumber,
+      rowFingerprint: nextFingerprint,
+      canonicalSnapshot: plan.canonical,
+      harnessUpdatedAt: plan.friend.updatedAt,
+      sheetObservedAt: now,
+      lastSyncedAt: now,
+      lastSyncDirection: plan.direction,
+      lastAppliedSequence: sequence,
+    },
   }, lease);
-  if (!auditWritten) throw new Error('stale_sheets_audit_generation');
-  const ledgerWritten = await upsertSheetsSyncLedger(db, connection.lineAccountId, {
-    connectionId: connection.id,
-    connectionVersion: connection.configVersion,
-    recordKey: plan.friend.id,
-    sheetRowNumber: plan.rowNumber,
-    rowFingerprint: nextFingerprint,
-    canonicalSnapshot: plan.canonical,
-    harnessUpdatedAt: plan.friend.updatedAt,
-    sheetObservedAt: now,
-    lastSyncedAt: now,
-    lastSyncDirection: plan.direction,
-    lastAppliedSequence: sequence,
-  }, lease);
-  if (!ledgerWritten) throw new Error('stale_sheets_ledger_generation');
+  if (!committed) throw new Error('stale_sheets_row_commit_generation');
 }
 
 function makeClient(options: SyncFriendLedgerOptions): FriendLedgerSheetsClient {
@@ -577,19 +602,6 @@ export async function syncFriendLedger(
     const hasUnrecordedHeaders = columns.some((column) => !knownHeaders.has(column.header));
     const ledgerByFriend = new Map(ledgerEntries.map((entry) => [entry.recordKey, entry]));
     const values = (response.values ?? []).map((row) => [...row]);
-    let liveSnapshotValue: string | null = null;
-    if (options.source === 'webhook' && options.snapshot) {
-      const rowIndex = options.snapshot.rowNumber - 1;
-      const columnIndex = options.snapshot.columnNumber - 1;
-      liveSnapshotValue = normalizeSheetCell(values[rowIndex]?.[columnIndex]);
-    }
-    const effectiveRow = (rowNumber: number): SheetCellValue[] => {
-      const row = [...(values[rowNumber - 1] ?? [])];
-      if (options.source === 'webhook' && options.snapshot?.rowNumber === rowNumber) {
-        row[options.snapshot.columnNumber - 1] = options.snapshot.value;
-      }
-      return row;
-    };
     const warnings: string[] = [];
     const warningSet = new Set<string>();
     const addWarning = (message: string): void => {
@@ -597,14 +609,192 @@ export async function syncFriendLedger(
       warningSet.add(message);
       if (warnings.length < MAX_SYNC_WARNINGS) warnings.push(message);
     };
+    for (const warning of options.initialWarnings ?? []) addWarning(warning);
     const friends = allFriends.filter((friend) => friend.metadataValid);
     if (friends.length !== allFriends.length) {
       addWarning('保存済みの friend metadata が壊れている友だちをスキップしました');
     }
+    let liveSnapshotValue: string | null = null;
+    let snapshotFriend: FriendState | null = null;
+    let snapshotTargetError:
+      | 'stale_webhook_generation'
+      | 'stale_webhook_target'
+      | 'unsafe_webhook_identity'
+      | 'unselected_webhook_column'
+      | 'stale_webhook_event'
+      | null
+      = options.webhookTargetError ?? null;
+    if (options.source === 'webhook' && options.snapshot) {
+      const rowIndex = options.snapshot.rowNumber - 1;
+      const columnIndex = options.snapshot.columnNumber - 1;
+      liveSnapshotValue = normalizeSheetCell(values[rowIndex]?.[columnIndex]);
+      const rawHeaders = values[0] ?? [];
+      const normalizedHeaders = rawHeaders.map(normalizeSheetCell);
+      const headerIndexes = normalizedHeaders
+        .map((header, index) => header === options.snapshot!.header ? index : -1)
+        .filter((index) => index >= 0);
+      const friendCandidates = options.snapshot.rowUserId === null
+        ? []
+        : friends.filter((friend) => friend.lineUserId === options.snapshot!.rowUserId);
+      snapshotFriend = friendCandidates.length === 1 ? friendCandidates[0] : null;
+      if (!snapshotTargetError) {
+        const configuredTargets = columns.filter((column) => column.header === options.snapshot!.header);
+        if (options.snapshot.rowNumber === 1) {
+          snapshotTargetError = 'stale_webhook_target';
+        } else if (!options.snapshot.rowUserId || friendCandidates.length !== 1) {
+          snapshotTargetError = 'unsafe_webhook_identity';
+        } else if (configuredTargets.length === 0) {
+          snapshotTargetError = 'unselected_webhook_column';
+        } else if (configuredTargets.length !== 1) {
+          snapshotTargetError = 'stale_webhook_target';
+        } else if (
+          headerIndexes.length !== 1
+          || headerIndexes[0] !== columnIndex
+        ) {
+          snapshotTargetError = 'stale_webhook_target';
+        } else {
+          const userIdIndexes = normalizedHeaders
+            .map((header, index) => header === 'userId' ? index : -1)
+            .filter((index) => index >= 0);
+          const rawRow = values[rowIndex] ?? [];
+          const currentRowUserId = userIdIndexes.length === 1
+            ? normalizeSheetCell(rawRow[userIdIndexes[0]])
+            : '';
+          const matchingUserRows = userIdIndexes.length === 1
+            ? values.flatMap((row, index) => (
+              index > 0 && normalizeSheetCell(row[userIdIndexes[0]]) === options.snapshot!.rowUserId
+                ? [index + 1]
+                : []
+            ))
+            : [];
+          let rowMatches = matchingUserRows.length === 1
+            && matchingUserRows[0] === options.snapshot.rowNumber
+            && currentRowUserId === options.snapshot.rowUserId;
+          if (
+            !rowMatches
+            && options.snapshot.header === 'userId'
+            && options.snapshot.oldValueKnown
+            && normalizeSheetCell(options.snapshot.oldValue) === options.snapshot.rowUserId
+            && snapshotFriend
+          ) {
+            const ledger = ledgerByFriend.get(snapshotFriend.id);
+            const identityChecks = [
+              ['表示名', snapshotFriend.displayName ?? ''],
+              ['登録日', snapshotFriend.createdAt],
+            ] as const;
+            const available = identityChecks.flatMap(([header, expected]) => {
+              const indexes = normalizedHeaders
+                .map((candidate, index) => candidate === header ? index : -1)
+                .filter((index) => index >= 0);
+              return indexes.length === 1 ? [{ index: indexes[0], expected }] : [];
+            });
+            rowMatches = matchingUserRows.length === 0
+              && ledger?.sheetRowNumber === options.snapshot.rowNumber
+              && available.length > 0
+              && available.every(({ index, expected }) => normalizeSheetCell(rawRow[index]) === expected);
+          }
+          if (!rowMatches) {
+            snapshotTargetError = matchingUserRows.length > 1 || userIdIndexes.length !== 1
+              ? 'unsafe_webhook_identity'
+              : 'stale_webhook_target';
+          } else if (
+            !options.snapshot.oldValueKnown
+            && liveSnapshotValue !== normalizeSheetCell(options.snapshot.value)
+          ) {
+            snapshotTargetError = 'stale_webhook_event';
+          }
+        }
+      }
+    }
+    const effectiveRow = (rowNumber: number): SheetCellValue[] => {
+      const row = [...(values[rowNumber - 1] ?? [])];
+      if (
+        !snapshotTargetError
+        && options.source === 'webhook'
+        && options.snapshot?.rowNumber === rowNumber
+      ) {
+        row[options.snapshot.columnNumber - 1] = options.snapshot.value;
+      }
+      return row;
+    };
     const plans: RowPlan[] = [];
+    const removedRowNumbers = new Set<number>();
     let appendedRows = 0;
     let importedFields = 0;
     let ignoredIdentityEdits = 0;
+    if (snapshotTargetError && options.snapshot) {
+      const message = snapshotTargetError === 'unsafe_webhook_identity'
+        ? '編集通知の userId から友だちを安全に特定できないため、取り込みませんでした'
+        : snapshotTargetError === 'unselected_webhook_column'
+          ? '同期対象に選ばれていない列の編集通知は取り込みませんでした'
+          : snapshotTargetError === 'stale_webhook_event'
+            ? '保護のため、古い編集通知を取り込みませんでした'
+            : '編集後に行・列または同期設定が変わったため、古い編集通知を取り込みませんでした';
+      addWarning(message);
+      const completedAt = toJstString(nowFactory());
+      const ledger = snapshotFriend ? ledgerByFriend.get(snapshotFriend.id) ?? null : null;
+      const lease = await renewLease();
+      const sequence = await reserveSheetsSyncSequence(
+        options.db,
+        options.connection.lineAccountId,
+        options.connection.id,
+        options.connection.configVersion,
+        lease,
+      );
+      if (sequence === null) throw new Error('stale_sheets_connection_generation');
+      const identityEdit = ['表示名', 'userId', '登録日'].includes(options.snapshot.header);
+      const auditWritten = await appendSheetsSyncAudit(options.db, options.connection.lineAccountId, {
+        id: `gsa_${crypto.randomUUID()}`,
+        connectionId: options.connection.id,
+        connectionVersion: options.connection.configVersion,
+        applySequence: sequence,
+        recordKey: snapshotFriend?.id ?? null,
+        sheetRowNumber: options.snapshot.rowNumber,
+        direction: 'from_sheets',
+        action: 'conflict',
+        outcome: 'skipped',
+        conflictResolution: null,
+        harnessUpdatedAt: snapshotFriend?.updatedAt ?? null,
+        sheetObservedAt: completedAt,
+        beforeFingerprint: ledger?.rowFingerprint ?? null,
+        afterFingerprint: ledger?.rowFingerprint ?? null,
+        errorCode: snapshotTargetError,
+        webhookEventId: options.webhookEventId ?? null,
+        details: [detail(
+          actor,
+          options.snapshot.header,
+          options.snapshot.oldValueKnown ? normalizeSheetCell(options.snapshot.oldValue) : null,
+          normalizeSheetCell(options.snapshot.value),
+          options.source,
+          identityEdit ? 'identity_ignored' : 'conflict',
+        )],
+      }, lease);
+      if (!auditWritten) throw new Error('stale_sheets_audit_generation');
+      const finalLease = await renewLease();
+      const statusUpdated = await updateSheetsSyncStatus(
+        options.db,
+        options.connection.lineAccountId,
+        options.connection.id,
+        {
+          status: 'warning',
+          lastSyncAt: completedAt,
+          warning: warnings.join(' / '),
+          errorCode: snapshotTargetError,
+        },
+        finalLease,
+      );
+      if (!statusUpdated) throw new Error('friend_ledger_sync_lock_lost');
+      return {
+        status: 'warning',
+        busy: false,
+        warning: warnings.join(' / '),
+        warnings,
+        appendedRows: 0,
+        updatedRows: 0,
+        importedFields: 0,
+        ignoredIdentityEdits: identityEdit ? 1 : 0,
+      };
+    }
     const isNotifiedCell = (rowNumber: number, columnIndex: number): boolean => {
       if (options.source !== 'webhook' || !options.range) return true;
       return rowNumber >= options.range.rowStart
@@ -750,6 +940,246 @@ export async function syncFriendLedger(
         if (rows.length === 1) exactRowOwner.set(rows[0], friend.id);
       }
 
+      const allFriendIds = new Set(allFriends.map((friend) => friend.id));
+      const emptyCanonical: Record<string, SheetsCanonicalCellValue> = {};
+      const emptyFingerprint = await fingerprint(emptyCanonical);
+      const commitRemovedLedger = async (
+        ledger: SheetsSyncLedgerEntry,
+        errorCode: 'friend_removed_from_harness' | 'friend_recreated_in_harness',
+        details: SheetsSyncAuditDetailInput[],
+      ): Promise<void> => {
+        const observedAt = toJstString(nowFactory());
+        const lease = await renewLease();
+        const sequence = await reserveSheetsSyncSequence(
+          options.db,
+          options.connection.lineAccountId,
+          options.connection.id,
+          options.connection.configVersion,
+          lease,
+        );
+        if (sequence === null) throw new Error('stale_sheets_connection_generation');
+        const committed = await commitSheetsSyncRow(options.db, options.connection.lineAccountId, {
+          audit: {
+            id: `gsa_${crypto.randomUUID()}`,
+            connectionId: options.connection.id,
+            connectionVersion: options.connection.configVersion,
+            applySequence: sequence,
+            recordKey: ledger.recordKey,
+            sheetRowNumber: null,
+            direction: 'to_sheets',
+            action: 'update',
+            outcome: 'applied',
+            conflictResolution: null,
+            harnessUpdatedAt: null,
+            sheetObservedAt: observedAt,
+            beforeFingerprint: ledger.rowFingerprint,
+            afterFingerprint: emptyFingerprint,
+            errorCode,
+            webhookEventId: null,
+            details,
+          },
+          ledger: {
+            connectionId: options.connection.id,
+            connectionVersion: options.connection.configVersion,
+            recordKey: ledger.recordKey,
+            sheetRowNumber: null,
+            rowFingerprint: emptyFingerprint,
+            canonicalSnapshot: emptyCanonical,
+            harnessUpdatedAt: null,
+            sheetObservedAt: observedAt,
+            lastSyncedAt: observedAt,
+            lastSyncDirection: 'to_sheets',
+            lastAppliedSequence: sequence,
+          },
+        }, lease);
+        if (!committed) throw new Error('stale_sheets_removed_friend_commit');
+      };
+      const auditUnsafeRemovedLedger = async (
+        ledger: SheetsSyncLedgerEntry,
+        lineUserId: string,
+      ): Promise<void> => {
+        const observedAt = toJstString(nowFactory());
+        const lease = await renewLease();
+        const sequence = await reserveSheetsSyncSequence(
+          options.db,
+          options.connection.lineAccountId,
+          options.connection.id,
+          options.connection.configVersion,
+          lease,
+        );
+        if (sequence === null) throw new Error('stale_sheets_connection_generation');
+        const written = await appendSheetsSyncAudit(options.db, options.connection.lineAccountId, {
+          id: `gsa_${crypto.randomUUID()}`,
+          connectionId: options.connection.id,
+          connectionVersion: options.connection.configVersion,
+          applySequence: sequence,
+          recordKey: ledger.recordKey,
+          sheetRowNumber: ledger.sheetRowNumber,
+          direction: 'to_sheets',
+          action: 'conflict',
+          outcome: 'skipped',
+          conflictResolution: null,
+          harnessUpdatedAt: null,
+          sheetObservedAt: observedAt,
+          beforeFingerprint: ledger.rowFingerprint,
+          afterFingerprint: ledger.rowFingerprint,
+          errorCode: 'unsafe_deleted_friend_row',
+          webhookEventId: null,
+          details: [detail(actor, 'userId', lineUserId, lineUserId, options.source, 'conflict')],
+        }, lease);
+        if (!written) throw new Error('stale_sheets_removed_friend_audit');
+      };
+      const locateRemovedLedgerRow = async (
+        ledger: SheetsSyncLedgerEntry,
+        rowNumber: number,
+      ): Promise<SheetsSyncLedgerEntry> => {
+        if (ledger.sheetRowNumber === rowNumber) return ledger;
+        const observedAt = toJstString(nowFactory());
+        const lease = await renewLease();
+        const sequence = await reserveSheetsSyncSequence(
+          options.db,
+          options.connection.lineAccountId,
+          options.connection.id,
+          options.connection.configVersion,
+          lease,
+        );
+        if (sequence === null) throw new Error('stale_sheets_connection_generation');
+        const committed = await commitSheetsSyncRow(options.db, options.connection.lineAccountId, {
+          audit: {
+            id: `gsa_${crypto.randomUUID()}`,
+            connectionId: options.connection.id,
+            connectionVersion: options.connection.configVersion,
+            applySequence: sequence,
+            recordKey: ledger.recordKey,
+            sheetRowNumber: rowNumber,
+            direction: 'to_sheets',
+            action: 'read',
+            outcome: 'applied',
+            conflictResolution: null,
+            harnessUpdatedAt: null,
+            sheetObservedAt: observedAt,
+            beforeFingerprint: ledger.rowFingerprint,
+            afterFingerprint: ledger.rowFingerprint,
+            errorCode: 'friend_removed_row_located',
+            webhookEventId: null,
+            details: [],
+          },
+          ledger: {
+            connectionId: options.connection.id,
+            connectionVersion: options.connection.configVersion,
+            recordKey: ledger.recordKey,
+            sheetRowNumber: rowNumber,
+            rowFingerprint: ledger.rowFingerprint,
+            canonicalSnapshot: ledger.canonicalSnapshot,
+            harnessUpdatedAt: ledger.harnessUpdatedAt,
+            sheetObservedAt: observedAt,
+            lastSyncedAt: observedAt,
+            lastSyncDirection: 'to_sheets',
+            lastAppliedSequence: sequence,
+          },
+        }, lease);
+        if (!committed) throw new Error('stale_sheets_removed_friend_location');
+        return {
+          ...ledger,
+          sheetRowNumber: rowNumber,
+          sheetObservedAt: observedAt,
+          lastSyncedAt: observedAt,
+          lastSyncDirection: 'to_sheets',
+          lastAppliedSequence: sequence,
+          version: ledger.version + 1,
+        };
+      };
+
+      for (const orphan of ledgerEntries.filter((entry) => !allFriendIds.has(entry.recordKey))) {
+        const lineUserId = normalizeSheetCell(orphan.canonicalSnapshot['identity:lineUserId']);
+        if (!lineUserId) continue;
+        const liveOwners = allFriends.filter((friend) => friend.lineUserId === lineUserId);
+        if (liveOwners.length === 1) {
+          await commitRemovedLedger(orphan, 'friend_recreated_in_harness', [
+            detail(actor, 'userId', lineUserId, lineUserId, options.source, 'identity_sync'),
+          ]);
+          continue;
+        }
+
+        const ownedColumns = columns.flatMap((column) => {
+          const index = resolved.indexByKey[column.key];
+          return index === undefined ? [] : [{ column, index }];
+        });
+        const matchingRows = positions.get(lineUserId) ?? [];
+        const recordedRow = orphan.sheetRowNumber && orphan.sheetRowNumber >= 2
+          ? effectiveRow(orphan.sheetRowNumber)
+          : null;
+        const recordedRowAlreadyBlank = Boolean(
+          recordedRow
+          && ownedColumns.length === columns.length
+          && ownedColumns.every(({ index }) => normalizeSheetCell(recordedRow[index]) === ''),
+        );
+        const safeRowNumber = matchingRows.length === 1 ? matchingRows[0] : null;
+        if (
+          liveOwners.length > 1
+          || ownedColumns.length !== columns.length
+          || matchingRows.length > 1
+          || (!safeRowNumber && !recordedRowAlreadyBlank)
+        ) {
+          addWarning('削除済み友だちの userId から安全に行を特定できないため、シートを消去しませんでした');
+          await auditUnsafeRemovedLedger(orphan, lineUserId);
+          continue;
+        }
+
+        const locatedLedger = safeRowNumber
+          ? await locateRemovedLedgerRow(orphan, safeRowNumber)
+          : orphan;
+        const targetRow = safeRowNumber ? effectiveRow(safeRowNumber) : recordedRow!;
+        const removalDetails = ownedColumns.flatMap(({ column, index }) => {
+          const oldValue = safeRowNumber
+            ? normalizeSheetCell(targetRow[index])
+            : normalizeSheetCell(orphan.canonicalSnapshot[column.key]);
+          return oldValue
+            ? [detail(
+              actor,
+              column.header,
+              oldValue,
+              '',
+              options.source,
+              column.kind === 'identity' ? 'identity_sync' : 'custom_field',
+            )]
+            : [];
+        });
+        if (safeRowNumber) {
+          const userIdColumnIndex = resolved.indexByKey['identity:lineUserId'];
+          const clearUpdates = ownedColumns.flatMap(({ index }) => (
+            normalizeSheetCell(targetRow[index]) === ''
+              ? []
+              : [{
+                range: cellRange(options.connection.sheetName, safeRowNumber, index),
+                values: [['']],
+                index,
+              }]
+          ));
+          // Keep userId until every other owned cell is blank. If a request or
+          // process fails between phases, the next poll can still find the row
+          // by its exact identity and safely resume.
+          const contentUpdates = clearUpdates.filter((update) => update.index !== userIdColumnIndex);
+          const identityUpdate = clearUpdates.filter((update) => update.index === userIdColumnIndex);
+          if (contentUpdates.length > 0) {
+            await renewLease();
+            await client.batchUpdateValues(options.connection.spreadsheetId, contentUpdates);
+          }
+          if (identityUpdate.length > 0) {
+            await renewLease();
+            await client.batchUpdateValues(options.connection.spreadsheetId, identityUpdate);
+          }
+          if (clearUpdates.length > 0) {
+            for (const { index } of clearUpdates) values[safeRowNumber - 1][index] = '';
+            removedRowNumbers.add(safeRowNumber);
+          }
+        }
+        if (removalDetails.length === 0) {
+          removalDetails.push(detail(actor, 'userId', lineUserId, '', options.source, 'identity_sync'));
+        }
+        await commitRemovedLedger(locatedLedger, 'friend_removed_from_harness', removalDetails);
+      }
+
       for (const friend of friends) {
         const ledger = ledgerByFriend.get(friend.id) ?? null;
         const matchingRows = positions.get(friend.lineUserId) ?? [];
@@ -866,7 +1296,21 @@ export async function syncFriendLedger(
                 range: cellRange(options.connection.sheetName, rowNumber, columnIndex),
                 values: [[expected]],
               });
-              if (!ledger || (harnessChanged && !sheetChanged)) {
+              if (signedSnapshot && options.webhookEventId) {
+                ignoredIdentityEdits += 1;
+                addWarning(`保護列「${column.header}」の変更を取り込みませんでした`);
+                direction = 'from_sheets';
+                auditOutcome = 'skipped';
+                auditErrorCode = 'identity_read_only';
+                details.push(detail(
+                  actor,
+                  column.header,
+                  signedSnapshot.oldValueKnown ? signedSnapshot.oldValue : expected,
+                  observed,
+                  options.source,
+                  'identity_ignored',
+                ));
+              } else if (!ledger || (harnessChanged && !sheetChanged)) {
                 details.push(detail(actor, column.header, observed, expected, options.source, 'identity_sync'));
               } else {
                 ignoredIdentityEdits += 1;
@@ -881,6 +1325,20 @@ export async function syncFriendLedger(
                   'identity_ignored',
                 ));
               }
+            } else if (signedSnapshot && options.webhookEventId) {
+              ignoredIdentityEdits += 1;
+              addWarning(`保護列「${column.header}」の変更を取り込みませんでした`);
+              direction = 'from_sheets';
+              auditOutcome = 'skipped';
+              auditErrorCode = 'identity_read_only';
+              details.push(detail(
+                actor,
+                column.header,
+                signedSnapshot.oldValueKnown ? signedSnapshot.oldValue : null,
+                signedSnapshot.value,
+                options.source,
+                'identity_ignored',
+              ));
             }
             continue;
           }
@@ -1012,6 +1470,7 @@ export async function syncFriendLedger(
     const updatedRowNumbers = new Set(
       plans.filter((plan) => plan.sheetUpdates.length > 0).map((plan) => plan.rowNumber),
     );
+    for (const rowNumber of removedRowNumbers) updatedRowNumbers.add(rowNumber);
     const completedAt = toJstString(nowFactory());
     const movedPlans = plans.filter(
       (plan) => plan.ledger && plan.ledger.sheetRowNumber !== plan.rowNumber,
@@ -1147,6 +1606,7 @@ export interface FriendLedgerWebhookDrainResult {
   deferred: number;
   dead: number;
   exhausted: boolean;
+  warnings: string[];
 }
 
 export async function drainFriendLedgerWebhookEvents(
@@ -1160,6 +1620,7 @@ export async function drainFriendLedgerWebhookEvents(
     deferred: 0,
     dead: 0,
     exhausted: false,
+    warnings: [],
   };
   for (let index = 0; index < limit; index += 1) {
     const claimTime = nowFactory();
@@ -1233,8 +1694,17 @@ export async function drainFriendLedgerWebhookEvents(
         range: payload.range,
         snapshot: payload.snapshot,
         webhookEventId: event.eventId,
+        webhookTargetError: (
+          Number.isFinite(parseFriendLedgerTimestamp(event.occurredAt))
+          && Number.isFinite(parseFriendLedgerTimestamp(options.connection.updatedAt))
+          && parseFriendLedgerTimestamp(event.occurredAt)
+            < parseFriendLedgerTimestamp(options.connection.updatedAt)
+        ) ? 'stale_webhook_generation' : undefined,
         now: nowFactory,
       });
+      for (const warning of synced.warnings) {
+        if (!result.warnings.includes(warning)) result.warnings.push(warning);
+      }
       if (synced.busy) {
         const retryAt = new Date(nowFactory().getTime() + WEBHOOK_EVENT_RETRY_MS);
         const deferred = await deferSheetsWebhookEvent(
@@ -1295,6 +1765,7 @@ export async function drainFriendLedgerWebhookEvents(
 export interface RunFriendLedgerPollingOptions {
   db: D1Database;
   credentialsJson?: string;
+  client?: FriendLedgerSheetsClient;
   maxConnections: number;
   now?: () => Date;
 }
@@ -1302,32 +1773,42 @@ export interface RunFriendLedgerPollingOptions {
 export async function runFriendLedgerPolling(
   options: RunFriendLedgerPollingOptions,
 ): Promise<{ attempted: number; succeeded: number; warnings: number; failed: number }> {
-  if (!options.credentialsJson) return { attempted: 0, succeeded: 0, warnings: 0, failed: 0 };
-  const client = new GoogleSheetsClient({
-    credentials: parseGoogleServiceAccountCredentials(options.credentialsJson),
+  const cleanupTime = (options.now ?? (() => new Date()))();
+  await expireSheetsWebhookEvents(options.db, {
+    now: toJstString(cleanupTime),
+    discardBefore: toJstString(new Date(cleanupTime.getTime() - WEBHOOK_EVENT_RETENTION_MS)),
+    maxAttempts: MAX_WEBHOOK_EVENT_ATTEMPTS,
+    limit: 100,
+  });
+  await purgeSheetsWebhookEventTombstones(options.db, {
+    completedBefore: toJstString(new Date(cleanupTime.getTime() - WEBHOOK_TOMBSTONE_RETENTION_MS)),
+    limit: 100,
+  });
+  if (!options.client && !options.credentialsJson) {
+    return { attempted: 0, succeeded: 0, warnings: 0, failed: 0 };
+  }
+  const client = options.client ?? new GoogleSheetsClient({
+    credentials: parseGoogleServiceAccountCredentials(options.credentialsJson!),
   });
   const connections = await listActiveSheetsConnectionsForSync(options.db, options.maxConnections);
   const summary = { attempted: 0, succeeded: 0, warnings: 0, failed: 0 };
   for (const connection of connections) {
     summary.attempted += 1;
     try {
-      const webhookEvents = await drainFriendLedgerWebhookEvents({
+      const drained = await drainFriendLedgerWebhookEvents({
         db: options.db,
         connection,
         client,
-        maxEvents: 10,
+        maxEvents: 1,
         now: options.now,
       });
-      if (webhookEvents.deferred > 0 || webhookEvents.exhausted) {
-        summary.warnings += 1;
-        continue;
-      }
       const result = await syncFriendLedger({
         db: options.db,
         connection,
         client,
         source: 'polling',
         actor: 'system_poll',
+        initialWarnings: drained.warnings,
         now: options.now,
       });
       if (result.status === 'warning') summary.warnings += 1;
@@ -1360,6 +1841,8 @@ export async function listFriendLedgerAudit(options: {
     newValue: entry.newValue,
     source: entry.source,
     changeKind: entry.changeKind,
+    outcome: event.outcome,
+    errorCode: event.errorCode,
     conflictResolution: event.conflictResolution,
     createdAt: entry.createdAt,
   })));

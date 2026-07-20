@@ -20,7 +20,7 @@ vi.mock('../services/friend-ledger-sync.js', async (importOriginal) => ({
   ...service,
 }));
 
-import { sheetsConnections } from './sheets-connections.js';
+import { parseWebhookPayload, sheetsConnections } from './sheets-connections.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
@@ -239,6 +239,31 @@ describe('friend ledger owner routes', () => {
 });
 
 describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
+  test('bounds legacy coordinates and normalizes an unavailable Google editor identity', () => {
+    expect(parseWebhookPayload({
+      version: 1,
+      connectionId: 'conn-a', spreadsheetId: 'sheet-a', sheetName: '友だち台帳',
+      range: {
+        rowStart: Number.MAX_SAFE_INTEGER, rowEnd: Number.MAX_SAFE_INTEGER,
+        columnStart: 1, columnEnd: 1,
+      },
+      actor: 'editor@example.test',
+    })).toBeNull();
+    expect(parseWebhookPayload({
+      version: 2,
+      eventId: 'event-actor-000001', occurredAt: WEBHOOK_TIMESTAMP,
+      connectionId: 'conn-a', spreadsheetId: 'sheet-a', sheetName: '友だち台帳',
+      range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      snapshot: {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: '後', oldValue: '前', oldValueKnown: true,
+      },
+      actor: 'not-an-email', actorKind: 'google_email',
+    })).toMatchObject({
+      actor: 'google_sheets_editor_unavailable', actorKind: 'unavailable',
+    });
+  });
+
   test('rejects an invalid signature before JSON parsing, DB access, or sync', async () => {
     const prepare = vi.fn(() => { throw new Error('DB must not be touched'); });
     const response = await call(
@@ -348,6 +373,8 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
       snapshot: {
         rowNumber: 2,
         columnNumber: 4,
+        header: '入金確認',
+        rowUserId: 'U_AYAKO',
         value: '編集後',
         oldValue: '編集前',
         oldValueKnown: true,

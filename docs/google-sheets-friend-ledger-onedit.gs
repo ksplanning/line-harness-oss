@@ -33,6 +33,26 @@ function hmacHex_(message, secret) {
   }).join('');
 }
 
+function friendLedgerEditTarget_(event, sheet) {
+  var width = Math.max(1, sheet.getLastColumn());
+  var headers = sheet.getRange(1, 1, 1, width).getDisplayValues()[0];
+  var column = event.range.getColumn();
+  var oldValueKnown = event.oldValue !== undefined;
+  var header = event.range.getRow() === 1 && oldValueKnown
+    ? String(event.oldValue)
+    : String(headers[column - 1] || '');
+  var rowUserId = null;
+  if (event.range.getRow() > 1) {
+    var userIdColumn = headers.indexOf('userId') + 1;
+    if (header === 'userId' && oldValueKnown) {
+      rowUserId = String(event.oldValue);
+    } else if (userIdColumn > 0) {
+      rowUserId = String(sheet.getRange(event.range.getRow(), userIdColumn).getDisplayValue() || '') || null;
+    }
+  }
+  return { header: header, rowUserId: rowUserId };
+}
+
 /** 同じトリガーを重複させず、インストール型の編集時トリガーを作ります。 */
 function installFriendLedgerSync() {
   var values = friendLedgerProperties_();
@@ -68,6 +88,7 @@ function friendLedgerOnEdit(event) {
   var actor = actorEmail || 'google_sheets_editor_unavailable';
   var actorKind = actorEmail ? 'google_email' : 'unavailable';
   var oldValueKnown = event.oldValue !== undefined;
+  var target = friendLedgerEditTarget_(event, sheet);
   var payload = JSON.stringify({
     version: 2,
     eventId: Utilities.getUuid(),
@@ -84,6 +105,8 @@ function friendLedgerOnEdit(event) {
     snapshot: {
       rowNumber: event.range.getRow(),
       columnNumber: event.range.getColumn(),
+      header: target.header,
+      rowUserId: target.rowUserId,
       value: event.value === undefined ? '' : event.value,
       oldValue: oldValueKnown ? event.oldValue : null,
       oldValueKnown: oldValueKnown
@@ -110,7 +133,8 @@ function friendLedgerOnEdit(event) {
     } catch (error) {
       status = 0;
     }
-    if ([0, 409, 429, 503].indexOf(status) === -1 || attempt === 2) break;
+    var retriable = status === 0 || status === 408 || status === 409 || status === 429 || status >= 500;
+    if (!retriable || attempt === 2) break;
     Utilities.sleep(1000 * Math.pow(2, attempt));
   }
   if (status < 200 || status >= 300) {

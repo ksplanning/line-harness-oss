@@ -28,10 +28,13 @@ describe('Google Sheets friend ledger owner handoff documents', () => {
       'event.oldValue',
       'oldValueKnown',
       'actorKind',
+      'rowUserId',
+      'header',
     ]) {
       expect(script).toContain(required);
     }
     expect(script).toMatch(/JSON\.stringify\s*\(/);
+    for (const status of ['408', '409', '429', '500']) expect(script).toContain(status);
     expect(script).not.toMatch(/\b(?:console|Logger)\.(?:log|info|warn|error)\s*\(/);
     expect(script).not.toContain('-----BEGIN PRIVATE KEY-----');
     expect(script).not.toContain('1bJCZHSqVSZstcFcI3c1xlEZKByNdbCMqGC4Sc9NtnGU');
