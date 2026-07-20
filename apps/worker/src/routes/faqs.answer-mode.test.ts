@@ -1,6 +1,6 @@
 /**
  * T-A4 (Phase B B-1) — answer_mode が faq_bot 設定 JSON に持たれ、PUT round-trip で
- * 既存キーを落とさず default='auto' (D3) を保つ検証。
+ * 既存キーを落とさず安全側 default='draft' を保つ検証。
  */
 import { describe, expect, test } from 'vitest';
 import { Hono } from 'hono';
@@ -40,11 +40,11 @@ function app(db: D1Database) {
 }
 
 describe('faq-bot settings answer_mode (T-A4)', () => {
-  test('default は auto (未保存アカウントの GET)', async () => {
+  test('default は draft (未保存アカウントの GET)', async () => {
     const { db } = statefulDb();
     const res = await app(db).request('/api/account-settings/faq-bot?accountId=acc-1');
     const body = (await res.json()) as { data: { answerMode: string } };
-    expect(body.data.answerMode).toBe('auto');
+    expect(body.data.answerMode).toBe('draft');
   });
 
   test('PUT answerMode=draft → GET で draft・既存キー (threshold 等) を落とさない', async () => {
@@ -73,7 +73,19 @@ describe('faq-bot settings answer_mode (T-A4)', () => {
     expect(body.data.maxRepliesPerDay).toBe(3);
   });
 
-  test('不正な answerMode は auto に正規化', async () => {
+  test('PUT answerMode=auto → GET で auto を維持', async () => {
+    const { db } = statefulDb();
+    await app(db).request('/api/account-settings/faq-bot', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: 'acc-1', enabled: true, answerMode: 'auto' }),
+    });
+    const getRes = await app(db).request('/api/account-settings/faq-bot?accountId=acc-1');
+    const body = (await getRes.json()) as { data: { answerMode: string } };
+    expect(body.data.answerMode).toBe('auto');
+  });
+
+  test('不正な answerMode は draft に正規化', async () => {
     const { db } = statefulDb();
     await app(db).request('/api/account-settings/faq-bot', {
       method: 'PUT',
@@ -82,6 +94,6 @@ describe('faq-bot settings answer_mode (T-A4)', () => {
     });
     const getRes = await app(db).request('/api/account-settings/faq-bot?accountId=acc-1');
     const body = (await getRes.json()) as { data: { answerMode: string } };
-    expect(body.data.answerMode).toBe('auto');
+    expect(body.data.answerMode).toBe('draft');
   });
 });

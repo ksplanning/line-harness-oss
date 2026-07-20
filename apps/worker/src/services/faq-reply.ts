@@ -27,7 +27,7 @@ const DEFAULT_SETTINGS: FaqBotSettings = {
   handoffMessage: '',
   autoReplyNotice: '',
   maxRepliesPerDay: 5,
-  answerMode: 'auto',
+  answerMode: 'draft',
 };
 
 export interface TryFaqReplyOptions {
@@ -56,7 +56,9 @@ function parseSettings(value: string | null | undefined): FaqBotSettings {
       handoffMessage: typeof parsed.handoffMessage === 'string' ? parsed.handoffMessage : DEFAULT_SETTINGS.handoffMessage,
       autoReplyNotice: typeof parsed.autoReplyNotice === 'string' ? parsed.autoReplyNotice : DEFAULT_SETTINGS.autoReplyNotice,
       maxRepliesPerDay: typeof parsed.maxRepliesPerDay === 'number' ? parsed.maxRepliesPerDay : DEFAULT_SETTINGS.maxRepliesPerDay,
-      answerMode: parsed.answerMode === 'draft' ? 'draft' : DEFAULT_SETTINGS.answerMode,
+      answerMode: parsed.answerMode === 'auto' || parsed.answerMode === 'draft'
+        ? parsed.answerMode
+        : DEFAULT_SETTINGS.answerMode,
     };
   } catch {
     return DEFAULT_SETTINGS;

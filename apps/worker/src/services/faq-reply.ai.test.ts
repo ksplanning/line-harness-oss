@@ -48,18 +48,19 @@ function d1(db: Database.Database): D1Database {
   } as unknown as D1Database;
 }
 
-function seed(raw: Database.Database, opts: { enabled?: boolean; answerMode?: string; threshold?: number } = {}) {
+function seed(raw: Database.Database, opts: { enabled?: boolean; answerMode?: string; omitAnswerMode?: boolean; threshold?: number } = {}) {
   // FK 親行 (messages_log/unmatched_questions → friends / faqs·account_settings → line_accounts)。
   raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret) VALUES ('acc-1','ch','a','t','s')`).run();
   raw.prepare(`INSERT INTO friends (id, line_user_id, line_account_id) VALUES ('f1','u1','acc-1')`).run();
-  const value = JSON.stringify({
+  const settings: Record<string, unknown> = {
     enabled: opts.enabled ?? true,
     threshold: opts.threshold ?? 2, // 常に match=null → AI 経路を決定的に
     handoffMessage: '',
     autoReplyNotice: '',
     maxRepliesPerDay: 5,
-    answerMode: opts.answerMode ?? 'auto',
-  });
+  };
+  if (!opts.omitAnswerMode) settings.answerMode = opts.answerMode ?? 'auto';
+  const value = JSON.stringify(settings);
   raw.prepare(`INSERT INTO account_settings (id, line_account_id, key, value) VALUES ('s1','acc-1','faq_bot',?)`).run(value);
   // Phase B B-2: AI 後段の retrieval は FTS (search_text) 経由 → 実書込と同様に search_text を埋める。
   raw.prepare(`INSERT INTO faqs (id, line_account_id, question, variants, answer, is_active, search_text) VALUES ('fq1','acc-1','営業時間は何時ですか','[]','平日は10時から19時までです',1,?)`).run(buildFaqSearchText('営業時間は何時ですか', []));
@@ -116,6 +117,18 @@ describe('tryFaqReply — account gate + AI RAG (T-A2)', () => {
     expect(lineClient.replyMessage).toHaveBeenCalledTimes(1);
     expect(countFaqOutgoing()).toBe(1);
     expect(countUnmatched()).toBe(0); // AI が答えた = 退避しない
+  });
+  test('answerMode 欠落 + 根拠あり → 安全側 draft で保存し送信しない', async () => {
+    seed(raw, { omitAnswerMode: true });
+    const mock = new MockLlmProvider({ text: '平日は10時から19時までです' });
+    const res = await tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか'), rt(mock));
+
+    expect(res).toEqual({ replied: false, handoff: false });
+    expect(mock.calls).toHaveLength(1);
+    expect(lineClient.replyMessage).not.toHaveBeenCalled();
+    expect(countDrafts()).toBe(1);
+    expect(countFaqOutgoing()).toBe(0);
+    expect(countUnmatched()).toBe(0);
   });
 
   test('根拠なし (floor 未満) → recordUnmatchedQuestion 退避 / replyMessage 0 / provider 未呼出', async () => {

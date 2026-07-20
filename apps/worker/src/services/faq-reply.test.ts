@@ -91,6 +91,7 @@ describe('tryFaqReply', () => {
           autoReplyNotice: '※自動返信です',
           handoffMessage: '担当者に引き継ぎます',
           maxRepliesPerDay: 5,
+          answerMode: 'auto',
         }),
       }),
     });
