@@ -822,14 +822,17 @@ export async function syncFriendLedger(
     };
 
     const headerIsEmpty = values.length === 0 || !effectiveRow(1).some((cell) => normalizeSheetCell(cell));
+    const hasEstablishedDataRows = values.slice(1)
+      .some((row) => row.some((cell) => normalizeSheetCell(cell)));
+    const generatedHeaders = columns.map((column) => column.header);
     if (headerIsEmpty) {
-      const headers = columns.map((column) => column.header);
       await renewLease();
       await client.updateValues(
         options.connection.spreadsheetId,
-        blockRange(options.connection.sheetName, 1, headers.length),
-        [headers],
+        blockRange(options.connection.sheetName, 1, generatedHeaders.length),
+        [generatedHeaders],
       );
+      values[0] = [...generatedHeaders];
       if (hasUnrecordedHeaders) {
         const lease = await renewLease();
         const recorded = await recordSheetsFriendLedgerHeaders(
@@ -842,6 +845,8 @@ export async function syncFriendLedger(
         );
         if (!recorded) throw new Error('friend_ledger_sync_lock_lost');
       }
+    }
+    if (headerIsEmpty && !hasEstablishedDataRows) {
       if (friends.length > 0) {
         const rows = friends.map((friend) => {
           const projection = projectedWithDefaults(friend, options.connection, defaults);
@@ -850,7 +855,7 @@ export async function syncFriendLedger(
         await renewLease();
         const appended = await client.appendValues(
           options.connection.spreadsheetId,
-          `${quoteSheetName(options.connection.sheetName)}!A:${columnLabel(Math.max(0, headers.length - 1))}`,
+          `${quoteSheetName(options.connection.sheetName)}!A:${columnLabel(Math.max(0, generatedHeaders.length - 1))}`,
           rows,
         );
         appendedRows = friends.length;

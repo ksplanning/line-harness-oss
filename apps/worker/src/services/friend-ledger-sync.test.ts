@@ -211,6 +211,20 @@ describe('friend ledger bidirectional sync', () => {
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger').get()).toEqual({ count: 1 });
   });
 
+  test('rebuilds a cleared heading row without duplicating established friend rows', async () => {
+    await run();
+    client.values[0] = [];
+
+    const recovered = await run('polling', 'system_poll');
+    const retried = await run('polling', 'system_poll');
+
+    expect(recovered).toMatchObject({ appendedRows: 0, importedFields: 0 });
+    expect(retried).toMatchObject({ appendedRows: 0, importedFields: 0 });
+    expect(client.values[0]).toEqual(['表示名', 'userId', '登録日', '入金確認']);
+    expect(client.values.slice(1).filter((row) => row[1] === 'U_AYAKO')).toHaveLength(1);
+    expect(retried.warnings.join(' ')).not.toContain('userId が重複');
+  });
+
   test('fails closed without replacing malformed stored friend metadata', async () => {
     await run();
     raw.prepare(`UPDATE friends SET metadata='{broken',
