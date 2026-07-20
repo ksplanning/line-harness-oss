@@ -749,3 +749,4 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **[BLOCKED] 実接続テストが Cloudflare Workers 上で失敗（`ok:false`）**: 同じ鍵・同じスプレッドシート・**リポジトリ本体のクライアントコードをそのまま**ローカル（Node の `node:crypto` webcrypto 経由）で直接実行すると成功する。つまり資格情報・シート共有・コードロジックの誤りではなく、Cloudflare Workers 実行環境固有の何か（WebCrypto の挙動差／outbound fetch のタイミング等）が疑われる。アプリは内部エラー詳細をクライアントへ返さない設計のため、これ以上の切り分けにはワーカー側への一時診断ログ追加（`GoogleSheetsError.status`/`operation` を秘密値なしでログ出力）が必要。次の generator 案件で対応すること。
 - **残置**: Piecemaker に owner の実接続設定 1 件（`gsc_4881ef88-e6e4-415e-ab62-c24106c09015`）が有効なまま残っている。設定は正しいので、コード側原因さえ特定できれば再設定は不要な見込み。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_021500_selfform-w4-sheets-foundation.md`（Box folder 386663013201 / box_file_id_md 2358225745887 / box_file_id_html 2358228783732）。
+- **🔵 test-hygiene**: builder.test.tsx「全入力型の補足説明」テストが高負荷時に 5s timeout を踏む (単体 69/69 PASS 実証・2026-07-21)。timeout 予算増 or ループ分割の小修理を次の web 触り lane に同乗させる
