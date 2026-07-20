@@ -184,6 +184,83 @@ describe('internal submission answer formatting', () => {
   });
 });
 
+describe('repeating-section column scope', () => {
+  test('keeps referenced column fields out of top-level variables, defaults and samples', () => {
+    let sampleChoiceReads = 0;
+    const repeatingChoiceConfig = {
+      get choices() {
+        sampleChoiceReads += 1;
+        return ['参加する', '参加しない'];
+      },
+    } as InternalSubmissionNotificationField['config'];
+    const fields = [
+      field('participant_choice', '行内の参加希望', 'choice', repeatingChoiceConfig),
+      field('note', '備考'),
+      field('participants', '参加者', 'repeating_section', {
+        repeatingColumns: [{ columnField: 'participant_choice', title: '参加希望' }],
+      }),
+    ];
+
+    expect(validateInternalSubmissionNotificationTemplate(
+      '{{回答:行内の参加希望}}',
+      fields,
+    )).toEqual({
+      ok: false,
+      error: '回答項目「行内の参加希望」が見つかりません',
+      issues: [{
+        code: 'unknown_answer_label',
+        label: '行内の参加希望',
+        message: '回答項目「行内の参加希望」が見つかりません',
+      }],
+    });
+
+    expect(renderInternalSubmissionNotification({
+      template: '',
+      formTitle: '参加登録',
+      fields,
+      answers: {
+        participant_choice: 'トップレベルには出さない値',
+        note: '連絡事項なし',
+        participants: [{ participant_choice: '参加する' }],
+      },
+      displayName: null,
+      editUrl: 'https://example.test/edit/repeating',
+    })).toEqual({
+      ok: true,
+      text: [
+        '「参加登録」へのご回答ありがとうございます。',
+        '',
+        '回答内容',
+        '備考: 連絡事項なし',
+        '参加者: 1. 参加希望: 参加する',
+        '',
+        '編集リンク',
+        'https://example.test/edit/repeating',
+      ].join('\n'),
+    });
+
+    expect(previewInternalSubmissionNotification({
+      template: null,
+      formTitle: '参加登録',
+      fields,
+      displayName: null,
+    })).toEqual({
+      ok: true,
+      text: [
+        '「参加登録」へのご回答ありがとうございます。',
+        '',
+        '回答内容',
+        '備考: サンプル回答',
+        '参加者: 1. 参加希望: 参加する',
+        '',
+        '編集リンク',
+        'https://example.test/edit/sample',
+      ].join('\n'),
+    });
+    expect(sampleChoiceReads).toBe(1);
+  });
+});
+
 describe('previewInternalSubmissionNotification', () => {
   test('generates representative sample answers when answers are omitted', () => {
     const result = previewInternalSubmissionNotification({

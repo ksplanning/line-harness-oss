@@ -73,7 +73,14 @@ function visitTemplateTokens(
 function answerFields(
   fields: readonly InternalSubmissionNotificationField[],
 ): InternalSubmissionNotificationField[] {
-  return fields.filter((field) => !isDecorationType(field.type));
+  const repeatingColumnFieldIds = new Set(
+    fields.flatMap((field) => field.type === 'repeating_section'
+      ? (field.config.repeatingColumns ?? []).map((column) => column.columnField)
+      : []),
+  );
+  return fields.filter((field) => (
+    !isDecorationType(field.type) && !repeatingColumnFieldIds.has(field.id)
+  ));
 }
 
 function fieldsByLabel(
