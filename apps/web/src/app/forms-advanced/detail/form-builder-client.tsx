@@ -6,6 +6,7 @@ import Header from '@/components/layout/header'
 import FormBuilder from '@/components/forms-advanced/builder'
 import SharePanel from '@/components/forms-advanced/share-panel'
 import InstantWebhookSettings from '@/components/forms-advanced/instant-webhook-settings'
+import InternalSubmissionNotificationSettings from '@/components/forms-advanced/internal-submission-notification-settings'
 import { formsAdvancedApi, type AdvancedForm, type RenderBackend, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
 import { sheetsConnectionsApi, type SheetsConnection } from '@/lib/sheets-connections-api'
@@ -290,6 +291,15 @@ export default function FormBuilderClient({ id }: { id: string }) {
           {renderBackend === 'formaloo' && (
             <div className="mb-4">
               <InstantWebhookSettings formId={form.id} />
+            </div>
+          )}
+          {renderBackend === 'internal' && (
+            <div className="mb-4">
+              <InternalSubmissionNotificationSettings
+                formId={form.id}
+                formTitle={form.title}
+                fields={form.fields}
+              />
             </div>
           )}
           <FormBuilder

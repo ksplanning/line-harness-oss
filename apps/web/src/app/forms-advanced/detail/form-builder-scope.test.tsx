@@ -11,6 +11,7 @@ import type { ReactNode } from 'react'
 
 const builderProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
 const sharePanelProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
+const notificationSettingsProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: 'acc_A' }
 const getMock = vi.fn()
 const getRenderBackendMock = vi.fn()
@@ -44,6 +45,12 @@ vi.mock('@/components/forms-advanced/share-panel', () => ({
     return null
   },
 }))
+vi.mock('@/components/forms-advanced/internal-submission-notification-settings', () => ({
+  default: (props: Record<string, unknown>) => {
+    notificationSettingsProps.current = props
+    return <div data-testid="notification-settings" />
+  },
+}))
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
 vi.mock('@/lib/formaloo-advanced-api', () => ({
   formsAdvancedApi: {
@@ -75,6 +82,7 @@ beforeEach(() => {
   getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); sheetsListMock.mockReset(); submitForReviewMock.mockReset(); publishMock.mockReset(); unpublishMock.mockReset(); reimportMock.mockReset(); fetchApiMock.mockReset()
   builderProps.current = undefined
   sharePanelProps.current = undefined
+  notificationSettingsProps.current = undefined
   mockAccount.selectedAccountId = 'acc_A'
   getRenderBackendMock.mockResolvedValue('formaloo')
   setRenderBackendMock.mockImplementation(async (_id: string, backend: string) => backend)
@@ -458,6 +466,20 @@ describe('詳細画面 scope 照合', () => {
     expect(unpublishMock).toHaveBeenCalledWith('fa1', 'internal', 'displayed-at')
   })
 
+  it('自前配信だけに回答者通知設定を表示し、フォーム定義を渡す', async () => {
+    const loaded = { ...form('acc_A'), title: '参加申込', fields: [{ id: 'mail', type: 'email', label: 'メール', required: true, position: 0, config: {} }] }
+    getMock.mockResolvedValue(loaded)
+    getRenderBackendMock.mockResolvedValue('internal')
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(screen.getByTestId('notification-settings')).toBeTruthy())
+    expect(notificationSettingsProps.current).toEqual({
+      formId: 'fa1',
+      formTitle: '参加申込',
+      fields: loaded.fields,
+    })
+  })
+
   it('Formaloo 配信の owner は既存共有操作を維持する', async () => {
     getMock.mockResolvedValue(form('acc_A'))
     render(<FormBuilderClient id="fa1" />)
@@ -465,6 +487,7 @@ describe('詳細画面 scope 照合', () => {
     await waitFor(() => expect(sharePanelProps.current?.isOwner).toBe(true))
     expect(sharePanelProps.current?.renderBackend).toBe('formaloo')
     expect(sheetsListMock).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('notification-settings')).toBeNull()
   })
 
   it('internal の NULL 共通 form は選択中アカウントで接続を取得する', async () => {
