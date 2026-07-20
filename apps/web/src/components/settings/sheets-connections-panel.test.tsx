@@ -30,6 +30,7 @@ function fill(testId: string, value: string): void {
 
 describe('SheetsConnectionsPanel', () => {
   test('shows saved settings and wires connection test/delete', () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const p = props()
     render(<SheetsConnectionsPanel {...p} />)
     expect(screen.getByTestId('sheets-item-gsc_1').textContent).toContain('form-1')
@@ -39,6 +40,24 @@ describe('SheetsConnectionsPanel', () => {
     expect(p.onTest).toHaveBeenCalledWith('gsc_1')
     fireEvent.click(screen.getByTestId('sheets-remove-gsc_1'))
     expect(p.onRemove).toHaveBeenCalledWith('gsc_1')
+  })
+
+  test('requires confirmation before removing a connection', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const p = props()
+    render(<SheetsConnectionsPanel {...p} />)
+
+    fireEvent.click(screen.getByTestId('sheets-remove-gsc_1'))
+
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(p.onRemove).not.toHaveBeenCalled()
+  })
+
+  test('blocks edit and remove while that connection test is running', () => {
+    render(<SheetsConnectionsPanel {...props({ testResults: { gsc_1: 'testing' } })} />)
+
+    expect((screen.getByTestId('sheets-edit-gsc_1') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('sheets-remove-gsc_1') as HTMLButtonElement).disabled).toBe(true)
   })
 
   test('requires form/spreadsheet/sheet and creates with the selected direction', () => {
@@ -77,7 +96,9 @@ describe('SheetsConnectionsPanel', () => {
     expect(screen.getByTestId('sheets-error').textContent).toContain('保存できませんでした')
     rerender(<SheetsConnectionsPanel {...props({ testResults: { gsc_1: 'ok' } })} />)
     expect(screen.getByTestId('sheets-test-result-gsc_1').textContent).toContain('接続できました')
+    expect(screen.getByTestId('sheets-test-result-gsc_1').getAttribute('role')).toBe('status')
     rerender(<SheetsConnectionsPanel {...props({ testResults: { gsc_1: 'ng' } })} />)
     expect(screen.getByTestId('sheets-test-result-gsc_1').textContent).toContain('接続できませんでした')
+    expect(screen.getByTestId('sheets-test-result-gsc_1').getAttribute('role')).toBe('alert')
   })
 })

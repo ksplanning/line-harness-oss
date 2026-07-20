@@ -25,6 +25,7 @@ export default function SheetsSettingsPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const requestVersion = useRef(0)
+  const testVersions = useRef<Record<string, number>>({})
   const activeAccount = useRef<string | null>(selectedAccountId)
   activeAccount.current = selectedAccountId
 
@@ -46,6 +47,7 @@ export default function SheetsSettingsPage() {
     requestVersion.current += 1
     setConnections([])
     setTestResults({})
+    testVersions.current = {}
     setError(null)
     setBusy(false)
     if (selectedAccountId) void load(selectedAccountId)
@@ -80,6 +82,12 @@ export default function SheetsSettingsPage() {
     if (!accountId) return
     setBusy(true)
     setError(null)
+    testVersions.current[id] = (testVersions.current[id] ?? 0) + 1
+    setTestResults((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
     try {
       await sheetsConnectionsApi.update(id, input)
       await refreshIfCurrent(accountId)
@@ -95,6 +103,12 @@ export default function SheetsSettingsPage() {
     if (!accountId) return
     setBusy(true)
     setError(null)
+    testVersions.current[id] = (testVersions.current[id] ?? 0) + 1
+    setTestResults((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
     try {
       await sheetsConnectionsApi.remove(id)
       await refreshIfCurrent(accountId)
@@ -108,14 +122,17 @@ export default function SheetsSettingsPage() {
   const handleTest = async (id: string) => {
     const accountId = selectedAccountId
     if (!accountId) return
+    setError(null)
+    const testVersion = (testVersions.current[id] ?? 0) + 1
+    testVersions.current[id] = testVersion
     setTestResults((current) => ({ ...current, [id]: 'testing' }))
     try {
       const ok = await sheetsConnectionsApi.test(id)
-      if (activeAccount.current === accountId) {
+      if (activeAccount.current === accountId && testVersions.current[id] === testVersion) {
         setTestResults((current) => ({ ...current, [id]: ok ? 'ok' : 'ng' }))
       }
     } catch (cause) {
-      if (activeAccount.current === accountId) {
+      if (activeAccount.current === accountId && testVersions.current[id] === testVersion) {
         setTestResults((current) => ({ ...current, [id]: 'ng' }))
         setError(errorMessage(cause))
       }
@@ -136,6 +153,7 @@ export default function SheetsSettingsPage() {
         </div>
       ) : (
         <SheetsConnectionsPanel
+          key={selectedAccountId}
           connections={connections}
           onCreate={(input) => { void handleCreate(input) }}
           onUpdate={(id, input) => { void handleUpdate(id, input) }}

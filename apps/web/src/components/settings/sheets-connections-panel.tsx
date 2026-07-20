@@ -108,6 +108,7 @@ export default function SheetsConnectionsPanel({
                         type="button"
                         data-testid={`sheets-test-${connection.id}`}
                         onClick={() => onTest(connection.id)}
+                        aria-label={`${connection.formId} の接続テスト`}
                         disabled={busy || testState === 'testing'}
                         className="rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-700 disabled:opacity-50"
                       >
@@ -117,7 +118,8 @@ export default function SheetsConnectionsPanel({
                         type="button"
                         data-testid={`sheets-edit-${connection.id}`}
                         onClick={() => beginEdit(connection)}
-                        disabled={busy}
+                        aria-label={`${connection.formId} の接続設定を編集`}
+                        disabled={busy || testState === 'testing'}
                         className="rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-700 disabled:opacity-50"
                       >
                         編集
@@ -125,8 +127,11 @@ export default function SheetsConnectionsPanel({
                       <button
                         type="button"
                         data-testid={`sheets-remove-${connection.id}`}
-                        onClick={() => onRemove(connection.id)}
-                        disabled={busy}
+                        onClick={() => {
+                          if (window.confirm(`${connection.formId} の接続設定を削除しますか？`)) onRemove(connection.id)
+                        }}
+                        aria-label={`${connection.formId} の接続設定を削除`}
+                        disabled={busy || testState === 'testing'}
                         className="px-2 py-1.5 text-xs text-red-600 disabled:opacity-50"
                       >
                         削除
@@ -134,12 +139,12 @@ export default function SheetsConnectionsPanel({
                     </div>
                   </div>
                   {testState === 'ok' && (
-                    <p data-testid={`sheets-test-result-${connection.id}`} className="mt-2 text-xs text-green-700">
+                    <p role="status" data-testid={`sheets-test-result-${connection.id}`} className="mt-2 text-xs text-green-700">
                       接続できました（先頭セルを 1 回読み取りました）。
                     </p>
                   )}
                   {testState === 'ng' && (
-                    <p data-testid={`sheets-test-result-${connection.id}`} className="mt-2 text-xs text-red-600">
+                    <p role="alert" data-testid={`sheets-test-result-${connection.id}`} className="mt-2 text-xs text-red-600">
                       接続できませんでした。シート共有とサービスアカウント設定を確認してください。
                     </p>
                   )}
@@ -206,7 +211,7 @@ export default function SheetsConnectionsPanel({
           </select>
         </label>
 
-        {error && <p data-testid="sheets-error" className="text-xs text-red-600">{error}</p>}
+        {error && <p role="alert" data-testid="sheets-error" className="text-xs text-red-600">{error}</p>}
 
         <div className="flex gap-2 pt-1">
           <button

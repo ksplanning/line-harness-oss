@@ -80,4 +80,49 @@ describe('Sheets settings page', () => {
     expect(screen.queryByTestId('sheets-item-stale')).toBeNull()
     expect(screen.getByTestId('sheets-item-new-account')).toBeTruthy()
   })
+
+  test('resets an account-scoped edit draft when the selected account changes', async () => {
+    mocks.list.mockImplementation((accountId: string) => Promise.resolve([
+      item(accountId === 'acc-1' ? 'one' : 'two', accountId),
+    ]))
+    const view = render(<SheetsSettingsPage />)
+    await screen.findByTestId('sheets-item-one')
+    fireEvent.click(screen.getByTestId('sheets-edit-one'))
+    fireEvent.change(screen.getByTestId('sheets-spreadsheet-id'), { target: { value: 'account-a-draft' } })
+
+    mocks.account.selectedAccountId = 'acc-2'
+    view.rerender(<SheetsSettingsPage />)
+    await screen.findByTestId('sheets-item-two')
+
+    expect((screen.getByTestId('sheets-form-id') as HTMLInputElement).disabled).toBe(false)
+    expect((screen.getByTestId('sheets-form-id') as HTMLInputElement).value).toBe('')
+    expect((screen.getByTestId('sheets-spreadsheet-id') as HTMLInputElement).value).toBe('')
+  })
+
+  test('clears an old successful test result when settings are updated', async () => {
+    render(<SheetsSettingsPage />)
+    await screen.findByTestId('sheets-item-one')
+    fireEvent.click(screen.getByTestId('sheets-test-one'))
+    await screen.findByTestId('sheets-test-result-one')
+
+    fireEvent.click(screen.getByTestId('sheets-edit-one'))
+    fireEvent.change(screen.getByTestId('sheets-sheet-name'), { target: { value: '変更後' } })
+    fireEvent.click(screen.getByTestId('sheets-save'))
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledTimes(1))
+
+    expect(screen.queryByTestId('sheets-test-result-one')).toBeNull()
+  })
+
+  test('clears a previous setup error before a successful retry', async () => {
+    mocks.testConnection.mockRejectedValueOnce({ body: { error: '秘密設定を確認してください' } }).mockResolvedValueOnce(true)
+    render(<SheetsSettingsPage />)
+    await screen.findByTestId('sheets-item-one')
+
+    fireEvent.click(screen.getByTestId('sheets-test-one'))
+    await screen.findByTestId('sheets-error')
+    fireEvent.click(screen.getByTestId('sheets-test-one'))
+    await waitFor(() => expect(screen.getByTestId('sheets-test-result-one').textContent).toContain('接続できました'))
+
+    expect(screen.queryByTestId('sheets-error')).toBeNull()
+  })
 })
