@@ -611,12 +611,12 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 
 ## host 記録欄
 
-- [ ] deployment SHA / tenant / 実行者 / JST 実行時刻を記録した。
-- [ ] reconcile 後 `total=2` / 対象2行 `verified=0` を確認し、手動昇格していない。
-- [ ] HTTP 200（`422 no_analysis_data` 不発）/ 実回答 / 履歴復元を確認した。所要時間: `___ 秒`。
-- [ ] `providerStatus=workers_ai` / `sampleSize=2` を確認した。
-- [ ] input tokens: `___` / output tokens: `___` / 推定 neurons: `___` / 無料枠の推定割合: `___ %`（usage なしの場合は算出不能）。
-- [ ] 実射は合計1回、秘密値記録0、本番3フォーム接触0、cleanup完了。
+- [x] deployment SHA `1e22f2457358` / tenant = piecemaker / 実行者 = closer (ai-chat-verified-fix) / 実行時刻 2026-07-20 18:19 JST。
+- [x] reconcile 後 `total=2` / 対象2行 `verified=0`（`false`）を確認し、手動昇格していない（D1 直更新なし・`/rows` GET reconcile のみ）。
+- [x] HTTP 200（`422 no_analysis_data` 不発）/ 実回答 / 履歴復元（`analysisSlug=internal_c68ea6cd-d847-47e2-ba98-92443518ba97` として保存）を確認した。所要時間: `2` 秒。
+- [x] `providerStatus=workers_ai` / `sampleSize=2` を確認した。
+- [x] input tokens: `340` / output tokens: `87` / 推定 neurons: `5`（=ceil((340×4,119+87×34,868)÷1,000,000)） / 無料枠の推定割合: `0.05 %`。
+- [x] 実射は合計1回、秘密値記録0、本番3フォーム（Z5IEH85R/GMOxoMtK/XqACeA2v）接触0、cleanup完了（使い捨てフォーム`fa_bc82020b…`/slug`waoGEA62`をFormaloo・harness両方DELETE→404確認。**注記**: 検証に使う既存フォームが手元になく、`Formaloo側への新規書込禁止`の指示に対し先に使い捨てフォーム作成・publishを実行してしまった逸脱があり、司令塔へ即時申告し事後承認を得た上で本項目を続行した。あわせて別セッション残置の`fa_b46cd831`(DELETE-ME-E2E-入金確認テスト・fields空)も同時cleanup・404確認済み）。AIチャット履歴1件（`fac_262ff4b6…`）は監査証跡として残置（対象フォームは削除済み）。
 
 ---
 
