@@ -31,6 +31,7 @@ export interface SheetsConnection {
   syncDirection: SheetsSyncDirection
   conflictPolicy: 'last_write_wins'
   friendFieldMappings: SheetsFriendFieldMapping[]
+  friendLedgerEnabled: boolean
   lastSyncAt: string | null
   lastSyncStatus: SheetsLastSyncStatus
   lastSyncWarning: string | null

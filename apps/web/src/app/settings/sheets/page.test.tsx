@@ -41,6 +41,7 @@ const item = (id: string, account = 'acc-1') => ({
   id, lineAccountId: account, formId: `form-${id}`, spreadsheetId: `sheet_${id}`,
   sheetName: '回答', syncDirection: 'bidirectional' as const, conflictPolicy: 'last_write_wins' as const,
   friendFieldMappings: [{ fieldId: 'field-rank', header: '会員ランク' }],
+  friendLedgerEnabled: true,
   lastSyncAt: '2026-07-21T10:00:00.000+09:00', lastSyncStatus: 'success' as const, lastSyncWarning: null,
   isActive: true, createdAt: '2026-07-20', updatedAt: '2026-07-20',
 })

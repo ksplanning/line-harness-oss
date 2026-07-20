@@ -11,6 +11,7 @@ const created = {
   id: 'gsc_1', lineAccountId: 'acc/1', formId: 'form/1', spreadsheetId: 'sheet_1',
   sheetName: '回答', syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins',
   friendFieldMappings: [{ fieldId: 'field-rank', header: '会員ランク' }],
+  friendLedgerEnabled: true,
   lastSyncAt: '2026-07-21T10:00:00.000+09:00', lastSyncStatus: 'success', lastSyncWarning: null,
   isActive: true, createdAt: '2026-07-20', updatedAt: '2026-07-20',
 }

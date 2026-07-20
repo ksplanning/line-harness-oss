@@ -64,6 +64,7 @@ const AUDIT_SOURCE_LABELS: Record<string, string> = {
 
 const AUDIT_CHANGE_LABELS: Record<string, string> = {
   custom_field: 'カスタムフィールド更新',
+  identity_sync: '識別項目をシートへ反映',
   conflict: '競合（後の変更を採用）',
   identity_ignored: '識別項目の変更を無視',
 }
