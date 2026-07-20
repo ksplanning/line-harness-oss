@@ -86,6 +86,7 @@ interface SheetsSyncAuditContract {
   beforeFingerprint: string | null;
   afterFingerprint: string | null;
   errorCode: string | null;
+  webhookEventId?: string | null;
   createdAt: string;
   details: SheetsSyncAuditDetailContract[];
 }
@@ -142,6 +143,35 @@ interface FriendLedgerDbContract {
     configVersion: number,
     headers: string[],
     lease?: { token: string; now: string },
+  ): Promise<boolean>;
+  enqueueSheetsWebhookEvent(
+    db: D1Database,
+    lineAccountId: string,
+    connectionId: string,
+    connectionVersion: number,
+    input: {
+      eventId: string;
+      actor: string;
+      actorKind: 'google_email' | 'unavailable';
+      occurredAt: string;
+      payload: Record<string, unknown>;
+      receivedAt: string;
+    },
+  ): Promise<{ sequence: number; status: 'pending' | 'applied' | 'dead'; enqueued: boolean } | null>;
+  listPendingSheetsWebhookEvents(
+    db: D1Database,
+    lineAccountId: string,
+    connectionId: string,
+    now: string,
+    limit: number,
+  ): Promise<Array<{ eventId: string; actor: string; payload: Record<string, unknown> | null }>>;
+  finishSheetsWebhookEvent(
+    db: D1Database,
+    lineAccountId: string,
+    connectionId: string,
+    connectionVersion: number,
+    eventId: string,
+    input: { status: 'applied' | 'dead'; completedAt: string; errorCode: string | null },
   ): Promise<boolean>;
   claimSheetsSyncLock(
     db: D1Database,
@@ -495,6 +525,47 @@ describe('Sheets connections DB helper', () => {
     await expect(friendLedgerDb.getActiveSheetsConnectionById(db, created.id)).resolves.toBeNull();
   });
 
+  test('claims and completes each signed webhook event once under its owning connection', async () => {
+    const created = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'friends-events', spreadsheetId: 'sheet-friends',
+      sheetName: '友だち台帳', syncDirection: 'bidirectional', friendLedgerEnabled: true,
+    });
+    const input = {
+      eventId: 'event-0000000001',
+      actor: 'editor@example.test',
+      actorKind: 'google_email' as const,
+      occurredAt: '2026-07-21T10:00:00+09:00',
+      payload: { range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 } },
+      receivedAt: '2026-07-21T10:00:01+09:00',
+    };
+
+    await expect(friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-2', created.id, 1, input))
+      .resolves.toBeNull();
+    const enqueued = await friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, input);
+    expect(enqueued).toMatchObject({ sequence: 1, status: 'pending', enqueued: true });
+    await expect(friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, input))
+      .resolves.toEqual({ sequence: 1, status: 'pending', enqueued: false });
+    await expect(friendLedgerDb.listPendingSheetsWebhookEvents(
+      db, 'acc-1', created.id, '2026-07-21T10:00:01+09:00', 10,
+    )).resolves.toEqual([
+      expect.objectContaining({ eventId: input.eventId, actor: input.actor, payload: input.payload }),
+    ]);
+    await expect(friendLedgerDb.finishSheetsWebhookEvent(
+      db, 'acc-2', created.id, 1, input.eventId,
+      { status: 'applied', completedAt: '2026-07-21T10:00:02+09:00', errorCode: null },
+    )).resolves.toBe(false);
+    await expect(friendLedgerDb.finishSheetsWebhookEvent(
+      db, 'acc-1', created.id, 1, input.eventId,
+      { status: 'applied', completedAt: '2026-07-21T10:00:02+09:00', errorCode: null },
+    )).resolves.toBe(true);
+    await expect(friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, input))
+      .resolves.toEqual({ sequence: 1, status: 'applied', enqueued: false });
+    expect(raw.prepare(`SELECT status, payload_json, attempts FROM sheets_sync_webhook_events
+      WHERE connection_id=? AND event_id=?`).get(created.id, input.eventId)).toEqual({
+      status: 'applied', payload_json: null, attempts: 1,
+    });
+  });
+
   test('claims an expiring sync lock atomically and releases only the owning tenant/token', async () => {
     const created = await createSheetsConnection(db, {
       lineAccountId: 'acc-1', formId: 'friends', spreadsheetId: 'sheet-friends',
@@ -699,6 +770,7 @@ describe('Sheets connections DB helper', () => {
       beforeFingerprint: 'before-1',
       afterFingerprint: 'after-1',
       errorCode: null,
+      webhookEventId: 'event-audit-000001',
       details: [{
         id: 'detail-1',
         actor: 'editor@example.com',
@@ -719,6 +791,7 @@ describe('Sheets connections DB helper', () => {
       action: 'conflict',
       outcome: 'skipped',
       errorCode: 'identity_read_only',
+      webhookEventId: null,
       details: [{
         id: 'detail-2',
         actor: 'system_poll',
@@ -742,6 +815,7 @@ describe('Sheets connections DB helper', () => {
       spreadsheetId: 'sheet-friends',
       sheetName: '友だち台帳',
       errorCode: 'identity_read_only',
+      webhookEventId: null,
       details: [{
         id: 'detail-2',
         actor: 'system_poll',

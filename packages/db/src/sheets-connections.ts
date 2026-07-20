@@ -83,6 +83,45 @@ export interface SheetsSyncLeaseGuard {
   now: string;
 }
 
+export type SheetsWebhookActorKind = 'google_email' | 'unavailable';
+export type SheetsWebhookEventStatus = 'pending' | 'applied' | 'dead';
+
+export interface SheetsWebhookEvent {
+  sequence: number;
+  connectionId: string;
+  lineAccountId: string;
+  connectionVersion: number;
+  eventId: string;
+  actor: string;
+  actorKind: SheetsWebhookActorKind;
+  occurredAt: string;
+  payload: Record<string, unknown> | null;
+  status: SheetsWebhookEventStatus;
+  attempts: number;
+  availableAt: string;
+  receivedAt: string;
+  appliedAt: string | null;
+  lastErrorCode: string | null;
+}
+
+interface SheetsWebhookEventRow {
+  sequence: number;
+  connection_id: string;
+  line_account_id: string;
+  connection_version: number;
+  event_id: string;
+  actor: string;
+  actor_kind: SheetsWebhookActorKind;
+  occurred_at: string;
+  payload_json: string | null;
+  status: SheetsWebhookEventStatus;
+  attempts: number;
+  available_at: string;
+  received_at: string;
+  applied_at: string | null;
+  last_error_code: string | null;
+}
+
 export type SheetsCanonicalCellValue = string | number | boolean | null;
 
 export interface SheetsSyncLedgerEntry {
@@ -148,6 +187,7 @@ export interface AppendSheetsSyncAuditInput {
   beforeFingerprint: string | null;
   afterFingerprint: string | null;
   errorCode: string | null;
+  webhookEventId?: string | null;
   details: SheetsSyncAuditDetailInput[];
 }
 
@@ -180,6 +220,7 @@ interface SheetsSyncAuditRow {
   before_fingerprint: string | null;
   after_fingerprint: string | null;
   error_code: string | null;
+  webhook_event_id: string | null;
   created_at: string;
 }
 
@@ -293,6 +334,7 @@ function serializeAudit(
     beforeFingerprint: row.before_fingerprint,
     afterFingerprint: row.after_fingerprint,
     errorCode: row.error_code,
+    webhookEventId: row.webhook_event_id,
     createdAt: row.created_at,
     details,
   };
@@ -621,6 +663,165 @@ export async function recordSheetsFriendLedgerHeaders(
   return (result.meta.changes ?? 0) === 1;
 }
 
+function serializeWebhookEvent(row: SheetsWebhookEventRow): SheetsWebhookEvent {
+  let payload: Record<string, unknown> | null = null;
+  if (row.payload_json) {
+    try {
+      const parsed = JSON.parse(row.payload_json) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        payload = parsed as Record<string, unknown>;
+      }
+    } catch {
+      payload = null;
+    }
+  }
+  return {
+    sequence: row.sequence,
+    connectionId: row.connection_id,
+    lineAccountId: row.line_account_id,
+    connectionVersion: row.connection_version,
+    eventId: row.event_id,
+    actor: row.actor,
+    actorKind: row.actor_kind,
+    occurredAt: row.occurred_at,
+    payload,
+    status: row.status,
+    attempts: row.attempts,
+    availableAt: row.available_at,
+    receivedAt: row.received_at,
+    appliedAt: row.applied_at,
+    lastErrorCode: row.last_error_code,
+  };
+}
+
+export async function enqueueSheetsWebhookEvent(
+  db: D1Database,
+  lineAccountId: string,
+  connectionId: string,
+  connectionVersion: number,
+  input: {
+    eventId: string;
+    actor: string;
+    actorKind: SheetsWebhookActorKind;
+    occurredAt: string;
+    payload: Record<string, unknown>;
+    receivedAt: string;
+  },
+): Promise<{ sequence: number; status: SheetsWebhookEventStatus; enqueued: boolean } | null> {
+  const inserted = await db.prepare(
+    `INSERT INTO sheets_sync_webhook_events
+       (connection_id, line_account_id, connection_version, event_id, actor, actor_kind,
+        occurred_at, payload_json, available_at, received_at)
+     SELECT c.id, c.line_account_id, c.config_version, ?, ?, ?, ?, ?, ?, ?
+     FROM sheets_connections c
+     WHERE c.id = ? AND c.line_account_id = ? AND c.config_version = ?
+       AND c.friend_ledger_enabled = 1 AND c.is_active = 1 AND c.deleted_at IS NULL
+     ON CONFLICT(connection_id, event_id) DO NOTHING
+     RETURNING sequence, status`,
+  ).bind(
+    input.eventId,
+    input.actor,
+    input.actorKind,
+    input.occurredAt,
+    JSON.stringify(input.payload),
+    input.receivedAt,
+    input.receivedAt,
+    connectionId,
+    lineAccountId,
+    connectionVersion,
+  ).first<{ sequence: number; status: SheetsWebhookEventStatus }>();
+  if (inserted) return { ...inserted, enqueued: true };
+  const duplicate = await db.prepare(
+    `SELECT e.sequence, e.status
+     FROM sheets_sync_webhook_events e
+     JOIN sheets_connections c ON c.id = e.connection_id
+     WHERE e.connection_id = ? AND e.event_id = ? AND c.line_account_id = ?`,
+  ).bind(connectionId, input.eventId, lineAccountId)
+    .first<{ sequence: number; status: SheetsWebhookEventStatus }>();
+  if (!duplicate) return null;
+  return { ...duplicate, enqueued: false };
+}
+
+export async function listPendingSheetsWebhookEvents(
+  db: D1Database,
+  lineAccountId: string,
+  connectionId: string,
+  now: string,
+  limit: number,
+): Promise<SheetsWebhookEvent[]> {
+  const result = await db.prepare(
+    `SELECT sequence, connection_id, line_account_id, connection_version, event_id,
+            actor, actor_kind, occurred_at, payload_json, status, attempts,
+            available_at, received_at, applied_at, last_error_code
+     FROM sheets_sync_webhook_events
+     WHERE line_account_id = ? AND connection_id = ? AND status = 'pending'
+       AND julianday(available_at) <= julianday(?)
+     ORDER BY sequence ASC
+     LIMIT ?`,
+  ).bind(lineAccountId, connectionId, now, boundedLimit(limit, 10)).all<SheetsWebhookEventRow>();
+  return result.results.map(serializeWebhookEvent);
+}
+
+export async function finishSheetsWebhookEvent(
+  db: D1Database,
+  lineAccountId: string,
+  connectionId: string,
+  connectionVersion: number,
+  eventId: string,
+  input: { status: 'applied' | 'dead'; completedAt: string; errorCode: string | null },
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE sheets_sync_webhook_events
+     SET status = ?, payload_json = NULL, attempts = attempts + 1,
+         applied_at = ?, last_error_code = ?
+     WHERE connection_id = ? AND connection_version = ? AND event_id = ?
+       AND status = 'pending'
+       AND EXISTS (
+         SELECT 1 FROM sheets_connections c
+         WHERE c.id = sheets_sync_webhook_events.connection_id
+           AND c.line_account_id = ?
+       )`,
+  ).bind(
+    input.status,
+    input.completedAt,
+    input.errorCode,
+    connectionId,
+    connectionVersion,
+    eventId,
+    lineAccountId,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+export async function deferSheetsWebhookEvent(
+  db: D1Database,
+  lineAccountId: string,
+  connectionId: string,
+  connectionVersion: number,
+  eventId: string,
+  input: { availableAt: string; errorCode: string },
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE sheets_sync_webhook_events
+     SET attempts = attempts + 1, available_at = ?, last_error_code = ?
+     WHERE connection_id = ? AND connection_version = ? AND event_id = ?
+       AND status = 'pending'
+       AND EXISTS (
+         SELECT 1 FROM sheets_connections c
+         WHERE c.id = sheets_sync_webhook_events.connection_id
+           AND c.line_account_id = ?
+       )`,
+  ).bind(
+    input.availableAt,
+    input.errorCode,
+    connectionId,
+    connectionVersion,
+    eventId,
+    lineAccountId,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
 export async function claimSheetsSyncLock(
   db: D1Database,
   lineAccountId: string,
@@ -797,9 +998,10 @@ export async function appendSheetsSyncAudit(
        (id, connection_id, connection_version, apply_sequence, line_account_id,
         form_id, spreadsheet_id, sheet_name, record_key, sheet_row_number,
         direction, action, outcome, conflict_resolution, harness_updated_at,
-        sheet_observed_at, before_fingerprint, after_fingerprint, error_code)
+        sheet_observed_at, before_fingerprint, after_fingerprint, error_code,
+        webhook_event_id)
      SELECT ?, c.id, c.config_version, ?, c.line_account_id, c.form_id,
-            c.spreadsheet_id, c.sheet_name, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            c.spreadsheet_id, c.sheet_name, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      FROM sheets_connections c
      WHERE c.id = ? AND c.line_account_id = ? AND c.config_version = ?
        AND c.is_active = 1 AND c.deleted_at IS NULL
@@ -823,6 +1025,7 @@ export async function appendSheetsSyncAudit(
     entry.beforeFingerprint,
     entry.afterFingerprint,
     entry.errorCode,
+    entry.webhookEventId ?? null,
     entry.connectionId,
     lineAccountId,
     entry.connectionVersion,
@@ -866,7 +1069,7 @@ export async function listSheetsSyncAudit(
             form_id, spreadsheet_id, sheet_name, record_key, sheet_row_number,
             direction, action, outcome, conflict_resolution, harness_updated_at,
             sheet_observed_at, before_fingerprint, after_fingerprint, error_code,
-            created_at
+            webhook_event_id, created_at
      FROM sheets_sync_audit_log
      WHERE connection_id = ? AND line_account_id = ?
      ORDER BY apply_sequence DESC, created_at DESC, id DESC

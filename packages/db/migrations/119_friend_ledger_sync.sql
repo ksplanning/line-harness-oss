@@ -50,6 +50,39 @@ CREATE TABLE IF NOT EXISTS sheets_sync_audit_details (
 CREATE INDEX IF NOT EXISTS idx_sheets_sync_audit_details_parent
   ON sheets_sync_audit_details (audit_id, created_at, id);
 
+ALTER TABLE sheets_sync_audit_log ADD COLUMN webhook_event_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sheets_sync_audit_webhook_event
+  ON sheets_sync_audit_log (connection_id, webhook_event_id, IFNULL(record_key, ''))
+  WHERE webhook_event_id IS NOT NULL;
+
+-- Signed onEdit snapshots are accepted durably before attempting the sync.
+-- Applied/dead rows retain only the event-id tombstone; payload_json (which may
+-- temporarily contain a cell value) is erased on terminal completion.
+CREATE TABLE IF NOT EXISTS sheets_sync_webhook_events (
+  sequence           INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection_id      TEXT NOT NULL REFERENCES sheets_connections (id) ON DELETE CASCADE,
+  line_account_id    TEXT NOT NULL,
+  connection_version INTEGER NOT NULL CHECK (connection_version >= 1),
+  event_id            TEXT NOT NULL CHECK (length(event_id) BETWEEN 16 AND 200),
+  actor               TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 320),
+  actor_kind          TEXT NOT NULL CHECK (actor_kind IN ('google_email', 'unavailable')),
+  occurred_at         TEXT NOT NULL,
+  payload_json        TEXT CHECK (payload_json IS NULL OR (json_valid(payload_json) AND json_type(payload_json) = 'object')),
+  status              TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'applied', 'dead')),
+  attempts            INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  available_at        TEXT NOT NULL,
+  received_at         TEXT NOT NULL,
+  applied_at          TEXT,
+  last_error_code     TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE (connection_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sheets_sync_webhook_events_pending
+  ON sheets_sync_webhook_events
+     (line_account_id, connection_id, status, available_at, sequence);
+
 CREATE TRIGGER IF NOT EXISTS trg_sheets_sync_audit_details_no_replace
 BEFORE INSERT ON sheets_sync_audit_details
 WHEN EXISTS (SELECT 1 FROM sheets_sync_audit_details WHERE id = NEW.id)

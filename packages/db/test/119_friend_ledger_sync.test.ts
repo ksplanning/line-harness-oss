@@ -68,6 +68,7 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
       'last_sync_status',
       'canonical_snapshot_json',
       'sheets_sync_audit_details',
+      'sheets_sync_webhook_events',
     ]) {
       expect(foundation).not.toContain(additiveColumn);
       expect(sql).toContain(additiveColumn);
@@ -126,6 +127,8 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
   test('adds append-only per-column details under the immutable audit parent', () => {
     requireMigration119();
 
+    expect(columns(raw, 'sheets_sync_audit_log')).toContain('webhook_event_id');
+
     expect(columns(raw, 'sheets_sync_audit_details')).toEqual([
       'id',
       'audit_id',
@@ -169,6 +172,42 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
     });
   });
 
+  test('adds a bounded durable inbox for signed onEdit event ids', () => {
+    requireMigration119();
+
+    expect(columns(raw, 'sheets_sync_webhook_events')).toEqual([
+      'sequence',
+      'connection_id',
+      'line_account_id',
+      'connection_version',
+      'event_id',
+      'actor',
+      'actor_kind',
+      'occurred_at',
+      'payload_json',
+      'status',
+      'attempts',
+      'available_at',
+      'received_at',
+      'applied_at',
+      'last_error_code',
+      'created_at',
+    ]);
+    raw.prepare(`INSERT INTO sheets_sync_webhook_events
+      (connection_id, line_account_id, connection_version, event_id, actor, actor_kind,
+       occurred_at, payload_json, available_at, received_at)
+      VALUES ('connection-1', 'acc-1', 1, 'event-0000000001', 'editor@example.test',
+              'google_email', '2026-07-21T10:00:00+09:00', '{}',
+              '2026-07-21T10:00:00+09:00', '2026-07-21T10:00:00+09:00')`).run();
+    expect(() => raw.prepare(`INSERT INTO sheets_sync_webhook_events
+      (connection_id, line_account_id, connection_version, event_id, actor, actor_kind,
+       occurred_at, payload_json, available_at, received_at)
+      VALUES ('connection-1', 'acc-1', 1, 'event-0000000001', 'editor@example.test',
+              'google_email', '2026-07-21T10:00:00+09:00', '{}',
+              '2026-07-21T10:00:00+09:00', '2026-07-21T10:00:00+09:00')`).run())
+      .toThrow(/UNIQUE constraint failed/i);
+  });
+
   test('keeps schema and generated bootstrap aligned with migration 119', () => {
     requireMigration119();
     for (const file of ['schema.sql', 'bootstrap.sql']) {
@@ -176,6 +215,8 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
       expect(sql).toContain('friend_field_mappings_json');
       expect(sql).toContain('canonical_snapshot_json');
       expect(sql).toContain('sheets_sync_audit_details');
+      expect(sql).toContain('sheets_sync_webhook_events');
+      expect(sql).toContain('webhook_event_id');
     }
     const meta = JSON.parse(readFileSync(join(PKG_ROOT, 'bootstrap-meta.json'), 'utf8')) as {
       includedMigrations?: string[];
