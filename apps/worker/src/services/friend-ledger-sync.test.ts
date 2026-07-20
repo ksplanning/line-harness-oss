@@ -12,7 +12,7 @@ const DB_ROOT = join(__dirname, '../../../../packages/db');
 
 type MockStatement = D1PreparedStatement & { __exec: () => { meta: { changes: number } } };
 
-function d1(raw: Database.Database): D1Database {
+function d1(raw: Database.Database, beforeRun?: (sql: string) => void): D1Database {
   const prepare = (sql: string): MockStatement => {
     const statement = raw.prepare(sql);
     let params: unknown[] = [];
@@ -22,6 +22,7 @@ function d1(raw: Database.Database): D1Database {
       async all<T>() { return { results: statement.all(...(params as never[])) as T[] }; },
       async run() { return api.__exec(); },
       __exec() {
+        beforeRun?.(sql);
         const result = statement.run(...(params as never[]));
         return { meta: { changes: result.changes } };
       },
@@ -258,6 +259,27 @@ describe('friend ledger bidirectional sync', () => {
     expect(raw.prepare(`SELECT conflict_resolution FROM sheets_sync_audit_log
       WHERE conflict_resolution IS NOT NULL ORDER BY apply_sequence DESC LIMIT 1`).get())
       .toEqual({ conflict_resolution: 'sheet_wins' });
+  });
+
+  test('keeps a newer Harness field update that races with an observed sheet edit', async () => {
+    await run();
+    client.values[1][3] = 'シート更新';
+    let injected = false;
+    db = d1(raw, (sql) => {
+      if (injected || !sql.includes('UPDATE friends') || !sql.includes('metadata IS ?')) return;
+      injected = true;
+      raw.prepare(`UPDATE friends SET metadata='{"\u5165\u91d1\u78ba\u8a8d":"Harness newer","\u672a\u9078\u629e":"\u4fdd\u6301"}',
+        updated_at='2026-07-21T11:59:00+09:00' WHERE id='friend-ayako'`).run();
+    });
+
+    const result = await run('webhook', 'editor@example.test');
+
+    expect(result).toMatchObject({ importedFields: 0, updatedRows: 1 });
+    expect(metadata()).toMatchObject({ 入金確認: 'Harness newer', 未選択: '保持' });
+    expect(client.values[1][3]).toBe('Harness newer');
+    expect(raw.prepare(`SELECT conflict_resolution FROM sheets_sync_audit_log
+      WHERE conflict_resolution IS NOT NULL ORDER BY apply_sequence DESC LIMIT 1`).get())
+      .toEqual({ conflict_resolution: 'harness_wins' });
   });
 
   test('treats equal Harness and sheet changes as convergence, not a fake import', async () => {

@@ -90,10 +90,16 @@ interface RowPlan {
   canonical: Record<string, SheetsCanonicalCellValue>;
   details: SheetsSyncAuditDetailInput[];
   imports: Record<string, string>;
+  customCells: Record<string, { columnKey: string; columnIndex: number; observed: string }>;
   sheetUpdates: SheetsDataUpdate[];
   direction: 'to_sheets' | 'from_sheets';
   conflictResolution: 'harness_wins' | 'sheet_wins' | null;
   isAppend: boolean;
+}
+
+interface ImportedMetadataResult {
+  friend: FriendState;
+  rejected: Record<string, string>;
 }
 
 const LOCK_DURATION_MS = 2 * 60_000;
@@ -180,11 +186,16 @@ async function saveImportedMetadata(
   friend: FriendState,
   imports: Record<string, string>,
   updatedAt: string,
-): Promise<FriendState> {
-  if (Object.keys(imports).length === 0) return friend;
+): Promise<ImportedMetadataResult> {
+  if (Object.keys(imports).length === 0) return { friend, rejected: {} };
+  const originalValues = Object.fromEntries(
+    Object.keys(imports).map((header) => [header, normalizeSheetCell(friend.metadata[header])]),
+  );
+  const pending = { ...imports };
+  const rejected: Record<string, string> = {};
   let current = friend;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const merged = { ...current.metadata, ...imports };
+    const merged = { ...current.metadata, ...pending };
     const nextRaw = JSON.stringify(merged);
     const result = await db.prepare(
       `UPDATE friends
@@ -192,7 +203,10 @@ async function saveImportedMetadata(
        WHERE id = ? AND line_account_id = ? AND metadata IS ?`,
     ).bind(nextRaw, updatedAt, current.id, lineAccountId, current.metadataRaw).run();
     if ((result.meta.changes ?? 0) === 1) {
-      return { ...current, metadataRaw: nextRaw, metadata: merged, updatedAt };
+      return {
+        friend: { ...current, metadataRaw: nextRaw, metadata: merged, updatedAt },
+        rejected,
+      };
     }
     const latest = await db.prepare(
       `SELECT id, line_user_id, display_name, metadata, created_at, updated_at
@@ -200,6 +214,14 @@ async function saveImportedMetadata(
     ).bind(current.id, lineAccountId).first<FriendRow>();
     if (!latest) throw new Error('friend_missing_during_sync');
     current = serializeFriend(latest);
+    for (const header of Object.keys(pending)) {
+      const latestValue = normalizeSheetCell(current.metadata[header]);
+      if (latestValue !== originalValues[header]) {
+        rejected[header] = latestValue;
+        delete pending[header];
+      }
+    }
+    if (Object.keys(pending).length === 0) return { friend: current, rejected };
   }
   throw new Error('friend_metadata_concurrent_update');
 }
@@ -421,6 +443,7 @@ export async function syncFriendLedger(
           ledger: null,
           canonical,
           imports: {},
+          customCells: {},
           sheetUpdates: [],
           direction: 'to_sheets',
           conflictResolution: null,
@@ -497,7 +520,7 @@ export async function syncFriendLedger(
             columns.map((column) => [column.key, canonicalValue(projection[column.key] ?? '')]),
           );
           plans.push({
-            friend, rowNumber, ledger: null, canonical, imports: {}, sheetUpdates: [],
+            friend, rowNumber, ledger: null, canonical, imports: {}, customCells: {}, sheetUpdates: [],
             direction: 'to_sheets', conflictResolution: null, isAppend: true,
             details: columns
               .filter((column) => column.kind === 'custom')
@@ -509,6 +532,7 @@ export async function syncFriendLedger(
         const sheetRow = values[rowNumber - 1] ?? [];
         const details: SheetsSyncAuditDetailInput[] = [];
         const imports: Record<string, string> = {};
+        const customCells: RowPlan['customCells'] = {};
         const sheetUpdates: SheetsDataUpdate[] = [];
         const canonical: Record<string, SheetsCanonicalCellValue> = {};
         let direction: RowPlan['direction'] = 'to_sheets';
@@ -545,6 +569,8 @@ export async function syncFriendLedger(
             }
             continue;
           }
+
+          customCells[column.header] = { columnKey: column.key, columnIndex, observed };
 
           const baseline = ledger
             ? normalizeSheetCell(ledger.canonicalSnapshot[column.key])
@@ -597,7 +623,7 @@ export async function syncFriendLedger(
           }
         }
         plans.push({
-          friend, rowNumber, ledger, canonical, details, imports, sheetUpdates,
+          friend, rowNumber, ledger, canonical, details, imports, customCells, sheetUpdates,
           direction, conflictResolution, isAppend: false,
         });
       }
@@ -607,9 +633,9 @@ export async function syncFriendLedger(
     if (allSheetUpdates.length > 0) {
       await client.batchUpdateValues(options.connection.spreadsheetId, allSheetUpdates);
     }
-    const updatedRows = new Set(
+    const updatedRowNumbers = new Set(
       plans.filter((plan) => plan.sheetUpdates.length > 0).map((plan) => plan.rowNumber),
-    ).size;
+    );
     const completedAt = toJstString(nowFactory());
     if (plans.some((plan) => plan.ledger && plan.ledger.sheetRowNumber !== plan.rowNumber)) {
       await clearSheetsSyncLedgerRowNumbers(
@@ -620,13 +646,40 @@ export async function syncFriendLedger(
       );
     }
     for (const plan of plans) {
-      plan.friend = await saveImportedMetadata(
+      const imported = await saveImportedMetadata(
         options.db,
         options.connection.lineAccountId,
         plan.friend,
         plan.imports,
         completedAt,
       );
+      plan.friend = imported.friend;
+      const rejectedUpdates: SheetsDataUpdate[] = [];
+      for (const [header, latestValue] of Object.entries(imported.rejected)) {
+        const cell = plan.customCells[header];
+        if (!cell) continue;
+        importedFields -= 1;
+        plan.canonical[cell.columnKey] = canonicalValue(latestValue);
+        plan.details = plan.details.filter((entry) => entry.fieldName !== header);
+        plan.details.push(detail(
+          actor,
+          header,
+          cell.observed,
+          latestValue,
+          options.source,
+          'conflict',
+        ));
+        rejectedUpdates.push({
+          range: cellRange(options.connection.sheetName, plan.rowNumber, cell.columnIndex),
+          values: [[latestValue]],
+        });
+        plan.direction = 'to_sheets';
+        plan.conflictResolution = 'harness_wins';
+      }
+      if (rejectedUpdates.length > 0) {
+        await client.batchUpdateValues(options.connection.spreadsheetId, rejectedUpdates);
+        updatedRowNumbers.add(plan.rowNumber);
+      }
       await persistPlan(options.db, options.connection, plan, completedAt);
     }
 
@@ -638,7 +691,15 @@ export async function syncFriendLedger(
       warning,
       errorCode: warnings.length > 0 ? 'friend_ledger_warning' : null,
     });
-    return { status, warning, warnings, appendedRows, updatedRows, importedFields, ignoredIdentityEdits };
+    return {
+      status,
+      warning,
+      warnings,
+      appendedRows,
+      updatedRows: updatedRowNumbers.size,
+      importedFields,
+      ignoredIdentityEdits,
+    };
   } catch (error) {
     failure = error;
     const failedAt = toJstString(nowFactory());
