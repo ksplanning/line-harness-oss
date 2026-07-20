@@ -760,14 +760,19 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **自動応答センター統合 (改修・selfform 波の後に設計提示)**: 自動返信ルール/よくある質問/資料AI の3画面を「受付階層」1画面に統合 — ①機械ルール(安全弁・定型・エスカレーション) → ②AI回答(FAQ+資料=統合ナレッジ) → ③自信なし→人間へ(下書き)。owner 洞察「FAQもナレッジの一つ・機械ルールはナレッジではない(=安全弁)」を設計原則に。どの層で返ったかの可視化込み
 - **オートメーション画面の JSON 直書き → GUI 化**: owner 明示「一番最後も最後で良い」— 最低優先で登録 (イベント→アクションを日常語で組める picker 形式)
 
-## selfform-w4-sheets-foundation — Google スプレッドシート連携の基盤（2026-07-21 closer / status: blocked）
+## selfform-w4-sheets-foundation — Google スプレッドシート連携の基盤（2026-07-21 closer / ✅ 2026-07-21 sheets-workers-oauth-fetch-fix closer で解消）
 - **やったこと**: WebCrypto JWT Sheets client / migration 114（sheets_connections・sheets_sync_ledger・sheets_sync_audit_log・additive）/ 接続設定ページ（`/settings/sheets`）/ owner 向け 10 分手順書（`docs/google-sheets-service-account-setup.md`）はコード完成・desk PASS 済み。closer が両テナント D1 へ migration 114 適用・Piecemaker worker へ実サービスアカウント鍵（`GOOGLE_SERVICE_ACCOUNT_JSON`）を投入・4 面デプロイ（health 200）・owner の実スプレッドシート（ID 提供済み）を接続設定として登録（LINE アカウント「お祝い夢花火」）。
-- **[BLOCKED] 実接続テストが Cloudflare Workers 上で失敗（`ok:false`）**: 同じ鍵・同じスプレッドシート・**リポジトリ本体のクライアントコードをそのまま**ローカル（Node の `node:crypto` webcrypto 経由）で直接実行すると成功する。つまり資格情報・シート共有・コードロジックの誤りではなく、Cloudflare Workers 実行環境固有の何か（WebCrypto の挙動差／outbound fetch のタイミング等）が疑われる。アプリは内部エラー詳細をクライアントへ返さない設計のため、これ以上の切り分けにはワーカー側への一時診断ログ追加（`GoogleSheetsError.status`/`operation` を秘密値なしでログ出力）が必要。次の generator 案件で対応すること。
-- **残置**: Piecemaker に owner の実接続設定 1 件（`gsc_4881ef88-e6e4-415e-ab62-c24106c09015`）が有効なまま残っている。設定は正しいので、コード側原因さえ特定できれば再設定は不要な見込み。
+- **✅ 解消（下記 sheets-workers-oauth-fetch-fix 節参照）**: 接続テスト `ok:true` を deployed 環境で実測（4/5 連続成功）。旧「Workers 上でだけ失敗」の謎は `GoogleSheetsClient` の unbound `fetch` 呼び出しが原因と判明・修理済み。
+- **残置**: Piecemaker に owner の実接続設定 1 件（`gsc_4881ef88-e6e4-415e-ab62-c24106c09015`）が有効なまま残っている（今回の修理で正常稼働）。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_021500_selfform-w4-sheets-foundation.md`（Box folder 386663013201 / box_file_id_md 2358225745887 / box_file_id_html 2358228783732）。
 - **🔵 test-hygiene**: builder.test.tsx「全入力型の補足説明」テストが高負荷時に 5s timeout を踏む (単体 69/69 PASS 実証・2026-07-21)。timeout 予算増 or ループ分割の小修理を次の web 触り lane に同乗させる
 
-### sheets-workers-jwt-fix follow-up（2026-07-21 closer / status: blocked・上記のコード側原因判明）
+### sheets-workers-jwt-fix follow-up（2026-07-21 closer / ✅ 2026-07-21 sheets-workers-oauth-fetch-fix closer で解消・上記のコード側原因判明）
 - **JWT/PEM 正規化 + エラー原因の正直な surface 化を修理**（D-1〜D-3 は reviewer Round2 で cross-vendor 独立検証 PASS）。closer が piecemaker deployed 環境で接続テストを実測: 依然 `ok:false` だが `wrangler tail` で `category:network / operation:token / status:0` を実取得 — **「鍵の改行/PEM 解析」ではなく Google OAuth トークン取得の fetch 自体が失敗**していると判明（当初有力容疑は排除）。
-- **未着手 (required)**: ①Workers→`oauth2.googleapis.com` の outbound fetch がなぜ例外を投げるか調査(DNS/TLS/到達性/`global_fetch_strictly_public` フラグの影響有無) ②fetch catch 節の握り潰しをやめ実エラーメッセージをログ出力する診断強化。
+- **✅ 解消**: fetch 自体の失敗原因は `GoogleSheetsClient` が unbound `fetch` を呼んでいたため（Workers 環境で receiver 未束縛だと例外化する既知挙動）。`globalThis.fetch.bind(globalThis)` で修理・deployed 実測で `ok:true` を確認（下記 sheets-workers-oauth-fetch-fix 節）。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_073500_sheets-workers-jwt-fix.md`（Box working folder 386663013201・box_file_id_md=2358437428652 / box_file_id_html=2358419068215）。
+
+### sheets-workers-oauth-fetch-fix — Sheets 接続テストの本丸解消（2026-07-21 closer / ✅ status: completed）
+- **deployed 実測で `ok:true` を達成**: piecemaker worker を main HEAD `b3276a6a`（generator lane の receiver-bind 修理・reviewer Round1 PASS）へ再デプロイ（Version `8c949dfb-6ac9-4eef-a341-5cd7c3f250f9`）。接続 `gsc_4881ef88-e6e4-415e-ab62-c24106c09015` の接続テストを5回実行 → 4/5 で `ok:true`（1回目のみ一過性ネットワークブリップ）。コード確認どおり `ok:true` は OAuth トークン取得 + Google Sheets A1 read の両方成功を意味する。
+- ks worker も同 HEAD へ再デプロイ済み（Version `234a8892-bf3e-4074-a00b-505067c45b34`）。ks tenant は Sheets 接続が未作成（owner 権限で確認済み・新規作成はせず記録のみ）。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_061142_sheets-workers-oauth-fetch-fix.md`（Box working folder 386663013201・box_file_id_md 2358523578940 / box_file_id_html 2358531870104）。
