@@ -175,7 +175,10 @@ describe('D-3 — 秘密値/内部識別子が embed 入力・プロンプト・
     const faq: FaqEvidence[] = [{ question: '営業時間は？', answer: '平日は10時から19時までです' }];
     const prompt = buildRagPrompt(faq, [{ content: '駐車場は店舗裏に3台あります' }], '営業時間を教えて');
     const whole = `${prompt.system}\n${prompt.user}`;
-    for (const bad of FORBIDDEN) expect(whole).not.toContain(bad);
+    // ランダム fence nonce 自体はデータではないため検査対象から外す。16進 nonce が偶然
+    // friend id の短い番兵文字列 (例: "f1") を含んでも、秘密混入とは判定しない。
+    const inspectable = whole.replace(/\[\[\/?KB:[0-9a-f]{16}\]\]/g, '');
+    for (const bad of FORBIDDEN) expect(inspectable).not.toContain(bad);
     // chunk は nonce fence で囲われている (instruction/data 分離)。
     expect(prompt.user).toMatch(/\[\[KB:[0-9a-f]{16}\]\]/);
   });
