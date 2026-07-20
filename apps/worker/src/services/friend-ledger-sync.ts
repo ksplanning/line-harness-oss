@@ -944,6 +944,9 @@ export async function syncFriendLedger(
       const answerEdit = columns.some((column) => (
         column.kind === 'answer' && column.header === options.snapshot!.header
       ));
+      const redactSkippedCellValues = answerEdit
+        || snapshotTargetError === 'unselected_webhook_column'
+        || snapshotTargetError === 'stale_webhook_target';
       const auditWritten = await appendSheetsSyncAudit(options.db, options.connection.lineAccountId, {
         id: `gsa_${crypto.randomUUID()}`,
         connectionId: options.connection.id,
@@ -961,7 +964,7 @@ export async function syncFriendLedger(
         afterFingerprint: ledger?.rowFingerprint ?? null,
         errorCode: snapshotTargetError,
         webhookEventId: options.webhookEventId ?? null,
-        details: [answerEdit
+        details: [redactSkippedCellValues
           ? answerDetail(actor, options.snapshot.header, options.source, 'conflict')
           : detail(
             actor,

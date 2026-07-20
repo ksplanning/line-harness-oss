@@ -388,6 +388,36 @@ describe('friend ledger bidirectional sync', () => {
     expect(client.values[1][5]).toBe('D');
   });
 
+  test('redacts a skipped webhook value after an answer heading is renamed', async () => {
+    enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
+    insertInternalAnswer('answer-first', { name: '山田花子' }, '2026-07-21T10:00:00+09:00');
+    await run();
+    client.values[0][4] = '申込者名（変更）';
+    client.values[1][4] = '編集後の個人情報';
+
+    const result = await run(
+      'webhook',
+      'editor@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 5, columnEnd: 5 },
+      {
+        rowNumber: 2, columnNumber: 5, header: '申込者名（変更）', rowUserId: 'U_AYAKO',
+        value: '編集後の個人情報', oldValue: '山田花子', oldValueKnown: true,
+      },
+      'event-renamed-answer-1',
+    );
+
+    expect(result).toMatchObject({ status: 'warning', importedFields: 0 });
+    expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+      WHERE webhook_event_id='event-renamed-answer-1'`).get()).toEqual({
+      outcome: 'skipped', error_code: 'unselected_webhook_column',
+    });
+    expect(raw.prepare(`SELECT column_name, old_value, new_value FROM sheets_sync_audit_details
+      WHERE audit_id=(SELECT id FROM sheets_sync_audit_log
+        WHERE webhook_event_id='event-renamed-answer-1')`).get()).toEqual({
+      column_name: '申込者名（変更）', old_value: null, new_value: null,
+    });
+  });
+
   test('imports a sheet answer edit into the latest submission without creating a duplicate or logging answer PII', async () => {
     enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
     insertInternalAnswer('answer-first', { name: '山田花子', keep: '保持' }, '2026-07-21T10:00:00+09:00');
