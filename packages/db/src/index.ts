@@ -37,6 +37,7 @@ export * from './formaloo-choice-lists';
 export * from './auto-replies';
 export * from './faqs';
 export * from './ai-faq';
+export * from './faq-personal-context';
 export * from './knowledge';
 export * from './traffic-pools';
 export * from './message-templates';
