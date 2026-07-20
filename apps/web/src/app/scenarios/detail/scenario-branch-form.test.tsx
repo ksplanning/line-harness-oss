@@ -43,7 +43,7 @@ vi.mock('@/lib/api', () => ({
 
 import ScenarioDetailClient from './scenario-detail-client'
 
-afterEach(() => { cleanup(); updateStep.mockClear() })
+afterEach(() => { cleanup(); updateStep.mockClear(); vi.unstubAllGlobals() })
 
 async function openFirstStepEditor() {
   render(<ScenarioDetailClient scenarioId="s1" />)
@@ -86,6 +86,38 @@ describe('T-A5 ステップ編集フォームの分岐欄', () => {
         conditionValue: JSON.stringify({ key: 'answer', value: 'A' }),
         nextStepOnFalse: 3,
       }),
+    )
+  })
+})
+
+describe('ステップ文のパーソナライズ入力', () => {
+  it('実画面で挿入した名前変数と絵文字を updateStep payload に保持する', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0))
+    await openFirstStepEditor()
+
+    const textarea = await screen.findByRole('textbox', { name: 'ステップのメッセージ内容' }) as HTMLTextAreaElement
+    textarea.focus()
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+
+    fireEvent.click(screen.getByRole('button', { name: '変数を挿入' }))
+    fireEvent.click(screen.getByRole('button', { name: '友だちの名前' }))
+    const withName = 'ステップ1{{display_name|お客様}}'
+    await waitFor(() => expect(textarea.value).toBe(withName))
+    await waitFor(() => expect(textarea.selectionStart).toBe(withName.length))
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }))
+    fireEvent.click(screen.getByRole('button', { name: '絵文字 🎉 を挿入' }))
+    const personalizedMessage = `${withName}🎉`
+    await waitFor(() => expect(textarea.value).toBe(personalizedMessage))
+
+    fireEvent.click(screen.getByRole('button', { name: '更新' }))
+
+    await waitFor(() => expect(updateStep).toHaveBeenCalled())
+    expect(updateStep).toHaveBeenCalledWith(
+      's1',
+      'st1',
+      expect.objectContaining({ messageContent: personalizedMessage }),
     )
   })
 })

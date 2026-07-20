@@ -71,6 +71,31 @@ describe('PersonalizedTextEditor', () => {
     });
   });
 
+  test('RTL 本文でも論理的な選択位置へ変数を挿入し、カーソル位置を復帰する', async () => {
+    const rtlText = 'שלום بالعالم';
+    const logicalInsertionPoint = 'שלום'.length;
+    const token = '{{display_name|お客様}}';
+    render(
+      <div dir="rtl">
+        <Harness initial={rtlText} />
+      </div>,
+    );
+    const textarea = screen.getByRole('textbox', { name: 'ステップのメッセージ内容' }) as HTMLTextAreaElement;
+    expect(textarea.closest('[dir="rtl"]')).toBeTruthy();
+    textarea.focus();
+    textarea.setSelectionRange(logicalInsertionPoint, logicalInsertionPoint);
+
+    fireEvent.click(screen.getByRole('button', { name: '変数を挿入' }));
+    fireEvent.click(screen.getByRole('button', { name: '友だちの名前' }));
+
+    const expectedCaret = logicalInsertionPoint + token.length;
+    await waitFor(() => expect(textarea.value).toBe(`שלום${token} بالعالم`));
+    await waitFor(() => {
+      expect(textarea.selectionStart).toBe(expectedCaret);
+      expect(textarea.selectionEnd).toBe(expectedCaret);
+    });
+  });
+
   test('有効なカスタム項目だけを表示し、選択範囲を field token で置き換える', async () => {
     render(<Harness initial="AここB" />);
     const textarea = screen.getByRole('textbox', { name: 'ステップのメッセージ内容' }) as HTMLTextAreaElement;
