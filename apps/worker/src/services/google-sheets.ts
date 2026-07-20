@@ -11,6 +11,7 @@ const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4';
 const JWT_LIFETIME_SECONDS = 3600;
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 const MAX_FETCH_ERROR_DETAIL_LENGTH = 160;
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
 export interface GoogleServiceAccountCredentials {
   clientEmail: string;
@@ -132,6 +133,7 @@ interface GoogleSheetsClientOptions {
   fetchImpl?: typeof fetch;
   now?: () => number;
   webCrypto?: Crypto;
+  requestTimeoutMs?: number;
 }
 
 interface CachedToken {
@@ -222,6 +224,7 @@ export class GoogleSheetsClient {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly webCrypto: Crypto;
+  private readonly requestTimeoutMs: number;
   private cachedToken: CachedToken | null = null;
 
   constructor(options: GoogleSheetsClientOptions) {
@@ -232,6 +235,9 @@ export class GoogleSheetsClient {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.now = options.now ?? Date.now;
     this.webCrypto = options.webCrypto ?? crypto;
+    this.requestTimeoutMs = Number.isFinite(options.requestTimeoutMs)
+      ? Math.max(1, Math.min(120_000, Math.trunc(options.requestTimeoutMs!)))
+      : DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   private async createAssertion(): Promise<string> {
@@ -277,6 +283,7 @@ export class GoogleSheetsClient {
       response = await this.fetchImpl(GOOGLE_TOKEN_URL, {
         method: 'POST',
         redirect: 'manual',
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
@@ -311,6 +318,7 @@ export class GoogleSheetsClient {
       response = await this.fetchImpl(url, {
         ...init,
         redirect: 'manual',
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
         headers: {
           Authorization: `Bearer ${accessToken}`,
           ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),

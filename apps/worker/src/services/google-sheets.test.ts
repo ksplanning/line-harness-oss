@@ -57,6 +57,7 @@ describe('GoogleSheetsClient — WebCrypto service account JWT', () => {
       expect(String(input)).toBe(TOKEN_URL);
       expect(init?.method).toBe('POST');
       expect(init?.redirect).toBe('manual');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       expect(new Headers(init?.headers).get('content-type')).toContain('application/x-www-form-urlencoded');
 
       const params = new URLSearchParams(String(init?.body));
@@ -268,6 +269,7 @@ describe('GoogleSheetsClient — Sheets API v4 contracts', () => {
         return jsonResponse({ access_token: 'ACCESS-2', token_type: 'Bearer', expires_in: 3600 });
       }
       apiCalls.push({ url, init });
+      expect(init.signal).toBeInstanceOf(AbortSignal);
       if (init.method === 'GET') return jsonResponse({ range: '回答!A1:B1', majorDimension: 'ROWS', values: [['name', 'email']] });
       if (init.method === 'POST') return jsonResponse({ spreadsheetId: 'sheet/id', tableRange: '回答!A1:B1', updates: { updatedRows: 1 } });
       return jsonResponse({ spreadsheetId: 'sheet/id', updatedRange: '回答!A2:B2', updatedRows: 1 });
