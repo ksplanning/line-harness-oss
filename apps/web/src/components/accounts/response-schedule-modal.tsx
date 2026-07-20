@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { api, type DayHours, type OutsideHoursMode } from '@/lib/api'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 
 interface Props {
   accountId: string
@@ -294,9 +295,11 @@ export default function ResponseScheduleModal({ accountId, onClose }: Props) {
                 {mode === 'away_message' && (
                   <div className="mt-3">
                     <label className="block text-xs font-medium text-gray-700 mb-1">不在メッセージの文面</label>
-                    <textarea
+                    <PersonalizedTextEditor
+                      mode="emoji-only"
+                      ariaLabel="不在メッセージの文面"
                       value={awayMessage}
-                      onChange={(e) => setAwayMessage(e.target.value)}
+                      onChange={setAwayMessage}
                       rows={3}
                       placeholder="ただいま営業時間外です。翌営業日に順番にご返信します。"
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"

@@ -23,6 +23,13 @@ afterEach(() => cleanup())
 describe('batch B PartEditor: text 装飾', () => {
   const body: BuilderPart = { kind: 'body', id: 'b', text: 'x' }
 
+  it('変数が解決される利用画面では変数ボタンも表示する', () => {
+    render(<PartEditor part={body} onChange={() => {}} textEditorMode="variables-and-emoji" />)
+
+    expect(screen.getByRole('button', { name: '変数を挿入' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '絵文字' })).toBeTruthy()
+  })
+
   it('色の緑スウォッチで color patch', () => {
     const onChange = vi.fn()
     render(<PartEditor part={body} onChange={onChange} />)

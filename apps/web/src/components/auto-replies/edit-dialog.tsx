@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { api } from '@/lib/api'
 import ImageUploader from '@/components/shared/image-uploader'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 
 export interface AutoReplyDraft {
   id?: string
@@ -192,13 +193,24 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
               )}
             </div>
           )}
-          {(mode === 'inline-text' || mode === 'inline-flex') && (
+          {mode === 'inline-text' && (
             <div>
-              <label className="block text-xs text-gray-600 mb-1">
-                {mode === 'inline-flex' ? 'Flex JSON' : 'テキスト'}
-              </label>
+              <label className="block text-xs text-gray-600 mb-1">テキスト</label>
+              <PersonalizedTextEditor
+                mode="variables-and-emoji"
+                ariaLabel="自動返信テキスト"
+                rows={4}
+                value={responseContent}
+                onChange={setResponseContent}
+                className="w-full border border-gray-300 rounded-md px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+              />
+            </div>
+          )}
+          {mode === 'inline-flex' && (
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Flex JSON</label>
               <textarea
-                rows={mode === 'inline-flex' ? 8 : 4}
+                rows={8}
                 value={responseContent}
                 onChange={(e) => setResponseContent(e.target.value)}
                 className="w-full border border-gray-300 rounded-md px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"

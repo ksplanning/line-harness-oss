@@ -9,6 +9,7 @@ import CcPromptButton from '@/components/cc-prompt-button'
 import FlexPreviewComponent from '@/components/flex-preview'
 import FriendInfoSidebar from '@/components/chats/friend-info-sidebar'
 import ImageUploader, { type ImageUploaderValue } from '@/components/shared/image-uploader'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 import CannedResponsePicker from '@/components/chats/canned-response-picker'
 import { applyCannedSelection } from '@/lib/canned-responses/insert-canned-text'
 
@@ -361,23 +362,28 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
         )}
       </div>
       <div className="px-4 py-3 border-t border-gray-200">
-        <div className="flex gap-2">
-          <input
-            type="text"
+        <div className="flex items-end gap-2">
+          <PersonalizedTextEditor
+            mode="emoji-only"
+            multiline={false}
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onCompositionStart={() => { isComposingRef.current = true }}
-            onCompositionEnd={() => { isComposingRef.current = false }}
-            onKeyDown={(e) => {
-              // IME変換確定のEnterでは送信しない
-              if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) return
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                handleSend()
-              }
+            onChange={setMessage}
+            pickerPlacement="above"
+            inputProps={{
+              onCompositionStart: () => { isComposingRef.current = true },
+              onCompositionEnd: () => { isComposingRef.current = false },
+              onKeyDown: (e) => {
+                // IME変換確定のEnterでは送信しない
+                if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) return
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  handleSend()
+                }
+              },
             }}
             placeholder="メッセージを入力..."
-            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+            containerClassName="flex-1 space-y-2"
           />
           <button
             onClick={handleSend}
@@ -1207,30 +1213,34 @@ export default function ChatsPage() {
                   />
                 </div>
                 <div className="flex items-end gap-2">
-                  <textarea
-                    ref={textareaRef}
+                  <PersonalizedTextEditor
+                    mode="emoji-only"
+                    textareaRef={textareaRef}
                     rows={2}
                     value={messageContent}
-                    style={{ maxHeight: '200px', overflowY: 'auto' }}
-                    onChange={(e) => {
-                      const value = e.target.value
+                    onChange={(value) => {
                       setMessageContent(value)
                       if (selectedChatId && isMessageInputFocused && value.trim()) {
                         void triggerLoadingAnimation(selectedChatId)
                       }
                     }}
-                    onCompositionStart={() => { isComposingRef.current = true }}
-                    onCompositionEnd={() => { isComposingRef.current = false }}
-                    onFocus={() => {
-                      setIsMessageInputFocused(true)
-                      if (selectedChatId) {
-                        void triggerLoadingAnimation(selectedChatId)
-                      }
+                    pickerPlacement="above"
+                    textareaProps={{
+                      style: { maxHeight: '200px', overflowY: 'auto' },
+                      onCompositionStart: () => { isComposingRef.current = true },
+                      onCompositionEnd: () => { isComposingRef.current = false },
+                      onFocus: () => {
+                        setIsMessageInputFocused(true)
+                        if (selectedChatId) {
+                          void triggerLoadingAnimation(selectedChatId)
+                        }
+                      },
+                      onBlur: () => setIsMessageInputFocused(false),
+                      onKeyDown: handleKeyDown,
                     }}
-                    onBlur={() => setIsMessageInputFocused(false)}
-                    onKeyDown={handleKeyDown}
                     placeholder="メッセージを入力..."
-                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none overflow-y-auto"
+                    className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none overflow-y-auto"
+                    containerClassName="flex-1 space-y-2"
                   />
                   <button
                     onClick={handleSendMessage}

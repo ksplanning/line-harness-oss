@@ -8,6 +8,7 @@ import CcPromptButton from '@/components/cc-prompt-button'
 import EnrollDialog, { type EnrolledFriendRow } from '@/components/reminders/enroll-dialog'
 import { buildReminderCreateBody } from '@/lib/reminders/create-body'
 import TestSendDialog from '@/components/shared/test-send-dialog'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 
 interface Reminder {
   id: string
@@ -536,13 +537,25 @@ export default function RemindersPage() {
                               </div>
                               <div>
                                 <label className="block text-xs font-medium text-gray-600 mb-1">メッセージ内容 <span className="text-red-500">*</span></label>
-                                <textarea
-                                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
-                                  rows={3}
-                                  placeholder="メッセージ内容を入力"
-                                  value={stepForm.messageContent}
-                                  onChange={(e) => setStepForm({ ...stepForm, messageContent: e.target.value })}
-                                />
+                                {stepForm.messageType === 'text' ? (
+                                  <PersonalizedTextEditor
+                                    mode="emoji-only"
+                                    ariaLabel="リマインダーのメッセージ内容"
+                                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+                                    rows={3}
+                                    placeholder="メッセージ内容を入力"
+                                    value={stepForm.messageContent}
+                                    onChange={(messageContent) => setStepForm({ ...stepForm, messageContent })}
+                                  />
+                                ) : (
+                                  <textarea
+                                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+                                    rows={3}
+                                    placeholder="メッセージ内容を入力"
+                                    value={stepForm.messageContent}
+                                    onChange={(e) => setStepForm({ ...stepForm, messageContent: e.target.value })}
+                                  />
+                                )}
                               </div>
 
                               {stepFormError && <p className="text-xs text-red-600">{stepFormError}</p>}

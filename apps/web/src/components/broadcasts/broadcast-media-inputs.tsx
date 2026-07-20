@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import ImageUploader from '@/components/shared/image-uploader'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 import { buildMediaJson, initialMediaState, num, parseMediaJson, type MediaMessageType, type MediaState } from '@/lib/broadcast-media'
 import ImagemapRegionEditor from './imagemap-region-editor'
 import HelpPopover from '@/components/help/help-popover'
@@ -179,7 +180,15 @@ export default function BroadcastMediaInputs({
       </div>
       <div>
         <label className={labelCls}>再生後に出すボタン（任意）</label>
-        <input type="text" className={`${fieldCls} mb-1`} placeholder="ボタンの文字（例: 詳しく見る）" value={s.btnLabel} onChange={(e) => patch({ btnLabel: e.target.value })} />
+        <PersonalizedTextEditor
+          mode="emoji-only"
+          multiline={false}
+          className={`${fieldCls} mb-1`}
+          placeholder="ボタンの文字（例: 詳しく見る）"
+          value={s.btnLabel}
+          onChange={(btnLabel) => patch({ btnLabel })}
+          ariaLabel="再生後に出すボタンの文字"
+        />
         <input type="text" className={fieldCls} placeholder="ボタンの飛び先 (https://...)" value={s.btnLink} onChange={(e) => patch({ btnLink: e.target.value })} />
       </div>
       <p className="text-xs text-gray-500">動画の再生後にボタンを出せます。</p>

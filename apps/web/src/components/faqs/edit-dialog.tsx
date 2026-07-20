@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 
 export interface FaqDraft {
   id?: string
@@ -161,10 +162,12 @@ export default function EditDialog({ draft, selectedAccountId, onClose, onSaved 
 
           <div>
             <label className="block text-xs text-gray-600 mb-1">答え</label>
-            <textarea
+            <PersonalizedTextEditor
+              mode="emoji-only"
+              ariaLabel="答え"
               rows={4}
               value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
+              onChange={setAnswer}
               className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
               placeholder="例: 平日は10時〜19時、土日は11時〜18時です。"
             />

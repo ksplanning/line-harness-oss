@@ -36,6 +36,7 @@ import {
   type Region,
 } from '@/lib/flex-builder/modal-logic'
 import ImageUploader from '@/components/shared/image-uploader'
+import type { PersonalizedTextEditorMode } from '@/components/shared/personalized-text-editor'
 import type { BuilderModel, BuilderPart, ImageAspect, PartKind, ValidationError } from '@/lib/flex-builder/types'
 import type { ComponentType, SVGProps } from 'react'
 import {
@@ -54,6 +55,7 @@ import {
 interface Props {
   /** 既存 Flex を編集する場合の初期モデル。新規なら undefined (テンプレ選択から)。 */
   initialModel?: BuilderModel
+  textEditorMode?: PersonalizedTextEditorMode
   onSave: (jsonString: string) => void
   onClose: () => void
 }
@@ -207,7 +209,7 @@ function RegionEditor({
   )
 }
 
-export default function FlexBuilderModal({ initialModel, onSave, onClose }: Props) {
+export default function FlexBuilderModal({ initialModel, textEditorMode = 'emoji-only', onSave, onClose }: Props) {
   const [step, setStep] = useState<'template' | 'edit'>(initialModel ? 'edit' : 'template')
   const [model, setModel] = useState<BuilderModel>(initialModel ?? blankModel())
   const [snapshot, setSnapshot] = useState<BuilderModel>(initialModel ?? blankModel())
@@ -550,7 +552,7 @@ export default function FlexBuilderModal({ initialModel, onSave, onClose }: Prop
 
               {selectedPart && (
                 <div className="rounded-md border border-gray-200 p-3 bg-gray-50">
-                  <PartEditor part={selectedPart} onChange={handlePartChange} />
+                  <PartEditor part={selectedPart} onChange={handlePartChange} textEditorMode={textEditorMode} />
                 </div>
               )}
             </div>

@@ -7,6 +7,7 @@
  *   全部品の上マージン。専門語ゼロ・トグルボタン群 (enum 名/数値を極力出さない)。
  */
 import ImageUploader from '@/components/shared/image-uploader'
+import PersonalizedTextEditor, { type PersonalizedTextEditorMode } from '@/components/shared/personalized-text-editor'
 import LinkPicker from './link-picker'
 import { BUTTON_STYLE_OPTIONS } from '@/lib/flex-builder/link'
 import type { BuilderPart, ImageAspect, ButtonStyle, LinkSpec } from '@/lib/flex-builder/types'
@@ -14,6 +15,7 @@ import type { BuilderPart, ImageAspect, ButtonStyle, LinkSpec } from '@/lib/flex
 interface Props {
   part: BuilderPart
   onChange: (patch: Partial<BuilderPart>) => void
+  textEditorMode?: PersonalizedTextEditorMode
 }
 
 const inputCls =
@@ -114,7 +116,7 @@ function MarginControl({ part, onChange }: Props) {
   )
 }
 
-export default function PartEditor({ part, onChange }: Props) {
+export default function PartEditor({ part, onChange, textEditorMode = 'emoji-only' }: Props) {
   if (part.kind === 'heading' || part.kind === 'body') {
     return (
       <div className="space-y-3">
@@ -122,10 +124,12 @@ export default function PartEditor({ part, onChange }: Props) {
           <label className="block text-xs text-gray-600 mb-1">
             {part.kind === 'heading' ? '見出しの文字' : '本文の文字'}
           </label>
-          <textarea
+          <PersonalizedTextEditor
+            mode={textEditorMode}
             rows={part.kind === 'heading' ? 2 : 4}
             value={part.text}
-            onChange={(e) => onChange({ text: e.target.value } as Partial<BuilderPart>)}
+            onChange={(text) => onChange({ text } as Partial<BuilderPart>)}
+            ariaLabel={part.kind === 'heading' ? '見出しの文字' : '本文の文字'}
             className={`${inputCls} resize-y`}
             placeholder={part.kind === 'heading' ? '例: 春の新色ネイル 20%OFF' : '例: 3月末まで全メニュー20%OFF'}
           />
@@ -196,8 +200,15 @@ export default function PartEditor({ part, onChange }: Props) {
                   className="text-xs text-red-600 px-2 py-1 hover:bg-red-50 rounded" aria-label={`区間 ${i + 1} を消す`}>消す</button>
               )}
             </div>
-            <input type="text" value={run.text} onChange={(e) => updateRun(i, { text: e.target.value })}
-              className={inputCls} placeholder="この区間の文字" />
+            <PersonalizedTextEditor
+              mode={textEditorMode}
+              multiline={false}
+              value={run.text}
+              onChange={(text) => updateRun(i, { text })}
+              ariaLabel={`区間 ${i + 1} の文字`}
+              className={inputCls}
+              placeholder="この区間の文字"
+            />
             <ColorPicker label="色" value={run.color} onPick={(v) => updateRun(i, { color: v })} />
             <div className="flex gap-3">
               <ToggleGroup label="太さ" options={WEIGHT_OPTS} value={run.weight} fallback="regular" onPick={(v) => updateRun(i, { weight: v })} />
@@ -429,10 +440,12 @@ export default function PartEditor({ part, onChange }: Props) {
     <div className="space-y-3">
       <div>
         <label className="block text-xs text-gray-600 mb-1">ボタンの文字</label>
-        <input
-          type="text"
+        <PersonalizedTextEditor
+          mode={textEditorMode}
+          multiline={false}
           value={part.label}
-          onChange={(e) => onChange({ label: e.target.value } as Partial<BuilderPart>)}
+          onChange={(label) => onChange({ label } as Partial<BuilderPart>)}
+          ariaLabel="ボタンの文字"
           className={inputCls}
           placeholder="例: 予約する"
         />

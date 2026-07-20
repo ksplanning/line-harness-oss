@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { validateCannedResponse } from '@/lib/canned-responses/canned-form'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 
 interface Props {
   mode: 'create' | 'edit'
@@ -73,9 +74,11 @@ export default function CannedResponseModal({
 
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">本文</label>
-            <textarea
+            <PersonalizedTextEditor
+              mode="emoji-only"
+              ariaLabel="本文"
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={setContent}
               rows={5}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
               placeholder="チャットに差し込む文章を入力します"

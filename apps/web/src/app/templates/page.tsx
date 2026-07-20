@@ -6,6 +6,7 @@ import Header from '@/components/layout/header'
 import FlexPreviewComponent from '@/components/flex-preview'
 import CcPromptButton from '@/components/cc-prompt-button'
 import ImageUploader from '@/components/shared/image-uploader'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
 import { flexToModel } from '@/lib/flex-builder/from-flex'
 import type { BuilderModel } from '@/lib/flex-builder/types'
@@ -417,12 +418,14 @@ export default function TemplatesPage() {
                   </div>
                 </div>
               ) : (
-                <textarea
+                <PersonalizedTextEditor
+                  mode="variables-and-emoji"
+                  ariaLabel="メッセージ内容"
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
                   rows={4}
                   placeholder="メッセージ内容"
                   value={form.messageContent}
-                  onChange={(e) => setForm({ ...form, messageContent: e.target.value })}
+                  onChange={(messageContent) => setForm({ ...form, messageContent })}
                 />
               )}
             </div>
@@ -611,7 +614,7 @@ export default function TemplatesPage() {
                   </div>
                 </div>
 
-                {/* Edit content: flex/carousel はビルダー起動、text/image は textarea */}
+                {/* Edit content: flex/carousel はビルダー起動、text は絵文字対応、image は JSON textarea */}
                 <div>
                   <h4 className="text-[11px] font-medium text-gray-500 mb-1.5 uppercase tracking-wide">内容の編集</h4>
                   {(drawerData.messageType === 'flex' || drawerData.messageType === 'carousel') ? (
@@ -641,6 +644,15 @@ export default function TemplatesPage() {
                         )}
                       </div>
                     </div>
+                  ) : drawerData.messageType === 'text' ? (
+                    <PersonalizedTextEditor
+                      mode="variables-and-emoji"
+                      ariaLabel="メッセージ内容"
+                      rows={4}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
+                      value={editContent ?? drawerData.messageContent}
+                      onChange={(messageContent) => setEditContent(messageContent)}
+                    />
                   ) : (
                     <textarea
                       rows={4}
@@ -721,6 +733,7 @@ export default function TemplatesPage() {
       {builderTarget && (
         <FlexBuilderModal
           initialModel={builderInitial}
+          textEditorMode="variables-and-emoji"
           onSave={handleBuilderSave}
           onClose={() => setBuilderTarget(null)}
         />

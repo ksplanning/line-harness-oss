@@ -7,6 +7,7 @@ import Header from '@/components/layout/header'
 import Toggle from '@/components/shared/toggle'
 import EditDialog, { type FaqDraft } from '@/components/faqs/edit-dialog'
 import BulkImportDialog from '@/components/faqs/bulk-import-dialog'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 
 interface Faq {
   id: string
@@ -526,10 +527,12 @@ export default function FaqsPage() {
           {/* ③ 引き継ぎメッセージ */}
           <div className="bg-white border border-gray-200 rounded-lg p-5">
             <h3 className="text-sm font-semibold text-gray-800">自動で答えられないときに送る文</h3>
-            <textarea
+            <PersonalizedTextEditor
+              mode="emoji-only"
+              ariaLabel="引き継ぎメッセージ"
               rows={3}
               value={settings.handoffMessage}
-              onChange={(e) => setSettings((s) => ({ ...s, handoffMessage: e.target.value }))}
+              onChange={(handoffMessage) => setSettings((s) => ({ ...s, handoffMessage }))}
               className="mt-2 w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
               placeholder="例: お問い合わせありがとうございます。担当者より順次ご返信いたします。少々お待ちください。"
             />
@@ -541,10 +544,12 @@ export default function FaqsPage() {
           {/* ④ 明記文 */}
           <div className="bg-white border border-gray-200 rounded-lg p-5">
             <h3 className="text-sm font-semibold text-gray-800">答えの最後に付ける「自動応答です」の一文</h3>
-            <input
-              type="text"
+            <PersonalizedTextEditor
+              mode="emoji-only"
+              multiline={false}
+              ariaLabel="自動応答の明記文"
               value={settings.autoReplyNotice}
-              onChange={(e) => setSettings((s) => ({ ...s, autoReplyNotice: e.target.value }))}
+              onChange={(autoReplyNotice) => setSettings((s) => ({ ...s, autoReplyNotice }))}
               className="mt-2 w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
               placeholder="例: ※この返信は自動応答です"
             />

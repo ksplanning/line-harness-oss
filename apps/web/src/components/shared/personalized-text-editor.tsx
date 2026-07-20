@@ -4,10 +4,12 @@ import { useEffect, useRef, useState } from 'react'
 import type { InputHTMLAttributes, Ref, TextareaHTMLAttributes } from 'react'
 import type { FriendFieldDefinition } from '@line-crm/shared'
 
+export type PersonalizedTextEditorMode = 'variables-and-emoji' | 'emoji-only'
+
 interface PersonalizedTextEditorProps {
   value: string
   onChange: (value: string) => void
-  mode?: 'variables-and-emoji' | 'emoji-only'
+  mode?: PersonalizedTextEditorMode
   ariaLabel?: string
   placeholder?: string
   rows?: number

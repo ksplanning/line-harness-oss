@@ -1046,6 +1046,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                       </div>
                     ) : (
                       <PersonalizedTextEditor
+                        mode="variables-and-emoji"
                         ariaLabel="ステップのメッセージ内容"
                         placeholder="メッセージ内容を入力..."
                         value={stepForm.messageContent}
@@ -1372,6 +1373,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       {stepBuilderOpen && (
         <FlexBuilderModal
           initialModel={stepBuilderInitial}
+          textEditorMode="variables-and-emoji"
           onSave={(jsonString) => {
             setStepForm((prev) => ({ ...prev, messageContent: jsonString, messageType: 'flex' }))
             setStepBuilderOpen(false)
