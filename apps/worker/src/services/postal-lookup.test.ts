@@ -85,6 +85,47 @@ describe('postal lookup service', () => {
     });
   });
 
+  test.each([{ results: [] }, { results: [null] }])(
+    'results=$results は未登録扱いで cache せず upstream error にする',
+    async ({ results }) => {
+      const fetchImpl = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ message: null, results, status: 200 }))
+        .mockResolvedValueOnce(Response.json(ZIPCLOUD_ADDRESS_RESPONSE));
+      const lookup = createPostalLookupService({ fetchImpl });
+
+      await expect(lookup('5690000')).rejects.toMatchObject({
+        name: 'PostalLookupUpstreamError',
+      });
+      await expect(lookup('5690000')).resolves.toEqual({
+        pref: '大阪府',
+        city: '高槻市',
+        town: '',
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  test('upstream が別の郵便番号を返したら誤住所として cache しない', async () => {
+    const wrongZipResponse = {
+      ...ZIPCLOUD_ADDRESS_RESPONSE,
+      results: [{ ...ZIPCLOUD_ADDRESS_RESPONSE.results[0], zipcode: '1000001' }],
+    };
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(wrongZipResponse))
+      .mockResolvedValueOnce(Response.json(ZIPCLOUD_ADDRESS_RESPONSE));
+    const lookup = createPostalLookupService({ fetchImpl });
+
+    await expect(lookup('5690000')).rejects.toMatchObject({
+      name: 'PostalLookupUpstreamError',
+    });
+    await expect(lookup('5690000')).resolves.toEqual({
+      pref: '大阪府',
+      city: '高槻市',
+      town: '',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   test('異なる住所候補が複数ある郵便番号は誤った町域を選ばない', async () => {
     const first = ZIPCLOUD_ADDRESS_RESPONSE.results[0];
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -159,5 +200,25 @@ describe('postal lookup service', () => {
     await lookup('0000000');
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('公開入力を大量に受けても cache を上限件数以内に保つ', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async (input) => {
+        const zipcode = new URL(input.toString()).searchParams.get('zipcode');
+        return Response.json({
+          ...ZIPCLOUD_ADDRESS_RESPONSE,
+          results: [{ ...ZIPCLOUD_ADDRESS_RESPONSE.results[0], zipcode }],
+        });
+      },
+    );
+    const lookup = createPostalLookupService({ fetchImpl });
+
+    for (let zip = 0; zip <= 1_000; zip++) {
+      await lookup(String(zip).padStart(7, '0'));
+    }
+    await lookup('0000000');
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1_002);
   });
 });
