@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import type { FriendFieldDefinition, Tag } from '@line-crm/shared'
 import type { FriendListItem } from '@/lib/api'
 import { api } from '@/lib/api'
@@ -175,6 +176,12 @@ export default function FriendListTable({
                         expander が開いたときだけ mount され、その時点で metadata を fetch する。 */}
                     <div className="pt-2 border-t border-gray-100">
                       <CustomMetadataEditor friendId={friend.id} fieldDefinitions={fieldDefinitions} />
+                      <Link
+                        href="/friends#friend-custom-fields"
+                        className="mt-2 inline-flex min-h-[44px] items-center text-xs font-medium text-green-600 underline underline-offset-2"
+                      >
+                        全員共通のカスタムフィールドはこちら → 友だちリスト上部で設定
+                      </Link>
                     </div>
                   </div>
                 )}

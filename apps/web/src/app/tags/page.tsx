@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
 import { api } from '@/lib/api'
 import type { Tag } from '@line-crm/shared'
 import Header from '@/components/layout/header'
@@ -98,6 +99,16 @@ export default function TagsPage() {
           </button>
         }
       />
+
+      <p className="mb-4 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
+        友だち全員に同じ情報項目を追加する場合は、
+        <Link
+          href="/friends#friend-custom-fields"
+          className="inline-flex min-h-[44px] items-center font-medium text-green-600 underline underline-offset-2"
+        >
+          全員共通のカスタムフィールドはこちら → 友だちリスト上部で設定
+        </Link>
+      </p>
 
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">

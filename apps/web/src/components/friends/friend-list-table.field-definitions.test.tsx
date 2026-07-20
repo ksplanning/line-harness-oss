@@ -9,6 +9,12 @@ vi.mock('@/lib/api', () => ({
   api: { friends: { addTag: vi.fn(), removeTag: vi.fn() } },
 }));
 
+vi.mock('next/link', () => ({
+  default: ({ href, children }: { href: string; children: React.ReactNode }) => (
+    <a href={href}>{children}</a>
+  ),
+}));
+
 vi.mock('./friend-list-row', () => ({
   default: ({ onTagEditClick }: { onTagEditClick: () => void }) => (
     <button type="button" onClick={onTagEditClick}>展開</button>
@@ -42,6 +48,15 @@ const friend: FriendListItem = {
 };
 
 describe('FriendListTable fieldDefinitions default', () => {
+  test('友だち詳細のカスタム欄から全員共通の設定へ移動できる', () => {
+    render(<FriendListTable friends={[friend]} allTags={[]} onRefresh={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '展開' }));
+
+    const link = screen.getByRole('link', { name: /全員共通のカスタムフィールドはこちら/ });
+    expect(link.getAttribute('href')).toBe('/friends#friend-custom-fields');
+  });
+
   test('props 未指定の空配列は親 rerender をまたいで同じ参照を保つ', () => {
     const { rerender } = render(
       <FriendListTable friends={[friend]} allTags={[]} onRefresh={vi.fn()} />,
