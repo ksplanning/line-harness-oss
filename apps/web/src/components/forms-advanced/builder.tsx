@@ -245,7 +245,19 @@ export function CanvasDropLayout({
 }
 
 // ── パレット項目 (click-to-add = 素人/375px 向け + drag = desktop) ──
-function PaletteItem({ type, label, icon, onAdd }: { type: HarnessFieldType; label: string; icon: string; onAdd: () => void }) {
+function PaletteItem({
+  type,
+  label,
+  icon,
+  description,
+  onAdd,
+}: {
+  type: HarnessFieldType
+  label: string
+  icon: string
+  description?: string
+  onAdd: () => void
+}) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `palette:${type}` })
   return (
     <button
@@ -253,13 +265,16 @@ function PaletteItem({ type, label, icon, onAdd }: { type: HarnessFieldType; lab
       type="button"
       onClick={onAdd}
       aria-label={`${label}を追加`}
-      className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm bg-white border border-gray-200 rounded-lg hover:border-gray-400 hover:bg-gray-50 cursor-grab"
+      className="w-full flex items-start gap-2 px-3 py-2 text-left text-sm bg-white border border-gray-200 rounded-lg hover:border-gray-400 hover:bg-gray-50 cursor-grab"
       style={{ opacity: isDragging ? 0.5 : 1 }}
       {...attributes}
       {...listeners}
     >
-      <span aria-hidden>{icon}</span>
-      <span>{label}</span>
+      <span className="mt-0.5" aria-hidden>{icon}</span>
+      <span className="min-w-0">
+        <span className="block">{label}</span>
+        {description && <span className="mt-0.5 block text-[10px] leading-snug text-gray-500">{description}</span>}
+      </span>
     </button>
   )
 }
@@ -1840,7 +1855,7 @@ export default function FormBuilder(props: BuilderProps) {
                   <div className="text-[10px] text-gray-400 mb-1">{cat}</div>
                   <div className="grid grid-cols-2 md:grid-cols-1 gap-1">
                     {FIELD_TYPE_META.filter((m) => m.category === cat).map((m) => (
-                      <PaletteItem key={m.type} type={m.type} label={m.label} icon={m.icon} onAdd={() => addField(m.type)} />
+                      <PaletteItem key={m.type} type={m.type} label={m.label} icon={m.icon} description={m.description} onAdd={() => addField(m.type)} />
                     ))}
                   </div>
                 </div>

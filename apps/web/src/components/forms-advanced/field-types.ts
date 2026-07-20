@@ -12,6 +12,8 @@ export interface FieldTypeMeta {
   label: string
   icon: string
   category: FieldCategory
+  /** パーツを初めて使う人向けに、何を入力してもらう欄かを日常語で示す。 */
+  description?: string
 }
 
 export const FIELD_TYPE_META: FieldTypeMeta[] = [
@@ -21,7 +23,12 @@ export const FIELD_TYPE_META: FieldTypeMeta[] = [
   { type: 'email', label: 'メール', icon: '✉️', category: '入力' },
   { type: 'phone', label: '電話番号', icon: '📞', category: '入力' },
   { type: 'date', label: '日付', icon: '📅', category: '入力' },
+  // treasure-e1-field-parts: hosted 表示まで実測できた標準入力4型だけを公開。
+  { type: 'time', label: '時刻', icon: '🕐', category: '入力', description: '時刻だけを入力してもらう項目です' },
+  { type: 'website', label: 'URL', icon: '🔗', category: '入力', description: 'ホームページなどのURLを入力してもらう項目です' },
+  { type: 'city', label: '市区町村', icon: '🏙️', category: '入力', description: '市区町村を入力してもらう項目です' },
   { type: 'choice', label: '単一選択', icon: '🔘', category: '選択' },
+  { type: 'yes_no', label: 'はい/いいえ', icon: '✅', category: '選択', description: '「はい」か「いいえ」で答えてもらう項目です' },
   { type: 'dropdown', label: 'ドロップダウン', icon: '🔽', category: '選択' },
   { type: 'multiple_select', label: '複数選択', icon: '☑️', category: '選択' },
   { type: 'choice_fetch', label: '動的選択肢', icon: '🔄', category: '選択' },

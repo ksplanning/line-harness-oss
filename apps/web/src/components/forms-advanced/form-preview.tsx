@@ -64,6 +64,33 @@ function PreviewControl({ field, ratingStarColor }: { field: HarnessField; ratin
       return <input id={controlId} aria-label={field.label} type="tel" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
     case 'date':
       return <input id={controlId} aria-label={field.label} type="date" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+    case 'time':
+      return <input id={controlId} aria-label={field.label} type="time" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+    case 'website':
+      return <input id={controlId} aria-label={field.label} type="url" value={value} onChange={(e) => setValue(e.target.value)} placeholder="https://example.com" className={inputClassName} />
+    case 'city':
+      return <input id={controlId} aria-label={field.label} type="text" value={value} onChange={(e) => setValue(e.target.value)} placeholder="例: 千代田区" className={inputClassName} />
+    case 'yes_no':
+      return (
+        <div id={controlId} role="group" aria-label={field.label} className="space-y-2">
+          {[
+            { value: 'yes', label: 'はい' },
+            { value: 'no', label: 'いいえ' },
+          ].map((option) => (
+            <label key={option.value} className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="radio"
+                name={`preview-${field.id}`}
+                value={option.value}
+                checked={value === option.value}
+                onChange={() => setValue(option.value)}
+                className="h-4 w-4 accent-[#06C755]"
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+      )
     case 'choice':
       return (
         <div className="space-y-2">
