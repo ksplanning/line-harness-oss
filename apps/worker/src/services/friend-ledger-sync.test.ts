@@ -102,7 +102,11 @@ function metadata(friendId = 'friend-ayako'): Record<string, unknown> {
   return JSON.parse(row.metadata) as Record<string, unknown>;
 }
 
-async function run(source: 'manual' | 'polling' | 'webhook' = 'manual', actor = 'owner') {
+async function run(
+  source: 'manual' | 'polling' | 'webhook' = 'manual',
+  actor = 'owner',
+  range?: { rowStart: number; rowEnd: number; columnStart: number; columnEnd: number },
+) {
   connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
   return syncFriendLedger({
     db,
@@ -110,6 +114,7 @@ async function run(source: 'manual' | 'polling' | 'webhook' = 'manual', actor = 
     client,
     source,
     actor,
+    range,
     now: () => new Date('2026-07-21T03:00:00.000Z'),
   });
 }
@@ -180,6 +185,31 @@ describe('friend ledger bidirectional sync', () => {
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger').get()).toEqual({ count: 1 });
   });
 
+  test('adds friend headings beside company-owned headings on the first sync', async () => {
+    client.values = [['自社担当'], ['営業部']];
+
+    const result = await run();
+
+    expect(result).toMatchObject({ appendedRows: 1, status: 'success' });
+    expect(client.values).toEqual([
+      ['自社担当', '表示名', 'userId', '登録日', '入金確認'],
+      ['営業部'],
+      ['', 'あやこ', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '未'],
+    ]);
+  });
+
+  test('warns about a renamed heading after an empty ledger was initialized', async () => {
+    raw.prepare("DELETE FROM friends WHERE line_account_id='acc-1'").run();
+    await run();
+    client.values[0][3] = '入金済み';
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result.status).toBe('warning');
+    expect(result.warnings.join(' ')).toContain('入金確認');
+    expect(client.values[0]).toEqual(['表示名', 'userId', '登録日', '入金済み']);
+  });
+
   test('uses heading names after reorder/insertion and never overwrites a company column', async () => {
     await run();
     client.values = [
@@ -200,8 +230,12 @@ describe('friend ledger bidirectional sync', () => {
       (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
       VALUES ('friend-b', 'U_B', 'びー', 'acc-1', '{"入金確認":"済"}',
               '2026-07-20T11:00:00+09:00', '2026-07-20T11:00:00+09:00')`).run();
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-c', 'U_C', 'しー', 'acc-1', '{"入金確認":"C"}',
+              '2026-07-20T12:00:00+09:00', '2026-07-20T12:00:00+09:00')`).run();
     await run();
-    client.values = [client.values[0], client.values[2], client.values[1]];
+    client.values = [client.values[0], client.values[2], client.values[1], client.values[3]];
 
     const result = await run('polling', 'system_poll');
 
@@ -210,6 +244,7 @@ describe('friend ledger bidirectional sync', () => {
       ORDER BY record_key`).all()).toEqual([
       { record_key: 'friend-ayako', sheet_row_number: 3 },
       { record_key: 'friend-b', sheet_row_number: 2 },
+      { record_key: 'friend-c', sheet_row_number: 4 },
     ]);
   });
 
@@ -231,6 +266,60 @@ describe('friend ledger bidirectional sync', () => {
     expect(result.importedFields).toBe(0);
     expect(metadata()).toMatchObject({ 入金確認: '未' });
     expect(metadata('friend-b')).toMatchObject({ 入金確認: 'B' });
+  });
+
+  test('never imports custom values through a fallback shared by identical display identities', async () => {
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-b', 'U_B', 'あやこ', 'acc-1', '{"入金確認":"B"}',
+              '2026-07-20T10:00:00+09:00', '2026-07-20T10:00:00+09:00')`).run();
+    await run();
+    client.values = [
+      client.values[0],
+      ['あやこ', 'tampered-b', '2026-07-20T10:00:00+09:00', 'B'],
+      ['あやこ', 'tampered-a', '2026-07-20T10:00:00+09:00', '未'],
+    ];
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result).toMatchObject({ importedFields: 0, ignoredIdentityEdits: 2, status: 'warning' });
+    expect(metadata()).toMatchObject({ 入金確認: '未' });
+    expect(metadata('friend-b')).toMatchObject({ 入金確認: 'B' });
+    expect(client.values.slice(1).map((row) => [row[1], row[3]])).toEqual([
+      ['U_AYAKO', '未'],
+      ['U_B', 'B'],
+    ]);
+  });
+
+  test('reappends an authoritative friend row after the last sheet row is deleted', async () => {
+    await run();
+    client.values.pop();
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result).toMatchObject({ appendedRows: 1, importedFields: 0 });
+    expect(client.values[1]).toEqual(['あやこ', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '未']);
+    expect(raw.prepare(`SELECT sheet_row_number FROM sheets_sync_ledger
+      WHERE record_key='friend-ayako'`).get()).toEqual({ sheet_row_number: 2 });
+  });
+
+  test('reappends a deleted middle friend without confusing the row that shifted up', async () => {
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-b', 'U_B', 'びー', 'acc-1', '{"入金確認":"B"}',
+              '2026-07-20T11:00:00+09:00', '2026-07-20T11:00:00+09:00')`).run();
+    await run();
+    client.values.splice(1, 1);
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result).toMatchObject({ appendedRows: 1, importedFields: 0 });
+    expect(client.values.slice(1).map((row) => row[1])).toEqual(['U_B', 'U_AYAKO']);
+    expect(raw.prepare(`SELECT record_key, sheet_row_number FROM sheets_sync_ledger
+      ORDER BY record_key`).all()).toEqual([
+      { record_key: 'friend-ayako', sheet_row_number: 3 },
+      { record_key: 'friend-b', sheet_row_number: 2 },
+    ]);
   });
 
   test('imports selected custom cells but restores and audits edited identity cells', async () => {
@@ -306,6 +395,51 @@ describe('friend ledger bidirectional sync', () => {
     expect(raw.prepare(`SELECT conflict_resolution FROM sheets_sync_audit_log
       WHERE conflict_resolution IS NOT NULL ORDER BY apply_sequence DESC LIMIT 1`).get())
       .toEqual({ conflict_resolution: 'harness_wins' });
+  });
+
+  test('records a racing equal value as convergence without a redundant write', async () => {
+    await run();
+    client.values[1][3] = '同時に同じ';
+    let injected = false;
+    db = d1(raw, (sql) => {
+      if (injected || !sql.includes('UPDATE friends') || !sql.includes('metadata IS ?')) return;
+      injected = true;
+      raw.prepare(`UPDATE friends SET metadata='{"入金確認":"同時に同じ","未選択":"保持"}',
+        updated_at='2026-07-21T11:59:00+09:00' WHERE id='friend-ayako'`).run();
+    });
+
+    const result = await run('webhook', 'editor@example.test');
+
+    expect(result).toMatchObject({ importedFields: 0, updatedRows: 0 });
+    expect(client.values[1][3]).toBe('同時に同じ');
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_audit_details
+      WHERE old_value = new_value`).get()).toEqual({ count: 0 });
+  });
+
+  test('attributes and imports only sheet edits inside the signed webhook range', async () => {
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-b', 'U_B', 'びー', 'acc-1', '{"入金確認":"B"}',
+              '2026-07-20T11:00:00+09:00', '2026-07-20T11:00:00+09:00')`).run();
+    await run();
+    client.values[1][3] = 'A sheet';
+    client.values[2][3] = 'B sheet';
+
+    const webhook = await run('webhook', 'editor-a@example.test', {
+      rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4,
+    });
+
+    expect(webhook.importedFields).toBe(1);
+    expect(metadata()).toMatchObject({ 入金確認: 'A sheet' });
+    expect(metadata('friend-b')).toMatchObject({ 入金確認: 'B' });
+    expect(raw.prepare(`SELECT DISTINCT actor FROM sheets_sync_audit_details
+      WHERE source='webhook'`).all()).toEqual([{ actor: 'editor-a@example.test' }]);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_audit_details
+      WHERE source='webhook' AND old_value='B' AND new_value='B sheet'`).get()).toEqual({ count: 0 });
+
+    const polling = await run('polling', 'system_poll');
+    expect(polling.importedFields).toBe(1);
+    expect(metadata('friend-b')).toMatchObject({ 入金確認: 'B sheet' });
   });
 
   test('treats equal Harness and sheet changes as convergence, not a fake import', async () => {

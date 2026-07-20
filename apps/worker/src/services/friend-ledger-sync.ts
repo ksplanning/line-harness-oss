@@ -6,6 +6,7 @@ import {
   listFriendFieldDefinitions,
   listSheetsSyncAudit,
   listSheetsSyncLedger,
+  recordSheetsFriendLedgerHeaders,
   releaseSheetsSyncLock,
   reserveSheetsSyncSequence,
   toJstString,
@@ -104,6 +105,7 @@ interface ImportedMetadataResult {
 }
 
 const LOCK_DURATION_MS = 2 * 60_000;
+const MAX_SYNC_WARNINGS = 20;
 
 function parseMetadata(raw: string): Record<string, unknown> {
   try {
@@ -152,6 +154,25 @@ function blockRange(sheetName: string, rowNumber: number, width: number): string
   return `${quoteSheetName(sheetName)}!A${rowNumber}:${columnLabel(Math.max(0, width - 1))}${rowNumber}`;
 }
 
+function horizontalRange(
+  sheetName: string,
+  rowNumber: number,
+  startColumnIndex: number,
+  width: number,
+): string {
+  const start = columnLabel(startColumnIndex);
+  const end = columnLabel(startColumnIndex + Math.max(0, width - 1));
+  return `${quoteSheetName(sheetName)}!${start}${rowNumber}:${end}${rowNumber}`;
+}
+
+function appendedStartRow(response: { updates?: Record<string, unknown> }, fallback: number): number {
+  const updatedRange = response.updates?.updatedRange;
+  if (typeof updatedRange !== 'string') return fallback;
+  const match = /![A-Z]+(\d+)(?::|$)/i.exec(updatedRange.replace(/\$/g, ''));
+  const row = match ? Number(match[1]) : Number.NaN;
+  return Number.isSafeInteger(row) && row >= 2 ? row : fallback;
+}
+
 function cleanActor(actor: string, source: SheetsSyncAuditSource): string {
   const cleaned = actor.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 320);
   return cleaned || (source === 'polling' ? 'system_poll' : 'unknown_editor');
@@ -186,7 +207,7 @@ async function saveImportedMetadata(
   connection: SheetsConnection,
   friend: FriendState,
   imports: Record<string, string>,
-  updatedAt: string,
+  nextUpdatedAt: () => string,
   renewLease: () => Promise<SheetsSyncLeaseGuard>,
 ): Promise<ImportedMetadataResult> {
   if (Object.keys(imports).length === 0) return { friend, rejected: {} };
@@ -198,6 +219,10 @@ async function saveImportedMetadata(
   let current = friend;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const lease = await renewLease();
+    const candidateUpdatedAt = nextUpdatedAt();
+    const updatedAt = candidateUpdatedAt > current.updatedAt
+      ? candidateUpdatedAt
+      : current.updatedAt;
     const merged = { ...current.metadata, ...pending };
     const nextRaw = JSON.stringify(merged);
     const result = await db.prepare(
@@ -452,13 +477,32 @@ export async function syncFriendLedger(
     await renewLease();
     const defaults = new Map(definitions.map((definition) => [definition.id, definition.defaultValue]));
     const columns = buildFriendLedgerColumns(options.connection.friendFieldMappings);
+    const knownHeaders = new Set(options.connection.friendLedgerHeaders);
+    const headersToRecord = [...new Set([
+      ...options.connection.friendLedgerHeaders,
+      ...columns.map((column) => column.header),
+    ])];
+    const hasUnrecordedHeaders = columns.some((column) => !knownHeaders.has(column.header));
     const ledgerByFriend = new Map(ledgerEntries.map((entry) => [entry.recordKey, entry]));
     const values = (response.values ?? []).map((row) => [...row]);
     const warnings: string[] = [];
+    const warningSet = new Set<string>();
+    const addWarning = (message: string): void => {
+      if (warningSet.has(message)) return;
+      warningSet.add(message);
+      if (warnings.length < MAX_SYNC_WARNINGS) warnings.push(message);
+    };
     const plans: RowPlan[] = [];
     let appendedRows = 0;
     let importedFields = 0;
     let ignoredIdentityEdits = 0;
+    const isNotifiedCell = (rowNumber: number, columnIndex: number): boolean => {
+      if (options.source !== 'webhook' || !options.range) return true;
+      return rowNumber >= options.range.rowStart
+        && rowNumber <= options.range.rowEnd
+        && columnIndex + 1 >= options.range.columnStart
+        && columnIndex + 1 <= options.range.columnEnd;
+    };
 
     const headerIsEmpty = values.length === 0 || !(values[0] ?? []).some((cell) => normalizeSheetCell(cell));
     if (headerIsEmpty) {
@@ -469,46 +513,96 @@ export async function syncFriendLedger(
         blockRange(options.connection.sheetName, 1, headers.length),
         [headers],
       );
+      if (hasUnrecordedHeaders) {
+        const lease = await renewLease();
+        const recorded = await recordSheetsFriendLedgerHeaders(
+          options.db,
+          options.connection.lineAccountId,
+          options.connection.id,
+          options.connection.configVersion,
+          headersToRecord,
+          lease,
+        );
+        if (!recorded) throw new Error('friend_ledger_sync_lock_lost');
+      }
       if (friends.length > 0) {
         const rows = friends.map((friend) => {
           const projection = projectedWithDefaults(friend, options.connection, defaults);
           return columns.map((column) => projection[column.key] ?? '');
         });
         await renewLease();
-        await client.appendValues(
+        const appended = await client.appendValues(
           options.connection.spreadsheetId,
           `${quoteSheetName(options.connection.sheetName)}!A:${columnLabel(Math.max(0, headers.length - 1))}`,
           rows,
         );
         appendedRows = friends.length;
-      }
-      for (let index = 0; index < friends.length; index += 1) {
-        const friend = friends[index];
-        const projection = projectedWithDefaults(friend, options.connection, defaults);
-        const canonical = Object.fromEntries(
-          columns.map((column) => [column.key, canonicalValue(projection[column.key] ?? '')]),
-        );
-        plans.push({
-          friend,
-          rowNumber: index + 2,
-          ledger: null,
-          canonical,
-          imports: {},
-          customCells: {},
-          sheetUpdates: [],
-          direction: 'to_sheets',
-          conflictResolution: null,
-          isAppend: true,
-          details: columns
-            .filter((column) => column.kind === 'custom')
-            .map((column) => detail(actor, column.header, null, projection[column.key] ?? '', options.source, 'custom_field')),
-        });
+        const firstAppendedRow = appendedStartRow(appended, 2);
+        for (let index = 0; index < friends.length; index += 1) {
+          const friend = friends[index];
+          const projection = projectedWithDefaults(friend, options.connection, defaults);
+          const canonical = Object.fromEntries(
+            columns.map((column) => [column.key, canonicalValue(projection[column.key] ?? '')]),
+          );
+          plans.push({
+            friend,
+            rowNumber: firstAppendedRow + index,
+            ledger: null,
+            canonical,
+            imports: {},
+            customCells: {},
+            sheetUpdates: [],
+            direction: 'to_sheets',
+            conflictResolution: null,
+            isAppend: true,
+            details: columns
+              .filter((column) => column.kind === 'custom')
+              .map((column) => detail(actor, column.header, null, projection[column.key] ?? '', options.source, 'custom_field')),
+          });
+        }
       }
     } else {
-      const headers = values[0] ?? [];
-      const resolved = resolveFriendLedgerHeaders(headers, columns);
+      let headers = values[0] ?? [];
+      let resolved = resolveFriendLedgerHeaders(headers, columns);
+      if (hasUnrecordedHeaders) {
+        const configuredCounts = new Map<string, number>();
+        for (const column of columns) {
+          configuredCounts.set(column.header, (configuredCounts.get(column.header) ?? 0) + 1);
+        }
+        const present = new Set(headers.map(normalizeSheetCell));
+        const additions = columns
+          .filter((column) => (
+            !knownHeaders.has(column.header)
+            && (configuredCounts.get(column.header) ?? 0) === 1
+            && !present.has(column.header)
+          ))
+          .map((column) => column.header);
+        if (additions.length > 0) {
+          await renewLease();
+          await client.updateValues(
+            options.connection.spreadsheetId,
+            horizontalRange(options.connection.sheetName, 1, headers.length, additions.length),
+            [additions],
+          );
+          headers = [...headers, ...additions];
+          values[0] = headers;
+          resolved = resolveFriendLedgerHeaders(headers, columns);
+        }
+      }
+      if (hasUnrecordedHeaders) {
+        const lease = await renewLease();
+        const recorded = await recordSheetsFriendLedgerHeaders(
+          options.db,
+          options.connection.lineAccountId,
+          options.connection.id,
+          options.connection.configVersion,
+          headersToRecord,
+          lease,
+        );
+        if (!recorded) throw new Error('friend_ledger_sync_lock_lost');
+      }
       for (const headerWarning of resolved.warnings) {
-        warnings.push(warningText(headerWarning.code, headerWarning.header));
+        addWarning(warningText(headerWarning.code, headerWarning.header));
       }
       const userIdIndex = resolved.indexByKey['identity:lineUserId'];
       const positions = new Map<string, number[]>();
@@ -521,7 +615,7 @@ export async function syncFriendLedger(
           positions.set(userId, rows);
         }
         for (const [userId, rows] of positions) {
-          if (rows.length > 1) warnings.push('userId が重複している行があります');
+          if (rows.length > 1) addWarning('userId が重複している行があります');
         }
       }
       const exactRowOwner = new Map<number, string>();
@@ -534,6 +628,7 @@ export async function syncFriendLedger(
         const ledger = ledgerByFriend.get(friend.id) ?? null;
         const matchingRows = positions.get(friend.lineUserId) ?? [];
         if (matchingRows.length > 1) continue;
+        const rowMatchedByUserId = matchingRows.length === 1;
         let rowNumber = matchingRows.length === 1 ? matchingRows[0] : null;
         const projection = projectedWithDefaults(friend, options.connection, defaults);
         if (
@@ -555,28 +650,54 @@ export async function syncFriendLedger(
           ) rowNumber = ledger.sheetRowNumber;
         }
         if (!rowNumber) {
-          if (userIdIndex === undefined || ledger) {
-            warnings.push('userId から安全に行を特定できない友だちをスキップしました');
+          const priorRow = ledger?.sheetRowNumber
+            ? values[ledger.sheetRowNumber - 1]
+            : undefined;
+          const priorRowIsBlank = !priorRow?.some((cell) => normalizeSheetCell(cell) !== '');
+          const priorRowOwner = ledger?.sheetRowNumber
+            ? exactRowOwner.get(ledger.sheetRowNumber)
+            : undefined;
+          const canRestoreDeletedRow = Boolean(
+            ledger
+            && userIdIndex !== undefined
+            && (priorRowIsBlank || (priorRowOwner && priorRowOwner !== friend.id)),
+          );
+          if (userIdIndex === undefined || (ledger && !canRestoreDeletedRow)) {
+            addWarning('userId から安全に行を特定できない友だちをスキップしました');
             continue;
           }
           const nextRow = rowForProjection(headers.length, projection, columns, resolved.indexByKey);
           await renewLease();
-          await client.appendValues(
+          const appended = await client.appendValues(
             options.connection.spreadsheetId,
             `${quoteSheetName(options.connection.sheetName)}!A:${columnLabel(Math.max(0, headers.length - 1))}`,
             [nextRow],
           );
-          rowNumber = values.length + appendedRows + 1;
+          rowNumber = appendedStartRow(appended, values.length + appendedRows + 1);
           appendedRows += 1;
           const canonical = Object.fromEntries(
             columns.map((column) => [column.key, canonicalValue(projection[column.key] ?? '')]),
           );
+          const restoredDeletedRow = Boolean(ledger && canRestoreDeletedRow);
+          if (restoredDeletedRow) {
+            addWarning('保護列を含む友だち行の削除を検知し、元に戻しました');
+            ignoredIdentityEdits += columns.filter((column) => column.kind === 'identity').length;
+          }
           plans.push({
-            friend, rowNumber, ledger: null, canonical, imports: {}, customCells: {}, sheetUpdates: [],
-            direction: 'to_sheets', conflictResolution: null, isAppend: true,
+            friend, rowNumber, ledger, canonical, imports: {}, customCells: {}, sheetUpdates: [],
+            direction: 'to_sheets', conflictResolution: restoredDeletedRow ? 'harness_wins' : null, isAppend: true,
             details: columns
-              .filter((column) => column.kind === 'custom')
-              .map((column) => detail(actor, column.header, null, projection[column.key] ?? '', options.source, 'custom_field')),
+              .filter((column) => restoredDeletedRow || column.kind === 'custom')
+              .map((column) => detail(
+              actor,
+              column.header,
+              restoredDeletedRow ? projection[column.key] ?? '' : null,
+              restoredDeletedRow ? '' : projection[column.key] ?? '',
+              options.source,
+              restoredDeletedRow
+                ? column.kind === 'identity' ? 'identity_ignored' : 'conflict'
+                : 'custom_field',
+            )),
           });
           continue;
         }
@@ -601,21 +722,25 @@ export async function syncFriendLedger(
           if (column.kind === 'identity') {
             canonical[column.key] = canonicalValue(expected);
             if (observed !== expected) {
-              sheetUpdates.push({
-                range: cellRange(options.connection.sheetName, rowNumber, columnIndex),
-                values: [[expected]],
-              });
+              if (!isNotifiedCell(rowNumber, columnIndex)) {
+                canonical[column.key] = ledger?.canonicalSnapshot[column.key] ?? canonicalValue(expected);
+                continue;
+              }
               const baseline = ledger
                 ? normalizeSheetCell(ledger.canonicalSnapshot[column.key])
                 : observed;
               const harnessChanged = expected !== baseline;
               const sheetChanged = ledger ? observed !== baseline : false;
+              sheetUpdates.push({
+                range: cellRange(options.connection.sheetName, rowNumber, columnIndex),
+                values: [[expected]],
+              });
               if (!ledger || (harnessChanged && !sheetChanged)) {
                 details.push(detail(actor, column.header, observed, expected, options.source, 'identity_sync'));
               } else {
                 ignoredIdentityEdits += 1;
                 const message = `保護列「${column.header}」の変更を取り込みませんでした`;
-                if (!warnings.includes(message)) warnings.push(message);
+                addWarning(message);
                 details.push(detail(actor, column.header, expected, observed, options.source, 'identity_ignored'));
               }
             }
@@ -627,6 +752,25 @@ export async function syncFriendLedger(
           const baseline = ledger
             ? normalizeSheetCell(ledger.canonicalSnapshot[column.key])
             : expected;
+          if (!isNotifiedCell(rowNumber, columnIndex)) {
+            canonical[column.key] = ledger?.canonicalSnapshot[column.key] ?? canonicalValue(expected);
+            continue;
+          }
+
+          if (!rowMatchedByUserId) {
+            canonical[column.key] = canonicalValue(expected);
+            if (observed !== expected) {
+              sheetUpdates.push({
+                range: cellRange(options.connection.sheetName, rowNumber, columnIndex),
+                values: [[expected]],
+              });
+              details.push(detail(actor, column.header, observed, expected, options.source, 'conflict'));
+              direction = 'to_sheets';
+              conflictResolution = 'harness_wins';
+            }
+            continue;
+          }
+
           if (expected === observed) {
             canonical[column.key] = canonicalValue(expected);
             continue;
@@ -690,16 +834,23 @@ export async function syncFriendLedger(
       plans.filter((plan) => plan.sheetUpdates.length > 0).map((plan) => plan.rowNumber),
     );
     const completedAt = toJstString(nowFactory());
-    if (plans.some((plan) => plan.ledger && plan.ledger.sheetRowNumber !== plan.rowNumber)) {
+    const movedPlans = plans.filter(
+      (plan) => plan.ledger && plan.ledger.sheetRowNumber !== plan.rowNumber,
+    );
+    if (movedPlans.length > 0) {
       const lease = await renewLease();
       const cleared = await clearSheetsSyncLedgerRowNumbers(
         options.db,
         options.connection.lineAccountId,
         options.connection.id,
         options.connection.configVersion,
+        movedPlans.map((plan) => plan.friend.id),
         lease,
       );
       if (!cleared) throw new Error('friend_ledger_sync_lock_lost');
+      for (const plan of movedPlans) {
+        if (plan.ledger) plan.ledger = { ...plan.ledger, sheetRowNumber: null };
+      }
     }
     for (const plan of plans) {
       const imported = await saveImportedMetadata(
@@ -707,17 +858,23 @@ export async function syncFriendLedger(
         options.connection,
         plan.friend,
         plan.imports,
-        completedAt,
+        () => toJstString(nowFactory()),
         renewLease,
       );
       plan.friend = imported.friend;
       const rejectedUpdates: SheetsDataUpdate[] = [];
+      let rejectedConvergence = false;
       for (const [header, latestValue] of Object.entries(imported.rejected)) {
         const cell = plan.customCells[header];
         if (!cell) continue;
         importedFields -= 1;
+        delete plan.imports[header];
         plan.canonical[cell.columnKey] = canonicalValue(latestValue);
         plan.details = plan.details.filter((entry) => entry.fieldName !== header);
+        if (latestValue === cell.observed) {
+          rejectedConvergence = true;
+          continue;
+        }
         plan.details.push(detail(
           actor,
           header,
@@ -732,6 +889,14 @@ export async function syncFriendLedger(
         });
         plan.direction = 'to_sheets';
         plan.conflictResolution = 'harness_wins';
+      }
+      if (
+        rejectedConvergence
+        && rejectedUpdates.length === 0
+        && Object.keys(plan.imports).length === 0
+      ) {
+        plan.direction = 'to_sheets';
+        plan.conflictResolution = null;
       }
       if (rejectedUpdates.length > 0) {
         await renewLease();
