@@ -1,20 +1,36 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import {
   addTagToFriend,
+  countInternalFormSubmissionsForForm,
   createInternalFormSubmission,
+  createInternalFormSubmissionWithinLimit,
   enrollFriendInScenario,
   getFormalooForm,
   getFriendById,
+  getFriendByLineUserId,
+  getLineAccountById,
+  jstNow,
   type FormalooForm,
 } from '@line-crm/db';
-import { verifyFriendToken } from '../services/formaloo-friend-token.js';
 import {
   JAPAN_PREFECTURES,
+  buildRedirectTargetUrl,
+  evaluateInternalFormLogic,
+  nextInternalFormFieldId,
+  type FormDesign,
+  type InternalFormChannel,
+  type InternalFormLogicAnswers,
+} from '@line-crm/shared';
+import { signFriendToken, verifyFriendToken } from '../services/formaloo-friend-token.js';
+import {
+  evaluateInternalFormAvailability,
   parseInternalFormDefinition,
   validateInternalFormAnswers,
   type InternalAnswerInput,
+  type InternalFormAvailability,
   type InternalFormDefinition,
   type InternalFormField,
+  type PostalAutofillConfig,
 } from '../services/internal-form-runtime.js';
 import type { Env } from '../index.js';
 
@@ -29,7 +45,37 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
-function shell(title: string, content: string): string {
+function escapeCssString(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/</g, '\\3C ')
+    .replace(/>/g, '\\3E ')
+    .replace(/[\r\n\f]/g, '');
+}
+
+function scriptJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003C')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+function fontForDesign(design: FormDesign): string {
+  const serifPresets = new Set(['dark-sumi', 'sand-washi', 'mono-ink', 'matcha-wa']);
+  if (design.presetId && serifPresets.has(design.presetId)) {
+    return '"Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", serif';
+  }
+  if (design.presetId === 'coral-pop') {
+    return '"M PLUS Rounded 1c", "Noto Sans JP", "Yu Gothic", sans-serif';
+  }
+  return '"Noto Sans JP", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif';
+}
+
+function shell(title: string, content: string, design: FormDesign = {}): string {
+  const backgroundImage = design.backgroundImageUrl
+    ? `url("${escapeCssString(design.backgroundImageUrl)}")`
+    : 'none';
   return `<!doctype html>
 <html lang="ja">
 <head>
@@ -38,24 +84,53 @@ function shell(title: string, content: string): string {
   <meta name="referrer" content="no-referrer">
   <title>${escapeHtml(title)}</title>
   <style>
-    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17202a; background: #f4f6f8; }
+    :root {
+      color-scheme: light;
+      --form-theme: ${design.themeColor ?? '#06C755'};
+      --form-background: ${design.backgroundColor ?? '#F4F6F8'};
+      --form-button: ${design.buttonColor ?? design.themeColor ?? '#06C755'};
+      --form-text: ${design.textColor ?? '#17202A'};
+      --form-field: ${design.fieldColor ?? '#FFFFFF'};
+      --form-border: ${design.borderColor ?? '#CBD5E1'};
+      --form-submit-text: ${design.submitTextColor ?? '#FFFFFF'};
+      --form-font: ${fontForDesign(design)};
+      --form-background-image: ${backgroundImage};
+      font-family: var(--form-font);
+      color: var(--form-text);
+      background: var(--form-background);
+    }
     * { box-sizing: border-box; }
-    body { margin: 0; padding: max(20px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom)); }
-    main { width: min(100%, 640px); margin: 0 auto; background: #fff; border-radius: 16px; padding: 24px 18px; box-shadow: 0 8px 28px rgba(18, 38, 63, .08); }
-    h1 { margin: 0 0 8px; font-size: clamp(1.45rem, 5vw, 2rem); line-height: 1.3; }
-    .description { margin: 0 0 24px; color: #52606d; white-space: pre-wrap; }
+    body {
+      min-height: 100vh; margin: 0;
+      padding: max(20px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
+      background-color: var(--form-background); background-image: var(--form-background-image);
+      background-size: cover; background-position: center; background-attachment: fixed;
+    }
+    main {
+      width: min(100%, 640px); margin: 0 auto; color: var(--form-text); background: var(--form-field);
+      border: 1px solid var(--form-border); border-radius: 16px; padding: 24px 18px;
+      box-shadow: 0 8px 28px rgba(18, 38, 63, .12);
+    }
+    .form-logo { display: block; width: auto; max-width: min(100%, 220px); max-height: 96px; margin: 0 auto 22px; object-fit: contain; }
+    h1 { margin: 0 0 8px; color: var(--form-text); font-size: clamp(1.45rem, 5vw, 2rem); line-height: 1.3; }
+    h2 { margin: 0; color: var(--form-theme); font-size: 1.15rem; }
+    .description { margin: 0 0 24px; color: var(--form-text); opacity: .78; white-space: pre-wrap; }
     .field { margin: 0 0 22px; padding: 0; border: 0; }
+    .route-section, .section { padding-top: 8px; border-top: 2px solid var(--form-theme); }
     .label, legend { display: block; width: 100%; margin: 0 0 8px; font-weight: 700; }
-    .required { color: #b42318; font-size: .8rem; margin-left: 6px; }
-    .help { margin: -2px 0 8px; color: #667085; font-size: .9rem; white-space: pre-wrap; }
+    .required { color: #B42318; font-size: .8rem; margin-left: 6px; }
+    .help { margin: -2px 0 8px; color: var(--form-text); opacity: .72; font-size: .9rem; white-space: pre-wrap; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     .placeholder-hint { margin: -2px 0 8px; color: #667085; font-size: .85rem; font-style: italic; }
     .counter { margin: 6px 0 0; color: #667085; font-size: .85rem; text-align: right; }
     input, textarea, select, button { width: 100%; font: inherit; }
-    input, textarea, select { min-height: 48px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 11px 12px; background: #fff; color: inherit; }
+    input, textarea, select {
+      min-height: 48px; border: 1px solid var(--form-border); border-radius: 10px;
+      padding: 11px 12px; background: var(--form-field); color: var(--form-text);
+    }
     textarea { min-height: 120px; resize: vertical; }
     .option { display: flex; align-items: flex-start; gap: 10px; margin: 10px 0; font-weight: 400; }
-    .option input { width: 22px; min-height: 22px; margin: 0; flex: 0 0 22px; }
+    .option input { width: 22px; min-height: 22px; margin: 0; flex: 0 0 22px; accent-color: var(--form-theme); }
     .rating-options { display: flex; flex-wrap: wrap; gap: 8px; }
     .rating-options .option { align-items: center; margin: 0; padding: 8px 10px; border: 1px solid #d8dee8; border-radius: 10px; }
     .signature-wrap { border: 1px solid #cbd5e1; border-radius: 10px; overflow: hidden; background: #fff; }
@@ -78,9 +153,16 @@ function shell(title: string, content: string): string {
     [data-page-step][hidden] { display: none; }
     .page-actions { display: flex; gap: 10px; margin-top: 22px; }
     .page-actions .secondary { margin: 0; }
-    button { min-height: 52px; border: 0; border-radius: 12px; background: #06c755; color: #fff; font-weight: 800; cursor: pointer; }
-    .errors { margin: 0 0 20px; padding: 12px 14px; border-radius: 10px; background: #fef3f2; color: #b42318; }
+    button {
+      min-height: 52px; border: 0; border-radius: 12px; background: var(--form-button);
+      color: var(--form-submit-text); font-weight: 800; cursor: pointer;
+    }
+    button:disabled { cursor: wait; opacity: .65; }
+    .postal-lookup { width: auto; min-width: 9em; min-height: 48px; margin-top: 8px; padding-inline: 18px; }
+    .postal-status { min-height: 1.5em; margin: 7px 0 0; font-size: .9rem; }
+    .errors { margin: 0 0 20px; padding: 12px 14px; border-radius: 10px; background: #FEF3F2; color: #B42318; }
     .complete { text-align: center; padding-block: 42px; }
+    [hidden] { display: none !important; }
     @media (min-width: 600px) { main { padding: 36px; } }
   </style>
 </head>
@@ -321,7 +403,29 @@ function renderField(field: InternalFormField, index: number, fields: InternalFo
   const visiblePlaceholder = field.type === 'date' || field.type === 'time' || field.type === 'datetime'
     ? placeholderHint(field)
     : '';
-  return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}${visiblePlaceholder}<input type="${inputType}" id="${id}" name="${name}"${required}${placeholderAttribute(field)}${length}${inputMode} data-answer-field="${escapeHtml(field.id)}"${counter ? ` aria-describedby="${id}-counter"` : ''}>${counter}</div>`;
+  return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}${visiblePlaceholder}<input type="${inputType}" id="${id}" name="${name}"${required}${placeholderAttribute(field)}${length}${inputMode} data-answer-field="${escapeHtml(field.id)}"${counter ? ` aria-describedby="${id}-counter"` : ''}>${counter}${postalControls(field.config.postalAutofill)}</div>`;
+}
+
+function postalControls(config: PostalAutofillConfig | undefined): string {
+  if (!config) return '';
+  return `<button type="button" class="postal-lookup"
+    data-zip-field="${escapeHtml(config.zipField)}"
+    data-pref-field="${escapeHtml(config.prefField)}"
+    data-city-field="${escapeHtml(config.cityField)}"
+    data-town-field="${escapeHtml(config.townField)}">郵便番号から住所を入力</button>
+    <p class="postal-status" aria-live="polite"></p>`;
+}
+
+function renderLogicField(
+  field: InternalFormField,
+  index: number,
+  fields: InternalFormField[],
+  visible: boolean,
+): string {
+  const inner = field.type === 'page_break'
+    ? `<section class="section-decoration"><h2>${escapeHtml(field.label)}</h2></section>`
+    : renderField(field, index, fields);
+  return `<div data-field-id="${escapeHtml(field.id)}"${visible ? '' : ' hidden'}>${inner}</div>`;
 }
 
 function renderRuntimeFields(definition: InternalFormDefinition): { html: string; hasPages: boolean } {
@@ -567,44 +671,236 @@ function runtimeScript(): string {
   </script>`;
 }
 
+function logicClientScript(definition: InternalFormDefinition): string {
+  const fields = definition.fields.map((field) => ({ id: field.id, position: field.position, type: field.type }));
+  return `<script>
+(() => {
+  const evaluateInternalFormLogic = ${evaluateInternalFormLogic.toString()};
+  const nextInternalFormFieldId = ${nextInternalFormFieldId.toString()};
+  const fields = ${scriptJson(fields)};
+  const logic = ${scriptJson(definition.logic)};
+  const form = document.querySelector('[data-internal-form]');
+  if (!form) return;
+  const channel = form.dataset.channel === 'line' ? 'line' : 'web';
+  const formType = form.dataset.formType === 'multi_step' ? 'multi_step' : 'simple';
+  const submitButton = form.querySelector('[data-submit]');
+  const submitLabel = submitButton.textContent;
+  const wrappers = Array.from(form.querySelectorAll('[data-field-id]'));
+  const wrapperById = (id) => wrappers.find((wrapper) => wrapper.dataset.fieldId === id);
+  const fieldType = (id) => fields.find((field) => field.id === id)?.type;
+  let currentFieldId = null;
+
+  const answers = () => {
+    const result = {};
+    for (const wrapper of wrappers) {
+      const id = wrapper.dataset.fieldId;
+      const controls = Array.from(wrapper.querySelectorAll('input, textarea, select'));
+      const checks = controls.filter((control) => control.type === 'checkbox');
+      const radios = controls.filter((control) => control.type === 'radio');
+      if (checks.length) result[id] = checks.filter((control) => control.checked).map((control) => control.value);
+      else if (radios.length) result[id] = radios.find((control) => control.checked)?.value ?? '';
+      else if (controls[0]) result[id] = controls[0].value;
+    }
+    return result;
+  };
+
+  const nextQuestion = (state, from) => {
+    let next = nextInternalFormFieldId(fields, state, from);
+    while (next && (fieldType(next) === 'page_break' || fieldType(next) === 'section')) {
+      next = nextInternalFormFieldId(fields, state, next);
+    }
+    return next;
+  };
+
+  const apply = () => {
+    const state = evaluateInternalFormLogic(fields, logic, answers(), channel);
+    const logicVisible = new Set(state.visibleFieldIds);
+    const questions = state.visibleFieldIds.filter((id) => fieldType(id) !== 'page_break' && fieldType(id) !== 'section');
+    if (!currentFieldId || !logicVisible.has(currentFieldId)) currentFieldId = questions[0] ?? null;
+    for (const wrapper of wrappers) {
+      const visible = logicVisible.has(wrapper.dataset.fieldId);
+      const displayed = formType === 'simple' ? visible : visible && wrapper.dataset.fieldId === currentFieldId;
+      wrapper.hidden = !displayed;
+      for (const control of wrapper.querySelectorAll('input, textarea, select')) {
+        control.disabled = !visible;
+        if (control.dataset.required === 'true') control.required = visible;
+      }
+    }
+    if (formType === 'multi_step') {
+      const next = currentFieldId ? nextQuestion(state, currentFieldId) : null;
+      submitButton.type = next ? 'button' : 'submit';
+      submitButton.textContent = next ? '次へ' : submitLabel;
+      submitButton.dataset.nextFieldId = next ?? '';
+    }
+  };
+
+  form.addEventListener('input', apply);
+  form.addEventListener('change', apply);
+  submitButton.addEventListener('click', (event) => {
+    if (formType !== 'multi_step' || submitButton.type !== 'button') return;
+    event.preventDefault();
+    const current = currentFieldId ? wrapperById(currentFieldId) : null;
+    const invalid = current && Array.from(current.querySelectorAll('input, textarea, select'))
+      .find((control) => !control.reportValidity());
+    if (invalid) return;
+    currentFieldId = submitButton.dataset.nextFieldId || null;
+    apply();
+    wrapperById(currentFieldId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  apply();
+})();
+</script>`;
+}
+
+function postalClientScript(): string {
+  return `<script>
+(() => {
+  const messages = {
+    400: '郵便番号は半角数字7桁で入力してください',
+    404: '住所が見つかりませんでした',
+    409: '住所候補が複数あります。住所を直接入力してください',
+    429: '検索が混み合っています。少し待ってからお試しください',
+    503: '住所検索を一時的に利用できません。住所を直接入力してください',
+  };
+  const field = (id) => Array.from(document.querySelectorAll('[data-field-id]'))
+    .find((element) => element.dataset.fieldId === id)?.querySelector('input, textarea, select');
+  document.querySelectorAll('.postal-lookup').forEach((button) => {
+    let controller = null;
+    let generation = 0;
+    const status = button.parentElement.querySelector('.postal-status');
+    button.addEventListener('click', async () => {
+      const zipInput = field(button.dataset.zipField);
+      const zip = String(zipInput?.value ?? '').replace(/[\\s-]/g, '');
+      if (!/^\\d{7}$/.test(zip)) {
+        status.textContent = messages[400];
+        zipInput?.focus();
+        return;
+      }
+      controller?.abort();
+      controller = new AbortController();
+      const current = ++generation;
+      button.disabled = true;
+      status.textContent = '住所を検索しています';
+      try {
+        const response = await fetch('/api/postal-lookup?zip=' + encodeURIComponent(zip), {
+          signal: controller.signal,
+          headers: { Accept: 'application/json' },
+        });
+        if (current !== generation) return;
+        if (!response.ok) throw Object.assign(new Error('postal lookup failed'), { status: response.status });
+        const address = await response.json();
+        const values = [
+          [button.dataset.prefField, address.pref],
+          [button.dataset.cityField, address.city],
+          [button.dataset.townField, address.town],
+        ];
+        for (const [targetId, value] of values) {
+          const target = field(targetId);
+          if (target && typeof value === 'string' && !target.value) target.value = value;
+        }
+        status.textContent = '住所を入力しました';
+        document.querySelector('[data-internal-form]')?.dispatchEvent(new Event('change', { bubbles: true }));
+      } catch (error) {
+        if (error?.name === 'AbortError' || current !== generation) return;
+        status.textContent = messages[error?.status] ?? '住所検索に失敗しました。住所を直接入力してください';
+      } finally {
+        if (current === generation) button.disabled = false;
+      }
+    });
+  });
+})();
+</script>`;
+}
+
 function renderFormPage(
   form: FormalooForm,
   definition: InternalFormDefinition,
   friendToken: string | null,
+  channel: InternalFormChannel,
   error?: string,
+  currentAnswers: InternalFormLogicAnswers = {},
 ): string {
   const hidden = friendToken
     ? `<input type="hidden" name="fr_id" value="${escapeHtml(friendToken)}">`
     : '';
-  const rendered = renderRuntimeFields(definition);
+  const hasLogic = definition.logic.length > 0;
+  const initial = evaluateInternalFormLogic(definition.fields, definition.logic, currentAnswers, channel);
+  const visible = new Set(initial.visibleFieldIds);
+  const repeatingTemplates = new Set(
+    definition.fields
+      .filter((field) => field.type === 'repeating_section')
+      .flatMap((field) => (field.config.repeatingColumns ?? []).map((column) => column.columnField)),
+  );
+  const logicFields = definition.fields.map((field, index) => (
+    repeatingTemplates.has(field.id)
+      ? ''
+      : renderLogicField(field, index, definition.fields, visible.has(field.id))
+  )).join('');
+  const rendered = hasLogic
+    ? `${logicFields}<button type="submit" data-submit>${escapeHtml(definition.buttonText ?? '送信する')}</button>`
+    : renderRuntimeFields(definition).html;
   const errorHtml = error ? `<div class="errors" role="alert">${escapeHtml(error)}</div>` : '';
+  const logo = definition.design.logoUrl
+    ? `<img class="form-logo" src="${escapeHtml(definition.design.logoUrl)}" alt="">`
+    : '';
+  const hasPostal = definition.fields.some((field) => field.config.postalAutofill);
   const enctype = definition.fields.some((field) => field.type === 'file')
     ? ' enctype="multipart/form-data"'
     : '';
   return shell(form.title, `
-    <h1>${escapeHtml(form.title)}</h1>
+    ${logo}<h1>${escapeHtml(form.title)}</h1>
     ${form.description ? `<p class="description">${escapeHtml(form.description)}</p>` : ''}
     ${errorHtml}
-    <form method="post" action="/f/${encodeURIComponent(form.id)}"${enctype}>
-      ${hidden}${rendered.html}
-    </form>
-    ${runtimeScript()}`);
+    <div data-internal-form data-form-type="${definition.formType}" data-channel="${channel}">
+      <form method="post" action="/f/${encodeURIComponent(form.id)}"${enctype}>
+        ${hidden}${rendered}
+      </form>
+    </div>
+    ${runtimeScript()}
+    ${hasLogic ? logicClientScript(definition) : ''}
+    ${hasPostal ? postalClientScript() : ''}`, definition.design);
 }
 
-function renderCompletion(form: FormalooForm, definition: InternalFormDefinition): string {
-  const message = definition.successMessage ?? form.submit_message ?? '送信ありがとうございました';
-  return shell(form.title, `<section class="complete"><h1>${escapeHtml(message)}</h1></section>`);
+function renderCompletion(
+  form: FormalooForm,
+  definition: InternalFormDefinition,
+  completionPageId: string | null,
+): string {
+  const page = completionPageId
+    ? definition.successPages.find((candidate) => candidate.id === completionPageId)
+    : null;
+  const title = page?.title ?? definition.successMessage ?? form.submit_message ?? '送信ありがとうございました';
+  const description = page?.description
+    ? `<p class="description">${escapeHtml(page.description)}</p>`
+    : '';
+  return shell(form.title, `<section class="complete"><h1>${escapeHtml(title)}</h1>${description}</section>`, definition.design);
 }
 
-function renderUnavailable(status: 404 | 422 | 500, message: string): Response {
-  return new Response(shell('フォーム', `<section class="complete"><h1>${escapeHtml(message)}</h1></section>`), {
+function renderUnavailable(
+  status: 200 | 404 | 422 | 500,
+  message: string,
+  options: { title?: string; design?: FormDesign } = {},
+): Response {
+  return new Response(shell(
+    options.title ?? 'フォーム',
+    `<section class="complete"><h1>${escapeHtml(message)}</h1></section>`,
+    options.design,
+  ), {
     status,
     headers: { 'Content-Type': 'text/html; charset=UTF-8' },
   });
 }
 
+type RuntimeForm = {
+  ok: true;
+  form: FormalooForm;
+  definition: InternalFormDefinition;
+  submissionCount: number;
+  availability: InternalFormAvailability;
+};
+
 async function loadRuntimeForm(db: D1Database, formId: string): Promise<
-  | { ok: true; form: FormalooForm; definition: InternalFormDefinition }
+  | RuntimeForm
   | { ok: false; status: 404 | 422; message: string }
 > {
   const form = await getFormalooForm(db, formId);
@@ -613,7 +909,14 @@ async function loadRuntimeForm(db: D1Database, formId: string): Promise<
   }
   const parsed = parseInternalFormDefinition(form.definition_json);
   if (!parsed.ok) return { ok: false, status: 422, message: parsed.error };
-  return { ok: true, form, definition: parsed.definition };
+  const submissionCount = await countInternalFormSubmissionsForForm(db, formId);
+  return {
+    ok: true,
+    form,
+    definition: parsed.definition,
+    submissionCount,
+    availability: evaluateInternalFormAvailability(parsed.definition, submissionCount),
+  };
 }
 
 function answerInputs(body: Record<string, string | File | (string | File)[]>): InternalAnswerInput {
@@ -636,13 +939,119 @@ async function rollbackUploads(bucket: R2Bucket, keys: string[]): Promise<void> 
   await Promise.allSettled(keys.map((key) => bucket.delete(key)));
 }
 
+function logicAnswers(fields: InternalFormField[], input: InternalAnswerInput): InternalFormLogicAnswers {
+  const answers: InternalFormLogicAnswers = Object.create(null) as InternalFormLogicAnswers;
+  fields.forEach((field, index) => {
+    const value = input[`a_${index}`];
+    if (typeof value === 'string') answers[field.id] = value;
+    else if (Array.isArray(value)) {
+      answers[field.id] = value.filter((item): item is string => typeof item === 'string');
+    }
+  });
+  return answers;
+}
+
+function availabilityResponse(runtime: RuntimeForm): Response | null {
+  if (runtime.availability.status === 'open') return null;
+  return renderUnavailable(200, runtime.availability.message!, {
+    title: runtime.form.title,
+    design: runtime.definition.design,
+  });
+}
+
+async function verifiedFriend(c: Context<Env>, rawToken: string | null) {
+  const verifiedFriendId = await verifyFriendToken(rawToken, c.env.FORMALOO_FRIEND_TOKEN_SECRET);
+  return verifiedFriendId ? getFriendById(c.env.DB, verifiedFriendId) : null;
+}
+
+internalFormsPublic.get('/fo/:formId', async (c, next: Next) => {
+  try {
+    const id = c.req.param('formId');
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.render_backend !== 'internal') return next();
+    if (form.deleted || form.builder_status !== 'published') {
+      return c.json({ success: false, error: 'このフォームは現在ご利用いただけません' }, 404);
+    }
+
+    const lineUserId = c.req.query('lu') ?? null;
+    let friendId = c.req.query('f') ?? null;
+    const lineApp = /\bLine\b/i.test(c.req.header('user-agent') || '');
+    const liffBounced = c.req.query('_lfb') === '1';
+    if (!lineUserId && !friendId && lineApp && !liffBounced) {
+      let liffBase = c.env.LIFF_URL;
+      let resolvedLiffId: string | null = null;
+      if (form.line_account_id) {
+        try {
+          const account = await getLineAccountById(c.env.DB, form.line_account_id);
+          if (account?.liff_id) {
+            resolvedLiffId = account.liff_id;
+            liffBase = `https://liff.line.me/${account.liff_id}`;
+          }
+        } catch (error) {
+          console.error(`/fo/${id} internal LIFF resolve failed (fallback global):`, error);
+        }
+      }
+      if (liffBase) {
+        const base = (c.env.WORKER_URL || new URL(c.req.url).origin).replace(/\/+$/, '');
+        const directUrl = new URL(`${base}/fo/${encodeURIComponent(id)}`);
+        directUrl.searchParams.set('_lfb', '1');
+        const liffIdParam = resolvedLiffId ? `&liffId=${encodeURIComponent(resolvedLiffId)}` : '';
+        return c.redirect(`${liffBase}?redirect=${encodeURIComponent(directUrl.toString())}${liffIdParam}`, 302);
+      }
+    }
+
+    let friendName: string | null = null;
+    try {
+      if (!friendId && lineUserId) {
+        const friend = await getFriendByLineUserId(c.env.DB, lineUserId);
+        if (friend) {
+          friendId = friend.id;
+          friendName = friend.display_name ?? null;
+        }
+      } else if (friendId) {
+        const friend = await getFriendById(c.env.DB, friendId);
+        if (friend) friendName = friend.display_name ?? null;
+        else friendId = null;
+      }
+    } catch (error) {
+      console.error(`/fo/${id} internal friend resolve failed (non-blocking):`, error);
+      friendId = null;
+      friendName = null;
+    }
+
+    try {
+      await c.env.DB.prepare(
+        'INSERT INTO form_opens (id, form_id, friend_id, friend_name, opened_at) VALUES (?, ?, ?, ?, ?)',
+      ).bind(crypto.randomUUID(), id, friendId, friendName, jstNow()).run();
+    } catch (error) {
+      console.error(`/fo/${id} internal form open insert failed (non-blocking):`, error);
+    }
+
+    const signed = friendId
+      ? await signFriendToken(friendId, c.env.FORMALOO_FRIEND_TOKEN_SECRET)
+      : null;
+    const target = `/f/${encodeURIComponent(id)}${signed ? `?fr_id=${encodeURIComponent(signed)}` : ''}`;
+    return c.redirect(target, 302);
+  } catch (error) {
+    console.error('GET internal /fo/:formId error:', error);
+    return renderUnavailable(500, 'フォームの読み込みに失敗しました');
+  }
+});
+
 internalFormsPublic.get('/f/:formId', async (c) => {
   try {
     const runtime = await loadRuntimeForm(c.env.DB, c.req.param('formId'));
     if (!runtime.ok) return renderUnavailable(runtime.status, runtime.message);
+    const unavailable = availabilityResponse(runtime);
+    if (unavailable) return unavailable;
     const rawToken = c.req.query('fr_id') ?? null;
-    const verified = await verifyFriendToken(rawToken, c.env.FORMALOO_FRIEND_TOKEN_SECRET);
-    return c.html(renderFormPage(runtime.form, runtime.definition, verified ? rawToken : null));
+    const friend = await verifiedFriend(c, rawToken);
+    return c.html(renderFormPage(
+      runtime.form,
+      runtime.definition,
+      friend ? rawToken : null,
+      friend ? 'line' : 'web',
+    ));
   } catch (error) {
     console.error('GET /f/:formId error:', error);
     return renderUnavailable(500, 'フォームの読み込みに失敗しました');
@@ -653,21 +1062,37 @@ internalFormsPublic.post('/f/:formId', async (c) => {
   try {
     const runtime = await loadRuntimeForm(c.env.DB, c.req.param('formId'));
     if (!runtime.ok) return renderUnavailable(runtime.status, runtime.message);
+    const unavailable = availabilityResponse(runtime);
+    if (unavailable) return unavailable;
+
     const parsedBody = await c.req.parseBody({ all: true }).catch(() => ({}));
     const body = answerInputs(parsedBody);
-    const validation = validateInternalFormAnswers(runtime.definition.fields, body);
     const rawToken = typeof body.fr_id === 'string' ? body.fr_id : null;
-    const verifiedFriendId = await verifyFriendToken(rawToken, c.env.FORMALOO_FRIEND_TOKEN_SECRET);
+    const friend = await verifiedFriend(c, rawToken);
+    const channel: InternalFormChannel = friend ? 'line' : 'web';
+    const submittedLogicAnswers = logicAnswers(runtime.definition.fields, body);
+    const logicState = evaluateInternalFormLogic(
+      runtime.definition.fields,
+      runtime.definition.logic,
+      submittedLogicAnswers,
+      channel,
+    );
+    const validation = validateInternalFormAnswers(runtime.definition.fields, body, {
+      visibleFieldIds: logicState.visibleFieldIds,
+    });
 
     if (!validation.ok) {
-      return c.html(
-        renderFormPage(runtime.form, runtime.definition, verifiedFriendId ? rawToken : null, validation.error),
-        400,
-      );
+      return c.html(renderFormPage(
+        runtime.form,
+        runtime.definition,
+        friend ? rawToken : null,
+        channel,
+        validation.error,
+        submittedLogicAnswers,
+      ), 400);
     }
 
     const uploadedKeys: string[] = [];
-    let friendId: string | null = null;
     try {
       const answers = validation.answers;
       for (const upload of validation.pendingUploads) {
@@ -689,25 +1114,38 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         answers[upload.fieldId] = metadata;
       }
 
-      const friend = verifiedFriendId ? await getFriendById(c.env.DB, verifiedFriendId) : null;
-      friendId = friend?.id ?? null;
-      await createInternalFormSubmission(c.env.DB, {
-        formId: runtime.form.id,
-        friendId,
-        answers,
-      });
+      const maxSubmissions = runtime.definition.operationsSettings.maxSubmitCount;
+      const submission = maxSubmissions === undefined
+        ? await createInternalFormSubmission(c.env.DB, {
+          formId: runtime.form.id,
+          friendId: friend?.id ?? null,
+          answers,
+        })
+        : await createInternalFormSubmissionWithinLimit(c.env.DB, {
+          formId: runtime.form.id,
+          friendId: friend?.id ?? null,
+          answers,
+          maxSubmissions,
+        });
+      if (!submission) {
+        await rollbackUploads(c.env.IMAGES, uploadedKeys);
+        return renderUnavailable(200, '回答上限に達したため受付を終了しました', {
+          title: runtime.form.title,
+          design: runtime.definition.design,
+        });
+      }
     } catch (error) {
       await rollbackUploads(c.env.IMAGES, uploadedKeys);
       throw error;
     }
 
-    if (friendId) {
+    if (friend) {
       const effects: Promise<unknown>[] = [];
       if (runtime.form.on_submit_tag_id) {
-        effects.push(addTagToFriend(c.env.DB, friendId, runtime.form.on_submit_tag_id));
+        effects.push(addTagToFriend(c.env.DB, friend.id, runtime.form.on_submit_tag_id));
       }
       if (runtime.form.on_submit_scenario_id) {
-        effects.push(enrollFriendInScenario(c.env.DB, friendId, runtime.form.on_submit_scenario_id));
+        effects.push(enrollFriendInScenario(c.env.DB, friend.id, runtime.form.on_submit_scenario_id));
       }
       const settled = await Promise.allSettled(effects);
       for (const result of settled) {
@@ -715,7 +1153,13 @@ internalFormsPublic.post('/f/:formId', async (c) => {
       }
     }
 
-    return c.html(renderCompletion(runtime.form, runtime.definition));
+    if (runtime.definition.formRedirect.url) {
+      return c.redirect(buildRedirectTargetUrl(
+        runtime.definition.formRedirect.url,
+        runtime.definition.formRedirect.openExternalBrowser,
+      ), 303);
+    }
+    return c.html(renderCompletion(runtime.form, runtime.definition, logicState.completionPageId));
   } catch (error) {
     console.error('POST /f/:formId error:', error);
     return renderUnavailable(500, '送信に失敗しました');

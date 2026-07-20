@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
-import { signFriendToken } from '../services/formaloo-friend-token.js';
+import { signFriendToken, verifyFriendToken } from '../services/formaloo-friend-token.js';
 import { internalFormsPublic } from './internal-forms-public.js';
 import type { Env } from '../index.js';
 
@@ -77,6 +77,14 @@ function app(): Hono<Env> {
   const hono = new Hono<Env>();
   hono.route('/', internalFormsPublic);
   return hono;
+}
+
+function postForm(id: string, body: URLSearchParams) {
+  return app().request(`/f/${id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  }, env());
 }
 
 function seedForm(
@@ -183,7 +191,117 @@ describe('internal public form GET /f/:formId', () => {
     expect((await app().request('/f/fa_draft', {}, env())).status).toBe(404);
     expect((await app().request('/f/fa_unsupported', {}, env())).status).toBe(422);
   });
+
+  test.each([
+    [
+      'upcoming',
+      { submitStartTime: '2099-07-25T00:00:00+09:00' },
+      '受付開始前・7月25日から',
+    ],
+    [
+      'ended',
+      { submitEndTime: '2000-07-25T00:00:00+09:00' },
+      '受付は終了しました',
+    ],
+  ])('honestly renders %s availability without exposing or accepting the form', async (_name, operationsSettings, message) => {
+    seedForm('fa_window', { definition: { fields: [fields[0]], logic: [], operationsSettings } });
+
+    const getResponse = await app().request('/f/fa_window', {}, env());
+    expect(getResponse.status).toBe(200);
+    const getHtml = await getResponse.text();
+    expect(getHtml).toContain(message);
+    expect(getHtml).not.toContain('<form');
+
+    const postResponse = await postForm('fa_window', new URLSearchParams({ a_0: '佐藤' }));
+    expect(postResponse.status).toBe(200);
+    expect(await postResponse.text()).toContain(message);
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 0 });
+  });
+
+  test('applies the saved theme, images, explicit CJK font, mobile sizing, and native postal controls', async () => {
+    seedForm('fa_design', { definition: {
+      fields: [
+        {
+          id: 'zip', type: 'text', label: '郵便番号', required: true, position: 0,
+          config: { postalAutofill: { zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town' } },
+        },
+        { id: 'pref', type: 'text', label: '都道府県', required: true, position: 1, config: {} },
+        { id: 'city', type: 'text', label: '市区町村', required: true, position: 2, config: {} },
+        { id: 'town', type: 'text', label: '町域', required: false, position: 3, config: {} },
+      ],
+      logic: [],
+      design: {
+        themeColor: '#112233', backgroundColor: '#223344', buttonColor: '#334455',
+        textColor: '#F0F1F2', fieldColor: '#445566', borderColor: '#778899',
+        submitTextColor: '#FFFFFF', logoUrl: 'https://img.example.test/logo.png',
+        backgroundImageUrl: 'https://img.example.test/background.png', presetId: 'matcha-wa',
+      },
+    } });
+
+    const response = await app().request('/f/fa_design', {}, env());
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain('--form-theme: #112233');
+    expect(html).toContain('--form-background: #223344');
+    expect(html).toContain('--form-button: #334455');
+    expect(html).toContain('--form-text: #F0F1F2');
+    expect(html).toContain('--form-field: #445566');
+    expect(html).toContain('--form-border: #778899');
+    expect(html).toContain('--form-submit-text: #FFFFFF');
+    expect(html).toContain('--form-font:');
+    expect(html).toContain('https://img.example.test/background.png');
+    expect(html).toContain('<img class="form-logo" src="https://img.example.test/logo.png"');
+    expect(html).toContain('min-height: 48px');
+    expect(html).toContain('@media (min-width: 600px)');
+    expect(html).toContain('type="button" class="postal-lookup"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('/api/postal-lookup?zip=');
+    expect(html).toContain("replace(/[\\s-]/g, '')");
+    expect(html).toContain('AbortController');
+    expect(html).toContain("typeof value === 'string' && !target.value");
+    for (const status of ['400', '404', '409', '429', '503']) {
+      expect(html).toContain(`${status}:`);
+    }
+  });
+
+  test('ships the same internal logic engine for one-page ABC and channel branching', async () => {
+    seedForm('fa_logic', { definition: logicDefinition() });
+    const response = await app().request('/f/fa_logic', {}, env());
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('function evaluateInternalFormLogic');
+    expect(html).toContain('data-field-id="page-a"');
+    expect(html).toContain('data-field-id="page-b"');
+    expect(html).toContain('data-form-type="simple"');
+    expect(html).toContain('data-channel="web"');
+    expect(html).toContain("control.disabled = !visible");
+  });
 });
+
+function logicDefinition() {
+  return {
+    fields: [
+      { id: 'kind', type: 'choice', label: '希望ルート', required: true, position: 0, config: { choices: ['A', 'B'] } },
+      { id: 'page-a', type: 'page_break', label: 'Aルート', required: false, position: 1, config: {} },
+      { id: 'answer-a', type: 'text', label: 'A回答', required: true, position: 2, config: {} },
+      { id: 'page-b', type: 'page_break', label: 'Bルート', required: false, position: 3, config: {} },
+      { id: 'answer-b', type: 'text', label: 'B回答', required: true, position: 4, config: {} },
+      { id: 'email-web', type: 'email', label: 'メール', required: true, position: 5, config: {} },
+    ],
+    logic: [
+      { id: 'route-a', sourceFieldId: 'kind', operator: 'equals', value: 'A', action: 'jump', targetFieldId: 'page-a' },
+      { id: 'route-b', sourceFieldId: 'kind', operator: 'equals', value: 'B', action: 'jump', targetFieldId: 'page-b' },
+      { id: 'web-email', sourceFieldId: '__channel__', operator: 'equals', value: 'web', action: 'show', targetFieldId: 'email-web' },
+      {
+        id: 'done-b', sourceFieldId: 'answer-b', operator: 'equals', value: '', action: 'submit',
+        targetFieldId: 'done-b', terminalTrigger: 'on_answered',
+      },
+    ],
+    formType: 'simple',
+    successPages: [{ id: 'done-b', title: 'B専用完了', description: 'Bルートを受け付けました <b>完了</b>' }],
+  };
+}
 
 describe('internal public form POST /f/:formId', () => {
   test.each([
@@ -267,5 +385,116 @@ describe('internal public form POST /f/:formId', () => {
     expect(row.friend_id).toBeNull();
     expect(JSON.parse(row.answers_json)).not.toHaveProperty('admin');
     expect(raw.prepare('SELECT COUNT(*) AS n FROM friend_tags').get()).toEqual({ n: 0 });
+  });
+
+  test('enforces the response limit atomically and never shows success for the rejected answer', async () => {
+    seedForm('fa_limited', { definition: {
+      fields: [fields[0]], logic: [], operationsSettings: { maxSubmitCount: 1 },
+    } });
+
+    const first = await postForm('fa_limited', new URLSearchParams({ a_0: '佐藤' }));
+    const second = await postForm('fa_limited', new URLSearchParams({ a_0: '鈴木' }));
+
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain('受付完了');
+    expect(second.status).toBe(200);
+    const rejectedHtml = await second.text();
+    expect(rejectedHtml).toContain('回答上限に達したため受付を終了しました');
+    expect(rejectedHtml).not.toContain('受付完了 &lt;b&gt;');
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 1 });
+  });
+
+  test('uses verified LINE channel logic, drops hidden answers, and selects the server-side route completion', async () => {
+    seedForm('fa_logic', { definition: logicDefinition() });
+    const token = await signFriendToken('friend-1', FRIEND_SECRET);
+    const body = new URLSearchParams({
+      a_0: 'B', a_2: '改ざんされたA回答', a_4: 'Bの回答', fr_id: token!,
+    });
+
+    const response = await postForm('fa_logic', body);
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain('B専用完了');
+    expect(html).toContain('Bルートを受け付けました 完了');
+    expect(html).not.toContain('<b>完了</b>');
+    const stored = raw.prepare('SELECT friend_id, answers_json FROM internal_form_submissions').get() as {
+      friend_id: string; answers_json: string;
+    };
+    expect(stored.friend_id).toBe('friend-1');
+    expect(JSON.parse(stored.answers_json)).toEqual({ kind: 'B', 'answer-b': 'Bの回答' });
+  });
+
+  test('treats a tampered token as web channel and requires the web-only field', async () => {
+    seedForm('fa_logic', { definition: logicDefinition() });
+    const response = await postForm('fa_logic', new URLSearchParams({
+      a_0: 'B', a_4: 'Bの回答', fr_id: 'friend-1.tampered',
+    }));
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain('メール は必須項目です');
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 0 });
+  });
+
+  test('redirects to the configured completion URL with external-browser intent after persistence', async () => {
+    seedForm('fa_redirect', { definition: {
+      fields: [fields[0]], logic: [],
+      formRedirect: { url: 'https://example.test/thanks?from=form#done', openExternalBrowser: true },
+    } });
+    const response = await postForm('fa_redirect', new URLSearchParams({ a_0: '佐藤' }));
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(
+      'https://example.test/thanks?from=form&openExternalBrowser=1#done',
+    );
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 1 });
+  });
+});
+
+describe('internal LINE distribution GET /fo/:formId', () => {
+  test.each([
+    ['f', 'friend-1'],
+    ['lu', 'U1'],
+  ])('resolves %s, records the open, and redirects with a signed internal fr_id', async (key, value) => {
+    seedForm('fa_internal');
+    const response = await app().request(`/fo/fa_internal?${key}=${value}`, {}, env());
+
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get('location')!, 'https://worker.example.test');
+    expect(location.pathname).toBe('/f/fa_internal');
+    const token = location.searchParams.get('fr_id');
+    expect(await verifyFriendToken(token, FRIEND_SECRET)).toBe('friend-1');
+    expect(raw.prepare('SELECT form_id, friend_id, friend_name FROM form_opens').get()).toEqual({
+      form_id: 'fa_internal', friend_id: 'friend-1', friend_name: '佐藤',
+    });
+  });
+
+  test('uses a one-shot LIFF bounce and then degrades anonymously without a loop', async () => {
+    seedForm('fa_internal');
+    const lineResponse = await app().request('/fo/fa_internal', {
+      headers: { 'User-Agent': 'Mozilla/5.0 Line/14.0' },
+    }, env());
+    expect(lineResponse.status).toBe(302);
+    expect(decodeURIComponent(lineResponse.headers.get('location')!)).toContain(
+      'https://worker.example.test/fo/fa_internal?_lfb=1',
+    );
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM form_opens').get()).toEqual({ n: 0 });
+
+    const bounced = await app().request('/fo/fa_internal?_lfb=1', {
+      headers: { 'User-Agent': 'Mozilla/5.0 Line/14.0' },
+    }, env());
+    expect(bounced.status).toBe(302);
+    expect(bounced.headers.get('location')).toBe('/f/fa_internal');
+    expect(raw.prepare('SELECT friend_id FROM form_opens').get()).toEqual({ friend_id: null });
+  });
+
+  test('passes non-internal forms to the existing Formaloo route unchanged', async () => {
+    seedForm('fa_formaloo', { backend: 'formaloo' });
+    const stacked = new Hono<Env>();
+    stacked.route('/', internalFormsPublic);
+    stacked.get('/fo/:formId', (c) => c.body('formaloo-byte-body', 299));
+
+    const response = await stacked.request('/fo/fa_formaloo', {}, env());
+    expect(response.status).toBe(299);
+    expect(await response.text()).toBe('formaloo-byte-body');
   });
 });
