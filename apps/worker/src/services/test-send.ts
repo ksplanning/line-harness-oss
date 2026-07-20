@@ -27,6 +27,7 @@ export interface TestRecipient {
   display_name: string | null;
   picture_url: string | null;
   user_id: string | null;
+  ref_code: string | null;
   metadata: string | null;
 }
 
@@ -66,7 +67,7 @@ export async function getTestRecipients(db: D1Database, accountId: string): Prom
 
   const placeholders = friendIds.map(() => '?').join(',');
   const result = await db.prepare(
-    `SELECT id, line_user_id, display_name, picture_url, user_id, metadata
+    `SELECT id, line_user_id, display_name, picture_url, user_id, ref_code, metadata
      FROM friends
      WHERE line_account_id = ? AND is_following = 1 AND id IN (${placeholders})`,
   ).bind(accountId, ...friendIds).all<TestRecipient>();

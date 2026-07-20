@@ -91,6 +91,7 @@ beforeEach(() => {
       is_following INTEGER NOT NULL DEFAULT 1,
       line_account_id TEXT,
       user_id TEXT,
+      ref_code TEXT,
       metadata TEXT
     );
     CREATE TABLE account_settings (
@@ -134,8 +135,8 @@ beforeEach(() => {
     .run('acc-1', 'token-1', 'liff-1', 10);
   raw.prepare(`INSERT INTO line_accounts (id, channel_access_token, liff_id, monthly_cap) VALUES (?, ?, ?, ?)`)
     .run('acc-2', 'token-2', 'liff-2', 10);
-  raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, is_following, line_account_id) VALUES (?, ?, ?, 1, ?)`)
-    .run('test-friend', 'U-test', 'テスター', 'acc-1');
+  raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, is_following, line_account_id, ref_code) VALUES (?, ?, ?, 1, ?, ?)`)
+    .run('test-friend', 'U-test', 'テスター', 'acc-1', '紹介A');
   raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, is_following, line_account_id) VALUES (?, ?, ?, 1, ?)`)
     .run('real-recipient', 'U-real', '本番受信者', 'acc-1');
   raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, is_following, line_account_id) VALUES (?, ?, ?, 1, ?)`)
@@ -170,13 +171,13 @@ describe('POST /api/test-sends', () => {
     const res = await post(app, {
       accountId: 'acc-1',
       source: 'broadcast',
-      messages: [{ type: 'text', content: 'こんにちは {{display_name}} / {{liff_id}}' }],
+      messages: [{ type: 'text', content: 'こんにちは {{display_name}} / {{liff_id}} / {{ref}} {{#if_ref}}紹介あり{{/if_ref}}' }],
     });
     expect(res.status).toBe(200);
     expect(pushCalls).toEqual([{
       token: 'token-1',
       to: 'U-test',
-      messages: [{ type: 'text', text: '【テスト配信】\nこんにちは テスター / liff-1' }],
+      messages: [{ type: 'text', text: '【テスト配信】\nこんにちは テスター / liff-1 / 紹介A 紹介あり' }],
     }]);
     expect(pushCalls.some((call) => call.to === 'U-real')).toBe(false);
 
@@ -188,7 +189,7 @@ describe('POST /api/test-sends', () => {
       line_account_id: 'acc-1',
       broadcast_id: null,
       scenario_step_id: null,
-      content: '【テスト配信】\nこんにちは テスター / liff-1',
+      content: '【テスト配信】\nこんにちは テスター / liff-1 / 紹介A 紹介あり',
     })]);
   });
 
