@@ -61,6 +61,27 @@ describe('evaluateInternalFormLogic', () => {
     expect(evaluateInternalFormLogic(conditionalFields, logic, { kind: '法人' }, 'web').visibleFieldIds).toEqual(['kind', 'company']);
   });
 
+  test('section の show/hide は次の section までの項目をひとまとまりで切り替える', () => {
+    const sectionFields: HarnessField[] = [
+      { id: 'kind', type: 'choice', label: '種別', required: true, position: 0, config: { choices: ['法人', '個人'] } },
+      { id: 'company-section', type: 'section', label: '法人向け', required: false, position: 1, config: {} },
+      { id: 'company', type: 'text', label: '会社名', required: true, position: 2, config: {} },
+      { id: 'department', type: 'text', label: '部署名', required: false, position: 3, config: {} },
+      { id: 'personal-section', type: 'section', label: '共通案内', required: false, position: 4, config: {} },
+      { id: 'note', type: 'text', label: '備考', required: false, position: 5, config: {} },
+    ];
+    const logic: HarnessLogicRule[] = [
+      { id: 'show-company-section', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'company-section' },
+    ];
+
+    expect(evaluateInternalFormLogic(sectionFields, logic, {}, 'web').visibleFieldIds).toEqual([
+      'kind', 'personal-section', 'note',
+    ]);
+    expect(evaluateInternalFormLogic(sectionFields, logic, { kind: '法人' }, 'web').visibleFieldIds).toEqual([
+      'kind', 'company-section', 'company', 'department', 'personal-section', 'note',
+    ]);
+  });
+
   test('経由チャネルを条件ソースにして LINE と直リンクの表示を分ける', () => {
     const channelFields: HarnessField[] = [
       { id: 'name', type: 'text', label: '名前', required: true, position: 0, config: {} },
@@ -91,5 +112,54 @@ describe('evaluateInternalFormLogic', () => {
 
     expect(evaluateInternalFormLogic(compoundFields, logic, { kind: '法人', region: '東' }, 'web').visibleFieldIds).toContain('detail');
     expect(evaluateInternalFormLogic(compoundFields, logic, { kind: '法人', region: '西' }, 'web').visibleFieldIds).not.toContain('detail');
+  });
+
+  test('非表示になった分岐元の改ざん回答を後段の条件に使わない', () => {
+    const nestedFields: HarnessField[] = [
+      { id: 'gate', type: 'choice', label: '追加質問', required: true, position: 0, config: { choices: ['はい', 'いいえ'] } },
+      { id: 'nested', type: 'text', label: '合言葉', required: false, position: 1, config: {} },
+      { id: 'detail', type: 'text', label: '限定項目', required: false, position: 2, config: {} },
+      { id: 'detail-not', type: 'text', label: '否定条件の限定項目', required: false, position: 3, config: {} },
+    ];
+    const nestedLogic: HarnessLogicRule[] = [
+      { id: 'show-nested', sourceFieldId: 'gate', operator: 'equals', value: 'はい', action: 'show', targetFieldId: 'nested' },
+      { id: 'show-detail', sourceFieldId: 'nested', operator: 'equals', value: 'open', action: 'show', targetFieldId: 'detail' },
+      { id: 'show-detail-not', sourceFieldId: 'nested', operator: 'not_equals', value: 'closed', action: 'show', targetFieldId: 'detail-not' },
+    ];
+
+    expect(evaluateInternalFormLogic(
+      nestedFields,
+      nestedLogic,
+      { gate: 'いいえ', nested: 'open' },
+      'web',
+    ).visibleFieldIds).toEqual(['gate']);
+  });
+
+  test('ここで送信が成立したら同じルートの後続項目を表示・検証対象から外す', () => {
+    const terminalFields: HarnessField[] = [
+      { id: 'route', type: 'choice', label: '希望ルート', required: true, position: 0, config: { choices: ['A', 'B'] } },
+      { id: 'answer-a', type: 'text', label: 'Aの回答', required: true, position: 1, config: {} },
+      { id: 'after-terminal', type: 'text', label: '後続の必須項目', required: true, position: 2, config: {} },
+    ];
+    const terminalLogic: HarnessLogicRule[] = [{
+      id: 'finish-a',
+      sourceFieldId: 'answer-a',
+      operator: 'equals',
+      value: '',
+      action: 'submit',
+      targetFieldId: 'done-a',
+      terminalTrigger: 'on_answered',
+    }];
+
+    const state = evaluateInternalFormLogic(
+      terminalFields,
+      terminalLogic,
+      { route: 'A', 'answer-a': '回答済み', 'after-terminal': '改ざん値' },
+      'web',
+    );
+
+    expect(state.completionPageId).toBe('done-a');
+    expect(state.visibleFieldIds).toEqual(['route', 'answer-a']);
+    expect(state.hiddenFieldIds).toContain('after-terminal');
   });
 });

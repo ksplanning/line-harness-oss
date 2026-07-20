@@ -13,7 +13,7 @@ export interface InternalFormLogicState {
   completionPageId: string | null;
 }
 
-type LogicField = Pick<HarnessField, 'id' | 'position'>;
+type LogicField = Pick<HarnessField, 'id' | 'position' | 'type'>;
 
 /**
  * Internal 公開画面と builder preview が共有する分岐評価器。
@@ -29,112 +29,151 @@ export function evaluateInternalFormLogic(
 ): InternalFormLogicState {
   const ordered = [...fields].sort((a, b) => a.position - b.position);
   const positionById = new Map(ordered.map((field, index) => [field.id, index]));
-  const hidden = new Set<string>();
-  const activeJumpBySource: Record<string, string> = {};
+  const compute = (allowedSources: Set<string>): InternalFormLogicState => {
+    // Once a field is hidden in an evaluation pass, its submitted value cannot
+    // make itself or a later field visible in the next pass. Starting every
+    // top-level evaluation with all fields still lets legitimate answers reveal
+    // nested fields when their visible parent condition matches.
+    const hidden = new Set(
+      ordered.filter((field) => !allowedSources.has(field.id)).map((field) => field.id),
+    );
+    const activeJumpBySource: Record<string, string> = {};
 
-  const values = (sourceFieldId: string): string[] => {
-    if (sourceFieldId === '__channel__') return [channel];
-    const value = answers[sourceFieldId];
-    if (Array.isArray(value)) return value.map((item) => String(item));
-    if (value === undefined || value === null) return [];
-    return [String(value)];
-  };
+    const hideTarget = (targetFieldId: string): void => {
+      const start = positionById.get(targetFieldId);
+      if (start === undefined) return;
+      hidden.add(targetFieldId);
+      if (ordered[start].type !== 'section') return;
+      for (let index = start + 1; index < ordered.length; index++) {
+        if (ordered[index].type === 'section' || ordered[index].type === 'page_break') break;
+        hidden.add(ordered[index].id);
+      }
+    };
 
-  const conditionMatches = (sourceFieldId: string, operator: string, expected: string): boolean => {
-    const actual = values(sourceFieldId);
-    const answered = actual.some((value) => value.trim() !== '');
-    if (operator === 'is_answered') return answered;
-    if (operator === 'not_equals' || operator === 'is_not') return !actual.includes(expected);
-    if (operator === 'gt' || operator === 'gte' || operator === 'lt' || operator === 'lte') {
-      const left = Number(actual[0]);
-      const right = Number(expected);
-      if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
-      if (operator === 'gt') return left > right;
-      if (operator === 'gte') return left >= right;
-      if (operator === 'lt') return left < right;
-      return left <= right;
-    }
-    return actual.includes(expected);
-  };
+    const values = (sourceFieldId: string): string[] => {
+      if (sourceFieldId === '__channel__') return [channel];
+      if (!allowedSources.has(sourceFieldId)) return [];
+      const value = answers[sourceFieldId];
+      if (Array.isArray(value)) return value.map((item) => String(item));
+      if (value === undefined || value === null) return [];
+      return [String(value)];
+    };
 
-  const ruleMatches = (rule: HarnessLogicRule): boolean => {
-    if (rule.terminalTrigger === 'on_answered' && rule.action === 'submit') {
-      return values(rule.sourceFieldId).some((value) => value.trim() !== '');
-    }
-    if (Array.isArray(rule.conditions) && rule.conditions.length > 0) {
-      const matches = rule.conditions.map((condition) => conditionMatches(
-        condition.sourceFieldId,
-        condition.operator,
-        condition.value,
-      ));
-      return rule.conditionJoin === 'or' ? matches.some(Boolean) : matches.every(Boolean);
-    }
-    return conditionMatches(rule.sourceFieldId, rule.operator, rule.value);
-  };
+    const conditionMatches = (sourceFieldId: string, operator: string, expected: string): boolean => {
+      if (sourceFieldId !== '__channel__' && !allowedSources.has(sourceFieldId)) return false;
+      const actual = values(sourceFieldId);
+      const answered = actual.some((value) => value.trim() !== '');
+      if (operator === 'is_answered') return answered;
+      if (operator === 'not_equals' || operator === 'is_not') return !actual.includes(expected);
+      if (operator === 'gt' || operator === 'gte' || operator === 'lt' || operator === 'lte') {
+        const left = Number(actual[0]);
+        const right = Number(expected);
+        if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+        if (operator === 'gt') return left > right;
+        if (operator === 'gte') return left >= right;
+        if (operator === 'lt') return left < right;
+        return left <= right;
+      }
+      return actual.includes(expected);
+    };
 
-  const expanded = logic.flatMap((rule) => {
-    const actions = Array.isArray(rule.actions) && rule.actions.length > 0
-      ? rule.actions
-      : [{ action: rule.action, targetFieldId: rule.targetFieldId }];
-    return actions.map((action) => ({
-      rule,
-      action: action.action,
-      targetFieldId: action.targetFieldId,
-      matches: ruleMatches(rule),
-    }));
-  });
+    const ruleMatches = (rule: HarnessLogicRule): boolean => {
+      if (rule.terminalTrigger === 'on_answered' && rule.action === 'submit') {
+        return values(rule.sourceFieldId).some((value) => value.trim() !== '');
+      }
+      if (Array.isArray(rule.conditions) && rule.conditions.length > 0) {
+        const matches = rule.conditions.map((condition) => conditionMatches(
+          condition.sourceFieldId,
+          condition.operator,
+          condition.value,
+        ));
+        return rule.conditionJoin === 'or' ? matches.some(Boolean) : matches.every(Boolean);
+      }
+      return conditionMatches(rule.sourceFieldId, rule.operator, rule.value);
+    };
 
-  // A field controlled by one or more `show` rules starts hidden and appears when
-  // any matching rule says so. A matching hide/legacy skip always wins.
-  const showTargets = new Set(
-    expanded.filter((entry) => entry.action === 'show').map((entry) => entry.targetFieldId),
-  );
-  for (const target of showTargets) {
-    if (!expanded.some((entry) => entry.action === 'show' && entry.targetFieldId === target && entry.matches)) {
-      hidden.add(target);
-    }
-  }
-  for (const entry of expanded) {
-    if (entry.matches && (entry.action === 'hide' || entry.action === 'skip')) hidden.add(entry.targetFieldId);
-  }
-
-  // Jump rules sharing a source define sibling route segments. Before an answer,
-  // every route segment is hidden. After an answer, only the selected segment is
-  // visible. This is what makes ABC routing work on a one-page form as well.
-  const jumpSources = [...new Set(
-    expanded.filter((entry) => entry.action === 'jump').map((entry) => entry.rule.sourceFieldId),
-  )];
-  for (const source of jumpSources) {
-    const entries = expanded
-      .filter((entry) => entry.action === 'jump' && entry.rule.sourceFieldId === source && positionById.has(entry.targetFieldId))
-      .sort((a, b) => (positionById.get(a.targetFieldId) ?? 0) - (positionById.get(b.targetFieldId) ?? 0));
-    if (entries.length === 0) continue;
-    const active = entries.find((entry) => entry.matches);
-    if (active) activeJumpBySource[source] = active.targetFieldId;
-
-    entries.forEach((entry, index) => {
-      if (active && entry.targetFieldId === active.targetFieldId) return;
-      const start = positionById.get(entry.targetFieldId)!;
-      const end = index + 1 < entries.length
-        ? positionById.get(entries[index + 1].targetFieldId)!
-        : ordered.length;
-      for (let current = start; current < end; current++) hidden.add(ordered[current].id);
+    const expanded = logic.flatMap((rule) => {
+      const actions = Array.isArray(rule.actions) && rule.actions.length > 0
+        ? rule.actions
+        : [{ action: rule.action, targetFieldId: rule.targetFieldId }];
+      return actions.map((action) => ({
+        rule,
+        action: action.action,
+        targetFieldId: action.targetFieldId,
+        matches: ruleMatches(rule),
+      }));
     });
-  }
 
-  const visibleFieldIds = ordered.map((field) => field.id).filter((id) => !hidden.has(id));
-  const visible = new Set(visibleFieldIds);
-  const completion = expanded.find((entry) =>
-    entry.action === 'submit' && entry.matches && visible.has(entry.rule.sourceFieldId),
-  );
+    // A field controlled by one or more `show` rules starts hidden and appears when
+    // any matching rule says so. A matching hide/legacy skip always wins.
+    const showTargets = new Set(
+      expanded.filter((entry) => entry.action === 'show').map((entry) => entry.targetFieldId),
+    );
+    for (const target of showTargets) {
+      if (!expanded.some((entry) => entry.action === 'show' && entry.targetFieldId === target && entry.matches)) {
+        hideTarget(target);
+      }
+    }
+    for (const entry of expanded) {
+      if (entry.matches && (entry.action === 'hide' || entry.action === 'skip')) hideTarget(entry.targetFieldId);
+    }
 
-  return {
-    visibleFieldIds,
-    hiddenFieldIds: ordered.map((field) => field.id).filter((id) => hidden.has(id)),
-    activeJumpBySource,
-    completionSourceId: completion?.rule.sourceFieldId ?? null,
-    completionPageId: completion?.targetFieldId || null,
+    // Jump rules sharing a source define sibling route segments. Before an answer,
+    // every route segment is hidden. After an answer, only the selected segment is
+    // visible. This is what makes ABC routing work on a one-page form as well.
+    const jumpSources = [...new Set(
+      expanded.filter((entry) => entry.action === 'jump').map((entry) => entry.rule.sourceFieldId),
+    )];
+    for (const source of jumpSources) {
+      const entries = expanded
+        .filter((entry) => entry.action === 'jump' && entry.rule.sourceFieldId === source && positionById.has(entry.targetFieldId))
+        .sort((a, b) => (positionById.get(a.targetFieldId) ?? 0) - (positionById.get(b.targetFieldId) ?? 0));
+      if (entries.length === 0) continue;
+      const active = entries.find((entry) => entry.matches);
+      if (active) activeJumpBySource[source] = active.targetFieldId;
+
+      entries.forEach((entry, index) => {
+        if (active && entry.targetFieldId === active.targetFieldId) return;
+        const start = positionById.get(entry.targetFieldId)!;
+        const end = index + 1 < entries.length
+          ? positionById.get(entries[index + 1].targetFieldId)!
+          : ordered.length;
+        for (let current = start; current < end; current++) hidden.add(ordered[current].id);
+      });
+    }
+
+    const visibleBeforeCompletion = new Set(
+      ordered.map((field) => field.id).filter((id) => !hidden.has(id)),
+    );
+    const completion = expanded.find((entry) =>
+      entry.action === 'submit' && entry.matches && visibleBeforeCompletion.has(entry.rule.sourceFieldId),
+    );
+    const completionPosition = completion ? positionById.get(completion.rule.sourceFieldId) : undefined;
+    if (completionPosition !== undefined) {
+      for (let index = completionPosition + 1; index < ordered.length; index++) {
+        hidden.add(ordered[index].id);
+      }
+    }
+    const visibleFieldIds = ordered.map((field) => field.id).filter((id) => !hidden.has(id));
+
+    return {
+      visibleFieldIds,
+      hiddenFieldIds: ordered.map((field) => field.id).filter((id) => hidden.has(id)),
+      activeJumpBySource,
+      completionSourceId: completion?.rule.sourceFieldId ?? null,
+      completionPageId: completion?.targetFieldId || null,
+    };
   };
+
+  let allowedSources = new Set(ordered.map((field) => field.id));
+  let state = compute(allowedSources);
+  for (let pass = 0; pass <= ordered.length; pass++) {
+    const nextAllowedSources = new Set(state.visibleFieldIds);
+    if (nextAllowedSources.size === allowedSources.size) return state;
+    allowedSources = nextAllowedSources;
+    state = compute(allowedSources);
+  }
+  return state;
 }
 
 export function nextInternalFormFieldId(
