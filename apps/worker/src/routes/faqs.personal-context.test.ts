@@ -2,8 +2,8 @@ import { describe, expect, test } from 'vitest';
 import { Hono } from 'hono';
 import { faqs } from './faqs.js';
 
-function statefulDb() {
-  let stored: string | null = null;
+function statefulDb(initial: string | null = null) {
+  let stored: string | null = initial;
   const db = {
     prepare(sql: string) {
       const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
@@ -103,5 +103,64 @@ describe('faq-bot personal context settings', () => {
     const get = await app(db).request('/api/account-settings/faq-bot?accountId=account-a');
     const body = await get.json() as { data: { personalContext: { selectedCustomFieldIds: unknown } } };
     expect(body.data.personalContext.selectedCustomFieldIds).toEqual([]);
+  });
+
+  test('旧clientのpersonalContext省略PUTは保存済みOFFを既定ONへ戻さない', async () => {
+    const { db } = statefulDb();
+    const instance = app(db);
+    await instance.request('/api/account-settings/faq-bot', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: 'account-a',
+        enabled: true,
+        personalContext: {
+          enabled: false,
+          selectedCustomFieldIds: ['field-payment'],
+          includeFormAnswers: false,
+          maxTokens: 700,
+        },
+      }),
+    });
+
+    await instance.request('/api/account-settings/faq-bot', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: 'account-a',
+        enabled: false,
+        answerMode: 'draft',
+      }),
+    });
+
+    const response = await instance.request(
+      '/api/account-settings/faq-bot?accountId=account-a',
+    );
+    const body = await response.json() as {
+      data: { personalContext: Record<string, unknown> };
+    };
+    expect(body.data.personalContext).toEqual({
+      enabled: false,
+      selectedCustomFieldIds: ['field-payment'],
+      includeFormAnswers: false,
+      maxTokens: 700,
+    });
+  });
+
+  test('壊れた保存JSONはruntimeと同じく本人contextをfail-safe OFFで返す', async () => {
+    const { db } = statefulDb('{');
+    const response = await app(db).request(
+      '/api/account-settings/faq-bot?accountId=account-a',
+    );
+    const body = await response.json() as {
+      data: { personalContext: Record<string, unknown> };
+    };
+
+    expect(body.data.personalContext).toEqual({
+      enabled: false,
+      selectedCustomFieldIds: [],
+      includeFormAnswers: false,
+      maxTokens: 1_200,
+    });
   });
 });

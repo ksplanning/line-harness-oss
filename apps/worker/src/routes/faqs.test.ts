@@ -238,9 +238,9 @@ describe('FAQ bot account settings routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(String((db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0])).toContain('ON CONFLICT');
-    expect(stmt.bind.mock.calls[0][1]).toBe('acc-1');
-    expect(JSON.parse(stmt.bind.mock.calls[0][2] as string)).toMatchObject({ enabled: true, threshold: 0.7, maxRepliesPerDay: 3 });
+    expect(String((db.prepare as ReturnType<typeof vi.fn>).mock.calls[1][0])).toContain('ON CONFLICT');
+    expect(stmt.bind.mock.calls[1][1]).toBe('acc-1');
+    expect(JSON.parse(stmt.bind.mock.calls[1][2] as string)).toMatchObject({ enabled: true, threshold: 0.7, maxRepliesPerDay: 3 });
   });
 });
 

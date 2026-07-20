@@ -87,15 +87,18 @@ function normalizeSettings(input: FaqBotSettingsInput) {
 
 function parseStoredSettings(value: string | null | undefined) {
   if (!value) return normalizeSettings({});
+  const failSafe = () => ({
+    ...normalizeSettings({}),
+    personalContext: normalizeFaqPersonalContextSettings(null),
+  });
   try {
     const parsed = JSON.parse(value) as unknown;
-    return normalizeSettings(
-      parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? parsed as FaqBotSettingsInput
-        : {},
-    );
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return failSafe();
+    }
+    return normalizeSettings(parsed as FaqBotSettingsInput);
   } catch {
-    return normalizeSettings({});
+    return failSafe();
   }
 }
 
@@ -481,7 +484,19 @@ faqs.put('/api/account-settings/faq-bot', async (c) => {
   const body = await c.req.json<FaqBotSettingsInput & { accountId?: string }>();
   if (!body.accountId) return c.json({ success: false, error: 'accountId required' }, 400);
 
-  const value = normalizeSettings(body);
+  const existingRow = await c.env.DB
+    .prepare(`SELECT value FROM account_settings WHERE line_account_id = ? AND key = 'faq_bot'`)
+    .bind(body.accountId)
+    .first<{ value: string }>();
+  const existing = parseStoredSettings(existingRow?.value);
+  const value = normalizeSettings({
+    ...body,
+    // Old clients know nothing about this additive setting. Omission must keep
+    // an administrator's saved choice instead of silently restoring default ON.
+    personalContext: Object.prototype.hasOwnProperty.call(body, 'personalContext')
+      ? body.personalContext
+      : existing.personalContext,
+  });
   const id = crypto.randomUUID();
   const now = nowJst();
   const json = JSON.stringify(value);
