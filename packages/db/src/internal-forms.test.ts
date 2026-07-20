@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test } from 'vitest';
 import {
   createInternalFormSubmission,
+  createInternalFormSubmissionForPublishedDefinition,
   createInternalFormSubmissionWithinLimit,
   getInternalFormSubmission,
   listLatestVerifiedInternalFormSubmissions,
@@ -225,5 +226,66 @@ describe('internal form persistence', () => {
     expect(second).toBeNull();
     expect(await listInternalFormSubmissions(DB, 'fa_internal', { limit: 20, offset: 0 }))
       .toMatchObject({ total: 1 });
+  });
+
+  test('atomically inserts only while the same internal definition is still published', async () => {
+    raw.prepare(
+      "UPDATE formaloo_forms SET render_backend = 'internal', builder_status = 'published' WHERE id = 'fa_internal'",
+    ).run();
+    const definitionJson = (await getFormalooForm(DB, 'fa_internal'))!.definition_json;
+
+    const accepted = await createInternalFormSubmissionForPublishedDefinition(DB, {
+      formId: 'fa_internal', definitionJson, answers: { name: '公開中' }, maxSubmissions: 2,
+    });
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'fa_internal'").run();
+    const unpublished = await createInternalFormSubmissionForPublishedDefinition(DB, {
+      formId: 'fa_internal', definitionJson, answers: { name: '非公開後' }, maxSubmissions: 2,
+    });
+    raw.prepare(
+      "UPDATE formaloo_forms SET builder_status = 'published', definition_json = '{\"fields\":[1]}' WHERE id = 'fa_internal'",
+    ).run();
+    const changed = await createInternalFormSubmissionForPublishedDefinition(DB, {
+      formId: 'fa_internal', definitionJson, answers: { name: '定義変更後' }, maxSubmissions: 2,
+    });
+
+    expect(accepted?.id).toMatch(/^ifs_/);
+    expect(unpublished).toBeNull();
+    expect(changed).toBeNull();
+    expect(await listInternalFormSubmissions(DB, 'fa_internal', { limit: 20, offset: 0 }))
+      .toMatchObject({ total: 1 });
+  });
+
+  test('returns the known inserted row without a fallible read after commit', async () => {
+    let prepareCalls = 0;
+    const insertOnlyDb = {
+      prepare(sql: string) {
+        prepareCalls += 1;
+        if (!sql.includes('INSERT INTO internal_form_submissions')) {
+          throw new Error('post-insert reads are unavailable');
+        }
+        const statement = {
+          bind() { return statement; },
+          async run() { return { meta: { changes: 1 } }; },
+        };
+        return statement;
+      },
+    } as unknown as D1Database;
+
+    const submission = await createInternalFormSubmissionForPublishedDefinition(insertOnlyDb, {
+      formId: 'fa_internal',
+      definitionJson: '{"fields":[],"logic":[]}',
+      friendId: 'friend-1',
+      answers: { name: '保存済み' },
+      submittedAt: '2026-07-21T12:00:00+09:00',
+    });
+
+    expect(prepareCalls).toBe(1);
+    expect(submission).toMatchObject({
+      form_id: 'fa_internal',
+      friend_id: 'friend-1',
+      answers_json: '{"name":"保存済み"}',
+      submitted_at: '2026-07-21T12:00:00+09:00',
+      created_at: '2026-07-21T12:00:00+09:00',
+    });
   });
 });

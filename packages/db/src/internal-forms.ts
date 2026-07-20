@@ -94,6 +94,67 @@ export async function createInternalFormSubmissionWithinLimit(
   return getInternalFormSubmission(db, input.formId, id);
 }
 
+/**
+ * Public-form insert gate. The definition and publish state are checked in the
+ * same SQL statement as the INSERT, so an unpublish or edit that wins the race
+ * cannot receive an answer rendered from an older definition.
+ */
+export async function createInternalFormSubmissionForPublishedDefinition(
+  db: D1Database,
+  input: {
+    formId: string;
+    definitionJson: string;
+    friendId?: string | null;
+    answers: Record<string, unknown>;
+    maxSubmissions?: number;
+    submittedAt?: string;
+  },
+): Promise<InternalFormSubmission | null> {
+  const id = `ifs_${crypto.randomUUID()}`;
+  const now = input.submittedAt ?? jstNow();
+  const answersJson = JSON.stringify(input.answers);
+  const limit = input.maxSubmissions === undefined
+    ? null
+    : Math.max(1, Math.trunc(input.maxSubmissions));
+  const result = await db
+    .prepare(
+      `INSERT INTO internal_form_submissions
+         (id, form_id, friend_id, answers_json, submitted_at, created_at)
+       SELECT ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM formaloo_forms
+         WHERE id = ? AND deleted = 0 AND render_backend = 'internal'
+           AND builder_status = 'published' AND definition_json = ?
+       )
+       AND (? IS NULL OR (
+         SELECT COUNT(*) FROM internal_form_submissions WHERE form_id = ?
+       ) < ?)`,
+    )
+    .bind(
+      id,
+      input.formId,
+      input.friendId ?? null,
+      answersJson,
+      now,
+      now,
+      input.formId,
+      input.definitionJson,
+      limit,
+      input.formId,
+      limit,
+    )
+    .run();
+  if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) !== 1) return null;
+  return {
+    id,
+    form_id: input.formId,
+    friend_id: input.friendId ?? null,
+    answers_json: answersJson,
+    submitted_at: now,
+    created_at: now,
+  };
+}
+
 export async function listInternalFormSubmissions(
   db: D1Database,
   formId: string,
