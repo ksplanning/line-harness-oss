@@ -143,6 +143,7 @@ const WEBHOOK_TOMBSTONE_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const WEBHOOK_EVENT_RETRY_MS = 30_000;
 const MAX_WEBHOOK_EVENT_ATTEMPTS = 5;
 const MAX_WEBHOOK_EVENTS_PER_DRAIN = 20;
+const MAX_ORPHAN_CLEANUPS_PER_SYNC = 20;
 const MAX_GOOGLE_SHEET_ROWS = 10_000_000;
 const MAX_GOOGLE_SHEET_COLUMNS = 18_278;
 
@@ -1134,9 +1135,15 @@ export async function syncFriendLedger(
         };
       };
 
-      for (const orphan of ledgerEntries.filter((entry) => !allFriendIds.has(entry.recordKey))) {
+      const actionableOrphans = ledgerEntries.filter((entry) => (
+        !allFriendIds.has(entry.recordKey)
+        && normalizeSheetCell(entry.canonicalSnapshot['identity:lineUserId']) !== ''
+      ));
+      if (actionableOrphans.length > MAX_ORPHAN_CLEANUPS_PER_SYNC) {
+        addWarning('削除済み友だちのシート消去は1回20件までです。残りは次回の同期で続けます');
+      }
+      for (const orphan of actionableOrphans.slice(0, MAX_ORPHAN_CLEANUPS_PER_SYNC)) {
         const lineUserId = normalizeSheetCell(orphan.canonicalSnapshot['identity:lineUserId']);
-        if (!lineUserId) continue;
         const liveOwners = allFriends.filter((friend) => friend.lineUserId === lineUserId);
         if (liveOwners.length === 1) {
           await commitRemovedLedger(orphan, 'friend_recreated_in_harness', [

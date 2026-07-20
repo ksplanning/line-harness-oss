@@ -65,10 +65,12 @@ function parseA1(range: string): { row: number; column: number } {
 class FakeSheetsClient {
   values: SheetCellValue[][] = [];
   readonly writes: Array<{ kind: 'update' | 'append' | 'batch'; range?: string }> = [];
+  readCount = 0;
   afterWrite?: (kind: 'update' | 'append' | 'batch') => void | Promise<void>;
   afterRead?: () => void | Promise<void>;
 
   async readValues() {
+    this.readCount += 1;
     const response = { majorDimension: 'ROWS' as const, values: this.values.map((row) => [...row]) };
     await this.afterRead?.();
     return response;
@@ -406,6 +408,35 @@ describe('friend ledger bidirectional sync', () => {
       WHERE record_key='friend-ayako' ORDER BY apply_sequence DESC LIMIT 1`).get()).toEqual({
       outcome: 'applied', error_code: 'friend_removed_from_harness',
     });
+  });
+
+  test('bounds actionable orphan cleanup and resumes past completed tombstones', async () => {
+    const insert = raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, 'acc-1', '{"入金確認":"未"}', ?, ?)`);
+    for (let index = 1; index <= 20; index += 1) {
+      const suffix = String(index).padStart(2, '0');
+      const timestamp = `2026-07-20T10:${suffix}:00+09:00`;
+      insert.run(`friend-${suffix}`, `U_${suffix}`, `友だち${suffix}`, timestamp, timestamp);
+    }
+    await run();
+    raw.prepare("DELETE FROM friends WHERE line_account_id='acc-1'").run();
+    client.readCount = 0;
+
+    const firstCleanup = await run('polling', 'system_poll');
+
+    expect(firstCleanup.status).toBe('warning');
+    expect(firstCleanup.warnings.join(' ')).toContain('20件');
+    expect(client.readCount).toBeLessThanOrEqual(41);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_ledger
+      WHERE canonical_snapshot_json='{}'`).get()).toEqual({ count: 20 });
+
+    client.readCount = 0;
+    await run('polling', 'system_poll');
+
+    expect(client.readCount).toBeLessThanOrEqual(3);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_ledger
+      WHERE canonical_snapshot_json='{}'`).get()).toEqual({ count: 21 });
   });
 
   test('keeps deleted-friend data when its sheet userId is duplicated and records the unsafe skip', async () => {
