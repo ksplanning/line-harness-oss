@@ -162,6 +162,30 @@ describe('PersonalizedTextEditor', () => {
     expect(screen.getByText('PC は Win+. / Mac は Ctrl+Cmd+Space でも入力できます')).toBeTruthy();
   });
 
+  test('スマホでも絵文字の選択肢を44px以上のタップ領域で押せる', () => {
+    render(<Harness mode="emoji-only" />);
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
+
+    expect(screen.getByRole('button', { name: '絵文字 😊 を挿入' }).className).toContain('min-h-[44px]');
+    expect(screen.getByRole('button', { name: '絵文字 😊 を挿入' }).className).toContain('min-w-[44px]');
+  });
+
+  test('画面下部の入力欄ではピッカーを上向きに表示できる', () => {
+    render(
+      <PersonalizedTextEditor
+        value=""
+        onChange={() => {}}
+        mode="emoji-only"
+        pickerPlacement="above"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
+
+    expect(screen.getByRole('dialog', { name: '絵文字を選ぶ' }).className).toContain('bottom-full');
+  });
+
   test('端末内の最近使った絵文字を先頭行へ出し、選択順・重複排除・最大8件を保存する', async () => {
     window.localStorage.setItem(
       'line-crm:recent-emojis',

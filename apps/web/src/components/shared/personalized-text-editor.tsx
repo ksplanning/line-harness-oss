@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { InputHTMLAttributes, Ref, TextareaHTMLAttributes } from 'react'
 import type { FriendFieldDefinition } from '@line-crm/shared'
-import { api } from '@/lib/api'
 
 interface PersonalizedTextEditorProps {
   value: string
@@ -14,6 +13,7 @@ interface PersonalizedTextEditorProps {
   rows?: number
   className?: string
   containerClassName?: string
+  pickerPlacement?: 'above' | 'below'
   multiline?: boolean
   disabled?: boolean
   textareaRef?: Ref<HTMLTextAreaElement>
@@ -68,6 +68,7 @@ export default function PersonalizedTextEditor({
   rows = 4,
   className = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y',
   containerClassName = 'space-y-2',
+  pickerPlacement = 'below',
   multiline = true,
   disabled = false,
   textareaRef,
@@ -82,15 +83,15 @@ export default function PersonalizedTextEditor({
   const [emojiCategory, setEmojiCategory] = useState<(typeof EMOJI_CATEGORIES)[number]['id']>('faces')
   const [recentEmojis, setRecentEmojis] = useState<string[]>([])
   const variablesEnabled = mode === 'variables-and-emoji'
+  const pickerPositionClass = pickerPlacement === 'above' ? 'bottom-full mb-1' : 'top-full mt-1'
 
   useEffect(() => {
     if (!variablesEnabled) return
     let cancelled = false
-    const listDefinitions = api.friendFieldDefinitions?.list
-    if (!listDefinitions) return () => { cancelled = true }
-    listDefinitions()
+    import('@/lib/api')
+      .then(({ api }) => api.friendFieldDefinitions?.list?.())
       .then((response) => {
-        if (!cancelled && response.success) {
+        if (!cancelled && response?.success) {
           setFieldDefinitions(response.data.filter((definition) => definition.isActive))
         }
       })
@@ -187,7 +188,7 @@ export default function PersonalizedTextEditor({
           <div
             role="dialog"
             aria-label="挿入する変数を選ぶ"
-            className="absolute left-0 top-full z-20 mt-1 w-72 rounded-lg border border-gray-200 bg-white p-3 shadow-lg"
+            className={`absolute left-0 z-20 w-72 rounded-lg border border-gray-200 bg-white p-3 shadow-lg ${pickerPositionClass}`}
           >
             <p className="mb-2 text-xs font-semibold text-gray-700">送信時に友だちごとの情報へ変わります</p>
             <div className="space-y-1">
@@ -218,7 +219,7 @@ export default function PersonalizedTextEditor({
           <div
             role="dialog"
             aria-label="絵文字を選ぶ"
-            className="absolute left-0 top-full z-20 mt-1 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white p-3 shadow-lg"
+            className={`absolute left-0 z-20 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white p-3 shadow-lg ${pickerPositionClass}`}
           >
             {recentEmojis.length > 0 && (
               <div className="mb-2">
@@ -263,7 +264,7 @@ export default function PersonalizedTextEditor({
                   type="button"
                   aria-label={`絵文字 ${emoji} を挿入`}
                   onClick={() => insertEmoji(emoji)}
-                  className="flex h-10 w-10 items-center justify-center rounded-md text-xl hover:bg-gray-100"
+                  className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-xl hover:bg-gray-100"
                 >
                   {emoji}
                 </button>
