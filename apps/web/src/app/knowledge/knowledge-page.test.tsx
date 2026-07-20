@@ -10,7 +10,7 @@ const m = vi.hoisted(() => ({
   documents: vi.fn(), deleteDocument: vi.fn(), reingest: vi.fn(), aiUsage: vi.fn(), aiDrafts: vi.fn(), unmatched: vi.fn(),
 }))
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => ({ selectedAccountId: 'acc-1' }) }))
-vi.mock('@/components/layout/header', () => ({ default: () => null }))
+vi.mock('@/components/layout/header', () => ({ default: () => <div data-testid="legacy-page-header" /> }))
 vi.mock('@/lib/api', () => ({ api: {
   knowledge: {
     documents: (...a: unknown[]) => m.documents(...a),
@@ -24,6 +24,7 @@ vi.mock('@/lib/api', () => ({ api: {
 } }))
 
 import KnowledgePage from './page'
+import { AutoReplyCenterEmbed } from '@/components/auto-reply-center/embed-context'
 
 const doc = (over: Record<string, unknown>) => ({
   id: 'd', lineAccountId: 'acc-1', sourceType: 'text', sourceUrl: null, title: '資料', createdAt: '2026-07-11T10:00:00+09:00',
@@ -72,6 +73,22 @@ describe('/knowledge page — 資料タブ', () => {
 })
 
 describe('/knowledge page — AI ログ・コストタブ', () => {
+  it('centerの下書き受信箱ではAI tabへ直着地し、旧page headerを重ねない', async () => {
+    const openFaq = vi.fn()
+    render(
+      <AutoReplyCenterEmbed hideHeader knowledgeInitialTab="ai" knowledgeTabs={['ai']} onOpenFaq={openFaq}>
+        <KnowledgePage />
+      </AutoReplyCenterEmbed>,
+    )
+
+    await waitFor(() => expect(m.aiDrafts).toHaveBeenCalled())
+    expect(screen.getByText('AI 草案ログ')).toBeTruthy()
+    expect(screen.queryByTestId('legacy-page-header')).toBeNull()
+    expect(screen.queryByRole('button', { name: '資料' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'よくある質問へ' }))
+    expect(openFaq).toHaveBeenCalledOnce()
+  })
+
   it('タブ切替でコスト api を呼び headroom を表示する', async () => {
     render(<KnowledgePage />)
     await waitFor(() => expect(screen.getByText('料金表')).toBeTruthy())

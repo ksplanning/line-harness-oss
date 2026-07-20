@@ -8,6 +8,7 @@ import Toggle from '@/components/shared/toggle'
 import EditDialog, { type FaqDraft } from '@/components/faqs/edit-dialog'
 import BulkImportDialog from '@/components/faqs/bulk-import-dialog'
 import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
+import { useAutoReplyCenterEmbed } from '@/components/auto-reply-center/embed-context'
 
 interface PersonalContextFieldOption {
   id: string
@@ -85,8 +86,9 @@ function formatDateTime(iso: string): string {
 }
 
 export default function FaqsPage() {
+  const centerEmbed = useAutoReplyCenterEmbed()
   const { selectedAccountId, accounts } = useAccount()
-  const [tab, setTab] = useState<Tab>('faqs')
+  const [tab, setTab] = useState<Tab>(centerEmbed?.faqInitialTab ?? 'faqs')
 
   const [faqs, setFaqs] = useState<Faq[]>([])
   const [unmatched, setUnmatched] = useState<Unmatched[]>([])
@@ -260,32 +262,40 @@ export default function FaqsPage() {
       selectedCustomFieldIds: activeIds.length > 0 && next.length === activeIds.length ? null : next,
     })
   }
+  const faqTabs = ([
+    { key: 'faqs', label: 'よくある質問' },
+    { key: 'unmatched', label: '答えられなかった質問' },
+    { key: 'settings', label: '設定' },
+  ] as const).filter(({ key }) => !centerEmbed?.faqTabs || centerEmbed.faqTabs.includes(key))
+  const faqActions = (
+    <div className="flex items-center gap-2">
+      {tab === 'faqs' && (
+        <button
+          onClick={() => setBulkOpen(true)}
+          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+        >
+          まとめて登録
+        </button>
+      )}
+      <button
+        onClick={openNewFaq}
+        className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+        style={{ backgroundColor: '#06C755' }}
+      >
+        + 質問を追加
+      </button>
+    </div>
+  )
 
   return (
     <div>
-      <Header
-        title="よくある質問（自動応答）"
-        description="お客さまがLINEで送ってきた質問に、あらかじめ登録した答えを自動で返します。"
-        action={
-          <div className="flex items-center gap-2">
-            {tab === 'faqs' && (
-              <button
-                onClick={() => setBulkOpen(true)}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                まとめて登録
-              </button>
-            )}
-            <button
-              onClick={openNewFaq}
-              className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
-              style={{ backgroundColor: '#06C755' }}
-            >
-              + 質問を追加
-            </button>
-          </div>
-        }
-      />
+      {!centerEmbed?.hideHeader && (
+        <Header
+          title="よくある質問（自動応答）"
+          description="お客さまがLINEで送ってきた質問に、あらかじめ登録した答えを自動で返します。"
+          action={faqActions}
+        />
+      )}
 
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
@@ -293,29 +303,31 @@ export default function FaqsPage() {
         </div>
       )}
 
+      {centerEmbed?.hideHeader && tab !== 'settings' && (
+        <div className="mb-4 flex justify-end">{faqActions}</div>
+      )}
+
       {/* タブ (ピル型) */}
-      <div className="mb-4 inline-flex bg-gray-100 rounded-lg p-1 w-fit">
-        {([
-          { key: 'faqs', label: 'よくある質問' },
-          { key: 'unmatched', label: '答えられなかった質問' },
-          { key: 'settings', label: '設定' },
-        ] as const).map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`min-h-[44px] px-4 rounded-md text-sm font-medium transition-colors inline-flex items-center gap-2 ${
-              tab === key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            {label}
-            {key === 'unmatched' && unresolvedCount > 0 && (
-              <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 bg-rose-500 text-white rounded-full text-[10px] font-semibold">
-                {unresolvedCount}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+      {faqTabs.length > 1 && (
+        <div className="mb-4 inline-flex bg-gray-100 rounded-lg p-1 w-fit">
+          {faqTabs.map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`min-h-[44px] px-4 rounded-md text-sm font-medium transition-colors inline-flex items-center gap-2 ${
+                tab === key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {label}
+              {key === 'unmatched' && unresolvedCount > 0 && (
+                <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 bg-rose-500 text-white rounded-full text-[10px] font-semibold">
+                  {unresolvedCount}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* ── よくある質問 一覧 ── */}
       {tab === 'faqs' && (

@@ -10,7 +10,7 @@ import { useState, useEffect } from 'react'
 // sidebar / dashboard の両方がこの map を参照する (2 箇所コピーで drift させない / M-7)。
 // =============================================================================
 
-export const NAV_FEATURE: Record<string, string> = {
+export const NAV_FEATURE: Record<string, string | readonly string[]> = {
   '/friends': 'friend',
   '/chats': 'chat',
   '/friend-add-settings': 'broadcast',
@@ -36,6 +36,7 @@ export const NAV_FEATURE: Record<string, string> = {
   '/settings/sheets': 'integration',
   '/duplicates': 'friend',
   '/automations': 'scenario',
+  '/auto-reply-center': ['faq', 'auto_reply'],
   '/auto-replies': 'auto_reply',
   '/faqs': 'faq',
   '/knowledge': 'faq',
@@ -69,8 +70,9 @@ export interface NavPermissionCtx {
  */
 export function isNavVisible(href: string, ctx: NavPermissionCtx): boolean {
   if (ctx.hasCustomRole && ctx.permissions) {
-    const feature = NAV_FEATURE[href]
-    if (feature && !ctx.permissions.includes(feature)) return false
+    const requirement = NAV_FEATURE[href]
+    const features = typeof requirement === 'string' ? [requirement] : requirement
+    if (features && !features.some((feature) => ctx.permissions?.includes(feature))) return false
   }
   return true
 }

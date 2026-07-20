@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import EditDialog, { type AutoReplyDraft } from '@/components/auto-replies/edit-dialog'
+import { useAutoReplyCenterEmbed } from '@/components/auto-reply-center/embed-context'
 
 interface EffectiveAccount {
   accountId: string
@@ -36,6 +37,7 @@ interface TemplateLite {
 const matchTypeLabel: Record<'exact' | 'contains', string> = { exact: '完全一致', contains: '包含' }
 
 export default function AutoRepliesPage() {
+  const centerEmbed = useAutoReplyCenterEmbed()
   const { selectedAccountId, accounts } = useAccount()
   const [items, setItems] = useState<AutoReply[]>([])
   const [templates, setTemplates] = useState<TemplateLite[]>([])
@@ -146,28 +148,36 @@ export default function AutoRepliesPage() {
     }
   }
 
+  const newRuleAction = (
+    <button
+      onClick={() => setEditing({
+        keyword: '',
+        matchType: 'exact',
+        responseType: 'text',
+        responseContent: '',
+        templateId: null,
+        lineAccountId: selectedAccountId,
+        isActive: true,
+      })}
+      className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+      style={{ backgroundColor: '#06C755' }}
+    >
+      + 新規ルール
+    </button>
+  )
+
   return (
     <div>
-      <Header
-        title="自動返信ルール"
-        action={
-          <button
-            onClick={() => setEditing({
-              keyword: '',
-              matchType: 'exact',
-              responseType: 'text',
-              responseContent: '',
-              templateId: null,
-              lineAccountId: selectedAccountId,
-              isActive: true,
-            })}
-            className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
-            style={{ backgroundColor: '#06C755' }}
-          >
-            + 新規ルール
-          </button>
-        }
-      />
+      {!centerEmbed?.hideHeader && (
+        <Header
+          title="自動返信ルール"
+          action={newRuleAction}
+        />
+      )}
+
+      {centerEmbed?.hideHeader && (
+        <div className="mb-4 flex justify-end">{newRuleAction}</div>
+      )}
 
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">

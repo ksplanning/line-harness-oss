@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation'
 import { useAccount } from '@/contexts/account-context'
 import type { AccountWithStats } from '@/contexts/account-context'
 import { countryFlag } from '@/lib/country-flag'
-import { NAV_FEATURE } from '@/lib/nav-permissions'
+import { isNavVisible } from '@/lib/nav-permissions'
 import { api as webApi } from '@/lib/api'
 
 const appVersion = process.env.APP_VERSION || '0.0.0'
@@ -59,9 +59,7 @@ const menuSections = [
     label: '自動化',
     items: [
       { href: '/automations', label: 'オートメーション', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
-      { href: '/auto-replies', label: '自動返信ルール', icon: 'M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6' },
-      { href: '/faqs', label: 'よくある質問（自動応答）', icon: 'M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
-      { href: '/knowledge', label: '資料・AIログ', icon: 'M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253' },
+      { href: '/auto-reply-center', label: '自動応答センター', icon: 'M8 10h.01M12 10h.01M16 10h.01M21 10c0 4.418-4.03 8-9 8a10.5 10.5 0 01-3.9-.74L3 19l1.45-3.87A7.6 7.6 0 013 10c0-4.418 4.03-8 9-8s9 3.582 9 8z' },
       { href: '/webhooks', label: 'Webhook', icon: 'M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
       { href: '/notifications', label: '未対応', icon: 'M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9' },
     ],
@@ -335,9 +333,7 @@ export default function Sidebar() {
               ) return false
               // custom role (G64): 許可されていない feature の項目を隠す。enforcement は worker が正典。
               if (hasCustomRole && permissions) {
-                const feature = NAV_FEATURE[item.href]
-                if (feature && !permissions.includes(feature)) return false
-                return true
+                return isNavVisible(item.href, { permissions, hasCustomRole })
               }
               // built-in role: 従来の出し分け (byte-identical)。
               if (item.href === '/staff' && staffRole !== 'owner') return false

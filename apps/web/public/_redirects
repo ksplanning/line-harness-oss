@@ -1,1 +1,3 @@
-
+/auto-replies /auto-reply-center?view=rules 301
+/faqs /auto-reply-center?view=knowledge&source=faq 301
+/knowledge /auto-reply-center?view=knowledge&source=documents 301

@@ -14,9 +14,9 @@ const m = vi.hoisted(() => ({
   list: vi.fn(), unmatched: vi.fn(), settingsGet: vi.fn(), settingsPut: vi.fn(), accountId: 'acc-1',
 }))
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => ({ selectedAccountId: m.accountId, accounts: [] }) }))
-vi.mock('@/components/layout/header', () => ({ default: () => null }))
-vi.mock('@/components/faqs/edit-dialog', () => ({ default: () => null }))
-vi.mock('@/components/faqs/bulk-import-dialog', () => ({ default: () => null }))
+vi.mock('@/components/layout/header', () => ({ default: () => <div data-testid="legacy-page-header" /> }))
+vi.mock('@/components/faqs/edit-dialog', () => ({ default: () => <div data-testid="faq-edit-dialog" /> }))
+vi.mock('@/components/faqs/bulk-import-dialog', () => ({ default: () => <div data-testid="faq-bulk-dialog" /> }))
 vi.mock('@/lib/api', () => ({ api: {
   faqs: {
     list: (...a: unknown[]) => m.list(...a),
@@ -29,6 +29,7 @@ vi.mock('@/lib/api', () => ({ api: {
 } }))
 
 import FaqsPage from './page'
+import { AutoReplyCenterEmbed } from '@/components/auto-reply-center/embed-context'
 
 // GET が返す既存設定 (answerMode 以外の全フィールドが埋まっている状態)。
 const baseSettings = (answerMode: 'auto' | 'draft') => ({
@@ -61,6 +62,43 @@ beforeEach(() => { vi.clearAllMocks(); m.accountId = 'acc-1' })
 afterEach(() => { cleanup() })
 
 describe('/faqs 設定タブ — 回答モード切替 (下書き / 自動送信)', () => {
+  it('center埋め込み時は設定tabへ直着地し、旧page headerを重ねない', async () => {
+    m.list.mockResolvedValue({ success: true, data: [] })
+    m.unmatched.mockResolvedValue({ success: true, data: [] })
+    m.settingsGet.mockResolvedValue({ success: true, data: baseSettings('draft') })
+    m.settingsPut.mockResolvedValue({ success: true, data: baseSettings('draft') })
+
+    render(
+      <AutoReplyCenterEmbed hideHeader faqInitialTab="settings">
+        <FaqsPage />
+      </AutoReplyCenterEmbed>,
+    )
+
+    await waitFor(() => expect(screen.getByText('この LINE アカウントで自動応答を使う')).toBeTruthy())
+    expect(screen.queryByTestId('legacy-page-header')).toBeNull()
+    expect(screen.queryByText('まだ「よくある質問」がありません')).toBeNull()
+    expect(screen.queryByText('いまのところ、答えられなかった質問はありません。')).toBeNull()
+  })
+
+  it('centerのナレッジ埋め込みでもFAQの追加・まとめて登録へ到達できる', async () => {
+    m.list.mockResolvedValue({ success: true, data: [] })
+    m.unmatched.mockResolvedValue({ success: true, data: [] })
+    m.settingsGet.mockResolvedValue({ success: true, data: baseSettings('draft') })
+
+    render(
+      <AutoReplyCenterEmbed hideHeader faqInitialTab="faqs" faqTabs={['faqs', 'unmatched']}>
+        <FaqsPage />
+      </AutoReplyCenterEmbed>,
+    )
+
+    await waitFor(() => expect(screen.getByText('まだ「よくある質問」がありません')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: '+ 質問を追加' }))
+    expect(screen.getByTestId('faq-edit-dialog')).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('button', { name: 'まとめて登録' })[0])
+    expect(screen.getByTestId('faq-bulk-dialog')).toBeTruthy()
+    expect(screen.queryByTestId('legacy-page-header')).toBeNull()
+  })
+
   it('GET が draft のとき「下書き」説明が表示される', async () => {
     await openSettingsTab('draft')
     await waitFor(() => expect(screen.getByText(/草案を作るだけ/)).toBeTruthy())

@@ -14,6 +14,7 @@ import {
   AI_OPERATIONAL_CAP,
   AI_FREE_TIER_CAP,
 } from '@/components/knowledge/format'
+import { useAutoReplyCenterEmbed } from '@/components/auto-reply-center/embed-context'
 
 interface KnowledgeDoc {
   id: string
@@ -58,8 +59,9 @@ async function loadPdfjsWithWorker(): Promise<PdfjsLike> {
 }
 
 export default function KnowledgePage() {
+  const centerEmbed = useAutoReplyCenterEmbed()
   const { selectedAccountId } = useAccount()
-  const [tab, setTab] = useState<Tab>('documents')
+  const [tab, setTab] = useState<Tab>(centerEmbed?.knowledgeInitialTab ?? 'documents')
 
   const [docs, setDocs] = useState<KnowledgeDoc[]>([])
   const [loading, setLoading] = useState(true)
@@ -199,13 +201,19 @@ export default function KnowledgePage() {
   const todayGlobalNeurons = todayGlobal ? sumNeurons({ llmNeurons: todayGlobal.llmNeurons, embedNeurons: todayGlobal.embedNeurons, imageNeurons: todayGlobal.imageNeurons }) : 0
   const opBar = formatUsageBar(todayGlobalNeurons, AI_OPERATIONAL_CAP, '運用上限')
   const freeBar = formatUsageBar(todayGlobalNeurons, AI_FREE_TIER_CAP, '無料枠')
+  const knowledgeTabs = ([
+    { key: 'documents', label: '資料' },
+    { key: 'ai', label: 'AI ログ・コスト' },
+  ] as const).filter(({ key }) => !centerEmbed?.knowledgeTabs || centerEmbed.knowledgeTabs.includes(key))
 
   return (
     <div>
-      <Header
-        title="資料・AIログ"
-        description="AIが答えるための資料（PDF・Word・テキスト・URL）を取り込み、AIの使用量や回答の記録を確認できます。"
-      />
+      {!centerEmbed?.hideHeader && (
+        <Header
+          title="資料・AIログ"
+          description="AIが答えるための資料（PDF・Word・テキスト・URL）を取り込み、AIの使用量や回答の記録を確認できます。"
+        />
+      )}
 
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
@@ -215,22 +223,21 @@ export default function KnowledgePage() {
       )}
 
       {/* タブ */}
-      <div className="mb-4 inline-flex bg-gray-100 rounded-lg p-1 w-fit">
-        {([
-          { key: 'documents', label: '資料' },
-          { key: 'ai', label: 'AI ログ・コスト' },
-        ] as const).map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`min-h-[44px] px-4 rounded-md text-sm font-medium transition-colors ${
-              tab === key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {knowledgeTabs.length > 1 && (
+        <div className="mb-4 inline-flex bg-gray-100 rounded-lg p-1 w-fit">
+          {knowledgeTabs.map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`min-h-[44px] px-4 rounded-md text-sm font-medium transition-colors ${
+                tab === key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* ── 資料 タブ ── */}
       {tab === 'documents' && (
@@ -452,9 +459,19 @@ export default function KnowledgePage() {
                 <h3 className="text-sm font-semibold text-gray-800">AIを含む「答えられなかった質問」</h3>
                 <p className="text-[11px] text-gray-500 mt-0.5">未対応の質問が {unresolvedCount} 件あります。</p>
               </div>
-              <a href="/faqs" className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-                よくある質問へ
-              </a>
+              {centerEmbed?.onOpenFaq ? (
+                <button
+                  type="button"
+                  onClick={centerEmbed.onOpenFaq}
+                  className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  よくある質問へ
+                </button>
+              ) : (
+                <a href="/faqs" className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+                  よくある質問へ
+                </a>
+              )}
             </div>
           </div>
 
