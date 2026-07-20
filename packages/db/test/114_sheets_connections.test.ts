@@ -53,19 +53,19 @@ describe('migration 114 — self-hosted Google Sheets foundation', () => {
   test('creates connection settings, row ledger, and append-only audit contracts', () => {
     expect(columns(raw, 'sheets_connections')).toEqual([
       'id', 'line_account_id', 'form_id', 'spreadsheet_id', 'sheet_name',
-      'sheet_timestamp_column', 'sync_direction', 'conflict_policy', 'config_version',
-      'is_active', 'created_at', 'updated_at', 'deleted_at',
+      'sync_direction', 'conflict_policy', 'conflict_clock', 'config_version',
+      'next_sync_sequence', 'is_active', 'created_at', 'updated_at', 'deleted_at',
     ]);
     expect(columns(raw, 'sheets_sync_ledger')).toEqual([
       'connection_id', 'connection_version', 'record_key', 'sheet_row_number', 'row_fingerprint',
-      'harness_updated_at', 'sheet_updated_at', 'sheet_observed_at', 'last_synced_at',
-      'last_sync_direction', 'version',
+      'harness_updated_at', 'sheet_observed_at', 'last_synced_at', 'last_sync_direction',
+      'last_applied_sequence', 'version',
     ]);
     expect(columns(raw, 'sheets_sync_audit_log')).toEqual([
-      'id', 'connection_id', 'connection_version', 'line_account_id', 'form_id',
+      'id', 'connection_id', 'connection_version', 'apply_sequence', 'line_account_id', 'form_id',
       'spreadsheet_id', 'sheet_name', 'record_key', 'sheet_row_number', 'direction',
-      'action', 'outcome', 'conflict_resolution', 'harness_updated_at', 'sheet_updated_at',
-      'sheet_observed_at', 'before_fingerprint', 'after_fingerprint', 'error_code', 'created_at',
+      'action', 'outcome', 'conflict_resolution', 'harness_updated_at', 'sheet_observed_at',
+      'before_fingerprint', 'after_fingerprint', 'error_code', 'created_at',
     ]);
     const auditColumns = raw.prepare('PRAGMA table_info(sheets_sync_audit_log)').all()
       .map((row) => (row as { name: string }).name);
@@ -78,28 +78,61 @@ describe('migration 114 — self-hosted Google Sheets foundation', () => {
     raw.prepare(`INSERT INTO sheets_connections
       (id, line_account_id, form_id, spreadsheet_id, sheet_name)
       VALUES ('connection-1', 'acc-1', 'form-1', 'sheet-1', '回答')`).run();
+    raw.prepare(`INSERT INTO sheets_sync_ledger
+      (connection_id, connection_version, record_key, row_fingerprint, last_synced_at,
+       last_sync_direction, last_applied_sequence)
+      VALUES ('connection-1', 1, 'record-1', 'fingerprint-1', '2026-07-20T00:00:00+09:00',
+              'to_sheets', 1)`).run();
     raw.prepare(`INSERT INTO sheets_sync_audit_log
-      (id, connection_id, connection_version, line_account_id, form_id, spreadsheet_id,
+      (id, connection_id, connection_version, apply_sequence, line_account_id, form_id, spreadsheet_id,
        sheet_name, direction, action, outcome)
-      VALUES ('audit-1', 'connection-1', 1, 'acc-1', 'form-1', 'sheet-1',
+      VALUES ('audit-1', 'connection-1', 1, 1, 'acc-1', 'form-1', 'sheet-1',
               '回答', 'to_sheets', 'append', 'applied')`).run();
 
     expect(() => raw.prepare(`UPDATE sheets_sync_audit_log SET outcome='failed' WHERE id='audit-1'`).run())
       .toThrow(/append-only/i);
     expect(() => raw.prepare(`DELETE FROM sheets_sync_audit_log WHERE id='audit-1'`).run())
       .toThrow(/append-only/i);
+    expect(() => raw.prepare(`INSERT OR REPLACE INTO sheets_sync_audit_log
+      (id, connection_id, connection_version, apply_sequence, line_account_id, form_id,
+       spreadsheet_id, sheet_name, direction, action, outcome)
+      VALUES ('audit-1', 'connection-1', 1, 2, 'acc-1', 'form-1',
+              'tampered', '改ざん', 'to_sheets', 'update', 'failed')`).run())
+      .toThrow(/append-only/i);
     expect(() => raw.prepare(`DELETE FROM line_accounts WHERE id='acc-1'`).run()).not.toThrow();
     expect(raw.prepare('SELECT line_account_id, is_active, deleted_at FROM sheets_connections WHERE id=?').get('connection-1'))
       .toMatchObject({ line_account_id: null, is_active: 0, deleted_at: expect.any(String) });
     expect(raw.prepare('SELECT spreadsheet_id, sheet_name FROM sheets_sync_audit_log WHERE id=?').get('audit-1'))
       .toEqual({ spreadsheet_id: 'sheet-1', sheet_name: '回答' });
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger WHERE connection_id=?').get('connection-1'))
+      .toEqual({ count: 0 });
   });
 
-  test('defines a dedicated hidden-column clock instead of treating poll time as sheet write time', () => {
+  test('defines last-write-wins by server apply sequence instead of unreliable cross-system clocks', () => {
     const sql = readFileSync(MIGRATION_PATH, 'utf8');
-    expect(sql).toContain("DEFAULT '__line_harness_updated_at'");
-    expect(sql).toMatch(/hidden timestamp column[\s\S]+sheet_updated_at/i);
-    expect(sql).toMatch(/must never be used for LWW[\s\S]+sheet_observed_at/i);
+    expect(sql).toContain("DEFAULT 'server_sequence'");
+    expect(sql).toContain('next_sync_sequence');
+    expect(sql).toContain('last_applied_sequence');
+    expect(sql).toContain('apply_sequence');
+    expect(sql).toMatch(/observation time[\s\S]+never used as the conflict clock/i);
+    expect(sql).not.toContain('sheet_timestamp_column');
+  });
+
+  test('rejects stale ledger writes whose version no longer matches the active connection', () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-1', 'channel-1', 'A', 'token', 'secret')`).run();
+    raw.prepare(`INSERT INTO sheets_connections
+      (id, line_account_id, form_id, spreadsheet_id, sheet_name, config_version)
+      VALUES ('connection-1', 'acc-1', 'form-1', 'sheet-1', '回答', 2)`).run();
+    const insert = raw.prepare(`INSERT INTO sheets_sync_ledger
+      (connection_id, connection_version, record_key, row_fingerprint, last_synced_at,
+       last_sync_direction, last_applied_sequence)
+      VALUES ('connection-1', ?, 'record-1', 'fingerprint-1', '2026-07-20T00:00:00+09:00',
+              'to_sheets', 1)`);
+    expect(() => insert.run(1)).toThrow(/connection version/i);
+    expect(() => insert.run(2)).not.toThrow();
+    expect(() => raw.prepare(`UPDATE sheets_sync_ledger SET connection_version=1
+      WHERE connection_id='connection-1' AND record_key='record-1'`).run()).toThrow(/connection version/i);
   });
 
   test('enforces direction and last-write-wins policy at the database boundary', () => {

@@ -9,9 +9,9 @@ export interface SheetsConnection {
   formId: string;
   spreadsheetId: string;
   sheetName: string;
-  sheetTimestampColumn: string;
   syncDirection: SheetsSyncDirection;
   conflictPolicy: SheetsConflictPolicy;
+  conflictClock: 'server_sequence';
   configVersion: number;
   isActive: boolean;
   createdAt: string;
@@ -24,9 +24,9 @@ interface SheetsConnectionRow {
   form_id: string;
   spreadsheet_id: string;
   sheet_name: string;
-  sheet_timestamp_column: string;
   sync_direction: SheetsSyncDirection;
   conflict_policy: SheetsConflictPolicy;
+  conflict_clock: 'server_sequence';
   config_version: number;
   is_active: number;
   created_at: string;
@@ -54,9 +54,9 @@ function serialize(row: SheetsConnectionRow): SheetsConnection {
     formId: row.form_id,
     spreadsheetId: row.spreadsheet_id,
     sheetName: row.sheet_name,
-    sheetTimestampColumn: row.sheet_timestamp_column,
     syncDirection: row.sync_direction,
     conflictPolicy: row.conflict_policy,
+    conflictClock: row.conflict_clock,
     configVersion: row.config_version,
     isActive: row.is_active === 1,
     createdAt: row.created_at,
@@ -66,7 +66,7 @@ function serialize(row: SheetsConnectionRow): SheetsConnection {
 
 const ACTIVE_SELECT = `
   SELECT id, line_account_id, form_id, spreadsheet_id, sheet_name,
-         sheet_timestamp_column, sync_direction, conflict_policy, config_version,
+         sync_direction, conflict_policy, conflict_clock, config_version,
          is_active, created_at, updated_at
   FROM sheets_connections
   WHERE is_active = 1 AND deleted_at IS NULL`;
@@ -129,39 +129,33 @@ export async function updateSheetsConnection(
   id: string,
   input: UpdateSheetsConnectionInput,
 ): Promise<SheetsConnection | null> {
-  const current = await getSheetsConnection(db, lineAccountId, id);
-  if (!current) return null;
-  const targetChanged = current.spreadsheetId !== input.spreadsheetId || current.sheetName !== input.sheetName;
-  const nextVersion = current.configVersion + (targetChanged ? 1 : 0);
   const update = db.prepare(
     `UPDATE sheets_connections
-     SET spreadsheet_id = ?, sheet_name = ?, sync_direction = ?, config_version = ?, updated_at = ?
-     WHERE id = ? AND line_account_id = ? AND config_version = ?
-       AND is_active = 1 AND deleted_at IS NULL`,
+     SET spreadsheet_id = ?, sheet_name = ?, sync_direction = ?,
+         config_version = config_version + 1, updated_at = ?
+     WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL`,
   ).bind(
     input.spreadsheetId,
     input.sheetName,
     input.syncDirection,
-    nextVersion,
     jstNow(),
     id,
     lineAccountId,
-    current.configVersion,
   );
-  const result = targetChanged
-    ? (await db.batch([
-      update,
-      db.prepare(
-        `DELETE FROM sheets_sync_ledger
-         WHERE connection_id = ?
-           AND EXISTS (
-             SELECT 1 FROM sheets_connections
-             WHERE id = ? AND line_account_id = ? AND config_version = ?
-               AND spreadsheet_id = ? AND sheet_name = ?
-           )`,
-      ).bind(id, id, lineAccountId, nextVersion, input.spreadsheetId, input.sheetName),
-    ]))[0]
-    : await update.run();
+  // Every accepted settings write advances the generation. D1 serializes the
+  // increments, so concurrent owner tabs remain last-write-wins without a false
+  // not-found response. Old workers then fail the ledger version triggers.
+  const result = (await db.batch([
+    update,
+    db.prepare(
+      `DELETE FROM sheets_sync_ledger
+       WHERE connection_id = ?
+         AND EXISTS (
+           SELECT 1 FROM sheets_connections
+           WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
+         )`,
+    ).bind(id, id, lineAccountId),
+  ]))[0];
   if ((result.meta.changes ?? 0) !== 1) return null;
   return getSheetsConnection(db, lineAccountId, id);
 }
@@ -172,10 +166,38 @@ export async function softDeleteSheetsConnection(
   id: string,
 ): Promise<boolean> {
   const now = jstNow();
-  const result = await db.prepare(
-    `UPDATE sheets_connections
-     SET is_active = 0, deleted_at = ?, updated_at = ?
-     WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL`,
-  ).bind(now, now, id, lineAccountId).run();
+  const result = (await db.batch([
+    db.prepare(
+      `UPDATE sheets_connections
+       SET is_active = 0, deleted_at = ?, updated_at = ?
+       WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL`,
+    ).bind(now, now, id, lineAccountId),
+    db.prepare(
+      `DELETE FROM sheets_sync_ledger
+       WHERE connection_id = ?
+         AND EXISTS (SELECT 1 FROM sheets_connections WHERE id = ? AND line_account_id = ?)`,
+    ).bind(id, id, lineAccountId),
+  ]))[0];
   return (result.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Atomically allocates the ordering key used by last-write-wins.
+ * A stale worker must present its captured config version and receives null
+ * after any settings save, so it cannot publish a write under a new target.
+ */
+export async function reserveSheetsSyncSequence(
+  db: D1Database,
+  lineAccountId: string,
+  id: string,
+  configVersion: number,
+): Promise<number | null> {
+  const row = await db.prepare(
+    `UPDATE sheets_connections
+     SET next_sync_sequence = next_sync_sequence + 1
+     WHERE id = ? AND line_account_id = ? AND config_version = ?
+       AND is_active = 1 AND deleted_at IS NULL
+     RETURNING next_sync_sequence - 1 AS sequence`,
+  ).bind(id, lineAccountId, configVersion).first<{ sequence: number }>();
+  return row?.sequence ?? null;
 }

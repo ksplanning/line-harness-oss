@@ -7,6 +7,7 @@ import {
   createSheetsConnection,
   getSheetsConnection,
   listSheetsConnections,
+  reserveSheetsSyncSequence,
   softDeleteSheetsConnection,
   updateSheetsConnection,
 } from './sheets-connections.js';
@@ -74,6 +75,7 @@ describe('Sheets connections DB helper', () => {
       sheetName: '回答',
       syncDirection: 'bidirectional',
       conflictPolicy: 'last_write_wins',
+      conflictClock: 'server_sequence',
       configVersion: 1,
       isActive: true,
     });
@@ -82,21 +84,26 @@ describe('Sheets connections DB helper', () => {
     expect(await getSheetsConnection(db, 'acc-2', first.id)).toBeNull();
   });
 
-  test('update is account-scoped and resets the old row ledger only when the target changes', async () => {
+  test('every account-scoped settings save advances its generation and resets the old row ledger', async () => {
     const created = await createSheetsConnection(db, {
       lineAccountId: 'acc-1', formId: 'form-1', spreadsheetId: 'sheet-old',
       sheetName: '旧', syncDirection: 'to_sheets',
     });
     raw.prepare(`INSERT INTO sheets_sync_ledger
-      (connection_id, connection_version, record_key, row_fingerprint, last_synced_at, last_sync_direction)
-      VALUES (?, 1, 'record-1', 'fingerprint-1', '2026-07-20T00:00:00+09:00', 'to_sheets')`).run(created.id);
+      (connection_id, connection_version, record_key, row_fingerprint, last_synced_at,
+       last_sync_direction, last_applied_sequence)
+      VALUES (?, 1, 'record-1', 'fingerprint-1', '2026-07-20T00:00:00+09:00', 'to_sheets', 1)`).run(created.id);
 
     const directionOnly = await updateSheetsConnection(db, 'acc-1', created.id, {
       spreadsheetId: 'sheet-old', sheetName: '旧', syncDirection: 'bidirectional',
     });
-    expect(directionOnly?.configVersion).toBe(1);
+    expect(directionOnly?.configVersion).toBe(2);
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger WHERE connection_id=?').get(created.id))
-      .toEqual({ count: 1 });
+      .toEqual({ count: 0 });
+    raw.prepare(`INSERT INTO sheets_sync_ledger
+      (connection_id, connection_version, record_key, row_fingerprint, last_synced_at,
+       last_sync_direction, last_applied_sequence)
+      VALUES (?, 2, 'record-2', 'fingerprint-2', '2026-07-20T00:01:00+09:00', 'to_sheets', 2)`).run(created.id);
 
     const updated = await updateSheetsConnection(db, 'acc-1', created.id, {
       spreadsheetId: 'sheet-new', sheetName: '新', syncDirection: 'from_sheets',
@@ -108,7 +115,7 @@ describe('Sheets connections DB helper', () => {
       spreadsheetId: 'sheet-new',
       sheetName: '新',
       syncDirection: 'from_sheets',
-      configVersion: 2,
+      configVersion: 3,
     });
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger WHERE connection_id=?').get(created.id))
       .toEqual({ count: 0 });
@@ -125,12 +132,30 @@ describe('Sheets connections DB helper', () => {
       lineAccountId: 'acc-1', formId: 'form-1', spreadsheetId: 'sheet-1',
       sheetName: '回答', syncDirection: 'bidirectional',
     });
+    raw.prepare(`INSERT INTO sheets_sync_ledger
+      (connection_id, connection_version, record_key, row_fingerprint, last_synced_at,
+       last_sync_direction, last_applied_sequence)
+      VALUES (?, 1, 'record-1', 'fingerprint-1', '2026-07-20T00:00:00+09:00', 'to_sheets', 1)`).run(created.id);
     expect(await softDeleteSheetsConnection(db, 'acc-2', created.id)).toBe(false);
     expect(await softDeleteSheetsConnection(db, 'acc-1', created.id)).toBe(true);
     expect(await getSheetsConnection(db, 'acc-1', created.id)).toBeNull();
     expect(await listSheetsConnections(db, 'acc-1')).toEqual([]);
     expect(raw.prepare('SELECT is_active, deleted_at FROM sheets_connections WHERE id=?').get(created.id))
       .toMatchObject({ is_active: 0, deleted_at: expect.any(String) });
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger WHERE connection_id=?').get(created.id))
+      .toEqual({ count: 0 });
     expect(await softDeleteSheetsConnection(db, 'acc-1', created.id)).toBe(false);
+  });
+
+  test('reserves a monotonic server sequence only for the active connection generation', async () => {
+    const created = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'form-1', spreadsheetId: 'sheet-1',
+      sheetName: '回答', syncDirection: 'bidirectional',
+    });
+
+    await expect(reserveSheetsSyncSequence(db, 'acc-1', created.id, 1)).resolves.toBe(1);
+    await expect(reserveSheetsSyncSequence(db, 'acc-1', created.id, 1)).resolves.toBe(2);
+    await expect(reserveSheetsSyncSequence(db, 'acc-2', created.id, 1)).resolves.toBeNull();
+    await expect(reserveSheetsSyncSequence(db, 'acc-1', created.id, 2)).resolves.toBeNull();
   });
 });
