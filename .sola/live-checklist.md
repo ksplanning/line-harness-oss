@@ -617,3 +617,34 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 - [ ] `providerStatus=workers_ai` / `sampleSize=2` を確認した。
 - [ ] input tokens: `___` / output tokens: `___` / 推定 neurons: `___` / 無料枠の推定割合: `___ %`（usage なしの場合は算出不能）。
 - [ ] 実射は合計1回、秘密値記録0、本番3フォーム接触0、cleanup完了。
+
+---
+
+# treasure-e1-field-parts — host live checklist
+
+## できるようになること
+
+フォーム部品に「はい/いいえ」「時刻」「URL」「市区町村」が増え、ラベル・必須・補足説明をこれまでの入力欄と同じように設定できます。
+
+## 対象と安全条件
+
+- 査読済みの同一 revision を approved host へ反映してから、個人情報を含まない新規 scratch form 1個だけで確認する。本番3フォーム `Z5IEH85R` / `GMOxoMtK` / `XqACeA2v` には GET を含めて触れない。
+- 対象は Batch 0 で API read-back と hosted 表示を両方確認できた `yes_no` / `time` / `website` / `city` の4型だけ。`datetime` / `country` は API作成・GETには成功したが hosted 本文に描画されなかったため、今回は入力・送信対象に含めない。
+- token、API key、cookie、生の form/field/row slug、回答全文を証跡へ残さない。HTTP 200/201だけでPASSにせず、保存後の個別GET、hosted表示、回答row、削除後404を照合する。
+- 保存と送信はそれぞれ1回だけ。失敗時は追加POSTを止め、remote一覧と既存slugを確認してから再開し、重複field・重複rowを作らない。
+
+## scratch form 1周
+
+1. 新規 scratch form を1個作り、「はい/いいえ」「時刻」「URL」「市区町村」を各1個追加する。4項目すべてに識別しやすい合成ラベルを付け、少なくとも1項目を必須にし、1項目に補足説明を設定して1回だけ保存する。
+2. 各 field の個別GETと form detail GETを行い、type が順に `yes_no` / `time` / `website` / `city`、title・required・description が保存値どおりであることを確認する。`config:{}` / `invisible:false` / `admin_only:false` / `read_only:false` のserver defaultは値を推測せず、実際のread-backを記録する。
+3. hosted form を開き、4項目が本文に見えることを確認する。「はい/いいえ」が2択、時刻が時刻入力、URLがURL入力、市区町村が文字入力として操作でき、補足説明と必須表示も見えることを確認する。
+4. 合成値（例: はい / 09:30 / `https://example.invalid/e1` / 検証市）を4項目へ入力し、回答を1回だけ送信する。同じrowのread-backを行い、flat body `{fieldSlug: value}` の4キーが作成済みfield slugと一致し、それぞれの意味と値が送信内容どおりであることを確認する。
+5. 管理画面の再取込み後も4型・ラベル・必須・補足説明が変わらず、同じremote fieldに対応していることを確認する。drift表示が変化なしになり、server defaultだけで差分通知が出ないことを確認する。
+6. 合成row、4 field、scratch formを承認済みの通常手順で削除する。各fieldとformのGETが404、回答一覧に合成rowが残らないことまで確認する。途中失敗でも必ずここまで片付ける。
+
+## PASS 記録
+
+- [ ] deployment SHA / tenant / 実行者 / JST実行時刻を記録した。
+- [ ] 4型の保存→個別GET read-back→hosted表示→1回submit→同じ1 row read-backがPASS。
+- [ ] 再取込みとdrift無変化、row/field/form cleanup、削除後404がPASS。
+- [ ] 本番3フォーム接触0、個人情報0、秘密値記録0、重複POST/row 0。
