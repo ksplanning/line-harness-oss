@@ -30,4 +30,72 @@ describe('renderMessageContent', () => {
       'イベント詳細→ https://liff.line.me/LIFF-9999/?page=event&id=evt-1',
     );
   });
+
+  test('replaces display name and uses an explicit fallback when it is unavailable', () => {
+    expect(renderMessageContent(
+      'こんにちは {{display_name}}さん / {{display_name|お客様}}',
+      null,
+      { displayName: '山田花子' },
+    )).toBe('こんにちは 山田花子さん / 山田花子');
+
+    expect(renderMessageContent(
+      'こんにちは {{display_name}}さん / {{display_name|お客様}}',
+      null,
+      { displayName: null },
+    )).toBe('こんにちは さん / お客様');
+  });
+
+  test('replaces defined custom fields, including empty-value fallback and non-string values', () => {
+    expect(renderMessageContent(
+      '{{field:会員ランク}} / {{field:担当者|未設定}} / {{field:来店回数}} / {{field:興味}}',
+      null,
+      {
+        customFields: {
+          会員ランク: 'ゴールド',
+          担当者: '',
+          来店回数: 3,
+          興味: ['新商品', 'セール'],
+        },
+      },
+    )).toBe('ゴールド / 未設定 / 3 / 新商品, セール');
+  });
+
+  test('leaves unknown variables and undefined custom fields unchanged', () => {
+    expect(renderMessageContent(
+      '{{unknown}} {{field:未定義}} {{display_name}}',
+      null,
+      { displayName: '山田', customFields: { 会員ランク: 'ゴールド' } },
+    )).toBe('{{unknown}} {{field:未定義}} 山田');
+  });
+
+  test('matches custom field names literally even when they contain token delimiters', () => {
+    expect(renderMessageContent(
+      '{{field:会員|区分}} / {{field:備考}欄}} / {{field:会員|区分|一般}}',
+      null,
+      {
+        customFields: {
+          '会員|区分': '',
+          '備考}欄': '確認済み',
+        },
+      },
+    )).toBe(' / 確認済み / 一般');
+  });
+
+  test('does not consume recipient variables when recipient context is absent', () => {
+    expect(renderMessageContent(
+      '{{display_name}} {{field:会員ランク}} {{liff_id}}',
+      'LIFF-1',
+    )).toBe('{{display_name}} {{field:会員ランク}} LIFF-1');
+  });
+
+  test('keeps variable-free Unicode text byte-for-byte identical', () => {
+    const content = 'こんにちは😊\nそのままの本文です✨';
+    const rendered = renderMessageContent(content, 'LIFF-1', {
+      displayName: '未使用',
+      customFields: { 会員ランク: '未使用' },
+    });
+
+    expect(rendered).toBe(content);
+    expect(new TextEncoder().encode(rendered)).toEqual(new TextEncoder().encode(content));
+  });
 });
