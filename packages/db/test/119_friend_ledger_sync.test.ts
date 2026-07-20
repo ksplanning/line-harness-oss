@@ -188,8 +188,10 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
       'status',
       'attempts',
       'available_at',
+      'processing_token',
+      'processing_expires_at',
       'received_at',
-      'applied_at',
+      'completed_at',
       'last_error_code',
       'created_at',
     ]);

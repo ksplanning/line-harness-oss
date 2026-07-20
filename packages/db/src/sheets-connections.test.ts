@@ -158,20 +158,37 @@ interface FriendLedgerDbContract {
       receivedAt: string;
     },
   ): Promise<{ sequence: number; status: 'pending' | 'applied' | 'dead'; enqueued: boolean } | null>;
-  listPendingSheetsWebhookEvents(
+  claimNextSheetsWebhookEvent(
     db: D1Database,
     lineAccountId: string,
     connectionId: string,
-    now: string,
-    limit: number,
-  ): Promise<Array<{ eventId: string; actor: string; payload: Record<string, unknown> | null }>>;
+    connectionVersion: number,
+    input: {
+      token: string;
+      now: string;
+      expiresAt: string;
+      discardBefore: string;
+      maxAttempts: number;
+    },
+  ): Promise<{
+    eventId: string;
+    actor: string;
+    payload: Record<string, unknown> | null;
+    attempts: number;
+    processingToken: string | null;
+  } | null>;
   finishSheetsWebhookEvent(
     db: D1Database,
     lineAccountId: string,
     connectionId: string,
     connectionVersion: number,
     eventId: string,
-    input: { status: 'applied' | 'dead'; completedAt: string; errorCode: string | null },
+    input: {
+      processingToken: string;
+      status: 'applied' | 'dead';
+      completedAt: string;
+      errorCode: string | null;
+    },
   ): Promise<boolean>;
   claimSheetsSyncLock(
     db: D1Database,
@@ -545,24 +562,71 @@ describe('Sheets connections DB helper', () => {
     expect(enqueued).toMatchObject({ sequence: 1, status: 'pending', enqueued: true });
     await expect(friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, input))
       .resolves.toEqual({ sequence: 1, status: 'pending', enqueued: false });
-    await expect(friendLedgerDb.listPendingSheetsWebhookEvents(
-      db, 'acc-1', created.id, '2026-07-21T10:00:01+09:00', 10,
-    )).resolves.toEqual([
-      expect.objectContaining({ eventId: input.eventId, actor: input.actor, payload: input.payload }),
-    ]);
+    const claimInput = {
+      token: 'claim-token-1',
+      now: '2026-07-21T10:00:01+09:00',
+      expiresAt: '2026-07-21T10:02:01+09:00',
+      discardBefore: '2026-07-20T10:00:01+09:00',
+      maxAttempts: 5,
+    };
+    await expect(friendLedgerDb.claimNextSheetsWebhookEvent(
+      db, 'acc-2', created.id, 1, claimInput,
+    )).resolves.toBeNull();
+    await expect(friendLedgerDb.claimNextSheetsWebhookEvent(
+      db, 'acc-1', created.id, 1, claimInput,
+    )).resolves.toEqual(expect.objectContaining({
+      eventId: input.eventId,
+      actor: input.actor,
+      payload: input.payload,
+      attempts: 1,
+      processingToken: claimInput.token,
+    }));
+    await expect(friendLedgerDb.claimNextSheetsWebhookEvent(
+      db, 'acc-1', created.id, 1, { ...claimInput, token: 'claim-token-2' },
+    )).resolves.toBeNull();
     await expect(friendLedgerDb.finishSheetsWebhookEvent(
       db, 'acc-2', created.id, 1, input.eventId,
-      { status: 'applied', completedAt: '2026-07-21T10:00:02+09:00', errorCode: null },
+      {
+        processingToken: claimInput.token,
+        status: 'applied', completedAt: '2026-07-21T10:00:02+09:00', errorCode: null,
+      },
     )).resolves.toBe(false);
     await expect(friendLedgerDb.finishSheetsWebhookEvent(
       db, 'acc-1', created.id, 1, input.eventId,
-      { status: 'applied', completedAt: '2026-07-21T10:00:02+09:00', errorCode: null },
+      {
+        processingToken: 'wrong-token',
+        status: 'applied', completedAt: '2026-07-21T10:00:02+09:00', errorCode: null,
+      },
+    )).resolves.toBe(false);
+    await expect(friendLedgerDb.finishSheetsWebhookEvent(
+      db, 'acc-1', created.id, 1, input.eventId,
+      {
+        processingToken: claimInput.token,
+        status: 'applied', completedAt: '2026-07-21T10:00:02+09:00', errorCode: null,
+      },
     )).resolves.toBe(true);
     await expect(friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, input))
       .resolves.toEqual({ sequence: 1, status: 'applied', enqueued: false });
-    expect(raw.prepare(`SELECT status, payload_json, attempts FROM sheets_sync_webhook_events
+    expect(raw.prepare(`SELECT status, payload_json, actor, attempts, processing_token
+      FROM sheets_sync_webhook_events
       WHERE connection_id=? AND event_id=?`).get(created.id, input.eventId)).toEqual({
-      status: 'applied', payload_json: null, attempts: 1,
+      status: 'applied', payload_json: null, actor: 'redacted', attempts: 1, processing_token: null,
+    });
+
+    await friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, {
+      ...input,
+      eventId: 'event-0000000002',
+    });
+    await friendLedgerDb.updateSheetsConnection(db, 'acc-1', created.id, {
+      spreadsheetId: 'sheet-friends',
+      sheetName: '友だち台帳',
+      syncDirection: 'to_sheets',
+      friendLedgerEnabled: true,
+    });
+    expect(raw.prepare(`SELECT status, payload_json, actor, last_error_code
+      FROM sheets_sync_webhook_events WHERE connection_id=? AND event_id=?`)
+      .get(created.id, 'event-0000000002')).toEqual({
+      status: 'dead', payload_json: null, actor: 'redacted', last_error_code: 'connection_changed',
     });
   });
 

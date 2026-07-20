@@ -99,8 +99,10 @@ export interface SheetsWebhookEvent {
   status: SheetsWebhookEventStatus;
   attempts: number;
   availableAt: string;
+  processingToken: string | null;
+  processingExpiresAt: string | null;
   receivedAt: string;
-  appliedAt: string | null;
+  completedAt: string | null;
   lastErrorCode: string | null;
 }
 
@@ -117,8 +119,10 @@ interface SheetsWebhookEventRow {
   status: SheetsWebhookEventStatus;
   attempts: number;
   available_at: string;
+  processing_token: string | null;
+  processing_expires_at: string | null;
   received_at: string;
-  applied_at: string | null;
+  completed_at: string | null;
   last_error_code: string | null;
 }
 
@@ -688,8 +692,10 @@ function serializeWebhookEvent(row: SheetsWebhookEventRow): SheetsWebhookEvent {
     status: row.status,
     attempts: row.attempts,
     availableAt: row.available_at,
+    processingToken: row.processing_token,
+    processingExpiresAt: row.processing_expires_at,
     receivedAt: row.received_at,
-    appliedAt: row.applied_at,
+    completedAt: row.completed_at,
     lastErrorCode: row.last_error_code,
   };
 }
@@ -735,31 +741,70 @@ export async function enqueueSheetsWebhookEvent(
     `SELECT e.sequence, e.status
      FROM sheets_sync_webhook_events e
      JOIN sheets_connections c ON c.id = e.connection_id
-     WHERE e.connection_id = ? AND e.event_id = ? AND c.line_account_id = ?`,
-  ).bind(connectionId, input.eventId, lineAccountId)
+     WHERE e.connection_id = ? AND e.event_id = ?
+       AND e.line_account_id = ? AND c.line_account_id = ?`,
+  ).bind(connectionId, input.eventId, lineAccountId, lineAccountId)
     .first<{ sequence: number; status: SheetsWebhookEventStatus }>();
   if (!duplicate) return null;
   return { ...duplicate, enqueued: false };
 }
 
-export async function listPendingSheetsWebhookEvents(
+export async function claimNextSheetsWebhookEvent(
   db: D1Database,
   lineAccountId: string,
   connectionId: string,
-  now: string,
-  limit: number,
-): Promise<SheetsWebhookEvent[]> {
-  const result = await db.prepare(
-    `SELECT sequence, connection_id, line_account_id, connection_version, event_id,
-            actor, actor_kind, occurred_at, payload_json, status, attempts,
-            available_at, received_at, applied_at, last_error_code
-     FROM sheets_sync_webhook_events
+  connectionVersion: number,
+  input: {
+    token: string;
+    now: string;
+    expiresAt: string;
+    discardBefore: string;
+    maxAttempts: number;
+  },
+): Promise<SheetsWebhookEvent | null> {
+  await db.prepare(
+    `UPDATE sheets_sync_webhook_events
+     SET status = 'dead', payload_json = NULL, actor = 'redacted',
+         processing_token = NULL, processing_expires_at = NULL,
+         completed_at = ?, last_error_code = 'webhook_event_expired'
      WHERE line_account_id = ? AND connection_id = ? AND status = 'pending'
-       AND julianday(available_at) <= julianday(?)
-     ORDER BY sequence ASC
-     LIMIT ?`,
-  ).bind(lineAccountId, connectionId, now, boundedLimit(limit, 10)).all<SheetsWebhookEventRow>();
-  return result.results.map(serializeWebhookEvent);
+       AND (attempts >= ? OR julianday(received_at) < julianday(?))`,
+  ).bind(input.now, lineAccountId, connectionId, input.maxAttempts, input.discardBefore).run();
+  const row = await db.prepare(
+    `UPDATE sheets_sync_webhook_events
+     SET processing_token = ?, processing_expires_at = ?, attempts = attempts + 1
+     WHERE sequence = (
+       SELECT e.sequence
+       FROM sheets_sync_webhook_events e
+       JOIN sheets_connections c ON c.id = e.connection_id
+       WHERE e.line_account_id = ? AND e.connection_id = ?
+         AND e.connection_version = ? AND e.status = 'pending'
+         AND e.attempts < ? AND julianday(e.available_at) <= julianday(?)
+         AND (
+           e.processing_token IS NULL OR e.processing_expires_at IS NULL
+           OR julianday(e.processing_expires_at) <= julianday(?)
+         )
+         AND c.line_account_id = e.line_account_id
+         AND c.config_version = e.connection_version
+         AND c.friend_ledger_enabled = 1 AND c.is_active = 1 AND c.deleted_at IS NULL
+       ORDER BY e.sequence ASC
+       LIMIT 1
+     )
+     RETURNING sequence, connection_id, line_account_id, connection_version, event_id,
+               actor, actor_kind, occurred_at, payload_json, status, attempts,
+               available_at, processing_token, processing_expires_at, received_at,
+               completed_at, last_error_code`,
+  ).bind(
+    input.token,
+    input.expiresAt,
+    lineAccountId,
+    connectionId,
+    connectionVersion,
+    input.maxAttempts,
+    input.now,
+    input.now,
+  ).first<SheetsWebhookEventRow>();
+  return row ? serializeWebhookEvent(row) : null;
 }
 
 export async function finishSheetsWebhookEvent(
@@ -768,18 +813,24 @@ export async function finishSheetsWebhookEvent(
   connectionId: string,
   connectionVersion: number,
   eventId: string,
-  input: { status: 'applied' | 'dead'; completedAt: string; errorCode: string | null },
+  input: {
+    processingToken: string;
+    status: 'applied' | 'dead';
+    completedAt: string;
+    errorCode: string | null;
+  },
 ): Promise<boolean> {
   const result = await db.prepare(
     `UPDATE sheets_sync_webhook_events
-     SET status = ?, payload_json = NULL, attempts = attempts + 1,
-         applied_at = ?, last_error_code = ?
+     SET status = ?, payload_json = NULL, actor = 'redacted',
+         processing_token = NULL, processing_expires_at = NULL,
+         completed_at = ?, last_error_code = ?
      WHERE connection_id = ? AND connection_version = ? AND event_id = ?
-       AND status = 'pending'
+       AND line_account_id = ? AND status = 'pending' AND processing_token = ?
        AND EXISTS (
          SELECT 1 FROM sheets_connections c
          WHERE c.id = sheets_sync_webhook_events.connection_id
-           AND c.line_account_id = ?
+           AND c.line_account_id = sheets_sync_webhook_events.line_account_id
        )`,
   ).bind(
     input.status,
@@ -789,6 +840,7 @@ export async function finishSheetsWebhookEvent(
     connectionVersion,
     eventId,
     lineAccountId,
+    input.processingToken,
   ).run();
   return (result.meta.changes ?? 0) === 1;
 }
@@ -799,25 +851,42 @@ export async function deferSheetsWebhookEvent(
   connectionId: string,
   connectionVersion: number,
   eventId: string,
-  input: { availableAt: string; errorCode: string },
+  input: {
+    processingToken: string;
+    availableAt: string;
+    completedAt: string;
+    errorCode: string;
+    maxAttempts: number;
+  },
 ): Promise<boolean> {
   const result = await db.prepare(
     `UPDATE sheets_sync_webhook_events
-     SET attempts = attempts + 1, available_at = ?, last_error_code = ?
+     SET status = CASE WHEN attempts >= ? THEN 'dead' ELSE 'pending' END,
+         payload_json = CASE WHEN attempts >= ? THEN NULL ELSE payload_json END,
+         actor = CASE WHEN attempts >= ? THEN 'redacted' ELSE actor END,
+         available_at = ?, processing_token = NULL, processing_expires_at = NULL,
+         completed_at = CASE WHEN attempts >= ? THEN ? ELSE NULL END,
+         last_error_code = ?
      WHERE connection_id = ? AND connection_version = ? AND event_id = ?
-       AND status = 'pending'
+       AND line_account_id = ? AND status = 'pending' AND processing_token = ?
        AND EXISTS (
          SELECT 1 FROM sheets_connections c
          WHERE c.id = sheets_sync_webhook_events.connection_id
-           AND c.line_account_id = ?
+           AND c.line_account_id = sheets_sync_webhook_events.line_account_id
        )`,
   ).bind(
+    input.maxAttempts,
+    input.maxAttempts,
+    input.maxAttempts,
     input.availableAt,
+    input.maxAttempts,
+    input.completedAt,
     input.errorCode,
     connectionId,
     connectionVersion,
     eventId,
     lineAccountId,
+    input.processingToken,
   ).run();
   return (result.meta.changes ?? 0) === 1;
 }

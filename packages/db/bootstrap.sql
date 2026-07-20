@@ -1222,8 +1222,10 @@ CREATE TABLE sheets_sync_webhook_events (
   status              TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'applied', 'dead')),
   attempts            INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   available_at        TEXT NOT NULL,
+  processing_token    TEXT,
+  processing_expires_at TEXT,
   received_at         TEXT NOT NULL,
-  applied_at          TEXT,
+  completed_at        TEXT,
   last_error_code     TEXT,
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   UNIQUE (connection_id, event_id)
@@ -1685,7 +1687,7 @@ CREATE UNIQUE INDEX idx_sheets_sync_audit_sequence
   ON sheets_sync_audit_log (connection_id, connection_version, apply_sequence);
 
 CREATE UNIQUE INDEX idx_sheets_sync_audit_webhook_event
-  ON sheets_sync_audit_log (connection_id, webhook_event_id, IFNULL(record_key, ''))
+  ON sheets_sync_audit_log (connection_id, webhook_event_id)
   WHERE webhook_event_id IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_sheets_sync_ledger_row
@@ -1800,3 +1802,19 @@ CREATE TRIGGER trg_sheets_sync_ledger_version_update
 BEFORE UPDATE ON sheets_sync_ledger
 WHEN NOT EXISTS (SELECT 1 FROM sheets_connections WHERE id = NEW.connection_id AND config_version = NEW.connection_version AND is_active = 1 AND deleted_at IS NULL)
 BEGIN SELECT RAISE(ABORT, 'sheets_sync_ledger connection version mismatch'); END;
+
+CREATE TRIGGER trg_sheets_sync_webhook_events_connection_changed
+AFTER UPDATE OF config_version, friend_ledger_enabled, is_active, deleted_at, line_account_id
+ON sheets_connections
+WHEN NEW.config_version <> OLD.config_version
+  OR NEW.friend_ledger_enabled <> OLD.friend_ledger_enabled
+  OR NEW.is_active <> OLD.is_active
+  OR NEW.deleted_at IS NOT OLD.deleted_at
+  OR NEW.line_account_id IS NOT OLD.line_account_id
+BEGIN
+  UPDATE sheets_sync_webhook_events
+  SET status = 'dead', payload_json = NULL, actor = 'redacted',
+      processing_token = NULL, processing_expires_at = NULL,
+      completed_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'),
+      last_error_code = 'connection_changed'
+  WHERE connection_id = NEW.id AND status = 'pending'; END;
