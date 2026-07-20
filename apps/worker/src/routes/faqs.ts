@@ -11,6 +11,10 @@ import {
 } from '@line-crm/db';
 import type { Faq as DbFaq, UnmatchedQuestion as DbUnmatchedQuestion } from '@line-crm/db';
 import type { Env } from '../index.js';
+import {
+  DEFAULT_FAQ_PERSONAL_CONTEXT_SETTINGS,
+  normalizeFaqPersonalContextSettings,
+} from '../services/faq-personal-context.js';
 // Phase B B-2 (T-B5-a): search_text は worker 層 (faq-fts) が計算し createFaq/updateFaq に渡す
 // (db は保存のみ・依存方向)。全書込呼出元でこの helper を通す (grep 3 段の対象)。
 import { buildFaqSearchText } from '../services/faq-fts.js';
@@ -25,6 +29,11 @@ const DEFAULT_FAQ_BOT_SETTINGS = {
   maxRepliesPerDay: 5,
   // AI 回答モード。'auto'=送信 / 'draft'=草案保存。安全側の既定は 'draft'。
   answerMode: 'draft' as 'auto' | 'draft',
+  personalContext: DEFAULT_FAQ_PERSONAL_CONTEXT_SETTINGS,
+};
+
+type FaqBotSettingsInput = Partial<Omit<typeof DEFAULT_FAQ_BOT_SETTINGS, 'personalContext'>> & {
+  personalContext?: unknown;
 };
 
 function parseVariants(raw: string): string[] {
@@ -62,7 +71,7 @@ function serializeUnmatched(row: DbUnmatchedQuestion) {
   };
 }
 
-function normalizeSettings(input: Partial<typeof DEFAULT_FAQ_BOT_SETTINGS>) {
+function normalizeSettings(input: FaqBotSettingsInput) {
   return {
     enabled: input.enabled === true,
     threshold: typeof input.threshold === 'number' ? input.threshold : DEFAULT_FAQ_BOT_SETTINGS.threshold,
@@ -72,7 +81,22 @@ function normalizeSettings(input: Partial<typeof DEFAULT_FAQ_BOT_SETTINGS>) {
     answerMode: input.answerMode === 'auto' || input.answerMode === 'draft'
       ? input.answerMode
       : DEFAULT_FAQ_BOT_SETTINGS.answerMode,
+    personalContext: normalizeFaqPersonalContextSettings(input.personalContext),
   };
+}
+
+function parseStoredSettings(value: string | null | undefined) {
+  if (!value) return normalizeSettings({});
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return normalizeSettings(
+      parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as FaqBotSettingsInput
+        : {},
+    );
+  } catch {
+    return normalizeSettings({});
+  }
 }
 
 function nowJst(): string {
@@ -449,12 +473,12 @@ faqs.get('/api/account-settings/faq-bot', async (c) => {
     .prepare(`SELECT value FROM account_settings WHERE line_account_id = ? AND key = 'faq_bot'`)
     .bind(accountId)
     .first<{ value: string }>();
-  const value = row?.value ? normalizeSettings(JSON.parse(row.value) as Partial<typeof DEFAULT_FAQ_BOT_SETTINGS>) : DEFAULT_FAQ_BOT_SETTINGS;
+  const value = parseStoredSettings(row?.value);
   return c.json({ success: true, data: value });
 });
 
 faqs.put('/api/account-settings/faq-bot', async (c) => {
-  const body = await c.req.json<Partial<typeof DEFAULT_FAQ_BOT_SETTINGS> & { accountId?: string }>();
+  const body = await c.req.json<FaqBotSettingsInput & { accountId?: string }>();
   if (!body.accountId) return c.json({ success: false, error: 'accountId required' }, 400);
 
   const value = normalizeSettings(body);
