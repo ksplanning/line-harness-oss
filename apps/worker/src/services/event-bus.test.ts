@@ -7,7 +7,7 @@ interface CapturedInsert {
 }
 
 function fakeDb(opts: {
-  friend?: { line_user_id: string };
+  friend?: { line_user_id: string; display_name?: string | null; user_id?: string | null; metadata?: string };
   capturedInserts: CapturedInsert[];
   capturedAssignmentDeletes?: unknown[][];
 }): D1Database {
@@ -63,17 +63,26 @@ vi.mock('@line-crm/db', async () => {
 
 const linkRichMenuToUser = vi.fn().mockResolvedValue(undefined);
 const unlinkRichMenuFromUser = vi.fn().mockResolvedValue(undefined);
+const lineMessageMocks = vi.hoisted(() => ({
+  replyMessage: vi.fn().mockResolvedValue(undefined),
+  pushMessage: vi.fn().mockResolvedValue(undefined),
+}));
+const personalizationMocks = vi.hoisted(() => ({
+  renderFriendMessageContent: vi.fn(async (content: string) => content),
+}));
 
 vi.mock('@line-crm/line-sdk', () => {
   return {
     LineClient: vi.fn().mockImplementation(() => ({
-      replyMessage: vi.fn().mockResolvedValue(undefined),
-      pushMessage: vi.fn().mockResolvedValue(undefined),
+      replyMessage: lineMessageMocks.replyMessage,
+      pushMessage: lineMessageMocks.pushMessage,
       linkRichMenuToUser,
       unlinkRichMenuFromUser,
     })),
   };
 });
+
+vi.mock('./render-message.js', () => personalizationMocks);
 
 vi.mock('./ad-conversion.js', () => ({
   sendAdConversions: vi.fn().mockResolvedValue(undefined),
@@ -84,6 +93,7 @@ describe('fireEvent — send_message action logging', () => {
 
   beforeEach(async () => {
     captured = [];
+    personalizationMocks.renderFriendMessageContent.mockImplementation(async (content: string) => content);
     const db = await import('@line-crm/db');
     (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
       {
@@ -166,14 +176,15 @@ describe('fireEvent — send_message action logging', () => {
         actions: JSON.stringify([
           {
             type: 'send_message',
-            params: { messageType: 'text', content: 'hello' },
+            params: { messageType: 'text', content: 'hello {{display_name}} 😊' },
           },
         ]),
       },
     ]);
+    personalizationMocks.renderFriendMessageContent.mockResolvedValueOnce('hello 山田花子 😊');
 
     const dbFake = fakeDb({
-      friend: { line_user_id: 'U_test' },
+      friend: { line_user_id: 'U_test', display_name: '山田花子', user_id: null, metadata: '{}' },
       capturedInserts: captured,
     });
     await fireEvent(
@@ -186,8 +197,18 @@ describe('fireEvent — send_message action logging', () => {
 
     expect(captured).toHaveLength(1);
     expect(captured[0].binds[2]).toBe('text');
-    expect(captured[0].binds[3]).toBe('hello');
+    expect(captured[0].binds[3]).toBe('hello 山田花子 😊');
     expect(captured[0].binds[6]).toBe(null);
+    expect(personalizationMocks.renderFriendMessageContent).toHaveBeenCalledWith(
+      'hello {{display_name}} 😊',
+      null,
+      dbFake,
+      expect.objectContaining({ line_user_id: 'U_test', display_name: '山田花子' }),
+    );
+    expect(lineMessageMocks.pushMessage).toHaveBeenCalledWith('U_test', [{
+      type: 'text',
+      text: 'hello 山田花子 😊',
+    }]);
   });
 
   it('resolves params.template_id via templates table when set', async () => {

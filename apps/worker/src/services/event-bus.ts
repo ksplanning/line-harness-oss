@@ -24,6 +24,7 @@ import { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { sendAdConversions } from './ad-conversion.js';
 import { forgetRichMenuRuleAssignment } from './rich-menu-rule-engine.js';
+import { renderFriendMessageContent } from './render-message.js';
 
 export interface EventPayload {
   friendId?: string;
@@ -257,9 +258,14 @@ async function executeAction(
       if (payload.eventData?.businessHoursSuppressed === true) break;
       if (!lineAccessToken || !friendId) break;
       const friend = await db
-        .prepare('SELECT line_user_id FROM friends WHERE id = ?')
+        .prepare('SELECT line_user_id, display_name, user_id, metadata FROM friends WHERE id = ?')
         .bind(friendId)
-        .first<{ line_user_id: string }>();
+        .first<{
+          line_user_id: string;
+          display_name: string | null;
+          user_id: string | null;
+          metadata: string | null;
+        }>();
       if (!friend) break;
       const lineClient = new LineClient(lineAccessToken);
 
@@ -278,6 +284,7 @@ async function executeAction(
           resolvedContent = tpl.message_content;
         }
       }
+      resolvedContent = await renderFriendMessageContent(resolvedContent, null, db, friend);
 
       let msg: Message;
       let logContent: string;

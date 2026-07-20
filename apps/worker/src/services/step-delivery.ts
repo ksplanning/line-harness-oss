@@ -11,14 +11,13 @@ import {
   computeNextDeliveryAt,
   resolveStepContent,
   addTagToFriend,
-  listFriendFieldDefinitions,
   type DeliveryMode,
 } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
 import { getEffectiveFriendMetadataValue } from './friend-metadata-condition.js';
-import { renderMessageContent } from './render-message.js';
+import { renderFriendMessageContent } from './render-message.js';
 
 /**
  * Replace template variables in message content.
@@ -229,17 +228,13 @@ async function processSingleDelivery(
   const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
   const friendWithMeta = { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1];
   const legacyExpandedContent = expandVariables(resolved.messageContent, friendWithMeta, workerUrl);
-  const fieldDefinitions = await listFriendFieldDefinitions(db, { activeOnly: true });
-  const customFields = Object.fromEntries(fieldDefinitions.map((definition) => [
-    definition.name,
-    Object.prototype.hasOwnProperty.call(resolvedMeta, definition.name)
-      ? resolvedMeta[definition.name]
-      : definition.defaultValue,
-  ]));
-  const expandedContent = renderMessageContent(legacyExpandedContent, null, {
-    displayName: friend.display_name,
-    customFields,
-  });
+  const expandedContent = await renderFriendMessageContent(
+    legacyExpandedContent,
+    null,
+    db,
+    friend,
+    resolvedMeta,
+  );
   // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
   let trackedType: string = resolved.messageType;
   let trackedContent = expandedContent;
