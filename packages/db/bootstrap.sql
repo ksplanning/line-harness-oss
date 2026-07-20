@@ -399,6 +399,19 @@ CREATE TABLE events (
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
 );
 
+CREATE TABLE faq_personal_context_audit_log (
+  id                         TEXT PRIMARY KEY,
+  line_account_id            TEXT NOT NULL,
+  friend_id                  TEXT NOT NULL,
+  display_name_included      INTEGER NOT NULL DEFAULT 0 CHECK (display_name_included IN (0, 1)),
+  custom_field_ids_json      TEXT NOT NULL DEFAULT '[]',
+  formaloo_submission_count  INTEGER NOT NULL DEFAULT 0 CHECK (formaloo_submission_count >= 0),
+  internal_submission_count  INTEGER NOT NULL DEFAULT 0 CHECK (internal_submission_count >= 0),
+  prompt_token_estimate      INTEGER NOT NULL DEFAULT 0 CHECK (prompt_token_estimate >= 0),
+  was_truncated              INTEGER NOT NULL DEFAULT 0 CHECK (was_truncated IN (0, 1)),
+  created_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE faqs (
   id               TEXT PRIMARY KEY,
   line_account_id  TEXT DEFAULT NULL,
@@ -1501,6 +1514,12 @@ CREATE INDEX idx_event_slots_event_starts ON event_slots (event_id, starts_at);
 
 CREATE INDEX idx_events_account_published_sort ON events (line_account_id, is_published, sort_order);
 
+CREATE INDEX idx_faq_personal_context_audit_account_created
+  ON faq_personal_context_audit_log (line_account_id, created_at);
+
+CREATE INDEX idx_faq_personal_context_audit_friend_created
+  ON faq_personal_context_audit_log (friend_id, created_at);
+
 CREATE INDEX idx_faqs_account_active ON faqs(line_account_id, is_active);
 
 CREATE INDEX idx_form_opens_form ON form_opens (form_id, opened_at);
@@ -1765,6 +1784,14 @@ CREATE TRIGGER knowledge_chunks_fts_ad AFTER DELETE ON knowledge_chunks BEGIN DE
 CREATE TRIGGER knowledge_chunks_fts_ai AFTER INSERT ON knowledge_chunks BEGIN INSERT INTO knowledge_chunks_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
 
 CREATE TRIGGER knowledge_chunks_fts_au AFTER UPDATE ON knowledge_chunks BEGIN DELETE FROM knowledge_chunks_fts WHERE rowid = OLD.rowid; INSERT INTO knowledge_chunks_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
+
+CREATE TRIGGER trg_faq_personal_context_audit_no_delete
+BEFORE DELETE ON faq_personal_context_audit_log
+BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;
+
+CREATE TRIGGER trg_faq_personal_context_audit_no_update
+BEFORE UPDATE ON faq_personal_context_audit_log
+BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;
 
 CREATE TRIGGER trg_rich_menu_rule_account_reactivate AFTER UPDATE OF is_active ON line_accounts WHEN OLD.is_active IS NOT 1 AND NEW.is_active = 1 BEGIN INSERT INTO rich_menu_rule_evaluation_queue (friend_id, attempts, available_at, last_error, lease_token, revision, updated_at) SELECT f.id, 0, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'), NULL, NULL, 1, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') FROM friends f WHERE f.line_account_id = NEW.id AND f.is_following = 1 AND (EXISTS (SELECT 1 FROM rich_menu_display_rules r WHERE r.account_id = NEW.id AND r.is_active = 1) OR EXISTS (SELECT 1 FROM rich_menu_friend_assignments a WHERE a.friend_id = f.id)) ON CONFLICT(friend_id) DO UPDATE SET attempts = 0, available_at = CASE WHEN rich_menu_rule_evaluation_queue.lease_token IS NULL THEN excluded.available_at ELSE rich_menu_rule_evaluation_queue.available_at END, last_error = NULL, revision = rich_menu_rule_evaluation_queue.revision + 1, updated_at = excluded.updated_at; END;
 
