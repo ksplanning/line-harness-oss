@@ -9,7 +9,7 @@
  * (実 D&D drag は jsdom 非対応 → click-to-add で機能を担保。drag は browser-evaluator が実機確認。)
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, within, waitFor, act } from '@testing-library/react'
 import FormBuilder, {
   CanvasDropLayout,
   DragGhost,
@@ -65,6 +65,34 @@ describe('FormBuilder — パレット & 追加 (T-B1)', () => {
     render(<FormBuilder {...base({ initialFields: [first], onSave })} />)
     fireEvent.click(screen.getByLabelText('数値を追加'))
     fireEvent.click(screen.getByText('保存'))
+    const saved = onSave.mock.calls[0][0] as { fields: HarnessField[] }
+    expect(saved.fields.map((field) => field.type)).toEqual(['email', 'number'])
+    expect(saved.fields.map((field) => field.position)).toEqual([0, 1])
+  })
+
+  it('canvas 追加と保存が同じ React batch でも最新 field を保存 payload に含める', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave })} />)
+
+    act(() => {
+      screen.getByLabelText('数値を追加').click()
+      screen.getByText('保存').click()
+    })
+
+    const saved = onSave.mock.calls[0][0] as { fields: HarnessField[] }
+    expect(saved.fields.map((field) => field.type)).toEqual(['number'])
+  })
+
+  it('既存フォームでも canvas 追加直後の保存 payload に既存 field と追加 field を含める', () => {
+    const onSave = vi.fn()
+    const first: HarnessField = { id: 'existing', type: 'email', label: '既存メール', required: false, position: 7, config: {} }
+    render(<FormBuilder {...base({ initialFields: [first], onSave })} />)
+
+    act(() => {
+      screen.getByLabelText('数値を追加').click()
+      screen.getByText('保存').click()
+    })
+
     const saved = onSave.mock.calls[0][0] as { fields: HarnessField[] }
     expect(saved.fields.map((field) => field.type)).toEqual(['email', 'number'])
     expect(saved.fields.map((field) => field.position)).toEqual([0, 1])

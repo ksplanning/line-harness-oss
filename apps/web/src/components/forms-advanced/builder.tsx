@@ -999,7 +999,15 @@ export default function FormBuilder(props: BuilderProps) {
   const autoMode = useAutoLayoutMode()
   const mode = props.layoutMode ?? autoMode
   const [mobileTab, setMobileTab] = useState<'edit' | 'design' | 'preview'>('edit')
-  const [fields, setFields] = useState<HarnessField[]>(props.initialFields)
+  const [fields, setFieldsState] = useState<HarnessField[]>(props.initialFields)
+  // React may batch a canvas mutation and the following save before rendering again.
+  // Keep an event-synchronous snapshot so save never reads the previous render's fields.
+  const fieldsRef = useRef<HarnessField[]>(props.initialFields)
+  const setFields = (update: HarnessField[] | ((current: HarnessField[]) => HarnessField[])) => {
+    const next = typeof update === 'function' ? update(fieldsRef.current) : update
+    fieldsRef.current = next
+    setFieldsState(next)
+  }
   const [logic, setLogic] = useState<HarnessLogicRule[]>(props.initialLogic)
   const [title, setTitle] = useState(props.formTitle)
   const [description, setDescription] = useState(props.formDescription ?? '')
@@ -1131,7 +1139,7 @@ export default function FormBuilder(props: BuilderProps) {
   const reposition = (list: HarnessField[]) => list.map((f, i) => ({ ...f, position: i }))
 
   const addField = (type: HarnessFieldType, index?: number) => {
-    const f = newField(type, fields)
+    const f = newField(type, fieldsRef.current)
     setFields((cur) => {
       const next = [...cur]
       if (typeof index === 'number') next.splice(index, 0, f)
@@ -1251,7 +1259,7 @@ export default function FormBuilder(props: BuilderProps) {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
       // form-jp-localization: 文言を触ったときだけ完全 object で載せる (初期未編集は absent = 既存不干渉)。
-      const result = await props.onSave({ fields: reposition(fields), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), ...(friendMetadataMappingsTouched ? { friendMetadataMappings } : {}), ...(operationsSettingsTouched.size > 0 ? { operationsSettings: operationsSettingsPatch(operationsSettings, operationsSettingsTouched) } : {}), allowPostEdit, allowEditMail, editMailFieldId: editMailFieldId || null })
+      const result = await props.onSave({ fields: reposition(fieldsRef.current), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), ...(friendMetadataMappingsTouched ? { friendMetadataMappings } : {}), ...(operationsSettingsTouched.size > 0 ? { operationsSettings: operationsSettingsPatch(operationsSettings, operationsSettingsTouched) } : {}), allowPostEdit, allowEditMail, editMailFieldId: editMailFieldId || null })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
