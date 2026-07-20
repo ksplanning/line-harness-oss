@@ -29,6 +29,7 @@ export * from './ad-platforms';
 export * from './staff';
 export * from './roles';
 export * from './formaloo';
+export * from './internal-forms';
 export * from './formaloo-recurring-submissions';
 export * from './formaloo-ai-chat';
 export * from './formaloo-folders';

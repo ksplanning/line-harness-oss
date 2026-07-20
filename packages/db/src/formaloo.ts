@@ -52,6 +52,8 @@ export interface FormalooForm {
   formaloo_webhook_pull_lock_token: string | null;
   formaloo_webhook_pull_lock_until: number | null;
   formaloo_webhook_pull_not_before: number;
+  // migration 113: hosted renderer selector. Existing rows default to Formaloo.
+  render_backend: 'formaloo' | 'internal';
   created_at: string;
   updated_at: string;
 }
