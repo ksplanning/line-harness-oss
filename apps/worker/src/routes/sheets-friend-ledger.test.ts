@@ -276,6 +276,41 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
     });
   });
 
+  test('requires a timezone-bearing, calendar-valid ISO-8601 occurredAt', () => {
+    const payload = {
+      version: 2,
+      eventId: 'event-invalid-time-01',
+      occurredAt: WEBHOOK_TIMESTAMP,
+      connectionId: 'conn-a',
+      spreadsheetId: 'sheet-a',
+      sheetName: '友だち台帳',
+      range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      snapshot: {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: '後', oldValue: '前', oldValueKnown: true,
+      },
+      actor: 'editor@example.test',
+      actorKind: 'google_email',
+    };
+
+    for (const occurredAt of [
+      'Mar 5 2026 10:00:00 GMT',
+      '2026-02-30T10:00:00.000Z',
+      '2026-07-21T24:00:00.000Z',
+      '2026-07-21T03:00:00',
+      '2026-07-21 03:00:00Z',
+      '2026-07-21T03:00:00+14:01',
+      '0000-01-01T00:00:00.000Z',
+      '9999-12-31T23:59:59.999-14:00',
+    ]) {
+      expect(parseWebhookPayload({ ...payload, occurredAt })).toBeNull();
+    }
+    expect(parseWebhookPayload({
+      ...payload,
+      occurredAt: '2026-07-21T12:00:00.123+09:00',
+    })).toMatchObject({ occurredAt: '2026-07-21T12:00:00.123+09:00' });
+  });
+
   test('rejects an invalid signature before DB access or sync', async () => {
     const prepare = vi.fn(() => { throw new Error('DB must not be touched'); });
     const response = await call(
@@ -480,6 +515,41 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
       .toEqual({ count: 0 });
     expect(service.drainFriendLedgerWebhookEvents).not.toHaveBeenCalled();
     expect(service.syncFriendLedger).not.toHaveBeenCalled();
+  });
+
+  test('returns 400 for a signed ambiguous occurredAt before the D1 CHECK', async () => {
+    const occurredAt = 'Mar 5 2026 10:00:00 GMT';
+    vi.mocked(Date.now).mockReturnValue(Date.parse(occurredAt));
+    const payload = {
+      version: 2,
+      eventId: 'event-ambiguous-time-1',
+      occurredAt,
+      connectionId: 'conn-a',
+      spreadsheetId: 'sheet-a',
+      sheetName: '友だち台帳',
+      range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      snapshot: {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: '後', oldValue: '前', oldValueKnown: true,
+      },
+      actor: 'editor@example.test',
+      actorKind: 'google_email',
+    };
+    const body = JSON.stringify(payload);
+
+    const response = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+      body,
+      headers: {
+        'X-Sheets-Signature': await hmacHex(body, occurredAt),
+        'X-Sheets-Timestamp': occurredAt,
+        'X-Sheets-Connection-Id': 'conn-a',
+      },
+    });
+
+    expect(response.status).toBe(400);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_webhook_events').get())
+      .toEqual({ count: 0 });
+    expect(service.drainFriendLedgerWebhookEvents).not.toHaveBeenCalled();
   });
 
   test('binds the signed connection id to its saved spreadsheet and tab', async () => {
