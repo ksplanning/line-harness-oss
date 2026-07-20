@@ -1269,3 +1269,42 @@ Google へつなぐ処理が、Cloudflare Workers では「呼び出し元が違
 - [ ] 監査ログ: 実行者・項目・変更前後・通知元を1件確認し、証跡への個人情報記録0。
 - [ ] 保護列: LINEハーネスへ取り込まれず、正しい値への復元と警告を確認した（未実施なら理由を `BLOCKED` と記録）。
 - [ ] 本番3フォーム・回答シート・Formalooへの接触0、秘密値記録0、検証後の不要データ0。
+
+# automation-rules-gui — host live checklist
+
+## owner 日常語
+
+JSONを書かなくても、「何が起きたら → 何をする」を画面で選んでルールを作れます。知らない形式のルールは勝手に直さず、元のJSONのまま安全に残します。
+
+## 実施条件と安全境界
+
+- 査読済み revision を preview へ反映した後、trusted host の closer だけが実施する。sandbox では外部送信や本番データ変更を行わない。
+- sandbox 専用 LINE account と使い捨ての受信Webhookだけを使う。本番 rules、本番3フォーム、既存Webhook、既存の友だちには触れない。
+- LINE送信、Discord投稿、migration は行わない。secret の値は画面外へ貼らず、ログや証跡にも残さない。
+- アクションの確認先には、preview 内で承認済みの使い捨て HTTPS capture endpoint を使う。外部の第三者サービスは使わない。
+
+## GUIで rule を1本作る
+
+1. Webhook管理で source type を `sola_gui_check` とした使い捨て受信Webhookを1件作り、secret を trusted host の一時変数だけに保持する。
+2. `/automations` で sandbox 専用 account を選び、「新規ルール」を押す。
+3. ルール名を `automation-gui-live-<JST timestamp>`、イベントを「外部Webhook受信」、Webhookの種類を `sola_gui_check` にする。
+4. アクションを「Webhookを送る」にし、承認済みの使い捨て capture URL を入力して作成する。作成後に一覧へ戻り、同じ日常語の内容で表示されることを確認して有効化する。
+5. ルールをもう一度編集し、条件JSON・アクションJSONが上級者向けの読み取り専用表示であることを確認する。何も変えず閉じ、保存データの fingerprint が作成直後から変わっていないことを確認する。
+
+## 既存の受信Webhook機構で発火を確認する
+
+1. 既存の `/api/webhooks/incoming/:id/receive` 機構へ、固定した小さなJSONを HMAC-SHA256 署名付きで1回だけ POST する。signature と secret は表示しない。
+2. 応答が `success=true` / `received=true` であることを確認する。再送しない。
+3. `/api/automations/:id/logs` で、この rule の新しいログが1件だけ増え、`status=success` かつ `send_webhook` の action result が成功であることを確認する。
+4. preview 内の capture endpoint が同じ marker を1回だけ受けたことを確認する。LINE outgoing log と Discord投稿がともに0件であることも確認する。
+
+## 撤収と記録
+
+1. GUIで使い捨て rule を無効化して削除し、一覧と `/api/automations/:id` の両方で残っていないことを確認する。
+2. 使い捨て受信Webhookと capture データを削除し、source type `sola_gui_check` の残存が0件であることを確認する。一時変数の secret も破棄する。
+3. revision、JST時刻、rule作成1件、発火ログ成功1件、capture受信1件、撤収後残存0件だけを記録する。JSON本文やsecretは記録しない。
+
+- [ ] GUIだけで rule を1本作成・再表示でき、無編集時の fingerprint が不変だった。
+- [ ] 既存の受信Webhook機構で1回発火し、automation log と preview capture が各1件成功した。
+- [ ] LINE送信0件、Discord投稿0件、本番 rules・本番3フォーム・既存データへの接触0件だった。
+- [ ] rule、受信Webhook、capture、一時secretを撤収し、残存0件を確認した。
