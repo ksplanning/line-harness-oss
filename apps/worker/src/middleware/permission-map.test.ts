@@ -30,6 +30,7 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/api/auth/login')).toBeNull();
     expect(mapPathToFeature('/api/liff/forms/x')).toBeNull();
     expect(mapPathToFeature('/api/rich-menu-images/x')).toBeNull();
+    expect(mapPathToFeature('/api/postal-lookup')).toBeNull();
     // 非 /api は対象外 (null)
     expect(mapPathToFeature('/webhook')).toBeNull();
     expect(mapPathToFeature('/t/abc')).toBeNull();

@@ -28,6 +28,7 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('auth'), feature: null },              // login/logout (公開)
   { test: prefix('protected'), feature: null },         // test 専用 route
   { test: prefix('qr'), feature: null },                // 公開 QR proxy
+  { test: prefix('postal-lookup'), feature: null },     // 自前フォームの住所補完 (公開 GET のみ)
   { test: prefix('meet-callback'), feature: null },     // 公開 callback
   { test: prefix('liff'), feature: null },              // LIFF 公開
   { test: prefix('rich-menu-images'), feature: null },  // 公開画像 proxy
@@ -176,6 +177,7 @@ interface PublicRule {
 }
 
 export const PUBLIC_METHOD_RULES: PublicRule[] = [
+  { test: /^\/api\/postal-lookup$/, methods: ['GET'] }, // 自前フォームの郵便番号→住所補完
   { test: /^\/api\/forms\/[^/]+\/submit$/, methods: ['POST'] }, // LIFF フォーム送信
   { test: /^\/api\/forms\/[^/]+\/opened$/, methods: ['POST'] }, // 開封計測
   { test: /^\/api\/forms\/[^/]+\/partial$/, methods: ['POST'] }, // 途中保存

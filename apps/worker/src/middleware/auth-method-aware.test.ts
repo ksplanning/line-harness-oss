@@ -65,6 +65,8 @@ function app() {
   a.put('/api/forms/:id', (c) => c.json({ ok: 'put' }));
   a.delete('/api/forms/:id', (c) => c.json({ ok: 'delete' }));
   a.post('/api/forms/:id/submit', (c) => c.json({ ok: 'submit' }));
+  a.get('/api/postal-lookup', (c) => c.json({ ok: 'postal-get' }));
+  a.post('/api/postal-lookup', (c) => c.json({ ok: 'postal-post' }));
   return a;
 }
 
@@ -98,6 +100,8 @@ describe('isPublicApiRoute 分類 (単体)', () => {
     expect(isPublicApiRoute('/api/forms/abc', 'DELETE')).toBe(false);
     expect(isPublicApiRoute('/api/forms/abc/submit', 'POST')).toBe(true);
     expect(isPublicApiRoute('/api/forms/abc/submit', 'GET')).toBe(false);
+    expect(isPublicApiRoute('/api/postal-lookup', 'GET')).toBe(true);
+    expect(isPublicApiRoute('/api/postal-lookup', 'POST')).toBe(false);
     expect(isPublicApiRoute('/api/staff', 'GET')).toBe(false);
   });
 });
@@ -111,6 +115,11 @@ describe('authMiddleware method-aware 公開 skip (T-A8)', () => {
   test('POST /api/forms/:id/submit は公開 POST のまま', async () => {
     const res = await req('POST', '/api/forms/abc/submit');
     expect(res.status).toBe(200);
+  });
+
+  test('GET /api/postal-lookup だけを無認証公開する', async () => {
+    expect((await req('GET', '/api/postal-lookup')).status).toBe(200);
+    expect((await req('POST', '/api/postal-lookup')).status).toBe(401);
   });
 
   test('PUT /api/forms/:id は無認証で 401 (method-blind な穴を塞ぐ)', async () => {

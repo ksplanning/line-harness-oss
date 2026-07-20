@@ -65,6 +65,7 @@ function check(key: string, max: number, windowMs: number): { ok: boolean; remai
 const UNAUTHENTICATED_PATTERNS: Array<string | RegExp> = [
   '/webhook',
   /^\/api\/forms\/[^/]+\/submit$/,
+  '/api/postal-lookup',
   // Formaloo callback は /formaloo/* の auth skip 対象。bogus Bearer で authenticated bucket を選ばせず
   // 常に IP 100/min に固定し、callback token の総当たり・pull 起動連打を入口で抑える。
   /^\/formaloo\/instant\/[^/]+\/[^/]+$/,

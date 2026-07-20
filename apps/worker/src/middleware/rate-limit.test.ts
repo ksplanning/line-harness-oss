@@ -9,6 +9,7 @@ function app() {
   a.get('/api/protected', (c) => c.json({ success: true }));
   a.post('/formaloo/instant/:formId/:secret', (c) => c.json({ success: true }));
   a.get('/formaloo/choices/:formId/:listId', (c) => c.json([]));
+  a.get('/api/postal-lookup', (c) => c.json({ pref: '大阪府', city: '高槻市', town: '' }));
   return a;
 }
 
@@ -81,6 +82,24 @@ describe('Formaloo dynamic choices は常に unauthenticated IP bucket', () => {
         headers: {
           'cf-connecting-ip': ip,
           Authorization: `Bearer rotating-choice-bogus-${i}`,
+        },
+      }, env);
+      lastStatus = res.status;
+    }
+    expect(lastStatus).toBe(429);
+  });
+});
+
+describe('postal lookup は常に unauthenticated IP bucket', () => {
+  test('bogus Bearer を毎回変えても 101 件目を 429 にする', async () => {
+    const ip = '192.0.2.109';
+    const a = app();
+    let lastStatus = 0;
+    for (let i = 0; i < 101; i++) {
+      const res = await a.request('/api/postal-lookup?zip=5690000', {
+        headers: {
+          'cf-connecting-ip': ip,
+          Authorization: `Bearer rotating-postal-bogus-${i}`,
         },
       }, env);
       lastStatus = res.status;
