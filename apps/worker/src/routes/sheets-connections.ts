@@ -140,16 +140,7 @@ function quotedA1SheetName(sheetName: string): string {
   return `'${sheetName.replace(/'/g, "''")}'!A1:A1`;
 }
 
-interface FriendLedgerWebhookPayloadV1 {
-  version: 1;
-  connectionId: string;
-  spreadsheetId: string;
-  sheetName: string;
-  range: { rowStart: number; rowEnd: number; columnStart: number; columnEnd: number };
-  actor: string;
-}
-
-interface FriendLedgerWebhookPayloadV2 extends FriendLedgerWebhookEventPayload {
+interface FriendLedgerWebhookPayload extends FriendLedgerWebhookEventPayload {
   version: 2;
   eventId: string;
   occurredAt: string;
@@ -159,8 +150,6 @@ interface FriendLedgerWebhookPayloadV2 extends FriendLedgerWebhookEventPayload {
   actor: string;
   actorKind: 'google_email' | 'unavailable';
 }
-
-type FriendLedgerWebhookPayload = FriendLedgerWebhookPayloadV1 | FriendLedgerWebhookPayloadV2;
 
 const MAX_GOOGLE_SHEET_ROWS = 10_000_000;
 const MAX_GOOGLE_SHEET_COLUMNS = 18_278;
@@ -196,9 +185,6 @@ export function parseWebhookPayload(value: unknown): FriendLedgerWebhookPayload 
     || range.rowEnd > MAX_GOOGLE_SHEET_ROWS
     || range.columnEnd > MAX_GOOGLE_SHEET_COLUMNS
   ) return null;
-  if (value.version === 1) {
-    return { version: 1, connectionId, spreadsheetId, sheetName, range, actor };
-  }
   if (value.version !== 2) return null;
   const eventId = cleanString(value.eventId);
   const occurredAt = cleanString(value.occurredAt);
@@ -456,7 +442,6 @@ sheetsConnections.get(`${BASE_PATH}/:id/audit`, async (c) => {
 });
 
 // v2 signs one exact cell snapshot and durably accepts it before attempting sync.
-// The legacy range-only v1 path remains temporarily for already-installed scripts.
 sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', async (c) => {
   const declaredLength = Number(c.req.header('Content-Length'));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_FRIEND_LEDGER_WEBHOOK_BYTES) {
@@ -483,7 +468,7 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
     // Invalid JSON is intentionally handled only after the signature check.
   }
   if (!payload) return c.json({ success: false, error: '通知の形式が正しくありません' }, 400);
-  if (payload.version === 2 && payload.occurredAt !== timestamp) {
+  if (payload.occurredAt !== timestamp) {
     return c.json({ success: false, error: '通知時刻が一致しません' }, 400);
   }
 
@@ -495,52 +480,34 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
       || connection.spreadsheetId !== payload.spreadsheetId
       || connection.sheetName !== payload.sheetName
     ) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
-    if (payload.version === 2) {
-      const acceptedAt = toJstString(new Date());
-      const queued = await enqueueSheetsWebhookEvent(
-        c.env.DB,
-        connection.lineAccountId,
-        connection.id,
-        connection.configVersion,
-        {
-          eventId: payload.eventId,
-          actor: payload.actor,
-          actorKind: payload.actorKind,
-          occurredAt: payload.occurredAt,
-          payload: { range: payload.range, snapshot: payload.snapshot },
-          receivedAt: acceptedAt,
-        },
-      );
-      if (!queued) return c.json({ success: false, error: '接続設定が更新されました' }, 409);
-      if (queued.status === 'pending' && c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-        const work = drainFriendLedgerWebhookEvents({
-          db: c.env.DB,
-          connection,
-          credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
-          maxEvents: 1,
-        }).catch(() => undefined);
-        try {
-          c.executionCtx.waitUntil(work);
-        } catch {
-          await work;
-        }
+    const acceptedAt = toJstString(new Date());
+    const queued = await enqueueSheetsWebhookEvent(
+      c.env.DB,
+      connection.lineAccountId,
+      connection.id,
+      connection.configVersion,
+      {
+        eventId: payload.eventId,
+        actor: payload.actor,
+        actorKind: payload.actorKind,
+        occurredAt: payload.occurredAt,
+        payload: { range: payload.range, snapshot: payload.snapshot },
+        receivedAt: acceptedAt,
+      },
+    );
+    if (!queued) return c.json({ success: false, error: '接続設定が更新されました' }, 409);
+    if (queued.status === 'pending' && c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+      const work = drainFriendLedgerWebhookEvents({
+        db: c.env.DB,
+        connection,
+        credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+        maxEvents: 1,
+      }).catch(() => undefined);
+      try {
+        c.executionCtx.waitUntil(work);
+      } catch {
+        await work;
       }
-      return c.json({ success: true }, 202);
-    }
-    if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-      return c.json({ success: false, error: SETUP_MESSAGE }, 503);
-    }
-    const result = await syncFriendLedger({
-      db: c.env.DB,
-      connection,
-      credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
-      source: 'webhook',
-      actor: payload.actor,
-      range: payload.range,
-    });
-    if (result.busy) {
-      c.header('Retry-After', '2');
-      return c.json({ success: false, error: '同期中のため再試行が必要です' }, 409);
     }
     return c.json({ success: true }, 202);
   } catch {

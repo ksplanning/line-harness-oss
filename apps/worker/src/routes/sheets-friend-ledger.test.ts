@@ -239,13 +239,12 @@ describe('friend ledger owner routes', () => {
 });
 
 describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
-  test('bounds legacy coordinates and normalizes an unavailable Google editor identity', () => {
+  test('rejects legacy payloads and normalizes an unavailable Google editor identity', () => {
     expect(parseWebhookPayload({
       version: 1,
       connectionId: 'conn-a', spreadsheetId: 'sheet-a', sheetName: '友だち台帳',
       range: {
-        rowStart: Number.MAX_SAFE_INTEGER, rowEnd: Number.MAX_SAFE_INTEGER,
-        columnStart: 1, columnEnd: 1,
+        rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4,
       },
       actor: 'editor@example.test',
     })).toBeNull();
@@ -301,7 +300,7 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
     expect(service.syncFriendLedger).not.toHaveBeenCalled();
   });
 
-  test('accepts a signed range notification and forwards its actor to targeted sync', async () => {
+  test('rejects a signed legacy range notification without queueing or direct sync', async () => {
     const payload = {
       version: 1,
       connectionId: 'conn-a',
@@ -325,40 +324,11 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
       },
     );
 
-    expect(response.status).toBe(202);
-    expect(await response.json()).toMatchObject({ success: true });
-    expect(service.syncFriendLedger).toHaveBeenCalledWith(expect.objectContaining({
-      connection: expect.objectContaining({ id: 'conn-a', lineAccountId: 'acc-1' }),
-      source: 'webhook',
-      actor: 'editor@example.test',
-      range: payload.range,
-    }));
-  });
-
-  test('returns a retriable response instead of acknowledging a lock-busy edit', async () => {
-    service.syncFriendLedger.mockResolvedValueOnce({
-      status: 'warning', warning: '別の同期処理が実行中です', busy: true,
-    });
-    const payload = {
-      version: 1,
-      connectionId: 'conn-a',
-      spreadsheetId: 'sheet-a',
-      sheetName: '友だち台帳',
-      range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
-      actor: 'editor@example.test',
-    };
-    const body = JSON.stringify(payload);
-
-    const response = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
-      body,
-      headers: {
-        'X-Sheets-Signature': await hmacHex(body, WEBHOOK_TIMESTAMP),
-        'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
-      },
-    });
-
-    expect(response.status).toBe(409);
-    expect(response.headers.get('Retry-After')).toBe('2');
+    expect(response.status).toBe(400);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_webhook_events').get())
+      .toEqual({ count: 0 });
+    expect(service.drainFriendLedgerWebhookEvents).not.toHaveBeenCalled();
+    expect(service.syncFriendLedger).not.toHaveBeenCalled();
   });
 
   test('durably accepts one signed cell snapshot once before attempting background sync', async () => {
@@ -433,12 +403,19 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
 
   test('binds the signed connection id to its saved spreadsheet and tab', async () => {
     const payload = {
-      version: 1,
+      version: 2,
+      eventId: 'event-wrong-sheet-01',
+      occurredAt: WEBHOOK_TIMESTAMP,
       connectionId: 'conn-a',
       spreadsheetId: 'sheet-b',
       sheetName: '友だち台帳',
       range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      snapshot: {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+        value: '後', oldValue: '前', oldValueKnown: true,
+      },
       actor: 'editor@example.test',
+      actorKind: 'google_email',
     };
     const body = JSON.stringify(payload);
     const response = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
