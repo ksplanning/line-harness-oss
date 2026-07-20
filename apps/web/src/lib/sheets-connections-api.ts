@@ -20,6 +20,8 @@ export interface SheetsAuditEntry {
   newValue: string | null
   source: string
   changeKind: string
+  outcome?: 'applied' | 'skipped' | 'failed'
+  errorCode?: string | null
 }
 
 export interface SheetsConnection {

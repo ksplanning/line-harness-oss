@@ -69,6 +69,12 @@ const AUDIT_CHANGE_LABELS: Record<string, string> = {
   identity_ignored: '識別項目の変更を無視',
 }
 
+const AUDIT_OUTCOME_LABELS: Record<string, string> = {
+  applied: '反映済み',
+  skipped: '安全のため取り込まず',
+  failed: '反映失敗',
+}
+
 export default function SheetsConnectionsPanel({
   connections,
   onCreate,
@@ -252,6 +258,7 @@ export default function SheetsConnectionsPanel({
                             {' · '}{entry.fieldName}: {entry.oldValue ?? '（空）'} → {entry.newValue ?? '（空）'}
                             {' · '}{AUDIT_SOURCE_LABELS[entry.source] ?? entry.source}
                             {' · '}{AUDIT_CHANGE_LABELS[entry.changeKind] ?? entry.changeKind}
+                            {entry.outcome && ` · ${AUDIT_OUTCOME_LABELS[entry.outcome] ?? entry.outcome}`}
                           </li>
                         ))}
                       </ul>

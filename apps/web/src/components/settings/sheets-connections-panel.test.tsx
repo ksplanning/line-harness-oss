@@ -34,6 +34,8 @@ const auditEntry = {
   newValue: 'VIP',
   source: 'sheet',
   changeKind: 'custom_field',
+  outcome: 'skipped' as const,
+  errorCode: 'stale_webhook_target',
 }
 
 function props(overrides: Partial<SheetsConnectionsPanelProps> = {}): SheetsConnectionsPanelProps {
@@ -179,6 +181,7 @@ describe('SheetsConnectionsPanel', () => {
     expect(audit.textContent).toContain('VIP')
     expect(audit.textContent).toContain('シート')
     expect(audit.textContent).toContain('カスタムフィールド')
+    expect(audit.textContent).toContain('安全のため取り込まず')
   })
 
   test('renders empty/error and per-connection test states in plain language', () => {
