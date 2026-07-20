@@ -661,6 +661,59 @@ CREATE TABLE friend_field_definitions (
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE friend_import_audit_log (
+  id              TEXT PRIMARY KEY,
+  job_id          TEXT NOT NULL REFERENCES friend_import_jobs (id) ON DELETE RESTRICT,
+  account_id      TEXT NOT NULL,
+  event_type      TEXT NOT NULL,
+  actor_id        TEXT NOT NULL,
+  actor_name      TEXT NOT NULL,
+  new_count       INTEGER NOT NULL CHECK (new_count >= 0),
+  existing_count  INTEGER NOT NULL CHECK (existing_count >= 0),
+  failed_count    INTEGER NOT NULL CHECK (failed_count >= 0),
+  detail          TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE friend_import_items (
+  job_id         TEXT NOT NULL REFERENCES friend_import_jobs (id) ON DELETE CASCADE,
+  line_user_id   TEXT NOT NULL,
+  friend_id      TEXT NOT NULL,
+  outcome        TEXT NOT NULL CHECK (outcome IN ('new', 'existing', 'conflict')),
+  profile_status TEXT NOT NULL CHECK (profile_status IN ('pending', 'succeeded', 'failed', 'not_required')),
+  profile_attempts INTEGER NOT NULL DEFAULT 0 CHECK (profile_attempts >= 0),
+  next_attempt_at TEXT,
+  error_message  TEXT,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  PRIMARY KEY (job_id, line_user_id)
+);
+
+CREATE TABLE friend_import_jobs (
+  id                      TEXT PRIMARY KEY,
+  account_id              TEXT NOT NULL,
+  status                  TEXT NOT NULL DEFAULT 'running'
+                          CHECK (status IN ('running', 'completed', 'failed')),
+  phase                   TEXT NOT NULL DEFAULT 'followers'
+                          CHECK (phase IN ('followers', 'profiles', 'completed')),
+  continuation_token      TEXT,
+  fetched_count           INTEGER NOT NULL DEFAULT 0 CHECK (fetched_count >= 0),
+  new_count               INTEGER NOT NULL DEFAULT 0 CHECK (new_count >= 0),
+  existing_count          INTEGER NOT NULL DEFAULT 0 CHECK (existing_count >= 0),
+  profile_processed_count INTEGER NOT NULL DEFAULT 0 CHECK (profile_processed_count >= 0),
+  failed_count            INTEGER NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
+  next_run_at             TEXT,
+  lock_token              TEXT,
+  locked_until            TEXT,
+  last_error_code         TEXT,
+  last_error              TEXT,
+  requested_by_id         TEXT NOT NULL,
+  requested_by_name       TEXT NOT NULL,
+  created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  completed_at            TEXT
+);
+
 CREATE TABLE friend_reminder_deliveries (
   id                TEXT PRIMARY KEY,
   friend_reminder_id TEXT NOT NULL REFERENCES friend_reminders (id) ON DELETE CASCADE,
@@ -713,6 +766,7 @@ CREATE TABLE friends (
   picture_url      TEXT,
   status_message   TEXT,
   is_following     INTEGER NOT NULL DEFAULT 1,
+  source           TEXT,
   user_id          TEXT,
   ig_igsid         TEXT,
   score            INTEGER NOT NULL DEFAULT 0,
@@ -1589,6 +1643,21 @@ CREATE INDEX idx_friend_field_definitions_active_order
 CREATE UNIQUE INDEX idx_friend_field_definitions_name
   ON friend_field_definitions (name);
 
+CREATE INDEX idx_friend_import_audit_account
+  ON friend_import_audit_log (account_id, created_at DESC, id DESC);
+
+CREATE INDEX idx_friend_import_audit_job
+  ON friend_import_audit_log (job_id, created_at, id);
+
+CREATE INDEX idx_friend_import_items_profiles
+  ON friend_import_items (job_id, outcome, profile_status, next_attempt_at, line_user_id);
+
+CREATE INDEX idx_friend_import_jobs_latest
+  ON friend_import_jobs (account_id, created_at DESC, id DESC);
+
+CREATE UNIQUE INDEX idx_friend_import_jobs_one_running
+  ON friend_import_jobs (account_id) WHERE status = 'running';
+
 CREATE INDEX idx_friend_reminders_friend ON friend_reminders (friend_id);
 
 CREATE INDEX idx_friend_reminders_status ON friend_reminders (status);
@@ -1610,6 +1679,8 @@ CREATE INDEX idx_friend_tags_tag_id ON friend_tags (tag_id);
 CREATE INDEX idx_friends_ig_igsid ON friends (ig_igsid);
 
 CREATE INDEX idx_friends_line_user_id ON friends (line_user_id);
+
+CREATE INDEX idx_friends_source ON friends (source);
 
 CREATE INDEX idx_friends_user_id ON friends (user_id);
 
@@ -1797,6 +1868,10 @@ BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;
 CREATE TRIGGER trg_faq_personal_context_audit_no_update
 BEFORE UPDATE ON faq_personal_context_audit_log
 BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;
+
+CREATE TRIGGER trg_friend_import_audit_no_delete BEFORE DELETE ON friend_import_audit_log BEGIN SELECT RAISE(ABORT, 'friend_import_audit_log is append-only'); END;
+
+CREATE TRIGGER trg_friend_import_audit_no_update BEFORE UPDATE ON friend_import_audit_log BEGIN SELECT RAISE(ABORT, 'friend_import_audit_log is append-only'); END;
 
 CREATE TRIGGER trg_rich_menu_rule_account_reactivate AFTER UPDATE OF is_active ON line_accounts WHEN OLD.is_active IS NOT 1 AND NEW.is_active = 1 BEGIN INSERT INTO rich_menu_rule_evaluation_queue (friend_id, attempts, available_at, last_error, lease_token, revision, updated_at) SELECT f.id, 0, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'), NULL, NULL, 1, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') FROM friends f WHERE f.line_account_id = NEW.id AND f.is_following = 1 AND (EXISTS (SELECT 1 FROM rich_menu_display_rules r WHERE r.account_id = NEW.id AND r.is_active = 1) OR EXISTS (SELECT 1 FROM rich_menu_friend_assignments a WHERE a.friend_id = f.id)) ON CONFLICT(friend_id) DO UPDATE SET attempts = 0, available_at = CASE WHEN rich_menu_rule_evaluation_queue.lease_token IS NULL THEN excluded.available_at ELSE rich_menu_rule_evaluation_queue.available_at END, last_error = NULL, revision = rich_menu_rule_evaluation_queue.revision + 1, updated_at = excluded.updated_at; END;
 
