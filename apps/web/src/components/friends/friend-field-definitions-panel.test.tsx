@@ -27,6 +27,16 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('FriendFieldDefinitionsPanel', () => {
+  test('全員共通のカスタムフィールド設定だと見出しと説明で分かる', () => {
+    render(<FriendFieldDefinitionsPanel definitions={[]} onRefresh={vi.fn()} />);
+
+    expect(screen.getByRole('heading', {
+      name: 'カスタムフィールド（全員共通の項目）',
+    })).toBeTruthy();
+    expect(screen.getByText(/すべての友だちの個人情報欄/)).toBeTruthy();
+    expect(document.getElementById('friend-custom-fields')).toBeTruthy();
+  });
+
   test('項目名・既定値・表示順を一度入力して tenant 定義を作成する', async () => {
     const onRefresh = vi.fn();
     render(<FriendFieldDefinitionsPanel definitions={[]} onRefresh={onRefresh} />);

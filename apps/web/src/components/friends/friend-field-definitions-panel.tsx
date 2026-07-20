@@ -148,10 +148,10 @@ export default function FriendFieldDefinitionsPanel({ definitions, onRefresh }: 
   }
 
   return (
-    <section className="mb-4 rounded-lg border border-gray-200 bg-white p-4">
-      <h2 className="text-sm font-semibold text-gray-800">友だち項目定義</h2>
+    <section id="friend-custom-fields" className="mb-4 scroll-mt-20 rounded-lg border border-gray-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-gray-800">カスタムフィールド（全員共通の項目）</h2>
       <p className="mt-1 text-xs text-gray-500">
-        一回作れば全員の個人情報欄に同じ項目が出ます。全員分の入力は不要で、未入力は既定値を表示します。
+        ここで一回作れば、すべての友だちの個人情報欄に同じカスタムフィールドが出ます。全員分の入力は不要で、未入力は既定値を表示します。
       </p>
 
       <form onSubmit={create} className="mt-3 grid gap-2 rounded-lg bg-gray-50 p-3 md:grid-cols-[1.2fr_1fr_6rem_auto] md:items-end">
