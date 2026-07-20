@@ -48,7 +48,7 @@ function d1(db: Database.Database): D1Database {
   } as unknown as D1Database;
 }
 
-function seed(raw: Database.Database, opts: { enabled?: boolean; answerMode?: string; omitAnswerMode?: boolean; threshold?: number } = {}) {
+function seed(raw: Database.Database, opts: { enabled?: boolean; answerMode?: string; omitAnswerMode?: boolean; threshold?: number; maxRepliesPerDay?: number } = {}) {
   // FK 親行 (messages_log/unmatched_questions → friends / faqs·account_settings → line_accounts)。
   raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret) VALUES ('acc-1','ch','a','t','s')`).run();
   raw.prepare(`INSERT INTO friends (id, line_user_id, line_account_id) VALUES ('f1','u1','acc-1')`).run();
@@ -57,7 +57,7 @@ function seed(raw: Database.Database, opts: { enabled?: boolean; answerMode?: st
     threshold: opts.threshold ?? 2, // 常に match=null → AI 経路を決定的に
     handoffMessage: '',
     autoReplyNotice: '',
-    maxRepliesPerDay: 5,
+    maxRepliesPerDay: opts.maxRepliesPerDay ?? 5,
   };
   if (!opts.omitAnswerMode) settings.answerMode = opts.answerMode ?? 'auto';
   const value = JSON.stringify(settings);
@@ -160,6 +160,21 @@ describe('tryFaqReply — account gate + AI RAG (T-A2)', () => {
     expect(countDrafts()).toBe(0);
     expect(countFaqOutgoing()).toBe(1);
     expect(countUnmatched()).toBe(0);
+  });
+
+  test('draft 上限到達後の決定的 match は新しい草案を作らず未対応へ退避する', async () => {
+    seed(raw, { answerMode: 'draft', threshold: 0.6, maxRepliesPerDay: 1 });
+
+    await expect(tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか')))
+      .resolves.toEqual({ replied: false, handoff: false });
+    await expect(tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか')))
+      .resolves.toEqual({ replied: false, handoff: false });
+
+    expect(lineClient.replyMessage).not.toHaveBeenCalled();
+    expect(countDrafts()).toBe(1);
+    expect(countFaqOutgoing()).toBe(0);
+    expect(countUnmatched()).toBe(1);
+    expect((raw.prepare(`SELECT hit_count FROM faqs WHERE id = 'fq1'`).get() as { hit_count: number }).hit_count).toBe(1);
   });
 
   test('根拠なし (floor 未満) → recordUnmatchedQuestion 退避 / replyMessage 0 / provider 未呼出', async () => {

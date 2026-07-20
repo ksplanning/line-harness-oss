@@ -111,9 +111,7 @@ describe('FAQ DB helpers', () => {
   });
 });
 
-// reviewer R1-I2: 24h 上限カウントの窓判定を実 SQLite で検証する。
-// created_at は jstNow() の JST 文字列 (T 区切り・+09:00)。旧 `created_at >= datetime('now','-24 hours')`
-// は UTC 文字列との辞書比較で 24h より古い行まで数える (窓が壊れる)。julianday() 比較は正しい。
+// reviewer R1-I2/F-2: +09:00 付き実送信と suffix なし JST 草案の 24h 窓を実 SQLite で検証する。
 describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
   // better-sqlite3 の同期 API を D1 の async prepare().bind().first() 形に薄くラップ。
   function d1(db: Database.Database): D1Database {
@@ -141,6 +139,9 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     const raw = new Database(':memory:');
     raw.exec(`CREATE TABLE messages_log (
       id TEXT, friend_id TEXT, direction TEXT, source TEXT, delivery_type TEXT, content TEXT, created_at TEXT
+    );
+    CREATE TABLE ai_faq_drafts (
+      id TEXT, friend_id TEXT, created_at TEXT
     )`);
     return raw;
   }
@@ -149,6 +150,15 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     raw.prepare(`INSERT INTO messages_log (id, friend_id, direction, source, delivery_type, content, created_at)
                  VALUES (?, ?, 'outgoing', ?, ?, 'x', ?)`)
       .run(crypto.randomUUID(), friendId, source, delivery, createdAt);
+  }
+
+  function insertDraft(raw: Database.Database, friendId: string, createdAt: string) {
+    raw.prepare(`INSERT INTO ai_faq_drafts (id, friend_id, created_at) VALUES (?, ?, ?)`)
+      .run(crypto.randomUUID(), friendId, createdAt);
+  }
+
+  function naiveJst(d: Date): string {
+    return new Date(d.getTime() + 9 * 3_600_000).toISOString().replace('Z', '');
   }
 
   test('counts a reply from 23h ago (within window) and excludes one from 25h ago (JST-stored)', async () => {
@@ -173,7 +183,18 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
   });
 
-  test('returns 0 when no recent faq_bot replies', async () => {
+  test('counts recent saved drafts but excludes old and other-friend drafts', async () => {
+    const raw = seedDb();
+    const now = Date.now();
+    insertReply(raw, 'f1', jst(new Date(now - 1 * 3_600_000)));
+    insertDraft(raw, 'f1', naiveJst(new Date(now - 23 * 3_600_000)));
+    insertDraft(raw, 'f1', naiveJst(new Date(now - 25 * 3_600_000)));
+    insertDraft(raw, 'f2', naiveJst(new Date(now - 1 * 3_600_000)));
+
+    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(2);
+  });
+
+  test('returns 0 when no recent reply or draft exists', async () => {
     const raw = seedDb();
     insertReply(raw, 'f1', jst(new Date(Date.now() - 30 * 3_600_000))); // 30h ago
     await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(0);

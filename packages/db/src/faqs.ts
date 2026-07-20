@@ -146,19 +146,25 @@ export async function incrementFaqHitCount(db: D1Database, id: string): Promise<
     .run();
 }
 
-// reviewer R1-I2: created_at は jstNow() 由来の JST 文字列 (例 '2026-07-02T19:00:00.000+09:00' /
-// T 区切り・+09:00 付き)。これを datetime('now','-24 hours') (UTC・空白区切り・TZ なし) と
-// 辞書比較すると窓判定が歪む (フォーマット差で大小が逆転し、24h より古い行まで数えて上限に
-// 早く達する)。julianday() で数値化して比較すれば TZ/区切りに依らず正しく「直近 24h」を数える。
-export const RECENT_FAQ_REPLY_COUNT_SQL = `SELECT COUNT(*) AS count
-       FROM messages_log
-       WHERE friend_id = ?
-         AND direction = 'outgoing'
-         AND source = 'faq_bot'
-         AND delivery_type = 'reply'
-         AND julianday(created_at) >= julianday('now', '-24 hours')`;
+// reviewer R1-I2/F-2: messages_log は +09:00 付き、ai_faq_drafts は suffix なしの JST。
+// julianday() で数値化し、草案だけ -9h して UTC に揃えることで正しく「直近 24h」を数える。
+export const RECENT_FAQ_REPLY_COUNT_SQL = `WITH target(friend_id) AS (VALUES (?))
+       SELECT
+         (SELECT COUNT(*)
+            FROM messages_log ml
+            JOIN target t ON ml.friend_id = t.friend_id
+           WHERE ml.direction = 'outgoing'
+             AND ml.source = 'faq_bot'
+             AND ml.delivery_type = 'reply'
+             AND julianday(ml.created_at) >= julianday('now', '-24 hours'))
+         +
+         (SELECT COUNT(*)
+            FROM ai_faq_drafts d
+            JOIN target t ON d.friend_id = t.friend_id
+           WHERE julianday(d.created_at, '-9 hours') >= julianday('now', '-24 hours'))
+         AS count`;
 
-/** 直近 24h に friend へ送った faq_bot 自動返信 (delivery_type='reply') の件数。 */
+/** 直近 24h の friend 別 FAQ 枠使用数 (実送信 + 未送信草案)。 */
 export async function countRecentFaqReplies(db: D1Database, friendId: string): Promise<number> {
   const row = await db
     .prepare(RECENT_FAQ_REPLY_COUNT_SQL)
