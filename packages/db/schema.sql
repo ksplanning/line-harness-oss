@@ -531,7 +531,7 @@ CREATE TABLE IF NOT EXISTS sheets_sync_audit_details (
   old_value   TEXT,
   new_value   TEXT,
   source      TEXT NOT NULL CHECK (source IN ('webhook', 'polling', 'manual')),
-  change_kind TEXT NOT NULL CHECK (change_kind IN ('custom_field', 'identity_ignored', 'conflict')),
+  change_kind TEXT NOT NULL CHECK (change_kind IN ('custom_field', 'identity_sync', 'identity_ignored', 'conflict')),
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 

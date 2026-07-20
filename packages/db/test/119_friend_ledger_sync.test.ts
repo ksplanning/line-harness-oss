@@ -134,6 +134,10 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
       (id, audit_id, actor, column_name, old_value, new_value, source, change_kind)
       VALUES ('detail-1', 'audit-1', 'editor@example.com', '契約状況', '未', '済',
               'webhook', 'custom_field')`).run();
+    expect(() => raw.prepare(`INSERT INTO sheets_sync_audit_details
+      (id, audit_id, actor, column_name, old_value, new_value, source, change_kind)
+      VALUES ('detail-identity', 'audit-1', 'system_poll', '表示名', '旧名', '新名',
+              'polling', 'identity_sync')`).run()).not.toThrow();
 
     expect(() => raw.prepare(`UPDATE sheets_sync_audit_details SET new_value = '改ざん'
       WHERE id = 'detail-1'`).run()).toThrow(/append-only/i);

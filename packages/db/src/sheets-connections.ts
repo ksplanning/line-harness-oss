@@ -105,7 +105,7 @@ interface SheetsSyncLedgerRow {
 }
 
 export type SheetsSyncAuditSource = 'webhook' | 'polling' | 'manual';
-export type SheetsSyncAuditChangeKind = 'custom_field' | 'identity_ignored' | 'conflict';
+export type SheetsSyncAuditChangeKind = 'custom_field' | 'identity_sync' | 'identity_ignored' | 'conflict';
 
 export interface SheetsSyncAuditDetailInput {
   id: string;
@@ -386,20 +386,26 @@ export async function updateSheetsConnection(
   id: string,
   input: UpdateSheetsConnectionInput,
 ): Promise<SheetsConnection | null> {
+  const now = jstNow();
   const update = db.prepare(
     `UPDATE sheets_connections
      SET spreadsheet_id = ?, sheet_name = ?, sync_direction = ?,
          friend_field_mappings_json = COALESCE(?, friend_field_mappings_json),
          config_version = config_version + 1, updated_at = ?
-     WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL`,
+     WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
+       AND (
+         sync_lock_token IS NULL OR sync_lock_expires_at IS NULL
+         OR julianday(sync_lock_expires_at) <= julianday(?)
+       )`,
   ).bind(
     input.spreadsheetId,
     input.sheetName,
     input.syncDirection,
     input.friendFieldMappings === undefined ? null : JSON.stringify(input.friendFieldMappings),
-    jstNow(),
+    now,
     id,
     lineAccountId,
+    now,
   );
   // Every accepted settings write advances the generation. D1 serializes the
   // increments, so concurrent owner tabs remain last-write-wins without a false
@@ -412,8 +418,12 @@ export async function updateSheetsConnection(
          AND EXISTS (
            SELECT 1 FROM sheets_connections
            WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
+             AND (
+               sync_lock_token IS NULL OR sync_lock_expires_at IS NULL
+               OR julianday(sync_lock_expires_at) <= julianday(?)
+             )
          )`,
-    ).bind(id, id, lineAccountId),
+    ).bind(id, id, lineAccountId, now),
   ]))[0];
   if ((result.meta.changes ?? 0) !== 1) return null;
   return getSheetsConnection(db, lineAccountId, id);
@@ -429,13 +439,24 @@ export async function softDeleteSheetsConnection(
     db.prepare(
       `UPDATE sheets_connections
        SET is_active = 0, deleted_at = ?, updated_at = ?
-       WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL`,
-    ).bind(now, now, id, lineAccountId),
+       WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
+         AND (
+           sync_lock_token IS NULL OR sync_lock_expires_at IS NULL
+           OR julianday(sync_lock_expires_at) <= julianday(?)
+         )`,
+    ).bind(now, now, id, lineAccountId, now),
     db.prepare(
       `DELETE FROM sheets_sync_ledger
        WHERE connection_id = ?
-         AND EXISTS (SELECT 1 FROM sheets_connections WHERE id = ? AND line_account_id = ?)`,
-    ).bind(id, id, lineAccountId),
+         AND EXISTS (
+           SELECT 1 FROM sheets_connections
+           WHERE id = ? AND line_account_id = ?
+             AND (
+               sync_lock_token IS NULL OR sync_lock_expires_at IS NULL
+               OR julianday(sync_lock_expires_at) <= julianday(?)
+             )
+         )`,
+    ).bind(id, id, lineAccountId, now),
   ]))[0];
   return (result.meta.changes ?? 0) === 1;
 }
@@ -502,11 +523,13 @@ export async function claimSheetsSyncLock(
   token: string,
   now: string,
   expiresAt: string,
+  configVersion?: number,
 ): Promise<boolean> {
   const result = await db.prepare(
     `UPDATE sheets_connections
      SET sync_lock_token = ?, sync_lock_expires_at = ?
      WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
+       AND (? IS NULL OR config_version = ?)
        AND julianday(?) > julianday(?)
        AND (
          sync_lock_token IS NULL
@@ -514,7 +537,18 @@ export async function claimSheetsSyncLock(
          OR sync_lock_expires_at IS NULL
          OR julianday(sync_lock_expires_at) <= julianday(?)
        )`,
-  ).bind(token, expiresAt, id, lineAccountId, expiresAt, now, token, now).run();
+  ).bind(
+    token,
+    expiresAt,
+    id,
+    lineAccountId,
+    configVersion ?? null,
+    configVersion ?? null,
+    expiresAt,
+    now,
+    token,
+    now,
+  ).run();
   return (result.meta.changes ?? 0) === 1;
 }
 

@@ -60,7 +60,7 @@ interface SheetsSyncAuditDetailContract {
   oldValue: string | null;
   newValue: string | null;
   source: 'webhook' | 'polling' | 'manual';
-  changeKind: 'custom_field' | 'identity_ignored' | 'conflict';
+  changeKind: 'custom_field' | 'identity_sync' | 'identity_ignored' | 'conflict';
   createdAt?: string;
 }
 
@@ -137,6 +137,7 @@ interface FriendLedgerDbContract {
     token: string,
     now: string,
     expiresAt: string,
+    configVersion?: number,
   ): Promise<boolean>;
   releaseSheetsSyncLock(
     db: D1Database,
@@ -464,6 +465,30 @@ describe('Sheets connections DB helper', () => {
       .resolves.toBe(true);
     expect(raw.prepare(`SELECT sync_lock_token, sync_lock_expires_at FROM sheets_connections
       WHERE id = ?`).get(created.id)).toEqual({ sync_lock_token: null, sync_lock_expires_at: null });
+  });
+
+  test('binds a sync lock to the captured settings generation and blocks target changes while held', async () => {
+    const created = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'friends-lock', spreadsheetId: 'sheet-before',
+      sheetName: '台帳', syncDirection: 'bidirectional',
+    });
+
+    await expect(friendLedgerDb.claimSheetsSyncLock(
+      db, 'acc-1', created.id, 'stale-generation',
+      '2026-07-21T10:00:00+09:00', '2026-07-21T10:05:00+09:00', 2,
+    )).resolves.toBe(false);
+    await expect(friendLedgerDb.claimSheetsSyncLock(
+      db, 'acc-1', created.id, 'current-generation',
+      '2026-07-21T10:00:00+09:00', '2026-07-21T10:05:00+09:00', 1,
+    )).resolves.toBe(true);
+    await expect(updateSheetsConnection(db, 'acc-1', created.id, {
+      spreadsheetId: 'sheet-after', sheetName: '台帳', syncDirection: 'to_sheets',
+    })).resolves.toBeNull();
+    await expect(softDeleteSheetsConnection(db, 'acc-1', created.id)).resolves.toBe(false);
+    await friendLedgerDb.releaseSheetsSyncLock(db, 'acc-1', created.id, 'current-generation');
+    await expect(updateSheetsConnection(db, 'acc-1', created.id, {
+      spreadsheetId: 'sheet-after', sheetName: '台帳', syncDirection: 'to_sheets',
+    })).resolves.toMatchObject({ spreadsheetId: 'sheet-after', configVersion: 2 });
   });
 
   test('upserts and lists canonical ledger snapshots only through the owning tenant and active generation', async () => {
