@@ -671,3 +671,31 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 - [ ] 既存フォーム: 既存 field + パーツ追加→保存→再読込後も両方が残る。
 - [ ] 両経路の PUT payload に画面上の最新 `fields` が含まれる。
 - [ ] 本番3フォーム接触0、個人情報0、秘密値記録0、scratch form cleanup・削除後404がPASS。
+# b4-matrix-pull-fix — host live checklist
+
+## できるようになること
+
+行列パーツが編集画面の再読み込みで消える不具合を直しました。
+
+## 対象と安全条件
+
+- sandbox から Formaloo への登録・更新・削除は行わない。査読済みの同一 revision を approved host へ反映してから実施する。
+- 対象は、個人情報を含まず確実に削除できる新規 scratch form 1個だけにする。本番3フォーム `Z5IEH85R` / `GMOxoMtK` / `XqACeA2v` には GET を含めて触れない。
+- token、API key、cookie、生の form/field slug は画面・コマンド出力・証跡へ残さない。HTTP 200だけでPASSにせず、field の型、列見出し、行見出し、順序を照合する。
+- 失敗時は追加の保存や作成を止め、既存 scratch form の remote/local 対応を確認してから cleanup する。
+
+## matrix push → pull → 再読込 → 撤収
+
+1. 管理画面で scratch form を1個作り、行2件・列2件の matrix field を追加して1回だけ保存する。
+2. secret を除いた送信証跡で、matrix の write payload に `bulk_choices` が列見出しの文字列配列としてあり、`choice_items` が無いことを確認する。
+3. Formaloo form detail GET の read-back で、matrix の `choice_items` が `[{slug,title,...}]` の配列で、`bulk_choices` が無いことを確認する。実値は記録せず、配列であること、2列の title と順序、`choice_groups` の2行だけを照合する。
+4. 管理画面で同じ form を pull（再取込み）し、matrix field 自体が消えず、行2件・列2件と見出し順が保存前と一致することを確認する。
+5. 編集画面を再読み込みし、同じ matrix が残ることを確認する。そのまま1回だけ再保存・再pullし、`bulk_choices` で再送され、再び matrix が残ることを確認する。
+6. matrix field と scratch form を通常の承認済み手順で削除し、harness と Formaloo の両方で GET 404 を確認する。途中失敗でもこの撤収を完了する。
+
+## PASS 記録
+
+- [ ] deployment SHA / tenant / 実行者 / JST実行時刻を記録した。
+- [ ] matrix の bulk-only push、実 GET の array-only read-back、pull、編集画面再読込、再保存、再pullで field と2×2順序が残った。
+- [ ] scratch form を harness / Formaloo の両方から削除し、両方の GET 404 を確認した。
+- [ ] sandbox 実射0、本番3フォーム接触0、個人情報0、秘密値記録0、重複作成0。
