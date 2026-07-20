@@ -10,6 +10,8 @@ beforeEach(() => fetchApiMock.mockReset())
 const created = {
   id: 'gsc_1', lineAccountId: 'acc/1', formId: 'form/1', spreadsheetId: 'sheet_1',
   sheetName: '回答', syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins',
+  friendFieldMappings: [{ fieldId: 'field-rank', header: '会員ランク' }],
+  lastSyncAt: '2026-07-21T10:00:00.000+09:00', lastSyncStatus: 'success', lastSyncWarning: null,
   isActive: true, createdAt: '2026-07-20', updatedAt: '2026-07-20',
 }
 
@@ -37,13 +39,17 @@ describe('sheetsConnectionsApi', () => {
     const createInput = {
       lineAccountId: 'acc/1', formId: 'form/1', spreadsheetId: 'sheet_1',
       sheetName: '回答', syncDirection: 'bidirectional' as const,
+      selectedFieldIds: ['field-rank'],
     }
     await sheetsConnectionsApi.create(createInput)
     expect(fetchApiMock).toHaveBeenNthCalledWith(1, '/api/integrations/google-sheets/connections', {
       method: 'POST', body: JSON.stringify(createInput),
     })
 
-    const updateInput = { spreadsheetId: 'sheet_1', sheetName: '集計', syncDirection: 'from_sheets' as const }
+    const updateInput = {
+      spreadsheetId: 'sheet_1', sheetName: '集計', syncDirection: 'from_sheets' as const,
+      selectedFieldIds: ['field-rank', 'field-note'],
+    }
     await sheetsConnectionsApi.update('acc/1', 'gsc/1', updateInput)
     expect(fetchApiMock).toHaveBeenNthCalledWith(2, '/api/integrations/google-sheets/connections/gsc%2F1', {
       method: 'PATCH', body: JSON.stringify({ lineAccountId: 'acc/1', ...updateInput }),
@@ -61,5 +67,33 @@ describe('sheetsConnectionsApi', () => {
     expect(fetchApiMock).toHaveBeenCalledWith('/api/integrations/google-sheets/connections/gsc%2F1/test?lineAccountId=acc%2F1', {
       method: 'POST',
     })
+  })
+
+  test('manual sync and recent audit use account-scoped endpoints and return their payloads', async () => {
+    const summary = { status: 'success', warning: null }
+    const audit = [{
+      actor: 'オーナー',
+      fieldName: '会員ランク',
+      oldValue: '一般',
+      newValue: 'VIP',
+      source: 'sheet',
+      changeKind: 'custom_field',
+    }]
+    fetchApiMock
+      .mockResolvedValueOnce({ success: true, data: summary })
+      .mockResolvedValueOnce({ success: true, data: audit })
+
+    await expect(sheetsConnectionsApi.sync('acc/1', 'gsc/1')).resolves.toEqual(summary)
+    expect(fetchApiMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/integrations/google-sheets/connections/gsc%2F1/sync?lineAccountId=acc%2F1',
+      { method: 'POST' },
+    )
+
+    await expect(sheetsConnectionsApi.audit('acc/1', 'gsc/1')).resolves.toEqual(audit)
+    expect(fetchApiMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/integrations/google-sheets/connections/gsc%2F1/audit?lineAccountId=acc%2F1',
+    )
   })
 })

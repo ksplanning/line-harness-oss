@@ -35,28 +35,30 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
 describe('M1 Sidebar owner 専用導線', () => {
-  it('forms_advanced 持ち custom-role 非 owner に「フォーム連携キー」を出さない (高機能フォームは出る)', async () => {
+  it('integration/forms_advanced 持ち custom-role 非 owner に owner 専用連携導線を出さない', async () => {
     staffMe.mockResolvedValue({
       success: true,
-      data: { id: 's1', name: 'x', role: 'staff', email: null, roleId: 'r1', permissions: ['forms_advanced', 'friend', 'chat'] },
+      data: { id: 's1', name: 'x', role: 'staff', email: null, roleId: 'r1', permissions: ['forms_advanced', 'integration', 'friend', 'chat'] },
     })
     render(<Sidebar />)
     // 権限解決を待つ (forms_advanced 導線が出るのを起点にする)
     await waitFor(() => expect(screen.getAllByText('高機能フォーム').length).toBeGreaterThan(0))
     // owner 専用リンクは非 owner には出ない
     expect(screen.queryByText('フォーム連携キー')).toBeNull()
+    expect(document.querySelector('a[href="/settings/sheets"]')).toBeNull()
   })
 
-  it('built-in owner には「フォーム連携キー」を出す', async () => {
+  it('built-in owner にはフォーム連携キーと Sheets 同期設定を出す', async () => {
     staffMe.mockResolvedValue({
       success: true,
       data: { id: 'o1', name: 'owner', email: null, role: 'owner', roleId: null, permissions: [] },
     })
     render(<Sidebar />)
     await waitFor(() => expect(screen.getAllByText('フォーム連携キー').length).toBeGreaterThan(0))
+    expect(document.querySelectorAll('a[href="/settings/sheets"]').length).toBeGreaterThan(0)
   })
 
-  it('built-in staff (非 owner) にも「フォーム連携キー」を出さない', async () => {
+  it('built-in staff (非 owner) にも owner 専用連携導線を出さない', async () => {
     staffMe.mockResolvedValue({
       success: true,
       data: { id: 's2', name: 'staff', email: null, role: 'staff', roleId: null, permissions: [] },
@@ -64,6 +66,7 @@ describe('M1 Sidebar owner 専用導線', () => {
     render(<Sidebar />)
     await waitFor(() => expect(screen.getAllByText('友だち管理').length).toBeGreaterThan(0))
     expect(screen.queryByText('フォーム連携キー')).toBeNull()
+    expect(document.querySelector('a[href="/settings/sheets"]')).toBeNull()
   })
 })
 

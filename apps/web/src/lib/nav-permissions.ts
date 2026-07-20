@@ -33,6 +33,7 @@ export const NAV_FEATURE: Record<string, string> = {
   '/forms-advanced': 'forms_advanced',
   '/ai-chat': 'forms_advanced',
   '/settings/formaloo-workspaces': 'forms_advanced',
+  '/settings/sheets': 'integration',
   '/duplicates': 'friend',
   '/automations': 'scenario',
   '/auto-replies': 'auto_reply',

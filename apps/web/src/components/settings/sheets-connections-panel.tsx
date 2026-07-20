@@ -1,19 +1,28 @@
 'use client'
 
 import { useState } from 'react'
+import type { FriendFieldDefinition } from '@line-crm/shared'
 import type {
+  SheetsAuditEntry,
   SheetsConnection,
+  SheetsSyncSummary,
   SheetsSyncDirection,
   UpdateSheetsConnectionInput,
 } from '@/lib/sheets-connections-api'
 
 type TestState = 'testing' | 'ok' | 'ng'
 
+export type SheetsSyncResultState =
+  | { status: 'running' }
+  | { status: 'success' | 'warning'; summary: SheetsSyncSummary }
+  | { status: 'failed'; message: string }
+
 export interface SheetsConnectionDraft {
   formId: string
   spreadsheetId: string
   sheetName: string
   syncDirection: SheetsSyncDirection
+  selectedFieldIds: string[]
 }
 
 export interface SheetsConnectionsPanelProps {
@@ -22,15 +31,41 @@ export interface SheetsConnectionsPanelProps {
   onUpdate: (id: string, input: UpdateSheetsConnectionInput) => void
   onRemove: (id: string) => void
   onTest: (id: string) => void
+  onSync: (id: string) => void
+  fieldDefinitions: readonly FriendFieldDefinition[]
   testResults: Record<string, TestState>
+  syncResults: Record<string, SheetsSyncResultState>
+  auditEntries: Record<string, SheetsAuditEntry[]>
   error?: string | null
   busy?: boolean
 }
 
 const DIRECTION_LABELS: Record<SheetsSyncDirection, string> = {
   bidirectional: '双方向',
-  to_sheets: '回答 → シート',
-  from_sheets: 'シート → ハーネス',
+  to_sheets: '友だち情報 → シート',
+  from_sheets: 'シート → 友だち情報',
+}
+
+const SYNC_STATUS_LABELS: Record<SheetsConnection['lastSyncStatus'], string> = {
+  idle: '未同期',
+  running: '同期中',
+  success: '成功',
+  warning: '警告',
+  error: '失敗',
+}
+
+const AUDIT_SOURCE_LABELS: Record<string, string> = {
+  sheet: 'シート',
+  harness: 'ハーネス',
+  polling: 'ポーリング',
+  webhook: 'Webhook',
+  manual: '手動同期',
+}
+
+const AUDIT_CHANGE_LABELS: Record<string, string> = {
+  custom_field: 'カスタムフィールド更新',
+  conflict: '競合（後の変更を採用）',
+  identity_ignored: '識別項目の変更を無視',
 }
 
 export default function SheetsConnectionsPanel({
@@ -39,7 +74,11 @@ export default function SheetsConnectionsPanel({
   onUpdate,
   onRemove,
   onTest,
+  onSync,
+  fieldDefinitions,
   testResults,
+  syncResults,
+  auditEntries,
   error = null,
   busy = false,
 }: SheetsConnectionsPanelProps) {
@@ -48,6 +87,7 @@ export default function SheetsConnectionsPanel({
   const [spreadsheetId, setSpreadsheetId] = useState('')
   const [sheetName, setSheetName] = useState('Sheet1')
   const [syncDirection, setSyncDirection] = useState<SheetsSyncDirection>('bidirectional')
+  const [selectedFieldIds, setSelectedFieldIds] = useState<string[]>([])
 
   const resetDraft = () => {
     setEditingId(null)
@@ -55,6 +95,7 @@ export default function SheetsConnectionsPanel({
     setSpreadsheetId('')
     setSheetName('Sheet1')
     setSyncDirection('bidirectional')
+    setSelectedFieldIds([])
   }
 
   const beginEdit = (connection: SheetsConnection) => {
@@ -63,6 +104,10 @@ export default function SheetsConnectionsPanel({
     setSpreadsheetId(connection.spreadsheetId)
     setSheetName(connection.sheetName)
     setSyncDirection(connection.syncDirection)
+    const activeIds = new Set(fieldDefinitions.map((definition) => definition.id))
+    setSelectedFieldIds(
+      (connection.friendFieldMappings ?? []).map((mapping) => mapping.fieldId).filter((id) => activeIds.has(id)),
+    )
   }
 
   const canSave = Boolean(formId.trim() && spreadsheetId.trim() && sheetName.trim() && !busy)
@@ -73,9 +118,16 @@ export default function SheetsConnectionsPanel({
       spreadsheetId: spreadsheetId.trim(),
       sheetName: sheetName.trim(),
       syncDirection,
+      selectedFieldIds,
     }
     if (editingId) onUpdate(editingId, mutable)
     else onCreate({ formId: formId.trim(), ...mutable })
+  }
+
+  const toggleField = (fieldId: string, checked: boolean) => {
+    setSelectedFieldIds((current) => checked
+      ? current.includes(fieldId) ? current : [...current, fieldId]
+      : current.filter((id) => id !== fieldId))
   }
 
   return (
@@ -90,6 +142,10 @@ export default function SheetsConnectionsPanel({
           <ul className="space-y-2">
             {connections.map((connection) => {
               const testState = testResults[connection.id]
+              const syncState = syncResults[connection.id]
+              const audits = auditEntries[connection.id] ?? []
+              const mappings = connection.friendFieldMappings ?? []
+              const lastSyncStatus = connection.lastSyncStatus ?? 'idle'
               return (
                 <li
                   key={connection.id}
@@ -102,6 +158,12 @@ export default function SheetsConnectionsPanel({
                       <p className="truncate text-xs text-gray-500">シート: {connection.sheetName}</p>
                       <p className="truncate text-xs text-gray-600">ID: {connection.spreadsheetId}</p>
                       <p className="mt-1 text-xs text-gray-500">同期: {DIRECTION_LABELS[connection.syncDirection]}</p>
+                      <p className="mt-1 text-xs text-gray-500">
+                        同期項目: {mappings.length > 0 ? mappings.map((mapping) => mapping.header).join(' / ') : '未選択'}
+                      </p>
+                      <p className="mt-1 text-xs text-gray-500">
+                        最終同期: {connection.lastSyncAt ?? 'まだありません'}（{SYNC_STATUS_LABELS[lastSyncStatus]}）
+                      </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <button
@@ -113,6 +175,16 @@ export default function SheetsConnectionsPanel({
                         className="rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-700 disabled:opacity-50"
                       >
                         {testState === 'testing' ? '確認中...' : '接続テスト'}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`sheets-sync-${connection.id}`}
+                        onClick={() => onSync(connection.id)}
+                        aria-label={`${connection.formId} を手動同期`}
+                        disabled={busy || testState === 'testing' || syncState?.status === 'running'}
+                        className="rounded border border-[#087A39] px-3 py-1.5 text-xs text-[#087A39] disabled:opacity-50"
+                      >
+                        {syncState?.status === 'running' ? '同期中...' : '手動同期'}
                       </button>
                       <button
                         type="button"
@@ -147,6 +219,41 @@ export default function SheetsConnectionsPanel({
                     <p role="alert" data-testid={`sheets-test-result-${connection.id}`} className="mt-2 text-xs text-red-600">
                       接続できませんでした。シート共有とサービスアカウント設定を確認してください。
                     </p>
+                  )}
+                  {connection.lastSyncWarning && (
+                    <p role="alert" className="mt-2 rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      {connection.lastSyncWarning}
+                    </p>
+                  )}
+                  {syncState?.status === 'success' && (
+                    <p role="status" data-testid={`sheets-sync-result-${connection.id}`} className="mt-2 text-xs text-green-700">
+                      手動同期が完了しました。
+                    </p>
+                  )}
+                  {syncState?.status === 'warning' && (
+                    <p role="alert" data-testid={`sheets-sync-result-${connection.id}`} className="mt-2 text-xs text-amber-800">
+                      手動同期は警告つきで完了しました。{syncState.summary.warning ?? ''}
+                    </p>
+                  )}
+                  {syncState?.status === 'failed' && (
+                    <p role="alert" data-testid={`sheets-sync-result-${connection.id}`} className="mt-2 text-xs text-red-600">
+                      {syncState.message}
+                    </p>
+                  )}
+                  {audits.length > 0 && (
+                    <section data-testid={`sheets-audit-${connection.id}`} className="mt-3 border-t border-gray-100 pt-3">
+                      <h3 className="text-xs font-semibold text-gray-700">最近の監査</h3>
+                      <ul className="mt-1 space-y-1">
+                        {audits.map((entry, index) => (
+                          <li key={`${entry.fieldName}-${index}`} className="text-xs text-gray-600">
+                            <span>{entry.actor}</span>
+                            {' · '}{entry.fieldName}: {entry.oldValue ?? '（空）'} → {entry.newValue ?? '（空）'}
+                            {' · '}{AUDIT_SOURCE_LABELS[entry.source] ?? entry.source}
+                            {' · '}{AUDIT_CHANGE_LABELS[entry.changeKind] ?? entry.changeKind}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
                   )}
                 </li>
               )
@@ -205,11 +312,31 @@ export default function SheetsConnectionsPanel({
             onChange={(event) => setSyncDirection(event.target.value as SheetsSyncDirection)}
             className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
           >
-            <option value="bidirectional">双方向（回答 → シート / シート → ハーネス）</option>
-            <option value="to_sheets">回答 → シート</option>
-            <option value="from_sheets">シート → ハーネス</option>
+            <option value="bidirectional">双方向（友だち情報 ↔ シート）</option>
+            <option value="to_sheets">友だち情報 → シート</option>
+            <option value="from_sheets">シート → 友だち情報</option>
           </select>
         </label>
+
+        <fieldset className="space-y-2">
+          <legend className="text-xs text-gray-600">同期するカスタムフィールド</legend>
+          {fieldDefinitions.length === 0 ? (
+            <p className="text-xs text-gray-500">同期できる有効なカスタムフィールドはありません。</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {fieldDefinitions.map((definition) => (
+                <label key={definition.id} className="flex items-center gap-2 rounded border border-gray-200 px-3 py-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={selectedFieldIds.includes(definition.id)}
+                    onChange={(event) => toggleField(definition.id, event.target.checked)}
+                  />
+                  <span>{definition.name}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </fieldset>
 
         {error && <p role="alert" data-testid="sheets-error" className="text-xs text-red-600">{error}</p>}
 

@@ -41,6 +41,18 @@ describe('isNavVisible', () => {
     expect(NAV_FEATURE['/scenarios']).toBe('scenario')
     expect(NAV_FEATURE['/health']).toBe('system_update')
     expect(NAV_FEATURE['/staff']).toBe('staff_admin')
+    expect(NAV_FEATURE['/settings/sheets']).toBe('integration')
+  })
+
+  it('/settings/sheets は integration 権限に従う', () => {
+    expect(isNavVisible('/settings/sheets', {
+      permissions: ['integration'],
+      hasCustomRole: true,
+    })).toBe(true)
+    expect(isNavVisible('/settings/sheets', {
+      permissions: ['friend'],
+      hasCustomRole: true,
+    })).toBe(false)
   })
 
   it('harness-lp-hosting: /lp は analytics 再利用 (T-E2 / permission-map と feature 一致)', () => {

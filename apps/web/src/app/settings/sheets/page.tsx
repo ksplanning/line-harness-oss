@@ -1,13 +1,18 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { FriendFieldDefinition } from '@line-crm/shared'
 import Header from '@/components/layout/header'
-import SheetsConnectionsPanel from '@/components/settings/sheets-connections-panel'
+import SheetsConnectionsPanel, {
+  type SheetsConnectionDraft,
+  type SheetsSyncResultState,
+} from '@/components/settings/sheets-connections-panel'
 import { useAccount } from '@/contexts/account-context'
+import { api } from '@/lib/api'
 import {
   sheetsConnectionsApi,
+  type SheetsAuditEntry,
   type SheetsConnection,
-  type SheetsSyncDirection,
   type UpdateSheetsConnectionInput,
 } from '@/lib/sheets-connections-api'
 
@@ -21,11 +26,16 @@ function errorMessage(error: unknown): string {
 export default function SheetsSettingsPage() {
   const { selectedAccountId, loading } = useAccount()
   const [connections, setConnections] = useState<SheetsConnection[]>([])
+  const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
   const [testResults, setTestResults] = useState<Record<string, TestState>>({})
+  const [syncResults, setSyncResults] = useState<Record<string, SheetsSyncResultState>>({})
+  const [auditEntries, setAuditEntries] = useState<Record<string, SheetsAuditEntry[]>>({})
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const requestVersion = useRef(0)
+  const auditGeneration = useRef(0)
   const testVersions = useRef<Record<string, number>>({})
+  const syncVersions = useRef<Record<string, number>>({})
   const activeAccount = useRef<string | null>(selectedAccountId)
   activeAccount.current = selectedAccountId
 
@@ -34,7 +44,24 @@ export default function SheetsSettingsPage() {
     setError(null)
     try {
       const list = await sheetsConnectionsApi.list(accountId)
-      if (version === requestVersion.current && activeAccount.current === accountId) setConnections(list)
+      if (version === requestVersion.current && activeAccount.current === accountId) {
+        const generation = ++auditGeneration.current
+        setConnections(list)
+        setAuditEntries({})
+        for (const connection of list) {
+          void sheetsConnectionsApi.audit(accountId, connection.id)
+            .then((entries) => {
+              if (generation === auditGeneration.current && activeAccount.current === accountId) {
+                setAuditEntries((current) => ({ ...current, [connection.id]: entries }))
+              }
+            })
+            .catch(() => {
+              if (generation === auditGeneration.current && activeAccount.current === accountId) {
+                setAuditEntries((current) => ({ ...current, [connection.id]: [] }))
+              }
+            })
+        }
+      }
     } catch (cause) {
       if (version === requestVersion.current && activeAccount.current === accountId) {
         setConnections([])
@@ -44,10 +71,32 @@ export default function SheetsSettingsPage() {
   }, [])
 
   useEffect(() => {
+    let active = true
+    void api.friendFieldDefinitions.list()
+      .then((response) => {
+        if (active && response.success) {
+          setFieldDefinitions(
+            response.data
+              .filter((definition) => definition.isActive)
+              .sort((a, b) => a.displayOrder - b.displayOrder || a.id.localeCompare(b.id)),
+          )
+        }
+      })
+      .catch(() => {
+        if (active) setFieldDefinitions([])
+      })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
     requestVersion.current += 1
+    auditGeneration.current += 1
     setConnections([])
     setTestResults({})
+    setSyncResults({})
+    setAuditEntries({})
     testVersions.current = {}
+    syncVersions.current = {}
     setError(null)
     setBusy(false)
     if (selectedAccountId) void load(selectedAccountId)
@@ -57,12 +106,7 @@ export default function SheetsSettingsPage() {
     if (activeAccount.current === accountId) await load(accountId)
   }
 
-  const handleCreate = async (input: {
-    formId: string
-    spreadsheetId: string
-    sheetName: string
-    syncDirection: SheetsSyncDirection
-  }) => {
+  const handleCreate = async (input: SheetsConnectionDraft) => {
     const accountId = selectedAccountId
     if (!accountId) return
     setBusy(true)
@@ -83,7 +127,18 @@ export default function SheetsSettingsPage() {
     setBusy(true)
     setError(null)
     testVersions.current[id] = (testVersions.current[id] ?? 0) + 1
+    syncVersions.current[id] = (syncVersions.current[id] ?? 0) + 1
     setTestResults((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+    setSyncResults((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+    setAuditEntries((current) => {
       const next = { ...current }
       delete next[id]
       return next
@@ -104,7 +159,18 @@ export default function SheetsSettingsPage() {
     setBusy(true)
     setError(null)
     testVersions.current[id] = (testVersions.current[id] ?? 0) + 1
+    syncVersions.current[id] = (syncVersions.current[id] ?? 0) + 1
     setTestResults((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+    setSyncResults((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+    setAuditEntries((current) => {
       const next = { ...current }
       delete next[id]
       return next
@@ -139,6 +205,35 @@ export default function SheetsSettingsPage() {
     }
   }
 
+  const handleSync = async (id: string) => {
+    const accountId = selectedAccountId
+    if (!accountId) return
+    setError(null)
+    const syncVersion = (syncVersions.current[id] ?? 0) + 1
+    syncVersions.current[id] = syncVersion
+    setSyncResults((current) => ({ ...current, [id]: { status: 'running' } }))
+    try {
+      const summary = await sheetsConnectionsApi.sync(accountId, id)
+      if (activeAccount.current !== accountId || syncVersions.current[id] !== syncVersion) return
+      if (summary.status === 'failed') {
+        setSyncResults((current) => ({
+          ...current,
+          [id]: { status: 'failed', message: summary.warning ?? '手動同期に失敗しました。' },
+        }))
+        return
+      }
+      const status = summary.status === 'warning' || summary.warning ? 'warning' : 'success'
+      setSyncResults((current) => ({ ...current, [id]: { status, summary } }))
+      await refreshIfCurrent(accountId)
+    } catch (cause) {
+      if (activeAccount.current === accountId && syncVersions.current[id] === syncVersion) {
+        const message = errorMessage(cause)
+        setSyncResults((current) => ({ ...current, [id]: { status: 'failed', message } }))
+        setError(message)
+      }
+    }
+  }
+
   return (
     <div>
       <Header
@@ -155,11 +250,15 @@ export default function SheetsSettingsPage() {
         <SheetsConnectionsPanel
           key={selectedAccountId}
           connections={connections}
+          fieldDefinitions={fieldDefinitions}
           onCreate={(input) => { void handleCreate(input) }}
           onUpdate={(id, input) => { void handleUpdate(id, input) }}
           onRemove={(id) => { void handleRemove(id) }}
           onTest={(id) => { void handleTest(id) }}
+          onSync={(id) => { void handleSync(id) }}
           testResults={testResults}
+          syncResults={syncResults}
+          auditEntries={auditEntries}
           error={error}
           busy={busy}
         />
