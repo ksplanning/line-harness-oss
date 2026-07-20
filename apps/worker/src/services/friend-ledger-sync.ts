@@ -390,9 +390,10 @@ async function saveImportedMetadata(
 }
 
 function warningText(code: string, header: string): string {
-  if (code === 'duplicate_header') return `見出し「${header}」が重複しています`;
-  if (code === 'configured_header_collision') return `設定した見出し「${header}」が保護列と重複しています`;
-  return `見出し「${header}」が見つかりません`;
+  const safeHeader = header.slice(0, 200);
+  if (code === 'duplicate_header') return `見出し「${safeHeader}」が重複しています`;
+  if (code === 'configured_header_collision') return `設定した見出し「${safeHeader}」が保護列と重複しています`;
+  return `見出し「${safeHeader}」が見つかりません`;
 }
 
 function projectedWithDefaults(

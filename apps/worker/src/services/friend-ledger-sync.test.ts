@@ -1145,6 +1145,22 @@ describe('friend ledger bidirectional sync', () => {
       .toMatchObject({ last_sync_status: 'warning', last_sync_warning: expect.stringContaining('入金確認') });
   });
 
+  test('truncates sheet-provided headings before persisting polling warnings', async () => {
+    await run();
+    const prefix = '長'.repeat(200);
+    const unsafeHeader = `${prefix}SECRET_TAIL`;
+    client.values[0].push(unsafeHeader, unsafeHeader);
+
+    const result = await run('polling', 'system_poll');
+    const stored = raw.prepare(`SELECT last_sync_warning FROM sheets_connections WHERE id=?`)
+      .get(connection.id) as { last_sync_warning: string };
+
+    expect(result.status).toBe('warning');
+    expect(result.warnings.join(' ')).toContain(prefix);
+    expect(result.warnings.join(' ')).not.toContain('SECRET_TAIL');
+    expect(stored.last_sync_warning).not.toContain('SECRET_TAIL');
+  });
+
   test('does not advance a custom-field baseline while its heading is missing', async () => {
     await run();
     raw.prepare(`UPDATE friends SET metadata='{"入金確認":"ハーネス更新"}',
