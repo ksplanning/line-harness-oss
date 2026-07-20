@@ -648,3 +648,26 @@ KS が完了したら shell を閉じ、PIECE MAKER の secret/env と `wrangler
 - [ ] 4型の保存→個別GET read-back→hosted表示→1回submit→同じ1 row read-backがPASS。
 - [ ] 再取込みとdrift無変化、row/field/form cleanup、削除後404がPASS。
 - [ ] 本番3フォーム接触0、個人情報0、秘密値記録0、重複POST/row 0。
+
+---
+
+# builder-save-canvas-fix — host live checklist
+
+## 変更概要（owner 日常語）
+
+ビルダーの保存ボタンで追加パーツが保存されない不具合を直しました。
+
+## 保存後の残存確認
+
+1. 査読済み revision を approved host へ反映し、deployment SHA・tenant・実行者・JST 実行時刻を記録する。本番3フォーム `Z5IEH85R` / `GMOxoMtK` / `XqACeA2v` は開かず、削除可能で個人情報を含まない scratch form だけを使う。
+2. 新規の空フォームをビルダーで開き、パレットから「数値」を canvas に追加する。追加直後に「保存」を押し、保存完了表示を待ってからページを再読込する。
+3. 再読込後も「数値」が canvas に残り、保存リクエストの `fields` に追加 field が1件含まれていたことを network log で確認する。
+4. 同じ scratch form に既存 field が残っている状態で「メール」を追加し、追加直後に「保存」→再読込する。既存 field と追加 field の両方が canvas に残り、保存リクエストの `fields` に両方が含まれることを確認する。
+5. scratch form を通常の承認済み手順で削除し、再取得が404になることを確認する。失敗時も本番フォームや別テナントへ切り替えず、deployment SHA・操作順・network log の status と field 件数を記録して査読へ戻す。
+
+## PASS 記録
+
+- [ ] 新規フォーム: パーツ追加→保存→再読込後も追加 field が残る。
+- [ ] 既存フォーム: 既存 field + パーツ追加→保存→再読込後も両方が残る。
+- [ ] 両経路の PUT payload に画面上の最新 `fields` が含まれる。
+- [ ] 本番3フォーム接触0、個人情報0、秘密値記録0、scratch form cleanup・削除後404がPASS。
