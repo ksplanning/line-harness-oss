@@ -141,4 +141,95 @@ describe('GET /api/automations?lineAccountId=X', () => {
     const body = (await res.json()) as { success: boolean; data: unknown[] };
     expect(body.data).toEqual([]);
   });
+
+  test('returns exact JSON source and flags malformed stored JSON without dropping the rule', async () => {
+    const conditionsJson = '{\n  "keyword": "資料請求"\n}';
+    const actionsJson = '[{"type":"add_tag","params":{"tagId":"vip"}}';
+    const rows: AutomationRow[] = [
+      {
+        id: 'a-malformed',
+        name: 'keep-me',
+        line_account_id: null,
+        ...rowBase,
+        conditions: conditionsJson,
+        actions: actionsJson,
+      },
+      {
+        id: 'a-unsupported-shape',
+        name: 'keep-null-shapes',
+        line_account_id: null,
+        ...rowBase,
+        conditions: 'null',
+        actions: 'null',
+      },
+    ];
+    const { db } = makeAutomationDb(rows);
+
+    const res = await setupApp(db).request('/api/automations?lineAccountId=acc-1');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: Array<{
+        id: string;
+        conditions: Record<string, unknown>;
+        actions: unknown[];
+        conditionsJson: string;
+        actionsJson: string;
+        jsonIssues: string[];
+      }>;
+    };
+    expect(body.success).toBe(true);
+    expect(body.data).toHaveLength(2);
+    expect(body.data.find((item) => item.id === 'a-malformed')).toMatchObject({
+      id: 'a-malformed',
+      conditions: { keyword: '資料請求' },
+      actions: [],
+      conditionsJson,
+      actionsJson,
+      jsonIssues: ['actions_invalid_json'],
+    });
+    expect(body.data.find((item) => item.id === 'a-unsupported-shape')).toMatchObject({
+      id: 'a-unsupported-shape',
+      conditions: {},
+      actions: [],
+      conditionsJson: 'null',
+      actionsJson: 'null',
+      jsonIssues: ['conditions_unsupported_shape', 'actions_unsupported_shape'],
+    });
+  });
+});
+
+describe('PUT /api/automations/:id', () => {
+  test('keeps malformed JSON visible after a metadata-only update', async () => {
+    const malformedRow: AutomationRow = {
+      id: 'a-malformed',
+      name: 'keep-me',
+      line_account_id: null,
+      ...rowBase,
+      actions: '[not-json',
+    };
+    dbMocks.updateAutomation.mockResolvedValue(undefined);
+    dbMocks.getAutomationById.mockResolvedValue(malformedRow);
+    const { db } = makeAutomationDb([]);
+
+    const res = await setupApp(db).request('/api/automations/a-malformed', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: false }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { actionsJson: string; jsonIssues: string[] };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.actionsJson).toBe('[not-json');
+    expect(body.data.jsonIssues).toEqual(['actions_invalid_json']);
+    expect(dbMocks.updateAutomation).toHaveBeenCalledWith(
+      expect.anything(),
+      'a-malformed',
+      { isActive: false },
+    );
+  });
 });

@@ -7,9 +7,68 @@ import {
   deleteAutomation,
   getAutomationLogs,
 } from '@line-crm/db';
+import type { AutomationRow } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const automations = new Hono<Env>();
+
+type AutomationJsonIssue =
+  | 'conditions_invalid_json'
+  | 'conditions_unsupported_shape'
+  | 'actions_invalid_json'
+  | 'actions_unsupported_shape';
+
+function parseStoredJson(
+  source: string,
+  issue: AutomationJsonIssue,
+  issues: AutomationJsonIssue[],
+): { ok: true; value: unknown } | { ok: false; value: null } {
+  try {
+    return { ok: true, value: JSON.parse(source) };
+  } catch {
+    issues.push(issue);
+    return { ok: false, value: null };
+  }
+}
+
+function toAutomationResponse(item: AutomationRow) {
+  const jsonIssues: AutomationJsonIssue[] = [];
+  const parsedConditions = parseStoredJson(item.conditions, 'conditions_invalid_json', jsonIssues);
+  const parsedActions = parseStoredJson(item.actions, 'actions_invalid_json', jsonIssues);
+  const conditionsSupported = parsedConditions.ok
+    && parsedConditions.value !== null
+    && typeof parsedConditions.value === 'object'
+    && !Array.isArray(parsedConditions.value);
+  const actionsSupported = parsedActions.ok && Array.isArray(parsedActions.value);
+  const conditions = conditionsSupported
+    ? parsedConditions.value as Record<string, unknown>
+    : {};
+  const actions = actionsSupported ? parsedActions.value : [];
+
+  if (parsedConditions.ok && !conditionsSupported) {
+    jsonIssues.push('conditions_unsupported_shape');
+  }
+  if (parsedActions.ok && !actionsSupported) {
+    jsonIssues.push('actions_unsupported_shape');
+  }
+
+  return {
+    id: item.id,
+    name: item.name,
+    description: item.description,
+    eventType: item.event_type,
+    conditions,
+    actions,
+    conditionsJson: item.conditions,
+    actionsJson: item.actions,
+    jsonIssues,
+    lineAccountId: item.line_account_id ?? null,
+    isActive: Boolean(item.is_active),
+    priority: item.priority,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  };
+}
 
 // ========== 自動化ルールCRUD ==========
 
@@ -28,19 +87,7 @@ automations.get('/api/automations', async (c) => {
     }
     return c.json({
       success: true,
-      data: items.map((a) => ({
-        id: a.id,
-        name: a.name,
-        description: a.description,
-        eventType: a.event_type,
-        conditions: JSON.parse(a.conditions),
-        actions: JSON.parse(a.actions),
-        lineAccountId: (a as { line_account_id?: string | null }).line_account_id ?? null,
-        isActive: Boolean(a.is_active),
-        priority: a.priority,
-        createdAt: a.created_at,
-        updatedAt: a.updated_at,
-      })),
+      data: items.map((a) => toAutomationResponse(a)),
     });
   } catch (err) {
     console.error('GET /api/automations error:', err);
@@ -59,16 +106,7 @@ automations.get('/api/automations/:id', async (c) => {
     return c.json({
       success: true,
       data: {
-        id: item.id,
-        name: item.name,
-        description: item.description,
-        eventType: item.event_type,
-        conditions: JSON.parse(item.conditions),
-        actions: JSON.parse(item.actions),
-        isActive: Boolean(item.is_active),
-        priority: item.priority,
-        createdAt: item.created_at,
-        updatedAt: item.updated_at,
+        ...toAutomationResponse(item),
         logs: logs.map((l) => ({
           id: l.id,
           friendId: l.friend_id,
@@ -107,15 +145,7 @@ automations.post('/api/automations', async (c) => {
     }
     return c.json({
       success: true,
-      data: {
-        id: item.id,
-        name: item.name,
-        eventType: item.event_type,
-        actions: JSON.parse(item.actions),
-        isActive: Boolean(item.is_active),
-        priority: item.priority,
-        createdAt: item.created_at,
-      },
+      data: toAutomationResponse(item),
     }, 201);
   } catch (err) {
     console.error('POST /api/automations error:', err);
@@ -132,15 +162,7 @@ automations.put('/api/automations/:id', async (c) => {
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({
       success: true,
-      data: {
-        id: updated.id,
-        name: updated.name,
-        eventType: updated.event_type,
-        conditions: JSON.parse(updated.conditions),
-        actions: JSON.parse(updated.actions),
-        isActive: Boolean(updated.is_active),
-        priority: updated.priority,
-      },
+      data: toAutomationResponse(updated),
     });
   } catch (err) {
     console.error('PUT /api/automations/:id error:', err);
