@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { FriendFieldDefinition, Tag } from '@line-crm/shared'
 import { api, downloadCsv } from '@/lib/api'
 import type { FriendListItem } from '@/lib/api'
@@ -11,6 +11,7 @@ import SavedSearchPanel from '@/components/friends/saved-search-panel'
 import ExportCsvButton from '@/components/shared/export-csv-button'
 import CcPromptButton from '@/components/cc-prompt-button'
 import FriendFieldDefinitionsPanel from '@/components/friends/friend-field-definitions-panel'
+import FollowersImportPanel from '@/components/friends/followers-import-panel'
 import { useAccount } from '@/contexts/account-context'
 
 const ccPrompts = [
@@ -53,6 +54,7 @@ export default function FriendsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
+  const loadFriendsRequest = useRef(0)
 
   const loadTags = useCallback(async () => {
     try {
@@ -74,6 +76,7 @@ export default function FriendsPage() {
   }, [])
 
   const loadFriends = useCallback(async () => {
+    const requestId = ++loadFriendsRequest.current
     setLoading(true)
     setError('')
     try {
@@ -88,6 +91,7 @@ export default function FriendsPage() {
         handled: responseFilter === 'unhandled' ? 'unhandled' : undefined,
         savedSearchId: savedSearchId || undefined,
       })
+      if (requestId !== loadFriendsRequest.current) return
       if (res.success) {
         setFriends(res.data.items)
         setTotal(res.data.total)
@@ -96,9 +100,11 @@ export default function FriendsPage() {
         setError(res.error)
       }
     } catch {
-      setError('友だちの読み込みに失敗しました。もう一度お試しください。')
+      if (requestId === loadFriendsRequest.current) {
+        setError('友だちの読み込みに失敗しました。もう一度お試しください。')
+      }
     } finally {
-      setLoading(false)
+      if (requestId === loadFriendsRequest.current) setLoading(false)
     }
   }, [page, selectedTagId, selectedAccountId, searchSubmitted, sortMode, responseFilter, savedSearchId])
 
@@ -120,7 +126,7 @@ export default function FriendsPage() {
   }, [selectedAccountId])
 
   useEffect(() => {
-    loadFriends()
+    void loadFriends()
   }, [loadFriends])
 
   // Fan-out helpers: changing a filter also resets pagination synchronously,
@@ -165,6 +171,11 @@ export default function FriendsPage() {
       <Header
         title="友だちリスト"
         description="友だちの検索や、詳細情報の確認ができます。"
+      />
+
+      <FollowersImportPanel
+        accountId={selectedAccountId || null}
+        onCompleted={loadFriends}
       />
 
       <FriendFieldDefinitionsPanel

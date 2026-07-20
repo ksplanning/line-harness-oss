@@ -329,6 +329,26 @@ export type FriendListItem = FriendWithTags & Partial<{
   handled: boolean
 }>
 
+export type FollowerImportStatus = 'fetching' | 'profiling' | 'completed' | 'failed'
+
+export interface FollowerImportJob {
+  id: string
+  accountId: string
+  status: FollowerImportStatus
+  continuationToken: string | null
+  fetchedCount: number
+  newCount: number
+  existingCount: number
+  profileCompletedCount: number
+  failedCount: number
+  nextRunAt: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
+}
+
 export const api = {
   friendFieldDefinitions: {
     list: () =>
@@ -428,6 +448,22 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(patch),
       }),
+  },
+  followerImports: {
+    start: (accountId: string) =>
+      fetchApi<ApiResponse<FollowerImportJob>>(
+        `/api/friends/follower-imports?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'POST' },
+      ),
+    latest: (accountId: string) =>
+      fetchApi<ApiResponse<FollowerImportJob | null>>(
+        `/api/friends/follower-imports/latest?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    advance: (jobId: string, accountId: string) =>
+      fetchApi<ApiResponse<FollowerImportJob>>(
+        `/api/friends/follower-imports/${encodeURIComponent(jobId)}/advance?accountId=${encodeURIComponent(accountId)}`,
+        { method: 'POST' },
+      ),
   },
   tags: {
     list: () =>

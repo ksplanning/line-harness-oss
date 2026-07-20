@@ -25,6 +25,7 @@ export default function FriendListRow({ friend, onTagEditClick }: Props) {
   const incoming = friend.latestIncomingMessage
   const scenario = friend.activeScenario
   const isFollowing = friend.isFollowing
+  const displayName = friend.displayName?.trim() || '名前未取得'
 
   return (
     <div
@@ -66,16 +67,16 @@ export default function FriendListRow({ friend, onTagEditClick }: Props) {
         {friend.pictureUrl ? (
           <img
             src={friend.pictureUrl}
-            alt={friend.displayName}
+            alt={displayName}
             className="w-9 h-9 rounded-full object-cover bg-gray-100 flex-shrink-0"
           />
         ) : (
           <div className="w-9 h-9 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-sm font-medium flex-shrink-0">
-            {friend.displayName?.charAt(0) ?? '?'}
+            {friend.displayName?.trim().charAt(0) || '?'}
           </div>
         )}
         <div className="min-w-0">
-          <p className="text-sm font-medium text-gray-900 truncate">{friend.displayName}</p>
+          <p className="text-sm font-medium text-gray-900 truncate">{displayName}</p>
           <p className="text-[10px] text-gray-400 mt-0.5">登録: {formatJstDate(friend.createdAt)}</p>
           {!isFollowing && (
             <p className="text-[10px] text-red-400 mt-0.5">ブロック / 退会</p>
