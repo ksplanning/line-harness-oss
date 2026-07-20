@@ -53,6 +53,7 @@ interface FriendState {
   displayName: string | null;
   metadataRaw: string;
   metadata: Record<string, unknown>;
+  metadataValid: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -108,24 +109,27 @@ interface ImportedMetadataResult {
 const LOCK_DURATION_MS = 2 * 60_000;
 const MAX_SYNC_WARNINGS = 20;
 
-function parseMetadata(raw: string): Record<string, unknown> {
+function parseMetadata(raw: string): { value: Record<string, unknown>; valid: boolean } {
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? { ...(parsed as Record<string, unknown>) }
-      : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { value: {}, valid: false };
+    }
+    return { value: { ...(parsed as Record<string, unknown>) }, valid: true };
   } catch {
-    return {};
+    return { value: {}, valid: false };
   }
 }
 
 function serializeFriend(row: FriendRow): FriendState {
+  const parsedMetadata = parseMetadata(row.metadata);
   return {
     id: row.id,
     lineUserId: row.line_user_id,
     displayName: row.display_name,
-    metadataRaw: row.metadata || '{}',
-    metadata: parseMetadata(row.metadata || '{}'),
+    metadataRaw: row.metadata,
+    metadata: parsedMetadata.value,
+    metadataValid: parsedMetadata.valid,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -466,7 +470,7 @@ export async function syncFriendLedger(
     );
     if (!runningStatus) throw new Error('friend_ledger_sync_lock_lost');
     const client = makeClient(options);
-    const [friends, ledgerEntries, definitions, response] = await Promise.all([
+    const [allFriends, ledgerEntries, definitions, response] = await Promise.all([
       listFriends(options.db, options.connection.lineAccountId),
       listSheetsSyncLedger(options.db, options.connection.lineAccountId, options.connection.id),
       listFriendFieldDefinitions(options.db),
@@ -493,6 +497,10 @@ export async function syncFriendLedger(
       warningSet.add(message);
       if (warnings.length < MAX_SYNC_WARNINGS) warnings.push(message);
     };
+    const friends = allFriends.filter((friend) => friend.metadataValid);
+    if (friends.length !== allFriends.length) {
+      addWarning('保存済みの friend metadata が壊れている友だちをスキップしました');
+    }
     const plans: RowPlan[] = [];
     let appendedRows = 0;
     let importedFields = 0;

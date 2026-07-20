@@ -185,6 +185,23 @@ describe('friend ledger bidirectional sync', () => {
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger').get()).toEqual({ count: 1 });
   });
 
+  test('fails closed without replacing malformed stored friend metadata', async () => {
+    await run();
+    raw.prepare(`UPDATE friends SET metadata='{broken',
+      updated_at='2026-07-21T11:00:00+09:00' WHERE id='friend-ayako'`).run();
+    client.values[1][3] = 'シートの変更';
+    const auditCount = raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_audit_log').get();
+
+    const result = await run('polling', 'system_poll');
+
+    expect(result.status).toBe('warning');
+    expect(result.warnings.join(' ')).toContain('metadata');
+    expect(raw.prepare('SELECT metadata FROM friends WHERE id=?').get('friend-ayako'))
+      .toEqual({ metadata: '{broken' });
+    expect(client.values[1][3]).toBe('シートの変更');
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_audit_log').get()).toEqual(auditCount);
+  });
+
   test('adds friend headings beside company-owned headings on the first sync', async () => {
     client.values = [['自社担当'], ['営業部']];
 
