@@ -347,10 +347,7 @@ export function buildFaqPersonalContextBlock(
   ].join('\n');
 }
 
-/**
- * Load settings, read exact-friend data, assemble, then append audit metadata.
- * Audit failure means the personal block is not returned to the LLM.
- */
+/** Load settings and assemble exact-friend data. The caller audits immediately before injection. */
 export async function assembleFaqPersonalContext(
   db: D1Database,
   input: { friendId: string | null; lineAccountId: string | null },
@@ -369,20 +366,37 @@ export async function assembleFaqPersonalContext(
       lineAccountId: input.lineAccountId,
       settings,
     });
-    if (!context) return null;
-
-    await recordFaqPersonalContextAudit(db, {
-      lineAccountId: input.lineAccountId,
-      friendId: input.friendId,
-      displayNameIncluded: context.audit.displayNameIncluded,
-      customFieldIds: context.audit.customFieldIds,
-      formalooSubmissionCount: context.audit.formalooSubmissionCount,
-      internalSubmissionCount: context.audit.internalSubmissionCount,
-      promptTokenEstimate: context.tokenEstimate,
-      wasTruncated: context.audit.wasTruncated,
-    });
     return context;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Write the value-free audit row immediately before prompt injection.
+ * A failed write returns false so the caller can drop the personal block.
+ */
+export async function auditFaqPersonalContextInjection(
+  db: D1Database,
+  input: {
+    friendId: string;
+    lineAccountId: string;
+    context: AssembledFaqPersonalContext;
+  },
+): Promise<boolean> {
+  try {
+    await recordFaqPersonalContextAudit(db, {
+      lineAccountId: input.lineAccountId,
+      friendId: input.friendId,
+      displayNameIncluded: input.context.audit.displayNameIncluded,
+      customFieldIds: input.context.audit.customFieldIds,
+      formalooSubmissionCount: input.context.audit.formalooSubmissionCount,
+      internalSubmissionCount: input.context.audit.internalSubmissionCount,
+      promptTokenEstimate: input.context.tokenEstimate,
+      wasTruncated: input.context.audit.wasTruncated,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
