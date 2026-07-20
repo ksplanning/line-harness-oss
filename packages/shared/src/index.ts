@@ -11,6 +11,7 @@ export * from "./formaloo-fingerprint";
 export * from "./form-operations";
 export * from "./form-image";
 export * from "./form-design";
+export * from "./internal-form-logic";
 export * from "./formaloo-rating-style";
 export * from "./form-copy";
 export * from "./formaloo-localization";
