@@ -12,9 +12,28 @@
 pnpm exec wrangler secret put SHEETS_WEBHOOK_SECRET --config wrangler.ks.toml
 ```
 
-32文字以上の新しい合言葉を入力してください。コマンド履歴へ合言葉そのものを書かないでください。Apps Script の設定でも同じ値を1回だけ使います。
+32文字以上の新しい合言葉を入力してください。これは接続専用キーを作るための master secret です。コマンド履歴へ値を書かず、Apps Script や owner へ渡さないでください。
 
-## 2. Apps Script をコピペ1回で入れる
+## 2. 接続専用の署名キーを受け取る
+
+Apps Script には Worker の master secret ではなく、この接続だけで使える64桁のキーを入れます。owner の作業用端末で次を実行します。値をチャット、スクリーンショット、作業メモへ残さないでください。
+
+```bash
+set +x
+read -r -p 'Worker URL: ' WORKER_URL
+read -r -p 'LINE アカウント ID: ' LINE_ACCOUNT_ID
+read -r -p '接続 ID: ' SHEETS_CONNECTION_ID
+read -r -s -p 'Owner API token: ' HARNESS_API_KEY
+curl -fsS -X POST \
+  -H "Authorization: Bearer $HARNESS_API_KEY" \
+  "$WORKER_URL/api/integrations/google-sheets/connections/$SHEETS_CONNECTION_ID/webhook-secret?lineAccountId=$LINE_ACCOUNT_ID" \
+  | jq -er '.data.webhookSecret'
+unset HARNESS_API_KEY
+```
+
+表示された接続専用の署名キーは、次の手順の `SHEETS_WEBHOOK_SECRET` へ1回だけ貼ります。別の接続へ使い回しません。Worker の master secret と同じ値を入れません。
+
+## 3. Apps Script をコピペ1回で入れる
 
 1. 対象スプレッドシートを開きます。
 2. 上のメニューから「拡張機能」→「Apps Script」を開きます。
@@ -23,14 +42,14 @@ pnpm exec wrangler secret put SHEETS_WEBHOOK_SECRET --config wrangler.ks.toml
 5. 左の歯車「プロジェクトの設定」→「スクリプト プロパティ」で、次の5項目を追加します。
 
 - `SHEETS_WEBHOOK_URL`: Worker の公開URLの末尾に `/integrations/google-sheets/friend-ledger/webhook` を付けたもの
-- `SHEETS_WEBHOOK_SECRET`: 手順1で Worker に入れたものと同じ合言葉
+- `SHEETS_WEBHOOK_SECRET`: 手順2で受け取った、この接続専用の署名キー
 - `SHEETS_CONNECTION_ID`: LINE ハーネスの接続設定に表示される接続ID
 - `SHEETS_SPREADSHEET_ID`: スプレッドシートURLの `/d/` と `/edit` の間
 - `SHEETS_SHEET_NAME`: 友だち台帳のタブ名
 
 サービス アカウントの JSON や秘密鍵は、ここへ追加しないでください。
 
-## 3. インストール型の編集時トリガーを作る
+## 4. インストール型の編集時トリガーを作る
 
 1. Apps Script 上部の関数一覧で `installFriendLedgerSync` を選び、「実行」を押します。
 2. Google の確認画面で、このスプレッドシートの編集と外部通信を許可します。
@@ -38,7 +57,7 @@ pnpm exec wrangler secret put SHEETS_WEBHOOK_SECRET --config wrangler.ks.toml
 
 この操作は1回だけです。もう一度実行しても古いトリガーを消して作り直すため、通知が二重になりません。
 
-## 4. 動作を確かめる
+## 5. 動作を確かめる
 
 1. LINE ハーネスの「Google スプレッドシート連携」を開きます。
 2. 対象のカスタム項目を選び、まず「手動同期」を押します。
@@ -50,7 +69,7 @@ pnpm exec wrangler secret put SHEETS_WEBHOOK_SECRET --config wrangler.ks.toml
 
 ## 困ったとき
 
-- 「署名を確認できません」: Worker とスクリプト プロパティの `SHEETS_WEBHOOK_SECRET` が同じか確認します。
+- 「署名を確認できません」: 接続IDを確認し、手順2でその接続のキーを取り直して `SHEETS_WEBHOOK_SECRET` を更新します。Worker の master secret は貼りません。
 - 「見出しが変わっています」: 見出しをLINE ハーネスの項目名へ戻してから手動同期します。
 - 「接続できません」: 対象シートをサービス アカウントへ編集者として共有し、`GOOGLE_SERVICE_ACCOUNT_JSON` の設定を確認します。
 - 即時通知が止まっても、5分ごとの確認が追いつきます。慌ててセルを連打しないでください。

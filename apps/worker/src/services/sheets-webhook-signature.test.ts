@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  deriveSheetsWebhookSecret,
   SHEETS_WEBHOOK_TIMESTAMP_WINDOW_MS,
   verifySheetsWebhookSignature,
 } from './sheets-webhook-signature.js';
@@ -23,6 +24,35 @@ async function hmacHex(rawBody: string, timestamp: string, secret = SECRET): Pro
 }
 
 describe('verifySheetsWebhookSignature', () => {
+  test('derives isolated connection keys and never falls back to the deployment master', async () => {
+    const connectionA = await deriveSheetsWebhookSecret(SECRET, 'conn-a');
+    const connectionB = await deriveSheetsWebhookSecret(SECRET, 'conn-b');
+
+    expect(connectionA).toMatch(/^[0-9a-f]{64}$/);
+    expect(connectionB).toMatch(/^[0-9a-f]{64}$/);
+    expect(connectionA).not.toBe(connectionB);
+    await expect(deriveSheetsWebhookSecret(undefined, 'conn-a')).resolves.toBeNull();
+    await expect(deriveSheetsWebhookSecret(SECRET, '')).resolves.toBeNull();
+
+    const timestamp = new Date(NOW_MS).toISOString();
+    const rawBody = JSON.stringify({ connectionId: 'conn-a' });
+    const signature = await hmacHex(rawBody, timestamp, connectionA!);
+    await expect(verifySheetsWebhookSignature({
+      rawBody,
+      timestamp,
+      signature,
+      secret: connectionA,
+      nowMs: NOW_MS,
+    })).resolves.toBe(true);
+    await expect(verifySheetsWebhookSignature({
+      rawBody,
+      timestamp,
+      signature,
+      secret: connectionB,
+      nowMs: NOW_MS,
+    })).resolves.toBe(false);
+  });
+
   test('accepts HMAC-SHA256 hex over `${timestamp}.${rawBody}` inside the five-minute window', async () => {
     const timestamp = new Date(NOW_MS).toISOString();
     const rawBody = JSON.stringify({ connectionId: 'conn-a', range: 'D2:D2' });

@@ -125,7 +125,8 @@ function friendLedgerOnEdit(event) {
         payload: payload,
         headers: {
           'X-Sheets-Signature': signature,
-          'X-Sheets-Timestamp': timestamp
+          'X-Sheets-Timestamp': timestamp,
+          'X-Sheets-Connection-Id': values.SHEETS_CONNECTION_ID
         },
         muteHttpExceptions: true
       });

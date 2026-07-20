@@ -1239,7 +1239,7 @@ Google へつなぐ処理が、Cloudflare Workers では「呼び出し元が違
 
 - sandbox では Google Sheets への書き込みをしていない。査読済み revision と migration `119_friend_ledger_sync.sql` を approved host へ反映してから owner が実行する。
 - 対象は owner が指定した友だち台帳シートと、検証用友だち「あやこ」だけ。本番3フォーム、回答シート、Formaloo の設定やデータには触れない。
-- `GOOGLE_SERVICE_ACCOUNT_JSON` と `SHEETS_WEBHOOK_SECRET` は Worker secret にだけ置く。秘密値、シートID、userId、セルの個人情報をログ・画面共有・証跡へ残さない。
+- `GOOGLE_SERVICE_ACCOUNT_JSON` と master の `SHEETS_WEBHOOK_SECRET` は Worker secret にだけ置く。Apps Script には手順書で受け取る接続専用キーだけを入れ、秘密値、シートID、userId、セルの個人情報をログ・画面共有・証跡へ残さない。
 - 開始前に、あやこの検証対象カスタム項目の現在値を owner が画面上で確認する。失敗時に戻せる値だけを使い、検証後に元へ戻す。
 
 ## 1周目: 友だち情報 → シート

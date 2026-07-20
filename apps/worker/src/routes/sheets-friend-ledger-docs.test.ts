@@ -21,6 +21,7 @@ describe('Google Sheets friend ledger owner handoff documents', () => {
       'Utilities.computeHmacSha256Signature',
       'X-Sheets-Signature',
       'X-Sheets-Timestamp',
+      'X-Sheets-Connection-Id',
       'SHEETS_WEBHOOK_SECRET',
       'Utilities.sleep',
       'Utilities.getUuid',
@@ -51,6 +52,8 @@ describe('Google Sheets friend ledger owner handoff documents', () => {
       'SHEETS_WEBHOOK_SECRET',
       'wrangler secret put',
       '--config wrangler.ks.toml',
+      '/webhook-secret',
+      '接続専用の署名キー',
       '手動同期',
       '監査ログ',
       'トリガーを削除',
@@ -62,6 +65,7 @@ describe('Google Sheets friend ledger owner handoff documents', () => {
     expect(guide).toMatch(/スクリプト\s*プロパティ/);
     expect(guide).toContain('サービス アカウント');
     expect(guide).toContain('JSON');
+    expect(guide).not.toContain('手順1で Worker に入れたものと同じ合言葉');
     expect(guide).not.toMatch(/-----BEGIN PRIVATE KEY-----/);
     expect(guide).not.toContain('1bJCZHSqVSZstcFcI3c1xlEZKByNdbCMqGC4Sc9NtnGU');
     expect(guide).not.toContain('U5217ceb4debd9849959446ce8f902a27');

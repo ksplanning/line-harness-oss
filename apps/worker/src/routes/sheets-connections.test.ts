@@ -19,6 +19,7 @@ const CONNECTION_ERRORS = {
   sheet_permission: 'スプレッドシートを読み取れません。スプレッドシート ID・シート名と、サービスアカウントへの共有権限を確認してください。',
   network: 'Google に接続できませんでした。時間をおいて、もう一度接続テストをしてください。',
 } as const;
+const WEBHOOK_MASTER_SECRET = 'deployment-master-secret-at-least-32-characters';
 
 let raw: Database.Database;
 let DB: D1Database;
@@ -69,6 +70,7 @@ function env(overrides: Record<string, unknown> = {}): Env['Bindings'] {
     LINE_LOGIN_CHANNEL_SECRET: 'ls',
     WORKER_URL: 'https://api.example.test',
     GOOGLE_SERVICE_ACCOUNT_JSON: serviceAccountJson,
+    SHEETS_WEBHOOK_SECRET: WEBHOOK_MASTER_SECRET,
     ...overrides,
   } as unknown as Env['Bindings'];
 }
@@ -157,6 +159,7 @@ describe('Sheets connections CRUD API', () => {
     expect((await call('PATCH', '/api/integrations/google-sheets/connections/id', validInput, auth)).status).toBe(403);
     expect((await call('DELETE', '/api/integrations/google-sheets/connections/id', undefined, auth)).status).toBe(403);
     expect((await call('POST', '/api/integrations/google-sheets/connections/id/test', undefined, auth)).status).toBe(403);
+    expect((await call('POST', '/api/integrations/google-sheets/connections/id/webhook-secret?lineAccountId=acc-1', undefined, auth)).status).toBe(403);
   });
 
   test('create → list → patch → delete round-trip is account-scoped and soft-deleted', async () => {
@@ -250,6 +253,56 @@ describe('Sheets connections CRUD API', () => {
     expect(remove.status).toBe(409);
     expect(raw.prepare('SELECT spreadsheet_id, is_active FROM sheets_connections WHERE id=?').get(id))
       .toEqual({ spreadsheet_id: validInput.spreadsheetId, is_active: 1 });
+  });
+
+  test('issues distinct no-store webhook keys only within the selected LINE account', async () => {
+    const firstId = await createOne();
+    const secondCreated = await call('POST', '/api/integrations/google-sheets/connections', {
+      ...validInput,
+      lineAccountId: 'acc-2',
+      formId: 'internal-form-2',
+      spreadsheetId: 'Second_sheet-ID',
+    });
+    expect(secondCreated.status).toBe(201);
+    const secondId = (await secondCreated.json() as { data: { id: string } }).data.id;
+
+    const crossed = await call(
+      'POST',
+      `/api/integrations/google-sheets/connections/${firstId}/webhook-secret?lineAccountId=acc-2`,
+    );
+    const first = await call(
+      'POST',
+      `/api/integrations/google-sheets/connections/${firstId}/webhook-secret?lineAccountId=acc-1`,
+    );
+    const second = await call(
+      'POST',
+      `/api/integrations/google-sheets/connections/${secondId}/webhook-secret?lineAccountId=acc-2`,
+    );
+
+    expect(crossed.status).toBe(404);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.headers.get('Cache-Control')).toBe('no-store');
+    expect(second.headers.get('Cache-Control')).toBe('no-store');
+    const firstSecret = (await first.json() as { data: { webhookSecret: string } }).data.webhookSecret;
+    const secondSecret = (await second.json() as { data: { webhookSecret: string } }).data.webhookSecret;
+    expect(firstSecret).toMatch(/^[0-9a-f]{64}$/);
+    expect(secondSecret).toMatch(/^[0-9a-f]{64}$/);
+    expect(firstSecret).not.toBe(secondSecret);
+
+    const listed = await call('GET', '/api/integrations/google-sheets/connections?lineAccountId=acc-1');
+    const listedText = await listed.text();
+    expect(listedText).not.toContain(firstSecret);
+    expect(listedText).not.toContain('webhookSecret');
+
+    const missingMaster = await call(
+      'POST',
+      `/api/integrations/google-sheets/connections/${firstId}/webhook-secret?lineAccountId=acc-1`,
+      undefined,
+      OWNER,
+      { SHEETS_WEBHOOK_SECRET: undefined },
+    );
+    expect(missingMaster.status).toBe(503);
   });
 });
 

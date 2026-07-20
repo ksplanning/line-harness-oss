@@ -25,7 +25,10 @@ import {
   syncFriendLedger,
   type FriendLedgerWebhookEventPayload,
 } from '../services/friend-ledger-sync.js';
-import { verifySheetsWebhookSignature } from '../services/sheets-webhook-signature.js';
+import {
+  deriveSheetsWebhookSecret,
+  verifySheetsWebhookSignature,
+} from '../services/sheets-webhook-signature.js';
 import type { Env } from '../index.js';
 
 export const sheetsConnections = new Hono<Env>();
@@ -390,6 +393,33 @@ sheetsConnections.post(`${BASE_PATH}/:id/test`, async (c) => {
   }
 });
 
+// POST /api/integrations/google-sheets/connections/:id/webhook-secret
+// Returns only the selected connection's derived signing key. The deployment
+// master remains Worker-only and is never serialized.
+sheetsConnections.post(`${BASE_PATH}/:id/webhook-secret`, async (c) => {
+  const denied = ownerGate(c, OWNER_MESSAGE);
+  if (denied) return denied;
+  c.header('Cache-Control', 'no-store');
+  c.header('Pragma', 'no-cache');
+  const lineAccountId = validateLineAccountId(c.req.query('lineAccountId'));
+  if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+  try {
+    const connection = await getSheetsConnection(c.env.DB, lineAccountId.value, c.req.param('id'));
+    if (!connection) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    const webhookSecret = await deriveSheetsWebhookSecret(
+      c.env.SHEETS_WEBHOOK_SECRET,
+      connection.id,
+    );
+    if (!webhookSecret) {
+      return c.json({ success: false, error: '通知用の秘密設定が未完了です' }, 503);
+    }
+    return c.json({ success: true, data: { webhookSecret } });
+  } catch {
+    console.error('POST Google Sheets connection webhook secret failed');
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // POST /api/integrations/google-sheets/connections/:id/sync
 sheetsConnections.post(`${BASE_PATH}/:id/sync`, async (c) => {
   const denied = ownerGate(c, OWNER_MESSAGE);
@@ -453,11 +483,16 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
   }
   const signature = c.req.header('X-Sheets-Signature') ?? '';
   const timestamp = c.req.header('X-Sheets-Timestamp') ?? '';
+  const signedConnectionId = cleanString(c.req.header('X-Sheets-Connection-Id'));
+  const connectionSecret = await deriveSheetsWebhookSecret(
+    c.env.SHEETS_WEBHOOK_SECRET,
+    signedConnectionId,
+  );
   const verified = await verifySheetsWebhookSignature({
     rawBody,
     signature,
     timestamp,
-    secret: c.env.SHEETS_WEBHOOK_SECRET,
+    secret: connectionSecret,
   });
   if (!verified) return c.json({ success: false, error: '署名を確認できません' }, 401);
 
@@ -468,6 +503,9 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
     // Invalid JSON is intentionally handled only after the signature check.
   }
   if (!payload) return c.json({ success: false, error: '通知の形式が正しくありません' }, 400);
+  if (payload.connectionId !== signedConnectionId) {
+    return c.json({ success: false, error: '接続IDが一致しません' }, 400);
+  }
   if (payload.occurredAt !== timestamp) {
     return c.json({ success: false, error: '通知時刻が一致しません' }, 400);
   }

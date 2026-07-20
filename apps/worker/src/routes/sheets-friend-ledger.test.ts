@@ -118,19 +118,32 @@ function seedConnection(id: string, accountId: string, spreadsheetId: string): v
   ).run(id, accountId, `friend-ledger-${accountId}`, spreadsheetId);
 }
 
-async function hmacHex(rawBody: string, timestamp: string): Promise<string> {
+async function hmacMessageHex(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     'raw',
-    encoder.encode(WEBHOOK_SECRET),
+    encoder.encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   );
   const bytes = new Uint8Array(
-    await crypto.subtle.sign('HMAC', key, encoder.encode(`${timestamp}.${rawBody}`)),
+    await crypto.subtle.sign('HMAC', key, encoder.encode(message)),
   );
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function connectionSecret(connectionId: string): Promise<string> {
+  return hmacMessageHex(`friend-ledger-webhook:v2\0${connectionId}`, WEBHOOK_SECRET);
+}
+
+async function hmacHex(
+  rawBody: string,
+  timestamp: string,
+  connectionId = 'conn-a',
+  secret?: string,
+): Promise<string> {
+  return hmacMessageHex(`${timestamp}.${rawBody}`, secret ?? await connectionSecret(connectionId));
 }
 
 beforeEach(() => {
@@ -263,7 +276,7 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
     });
   });
 
-  test('rejects an invalid signature before JSON parsing, DB access, or sync', async () => {
+  test('rejects an invalid signature before DB access or sync', async () => {
     const prepare = vi.fn(() => { throw new Error('DB must not be touched'); });
     const response = await call(
       'POST',
@@ -273,6 +286,7 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
         headers: {
           'X-Sheets-Signature': '00'.repeat(32),
           'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+          'X-Sheets-Connection-Id': 'conn-a',
         },
         env: {
           DB: { prepare } as unknown as D1Database,
@@ -285,17 +299,30 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
     expect(service.syncFriendLedger).not.toHaveBeenCalled();
   });
 
-  test('requires both signature and timestamp headers', async () => {
+  test('requires signature, timestamp, and connection headers', async () => {
     const body = JSON.stringify({ connectionId: 'conn-a' });
     const signature = await hmacHex(body, WEBHOOK_TIMESTAMP);
 
     expect((await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
       body,
-      headers: { 'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP },
+      headers: {
+        'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+        'X-Sheets-Connection-Id': 'conn-a',
+      },
     })).status).toBe(401);
     expect((await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
       body,
-      headers: { 'X-Sheets-Signature': signature },
+      headers: {
+        'X-Sheets-Signature': signature,
+        'X-Sheets-Connection-Id': 'conn-a',
+      },
+    })).status).toBe(401);
+    expect((await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+      body,
+      headers: {
+        'X-Sheets-Signature': signature,
+        'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+      },
     })).status).toBe(401);
     expect(service.syncFriendLedger).not.toHaveBeenCalled();
   });
@@ -320,6 +347,7 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
         headers: {
           'X-Sheets-Signature': signature,
           'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+          'X-Sheets-Connection-Id': 'conn-a',
         },
       },
     );
@@ -356,6 +384,7 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
     const headers = {
       'X-Sheets-Signature': await hmacHex(body, WEBHOOK_TIMESTAMP),
       'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+      'X-Sheets-Connection-Id': 'conn-a',
     };
 
     const first = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
@@ -401,6 +430,58 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
     expect(service.syncFriendLedger).not.toHaveBeenCalled();
   });
 
+  test('rejects deployment-master signatures and cross-connection derived keys', async () => {
+    const payload = {
+      version: 2,
+      eventId: 'event-cross-tenant-01',
+      occurredAt: WEBHOOK_TIMESTAMP,
+      connectionId: 'conn-b',
+      spreadsheetId: 'sheet-b',
+      sheetName: '友だち台帳',
+      range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      snapshot: {
+        rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_TARGET',
+        value: '偽造値', oldValue: '前', oldValueKnown: true,
+      },
+      actor: 'attacker@example.test',
+      actorKind: 'google_email',
+    };
+    const body = JSON.stringify(payload);
+
+    const masterSigned = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+      body,
+      headers: {
+        'X-Sheets-Signature': await hmacHex(body, WEBHOOK_TIMESTAMP, 'conn-b', WEBHOOK_SECRET),
+        'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+        'X-Sheets-Connection-Id': 'conn-b',
+      },
+    });
+    const otherConnectionSigned = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+      body,
+      headers: {
+        'X-Sheets-Signature': await hmacHex(body, WEBHOOK_TIMESTAMP, 'conn-a'),
+        'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+        'X-Sheets-Connection-Id': 'conn-b',
+      },
+    });
+    const mismatchedHeader = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+      body,
+      headers: {
+        'X-Sheets-Signature': await hmacHex(body, WEBHOOK_TIMESTAMP, 'conn-a'),
+        'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+        'X-Sheets-Connection-Id': 'conn-a',
+      },
+    });
+
+    expect(masterSigned.status).toBe(401);
+    expect(otherConnectionSigned.status).toBe(401);
+    expect(mismatchedHeader.status).toBe(400);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_webhook_events').get())
+      .toEqual({ count: 0 });
+    expect(service.drainFriendLedgerWebhookEvents).not.toHaveBeenCalled();
+    expect(service.syncFriendLedger).not.toHaveBeenCalled();
+  });
+
   test('binds the signed connection id to its saved spreadsheet and tab', async () => {
     const payload = {
       version: 2,
@@ -423,6 +504,7 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
       headers: {
         'X-Sheets-Signature': await hmacHex(body, WEBHOOK_TIMESTAMP),
         'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+        'X-Sheets-Connection-Id': 'conn-a',
       },
     });
 
