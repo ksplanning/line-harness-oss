@@ -2,11 +2,21 @@ import {
   DECORATION_FIELD_TYPES,
   FORMALOO_FIELD_TYPES,
   INTERNAL_ONLY_FIELD_TYPES,
+  INTERNAL_FORM_CHANNEL_SOURCE_ID,
   isDecorationType,
+  normalizeFormDesign,
+  normalizeFormOperationsSettings,
+  normalizeFormRedirect,
+  normalizeSuccessPages,
   validateHarnessField,
+  type FormDesign,
   type FormDisplayType,
+  type FormOperationsSettings,
+  type FormRedirect,
   type HarnessField,
   type HarnessFieldType,
+  type HarnessLogicRule,
+  type SuccessPageSpec,
 } from '@line-crm/shared';
 
 type SupportedInternalFieldType = Exclude<HarnessFieldType, 'choice_fetch'>;
@@ -46,9 +56,15 @@ export type InternalFormField = Omit<HarnessField, 'type'> & {
 
 export interface InternalFormDefinition {
   fields: InternalFormField[];
+  logic: HarnessLogicRule[];
   buttonText: string | null;
   successMessage: string | null;
-  formType: FormDisplayType | null;
+  errorMessage: string | null;
+  design: FormDesign;
+  formType: FormDisplayType;
+  formRedirect: FormRedirect;
+  successPages: SuccessPageSpec[];
+  operationsSettings: FormOperationsSettings;
 }
 
 export type InternalAnswerInputValue = string | File | (string | File)[] | undefined;
@@ -411,9 +427,6 @@ export function parseInternalFormDefinition(
   }
 
   if (!Array.isArray(raw.fields)) return { ok: false, error: 'フォーム項目を読み込めません' };
-  if (raw.logic !== undefined && (!Array.isArray(raw.logic) || raw.logic.length > 0)) {
-    return { ok: false, error: 'このフォームの分岐設定は自前配信ではまだ利用できません' };
-  }
   if (raw.formType !== undefined && raw.formType !== 'simple' && raw.formType !== 'multi_step') {
     return { ok: false, error: 'フォーム表示形式を読み込めません' };
   }
@@ -438,6 +451,39 @@ export function parseInternalFormDefinition(
   const relationshipError = validateDefinitionRelationships(fields);
   if (relationshipError) return { ok: false, error: relationshipError };
 
+  const successPages = normalizeSuccessPages(raw.successPages);
+  const successPageIds = new Set(successPages.map((page) => page.id));
+  const fieldById = new Map(fields.map((field) => [field.id, field]));
+  const logic: HarnessLogicRule[] = [];
+  for (const candidate of Array.isArray(raw.logic) ? raw.logic : []) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return { ok: false, error: '分岐設定を読み込めません' };
+    }
+    const rule = candidate as Partial<HarnessLogicRule>;
+    if (
+      typeof rule.id !== 'string' || !rule.id
+      || typeof rule.sourceFieldId !== 'string'
+      || (rule.operator !== 'equals' && rule.operator !== 'not_equals')
+      || typeof rule.value !== 'string'
+      || !['show', 'hide', 'jump', 'skip', 'submit'].includes(String(rule.action))
+      || typeof rule.targetFieldId !== 'string'
+    ) return { ok: false, error: '分岐設定を読み込めません' };
+    const channelSource = rule.sourceFieldId === INTERNAL_FORM_CHANNEL_SOURCE_ID;
+    if (!channelSource && !fieldById.has(rule.sourceFieldId)) {
+      return { ok: false, error: '分岐元の項目が見つかりません' };
+    }
+    if (channelSource && rule.value !== 'line' && rule.value !== 'web') {
+      return { ok: false, error: '経由チャネルは LINE または直リンクを指定してください' };
+    }
+    if (rule.action === 'submit') {
+      if (rule.targetFieldId && !successPageIds.has(rule.targetFieldId)) {
+        return { ok: false, error: '完了ページが見つかりません' };
+      }
+    } else if (!fieldById.has(rule.targetFieldId)) {
+      return { ok: false, error: '分岐先の項目が見つかりません' };
+    }
+    logic.push(candidate as HarnessLogicRule);
+  }
   const formCopy = raw.formCopy && typeof raw.formCopy === 'object' && !Array.isArray(raw.formCopy)
     ? raw.formCopy as Record<string, unknown>
     : {};
@@ -445,15 +491,57 @@ export function parseInternalFormDefinition(
     ok: true,
     definition: {
       fields,
+      logic,
       buttonText: typeof formCopy.buttonText === 'string' && formCopy.buttonText.trim()
         ? formCopy.buttonText.trim()
         : null,
       successMessage: typeof formCopy.successMessage === 'string' && formCopy.successMessage.trim()
         ? formCopy.successMessage.trim()
         : null,
-      formType: raw.formType === 'simple' || raw.formType === 'multi_step' ? raw.formType : null,
+      errorMessage: typeof formCopy.errorMessage === 'string' && formCopy.errorMessage.trim()
+        ? formCopy.errorMessage.trim()
+        : null,
+      design: normalizeFormDesign(raw.design),
+      formType: raw.formType === 'multi_step' ? 'multi_step' : 'simple',
+      formRedirect: normalizeFormRedirect(raw.formRedirect),
+      successPages,
+      operationsSettings: normalizeFormOperationsSettings(raw.operationsSettings),
     },
   };
+}
+
+export type InternalFormAvailability = {
+  status: 'open' | 'upcoming' | 'ended' | 'limit_reached';
+  message: string | null;
+};
+
+function japaneseMonthDay(date: Date): string {
+  const parts = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric',
+  }).formatToParts(date);
+  const month = parts.find((part) => part.type === 'month')?.value ?? '';
+  const day = parts.find((part) => part.type === 'day')?.value ?? '';
+  return `${month}月${day}日`;
+}
+
+export function evaluateInternalFormAvailability(
+  definition: Pick<InternalFormDefinition, 'operationsSettings'>,
+  submissionCount: number,
+  now = new Date(),
+): InternalFormAvailability {
+  const settings = definition.operationsSettings;
+  const start = settings.submitStartTime ? new Date(settings.submitStartTime) : null;
+  const end = settings.submitEndTime ? new Date(settings.submitEndTime) : null;
+  if (start && now.getTime() < start.getTime()) {
+    return { status: 'upcoming', message: `受付開始前・${japaneseMonthDay(start)}から` };
+  }
+  if (end && now.getTime() >= end.getTime()) {
+    return { status: 'ended', message: '受付は終了しました' };
+  }
+  if (settings.maxSubmitCount !== undefined && submissionCount >= settings.maxSubmitCount) {
+    return { status: 'limit_reached', message: '回答上限に達したため受付を終了しました' };
+  }
+  return { status: 'open', message: null };
 }
 
 function valuesAt(input: InternalAnswerInput, key: string): Array<string | File> {
@@ -756,9 +844,11 @@ function roundedFormulaValue(value: number, decimalPlaces: number | undefined): 
 export function validateInternalFormAnswers(
   fields: InternalFormField[],
   input: InternalAnswerInput,
+  options: { visibleFieldIds?: string[] } = {},
 ): InternalAnswerValidationResult {
   const answers = Object.create(null) as Record<string, unknown>;
   const pendingUploads: PendingInternalUpload[] = [];
+  const visible = options.visibleFieldIds ? new Set(options.visibleFieldIds) : null;
   const byId = new Map(fields.map((field) => [field.id, field]));
   const repeatingTemplates = new Set(
     fields
@@ -768,6 +858,7 @@ export function validateInternalFormAnswers(
 
   for (let index = 0; index < fields.length; index++) {
     const field = fields[index];
+    if (visible && !visible.has(field.id)) continue;
     if (repeatingTemplates.has(field.id) || isDecorationType(field.type) || field.type === 'variable') continue;
 
     if (field.type === 'file') {
@@ -794,9 +885,11 @@ export function validateInternalFormAnswers(
     if (normalized.present) answers[field.id] = normalized.value;
   }
 
-  const formulaFields = fields.filter(
-    (field) => field.type === 'variable' && field.config.variableSubType === 'formula',
-  );
+  const formulaFields = fields.filter((field) => (
+    (!visible || visible.has(field.id))
+    && field.type === 'variable'
+    && field.config.variableSubType === 'formula'
+  ));
   const pending = [...formulaFields];
   while (pending.length > 0) {
     let progressed = false;

@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test } from 'vitest';
 import {
   createInternalFormSubmission,
+  createInternalFormSubmissionWithinLimit,
   getInternalFormSubmission,
   listLatestVerifiedInternalFormSubmissions,
   listInternalFormSubmissions,
@@ -210,5 +211,19 @@ describe('internal form persistence', () => {
     expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 2 });
     expect((await getInternalFormSubmission(DB, 'fa_internal', newer.id))?.answers_json)
       .toBe('{"name":"再回答","keep":"保持"}');
+  });
+
+  test('atomically refuses a submission after the configured response limit', async () => {
+    const first = await createInternalFormSubmissionWithinLimit(DB, {
+      formId: 'fa_internal', answers: { name: '一郎' }, maxSubmissions: 1,
+    });
+    const second = await createInternalFormSubmissionWithinLimit(DB, {
+      formId: 'fa_internal', answers: { name: '二郎' }, maxSubmissions: 1,
+    });
+
+    expect(first?.id).toMatch(/^ifs_/);
+    expect(second).toBeNull();
+    expect(await listInternalFormSubmissions(DB, 'fa_internal', { limit: 20, offset: 0 }))
+      .toMatchObject({ total: 1 });
   });
 });

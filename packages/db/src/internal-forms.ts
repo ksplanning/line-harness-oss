@@ -58,6 +58,42 @@ export async function createInternalFormSubmission(
   return (await getInternalFormSubmission(db, input.formId, id))!;
 }
 
+/** A single SQL statement keeps the response-limit check and insert atomic. */
+export async function createInternalFormSubmissionWithinLimit(
+  db: D1Database,
+  input: {
+    formId: string;
+    friendId?: string | null;
+    answers: Record<string, unknown>;
+    maxSubmissions: number;
+    submittedAt?: string;
+  },
+): Promise<InternalFormSubmission | null> {
+  const id = `ifs_${crypto.randomUUID()}`;
+  const now = input.submittedAt ?? jstNow();
+  const limit = Math.max(1, Math.trunc(input.maxSubmissions));
+  const result = await db
+    .prepare(
+      `INSERT INTO internal_form_submissions
+         (id, form_id, friend_id, answers_json, submitted_at, created_at)
+       SELECT ?, ?, ?, ?, ?, ?
+       WHERE (SELECT COUNT(*) FROM internal_form_submissions WHERE form_id = ?) < ?`,
+    )
+    .bind(
+      id,
+      input.formId,
+      input.friendId ?? null,
+      JSON.stringify(input.answers),
+      now,
+      now,
+      input.formId,
+      limit,
+    )
+    .run();
+  if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) !== 1) return null;
+  return getInternalFormSubmission(db, input.formId, id);
+}
+
 export async function listInternalFormSubmissions(
   db: D1Database,
   formId: string,

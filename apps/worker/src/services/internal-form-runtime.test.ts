@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import type { HarnessField, HarnessFieldType } from '@line-crm/shared';
 import {
   JAPAN_PREFECTURES,
+  evaluateInternalFormAvailability,
   evaluateInternalFormula,
   parseInternalFormDefinition,
   validateInternalFormAnswers,
@@ -463,5 +464,71 @@ describe('safe formula parser and server recomputation', () => {
       .toMatchObject({ ok: false, error: expect.stringMatching(/計算/) });
     expect(validateInternalFormAnswers(fields, { a_0: '10', a_1: '0' }))
       .toMatchObject({ ok: false, error: expect.stringMatching(/計算/) });
+  });
+});
+
+describe('internal form definition and availability', () => {
+  const source: InternalFormField = {
+    id: 'kind', type: 'choice', label: '種別', required: true, position: 0,
+    config: { choices: ['法人', '個人'] },
+  };
+  const company: InternalFormField = {
+    id: 'company', type: 'text', label: '会社名', required: true, position: 1, config: {},
+  };
+
+  test('accepts internal logic, design, completion, redirect, and operations settings', () => {
+    const result = parseInternalFormDefinition(JSON.stringify({
+      fields: [source, company],
+      logic: [{
+        id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人',
+        action: 'show', targetFieldId: 'company',
+      }],
+      formType: 'simple',
+      design: { themeColor: '#123456', backgroundColor: '#F0F0F0' },
+      formCopy: { buttonText: '申し込む', successMessage: '完了' },
+      formRedirect: { url: 'https://example.test/thanks', openExternalBrowser: true },
+      successPages: [{ id: 'done-a', title: 'A完了', description: 'ありがとうございました' }],
+      operationsSettings: {
+        maxSubmitCount: 20,
+        submitStartTime: '2026-07-25T00:00:00+09:00',
+        submitEndTime: '2026-08-01T00:00:00+09:00',
+      },
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.logic).toHaveLength(1);
+    expect(result.definition.formType).toBe('simple');
+    expect(result.definition.design).toMatchObject({ themeColor: '#123456' });
+    expect(result.definition.formRedirect).toMatchObject({ url: 'https://example.test/thanks' });
+    expect(result.definition.successPages).toEqual([{ id: 'done-a', title: 'A完了', description: 'ありがとうございました' }]);
+    expect(result.definition.operationsSettings).toMatchObject({ maxSubmitCount: 20 });
+  });
+
+  test('reports upcoming, ended, limit reached, and open states with an honest Japanese message', () => {
+    const definition = {
+      fields: [source], logic: [], buttonText: null, successMessage: null, errorMessage: null,
+      design: {}, formType: 'simple' as const, formRedirect: {}, successPages: [],
+      operationsSettings: {
+        submitStartTime: '2026-07-25T00:00:00+09:00',
+        submitEndTime: '2026-08-01T00:00:00+09:00',
+        maxSubmitCount: 2,
+      },
+    };
+
+    expect(evaluateInternalFormAvailability(definition, 0, new Date('2026-07-24T12:00:00+09:00')))
+      .toEqual({ status: 'upcoming', message: '受付開始前・7月25日から' });
+    expect(evaluateInternalFormAvailability(definition, 0, new Date('2026-08-01T00:00:00+09:00')))
+      .toEqual({ status: 'ended', message: '受付は終了しました' });
+    expect(evaluateInternalFormAvailability(definition, 2, new Date('2026-07-26T00:00:00+09:00')))
+      .toEqual({ status: 'limit_reached', message: '回答上限に達したため受付を終了しました' });
+    expect(evaluateInternalFormAvailability(definition, 1, new Date('2026-07-26T00:00:00+09:00')))
+      .toEqual({ status: 'open', message: null });
+  });
+
+  test('does not require or persist a field hidden by the shared logic result', () => {
+    expect(validateInternalFormAnswers([source, company], { a_0: '個人' }, {
+      visibleFieldIds: ['kind'],
+    })).toEqual({ ok: true, answers: { kind: '個人' } });
   });
 });
