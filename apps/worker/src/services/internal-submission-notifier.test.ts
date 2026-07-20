@@ -27,11 +27,12 @@ vi.mock('./edit-mail-sender.js', async () => {
 import { LineClient } from '@line-crm/line-sdk';
 import { notifyInternalFormSubmission } from './internal-submission-notifier.js';
 
+const dbStatement = {
+  bind: vi.fn().mockReturnThis(),
+  run: vi.fn().mockResolvedValue({ success: true }),
+};
 const DB = {
-  prepare: vi.fn(() => ({
-    bind: vi.fn().mockReturnThis(),
-    run: vi.fn().mockResolvedValue({ success: true }),
-  })),
+  prepare: vi.fn(() => dbStatement),
 } as unknown as D1Database;
 
 const form = {
@@ -87,6 +88,25 @@ function env() {
   };
 }
 
+function mockLineSubmission(): void {
+  dbMocks.getInternalFormSubmission.mockResolvedValue({
+    ...baseSubmission,
+    origin_channel: 'line',
+    friend_id: 'friend-1',
+  });
+  dbMocks.getFriendById.mockResolvedValue({
+    id: 'friend-1',
+    line_user_id: 'U_RESPONDENT',
+    display_name: '山田花子',
+    line_account_id: 'account-1',
+  });
+  dbMocks.getLineAccountById.mockResolvedValue({
+    id: 'account-1',
+    channel_access_token: 'account-token',
+    is_active: 1,
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   dbMocks.getFormalooForm.mockResolvedValue(form);
@@ -122,22 +142,7 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
   });
 
   test('signed LINE-origin submission pushes only to its persisted friend and never falls back to email', async () => {
-    dbMocks.getInternalFormSubmission.mockResolvedValue({
-      ...baseSubmission,
-      origin_channel: 'line',
-      friend_id: 'friend-1',
-    });
-    dbMocks.getFriendById.mockResolvedValue({
-      id: 'friend-1',
-      line_user_id: 'U_RESPONDENT',
-      display_name: '山田花子',
-      line_account_id: 'account-1',
-    });
-    dbMocks.getLineAccountById.mockResolvedValue({
-      id: 'account-1',
-      channel_access_token: 'account-token',
-      is_active: 1,
-    });
+    mockLineSubmission();
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
       .resolves.toMatchObject({ status: 'sent', channel: 'line' });
@@ -146,6 +151,66 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
       expect.objectContaining({ type: 'text', text: expect.stringContaining('山田花子') }),
     ]);
     expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+
+    const deliveredText = lineMocks.pushMessage.mock.calls[0]?.[1]?.[0]?.text;
+    const loggedText = dbStatement.bind.mock.calls[0]?.[2];
+    expect(deliveredText).toMatch(/https:\/\/worker\.example\.test\/ife\//);
+    expect(loggedText).toContain('[編集リンクを送信済み]');
+    expect(loggedText).not.toContain('/ife/');
+  });
+
+  test.each([
+    { length: 5_000, expectedLengths: [5_000] },
+    { length: 5_001, expectedLengths: [5_000, 1] },
+  ])('splits $length UTF-16 code units into valid LINE text messages', async ({ length, expectedLengths }) => {
+    mockLineSubmission();
+    dbMocks.getInternalFormNotificationSettings.mockResolvedValue({
+      ...settings,
+      messageTemplate: 'a'.repeat(length),
+    });
+
+    await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
+      .resolves.toMatchObject({ status: 'sent', channel: 'line' });
+
+    const messages = lineMocks.pushMessage.mock.calls[0]?.[1] as Array<{ type: string; text: string }>;
+    expect(messages.map((message) => message.text.length)).toEqual(expectedLengths);
+    expect(messages.map((message) => message.text).join('')).toBe('a'.repeat(length));
+  });
+
+  test('does not split a surrogate pair at the 5000-code-unit boundary', async () => {
+    mockLineSubmission();
+    const text = `${'a'.repeat(4_999)}😀b`;
+    dbMocks.getInternalFormNotificationSettings.mockResolvedValue({ ...settings, messageTemplate: text });
+
+    await notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' });
+
+    const messages = lineMocks.pushMessage.mock.calls[0]?.[1] as Array<{ type: string; text: string }>;
+    expect(messages.map((message) => message.text.length)).toEqual([4_999, 3]);
+    expect(messages.map((message) => message.text).join('')).toBe(text);
+  });
+
+  test('caps a very long default answer at five messages while preserving the edit link', async () => {
+    mockLineSubmission();
+    dbMocks.getInternalFormNotificationSettings.mockResolvedValue({ ...settings, messageTemplate: '' });
+    dbMocks.getInternalFormSubmission.mockResolvedValue({
+      ...baseSubmission,
+      origin_channel: 'line',
+      friend_id: 'friend-1',
+      answers_json: JSON.stringify({
+        name: 'あ'.repeat(30_000),
+        email: 'hanako@example.test',
+        other_email: 'third-party@example.test',
+      }),
+    });
+
+    await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
+      .resolves.toMatchObject({ status: 'sent', channel: 'line' });
+
+    const messages = lineMocks.pushMessage.mock.calls[0]?.[1] as Array<{ type: string; text: string }>;
+    expect(messages).toHaveLength(5);
+    expect(messages.every((message) => message.text.length <= 5_000)).toBe(true);
+    expect(messages[4]?.text).toContain('中間部分を省略しました');
+    expect(messages[4]?.text).toMatch(/https:\/\/worker\.example\.test\/ife\//);
   });
 
   test('embedded submission emails only the explicitly configured answer field', async () => {

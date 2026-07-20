@@ -25,6 +25,57 @@ export type InternalSubmissionNotificationResult =
   | { status: 'failed'; channel: 'line' | 'email'; reason: string }
   | { status: 'skipped'; reason: string };
 
+const LINE_TEXT_MAX_CODE_UNITS = 5_000;
+const LINE_PUSH_MAX_MESSAGES = 5;
+const LINE_TRUNCATION_NOTICE = '\n…\n（回答が長いため、中間部分を省略しました）\n';
+
+type LineTextMessage = { type: 'text'; text: string };
+
+function chunkEnd(text: string, start: number, maxCodeUnits: number): number {
+  let end = Math.min(text.length, start + maxCodeUnits);
+  if (end < text.length) {
+    const lastCodeUnit = text.charCodeAt(end - 1);
+    if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end -= 1;
+  }
+  return end;
+}
+
+function splitLineText(text: string): LineTextMessage[] {
+  const fullCapacity = LINE_TEXT_MAX_CODE_UNITS * LINE_PUSH_MAX_MESSAGES;
+  if (text.length <= fullCapacity) {
+    const messages: LineTextMessage[] = [];
+    let cursor = 0;
+    while (cursor < text.length) {
+      const end = chunkEnd(text, cursor, LINE_TEXT_MAX_CODE_UNITS);
+      messages.push({ type: 'text', text: text.slice(cursor, end) });
+      cursor = end;
+    }
+    return messages;
+  }
+
+  const messages: LineTextMessage[] = [];
+  let cursor = 0;
+  for (let index = 0; index < LINE_PUSH_MAX_MESSAGES - 1; index += 1) {
+    const end = chunkEnd(text, cursor, LINE_TEXT_MAX_CODE_UNITS);
+    messages.push({ type: 'text', text: text.slice(cursor, end) });
+    cursor = end;
+  }
+
+  const tailCapacity = LINE_TEXT_MAX_CODE_UNITS - LINE_TRUNCATION_NOTICE.length;
+  let tailStart = Math.max(cursor, text.length - tailCapacity);
+  const firstCodeUnit = text.charCodeAt(tailStart);
+  if (firstCodeUnit >= 0xdc00 && firstCodeUnit <= 0xdfff) tailStart += 1;
+  messages.push({
+    type: 'text',
+    text: `${LINE_TRUNCATION_NOTICE}${text.slice(tailStart)}`,
+  });
+  return messages;
+}
+
+function redactEditLink(text: string, editUrl: string): string {
+  return text.split(editUrl).join('[編集リンクを送信済み]');
+}
+
 function parseAnswers(value: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -126,13 +177,17 @@ export async function notifyInternalFormSubmission(
       }
       accessToken = account.channel_access_token;
     }
+    const messages = splitLineText(rendered.text);
     try {
-      await new LineClient(accessToken).pushMessage(friend!.line_user_id, [{ type: 'text', text: rendered.text }]);
+      await new LineClient(accessToken).pushMessage(friend!.line_user_id, messages);
     } catch {
       return { status: 'failed', channel: 'line', reason: 'line_push_failed' };
     }
     try {
-      await logLineNotification(env.DB, friend!.id, friend!.line_account_id, rendered.text);
+      const safeLogText = splitLineText(redactEditLink(rendered.text, editUrl))
+        .map((message) => message.text)
+        .join('\n');
+      await logLineNotification(env.DB, friend!.id, friend!.line_account_id, safeLogText);
     } catch (error) {
       console.error('internal form notification log failed:', error);
     }
