@@ -1,8 +1,8 @@
 /**
  * LLM 接続層の抽象 (Phase B B-1 / T-A1)。
  * 呼び手 (faq-reply) は本抽象のみを参照し、実体 (WorkersAiProvider / MockLlmProvider) は
- * createFaqAiRuntime factory が inject する (差替 1 点)。OpenAI/Anthropic は D2 で不採用 =
- * 実装しない (差替口だけ残す)。
+ * createFaqAiRuntime factory が inject する (差替 1 点)。Workers AI が既定で、secret 設定時だけ
+ * OpenAI の generate-only fallback を合成する。embed は既存 Workers AI 経路を維持する。
  */
 
 export interface LlmPrompt {

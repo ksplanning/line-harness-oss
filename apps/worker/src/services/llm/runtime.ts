@@ -1,5 +1,7 @@
 import { type LlmProvider } from './llm-provider.js';
 import { WorkersAiProvider, type WorkersAiBinding } from './workers-ai.js';
+import { OpenAiProvider } from './openai.js';
+import { GenerateFallbackProvider } from './fallback-provider.js';
 import { type VectorizeIndex } from '../vectorize.js';
 
 /**
@@ -35,6 +37,10 @@ export interface FaqAiRuntime {
 export interface FaqAiEnv {
   AI?: WorkersAiBinding;
   AI_MODEL_ID?: string;
+  /** Secret. Blank/unset keeps the exact WorkersAiProvider path with no wrapper. */
+  OPENAI_API_KEY?: string;
+  /** Optional model override; key-only configuration uses OpenAiProvider's stable default. */
+  OPENAI_MODEL_ID?: string;
   AI_RETRIEVAL_FLOOR?: string;
   AI_TIMEOUT_MS?: string;
   AI_NEURON_PER_MTOK_IN?: string;
@@ -76,8 +82,16 @@ function numFromEnv(value: string | undefined, fallback: number): number {
  */
 export function createFaqAiRuntime(env: FaqAiEnv): FaqAiRuntime | null {
   if (!env.AI) return null;
+  const workersProvider = new WorkersAiProvider(env.AI, env.AI_MODEL_ID, env.AI_EMBED_MODEL_ID);
+  const openAiKey = env.OPENAI_API_KEY?.trim();
+  const provider = openAiKey
+    ? new GenerateFallbackProvider(
+      workersProvider,
+      new OpenAiProvider(openAiKey, env.OPENAI_MODEL_ID),
+    )
+    : workersProvider;
   return {
-    provider: new WorkersAiProvider(env.AI, env.AI_MODEL_ID, env.AI_EMBED_MODEL_ID),
+    provider,
     retrievalFloor: numFromEnv(env.AI_RETRIEVAL_FLOOR, DEFAULT_RETRIEVAL_FLOOR),
     timeoutMs: numFromEnv(env.AI_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
     neuronPerMTokIn: numFromEnv(env.AI_NEURON_PER_MTOK_IN, DEFAULT_NEURON_PER_MTOK_IN),

@@ -158,6 +158,8 @@ export type Env = {
     // 未設定 dev では createFaqAiRuntime() が null を返し AI 後段を組まない (dark-ship default)。
     AI?: WorkersAiBinding;
     AI_MODEL_ID?: string;                       // 非 deprecated 8B 級 (default 値は wrangler [vars])
+    OPENAI_API_KEY?: string;                    // secret。設定時だけ Workers AI 失敗時の generate fallback
+    OPENAI_MODEL_ID?: string;                   // optional。未設定時は OpenAI provider の既定モデル
     AI_RETRIEVAL_FLOOR?: string;                // 暫定 Retrieval 下限 (< threshold 0.6)
     AI_TIMEOUT_MS?: string;                      // generate timeout
     AI_NEURON_PER_MTOK_IN?: string;             // token→neuron 換算係数 (モデル別)
