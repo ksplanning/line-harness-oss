@@ -11,13 +11,46 @@ import {
   computeNextDeliveryAt,
   resolveStepContent,
   addTagToFriend,
+  listFriendFieldDefinitions,
   type DeliveryMode,
 } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
 import { getEffectiveFriendMetadataValue } from './friend-metadata-condition.js';
-import { renderFriendMessageContent } from './render-message.js';
+import { renderMessageContent } from './render-message.js';
+
+// resolveMetadata must keep the legacy metadata object enumerable shape intact.
+// The active-definition projection travels out-of-band so {{metadata.KEY}} keeps
+// working while {{field:KEY}} cannot consume inactive or undefined keys.
+const resolvedCustomFields = new WeakMap<
+  Readonly<Record<string, unknown>>,
+  Readonly<Record<string, unknown>>
+>();
+const ACTIVE_FIELD_DEFINITION_CACHE_MS = 5_000;
+type ActiveFriendFieldDefinitions = Awaited<ReturnType<typeof listFriendFieldDefinitions>>;
+const activeFieldDefinitionCache = new WeakMap<
+  D1Database,
+  { expiresAt: number; value: Promise<ActiveFriendFieldDefinitions> }
+>();
+
+async function getActiveFriendFieldDefinitions(
+  db: D1Database,
+): Promise<ActiveFriendFieldDefinitions> {
+  const now = Date.now();
+  const cached = activeFieldDefinitionCache.get(db);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const value = listFriendFieldDefinitions(db, { activeOnly: true });
+  const entry = { expiresAt: now + ACTIVE_FIELD_DEFINITION_CACHE_MS, value };
+  activeFieldDefinitionCache.set(db, entry);
+  try {
+    return await value;
+  } catch (error) {
+    if (activeFieldDefinitionCache.get(db) === entry) activeFieldDefinitionCache.delete(db);
+    throw error;
+  }
+}
 
 /**
  * Replace template variables in message content.
@@ -34,11 +67,23 @@ export function expandVariables(
   friend: { id: string; display_name: string | null; user_id: string | null; ref_code?: string | null; metadata?: Record<string, unknown> | string | null },
   apiOrigin?: string,
 ): string {
+  // Legacy variables are expanded before the shared renderer for backwards
+  // compatibility. Mask their recipient-controlled values so a value that
+  // happens to contain a new {{display_name}}/{{field:*}} token stays literal.
+  let literalPrefix = '\uE000line_harness_literal_';
+  while (content.includes(literalPrefix)) literalPrefix += '_';
+  const literalSuffix = '\uE001';
+  const literalValues: string[] = [];
+  const maskLiteral = (value: string): string => {
+    const index = literalValues.push(value) - 1;
+    return `${literalPrefix}${index}${literalSuffix}`;
+  };
+
   let result = content;
-  result = result.replace(/\{\{name\}\}/g, friend.display_name || '');
-  result = result.replace(/\{\{uid\}\}/g, friend.user_id || '');
-  result = result.replace(/\{\{friend_id\}\}/g, friend.id);
-  result = result.replace(/\{\{ref\}\}/g, friend.ref_code || '');
+  result = result.replace(/\{\{name\}\}/g, () => maskLiteral(friend.display_name || ''));
+  result = result.replace(/\{\{uid\}\}/g, () => maskLiteral(friend.user_id || ''));
+  result = result.replace(/\{\{friend_id\}\}/g, () => maskLiteral(friend.id));
+  result = result.replace(/\{\{ref\}\}/g, () => maskLiteral(friend.ref_code || ''));
   // Conditional block: {{#if_ref}}...{{/if_ref}} — only shown if ref_code exists
   if (friend.ref_code) {
     result = result.replace(/\{\{#if_ref\}\}([\s\S]*?)\{\{\/if_ref\}\}/g, '$1');
@@ -62,17 +107,24 @@ export function expandVariables(
   result = result.replace(/,\s*\]/g, ']');
   result = result.replace(/\{\{metadata\.([^}]+)\}\}/g, (_match, key) => {
     const val = meta[key];
-    if (val == null) return '';
-    return Array.isArray(val) ? val.join(', ') : String(val);
+    if (val == null) return maskLiteral('');
+    return maskLiteral(Array.isArray(val) ? val.join(', ') : String(val));
   });
   if (apiOrigin) {
     result = result.replace(/\{\{auth_url:([^}]+)\}\}/g, (_match, channelId) => {
       const params = new URLSearchParams({ account: channelId, ref: 'cross-link' });
       if (friend.user_id) params.set('uid', friend.user_id);
-      return `${apiOrigin}/auth/line?${params.toString()}`;
+      return maskLiteral(`${apiOrigin}/auth/line?${params.toString()}`);
     });
   }
-  return result;
+  const rendered = renderMessageContent(result, null, {
+    displayName: friend.display_name,
+    customFields: resolvedCustomFields.get(meta),
+  });
+  const literalPattern = new RegExp(`${literalPrefix}(\\d+)${literalSuffix}`, 'g');
+  return rendered.replace(literalPattern, (match, index: string) => (
+    literalValues[Number(index)] ?? match
+  ));
 }
 
 /**
@@ -83,16 +135,38 @@ export async function resolveMetadata(
   db: D1Database,
   friend: { user_id?: string | null; metadata?: string | null },
 ): Promise<Record<string, unknown>> {
+  let rawMetadata: Record<string, unknown> = {};
   // If friend has a UUID, merge metadata from all linked records
   if (friend.user_id) {
     const { getMergedMetadataByUserId } = await import('@line-crm/db');
-    return getMergedMetadataByUserId(db, friend.user_id);
+    rawMetadata = await getMergedMetadataByUserId(db, friend.user_id);
+  } else if (friend.metadata) {
+    // Fallback: parse own metadata
+    try {
+      const parsed = JSON.parse(friend.metadata) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        rawMetadata = parsed as Record<string, unknown>;
+      }
+    } catch {
+      rawMetadata = {};
+    }
   }
-  // Fallback: parse own metadata
-  if (friend.metadata) {
-    try { return JSON.parse(friend.metadata); } catch { return {}; }
+
+  const metadata = { ...rawMetadata };
+  try {
+    const definitions = await getActiveFriendFieldDefinitions(db);
+    resolvedCustomFields.set(metadata, Object.fromEntries(definitions.map((definition) => [
+      definition.name,
+      Object.prototype.hasOwnProperty.call(metadata, definition.name)
+        ? metadata[definition.name]
+        : definition.defaultValue,
+    ])));
+  } catch {
+    // Existing messages must remain sendable if definitions cannot be read.
+    // In that case field tokens stay literal instead of being guessed or erased.
+    resolvedCustomFields.set(metadata, {});
   }
-  return {};
+  return metadata;
 }
 
 const MAX_SENDS_PER_CRON = 40; // CF Free plan: 50 subrequests limit (margin for other jobs)
@@ -227,14 +301,7 @@ async function processSingleDelivery(
   // Expand template variables ({{name}}, {{uid}}, {{auth_url:CHANNEL_ID}}, {{metadata.KEY}}, etc.)
   const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
   const friendWithMeta = { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1];
-  const legacyExpandedContent = expandVariables(resolved.messageContent, friendWithMeta, workerUrl);
-  const expandedContent = await renderFriendMessageContent(
-    legacyExpandedContent,
-    null,
-    db,
-    friend,
-    resolvedMeta,
-  );
+  const expandedContent = expandVariables(resolved.messageContent, friendWithMeta, workerUrl);
   // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
   let trackedType: string = resolved.messageType;
   let trackedContent = expandedContent;

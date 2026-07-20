@@ -68,6 +68,46 @@ describe('renderMessageContent', () => {
     )).toBe('{{unknown}} {{field:未定義}} 山田');
   });
 
+  test('does not scan known tokens nested inside an unknown token', () => {
+    expect(renderMessageContent(
+      '{{unknown {{field:A}}}} / {{field:A}}',
+      null,
+      { customFields: { A: 'VALUE' } },
+    )).toBe('{{unknown {{field:A}}}} / VALUE');
+  });
+
+  test('keeps a missing display-name context untouched while rendering provided fields', () => {
+    expect(renderMessageContent(
+      '{{display_name|お客様}} / {{field:会員ランク}}',
+      null,
+      { customFields: { 会員ランク: 'ゴールド' } },
+    )).toBe('{{display_name|お客様}} / ゴールド');
+  });
+
+  test('inserts recipient values literally without replacement-token or recursive expansion', () => {
+    expect(renderMessageContent(
+      '{{display_name}} / {{field:A}} / {{field:B}} / {{field:C}} / {{field:D}}',
+      null,
+      {
+        displayName: '{{field:A}}',
+        customFields: {
+          A: '$& VIP',
+          B: '$$',
+          C: '$` and $\'',
+          D: '{{display_name}}',
+        },
+      },
+    )).toBe('{{field:A}} / $& VIP / $$ / $` and $\' / {{display_name}}');
+  });
+
+  test('uses an explicit fallback when an array has no printable values', () => {
+    expect(renderMessageContent(
+      '{{field:興味|未設定}} / {{field:空要素|未設定}}',
+      null,
+      { customFields: { 興味: [], 空要素: ['', null] } },
+    )).toBe('未設定 / 未設定');
+  });
+
   test('matches custom field names literally even when they contain token delimiters', () => {
     expect(renderMessageContent(
       '{{field:会員|区分}} / {{field:備考}欄}} / {{field:会員|区分|一般}}',

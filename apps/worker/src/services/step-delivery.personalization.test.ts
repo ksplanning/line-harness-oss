@@ -9,7 +9,12 @@ import {
   createScenarioStep,
   enrollFriendInScenario,
 } from '@line-crm/db';
-import { processStepDeliveries } from './step-delivery.js';
+import {
+  buildMessage,
+  expandVariables,
+  processStepDeliveries,
+  resolveMetadata,
+} from './step-delivery.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../..', 'packages/db');
@@ -50,7 +55,10 @@ function asD1(db: Database.Database): D1Database {
     return api;
   };
   return {
-    prepare(sql: string) { return makeStatement(sql); },
+    prepare(sql: string) {
+      if (/\bFROM\s+friend_field_definitions\b/i.test(sql)) definitionQueryCount += 1;
+      return makeStatement(sql);
+    },
     async batch(statements: Array<{ __exec: () => unknown }>) {
       db.transaction(() => statements.map((statement) => statement.__exec()))();
       return statements.map(() => ({ success: true }));
@@ -61,12 +69,14 @@ function asD1(db: Database.Database): D1Database {
 let raw: Database.Database;
 let db: D1Database;
 let lineClient: { pushMessage: ReturnType<typeof vi.fn> };
+let definitionQueryCount: number;
 
 beforeEach(() => {
   raw = new Database(':memory:');
   replayAll(raw);
   db = asD1(raw);
   lineClient = { pushMessage: vi.fn(async () => {}) };
+  definitionQueryCount = 0;
 });
 
 async function deliverOneStep(messageContent: string, friend: {
@@ -135,15 +145,97 @@ describe('scenario step personalization payload', () => {
       displayOrder: 1,
       isActive: true,
     });
+    await createFriendFieldDefinition(db, {
+      name: '廃止項目',
+      defaultValue: '旧既定値',
+      displayOrder: 2,
+      isActive: false,
+    });
 
     await deliverOneStep(
-      '{{display_name|お客様}} / {{field:会員ランク}} / {{field:担当者|未設定}} / {{field:廃止項目}}',
-      { displayName: null, metadata: {} },
+      '{{display_name|お客様}} / {{field:会員ランク}} / {{field:担当者|未設定}} / {{field:廃止項目}} / {{field:廃止項目|代替}}',
+      { displayName: null, metadata: { 廃止項目: '旧データ' } },
     );
 
     expect(lineClient.pushMessage).toHaveBeenCalledWith('U-friend-1', [{
       type: 'text',
-      text: 'お客様 / 未登録 / 未設定 / {{field:廃止項目}}',
+      text: 'お客様 / 未登録 / 未設定 / {{field:廃止項目}} / {{field:廃止項目|代替}}',
     }]);
+  });
+
+  test('the shared immediate-delivery pipeline renders active fields into a LINE payload', async () => {
+    await createFriendFieldDefinition(db, {
+      name: '会員ランク',
+      defaultValue: '未登録',
+      displayOrder: 0,
+      isActive: true,
+    });
+    await createFriendFieldDefinition(db, {
+      name: '廃止項目',
+      defaultValue: '旧既定値',
+      displayOrder: 1,
+      isActive: false,
+    });
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, display_name, is_following, metadata)
+       VALUES ('friend-immediate', 'U-immediate', '山田花子', 1, ?)`,
+    ).run(JSON.stringify({ 会員ランク: 'ゴールド', 廃止項目: '旧データ' }));
+    const friend = raw.prepare('SELECT * FROM friends WHERE id = ?').get('friend-immediate') as {
+      id: string;
+      display_name: string | null;
+      user_id: string | null;
+      metadata: string | null;
+    };
+
+    const metadata = await resolveMetadata(db, friend);
+    const expanded = expandVariables(
+      'こんにちは {{display_name|お客様}}さん / {{field:会員ランク}} / {{field:廃止項目|代替}} 😊',
+      { ...friend, metadata },
+    );
+
+    expect(buildMessage('text', expanded)).toEqual({
+      type: 'text',
+      text: 'こんにちは 山田花子さん / ゴールド / {{field:廃止項目|代替}} 😊',
+    });
+  });
+
+  test('reuses active definitions across recipient metadata resolution in one send burst', async () => {
+    await createFriendFieldDefinition(db, {
+      name: '会員ランク',
+      defaultValue: '未登録',
+      displayOrder: 0,
+      isActive: true,
+    });
+    definitionQueryCount = 0;
+
+    await resolveMetadata(db, { metadata: '{}' });
+    await resolveMetadata(db, { metadata: '{}' });
+
+    expect(definitionQueryCount).toBe(1);
+  });
+
+  test('does not re-evaluate legacy recipient values as new template variables', async () => {
+    await createFriendFieldDefinition(db, {
+      name: '会員ランク',
+      defaultValue: '未登録',
+      displayOrder: 0,
+      isActive: true,
+    });
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, display_name, is_following, metadata)
+       VALUES ('friend-injection', 'U-injection', '{{field:会員ランク}}', 1, ?)`,
+    ).run(JSON.stringify({ 会員ランク: 'VIP', inject: '{{field:会員ランク}}' }));
+    const friend = raw.prepare('SELECT * FROM friends WHERE id = ?').get('friend-injection') as {
+      id: string;
+      display_name: string | null;
+      user_id: string | null;
+      metadata: string | null;
+    };
+    const metadata = await resolveMetadata(db, friend);
+
+    expect(expandVariables(
+      '{{name}} / {{metadata.inject}} / {{field:会員ランク}}',
+      { ...friend, metadata },
+    )).toBe('{{field:会員ランク}} / {{field:会員ランク}} / VIP');
   });
 });

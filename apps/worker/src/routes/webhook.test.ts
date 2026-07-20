@@ -7,28 +7,12 @@ const lineClientMocks = vi.hoisted(() => ({
   pushMessage: vi.fn(),
 }));
 
-const stepDeliveryMocks = vi.hoisted(() => ({
-  buildMessage: vi.fn((messageType: string, content: string) =>
-    messageType === 'text' ? { type: 'text', text: content } : { type: messageType, content }),
-  expandVariables: vi.fn((content: string) => content),
-  resolveMetadata: vi.fn(async () => ({} as Record<string, unknown>)),
-  messageToLogPayload: vi.fn((message: { type: string; text?: string; content?: string }) => ({
-    messageType: message.type,
-    content: message.text ?? message.content ?? '',
-  })),
-}));
-
-const personalizationMocks = vi.hoisted(() => ({
-  renderFriendMessageContent: vi.fn(async (content: string) => content),
-}));
-
 // Stub the DB graph — these tests focus on webhook guard behavior and the
 // first-contact friend registration path without touching real D1/LINE.
 vi.mock('@line-crm/db', () => ({
   upsertFriend: vi.fn(),
   updateFriendFollowStatus: vi.fn(),
   getFriendByLineUserId: vi.fn(),
-  getFriendById: vi.fn(),
   getScenarios: vi.fn(),
   enrollFriendInScenario: vi.fn(),
   getScenarioSteps: vi.fn(),
@@ -68,9 +52,10 @@ vi.mock('../services/faq-reply.js', () => ({
   tryFaqReply: vi.fn(),
 }));
 
-vi.mock('../services/step-delivery.js', () => stepDeliveryMocks);
-
-vi.mock('../services/render-message.js', () => personalizationMocks);
+vi.mock('../services/step-delivery.js', () => ({
+  buildMessage: vi.fn(),
+  expandVariables: vi.fn(),
+}));
 
 import { verifySignature } from '@line-crm/line-sdk';
 import {
@@ -117,9 +102,6 @@ const baseExecutionCtx = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  stepDeliveryMocks.expandVariables.mockImplementation((content: string) => content);
-  stepDeliveryMocks.resolveMetadata.mockResolvedValue({});
-  personalizationMocks.renderFriendMessageContent.mockImplementation(async (content: string) => content);
   vi.mocked(getLineAccounts).mockResolvedValue([]);
 });
 
@@ -330,148 +312,6 @@ describe('POST /webhook — first-contact existing friends', () => {
   });
 });
 
-describe('POST /webhook — personalized message routes', () => {
-  const friend = {
-    id: 'friend-1',
-    line_user_id: 'U-existing',
-    display_name: '山田花子',
-    picture_url: null,
-    status_message: null,
-    is_following: 1,
-    user_id: null,
-    line_account_id: null,
-    metadata: '{}',
-    first_tracked_link_id: null,
-    created_at: '2026-07-20T00:00:00+09:00',
-    updated_at: '2026-07-20T00:00:00+09:00',
-  };
-
-  function messageDb(autoReplies: unknown[] = []): D1Database {
-    return {
-      prepare: vi.fn(() => {
-        const statement = {
-          bind: vi.fn(),
-          run: vi.fn().mockResolvedValue({}),
-          all: vi.fn().mockResolvedValue({ results: autoReplies }),
-          first: vi.fn().mockResolvedValue(null),
-        };
-        statement.bind.mockReturnValue(statement);
-        return statement;
-      }),
-    } as unknown as D1Database;
-  }
-
-  async function dispatch(db: D1Database, event: Record<string, unknown>): Promise<void> {
-    vi.mocked(verifySignature).mockResolvedValue(true);
-    const executionCtx = {
-      waitUntil: vi.fn(),
-      passThroughOnException: vi.fn(),
-      props: {},
-    } as unknown as ExecutionContext;
-    const response = await setupApp().request(
-      '/webhook',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Line-Signature': 'A'.repeat(43) + '=' },
-        body: JSON.stringify({ destination: 'bot', events: [event] }),
-      },
-      { ...baseEnv, DB: db },
-      executionCtx,
-    );
-    expect(response.status).toBe(200);
-    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
-    await processing;
-  }
-
-  test('friend-add immediate scenario step sends the personalized renderer output', async () => {
-    lineClientMocks.getProfile.mockResolvedValue({ userId: 'U-existing', displayName: '山田花子' });
-    vi.mocked(upsertFriend).mockResolvedValue({ ...friend, ref_code: 'known-route' } as never);
-    vi.mocked(getEntryRouteByRefCode).mockResolvedValue(null);
-    vi.mocked(getScenarios).mockResolvedValue([{
-      id: 'scenario-1',
-      trigger_type: 'friend_add',
-      is_active: 1,
-      line_account_id: null,
-      delivery_mode: 'relative',
-    }] as never);
-    vi.mocked(enrollFriendInScenario).mockResolvedValue({ id: 'friend-scenario-1', status: 'active' } as never);
-    vi.mocked(getScenarioSteps).mockResolvedValue([{
-      id: 'step-1',
-      step_order: 0,
-      delay_minutes: 0,
-      on_reach_tag_id: null,
-    }] as never);
-    vi.mocked(computeNextDeliveryAt).mockReturnValue(new Date(0));
-    vi.mocked(resolveStepContent).mockResolvedValue({
-      messageType: 'text',
-      messageContent: 'こんにちは {{display_name}}さん 😊',
-      templateIdAtSend: null,
-    } as never);
-    vi.mocked(jstNow).mockReturnValue('2026-07-20T00:00:00.000+09:00');
-    personalizationMocks.renderFriendMessageContent.mockResolvedValueOnce('こんにちは 山田花子さん 😊');
-    const db = messageDb();
-
-    await dispatch(db, {
-      type: 'follow',
-      replyToken: 'reply-token',
-      timestamp: Date.now(),
-      source: { type: 'user', userId: 'U-existing' },
-      webhookEventId: 'event-follow',
-      deliveryContext: { isRedelivery: false },
-      mode: 'active',
-    });
-
-    expect(personalizationMocks.renderFriendMessageContent).toHaveBeenCalledWith(
-      'こんにちは {{display_name}}さん 😊',
-      null,
-      db,
-      expect.objectContaining({ id: 'friend-1', display_name: '山田花子' }),
-      {},
-    );
-    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [{
-      type: 'text',
-      text: 'こんにちは 山田花子さん 😊',
-    }]);
-  });
-
-  test('postback auto-reply sends the personalized renderer output', async () => {
-    vi.mocked(getFriendByLineUserId).mockResolvedValue(friend);
-    personalizationMocks.renderFriendMessageContent.mockResolvedValueOnce('山田花子さん、確認しました ✅');
-    vi.mocked(jstNow).mockReturnValue('2026-07-20T00:00:00.000+09:00');
-    const db = messageDb([{
-      id: 'auto-1',
-      keyword: 'confirm',
-      match_type: 'exact',
-      response_type: 'text',
-      response_content: '{{display_name}}さん、確認しました ✅',
-      template_id: null,
-    }]);
-
-    await dispatch(db, {
-      type: 'postback',
-      replyToken: 'reply-token',
-      postback: { data: 'confirm' },
-      timestamp: Date.now(),
-      source: { type: 'user', userId: 'U-existing' },
-      webhookEventId: 'event-postback',
-      deliveryContext: { isRedelivery: false },
-      mode: 'active',
-    });
-
-    expect(personalizationMocks.renderFriendMessageContent).toHaveBeenCalledWith(
-      '{{display_name}}さん、確認しました ✅',
-      null,
-      db,
-      expect.objectContaining({ id: 'friend-1' }),
-      {},
-    );
-    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [{
-      type: 'text',
-      text: '山田花子さん、確認しました ✅',
-    }]);
-  });
-});
-
 describe('POST /webhook — FAQ bot flag gate', () => {
   function existingFriend() {
     vi.mocked(getFriendByLineUserId).mockResolvedValue({
@@ -603,36 +443,6 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
-  test('text auto-reply sends the personalized renderer output with emoji intact', async () => {
-    personalizationMocks.renderFriendMessageContent.mockResolvedValueOnce('こんにちは Existing Friend 😊');
-    const { db } = await postTextWebhook(
-      {},
-      'あいさつ',
-      [{
-        id: 'auto-personalized',
-        keyword: 'あいさつ',
-        match_type: 'exact',
-        response_type: 'text',
-        response_content: 'こんにちは {{display_name}} 😊',
-        template_id: null,
-        is_active: 1,
-        created_at: '2026-07-20T00:00:00+09:00',
-      }],
-    );
-
-    expect(personalizationMocks.renderFriendMessageContent).toHaveBeenCalledWith(
-      'こんにちは {{display_name}} 😊',
-      null,
-      db,
-      expect.objectContaining({ id: 'friend-1', display_name: 'Existing Friend' }),
-      {},
-    );
-    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [{
-      type: 'text',
-      text: 'こんにちは Existing Friend 😊',
-    }]);
-  });
-
   test('FAQ hit consumes reply token and keeps the chat out of unread inbox', async () => {
     vi.mocked(tryFaqReply).mockResolvedValue({ replied: true, handoff: false });
 
@@ -732,21 +542,9 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     );
     vi.mocked(isWithinBusinessHours).mockReturnValue(false);
 
-    personalizationMocks.renderFriendMessageContent.mockResolvedValueOnce('Existing Friendさん、ただいま営業時間外です 🌙');
-
     const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' });
 
     expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
-    expect(personalizationMocks.renderFriendMessageContent).toHaveBeenCalledWith(
-      'ただいま営業時間外です',
-      null,
-      db,
-      expect.objectContaining({ id: 'friend-1' }),
-    );
-    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [{
-      type: 'text',
-      text: 'Existing Friendさん、ただいま営業時間外です 🌙',
-    }]);
     expect(tryFaqReply).not.toHaveBeenCalled();
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
     expect(fireEvent).toHaveBeenCalledWith(

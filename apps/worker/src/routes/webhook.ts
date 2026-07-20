@@ -24,7 +24,6 @@ import {
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
-import { renderFriendMessageContent } from '../services/render-message.js';
 import { createFaqAiRuntime, type FaqAiRuntime } from '../services/llm/runtime.js';
 import type { Env } from '../index.js';
 
@@ -291,8 +290,7 @@ async function handleEvent(
                 const resolved = await resolveStepContent(db, firstStep);
                 const { resolveMetadata } = await import('../services/step-delivery.js');
                 const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-                const legacyExpandedContent = expandVariables(resolved.messageContent, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1]);
-                const expandedContent = await renderFriendMessageContent(legacyExpandedContent, null, db, friend, resolvedMeta);
+                const expandedContent = expandVariables(resolved.messageContent, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1]);
                 const message = buildMessage(resolved.messageType, expandedContent);
                 await lineClient.replyMessage(event.replyToken, [message]);
                 console.log(`Immediate delivery: sent step ${firstStep.id} to ${userId}`);
@@ -439,8 +437,7 @@ async function handleEvent(
             response_type: rule.response_type,
             response_content: rule.response_content,
           });
-          const legacyExpandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl);
-          const expandedContent = await renderFriendMessageContent(legacyExpandedContent, null, db, friend, resolvedMeta);
+          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl);
           const replyMsg = buildMessage(resolved.messageType, expandedContent);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
 
@@ -635,8 +632,7 @@ async function handleEvent(
         const awayText = (responseSchedule.awayMessage ?? '').trim();
         if (awayText) {
           try {
-            const expandedAwayText = await renderFriendMessageContent(awayText, null, db, friend);
-            const awayMsg = buildMessage('text', expandedAwayText);
+            const awayMsg = buildMessage('text', awayText);
             await lineClient.replyMessage(event.replyToken, [awayMsg]);
             replyTokenConsumed = true;
             matched = true;
@@ -646,7 +642,7 @@ async function handleEvent(
                 `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
                  VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'reply', 'auto_reply', ?)`,
               )
-              .bind(awayLogId, friend.id, expandedAwayText, jstNow())
+              .bind(awayLogId, friend.id, awayText, jstNow())
               .run();
           } catch (err) {
             console.error('Failed to send away message', err);
@@ -700,8 +696,7 @@ async function handleEvent(
             response_type: rule.response_type,
             response_content: rule.response_content,
           });
-          const legacyExpandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
-          const expandedContent = await renderFriendMessageContent(legacyExpandedContent, null, db, friend, resolvedMeta2);
+          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
           const replyMsg = buildMessage(resolved.messageType, expandedContent);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
           replyTokenConsumed = true;

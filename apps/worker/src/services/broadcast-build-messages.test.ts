@@ -59,6 +59,31 @@ describe('buildBroadcastMessages', () => {
     expect(out[1]).toEqual({ type: 'text', text: 'b L9' });
   });
 
+  it('keeps recipient variables literal in single broadcast while replacing liff_id', () => {
+    const single = bc({
+      message_type: 'text',
+      message_content: '{{display_name|お客様}} / {{field:会員ランク|未設定}} / {{liff_id}}',
+      messages: null,
+    });
+
+    expect(buildBroadcastMessages(single, 'LIFF-B')).toEqual([{
+      type: 'text',
+      text: '{{display_name|お客様}} / {{field:会員ランク|未設定}} / LIFF-B',
+    }]);
+  });
+
+  it('keeps recipient variables literal in combo broadcast elements', () => {
+    const messages = JSON.stringify([
+      { type: 'text', content: '{{display_name}} {{liff_id}}' },
+      { type: 'text', content: '{{field:会員ランク|未設定}} {{liff_id}}' },
+    ]);
+
+    expect(buildBroadcastMessages(bc({ messages }), 'LIFF-C')).toEqual([
+      { type: 'text', text: '{{display_name}} LIFF-C' },
+      { type: 'text', text: '{{field:会員ランク|未設定}} LIFF-C' },
+    ]);
+  });
+
   it('len5 OK', () => {
     const messages = JSON.stringify(Array.from({ length: 5 }, (_, i) => ({ type: 'text', content: `m${i}` })));
     expect(buildBroadcastMessages(bc({ messages }), null)).toHaveLength(5);
