@@ -105,6 +105,8 @@ function invalidFormat(label: string) {
   return { ok: false as const, error: `${label} の形式が正しくありません` };
 }
 
+const HTML_NUMBER_PATTERN = /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
 export function validateInternalFormAnswers(
   fields: InternalFormField[],
   input: InternalAnswerInput,
@@ -140,15 +142,16 @@ export function validateInternalFormAnswers(
       }
     }
 
-    if (value === '') {
-      answers[field.id] = '';
-      continue;
-    }
-
     if (field.type === 'number') {
+      if (value === '') continue;
+      if (!HTML_NUMBER_PATTERN.test(value)) return invalidFormat(field.label);
       const parsed = Number(value);
       if (!Number.isFinite(parsed)) return invalidFormat(field.label);
       answers[field.id] = parsed;
+      continue;
+    }
+    if (value === '') {
+      answers[field.id] = '';
       continue;
     }
     if (field.type === 'email') {
