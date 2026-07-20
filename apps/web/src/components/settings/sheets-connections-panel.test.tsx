@@ -76,6 +76,13 @@ describe('SheetsConnectionsPanel', () => {
     })
   })
 
+  test('uses readable small-text and primary-action contrast', () => {
+    render(<SheetsConnectionsPanel {...props({ connections: [] })} />)
+
+    expect(screen.getByTestId('sheets-empty').className).toContain('text-gray-600')
+    expect(screen.getByTestId('sheets-save').className).toContain('bg-[#087A39]')
+  })
+
   test('edit loads the saved values, locks form ID, and updates mutable settings', () => {
     const p = props()
     render(<SheetsConnectionsPanel {...p} />)

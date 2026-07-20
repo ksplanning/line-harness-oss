@@ -83,7 +83,7 @@ export default function SheetsConnectionsPanel({
       <section>
         <h2 className="mb-2 text-sm font-semibold text-gray-700">登録済みの接続</h2>
         {connections.length === 0 ? (
-          <div data-testid="sheets-empty" className="rounded-lg border border-gray-200 bg-white p-6 text-center text-sm text-gray-400">
+          <div data-testid="sheets-empty" className="rounded-lg border border-gray-200 bg-white p-6 text-center text-sm text-gray-600">
             まだ接続設定がありません。下の欄から最初の接続を登録してください。
           </div>
         ) : (
@@ -100,7 +100,7 @@ export default function SheetsConnectionsPanel({
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-gray-900">フォーム: {connection.formId}</p>
                       <p className="truncate text-xs text-gray-500">シート: {connection.sheetName}</p>
-                      <p className="truncate text-xs text-gray-400">ID: {connection.spreadsheetId}</p>
+                      <p className="truncate text-xs text-gray-600">ID: {connection.spreadsheetId}</p>
                       <p className="mt-1 text-xs text-gray-500">同期: {DIRECTION_LABELS[connection.syncDirection]}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -158,7 +158,7 @@ export default function SheetsConnectionsPanel({
       <section className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">
         <div>
           <h2 className="text-sm font-semibold text-gray-700">{editingId ? '接続設定を編集' : '接続設定を追加'}</h2>
-          <p className="mt-1 text-xs text-gray-400">
+          <p className="mt-1 text-xs text-gray-600">
             Google の秘密鍵はこの画面には入力しません。Worker secret にだけ保存します。
           </p>
         </div>
@@ -219,7 +219,7 @@ export default function SheetsConnectionsPanel({
             data-testid="sheets-save"
             disabled={!canSave}
             onClick={save}
-            className="rounded-lg bg-[#06C755] px-4 py-2 text-sm text-white disabled:opacity-50"
+            className="rounded-lg bg-[#087A39] px-4 py-2 text-sm text-white disabled:opacity-50"
           >
             {busy ? '保存中...' : editingId ? '変更を保存' : '接続を登録'}
           </button>
