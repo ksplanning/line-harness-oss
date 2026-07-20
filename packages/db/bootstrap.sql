@@ -1789,6 +1789,11 @@ CREATE TRIGGER trg_faq_personal_context_audit_no_delete
 BEFORE DELETE ON faq_personal_context_audit_log
 BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;
 
+CREATE TRIGGER trg_faq_personal_context_audit_no_replace
+BEFORE INSERT ON faq_personal_context_audit_log
+WHEN EXISTS (SELECT 1 FROM faq_personal_context_audit_log WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;
+
 CREATE TRIGGER trg_faq_personal_context_audit_no_update
 BEFORE UPDATE ON faq_personal_context_audit_log
 BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;

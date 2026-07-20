@@ -20,6 +20,11 @@ CREATE INDEX IF NOT EXISTS idx_faq_personal_context_audit_account_created
 CREATE INDEX IF NOT EXISTS idx_faq_personal_context_audit_friend_created
   ON faq_personal_context_audit_log (friend_id, created_at);
 
+CREATE TRIGGER IF NOT EXISTS trg_faq_personal_context_audit_no_replace
+BEFORE INSERT ON faq_personal_context_audit_log
+WHEN EXISTS (SELECT 1 FROM faq_personal_context_audit_log WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;
+
 CREATE TRIGGER IF NOT EXISTS trg_faq_personal_context_audit_no_update
 BEFORE UPDATE ON faq_personal_context_audit_log
 BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;

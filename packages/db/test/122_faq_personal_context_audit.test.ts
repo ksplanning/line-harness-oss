@@ -62,7 +62,7 @@ describe('migration 122 — FAQ personal-context audit log', () => {
     expect(columns).not.toContain('answers_json');
   });
 
-  test('監査行は append-only で更新・削除できない', () => {
+  test('監査行は append-only で更新・削除・同一ID置換できない', () => {
     raw.exec(migration);
     raw.prepare(
       `INSERT INTO faq_personal_context_audit_log
@@ -76,6 +76,14 @@ describe('migration 122 — FAQ personal-context audit log', () => {
     expect(() => raw.prepare(
       "DELETE FROM faq_personal_context_audit_log WHERE id = 'audit-1'",
     ).run()).toThrow(/append-only/);
+    expect(() => raw.prepare(
+      `INSERT OR REPLACE INTO faq_personal_context_audit_log
+         (id, line_account_id, friend_id)
+       VALUES ('audit-1', 'account-alpha', 'friend-beta')`,
+    ).run()).toThrow(/append-only/);
+    expect(raw.prepare(
+      "SELECT friend_id FROM faq_personal_context_audit_log WHERE id = 'audit-1'",
+    ).get()).toEqual({ friend_id: 'friend-alpha' });
   });
 
   test('migration を再適用しても既存監査行を保つ', () => {
