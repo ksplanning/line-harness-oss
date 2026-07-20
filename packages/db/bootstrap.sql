@@ -1134,10 +1134,31 @@ CREATE TABLE sheets_connections (
                   CHECK (conflict_clock = 'server_sequence'),
   config_version  INTEGER NOT NULL DEFAULT 1 CHECK (config_version >= 1),
   next_sync_sequence INTEGER NOT NULL DEFAULT 1 CHECK (next_sync_sequence >= 1),
+  friend_field_mappings_json TEXT NOT NULL DEFAULT '[]'
+                  CHECK (json_valid(friend_field_mappings_json) AND json_type(friend_field_mappings_json) = 'array'),
+  last_sync_at    TEXT,
+  last_sync_status TEXT NOT NULL DEFAULT 'idle'
+                  CHECK (last_sync_status IN ('idle', 'running', 'success', 'warning', 'error')),
+  last_sync_warning TEXT,
+  last_sync_error_code TEXT,
+  sync_lock_token TEXT,
+  sync_lock_expires_at TEXT,
   is_active       INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   deleted_at      TEXT
+);
+
+CREATE TABLE sheets_sync_audit_details (
+  id          TEXT PRIMARY KEY,
+  audit_id    TEXT NOT NULL REFERENCES sheets_sync_audit_log (id) ON DELETE RESTRICT,
+  actor       TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 320),
+  column_name TEXT NOT NULL CHECK (length(column_name) BETWEEN 1 AND 200),
+  old_value   TEXT,
+  new_value   TEXT,
+  source      TEXT NOT NULL CHECK (source IN ('webhook', 'polling', 'manual')),
+  change_kind TEXT NOT NULL CHECK (change_kind IN ('custom_field', 'identity_ignored', 'conflict')),
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE TABLE sheets_sync_audit_log (
@@ -1179,6 +1200,8 @@ CREATE TABLE sheets_sync_ledger (
   last_sync_direction TEXT NOT NULL CHECK (last_sync_direction IN ('to_sheets', 'from_sheets')),
   last_applied_sequence INTEGER NOT NULL CHECK (last_applied_sequence >= 1),
   version            INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  canonical_snapshot_json TEXT NOT NULL DEFAULT '{}'
+                     CHECK (json_valid(canonical_snapshot_json) AND json_type(canonical_snapshot_json) = 'object'),
   PRIMARY KEY (connection_id, record_key)
 );
 
@@ -1631,6 +1654,9 @@ CREATE UNIQUE INDEX idx_sheets_connections_active_form
 CREATE INDEX idx_sheets_sync_audit_connection
   ON sheets_sync_audit_log (connection_id, created_at);
 
+CREATE INDEX idx_sheets_sync_audit_details_parent
+  ON sheets_sync_audit_details (audit_id, created_at, id);
+
 CREATE UNIQUE INDEX idx_sheets_sync_audit_sequence
   ON sheets_sync_audit_log (connection_id, connection_version, apply_sequence);
 
@@ -1700,6 +1726,19 @@ CREATE TRIGGER trg_sheets_connections_orphan_deactivate
 AFTER UPDATE OF line_account_id ON sheets_connections
 WHEN NEW.line_account_id IS NULL AND NEW.is_active = 1
 BEGIN DELETE FROM sheets_sync_ledger WHERE connection_id = NEW.id; UPDATE sheets_connections SET is_active = 0, deleted_at = COALESCE(deleted_at, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')), updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') WHERE id = NEW.id; END;
+
+CREATE TRIGGER trg_sheets_sync_audit_details_no_delete
+BEFORE DELETE ON sheets_sync_audit_details
+BEGIN SELECT RAISE(ABORT, 'sheets_sync_audit_details is append-only'); END;
+
+CREATE TRIGGER trg_sheets_sync_audit_details_no_replace
+BEFORE INSERT ON sheets_sync_audit_details
+WHEN EXISTS (SELECT 1 FROM sheets_sync_audit_details WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'sheets_sync_audit_details is append-only'); END;
+
+CREATE TRIGGER trg_sheets_sync_audit_details_no_update
+BEFORE UPDATE ON sheets_sync_audit_details
+BEGIN SELECT RAISE(ABORT, 'sheets_sync_audit_details is append-only'); END;
 
 CREATE TRIGGER trg_sheets_sync_audit_no_delete
 BEFORE DELETE ON sheets_sync_audit_log

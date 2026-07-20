@@ -99,7 +99,8 @@
     "113_internal_form_submissions.sql",
     "114_sheets_connections.sql",
     "115_messages_log_delivery_type_test.sql",
+    "119_friend_ledger_sync.sql",
     "121_faq_bot_draft_defaults.sql"
   ],
-  "migrationCount": 100
+  "migrationCount": 101
 }
