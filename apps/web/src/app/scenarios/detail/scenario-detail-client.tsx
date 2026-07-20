@@ -10,6 +10,7 @@ import Header from '@/components/layout/header'
 import HelpPopover from '@/components/help/help-popover'
 import FlexPreviewComponent from '@/components/flex-preview'
 import ImageUploader from '@/components/shared/image-uploader'
+import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
 import { flexToModel } from '@/lib/flex-builder/from-flex'
 import type { BuilderModel } from '@/lib/flex-builder/types'
@@ -1041,12 +1042,11 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                         </div>
                       </div>
                     ) : (
-                      <textarea
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-                        rows={4}
+                      <PersonalizedTextEditor
+                        ariaLabel="ステップのメッセージ内容"
                         placeholder="メッセージ内容を入力..."
                         value={stepForm.messageContent}
-                        onChange={(e) => setStepForm({ ...stepForm, messageContent: e.target.value })}
+                        onChange={(messageContent) => setStepForm({ ...stepForm, messageContent })}
                       />
                     )}
                   </div>
