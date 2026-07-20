@@ -38,11 +38,18 @@ const { broadcasts } = await import('./broadcasts.js');
 type TestEnv = { Bindings: { DB: D1Database; WORKER_URL: string } };
 
 /** test-send の raw DB クエリ (test_recipients / friends / messages_log insert) に応答する stub。 */
-function makeDbStub(cfg: { testRecipients?: string[]; friends?: Array<{ id: string; line_user_id: string }> } = {}): D1Database {
+function makeDbStub(cfg: {
+  testRecipients?: string[];
+  friends?: Array<{ id: string; line_user_id: string }>;
+  account?: { channel_access_token: string; liff_id: string | null };
+} = {}): D1Database {
   return {
     prepare: (sql: string) => ({
       bind: (..._args: unknown[]) => ({
         async first<T>() {
+          if (sql.includes('FROM line_accounts') && sql.includes('is_active = 1')) {
+            return (cfg.account ?? { channel_access_token: 'tok', liff_id: null }) as T;
+          }
           if (sql.includes('test_recipients')) {
             return (cfg.testRecipients ? { value: JSON.stringify(cfg.testRecipients) } : null) as T;
           }

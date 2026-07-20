@@ -819,19 +819,19 @@ CREATE TABLE message_templates (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE messages_log (
-  id               TEXT PRIMARY KEY,
-  friend_id        TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
-  direction        TEXT NOT NULL CHECK (direction IN ('incoming', 'outgoing')),
-  message_type     TEXT NOT NULL,
-  content          TEXT NOT NULL,
-  broadcast_id     TEXT REFERENCES broadcasts (id) ON DELETE SET NULL,
-  scenario_step_id TEXT REFERENCES scenario_steps (id) ON DELETE SET NULL,
+CREATE TABLE "messages_log" (
+  id                  TEXT PRIMARY KEY,
+  friend_id           TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
+  direction           TEXT NOT NULL CHECK (direction IN ('incoming', 'outgoing')),
+  message_type        TEXT NOT NULL,
+  content             TEXT NOT NULL,
+  broadcast_id        TEXT REFERENCES broadcasts (id) ON DELETE SET NULL,
+  scenario_step_id    TEXT REFERENCES scenario_steps (id) ON DELETE SET NULL,
   template_id_at_send TEXT,
-  delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply', 'test')),
-  source           TEXT,
-  line_account_id  TEXT,
-  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+  delivery_type       TEXT CHECK (delivery_type IN ('push', 'reply', 'test')),
+  source              TEXT,
+  line_account_id     TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE TABLE notification_rules (
@@ -1212,6 +1212,17 @@ CREATE TABLE templates (
   updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE test_send_requests (
+  idempotency_key TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  source           TEXT NOT NULL,
+  request_payload  TEXT NOT NULL,
+  status           TEXT NOT NULL CHECK (status IN ('processing', 'completed')),
+  response_json    TEXT,
+  created_at       TEXT NOT NULL,
+  completed_at     TEXT
+);
+
 CREATE TABLE tracked_links (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -1463,7 +1474,7 @@ CREATE INDEX idx_lp_views_slug ON lp_views (lp_slug, viewed_at);
 
 CREATE INDEX idx_menus_account_sort ON menus (line_account_id, sort_order);
 
-CREATE INDEX idx_messages_log_broadcast_id ON messages_log(broadcast_id);
+CREATE INDEX idx_messages_log_broadcast_id ON messages_log (broadcast_id);
 
 CREATE INDEX idx_messages_log_created_at ON messages_log (created_at);
 
@@ -1548,6 +1559,9 @@ CREATE INDEX idx_template_pack_items_pack ON template_pack_items(pack_id, order_
 CREATE INDEX idx_template_packs_account ON template_packs(account_id);
 
 CREATE INDEX idx_templates_category ON templates (category);
+
+CREATE INDEX idx_test_send_requests_account_created
+  ON test_send_requests (line_account_id, created_at);
 
 CREATE INDEX idx_unmatched_account_created ON unmatched_questions(line_account_id, created_at);
 

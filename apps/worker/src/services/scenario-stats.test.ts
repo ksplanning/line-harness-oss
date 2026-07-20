@@ -5,20 +5,24 @@ import { computeScenarioStats } from './scenario-stats.js';
 function mockDb(handlers: {
   enrollment: { total: number; active_count: number; completed_count: number; paused_count: number };
   steps: Array<{ step_order: number; reached_count: number }>;
+  preparedSql?: string[];
 }): D1Database {
   return {
-    prepare: (sql: string) => ({
-      bind: () => ({
-        first: async () => {
-          if (sql.includes('FROM friend_scenarios')) return handlers.enrollment;
-          return null;
-        },
-        all: async () => {
-          if (sql.includes('FROM scenario_steps ss')) return { results: handlers.steps };
-          return { results: [] };
-        },
-      }),
-    }),
+    prepare: (sql: string) => {
+      handlers.preparedSql?.push(sql);
+      return {
+        bind: () => ({
+          first: async () => {
+            if (sql.includes('FROM friend_scenarios')) return handlers.enrollment;
+            return null;
+          },
+          all: async () => {
+            if (sql.includes('FROM scenario_steps ss')) return { results: handlers.steps };
+            return { results: [] };
+          },
+        }),
+      };
+    },
   } as unknown as D1Database;
 }
 
@@ -72,5 +76,20 @@ describe('computeScenarioStats', () => {
       'scenario-1',
     );
     expect(stats.steps).toEqual([{ stepOrder: 1, reachedCount: 0, reachRate: 0 }]);
+  });
+
+  it("delivery_type='test' は step 到達数へ含めない SQL 境界を持つ", async () => {
+    const preparedSql: string[] = [];
+    await computeScenarioStats(
+      mockDb({
+        enrollment: { total: 1, active_count: 1, completed_count: 0, paused_count: 0 },
+        steps: [{ step_order: 1, reached_count: 0 }],
+        preparedSql,
+      }),
+      'scenario-1',
+    );
+
+    const reachSql = preparedSql.find((sql) => sql.includes('FROM scenario_steps ss'));
+    expect(reachSql).toMatch(/ml\.delivery_type IS NULL OR ml\.delivery_type != 'test'/);
   });
 });

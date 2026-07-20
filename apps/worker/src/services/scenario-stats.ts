@@ -62,6 +62,7 @@ export async function computeScenarioStats(
          ON ml.scenario_step_id = ss.id
         AND ml.direction = 'outgoing'
         AND ml.source = 'scenario'
+        AND (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
        WHERE ss.scenario_id = ?
        GROUP BY ss.step_order
        ORDER BY ss.step_order ASC`,

@@ -133,7 +133,9 @@ profileRefresh.post('/api/admin/broadcasts/:id/reset-to-draft', async (c) => {
   const db = c.env.DB;
 
   const logged = await db
-    .prepare('SELECT COUNT(*) AS cnt FROM messages_log WHERE broadcast_id = ?')
+    .prepare(`SELECT COUNT(*) AS cnt FROM messages_log
+              WHERE broadcast_id = ?
+                AND (delivery_type IS NULL OR delivery_type != 'test')`)
     .bind(id)
     .first<{ cnt: number }>();
   if (!logged) {
@@ -255,7 +257,9 @@ profileRefresh.post('/api/admin/content-leak-check', async (c) => {
       SELECT DISTINCT f.id AS friend_id, ${idCol} AS ident_key
       FROM friends f
       INNER JOIN messages_log ml ON ml.friend_id = f.id
-      WHERE ml.direction = 'outgoing' AND ml.content LIKE ?
+      WHERE ml.direction = 'outgoing'
+        AND (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
+        AND ml.content LIKE ?
     )
     SELECT
       (SELECT COUNT(DISTINCT ident_key) FROM tag_friends) AS unique_in_tag,
@@ -304,6 +308,7 @@ profileRefresh.post('/api/admin/broadcast-coverage', async (c) => {
     LEFT JOIN messages_log ml
       ON ml.friend_id = f.id
       AND ml.direction = 'outgoing'
+      AND (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
       AND ml.content LIKE ?
     WHERE la.is_active = 1
     GROUP BY la.id, la.name
@@ -326,7 +331,9 @@ profileRefresh.post('/api/admin/broadcast-coverage', async (c) => {
       SELECT DISTINCT f.id AS friend_id, ${idCol} AS ident_key
       FROM friends f
       INNER JOIN messages_log ml ON ml.friend_id = f.id
-      WHERE ml.direction = 'outgoing' AND ml.content LIKE ?
+      WHERE ml.direction = 'outgoing'
+        AND (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
+        AND ml.content LIKE ?
     )
     SELECT
       (SELECT COUNT(DISTINCT ident_key) FROM all_following) AS unique_total,
@@ -354,7 +361,9 @@ profileRefresh.post('/api/admin/broadcast-coverage', async (c) => {
       SELECT DISTINCT f.id AS friend_id, ${idCol} AS ident_key
       FROM friends f
       INNER JOIN messages_log ml ON ml.friend_id = f.id
-      WHERE ml.direction = 'outgoing' AND ml.content LIKE ?
+      WHERE ml.direction = 'outgoing'
+        AND (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
+        AND ml.content LIKE ?
     )
     SELECT
       tf.line_account_id AS account_id,
@@ -410,7 +419,9 @@ profileRefresh.post('/api/admin/tag-remove-content-dups', async (c) => {
           SELECT DISTINCT ${idCol} AS ident_key
           FROM friends f
           INNER JOIN messages_log ml ON ml.friend_id = f.id
-          WHERE ml.direction = 'outgoing' AND ml.content LIKE ?
+          WHERE ml.direction = 'outgoing'
+            AND (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
+            AND ml.content LIKE ?
         )
         SELECT f.id FROM friends f
         WHERE ${idCol} IN (SELECT ident_key FROM received_idents)

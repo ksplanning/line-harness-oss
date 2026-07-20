@@ -8,17 +8,17 @@
  * 表示との一致を優先して据え置き (境界を作り変えない)。
  *
  * gate 判定: cap==null は常に通す (無制限 = 既定挙動不変 = 誤爆ゼロ)。cap!=null は
- * 「今月送信数 + 今回予定数 > cap」でブロック。test-send は delivery_type='test' で計測除外 = 自然に免除。
+ * 「今月送信数 + 今回予定数 > cap」でブロック。test-send も LINE push の消費なので計測する。
  */
 
 /**
  * 表示 (line-accounts.ts) と完全一致の「今月送信数」SQL (byte-identical・単一 source)。
- * outgoing かつ push 系 (delivery_type IS NULL OR 'push') かつ当月 1 日以降。account 帰属は
- * friends.line_account_id。delivery_type='test' は除外される (test-send は cap 対象外)。
+ * outgoing かつ push 系 (delivery_type IS NULL / 'push' / 'test') かつ当月 1 日以降。account 帰属は
+ * friends.line_account_id。reply のみ除外する。
  */
 export const MESSAGES_THIS_MONTH_SQL = `SELECT COUNT(*) as count FROM messages_log ml
              INNER JOIN friends f ON f.id = ml.friend_id
-             WHERE ml.direction = 'outgoing' AND (ml.delivery_type IS NULL OR ml.delivery_type = 'push') AND ml.created_at >= date('now', 'start of month') AND f.line_account_id = ?`;
+             WHERE ml.direction = 'outgoing' AND (ml.delivery_type IS NULL OR ml.delivery_type IN ('push', 'test')) AND ml.created_at >= date('now', 'start of month') AND f.line_account_id = ?`;
 
 /** 今月送信数 (表示 messagesThisMonth と同一式)。 */
 export async function getMessagesThisMonth(db: D1Database, accountId: string): Promise<number> {

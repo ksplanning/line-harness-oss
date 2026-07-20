@@ -16,7 +16,16 @@ import Database from 'better-sqlite3';
 import { describe, expect, test, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 
-vi.mock('@line-crm/line-sdk', () => ({ LineClient: class { constructor(public t: string) {} } }));
+const pushCalls = vi.hoisted(() => [] as Array<{ to: string; messages: unknown[] }>);
+vi.mock('@line-crm/line-sdk', () => ({
+  LineClient: class {
+    constructor(public t: string) {}
+    async pushMessage(to: string, messages: unknown[]) {
+      pushCalls.push({ to, messages });
+      return {};
+    }
+  },
+}));
 
 const { broadcasts } = await import('./broadcasts.js');
 
@@ -59,6 +68,7 @@ function app() {
 }
 
 beforeEach(() => {
+  pushCalls.length = 0;
   raw = new Database(':memory:');
   replayAll(raw);
   raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret) VALUES ('acc-1','ch-1','A','t','s')`).run();
@@ -66,11 +76,11 @@ beforeEach(() => {
 
 const IMG = '{"originalContentUrl":"https://x/a.jpg","previewImageUrl":"https://x/a.jpg"}';
 const base = { title: 'C案', targetType: 'all', lineAccountId: 'acc-1' };
-type PostResp = { data: { id: string; messageType: string; messageContent: string; messages: Array<{ type: string; content: string }> | null } };
+type PostResp = { data: { id: string; messageType: string; messageContent: string; altText?: string | null; messages: Array<{ type: string; content: string; altText?: string }> | null } };
 
 describe('POST /api/broadcasts combo messages', () => {
   test('messages len2 → 201, persists JSON + mirrors blocks[0] to message_type/content', async () => {
-    const messages = [{ type: 'image', content: IMG }, { type: 'text', content: 'せつめい' }];
+    const messages = [{ type: 'image', content: IMG, altText: 'IMG ALT' }, { type: 'text', content: 'せつめい' }];
     const res = await app().request('/api/broadcasts', {
       method: 'POST',
       body: JSON.stringify({ ...base, messageType: 'image', messageContent: IMG, messages }),
@@ -81,6 +91,7 @@ describe('POST /api/broadcasts combo messages', () => {
     // 先頭ミラー: message_type/content = blocks[0]。
     expect(body.data.messageType).toBe('image');
     expect(body.data.messageContent).toBe(IMG);
+    expect(body.data.altText).toBe('IMG ALT');
     // DB 直: messages JSON 永続 + message_content=blocks[0].content。
     const row = raw.prepare(`SELECT messages, message_type, message_content FROM broadcasts WHERE id=?`).get(body.data.id) as { messages: string; message_type: string; message_content: string };
     expect(JSON.parse(row.messages)).toHaveLength(2);
@@ -209,12 +220,44 @@ describe('POST /api/broadcasts/:id/test-send combo gate (F2)', () => {
     return (await res.json() as PostResp).data.id;
   }
 
-  test('combo 行への test-send → 400 fail-loud (先頭ブロックだけ送って owner を誤認させない)', async () => {
+  function configureTestRecipient(friendId = 'friend-self', accountId = 'acc-1') {
+    raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, line_account_id, is_following) VALUES (?, ?, ?, ?, 1)`)
+      .run(friendId, `U-${friendId}`, '自分', accountId);
+    raw.prepare(`INSERT INTO account_settings (id, line_account_id, key, value) VALUES (?, ?, 'test_recipients', ?)`)
+      .run(`setting-${accountId}`, accountId, JSON.stringify([friendId]));
+  }
+
+  test('combo 行の test-send は設定先にのみ全ブロックを順序どおり送る', async () => {
     const id = await createComboDraft();
-    const ts = await app().request(`/api/broadcasts/${id}/test-send`, { method: 'POST', body: JSON.stringify({}) });
+    configureTestRecipient();
+    const ts = await app().request(`/api/broadcasts/${id}/test-send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotencyKey: 'saved-combo-test-send' }),
+    });
+    expect(ts.status).toBe(200);
+    expect(pushCalls).toHaveLength(1);
+    expect(pushCalls[0].to).toBe('U-friend-self');
+    expect(pushCalls[0].messages).toHaveLength(2);
+    expect((pushCalls[0].messages[1] as { text: string }).text).toContain('a');
+    expect(raw.prepare(`SELECT friend_id, delivery_type, source, broadcast_id FROM messages_log`).all()).toEqual([
+      { friend_id: 'friend-self', delivery_type: 'test', source: 'test', broadcast_id: null },
+    ]);
+  });
+
+  test('壊れた設定の別アカウント友だちには送らない', async () => {
+    const id = await createComboDraft();
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret) VALUES ('acc-2','ch-2','B','t2','s2')`).run();
+    configureTestRecipient('friend-other', 'acc-2');
+    raw.prepare(`INSERT INTO account_settings (id, line_account_id, key, value) VALUES ('setting-corrupt', 'acc-1', 'test_recipients', ?)`)
+      .run(JSON.stringify(['friend-other']));
+    const ts = await app().request(`/api/broadcasts/${id}/test-send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotencyKey: 'saved-cross-account' }),
+    });
     expect(ts.status).toBe(400);
-    const body = await ts.json() as { error: string };
-    expect(body.error).toContain('組み合わせメッセージのテスト送信');
+    expect(pushCalls).toEqual([]);
   });
 
   test('single 行の test-send は combo gate を通過する (combo エラーは出ない)', async () => {
@@ -233,5 +276,28 @@ describe('POST /api/broadcasts/:id/test-send combo gate (F2)', () => {
     // len1 は真 combo (len>1) ではない → combo gate に当たらない (別 400 になり得るが combo メッセージは出ない)。
     const body = await ts.json() as { error?: string };
     expect(body.error ?? '').not.toContain('組み合わせメッセージのテスト送信');
+  });
+});
+
+describe('GET /api/broadcasts/:id/per-account-stats test-send isolation', () => {
+  test("delivery_type='test' は実配信数に混ぜない", async () => {
+    const created = await app().request('/api/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({ ...base, messageType: 'text', messageContent: 'stats' }),
+    });
+    const id = (await created.json() as PostResp).data.id;
+    raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, line_account_id, is_following) VALUES ('friend-stats', 'U-stats', '集計', 'acc-1', 1)`).run();
+    const insert = raw.prepare(
+      `INSERT INTO messages_log
+         (id, friend_id, direction, message_type, content, broadcast_id, delivery_type, source, line_account_id, created_at)
+       VALUES (?, 'friend-stats', 'outgoing', 'text', 'stats', ?, ?, ?, 'acc-1', '2026-07-20T00:00:00+09:00')`,
+    );
+    insert.run('log-push', id, 'push', 'broadcast');
+    insert.run('log-test', id, 'test', 'test');
+
+    const res = await app().request(`/api/broadcasts/${id}/per-account-stats`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<{ accountId: string; sent: number }> };
+    expect(body.data).toEqual([expect.objectContaining({ accountId: 'acc-1', sent: 1 })]);
   });
 });

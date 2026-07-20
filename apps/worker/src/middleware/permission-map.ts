@@ -97,6 +97,14 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('sender-presets'), feature: 'broadcast' },
   { test: prefix('response-schedules'), feature: 'broadcast' },
   { test: prefix('segments'), feature: 'broadcast' },
+  // Test-send permission follows the composer that supplied the draft.
+  // Body-only dispatch would force every scenario/template/booking operator to
+  // also hold broadcast permission, so the source is pinned in the path first.
+  { test: /^\/api\/test-sends\/(?:greeting|scenario)(?:\/|$)/, feature: 'scenario' },
+  { test: /^\/api\/test-sends\/entry_greeting(?:\/|$)/, feature: 'analytics' },
+  { test: /^\/api\/test-sends\/template_pack(?:\/|$)/, feature: 'template' },
+  { test: /^\/api\/test-sends\/reminder(?:\/|$)/, feature: 'booking' },
+  { test: prefix('test-sends'), feature: 'broadcast' },
 
   // ── 配信設定 (broadcast_settings) ──
   { test: prefix('account-settings'), feature: 'broadcast_settings' },

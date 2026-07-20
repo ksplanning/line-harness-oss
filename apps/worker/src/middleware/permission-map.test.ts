@@ -61,6 +61,12 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/api/message-templates')).toBe('template');
     expect(mapPathToFeature('/api/templates')).toBe('template');
     expect(mapPathToFeature('/api/account-settings/test-recipients')).toBe('broadcast_settings');
+    expect(mapPathToFeature('/api/test-sends/broadcast')).toBe('broadcast');
+    expect(mapPathToFeature('/api/test-sends/greeting')).toBe('scenario');
+    expect(mapPathToFeature('/api/test-sends/entry_greeting')).toBe('analytics');
+    expect(mapPathToFeature('/api/test-sends/scenario')).toBe('scenario');
+    expect(mapPathToFeature('/api/test-sends/template_pack')).toBe('template');
+    expect(mapPathToFeature('/api/test-sends/reminder')).toBe('booking');
     // H-3: /api/accounts/* は health.ts のシステム操作 = system_update (旧 account から是正)
     expect(mapPathToFeature('/api/accounts/x/health')).toBe('system_update');
     // harness-lp-hosting (T-A9): /api/lp/* = analytics 再利用。'links'/'line-accounts' に bleed しない。

@@ -10,6 +10,7 @@ import type { Broadcast as DbBroadcast, BroadcastMessageType, BroadcastTargetTyp
 import { LineClient } from '@line-crm/line-sdk';
 import { processBroadcastSend, buildMessage, processQueuedBroadcasts, countBroadcastRecipients } from '../services/broadcast.js';
 import { checkMonthlyCap } from '../services/monthly-cap.js';
+import { sendTestMessages, TestSendError } from '../services/test-send.js';
 import { computeDedupBroadcastPreview } from '../services/dedup-broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
@@ -59,6 +60,7 @@ function serializeBroadcast(row: DbBroadcast) {
     dedupPriority: parseJsonArray(r.dedup_priority),
     failedAccountIds: parseJsonArray(r.failed_account_ids),
     senderPresetId: (r.sender_preset_id as string | null) ?? null,
+    altText: (r.alt_text as string | null) ?? null,
     abTestId: (r.ab_test_id as string | null) ?? null,
     abVariant: (r.ab_variant as string | null) ?? null,
     messages: parseMessagesColumn(r.messages),
@@ -334,6 +336,8 @@ broadcasts.get('/api/broadcasts/:id/per-account-stats', async (c) => {
     }
 
     // sent 数: messages_log の line_account_id (送信時固定) で GROUP BY する。
+    // delivery_type='test' は実配信統計に混ぜない（旧ログが broadcast_id を
+    // 持っていても除外する防御条件）。
     // 旧データ (032 migration 前) は ml.line_account_id=NULL なので、その場合だけ
     // friends.line_account_id にフォールバックする (best-effort、現在のアカウント帰属で集計)。
     const placeholders = accountIds.map(() => '?').join(',');
@@ -342,6 +346,7 @@ broadcasts.get('/api/broadcasts/:id/per-account-stats', async (c) => {
        FROM messages_log ml
        INNER JOIN friends f ON f.id = ml.friend_id
        WHERE ml.broadcast_id = ? AND ml.direction = 'outgoing'
+         AND (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
          AND COALESCE(ml.line_account_id, f.line_account_id) IN (${placeholders})
        GROUP BY COALESCE(ml.line_account_id, f.line_account_id)`,
     ).bind(id, ...accountIds).all<{ account_id: string; sent: number }>();
@@ -511,7 +516,12 @@ broadcasts.post('/api/broadcasts', async (c) => {
         .bind(...binds).run();
     }
 
-    return c.json({ success: true, data: serializeBroadcast(broadcast) }, 201);
+    // line_account_id / alt_text are applied by the compatibility update
+    // above, so re-read before serializing instead of returning stale nulls.
+    const savedBroadcast = updates.length > 0
+      ? await getBroadcastById(c.env.DB, broadcast.id)
+      : broadcast;
+    return c.json({ success: true, data: serializeBroadcast(savedBroadcast ?? broadcast) }, 201);
   } catch (err) {
     console.error('POST /api/broadcasts error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -721,7 +731,7 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
 
     // G2 entry pre-check: 送信入口で月次上限を即時確認 (UX 拒否)。真の送信点 (executor) にも
     // authoritative gate があるが、ここで早く弾いて owner に伝える。cap=null は常に通す (誤爆ゼロ)。
-    // test-send はこの route を通らないため免除。実 multicast は一切叩かずに 429 で止める。
+    // test-send は別 route で同じ cap を確認する。実 multicast は一切叩かずに 429 で止める。
     {
       const entryAccountId = (existing as unknown as Record<string, unknown>).line_account_id as string | null;
       const pending = await countBroadcastRecipients(c.env.DB, existing);
@@ -730,7 +740,7 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
         if (!cap.allowed) {
           return c.json({
             success: false,
-            error: `今月の配信上限に達しています (今月${cap.count} / 上限${cap.cap} 通)。上限を変えるか来月までお待ちください。テスト送信は上限の対象外です。`,
+            error: `今月の配信上限に達しています (今月${cap.count} / 上限${cap.cap} 通)。上限を変えるか来月までお待ちください。テスト送信も上限の対象です。`,
             capBlocked: true,
             cap: { count: cap.count, cap: cap.cap, pending },
           }, 429);
@@ -908,7 +918,7 @@ broadcasts.post('/api/broadcasts/:id/send-segment', async (c) => {
         if (!cap.allowed) {
           return c.json({
             success: false,
-            error: `今月の配信上限に達しています (今月${cap.count} / 上限${cap.cap} 通)。上限を変えるか来月までお待ちください。テスト送信は上限の対象外です。`,
+            error: `今月の配信上限に達しています (今月${cap.count} / 上限${cap.cap} 通)。上限を変えるか来月までお待ちください。テスト送信も上限の対象です。`,
             capBlocked: true,
             cap: { count: cap.count, cap: cap.cap, pending },
           }, 429);
@@ -1129,7 +1139,9 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', async (c) => {
   }
 });
 
-// POST /api/broadcasts/:id/test-send — send to test recipients with 【テスト配信】 label
+// POST /api/broadcasts/:id/test-send — saved-draft compatibility adapter.
+// Recipient resolution, cap accounting, rendering, logging and idempotency all
+// stay in the same fail-closed service used by the unsaved composer UIs.
 broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
   const id = c.req.param('id');
   try {
@@ -1138,79 +1150,59 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
     if (broadcast.status !== 'draft') {
       return c.json({ success: false, error: 'Only draft broadcasts can be test-sent' }, 400);
     }
-    // [F2] combo (messages 配列 length > 1) の test-send は現状未対応。従来の単発 buildMessage 経路は先頭
-    // ブロックだけを送るため、owner が combo プレビューで踏むと「1通目しか届かない」silent 事故になる。単発
-    // 送信して誤認させるより fail-loud で 400 明示する (excluded_scope: 予約発火のテスト送信は owner 判断 /
-    // 組み合わせのプレビュー・テスト送信は Batch 2 UI で配線する)。combo 判定は「messages 配列 length > 1」=
-    // null/len1(単発・legacy・実質 single) は従来経路へ通す (line-combo-iscombo-fix)。len1 は先頭ミラー
-    // (=messages[0]) を送るため単発と同一の内容が正しく届く。
-    const testSendBlocks = parseMessagesColumn(broadcast.messages);
-    if (testSendBlocks !== null && testSendBlocks.length > 1) {
-      return c.json(
-        { success: false, error: '組み合わせメッセージのテスト送信は現在未対応です（組み合わせ配信の対応は次のアップデートで行います）。' },
-        400,
-      );
-    }
-
     const raw = broadcast as unknown as Record<string, unknown>;
     const accountId = raw.line_account_id as string | null;
     if (!accountId) return c.json({ success: false, error: 'Broadcast has no line_account_id' }, 400);
 
-    // Get test recipients
-    const setting = await c.env.DB.prepare(
-      `SELECT value FROM account_settings WHERE line_account_id = ? AND key = 'test_recipients'`
-    ).bind(accountId).first<{ value: string }>();
-    if (!setting) return c.json({ success: false, error: 'No test recipients configured' }, 400);
-
-    const friendIds: string[] = JSON.parse(setting.value);
-    if (friendIds.length === 0) return c.json({ success: false, error: 'No test recipients configured' }, 400);
-
-    const placeholders = friendIds.map(() => '?').join(',');
-    const friends = await c.env.DB.prepare(
-      `SELECT id, line_user_id FROM friends WHERE id IN (${placeholders})`
-    ).bind(...friendIds).all<{ id: string; line_user_id: string }>();
-
-    const account = await getLineAccountById(c.env.DB, accountId);
-    if (!account) return c.json({ success: false, error: 'LINE account not found' }, 400);
-    const lineClient = new LineClient(account.channel_access_token);
-
-    // Build message with test label
-    let messageContent = broadcast.message_content;
-    if (broadcast.message_type === 'text') {
-      messageContent = `【テスト配信】\n${messageContent}`;
-    }
-
-    // Auto-track URLs
-    const { autoTrackContent } = await import('../services/auto-track.js');
-    const tracked = await autoTrackContent(c.env.DB, broadcast.message_type, messageContent, c.env.WORKER_URL);
-
-    const { extractFlexAltText } = await import('../utils/flex-alt-text.js');
-    const altText = raw.alt_text as string || (tracked.messageType === 'flex' ? extractFlexAltText(tracked.content) : undefined);
-    // 送信時に sender_preset_id → sender_presets (account-scoped) から name/iconUrl を解決して付与。
-    // client の生 sender は一切信用しない (なりすまし防止・G25)。
-    const sender = await resolveSenderForBroadcast(c.env.DB, raw.sender_preset_id as string | null, accountId);
-    const message = buildMessage(tracked.messageType, tracked.content, altText, sender);
-
-    let sent = 0;
-    let failed = 0;
-    const now = new Date(Date.now() + 9 * 60 * 60_000).toISOString().replace('Z', '+09:00');
-
-    for (const friend of friends.results) {
+    let requestBody: { idempotencyKey?: unknown } = {};
+    if (c.req.header('content-type')?.includes('application/json')) {
       try {
-        await lineClient.pushMessage(friend.line_user_id, [message]);
-        sent++;
-        await c.env.DB.prepare(
-          `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, delivery_type, source, created_at)
-           VALUES (?, ?, 'outgoing', ?, ?, NULL, 'test', 'broadcast', ?)`
-        ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, messageContent, now).run();
-      } catch (err) {
-        console.error(`Test send to ${friend.id} failed:`, err);
-        failed++;
+        requestBody = await c.req.json<{ idempotencyKey?: unknown }>();
+      } catch {
+        return c.json({ success: false, error: 'Invalid JSON body' }, 400);
       }
     }
+    const idempotencyKey = typeof requestBody.idempotencyKey === 'string'
+      && requestBody.idempotencyKey.length >= 8
+      && requestBody.idempotencyKey.length <= 128
+      ? requestBody.idempotencyKey
+      : crypto.randomUUID();
 
-    return c.json({ success: true, sent, failed });
+    const storedBlocks = parseMessagesColumn(raw.messages);
+    const messages = storedBlocks && storedBlocks.length > 0
+      ? storedBlocks.map((block) => ({
+        type: block.type,
+        content: block.content,
+        ...(typeof block.altText === 'string' ? { altText: block.altText } : {}),
+      }))
+      : [{
+        type: broadcast.message_type,
+        content: broadcast.message_content,
+        ...(typeof raw.alt_text === 'string' ? { altText: raw.alt_text } : {}),
+      }];
+
+    // Server-side account-scoped sender resolution keeps the saved-broadcast
+    // compatibility endpoint behavior without trusting a raw client sender.
+    const sender = await resolveSenderForBroadcast(c.env.DB, raw.sender_preset_id as string | null, accountId);
+    const result = await sendTestMessages({
+      db: c.env.DB,
+      accountId,
+      source: 'broadcast',
+      messages,
+      idempotencyKey,
+      workerUrl: c.env.WORKER_URL,
+      sender,
+    });
+    return c.json({ success: true, ...result });
   } catch (err) {
+    if (err instanceof TestSendError) {
+      if (err.status === 429) {
+        return c.json({ success: false, error: err.message, capBlocked: true, cap: err.cap }, 429);
+      }
+      if (err.status === 404) return c.json({ success: false, error: err.message }, 404);
+      if (err.status === 409) return c.json({ success: false, error: err.message }, 409);
+      if (err.status === 400) return c.json({ success: false, error: err.message }, 400);
+    }
     console.error('POST /api/broadcasts/:id/test-send error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }

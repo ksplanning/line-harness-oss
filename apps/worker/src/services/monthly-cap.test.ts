@@ -1,7 +1,7 @@
 /**
  * T-C6 / D-4 (F2 batch4 G2) — 月次上限 helper の計測式と gate 判定を実 SQLite で検証。
  *  - MESSAGES_THIS_MONTH_SQL が表示 (line-accounts.ts) と同一式 (byte-identical・単一 source)
- *  - getMessagesThisMonth: outgoing push のみ・当月のみ・delivery_type='test' は除外 (test-send 免除)
+ *  - getMessagesThisMonth: outgoing push/test のみ・当月のみ (test-send も LINE push 消費として計上)
  *  - checkMonthlyCap: cap=null は常に allowed (誤爆ゼロ) / count+pending>cap でブロック
  */
 import { readFileSync, readdirSync } from 'node:fs';
@@ -53,7 +53,7 @@ beforeEach(() => {
     raw.prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, delivery_type, source, created_at) VALUES (?, 'f1', ?, 'text', 'x', ?, 'broadcast', ?)`).run(id, dir, dt, created);
   ins('m1', 'outgoing', 'push', THIS_MONTH); // 数える
   ins('m2', 'outgoing', null, THIS_MONTH);   // 数える (push 相当)
-  ins('m3', 'outgoing', 'test', THIS_MONTH);  // test-send = 除外
+  ins('m3', 'outgoing', 'test', THIS_MONTH);  // test-send も数える
   ins('m4', 'outgoing', 'reply', THIS_MONTH); // reply = 除外
   ins('m5', 'incoming', null, THIS_MONTH);    // incoming = 除外
   ins('m6', 'outgoing', 'push', '2020-01-01T00:00:00.000+09:00'); // 先月以前 = 除外
@@ -62,15 +62,15 @@ beforeEach(() => {
 describe('MESSAGES_THIS_MONTH_SQL (byte-identical with display)', () => {
   test('contains the exact display clauses (single source)', () => {
     expect(MESSAGES_THIS_MONTH_SQL).toContain("ml.direction = 'outgoing'");
-    expect(MESSAGES_THIS_MONTH_SQL).toContain("(ml.delivery_type IS NULL OR ml.delivery_type = 'push')");
+    expect(MESSAGES_THIS_MONTH_SQL).toContain("(ml.delivery_type IS NULL OR ml.delivery_type IN ('push', 'test'))");
     expect(MESSAGES_THIS_MONTH_SQL).toContain("ml.created_at >= date('now', 'start of month')");
     expect(MESSAGES_THIS_MONTH_SQL).toContain('f.line_account_id = ?');
   });
 });
 
 describe('getMessagesThisMonth', () => {
-  test('counts only outgoing push this month (test/reply/incoming/old excluded)', async () => {
-    expect(await getMessagesThisMonth(db, 'acc-1')).toBe(2); // m1 + m2
+  test('counts outgoing push and test this month (reply/incoming/old excluded)', async () => {
+    expect(await getMessagesThisMonth(db, 'acc-1')).toBe(3); // m1 + m2 + m3
   });
 });
 
@@ -95,8 +95,8 @@ describe('checkMonthlyCap gate', () => {
     raw.prepare(`UPDATE line_accounts SET monthly_cap = 10 WHERE id='acc-1'`).run();
     const r = await checkMonthlyCap(db, 'acc-1', 5); // 2 + 5 = 7 <= 10
     expect(r.allowed).toBe(true);
-    expect(r.count).toBe(2);
-    expect(r.remaining).toBe(8);
+    expect(r.count).toBe(3);
+    expect(r.remaining).toBe(7);
   });
 
   test('count + pending > cap → blocked', async () => {

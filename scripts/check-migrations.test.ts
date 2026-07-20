@@ -152,6 +152,10 @@ ALTER TABLE broadcasts_new RENAME TO broadcasts;`;
     expect(DOCUMENTED_REBUILD_EXCEPTIONS.has('054_broadcasts_message_type_expand.sql')).toBe(true);
   });
 
+  it('115 messages_log CHECK widen is registered as a documented exception', () => {
+    expect(DOCUMENTED_REBUILD_EXCEPTIONS.has('115_messages_log_delivery_type_test.sql')).toBe(true);
+  });
+
   it('waives DROP TABLE / RENAME TABLE only when the exempt filename is passed', () => {
     expect(checkMigration(rebuildSql, '054_broadcasts_message_type_expand.sql')).toEqual({ ok: true });
     // full path も basename で判定される。
