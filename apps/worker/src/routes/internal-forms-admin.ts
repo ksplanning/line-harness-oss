@@ -167,8 +167,9 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/render-backend', async (c) => 
   }
 });
 
-// These routes mutate Formaloo or its D1 mirror. Internal forms must never fall
+// These routes depend on Formaloo or its D1 mirror. Internal forms must never fall
 // through to them, while Formaloo forms continue to the existing handlers byte-for-byte.
+internalFormsAdmin.get('/api/forms-advanced/:id/export.csv', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/reapply-hosted', rejectInternalFormalooMutation);
 internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/import', rejectInternalFormalooMutation);

@@ -346,6 +346,7 @@ describe('internal hosting provider boundary', () => {
   });
 
   test.each([
+    ['GET', '/api/forms-advanced/internal-form/export.csv', undefined],
     ['POST', '/api/forms-advanced/internal-form/reapply-hosted', undefined],
     ['PATCH', '/api/forms-advanced/internal-form/rows/formaloo-sub', { answers: { name: '変更' } }],
     ['POST', '/api/forms-advanced/internal-form/import', { csv: 'name\n一郎' }],
@@ -397,6 +398,7 @@ describe('auth, permission, and Formaloo passthrough regression', () => {
     '/api/forms-advanced/formaloo-form/rows/formaloo-sub',
     '/api/forms-advanced/formaloo-form/stats',
     '/api/forms-advanced/formaloo-form/share',
+    '/api/forms-advanced/formaloo-form/export.csv',
   ])('formaloo response status/body is identical with the pre-router: %s', async (path) => {
     seedForm('formaloo-form', 'formaloo');
     seedFormalooSubmission('formaloo-sub', 'formaloo-form');
