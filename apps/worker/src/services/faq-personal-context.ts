@@ -184,8 +184,22 @@ function labelForAnswer(
   const mapping = mappings.find((item) => (
     item.formId === formId && (item.fieldId === key || item.fieldSlug === key)
   ));
-  const label = sanitizePersonalText(mapping?.label || key);
+  // Formaloo stores hidden system values (including the signed fr_id token)
+  // under provider-generated opaque slugs. Raw answer keys therefore are not a
+  // safe label fallback: only fields present in our explicit form map may leave
+  // the assemble boundary.
+  if (!mapping) return null;
+  const label = sanitizePersonalText(mapping.label);
   return isSafeFieldName(label) ? label : null;
+}
+
+function containsFriendIdentityToken(value: unknown, friendId: string): boolean {
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized === friendId || normalized.startsWith(`${friendId}.`);
+  }
+  return Array.isArray(value)
+    && value.some((item) => containsFriendIdentityToken(item, friendId));
 }
 
 function formCandidate(
@@ -196,6 +210,7 @@ function formCandidate(
   const answers = parseObjectJson(submission.answersJson);
   const summary = Object.entries(answers)
     .flatMap(([key, rawValue]) => {
+      if (containsFriendIdentityToken(rawValue, submission.friendId)) return [];
       const label = labelForAnswer(mappings, submission.formId, key);
       const value = formatValue(rawValue);
       return label && value ? [`${label}: ${value}`] : [];

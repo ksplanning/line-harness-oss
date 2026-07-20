@@ -108,6 +108,41 @@ describe('assembleFaqPersonalContextData', () => {
     expect(context?.audit.internalSubmissionCount).toBe(1);
   });
 
+  test('Formalooの不透明slugに入った署名fr_idは古いmappingがあっても含めない', () => {
+    const data = fixture();
+    data.formalooSubmissions[0] = {
+      ...data.formalooSubmissions[0],
+      answersJson: JSON.stringify({
+        payment: '済',
+        RUEBj39b: 'friend-a.REPLAYABLE-HMAC-MARKER',
+        fr_id: 'OTHER-IDENTITY-MARKER',
+      }),
+    };
+    data.fieldMappings.push({
+      formId: 'form-a',
+      fieldId: 'stale-hidden-field',
+      fieldSlug: 'RUEBj39b',
+      label: '受付コード',
+    });
+    data.fieldMappings.push({
+      formId: 'form-a',
+      fieldId: 'stale-literal-hidden-field',
+      fieldSlug: 'fr_id',
+      label: '受付番号',
+    });
+
+    const context = assembleFaqPersonalContextData(data, {
+      friendId: 'friend-a',
+      lineAccountId: 'account-a',
+      settings: DEFAULT_FAQ_PERSONAL_CONTEXT_SETTINGS,
+    });
+
+    expect(context?.text).toContain('入金確認: 済');
+    expect(context?.text).not.toContain('RUEBj39b');
+    expect(context?.text).not.toContain('REPLAYABLE-HMAC-MARKER');
+    expect(context?.text).not.toContain('OTHER-IDENTITY-MARKER');
+  });
+
   test('返却行に別人 friend_id が1件でもあれば全注入を破棄する', () => {
     const data = fixture();
     data.internalSubmissions[0] = {
