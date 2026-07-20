@@ -1,0 +1,233 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
+import { Hono } from 'hono';
+import { jstNow } from '@line-crm/db';
+import { authMiddleware } from '../middleware/auth.js';
+import { permissionMiddleware } from '../middleware/permission-middleware.js';
+import { sheetsConnections } from './sheets-connections.js';
+import type { Env } from '../index.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DB_ROOT = join(__dirname, '../../../../packages/db');
+const OWNER = 'Bearer env-owner-key';
+
+let raw: Database.Database;
+let DB: D1Database;
+let serviceAccountJson: string;
+
+function d1(db: Database.Database): D1Database {
+  return {
+    prepare(sql: string) {
+      const statement = db.prepare(sql);
+      let params: unknown[] = [];
+      const api = {
+        bind(...args: unknown[]) { params = args; return api; },
+        async first<T>() { return (statement.get(...(params as never[])) as T) ?? null; },
+        async all<T>() { return { results: statement.all(...(params as never[])) as T[] }; },
+        async run() {
+          const result = statement.run(...(params as never[]));
+          return { meta: { changes: result.changes } };
+        },
+      };
+      return api;
+    },
+  } as unknown as D1Database;
+}
+
+function env(overrides: Record<string, unknown> = {}): Env['Bindings'] {
+  return {
+    DB,
+    IMAGES: {} as R2Bucket,
+    ASSETS: {} as Fetcher,
+    LINE_CHANNEL_SECRET: 's',
+    LINE_CHANNEL_ACCESS_TOKEN: 't',
+    API_KEY: 'env-owner-key',
+    LIFF_URL: 'https://liff.example.test',
+    LINE_CHANNEL_ID: 'c',
+    LINE_LOGIN_CHANNEL_ID: 'lc',
+    LINE_LOGIN_CHANNEL_SECRET: 'ls',
+    WORKER_URL: 'https://api.example.test',
+    GOOGLE_SERVICE_ACCOUNT_JSON: serviceAccountJson,
+    ...overrides,
+  } as unknown as Env['Bindings'];
+}
+
+function app() {
+  const instance = new Hono<Env>();
+  instance.use('*', authMiddleware);
+  instance.use('*', permissionMiddleware);
+  instance.route('/', sheetsConnections);
+  return instance;
+}
+
+function call(
+  method: string,
+  path: string,
+  body?: unknown,
+  auth = OWNER,
+  envOverrides: Record<string, unknown> = {},
+) {
+  return app().request(path, {
+    method,
+    headers: { Authorization: auth, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }, env(envOverrides));
+}
+
+function seedStaff(id: string, role: 'owner' | 'admin' | 'staff', apiKey: string): void {
+  const now = jstNow();
+  raw.prepare(
+    `INSERT INTO staff_members (id, name, email, role, api_key, is_active, created_at, updated_at)
+     VALUES (?, ?, NULL, ?, ?, 1, ?, ?)`,
+  ).run(id, id, role, apiKey, now, now);
+}
+
+const validInput = {
+  lineAccountId: 'acc-1',
+  formId: 'internal-form-1',
+  spreadsheetId: '1AbCd_ef-GhIj',
+  sheetName: '回答',
+  syncDirection: 'bidirectional',
+};
+
+async function createOne(): Promise<string> {
+  const response = await call('POST', '/api/integrations/google-sheets/connections', validInput);
+  expect(response.status).toBe(201);
+  return (await response.json() as { data: { id: string } }).data.id;
+}
+
+beforeAll(async () => {
+  const pair = await crypto.subtle.generateKey(
+    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+    true,
+    ['sign', 'verify'],
+  );
+  const base64 = Buffer.from(await crypto.subtle.exportKey('pkcs8', pair.privateKey)).toString('base64');
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${base64.match(/.{1,64}/g)?.join('\n')}\n-----END PRIVATE KEY-----\n`;
+  serviceAccountJson = JSON.stringify({
+    type: 'service_account',
+    client_email: 'sheets-test@example.iam.gserviceaccount.com',
+    private_key: privateKey,
+    token_uri: 'https://oauth2.googleapis.com/token',
+  });
+});
+
+beforeEach(() => {
+  raw = new Database(':memory:');
+  raw.pragma('foreign_keys = ON');
+  raw.exec(readFileSync(join(DB_ROOT, 'schema.sql'), 'utf8'));
+  raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+    VALUES ('acc-1', 'channel-1', 'A', 'token', 'secret'), ('acc-2', 'channel-2', 'B', 'token', 'secret')`).run();
+  DB = d1(raw);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  raw.close();
+});
+
+describe('Sheets connections CRUD API', () => {
+  test('all CRUD and connection-test endpoints are owner-only', async () => {
+    seedStaff('staff-1', 'staff', 'staff-key');
+    const auth = 'Bearer staff-key';
+    expect((await call('GET', '/api/integrations/google-sheets/connections?lineAccountId=acc-1', undefined, auth)).status).toBe(403);
+    expect((await call('POST', '/api/integrations/google-sheets/connections', validInput, auth)).status).toBe(403);
+    expect((await call('PATCH', '/api/integrations/google-sheets/connections/id', validInput, auth)).status).toBe(403);
+    expect((await call('DELETE', '/api/integrations/google-sheets/connections/id', undefined, auth)).status).toBe(403);
+    expect((await call('POST', '/api/integrations/google-sheets/connections/id/test', undefined, auth)).status).toBe(403);
+  });
+
+  test('create → list → patch → delete round-trip is account-scoped and soft-deleted', async () => {
+    const id = await createOne();
+    const list = await call('GET', '/api/integrations/google-sheets/connections?lineAccountId=acc-1');
+    expect(list.status).toBe(200);
+    expect(await list.json()).toMatchObject({ data: [{ id, ...validInput, conflictPolicy: 'last_write_wins' }] });
+    const other = await call('GET', '/api/integrations/google-sheets/connections?lineAccountId=acc-2');
+    expect((await other.json() as { data: unknown[] }).data).toEqual([]);
+
+    const updated = await call('PATCH', `/api/integrations/google-sheets/connections/${id}`, {
+      spreadsheetId: 'New_sheet-ID', sheetName: '集計', syncDirection: 'from_sheets',
+    });
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({ data: { id, spreadsheetId: 'New_sheet-ID', sheetName: '集計', syncDirection: 'from_sheets' } });
+
+    expect((await call('DELETE', `/api/integrations/google-sheets/connections/${id}`)).status).toBe(200);
+    expect((await call('PATCH', `/api/integrations/google-sheets/connections/${id}`, {
+      spreadsheetId: 'x', sheetName: 'x', syncDirection: 'to_sheets',
+    })).status).toBe(404);
+    expect(raw.prepare('SELECT is_active, deleted_at FROM sheets_connections WHERE id=?').get(id))
+      .toMatchObject({ is_active: 0, deleted_at: expect.any(String) });
+  });
+
+  test('validates account/form/spreadsheet/sheet/direction and rejects a duplicate active form', async () => {
+    const cases = [
+      { ...validInput, lineAccountId: 'missing' },
+      { ...validInput, formId: '' },
+      { ...validInput, spreadsheetId: 'https://docs.google.com/spreadsheets/d/id/edit' },
+      { ...validInput, sheetName: '' },
+      { ...validInput, syncDirection: 'sideways' },
+    ];
+    for (const input of cases) {
+      expect((await call('POST', '/api/integrations/google-sheets/connections', input)).status).toBe(400);
+    }
+    await createOne();
+    expect((await call('POST', '/api/integrations/google-sheets/connections', validInput)).status).toBe(409);
+  });
+});
+
+describe('Sheets connection test API', () => {
+  test('saved connection performs exactly one Sheets read and returns no cell values', async () => {
+    const id = await createOne();
+    const apiCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === 'https://oauth2.googleapis.com/token') {
+        return new Response(JSON.stringify({ access_token: 'ACCESS', expires_in: 3600 }), { status: 200 });
+      }
+      apiCalls.push(url);
+      return new Response(JSON.stringify({ range: '回答!A1', values: [['SENTINEL_CELL_VALUE']] }), { status: 200 });
+    }));
+
+    const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ success: true, data: { ok: true } });
+    expect(apiCalls).toHaveLength(1);
+    expect(apiCalls[0]).toContain('/spreadsheets/1AbCd_ef-GhIj/values/');
+    expect(apiCalls[0]).toContain('A1%3AA1');
+    expect(JSON.stringify(body)).not.toContain('SENTINEL_CELL_VALUE');
+  });
+
+  test('missing/invalid secret fails closed without echoing credentials', async () => {
+    const id = await createOne();
+    const missing = await call('POST', `/api/integrations/google-sheets/connections/${id}/test`, undefined, OWNER, {
+      GOOGLE_SERVICE_ACCOUNT_JSON: undefined,
+    });
+    expect(missing.status).toBe(503);
+    const sentinel = 'SENTINEL_PRIVATE_KEY';
+    const invalid = await call('POST', `/api/integrations/google-sheets/connections/${id}/test`, undefined, OWNER, {
+      GOOGLE_SERVICE_ACCOUNT_JSON: JSON.stringify({ private_key: sentinel }),
+    });
+    expect(invalid.status).toBe(503);
+    expect(JSON.stringify(await invalid.json())).not.toContain(sentinel);
+  });
+
+  test('Google API failure is a generic ok=false result and does not expose response body', async () => {
+    const id = await createOne();
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      if (String(input) === 'https://oauth2.googleapis.com/token') {
+        return new Response(JSON.stringify({ access_token: 'ACCESS', expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: 'SENTINEL_GOOGLE_BODY' }), { status: 403 });
+    }));
+    const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ success: true, data: { ok: false } });
+    expect(JSON.stringify(body)).not.toContain('SENTINEL_GOOGLE_BODY');
+  });
+});

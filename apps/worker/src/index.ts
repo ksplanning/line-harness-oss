@@ -112,6 +112,7 @@ import { templatePacks } from './routes/template-packs.js';
 import { richMenuAnalytics } from './routes/rich-menu-analytics.js';
 import { lp } from './routes/lp.js';
 import { postalLookup } from './routes/postal-lookup.js';
+import { sheetsConnections } from './routes/sheets-connections.js';
 
 export type Env = {
   Bindings: {
@@ -230,6 +231,9 @@ export type Env = {
     //   機能だけを緊急停止する kill-switch。未設定/其他 = 復元 ON (既定・reconcile が friend_id を fail-closed 復元)。
     //   'true' = friend_id 復元のみ停止 (reconcile のミラー充填・一覧表示は従来通り継続)。additive rollback。
     FORMALOO_RECONCILE_FRIEND_LINK_DISABLE?: string;
+    // Self-hosted Google Sheets: service-account JSON is supplied only through
+    // `wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON` (never a toml var).
+    GOOGLE_SERVICE_ACCOUNT_JSON?: string;
     // fr-id-capture-fix (T-C3/D-4): publish 経路の friend system hidden field (fr_id/fr_name) 冪等 auto-push の
     //   kill-switch。未設定/其他 = 有効 (既定・両テナント共通 publish で alias='fr_id'/'fr_name' の hidden field を
     //   冪等 ensure)。'1' = auto-push を短絡 (byte 同等 / rollback = Layer A land 済の現状へ完全復帰)。
@@ -373,6 +377,7 @@ app.route('/', postalLookup);
 // 登録されるため Hono 先勝ちで catch-all に食われない (T-A8)。admin (/api/lp/*) は authMiddleware +
 // permissionMiddleware ('analytics') で gate される。
 app.route('/', lp);
+app.route('/', sheetsConnections);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version
