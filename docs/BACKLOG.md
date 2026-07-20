@@ -758,7 +758,13 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 
 ## 自動応答まわりの owner 要望 (2026-07-21 04:4x 登録)
 - **自動応答センター統合 (改修・selfform 波の後に設計提示)**: 自動返信ルール/よくある質問/資料AI の3画面を「受付階層」1画面に統合 — ①機械ルール(安全弁・定型・エスカレーション) → ②AI回答(FAQ+資料=統合ナレッジ) → ③自信なし→人間へ(下書き)。owner 洞察「FAQもナレッジの一つ・機械ルールはナレッジではない(=安全弁)」を設計原則に。どの層で返ったかの可視化込み
-- **オートメーション画面の JSON 直書き → GUI 化**: owner 明示「一番最後も最後で良い」— 最低優先で登録 (イベント→アクションを日常語で組める picker 形式)
+- **✅ オートメーション画面の JSON 直書き → GUI 化 — 2026-07-21 closer で解消（下記 automation-rules-gui 節参照）**
+
+## automation-rules-gui — オートメーション JSON→GUI ビルダー化（2026-07-21 closer / ✅ status: completed）
+- **owner の「JSONで意味がわからない」を解消**: `/automations` に trigger→action の2段GUIビルダーを実装（全トリガー種別/全アクション種別を静的テストで網羅・`AUTOMATION_ACTION_DEFINITIONS` は `satisfies Record<AutomationActionType,…>` でコンパイル時網羅担保）。上級者向けJSON表示は読み取り専用で併存（無編集時は byte 不変・fingerprint pin `fnv1a32:74440fd9` で保証）。壊れた/未知形式JSONは silent 破壊せず正直に fail-safe 表示。worker実行系(automations.ts以外)は無改変(diff 0)。main HEAD `85b3e2d`(origin+piecemaker dual-push)。
+- **4面デプロイ**: ks worker Version `8a4909bb-576c-440f-88fa-ab2433300549` / ks admin hash `e86d5ed3`（VITE_LIFF_ID=1656331577-LBR4Xooz dist grep焼き込み確認）/ piecemaker worker Version `1b495952-2371-44b0-9ee0-e25e5ca7f070` / piecemaker admin hash `07295b87`（VITE_LIFF_ID=2010750380-zPyzob9G dist grep焼き込み確認）。4面 health 200。migration なし（既存 automations テーブル無改変）。
+- **deployed実機検証（piecemaker・API-key Bearer経由・使い捨てrule）**: GUIビルダーが呼ぶ実API (`POST/GET/PUT/DELETE /api/automations`) で「新規ルール作成→再読込で残存(fingerprint不変)→無編集で保存してもJSON byte-identical→既存の受信Webhook機構(`/api/webhooks/incoming/:id/receive`・HMAC署名)で発火→`/api/automations/:id/logs` に成功ログ1件(action=send_webhook success)」を2周実施し完全再現。`wrangler tail` の実ログで、automationのsend_webhookアクションが発火した実POSTリクエスト(marker一致・scriptVersion一致)を1回だけ捕捉、検証用の手動GET確認1回と合わせて計2件のみ(想定通り・二重発火なし)。LINE送信0件。撤収: 使い捨てrule・受信Webhookとも削除→404/一覧0件を確認、本番rules・本番3フォームは不接触。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_083000_automation-rules-gui.md`（Box working folder 386663013201）。
 
 ## selfform-w4-sheets-foundation — Google スプレッドシート連携の基盤（2026-07-21 closer / ✅ 2026-07-21 sheets-workers-oauth-fetch-fix closer で解消）
 - **やったこと**: WebCrypto JWT Sheets client / migration 114（sheets_connections・sheets_sync_ledger・sheets_sync_audit_log・additive）/ 接続設定ページ（`/settings/sheets`）/ owner 向け 10 分手順書（`docs/google-sheets-service-account-setup.md`）はコード完成・desk PASS 済み。closer が両テナント D1 へ migration 114 適用・Piecemaker worker へ実サービスアカウント鍵（`GOOGLE_SERVICE_ACCOUNT_JSON`）を投入・4 面デプロイ（health 200）・owner の実スプレッドシート（ID 提供済み）を接続設定として登録（LINE アカウント「お祝い夢花火」）。
