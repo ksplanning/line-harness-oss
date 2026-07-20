@@ -10,6 +10,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import SharePanel, { type SharePanelProps } from './share-panel'
 import type { ShareInfo } from '@/lib/formaloo-advanced-api'
+import type { SheetsConnection } from '@/lib/sheets-connections-api'
 
 afterEach(() => cleanup())
 
@@ -24,7 +25,25 @@ const PUBLISHED: ShareInfo = {
 }
 
 function base(overrides: Partial<SharePanelProps> = {}): SharePanelProps {
-  return { share: PUBLISHED, isOwner: true, onConnectSheets: vi.fn(), ...overrides }
+  return { share: PUBLISHED, renderBackend: 'formaloo', isOwner: true, onConnectSheets: vi.fn(), ...overrides }
+}
+
+const INTERNAL_CONNECTION: SheetsConnection = {
+  id: 'gsc_1',
+  lineAccountId: 'acc_A',
+  formId: 'fa1',
+  spreadsheetId: 'sheet_1',
+  sheetName: '回答一覧',
+  syncDirection: 'bidirectional',
+  conflictPolicy: 'last_write_wins',
+  friendFieldMappings: [],
+  friendLedgerEnabled: true,
+  lastSyncAt: '2026-07-21T10:00:00.000+09:00',
+  lastSyncStatus: 'success',
+  lastSyncWarning: null,
+  isActive: true,
+  createdAt: '2026-07-21T09:00:00.000+09:00',
+  updatedAt: '2026-07-21T10:00:00.000+09:00',
 }
 
 describe('SharePanel — 配布 URL 2 本 (T-A5 / 順方向)', () => {
@@ -100,5 +119,51 @@ describe('SharePanel — Sheets 再同期 (T-E1 / N-9 / admin-ui-cleanup D-2)', 
   it('share が null なら何も描画しない', () => {
     const { container } = render(<SharePanel {...base({ share: null })} />)
     expect(container.querySelector('[data-testid="share-panel"]')).toBeNull()
+  })
+})
+
+describe('SharePanel — 自前シート回答結合同期 (W4b)', () => {
+  it('internal 未接続は Formaloo 欄を出さず「設定 → シート連携」へ案内する', () => {
+    render(<SharePanel {...base({ renderBackend: 'internal', internalSheetConnection: null })} />)
+
+    expect(screen.queryByTestId('gsheet-sync-description')).toBeNull()
+    expect(screen.queryByTestId('gsheet-unconnected-note')).toBeNull()
+    expect(screen.queryByText(/Formaloo ダッシュボード/)).toBeNull()
+    expect(screen.queryByText('再同期する')).toBeNull()
+    expect(screen.getByTestId('internal-sheet-unconnected').textContent).toContain('未接続')
+    const settingsLink = screen.getByRole('link', { name: '設定 → シート連携' })
+    expect(settingsLink.getAttribute('href')).toBe('/settings/sheets')
+  })
+
+  it('internal 接続済みはシート名と回答結合同期ステータスを表示する', () => {
+    render(<SharePanel {...base({ renderBackend: 'internal', internalSheetConnection: INTERNAL_CONNECTION })} />)
+
+    expect(screen.getByTestId('internal-sheet-connected').textContent).toContain('回答一覧')
+    expect(screen.getByTestId('answer-join-sync-status').textContent).toContain('成功')
+    expect(screen.queryByText('再同期する')).toBeNull()
+  })
+
+  it('旧接続が友だち台帳同期へ未参加なら回答結合同期は設定が必要と表示する', () => {
+    render(<SharePanel {...base({
+      renderBackend: 'internal',
+      internalSheetConnection: { ...INTERNAL_CONNECTION, friendLedgerEnabled: false, lastSyncStatus: 'idle' },
+    })} />)
+
+    expect(screen.getByTestId('internal-sheet-connected').textContent).toContain('回答一覧')
+    expect(screen.getByTestId('answer-join-sync-status').textContent).toContain('設定が必要')
+  })
+
+  it('Formaloo は既存 Sheets subtree の文言と操作をそのまま維持する', () => {
+    const p = base({ renderBackend: 'formaloo' })
+    render(<SharePanel {...p} />)
+
+    expect(screen.getByTestId('gsheet-sync-description').textContent?.trim()).toBe(
+      'Formaloo で接続済みの Google スプレッドシートへ回答を再同期します。この画面から初回接続はできません。',
+    )
+    expect(screen.getByTestId('gsheet-unconnected-note').textContent?.trim()).toBe(
+      '未接続です。初回接続は Formaloo ダッシュボードで対象フォームを開き、「Google Sheets 連携」から設定してください。',
+    )
+    fireEvent.click(screen.getByText('再同期する'))
+    expect(p.onConnectSheets).toHaveBeenCalledTimes(1)
   })
 })

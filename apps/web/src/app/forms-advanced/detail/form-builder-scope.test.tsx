@@ -18,6 +18,7 @@ const setRenderBackendMock = vi.fn()
 const shareMock = vi.fn()
 const saveDefinitionMock = vi.fn()
 const saveInternalDefinitionMock = vi.fn()
+const sheetsListMock = vi.fn()
 const fetchApiMock = vi.fn()
 
 vi.mock('next/link', () => ({ default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a> }))
@@ -45,6 +46,11 @@ vi.mock('@/lib/formaloo-advanced-api', () => ({
     saveInternalDefinition: (...a: unknown[]) => saveInternalDefinitionMock(...a),
   },
 }))
+vi.mock('@/lib/sheets-connections-api', () => ({
+  sheetsConnectionsApi: {
+    list: (...a: unknown[]) => sheetsListMock(...a),
+  },
+}))
 vi.mock('@/lib/api', () => ({ fetchApi: (...a: unknown[]) => fetchApiMock(...a) }))
 
 import FormBuilderClient from './form-builder-client'
@@ -54,12 +60,13 @@ function form(lineAccountId: string | null) {
 }
 
 beforeEach(() => {
-  getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); saveInternalDefinitionMock.mockReset(); fetchApiMock.mockReset()
+  getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); saveInternalDefinitionMock.mockReset(); sheetsListMock.mockReset(); fetchApiMock.mockReset()
   builderProps.current = undefined
   sharePanelProps.current = undefined
   mockAccount.selectedAccountId = 'acc_A'
   getRenderBackendMock.mockResolvedValue('formaloo')
   setRenderBackendMock.mockImplementation(async (_id: string, backend: string) => backend)
+  sheetsListMock.mockResolvedValue([])
   shareMock.mockResolvedValue({ published: false, publicUrl: null, iframeCode: null, scriptCode: null, gsheetConnected: false, gsheetUrl: null })
   fetchApiMock.mockImplementation(async (path: string) => (
     path === '/api/friend-field-definitions'
@@ -78,6 +85,7 @@ describe('詳細画面 scope 照合', () => {
     render(<FormBuilderClient id="fa1" />)
     await waitFor(() => expect(screen.getByTestId('scope-blocked')).toBeTruthy())
     expect(screen.queryByTestId('form-builder')).toBeNull()
+    expect(sheetsListMock).not.toHaveBeenCalled()
   })
 
   it('NULL 共通 form は表示 (blocked でない)', async () => {
@@ -209,6 +217,13 @@ describe('詳細画面 scope 照合', () => {
       gsheetConnected: false,
       gsheetUrl: null,
     })
+    const connection = {
+      id: 'gsc_1', lineAccountId: 'acc_A', formId: 'fa1', spreadsheetId: 'sheet_1', sheetName: '回答一覧',
+      syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins', friendFieldMappings: [],
+      friendLedgerEnabled: true, lastSyncAt: '2026-07-21T10:00:00.000+09:00', lastSyncStatus: 'success',
+      lastSyncWarning: null, isActive: true, createdAt: 'x', updatedAt: 'x',
+    }
+    sheetsListMock.mockResolvedValue([connection])
     render(<FormBuilderClient id="fa1" />)
 
     await waitFor(() => expect(sharePanelProps.current?.share).toEqual(expect.objectContaining({
@@ -216,7 +231,10 @@ describe('詳細画面 scope 照合', () => {
     })))
     expect(builderProps.current?.publicUrl).toBe('https://api.example.test/f/fa1')
     expect(builderProps.current?.embedCode).toBeNull()
-    expect(sharePanelProps.current?.isOwner).toBe(false)
+    await waitFor(() => expect(sharePanelProps.current?.internalSheetConnection).toEqual(connection))
+    expect(sheetsListMock).toHaveBeenCalledWith('acc_A', 'fa1')
+    expect(sharePanelProps.current?.renderBackend).toBe('internal')
+    expect(sharePanelProps.current?.isOwner).toBe(true)
     expect(screen.queryByTestId('instant-webhook-settings')).toBeNull()
   })
 
@@ -225,6 +243,16 @@ describe('詳細画面 scope 照合', () => {
     render(<FormBuilderClient id="fa1" />)
 
     await waitFor(() => expect(sharePanelProps.current?.isOwner).toBe(true))
+    expect(sharePanelProps.current?.renderBackend).toBe('formaloo')
+    expect(sheetsListMock).not.toHaveBeenCalled()
+  })
+
+  it('internal の NULL 共通 form は選択中アカウントで接続を取得する', async () => {
+    getMock.mockResolvedValue(form(null))
+    getRenderBackendMock.mockResolvedValue('internal')
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(sheetsListMock).toHaveBeenCalledWith('acc_A', 'fa1'))
   })
 
   it('配信方式を切り替えた直後に共有情報も新しい backend で読み直す', async () => {

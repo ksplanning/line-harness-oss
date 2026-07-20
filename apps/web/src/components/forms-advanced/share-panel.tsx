@@ -1,7 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import type { ShareInfo } from '@/lib/formaloo-advanced-api'
+import type { RenderBackend, ShareInfo } from '@/lib/formaloo-advanced-api'
+import type { SheetsConnection } from '@/lib/sheets-connections-api'
 
 // =============================================================================
 // SharePanel (F-5 / T-E1) — HP 埋め込みコード提示 + Google Sheets 再同期 (presentational)。
@@ -12,9 +13,24 @@ import type { ShareInfo } from '@/lib/formaloo-advanced-api'
 
 const LINE_GREEN = '#06C755'
 
+const SYNC_STATUS_LABELS: Record<SheetsConnection['lastSyncStatus'], string> = {
+  idle: '未同期',
+  running: '同期中',
+  success: '成功',
+  warning: '警告',
+  error: '失敗',
+}
+
+export type InternalSheetConnection = Pick<
+  SheetsConnection,
+  'sheetName' | 'friendLedgerEnabled' | 'lastSyncAt' | 'lastSyncStatus' | 'lastSyncWarning'
+>
+
 export interface SharePanelProps {
   share: ShareInfo | null
+  renderBackend: RenderBackend
   isOwner: boolean
+  internalSheetConnection?: InternalSheetConnection | null
   connecting?: boolean
   onConnectSheets: () => void
 }
@@ -43,7 +59,7 @@ function CodeBox({ label, code, testid }: { label: string; code: string; testid:
   )
 }
 
-export default function SharePanel({ share, isOwner, connecting, onConnectSheets }: SharePanelProps) {
+export default function SharePanel({ share, renderBackend, isOwner, internalSheetConnection, connecting, onConnectSheets }: SharePanelProps) {
   if (!share) return null
 
   return (
@@ -86,6 +102,39 @@ export default function SharePanel({ share, isOwner, connecting, onConnectSheets
         )}
       </section>
 
+      {renderBackend === 'internal' ? (
+        <section className="space-y-2 border-t border-gray-100 pt-3">
+          <div className="text-xs font-medium text-gray-700">自前シート連携</div>
+          {!isOwner ? (
+            <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-600" data-testid="internal-sheet-owner-only">
+              シート連携の状態はオーナーのみ確認できます。
+            </div>
+          ) : internalSheetConnection ? (
+            <div className="space-y-1 text-xs text-gray-600" data-testid="internal-sheet-connected">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: LINE_GREEN }} />
+                接続済みシート: {internalSheetConnection.sheetName}
+              </div>
+              <p data-testid="answer-join-sync-status">
+                回答結合同期: {internalSheetConnection.friendLedgerEnabled
+                  ? SYNC_STATUS_LABELS[internalSheetConnection.lastSyncStatus]
+                  : '設定が必要です'}
+              </p>
+              {internalSheetConnection.lastSyncAt && <p>最終同期: {internalSheetConnection.lastSyncAt}</p>}
+              {internalSheetConnection.lastSyncWarning && (
+                <p role="alert" className="rounded bg-amber-50 px-3 py-2 text-amber-800">
+                  {internalSheetConnection.lastSyncWarning}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800" data-testid="internal-sheet-unconnected">
+              未接続です。<a href="/settings/sheets" className="font-medium text-blue-600 underline">設定 → シート連携</a>から対象フォームの接続を登録してください。
+            </div>
+          )}
+        </section>
+      ) : (
+        <>
       {/* Google Sheets 再同期 */}
       <section className="space-y-2 border-t border-gray-100 pt-3">
         <div className="text-xs font-medium text-gray-700">Google Sheets 再同期</div>
@@ -109,6 +158,8 @@ export default function SharePanel({ share, isOwner, connecting, onConnectSheets
           </button>
         )}
       </section>
+        </>
+      )}
     </div>
   )
 }

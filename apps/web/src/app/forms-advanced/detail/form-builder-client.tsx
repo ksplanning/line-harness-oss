@@ -8,6 +8,7 @@ import SharePanel from '@/components/forms-advanced/share-panel'
 import InstantWebhookSettings from '@/components/forms-advanced/instant-webhook-settings'
 import { formsAdvancedApi, type AdvancedForm, type RenderBackend, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
+import { sheetsConnectionsApi, type SheetsConnection } from '@/lib/sheets-connections-api'
 import { useAccount } from '@/contexts/account-context'
 import type { FriendFieldDefinition, HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettingsPatch } from '@line-crm/shared'
 
@@ -23,6 +24,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
+  const [internalSheetConnection, setInternalSheetConnection] = useState<SheetsConnection | null>(null)
 
   const loadShare = useCallback(async () => {
     try { setShare(await formsAdvancedApi.share(id)) } catch { /* fail-soft */ }
@@ -67,6 +69,32 @@ export default function FormBuilderClient({ id }: { id: string }) {
       })
     return () => { active = false }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    setInternalSheetConnection(null)
+    const formId = form?.id
+    const formLineAccountId = form?.lineAccountId ?? null
+    if (
+      renderBackend !== 'internal'
+      || !isOwner
+      || !formId
+      || (formLineAccountId !== null && formLineAccountId !== selectedAccountId)
+    ) {
+      return () => { active = false }
+    }
+    const accountId = formLineAccountId ?? selectedAccountId
+    if (!accountId) return () => { active = false }
+
+    void sheetsConnectionsApi.list(accountId, formId)
+      .then((connections) => {
+        if (active) setInternalSheetConnection(connections[0] ?? null)
+      })
+      .catch(() => {
+        if (active) setInternalSheetConnection(null)
+      })
+    return () => { active = false }
+  }, [form?.id, form?.lineAccountId, isOwner, renderBackend, selectedAccountId])
 
   const withErr = (fn: () => Promise<AdvancedForm>) => async () => {
     try {
@@ -218,7 +246,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
               : undefined}
           />
           <div className="mt-4">
-            <SharePanel share={share} isOwner={isOwner && renderBackend === 'formaloo'} connecting={connecting} onConnectSheets={handleConnectSheets} />
+            <SharePanel share={share} renderBackend={renderBackend} isOwner={isOwner} internalSheetConnection={internalSheetConnection} connecting={connecting} onConnectSheets={handleConnectSheets} />
           </div>
         </>
       ) : null}
