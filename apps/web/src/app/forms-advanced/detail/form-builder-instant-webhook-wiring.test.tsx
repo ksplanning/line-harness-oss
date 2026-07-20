@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: 'acc_A' }
 const getMock = vi.fn()
+const getRenderBackendMock = vi.fn()
 const shareMock = vi.fn()
 
 vi.mock('next/link', () => ({ default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a> }))
@@ -18,6 +19,7 @@ vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
 vi.mock('@/lib/formaloo-advanced-api', () => ({
   formsAdvancedApi: {
     get: (...args: unknown[]) => getMock(...args),
+    getRenderBackend: (...args: unknown[]) => getRenderBackendMock(...args),
     share: (...args: unknown[]) => shareMock(...args),
   },
 }))
@@ -35,8 +37,10 @@ function form(lineAccountId: string | null) {
 
 beforeEach(() => {
   getMock.mockReset()
+  getRenderBackendMock.mockReset()
   shareMock.mockReset()
   mockAccount.selectedAccountId = 'acc_A'
+  getRenderBackendMock.mockResolvedValue('formaloo')
   shareMock.mockResolvedValue(null)
 })
 afterEach(() => cleanup())

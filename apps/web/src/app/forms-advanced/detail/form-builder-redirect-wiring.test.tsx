@@ -14,6 +14,7 @@ import type { ReactNode } from 'react'
 const builderProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: null }
 const getMock = vi.fn()
+const getRenderBackendMock = vi.fn()
 const shareMock = vi.fn()
 const saveDefinitionMock = vi.fn()
 const fetchApiMock = vi.fn()
@@ -31,6 +32,7 @@ vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
 vi.mock('@/lib/formaloo-advanced-api', () => ({
   formsAdvancedApi: {
     get: (...a: unknown[]) => getMock(...a),
+    getRenderBackend: (...a: unknown[]) => getRenderBackendMock(...a),
     share: (...a: unknown[]) => shareMock(...a),
     saveDefinition: (...a: unknown[]) => saveDefinitionMock(...a),
   },
@@ -48,9 +50,10 @@ function form(extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  getMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); fetchApiMock.mockReset()
+  getMock.mockReset(); getRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); fetchApiMock.mockReset()
   builderProps.current = undefined
   mockAccount.selectedAccountId = null
+  getRenderBackendMock.mockResolvedValue('formaloo')
   shareMock.mockResolvedValue({ published: false, publicUrl: null, iframeCode: null, scriptCode: null, gsheetConnected: false, gsheetUrl: null })
   fetchApiMock.mockResolvedValue({ data: { role: 'owner' } })
 })
