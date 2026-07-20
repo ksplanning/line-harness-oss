@@ -12,6 +12,7 @@ import type { ReactNode } from 'react'
 
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: null }
 const getMock = vi.fn()
+const getRenderBackendMock = vi.fn()
 const rowsMock = vi.fn()
 const rowMock = vi.fn()
 const editRowMock = vi.fn()
@@ -30,7 +31,10 @@ vi.mock('@/components/forms-advanced/data-cockpit', () => ({
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
 vi.mock('@/lib/download', () => ({ csvDateStamp: () => 'd', safeFilenamePart: (s: string) => s }))
 vi.mock('@/lib/formaloo-advanced-api', () => ({
-  formsAdvancedApi: { get: (...a: unknown[]) => getMock(...a) },
+  formsAdvancedApi: {
+    get: (...a: unknown[]) => getMock(...a),
+    getRenderBackend: (...a: unknown[]) => getRenderBackendMock(...a),
+  },
   formalooDataApi: {
     rows: (...a: unknown[]) => rowsMock(...a),
     row: (...a: unknown[]) => rowMock(...a),
@@ -57,10 +61,11 @@ function detailFor(allowPostEdit: number, lastEdit: { editorStaffId: string | nu
 }
 
 beforeEach(() => {
-  getMock.mockReset(); rowsMock.mockReset(); rowMock.mockReset(); editRowMock.mockReset()
+  getMock.mockReset(); getRenderBackendMock.mockReset(); rowsMock.mockReset(); rowMock.mockReset(); editRowMock.mockReset()
   statsMock.mockReset(); listFiltersMock.mockReset(); fetchApiMock.mockReset()
   mockAccount.selectedAccountId = null
   getMock.mockResolvedValue({ id: 'fa1', title: 'F', lineAccountId: null })
+  getRenderBackendMock.mockResolvedValue('formaloo')
   rowsMock.mockResolvedValue({ rows: [], total: 0, page: 1, pageSize: 25 })
   statsMock.mockResolvedValue({ total: 0, verified: 0, daily: [], formaloo: null })
   listFiltersMock.mockResolvedValue([])

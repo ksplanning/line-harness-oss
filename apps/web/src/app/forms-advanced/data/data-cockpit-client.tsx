@@ -35,6 +35,7 @@ export default function DataCockpitClient({ id }: { id: string }) {
   const [stats, setStats] = useState<FormStats | null>(null)
   const [filters, setFilters] = useState<SavedFilter[]>([])
   const [isOwner, setIsOwner] = useState(false)
+  const [renderBackend, setRenderBackend] = useState<'formaloo' | 'internal'>('formaloo')
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState<string | null>(null)
   const [query, setQuery] = useState<RowsQuery>(DEFAULT_QUERY)
@@ -59,13 +60,18 @@ export default function DataCockpitClient({ id }: { id: string }) {
 
   const load = useCallback(async () => {
     setLoading(true)
+    setRenderBackend('formaloo')
     try {
-      const [form] = await Promise.all([
+      const [form, backend] = await Promise.all([
         formsAdvancedApi.get(id).catch(() => null),
+        formsAdvancedApi.getRenderBackend(id)
+          .then((value) => value === 'internal' ? 'internal' as const : 'formaloo' as const)
+          .catch(() => 'formaloo' as const),
         refreshStats(),
         formalooDataApi.listFilters(id).then(setFilters).catch(() => setFilters([])),
         loadRows(DEFAULT_QUERY),
       ])
+      setRenderBackend(backend)
       if (form) {
         setTitle(form.title)
         setFormAccountId(form.lineAccountId)
@@ -134,11 +140,14 @@ export default function DataCockpitClient({ id }: { id: string }) {
   //   → 回答データを描画せず hold する (fail-open で他アカウントの PII を出さない)。
   const scopeUnknown =
     !loading && (formAccountId === undefined || (formAccountId != null && selectedAccountId == null))
+  const headerDescription = renderBackend === 'internal'
+    ? '自前回答の検索・集計ができます'
+    : '回答の検索・集計・CSV 出し入れができます'
 
   if (scopeBlocked || scopeUnknown) {
     return (
       <div>
-        <Header title="回答データ" description="回答の検索・集計・CSV 出し入れができます" />
+        <Header title="回答データ" description={headerDescription} />
         <div className="mb-3">
           <Link href="/forms-advanced" className="text-xs text-gray-500 hover:text-gray-800">← 一覧に戻る</Link>
         </div>
@@ -158,7 +167,7 @@ export default function DataCockpitClient({ id }: { id: string }) {
 
   return (
     <div>
-      <Header title="回答データ" description="回答の検索・集計・CSV 出し入れができます" />
+      <Header title="回答データ" description={headerDescription} />
       <div className="mb-3 flex items-center gap-3">
         <Link href="/forms-advanced" className="text-xs text-gray-500 hover:text-gray-800">← 一覧に戻る</Link>
         <Link href={`/forms-advanced/detail?id=${id}`} className="text-xs text-gray-500 hover:text-gray-800">フォームを編集</Link>
@@ -184,7 +193,7 @@ export default function DataCockpitClient({ id }: { id: string }) {
           fieldLabels={rowsPage.fields}
           stats={stats}
           savedFilters={filters}
-          isOwner={isOwner}
+          isOwner={isOwner && renderBackend === 'formaloo'}
           loading={loading}
           onQuery={onQuery}
           onSaveFilter={onSaveFilter}
@@ -203,7 +212,12 @@ export default function DataCockpitClient({ id }: { id: string }) {
               <h2 className="text-sm font-bold text-gray-900">回答の詳細</h2>
               <button type="button" onClick={closeDetail} className="text-gray-400 hover:text-gray-700">閉じる</button>
             </div>
-            <div className="text-xs text-gray-400">{formatJstMinute(detail.submittedAt)}・{detail.source === 'formaloo' ? 'Formaloo 最新' : 'ミラー'}</div>
+            <div className="text-xs text-gray-400">
+              {formatJstMinute(detail.submittedAt)}・
+              <span data-testid="answer-source">
+                {detail.source === 'formaloo' ? 'Formaloo 最新' : detail.source === 'internal' ? '自前配信' : 'ミラー'}
+              </span>
+            </div>
             {/* ④ 最終編集の表示 (誰が いつ) */}
             {detail.lastEdit && (
               <div data-testid="last-edit" className="mt-1 text-xs text-amber-700">
