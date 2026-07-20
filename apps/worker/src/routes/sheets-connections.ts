@@ -10,7 +10,9 @@ import {
 import { ownerGate } from '../lib/owner-gate.js';
 import {
   GoogleSheetsClient,
+  GoogleSheetsError,
   parseGoogleServiceAccountCredentials,
+  type GoogleSheetsErrorCategory,
 } from '../services/google-sheets.js';
 import type { Env } from '../index.js';
 
@@ -19,6 +21,12 @@ export const sheetsConnections = new Hono<Env>();
 const BASE_PATH = '/api/integrations/google-sheets/connections';
 const OWNER_MESSAGE = 'この操作にはオーナー権限が必要です（Google Sheets 連携）';
 const SETUP_MESSAGE = 'Google Sheets の接続設定が未完了です。オーナー向け手順書を確認してください。';
+const CONNECTION_TEST_MESSAGES: Record<GoogleSheetsErrorCategory, string> = {
+  key_format: 'サービスアカウントの秘密鍵を読み取れません。Worker secret の改行と PEM 形式を確認してください。',
+  auth_rejected: 'Google の認証に失敗しました。サービスアカウントの設定を確認してください。',
+  sheet_permission: 'スプレッドシートを読み取れません。スプレッドシート ID・シート名と、サービスアカウントへの共有権限を確認してください。',
+  network: 'Google に接続できませんでした。時間をおいて、もう一度接続テストをしてください。',
+};
 const VALID_DIRECTIONS = new Set<SheetsSyncDirection>(['to_sheets', 'from_sheets', 'bidirectional']);
 
 interface ConnectionInput {
@@ -192,18 +200,34 @@ sheetsConnections.post(`${BASE_PATH}/:id/test`, async (c) => {
   if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
     return c.json({ success: false, error: SETUP_MESSAGE }, 503);
   }
+  let credentials: ReturnType<typeof parseGoogleServiceAccountCredentials>;
   try {
-    const credentials = parseGoogleServiceAccountCredentials(c.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+    credentials = parseGoogleServiceAccountCredentials(c.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+  } catch {
+    const category = 'key_format' as const;
+    console.error('Google Sheets connection test failed', { category, operation: 'token', status: 0 });
+    return c.json({
+      success: false,
+      error: CONNECTION_TEST_MESSAGES[category],
+      category,
+    }, 503);
+  }
+  try {
     const client = new GoogleSheetsClient({ credentials });
     await client.readValues(connection.spreadsheetId, quotedA1SheetName(connection.sheetName));
     return c.json({ success: true, data: { ok: true } });
-  } catch {
-    // Invalid local credentials are setup failures; remote auth/share/range errors are test result NG.
-    try {
-      parseGoogleServiceAccountCredentials(c.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-    } catch {
-      return c.json({ success: false, error: SETUP_MESSAGE }, 503);
-    }
-    return c.json({ success: true, data: { ok: false } });
+  } catch (error) {
+    const detail = error instanceof GoogleSheetsError
+      ? { category: error.category, operation: error.operation, status: error.status }
+      : { category: 'network' as const, operation: 'read' as const, status: 0 };
+    console.error('Google Sheets connection test failed', detail);
+    return c.json({
+      success: true,
+      data: {
+        ok: false,
+        category: detail.category,
+        message: CONNECTION_TEST_MESSAGES[detail.category],
+      },
+    });
   }
 });

@@ -45,8 +45,7 @@ export type GoogleSheetsErrorCategory =
   | 'key_format'
   | 'auth_rejected'
   | 'sheet_permission'
-  | 'network'
-  | 'unknown';
+  | 'network';
 
 export class GoogleSheetsError extends Error {
   readonly status: number;
@@ -56,7 +55,7 @@ export class GoogleSheetsError extends Error {
   constructor(
     operation: GoogleSheetsOperation,
     status: number,
-    category: GoogleSheetsErrorCategory = 'unknown',
+    category: GoogleSheetsErrorCategory,
   ) {
     super(`Google Sheets ${operation} request failed`);
     this.name = 'GoogleSheetsError';
@@ -171,6 +170,16 @@ function valueRange(values: SheetCellValue[][]): SheetsValueRange {
   return { majorDimension: 'ROWS', values };
 }
 
+function tokenFailureCategory(status: number): GoogleSheetsErrorCategory {
+  return status === 429 || status >= 500 ? 'network' : 'auth_rejected';
+}
+
+function sheetsFailureCategory(status: number): GoogleSheetsErrorCategory {
+  if (status === 401) return 'auth_rejected';
+  if (status === 429 || status >= 500) return 'network';
+  return 'sheet_permission';
+}
+
 export class GoogleSheetsClient {
   private readonly credentials: GoogleServiceAccountCredentials;
   private readonly fetchImpl: typeof fetch;
@@ -234,16 +243,18 @@ export class GoogleSheetsClient {
         }).toString(),
       });
     } catch {
-      throw new GoogleSheetsError('token', 0);
+      throw new GoogleSheetsError('token', 0, 'network');
     }
-    if (!response.ok) throw new GoogleSheetsError('token', response.status);
+    if (!response.ok) {
+      throw new GoogleSheetsError('token', response.status, tokenFailureCategory(response.status));
+    }
 
     const body = await response.json().catch(() => null) as {
       access_token?: unknown;
       expires_in?: unknown;
     } | null;
     if (!body || typeof body.access_token !== 'string' || !body.access_token) {
-      throw new GoogleSheetsError('token', response.status);
+      throw new GoogleSheetsError('token', response.status, 'auth_rejected');
     }
     const expiresIn = typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
       ? Math.max(1, body.expires_in)
@@ -265,11 +276,13 @@ export class GoogleSheetsClient {
         },
       });
     } catch {
-      throw new GoogleSheetsError(operation, 0);
+      throw new GoogleSheetsError(operation, 0, 'network');
     }
-    if (!response.ok) throw new GoogleSheetsError(operation, response.status);
+    if (!response.ok) {
+      throw new GoogleSheetsError(operation, response.status, sheetsFailureCategory(response.status));
+    }
     const body = await response.json().catch(() => null);
-    if (body === null) throw new GoogleSheetsError(operation, response.status);
+    if (body === null) throw new GoogleSheetsError(operation, response.status, 'network');
     return body as T;
   }
 

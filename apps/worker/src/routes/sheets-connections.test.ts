@@ -13,6 +13,12 @@ import type { Env } from '../index.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
 const OWNER = 'Bearer env-owner-key';
+const CONNECTION_ERRORS = {
+  key_format: 'サービスアカウントの秘密鍵を読み取れません。Worker secret の改行と PEM 形式を確認してください。',
+  auth_rejected: 'Google の認証に失敗しました。サービスアカウントの設定を確認してください。',
+  sheet_permission: 'スプレッドシートを読み取れません。スプレッドシート ID・シート名と、サービスアカウントへの共有権限を確認してください。',
+  network: 'Google に接続できませんでした。時間をおいて、もう一度接続テストをしてください。',
+} as const;
 
 let raw: Database.Database;
 let DB: D1Database;
@@ -206,7 +212,9 @@ describe('Sheets connection test API', () => {
 
     const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`);
     expect(response.status).toBe(200);
-    const body = await response.json();
+    const responseText = await response.text();
+    expect(responseText).toBe('{"success":true,"data":{"ok":true}}');
+    const body = JSON.parse(responseText);
     expect(body).toEqual({ success: true, data: { ok: true } });
     expect(apiCalls).toHaveLength(1);
     expect(apiCalls[0]).toContain('/spreadsheets/1AbCd_ef-GhIj/values/');
@@ -221,15 +229,74 @@ describe('Sheets connection test API', () => {
     });
     expect(missing.status).toBe(503);
     const sentinel = 'SENTINEL_PRIVATE_KEY';
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const invalid = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`, undefined, OWNER, {
       GOOGLE_SERVICE_ACCOUNT_JSON: JSON.stringify({ private_key: sentinel }),
     });
     expect(invalid.status).toBe(503);
-    expect(JSON.stringify(await invalid.json())).not.toContain(sentinel);
+    expect(await invalid.json()).toEqual({
+      success: false,
+      error: CONNECTION_ERRORS.key_format,
+      category: 'key_format',
+    });
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(sentinel);
   });
 
-  test('Google API failure is a generic ok=false result and does not expose response body', async () => {
+  test('不正 PEM は鍵形式エラーを安全な人間語で返す', async () => {
     const id = await createOne();
+    const sentinel = 'NOT-BASE64!';
+    const parsed = JSON.parse(serviceAccountJson) as Record<string, unknown>;
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const response = await call(
+      'POST',
+      `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`,
+      undefined,
+      OWNER,
+      {
+        GOOGLE_SERVICE_ACCOUNT_JSON: JSON.stringify({
+          ...parsed,
+          private_key: `-----BEGIN PRIVATE KEY-----\n${sentinel}\n-----END PRIVATE KEY-----`,
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      data: { ok: false, category: 'key_format', message: CONNECTION_ERRORS.key_format },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith('Google Sheets connection test failed', {
+      category: 'key_format', operation: 'token', status: 0,
+    });
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(sentinel);
+  });
+
+  test('OAuth token 拒否は認証エラーを返し Google response body を隠す', async () => {
+    const id = await createOne();
+    const sentinel = 'SENTINEL_TOKEN_BODY';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: sentinel }), { status: 401 })));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({
+      success: true,
+      data: { ok: false, category: 'auth_rejected', message: CONNECTION_ERRORS.auth_rejected },
+    });
+    expect(JSON.stringify(body)).not.toContain(sentinel);
+    expect(consoleError).toHaveBeenCalledWith('Google Sheets connection test failed', {
+      category: 'auth_rejected', operation: 'token', status: 401,
+    });
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(sentinel);
+  });
+
+  test('Sheets API の 403 はシート権限エラーを返し response body を隠す', async () => {
+    const id = await createOne();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
       if (String(input) === 'https://oauth2.googleapis.com/token') {
         return new Response(JSON.stringify({ access_token: 'ACCESS', expires_in: 3600 }), { status: 200 });
@@ -239,8 +306,35 @@ describe('Sheets connection test API', () => {
     const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`);
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ success: true, data: { ok: false } });
+    expect(body).toEqual({
+      success: true,
+      data: { ok: false, category: 'sheet_permission', message: CONNECTION_ERRORS.sheet_permission },
+    });
     expect(JSON.stringify(body)).not.toContain('SENTINEL_GOOGLE_BODY');
+    expect(consoleError).toHaveBeenCalledWith('Google Sheets connection test failed', {
+      category: 'sheet_permission', operation: 'read', status: 403,
+    });
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('SENTINEL_GOOGLE_BODY');
+  });
+
+  test('fetch 例外は通信エラーを返し内部例外を隠す', async () => {
+    const id = await createOne();
+    const sentinel = 'SENTINEL_NETWORK_FAILURE';
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error(sentinel); }));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const response = await call('POST', `/api/integrations/google-sheets/connections/${id}/test?lineAccountId=acc-1`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({
+      success: true,
+      data: { ok: false, category: 'network', message: CONNECTION_ERRORS.network },
+    });
+    expect(JSON.stringify(body)).not.toContain(sentinel);
+    expect(consoleError).toHaveBeenCalledWith('Google Sheets connection test failed', {
+      category: 'network', operation: 'token', status: 0,
+    });
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(sentinel);
   });
 
   test('database failure is a 500 instead of a misleading not-found response', async () => {
