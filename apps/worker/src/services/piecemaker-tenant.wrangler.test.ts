@@ -101,6 +101,16 @@ describe('piecemaker tenant wrangler config (P2-2 / H-4)', () => {
     expect(src).not.toMatch(/api_key\s*=\s*["']?[A-Za-z0-9]{20,}/i);
   });
 
+  it('FAQ bot は両テナントで ON、KS コメントも現在値と一致する', () => {
+    const piecemaker = read('wrangler.piecemaker.toml');
+    const ks = read('wrangler.ks.toml');
+
+    expect(piecemaker.split('\n').filter((l) => l === 'FAQ_BOT_ENABLED = "true"')).toHaveLength(1);
+    expect(piecemaker.split('\n').filter((l) => l === 'FAQ_BOT_ENABLED = "false"')).toHaveLength(0);
+    expect(ks.split('\n').filter((l) => l === 'FAQ_BOT_ENABLED = "true"')).toHaveLength(1);
+    expect(ks).not.toContain('FAQ_BOT_ENABLED は "false" のまま');
+  });
+
   it('ks 本番 config (wrangler.ks.toml) は不可触 = piecemaker 追加は additive (L-8)', () => {
     // 既存 ks config が現値を保持していることを確認 (兄弟ファイル追加で壊れない additive-safe)。
     const ks = read('wrangler.ks.toml');

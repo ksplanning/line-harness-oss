@@ -61,9 +61,8 @@ CF_ACCOUNT_ID = "8afbae04688d10af42d2d4ab5a323019"
 #   AUTO_APPLY を "true" に flip するだけ (通知/バッジ/監査は OFF でも動く)。ENABLED="false" で job 自体を即停止 (rollback)。
 FORMALOO_DRIFT_ENABLED = "true"
 FORMALOO_DRIFT_AUTO_APPLY = "false"
-# FAQ 自動応答ボット (Phase A) の全体スイッチ。既定 OFF = webhook text 処理は byte-identical。
-# 有効化 (= "true") は owner 立会テスト時のみ (cron ON と同じ回で可)。ここを "true" にすると
-# アカウント別設定 (account_settings key='faq_bot' enabled) と AND で自動返信が発火する。
+# FAQ 自動応答ボットの全体スイッチ。owner 指示で ON。
+# アカウント別設定 (account_settings key='faq_bot' enabled) と AND で有効になり、返答は既定で下書き保存する。
 FAQ_BOT_ENABLED = "true"
 # fr-id-capture-fix (2026-07-18): fr_id system field auto-push は既定 ON (qBSQdjyz 実測 PASS 済)。
 #   fr_name は実名 PII のため owner 未確認 → 保守的に "1" (無効) 固定。owner が PII 用途/保持方針を
@@ -72,7 +71,7 @@ FORMALOO_FR_NAME_AUTOPUSH_DISABLE = "0"
 MANIFEST_URL = "https://github.com/Shudesu/line-harness-oss/releases/latest/download/release-manifest.json"
 # ── FAQ AI (Phase B go-live / owner 立会 §1) additive。生成/埋め込みモデルは env 注入 (literal 焼き込みなし)。
 #    非 deprecated 実確認済 (2026-07-11 docs 200)・埋め込み次元 1024 は live 実測 (data[1][1024]) 済。
-#    FAQ_BOT_ENABLED は "false" のまま (この追記は「部品の用意」= オンとは別段階)。
+#    FAQ_BOT_ENABLED は owner 指示で ON。送信可否は account_settings の answerMode で制御する。
 AI_MODEL_ID = "@cf/meta/llama-3.1-8b-instruct-fast"
 AI_EMBED_MODEL_ID = "@cf/qwen/qwen3-embedding-0.6b"
 AI_EMBED_NEURON_PER_MTOK = "3000"

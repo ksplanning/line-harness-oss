@@ -62,9 +62,9 @@ CF_ACCOUNT_ID = "9e4c603b3f47d4072f8a3a27759e8aff"
 #   で dark-ship (通知のみ = 案 B 既定)。owner が案 A を選んだら AUTO_APPLY を "true" に flip するだけ。
 FORMALOO_DRIFT_ENABLED = "true"
 FORMALOO_DRIFT_AUTO_APPLY = "false"
-# FAQ 自動応答ボット (Phase A) の全体スイッチ。cutover gate (§10 H-8): 初回は "false" 固定 =
-#   webhook text 処理は byte-identical。seed+LINE 配線+smoke+owner 立会 完了後にのみ "true" へ flip。
-FAQ_BOT_ENABLED = "false"
+# FAQ 自動応答ボットの全体スイッチ。owner 指示で ON。
+#   アカウント別設定 (account_settings key='faq_bot' enabled) と AND で有効になり、返答は既定で下書き保存する。
+FAQ_BOT_ENABLED = "true"
 # fr-id-capture-fix (2026-07-18): fr_id system field auto-push は既定 ON (qBSQdjyz 実測 PASS 済)。
 #   fr_name は実名 PII のため owner 未確認 → 保守的に "1" (無効) 固定。owner が PII 用途/保持方針を
 #   承認したら "false" or 削除で有効化 (docs/BACKLOG.md「fr-id-capture-fix」節参照)。
