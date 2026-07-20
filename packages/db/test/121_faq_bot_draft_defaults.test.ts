@@ -89,6 +89,20 @@ describe('migration 121 — FAQ bot ON + draft defaults', () => {
     ]);
   });
 
+  test('既に ON + draft の行は再実行時に updated_at も書き換えない', () => {
+    raw.exec(migration);
+    raw.prepare(
+      `UPDATE account_settings SET updated_at = 'stable-after-first-run' WHERE key = 'faq_bot'`,
+    ).run();
+
+    raw.exec(migration);
+
+    const rows = raw.prepare(
+      `SELECT DISTINCT updated_at FROM account_settings WHERE key = 'faq_bot'`,
+    ).all() as Array<{ updated_at: string }>;
+    expect(rows).toEqual([{ updated_at: 'stable-after-first-run' }]);
+  });
+
   test('faq_bot 以外の account_settings は変更しない', () => {
     raw.exec(migration);
 

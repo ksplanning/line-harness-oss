@@ -17,4 +17,8 @@ SET
     '{"enabled":true,"answerMode":"draft"}'
   ),
   updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
-WHERE key = 'faq_bot';
+WHERE key = 'faq_bot'
+  AND (
+    json_extract(CASE WHEN json_valid(value) THEN value ELSE '{}' END, '$.enabled') IS NOT 1
+    OR json_extract(CASE WHEN json_valid(value) THEN value ELSE '{}' END, '$.answerMode') IS NOT 'draft'
+  );
