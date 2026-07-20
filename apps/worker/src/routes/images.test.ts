@@ -140,6 +140,14 @@ describe('POST /api/images key prefix (T-M1)', () => {
 });
 
 describe('serve / delete slash key (T-M3)', () => {
+  test('回答添付の private prefix は公開画像 route から取得できない', async () => {
+    const key = 'internal-form-submissions/form/field/secret.pdf';
+    const { r2 } = makeR2Stub({ [key]: { size: 8 } });
+    const app = setupApp(r2);
+    const res = await app.request(`/images/${key}`);
+    expect(res.status).toBe(404);
+  });
+
   test('GET /images/media/xxx.png (slash key) が serve できる', async () => {
     const { r2 } = makeR2Stub({ 'media/pic.png': { size: 8 } });
     const app = setupApp(r2);

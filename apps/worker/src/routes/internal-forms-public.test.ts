@@ -14,15 +14,15 @@ const BENIGN = /duplicate column name|already exists/i;
 const FRIEND_SECRET = 'internal-form-test-secret';
 
 const fields = [
-  { id: 'text', type: 'text', label: 'お名前', required: true, position: 0, config: { maxLength: 5 } },
-  { id: 'textarea', type: 'textarea', label: '備考', required: false, position: 1, config: { maxLength: 100 } },
-  { id: 'number', type: 'number', label: '人数', required: true, position: 2, config: {} },
-  { id: 'email', type: 'email', label: 'メール', required: true, position: 3, config: {} },
-  { id: 'phone', type: 'phone', label: '電話', required: true, position: 4, config: {} },
-  { id: 'date', type: 'date', label: '希望日', required: true, position: 5, config: {} },
-  { id: 'choice', type: 'choice', label: '区分', required: true, position: 6, config: { choices: ['個人', '法人'] } },
-  { id: 'dropdown', type: 'dropdown', label: '地域', required: true, position: 7, config: { choices: ['東', '西'] } },
-  { id: 'multiple', type: 'multiple_select', label: '興味', required: true, position: 8, config: { choices: ['A', 'B'] } },
+  { id: 'text', type: 'text', label: 'お名前', required: true, position: 0, config: { maxLength: 5, placeholder: '例：佐藤' } },
+  { id: 'textarea', type: 'textarea', label: '備考', required: false, position: 1, config: { maxLength: 100, placeholder: '自由に入力' } },
+  { id: 'number', type: 'number', label: '人数', required: true, position: 2, config: { placeholder: '2' } },
+  { id: 'email', type: 'email', label: 'メール', required: true, position: 3, config: { placeholder: 'name@example.jp' } },
+  { id: 'phone', type: 'phone', label: '電話', required: true, position: 4, config: { placeholder: '090-0000-0000' } },
+  { id: 'date', type: 'date', label: '希望日', required: true, position: 5, config: { placeholder: '希望日を選択' } },
+  { id: 'choice', type: 'choice', label: '区分', required: true, position: 6, config: { choices: ['個人', '法人'], placeholder: 'どちらか選択' } },
+  { id: 'dropdown', type: 'dropdown', label: '地域', required: true, position: 7, config: { choices: ['東', '西'], placeholder: '地域を選択' } },
+  { id: 'multiple', type: 'multiple_select', label: '興味', required: true, position: 8, config: { choices: ['A', 'B'], placeholder: '複数選べます' } },
 ];
 
 function d1(db: Database.Database): D1Database {
@@ -149,6 +149,15 @@ describe('internal public form GET /f/:formId', () => {
     expect(html).toMatch(/<input[^>]+type="radio"[^>]+name="a_6"/);
     expect(html).toMatch(/<select[^>]+name="a_7"/);
     expect(html).toMatch(/<input[^>]+type="checkbox"[^>]+name="a_8"/);
+    expect(html).toContain('placeholder="例：佐藤"');
+    expect(html).toContain('placeholder="自由に入力"');
+    expect(html).toContain('placeholder="2"');
+    expect(html).toContain('placeholder="name@example.jp"');
+    expect(html).toContain('placeholder="090-0000-0000"');
+    expect(html).toContain('希望日を選択');
+    expect(html).toContain('どちらか選択');
+    expect(html).toContain('<option value="">地域を選択</option>');
+    expect(html).toContain('複数選べます');
     const multipleInputs = html.match(/<input type="checkbox" name="a_8"[^>]*>/g) ?? [];
     expect(multipleInputs).toHaveLength(2);
     expect(multipleInputs.every((input) => !input.includes(' required'))).toBe(true);
@@ -161,7 +170,13 @@ describe('internal public form GET /f/:formId', () => {
     seedForm('fa_formaloo', { backend: 'formaloo' });
     seedForm('fa_draft', { status: 'draft' });
     seedForm('fa_unsupported', {
-      definition: { fields: [{ id: 'rating', type: 'rating', label: '評価', required: false, position: 0, config: {} }], logic: [] },
+      definition: {
+        fields: [{
+          id: 'remote', type: 'choice_fetch', label: '動的選択肢', required: false, position: 0,
+          config: { choicesSource: 'https://choices.example.test/public' },
+        }],
+        logic: [],
+      },
     });
 
     expect((await app().request('/f/fa_formaloo', {}, env())).status).toBe(404);

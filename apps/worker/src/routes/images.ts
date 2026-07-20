@@ -110,6 +110,11 @@ images.get('/api/images', async (c) => {
 // 既存 flat key (legacy-uuid.png) も引き続き serve できる。
 images.get('/images/:key{.+}', async (c) => {
   const key = c.req.param('key');
+  // 回答添付は管理画面の回答データからのみ参照する private object。
+  // 公開メディア用 route に key が渡っても存在を明かさず、R2 も読まない。
+  if (key.startsWith('internal-form-submissions/')) {
+    return c.json({ success: false, error: 'Image not found' }, 404);
+  }
   const object = await c.env.IMAGES.get(key);
 
   if (!object) {
