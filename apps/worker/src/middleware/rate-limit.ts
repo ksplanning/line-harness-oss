@@ -71,6 +71,9 @@ const UNAUTHENTICATED_PATTERNS: Array<string | RegExp> = [
   /^\/formaloo\/instant\/[^/]+\/[^/]+$/,
   // choice_fetch も認証不要の公開供給 URL。偽 Bearer のローテーションで緩い token bucket を選ばせない。
   /^\/formaloo\/choices\/[^/]+\/[^/]+$/,
+  // Apps Script callback has no bearer token; signature verification remains
+  // authoritative, while the IP bucket bounds invalid-signature floods.
+  '/integrations/google-sheets/friend-ledger/webhook',
   // Admin login: per-IP burst throttle (D1 per-account lockout is authoritative; this
   // is the IP dimension of the IP+account complex — GC-6 / batch F). Slows credential
   // stuffing from one IP regardless of which login_id is targeted.
