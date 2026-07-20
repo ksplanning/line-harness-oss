@@ -608,11 +608,15 @@ function repeatingColumns(value: unknown): RepeatingSectionColumn[] | null {
  */
 export function validateHarnessField(
   input: unknown,
+  options: { allowInternalOnly?: boolean } = {},
 ): { ok: true; field: HarnessField } | { ok: false; error: string } {
   if (typeof input !== 'object' || input === null) return { ok: false, error: 'field is not an object' };
   const o = input as Record<string, unknown>;
   if (typeof o.id !== 'string' || !o.id) return { ok: false, error: 'field.id required' };
   if (!isFieldType(o.type)) return { ok: false, error: `unsupported field type: ${String(o.type)} (MVP subset のみ / N-13)` };
+  if (isInternalOnlyFieldType(o.type) && options.allowInternalOnly !== true) {
+    return { ok: false, error: `internal-only field type is not allowed in the Formaloo contract: ${o.type}` };
+  }
   if (typeof o.label !== 'string') return { ok: false, error: 'field.label must be string' };
 
   const rawCfg = (typeof o.config === 'object' && o.config !== null ? o.config : {}) as Record<string, unknown>;

@@ -42,8 +42,8 @@ describe('internal-only form field schema', () => {
     }
   });
 
-  test.each(EXPECTED_INTERNAL_TYPES)('%s validates as a harness field', (type) => {
-    const result = validateHarnessField({
+  test.each(EXPECTED_INTERNAL_TYPES)('%s is rejected by default and validates only in explicit internal context', (type) => {
+    const input = {
       id: `internal-${type}`,
       type,
       label: type,
@@ -55,7 +55,14 @@ describe('internal-only form field schema', () => {
         defaultValues: ['A', 'B'],
         ignored: 'drop me',
       },
+    };
+
+    expect(validateHarnessField(input)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/internal-only/),
     });
+
+    const result = validateHarnessField(input, { allowInternalOnly: true });
 
     expect(result).toEqual({
       ok: true,
