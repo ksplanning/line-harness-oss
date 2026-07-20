@@ -776,3 +776,9 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **deployed 実測で `ok:true` を達成**: piecemaker worker を main HEAD `b3276a6a`（generator lane の receiver-bind 修理・reviewer Round1 PASS）へ再デプロイ（Version `8c949dfb-6ac9-4eef-a341-5cd7c3f250f9`）。接続 `gsc_4881ef88-e6e4-415e-ab62-c24106c09015` の接続テストを5回実行 → 4/5 で `ok:true`（1回目のみ一過性ネットワークブリップ）。コード確認どおり `ok:true` は OAuth トークン取得 + Google Sheets A1 read の両方成功を意味する。
 - ks worker も同 HEAD へ再デプロイ済み（Version `234a8892-bf3e-4074-a00b-505067c45b34`）。ks tenant は Sheets 接続が未作成（owner 権限で確認済み・新規作成はせず記録のみ）。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_061142_sheets-workers-oauth-fetch-fix.md`（Box working folder 386663013201・box_file_id_md 2358523578940 / box_file_id_html 2358531870104）。
+
+## selfform-w4a-friend-ledger-sync — 友だち台帳⇔Google スプレッドシート双方向同期（2026-07-21 closer / ✅ status: completed）
+- **owner の実シートで稼働化**: reviewer R2 PASS 済み main HEAD `ca4d9a88`（R1差し戻し6点 F-1〜F-6 全修理済み）を両テナント4面デプロイ + migration 119 additive 適用（KS friends 142件・piecemaker friends 4件・sheets_connections 行数不変）。
+- piecemaker の実接続 `gsc_4881ef88-e6e4-415e-ab62-c24106c09015`（対象シート「お祝い夢花火2026申し込み管理」）でカスタム項目「入金確認」を選択し友だち台帳同期を有効化。Google Sheets API 直接 read-back（独立検証）で友だち→シート初回同期（4行 appended）・再同期の冪等（0 appended）・シート→ハーネス反映（ポーリング約4分・監査ログ確認）・identity列不変・復元確認まで全て deployed 実測 PASS。
+- **残**: Apps Script（即時通知）の owner 自身による設置は owner 任意作業として残る（コード・手順書は完成済み・ポーリング経路のみで双方向実証済み）。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_080800_selfform-w4a-friend-ledger-sync.md`（Box working folder 386663013201・box_file_id_md 2358668404572 / box_file_id_html 2358663208213）。
