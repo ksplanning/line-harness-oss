@@ -17,6 +17,7 @@ const getRenderBackendMock = vi.fn()
 const setRenderBackendMock = vi.fn()
 const shareMock = vi.fn()
 const saveDefinitionMock = vi.fn()
+const saveInternalDefinitionMock = vi.fn()
 const fetchApiMock = vi.fn()
 
 vi.mock('next/link', () => ({ default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a> }))
@@ -41,6 +42,7 @@ vi.mock('@/lib/formaloo-advanced-api', () => ({
     setRenderBackend: (...a: unknown[]) => setRenderBackendMock(...a),
     share: (...a: unknown[]) => shareMock(...a),
     saveDefinition: (...a: unknown[]) => saveDefinitionMock(...a),
+    saveInternalDefinition: (...a: unknown[]) => saveInternalDefinitionMock(...a),
   },
 }))
 vi.mock('@/lib/api', () => ({ fetchApi: (...a: unknown[]) => fetchApiMock(...a) }))
@@ -52,7 +54,7 @@ function form(lineAccountId: string | null) {
 }
 
 beforeEach(() => {
-  getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); fetchApiMock.mockReset()
+  getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); saveInternalDefinitionMock.mockReset(); fetchApiMock.mockReset()
   builderProps.current = undefined
   sharePanelProps.current = undefined
   mockAccount.selectedAccountId = 'acc_A'
@@ -128,6 +130,40 @@ describe('詳細画面 scope 照合', () => {
     expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', {
       fields: [], logic: [], title: '新タイトル', description: '',
     })
+  })
+
+  it('自前配信は専用保存後に再取得し、古い Formaloo 未同期状態でも保存成功として扱う', async () => {
+    const loaded = { ...form('acc_A'), title: '旧タイトル', syncStatus: 'out_of_sync', syncError: '古い同期エラー' }
+    const refreshed = { ...loaded, title: '新タイトル' }
+    getMock.mockResolvedValueOnce(loaded).mockResolvedValueOnce(refreshed)
+    getRenderBackendMock.mockResolvedValue('internal')
+    saveInternalDefinitionMock.mockResolvedValue(undefined)
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+
+    let result: unknown
+    await act(async () => {
+      result = await (builderProps.current?.onSave as (def: Record<string, unknown>) => Promise<unknown>)({
+        fields: [], logic: [], title: '新タイトル',
+      })
+    })
+
+    expect(saveInternalDefinitionMock).toHaveBeenCalledWith('fa1', {
+      fields: [], logic: [], title: '新タイトル',
+    })
+    expect(saveDefinitionMock).not.toHaveBeenCalled()
+    expect(getMock).toHaveBeenCalledTimes(2)
+    expect(result).toEqual({ ok: true, design: undefined, warnings: undefined })
+    expect(await screen.findByText('保存しました')).toBeTruthy()
+  })
+
+  it('自前配信では Formaloo 再取り込み callback を builder に渡さない', async () => {
+    getMock.mockResolvedValue(form('acc_A'))
+    getRenderBackendMock.mockResolvedValue('internal')
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+    expect(builderProps.current?.onReimport).toBeUndefined()
   })
 
   it('配信方式を別 endpoint から読み、builder に復元する', async () => {

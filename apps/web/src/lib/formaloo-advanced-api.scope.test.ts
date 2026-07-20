@@ -52,6 +52,20 @@ describe('formsAdvancedApi.saveDefinition — metadata payload', () => {
   })
 })
 
+describe('formsAdvancedApi.saveInternalDefinition — isolated local endpoint', () => {
+  it('PUTs the definition to the encoded internal-only URL', async () => {
+    fetchApi.mockResolvedValue({ success: true, data: null })
+    const definition = { fields: [], logic: [], title: '自前フォーム', description: '' }
+
+    await formsAdvancedApi.saveInternalDefinition('fa/a', definition)
+
+    const [url, opts] = fetchApi.mock.calls[0]
+    expect(url).toBe('/api/forms-advanced/fa%2Fa/internal-definition')
+    expect((opts as { method: string }).method).toBe('PUT')
+    expect(JSON.parse((opts as { body: string }).body)).toEqual(definition)
+  })
+})
+
 describe('formsAdvancedApi render backend — separate additive endpoint', () => {
   it('GET reads the backend without changing the existing form response', async () => {
     fetchApi.mockResolvedValue({ success: true, data: { renderBackend: 'internal' } })

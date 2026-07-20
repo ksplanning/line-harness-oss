@@ -1,12 +1,21 @@
 import { Hono, type Context, type Next } from 'hono';
 import {
+  getFormalooFieldMap,
   getFormalooForm,
   getInternalFormSubmission,
   listInternalFormSubmissions,
+  saveFormalooDefinition,
   setFormRenderBackend,
   type FormalooForm,
   type InternalFormSubmission,
 } from '@line-crm/db';
+import {
+  normalizeFormCopy,
+  validateHarnessField,
+  type HarnessField,
+} from '@line-crm/shared';
+import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/form-image-upload.js';
+import { parseInternalFormDefinition } from '../services/internal-form-runtime.js';
 import type { Env } from '../index.js';
 
 export const internalFormsAdmin = new Hono<Env>();
@@ -122,6 +131,21 @@ function notFound(c: Context<Env>) {
   return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 }
 
+function definitionObject(definitionJson: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(definitionJson) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 async function rejectInternalFormalooMutation(c: Context<Env>, next: Next) {
   try {
     const form = await getInternalForm(c.env.DB, c.req.param('id')!);
@@ -163,6 +187,104 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/render-backend', async (c) => 
     return c.json({ success: true, data: { renderBackend } });
   } catch (error) {
     console.error('PATCH /api/forms-advanced/:id/render-backend error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+internalFormsAdmin.put('/api/forms-advanced/:id/internal-definition', async (c, next) => {
+  try {
+    const id = c.req.param('id');
+    const form = await getInternalForm(c.env.DB, id);
+    if (!form) return next();
+
+    const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+    if (!body) return c.json({ success: false, error: 'JSON body が必要です' }, 400);
+    if (!Array.isArray(body.fields)) {
+      return c.json({ success: false, error: 'fields は配列で指定してください' }, 400);
+    }
+    if (body.logic !== undefined && (!Array.isArray(body.logic) || body.logic.length > 0)) {
+      return c.json({ success: false, error: '自前配信の分岐設定はまだ利用できません' }, 400);
+    }
+    if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
+      return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
+    }
+    if (body.description !== undefined && body.description !== null && typeof body.description !== 'string') {
+      return c.json({ success: false, error: 'フォーム説明は文字列で指定してください' }, 400);
+    }
+    if (hasOwn(body, 'formType') && body.formType !== 'simple' && body.formType !== 'multi_step') {
+      return c.json({ success: false, error: 'formType は simple または multi_step を指定してください' }, 400);
+    }
+
+    const fields: HarnessField[] = [];
+    for (let index = 0; index < body.fields.length; index++) {
+      const raw = body.fields[index];
+      const position = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as { position?: unknown }).position
+        : undefined;
+      const validation = validateHarnessField({
+        ...(raw && typeof raw === 'object' ? raw : {}),
+        position: typeof position === 'number' ? position : index,
+      });
+      if (!validation.ok) {
+        return c.json({ success: false, error: `フィールド ${index + 1}: ${validation.error}` }, 400);
+      }
+      fields.push(validation.field);
+    }
+
+    const currentDefinition = definitionObject(form.definition_json);
+    if (!currentDefinition) {
+      return c.json({ success: false, error: '保存済みフォーム定義を読み込めません' }, 422);
+    }
+    const nextDefinition: Record<string, unknown> = {
+      ...currentDefinition,
+      fields,
+      logic: [],
+    };
+    if (hasOwn(body, 'formCopy')) {
+      const formCopy = normalizeFormCopy(body.formCopy);
+      if (Object.keys(formCopy).length > 0) nextDefinition.formCopy = formCopy;
+      else delete nextDefinition.formCopy;
+    }
+    if (hasOwn(body, 'formType')) nextDefinition.formType = body.formType;
+
+    const runtimeValidation = parseInternalFormDefinition(JSON.stringify(nextDefinition));
+    if (!runtimeValidation.ok) {
+      return c.json({ success: false, error: runtimeValidation.error }, 400);
+    }
+
+    const uploadOrigin = new URL(c.req.url).origin;
+    const imageResult = await resolveInBodyImageUploads(
+      fields,
+      (dataUrl) => uploadImageDataUrlToR2(c.env, dataUrl, id, uploadOrigin),
+    );
+    if (!imageResult.ok) {
+      return c.json({ success: false, error: `画像のアップロードに失敗しました：${imageResult.error}` }, 400);
+    }
+    nextDefinition.fields = fields;
+
+    const existingMap = await getFormalooFieldMap(c.env.DB, id);
+    const existingSlugs = new Map(existingMap.map((row) => [row.id, row.formaloo_field_slug]));
+    await saveFormalooDefinition(c.env.DB, id, {
+      definitionJson: JSON.stringify(nextDefinition),
+      fields: fields.map((field) => ({
+        id: field.id,
+        formalooFieldSlug: existingSlugs.get(field.id) ?? null,
+        fieldType: field.type,
+        label: field.label,
+        position: field.position,
+        configJson: JSON.stringify(field.config),
+      })),
+      title: typeof body.title === 'string' ? body.title.trim() : undefined,
+      description: body.description === undefined
+        ? undefined
+        : typeof body.description === 'string' && body.description.trim()
+          ? body.description.trim()
+          : null,
+    });
+
+    return c.json({ success: true, data: null });
+  } catch (error) {
+    console.error('PUT internal /api/forms-advanced/:id/internal-definition error:', error);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

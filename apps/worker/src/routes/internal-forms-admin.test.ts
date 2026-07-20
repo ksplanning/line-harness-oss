@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
-import { createRole, jstNow, setRolePermissions } from '@line-crm/db';
+import { createRole, jstNow, setFormalooSyncState, setRolePermissions } from '@line-crm/db';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formalooInstantWebhook } from './formaloo-instant-webhook.js';
@@ -213,6 +213,124 @@ describe('internal form render backend selector', () => {
         renderBackend: 'internal',
       })).status).toBe(404);
     }
+  });
+});
+
+describe('internal definition save boundary', () => {
+  test('saves only the local definition, preserves unrelated keys, and ignores stale Formaloo sync state', async () => {
+    seedForm('internal-form', 'internal', {
+      definition: {
+        ...DEFINITION,
+        design: { primaryColor: '#06C755' },
+        futureInternalSetting: { enabled: true },
+        formCopy: { buttonText: '以前の文言' },
+        formType: 'simple',
+      },
+    });
+    raw.prepare(
+      `INSERT INTO formaloo_field_map
+         (id, form_id, formaloo_field_slug, field_type, label, position, config_json)
+       VALUES ('name', 'internal-form', 'remote-name', 'text', 'お名前', 0, '{}')`,
+    ).run();
+    await setFormalooSyncState(DB, 'internal-form', {
+      syncStatus: 'out_of_sync',
+      lastError: '以前の Formaloo 同期エラー',
+    });
+    const externalFetch = vi.fn(async () => { throw new Error('Formaloo must not be called'); });
+    vi.stubGlobal('fetch', externalFetch);
+    bindingOverrides = { FORMALOO_API_KEY: 'must-not-be-used', FORMALOO_API_SECRET: 'must-not-be-used' };
+
+    const nextFields = [
+      {
+        id: 'name', type: 'text', label: '氏名', required: true, position: 0,
+        config: { maxLength: 40, unknownConfig: 'drop-me' },
+      },
+      { id: 'memo', type: 'textarea', label: '備考', required: false, position: 1, config: {} },
+    ];
+    const response = await call('PUT', '/api/forms-advanced/internal-form/internal-definition', {
+      fields: nextFields,
+      logic: [],
+      title: ' 自前フォーム ',
+      description: '',
+      formCopy: { buttonText: ' 送信する ', successMessage: ' 完了 ', evil: 'drop-me' },
+      formType: 'multi_step',
+      design: { primaryColor: '#000000' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true, data: null });
+    const stored = raw.prepare(
+      'SELECT title, description, definition_json FROM formaloo_forms WHERE id = ?',
+    ).get('internal-form') as { title: string; description: string | null; definition_json: string };
+    expect(stored.title).toBe('自前フォーム');
+    expect(stored.description).toBeNull();
+    expect(JSON.parse(stored.definition_json)).toEqual({
+      fields: [
+        { id: 'name', type: 'text', label: '氏名', required: true, position: 0, config: { maxLength: 40 } },
+        { id: 'memo', type: 'textarea', label: '備考', required: false, position: 1, config: {} },
+      ],
+      logic: [],
+      design: { primaryColor: '#06C755' },
+      futureInternalSetting: { enabled: true },
+      formCopy: { buttonText: '送信する', successMessage: '完了' },
+      formType: 'multi_step',
+    });
+    expect(raw.prepare(
+      'SELECT id, formaloo_field_slug, field_type, label, position, config_json FROM formaloo_field_map WHERE form_id = ? ORDER BY position',
+    ).all('internal-form')).toEqual([
+      {
+        id: 'name', formaloo_field_slug: 'remote-name', field_type: 'text', label: '氏名',
+        position: 0, config_json: '{"maxLength":40}',
+      },
+      {
+        id: 'memo', formaloo_field_slug: null, field_type: 'textarea', label: '備考',
+        position: 1, config_json: '{}',
+      },
+    ]);
+    expect(raw.prepare('SELECT sync_status, last_error FROM formaloo_sync_state WHERE form_id = ?').get('internal-form'))
+      .toEqual({ sync_status: 'out_of_sync', last_error: '以前の Formaloo 同期エラー' });
+    expect(externalFetch).not.toHaveBeenCalled();
+  });
+
+  test('rejects non-empty logic and unsupported runtime fields without mutating the stored definition', async () => {
+    seedForm('internal-form', 'internal');
+    const before = raw.prepare('SELECT definition_json FROM formaloo_forms WHERE id = ?')
+      .get('internal-form') as { definition_json: string };
+
+    const withLogic = await call('PUT', '/api/forms-advanced/internal-form/internal-definition', {
+      fields: DEFINITION.fields,
+      logic: [{ id: 'logic-1' }],
+    });
+    expect(withLogic.status).toBe(400);
+
+    const unsupported = await call('PUT', '/api/forms-advanced/internal-form/internal-definition', {
+      fields: [{
+        id: 'fetch', type: 'choice_fetch', label: '動的選択肢', required: false, position: 0,
+        config: { choicesSource: 'https://example.test/options' },
+      }],
+      logic: [],
+    });
+    expect(unsupported.status).toBe(400);
+    expect(raw.prepare('SELECT definition_json FROM formaloo_forms WHERE id = ?').get('internal-form'))
+      .toEqual(before);
+  });
+
+  test('does not handle or mutate a Formaloo-backed form', async () => {
+    seedForm('formaloo-form', 'formaloo');
+    const before = raw.prepare('SELECT title, definition_json FROM formaloo_forms WHERE id = ?')
+      .get('formaloo-form');
+    const externalFetch = vi.fn(async () => { throw new Error('Formaloo must not be called'); });
+    vi.stubGlobal('fetch', externalFetch);
+    bindingOverrides = { FORMALOO_API_KEY: 'must-not-be-used', FORMALOO_API_SECRET: 'must-not-be-used' };
+
+    const response = await call('PUT', '/api/forms-advanced/formaloo-form/internal-definition', {
+      fields: [], logic: [], title: '変更してはいけない',
+    });
+
+    expect(response.status).toBe(404);
+    expect(raw.prepare('SELECT title, definition_json FROM formaloo_forms WHERE id = ?').get('formaloo-form'))
+      .toEqual(before);
+    expect(externalFetch).not.toHaveBeenCalled();
   });
 });
 

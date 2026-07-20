@@ -81,6 +81,14 @@ export default function FormBuilderClient({ id }: { id: string }) {
 
   const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => {
     try {
+      if (renderBackend === 'internal') {
+        await formsAdvancedApi.saveInternalDefinition(id, def)
+        const updated = await formsAdvancedApi.get(id)
+        setForm(updated)
+        await loadShare()
+        setNotice('保存しました')
+        return { ok: true, design: updated.design ?? undefined, warnings: updated.warnings }
+      }
       // preserve-raw: builder が carry した rawLogic + logicFingerprint をそのまま save body へ渡す。
       // form-design: design(色) + designImages(画像 intent) / form-route-branching: formType も同梱される。
       const updated = await formsAdvancedApi.saveDefinition(id, def)
@@ -194,17 +202,19 @@ export default function FormBuilderClient({ id }: { id: string }) {
             onSubmitForReview={withErr(() => formsAdvancedApi.submitForReview(id))}
             onPublish={withErr(() => formsAdvancedApi.publish(id))}
             onUnpublish={withErr(() => formsAdvancedApi.unpublish(id))}
-            onReimport={async () => {
-              try {
-                const d = await formsAdvancedApi.reimport(id)
-                setNotice(d.note)
-                return d
-              } catch (e) {
-                const body = (e as { body?: { error?: string } })?.body
-                setNotice(body?.error ?? '再取り込みに失敗しました')
-                return null
-              }
-            }}
+            onReimport={renderBackend === 'formaloo'
+              ? async () => {
+                  try {
+                    const d = await formsAdvancedApi.reimport(id)
+                    setNotice(d.note)
+                    return d
+                  } catch (e) {
+                    const body = (e as { body?: { error?: string } })?.body
+                    setNotice(body?.error ?? '再取り込みに失敗しました')
+                    return null
+                  }
+                }
+              : undefined}
           />
           <div className="mt-4">
             <SharePanel share={share} isOwner={isOwner && renderBackend === 'formaloo'} connecting={connecting} onConnectSheets={handleConnectSheets} />

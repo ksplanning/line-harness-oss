@@ -168,6 +168,12 @@ export const formsAdvancedApi = {
     // form-route-branching: envelope top-level の warnings (jump+simple backstop 等) を form に搬送 (builder が surface)。
     return env.warnings && env.warnings.length ? { ...env.data, warnings: env.warnings } : env.data
   },
+  async saveInternalDefinition(id: string, def: SaveDefinitionBody): Promise<void> {
+    await fetchApi<Envelope<null>>(
+      `/api/forms-advanced/${encodeURIComponent(id)}/internal-definition`,
+      { method: 'PUT', body: JSON.stringify(def) },
+    )
+  },
   // N-8: Formaloo から定義を再取り込み (pull / 非破壊)。ok===true の時だけ builder に反映する。
   async reimport(id: string): Promise<PulledDefinition> {
     return (await fetchApi<Envelope<PulledDefinition>>(`/api/forms-advanced/${id}/pull`)).data
