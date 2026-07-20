@@ -76,6 +76,11 @@ export interface UpdateSheetsSyncStatusInput {
   errorCode: string | null;
 }
 
+export interface SheetsSyncLeaseGuard {
+  token: string;
+  now: string;
+}
+
 export type SheetsCanonicalCellValue = string | number | boolean | null;
 
 export interface SheetsSyncLedgerEntry {
@@ -480,14 +485,28 @@ export async function reserveSheetsSyncSequence(
   lineAccountId: string,
   id: string,
   configVersion: number,
+  lease?: SheetsSyncLeaseGuard,
 ): Promise<number | null> {
   const row = await db.prepare(
     `UPDATE sheets_connections
      SET next_sync_sequence = next_sync_sequence + 1
      WHERE id = ? AND line_account_id = ? AND config_version = ?
        AND is_active = 1 AND deleted_at IS NULL
+       AND (
+         ? IS NULL OR (
+           sync_lock_token = ? AND sync_lock_expires_at IS NOT NULL
+           AND julianday(sync_lock_expires_at) > julianday(?)
+         )
+       )
      RETURNING next_sync_sequence - 1 AS sequence`,
-  ).bind(id, lineAccountId, configVersion).first<{ sequence: number }>();
+  ).bind(
+    id,
+    lineAccountId,
+    configVersion,
+    lease?.token ?? null,
+    lease?.token ?? null,
+    lease?.now ?? null,
+  ).first<{ sequence: number }>();
   return row?.sequence ?? null;
 }
 
@@ -496,12 +515,19 @@ export async function updateSheetsSyncStatus(
   lineAccountId: string,
   id: string,
   input: UpdateSheetsSyncStatusInput,
+  lease?: SheetsSyncLeaseGuard,
 ): Promise<SheetsConnection | null> {
   const result = await db.prepare(
     `UPDATE sheets_connections
      SET last_sync_at = ?, last_sync_status = ?, last_sync_warning = ?,
          last_sync_error_code = ?
-     WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL`,
+     WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
+       AND (
+         ? IS NULL OR (
+           sync_lock_token = ? AND sync_lock_expires_at IS NOT NULL
+           AND julianday(sync_lock_expires_at) > julianday(?)
+         )
+       )`,
   ).bind(
     input.lastSyncAt,
     input.status,
@@ -509,6 +535,9 @@ export async function updateSheetsSyncStatus(
     input.errorCode,
     id,
     lineAccountId,
+    lease?.token ?? null,
+    lease?.token ?? null,
+    lease?.now ?? null,
   ).run();
   if ((result.meta.changes ?? 0) !== 1) return null;
   return getSheetsConnection(db, lineAccountId, id);
@@ -602,6 +631,7 @@ export async function clearSheetsSyncLedgerRowNumbers(
   lineAccountId: string,
   connectionId: string,
   connectionVersion: number,
+  lease?: SheetsSyncLeaseGuard,
 ): Promise<boolean> {
   const result = await db.prepare(
     `UPDATE sheets_sync_ledger
@@ -612,8 +642,22 @@ export async function clearSheetsSyncLedgerRowNumbers(
          WHERE c.id = sheets_sync_ledger.connection_id
            AND c.line_account_id = ? AND c.config_version = ?
            AND c.is_active = 1 AND c.deleted_at IS NULL
+           AND (
+             ? IS NULL OR (
+               c.sync_lock_token = ? AND c.sync_lock_expires_at IS NOT NULL
+               AND julianday(c.sync_lock_expires_at) > julianday(?)
+             )
+           )
        )`,
-  ).bind(connectionId, connectionVersion, lineAccountId, connectionVersion).run();
+  ).bind(
+    connectionId,
+    connectionVersion,
+    lineAccountId,
+    connectionVersion,
+    lease?.token ?? null,
+    lease?.token ?? null,
+    lease?.now ?? null,
+  ).run();
   return (result.meta.changes ?? 0) > 0;
 }
 
@@ -621,6 +665,7 @@ export async function upsertSheetsSyncLedger(
   db: D1Database,
   lineAccountId: string,
   entry: Omit<SheetsSyncLedgerEntry, 'version'>,
+  lease?: SheetsSyncLeaseGuard,
 ): Promise<boolean> {
   const result = await db.prepare(
     `INSERT INTO sheets_sync_ledger
@@ -632,6 +677,12 @@ export async function upsertSheetsSyncLedger(
      FROM sheets_connections c
      WHERE c.id = ? AND c.line_account_id = ? AND c.config_version = ?
        AND c.is_active = 1 AND c.deleted_at IS NULL
+       AND (
+         ? IS NULL OR (
+           c.sync_lock_token = ? AND c.sync_lock_expires_at IS NOT NULL
+           AND julianday(c.sync_lock_expires_at) > julianday(?)
+         )
+       )
      ON CONFLICT(connection_id, record_key) DO UPDATE SET
        connection_version = excluded.connection_version,
        sheet_row_number = excluded.sheet_row_number,
@@ -657,6 +708,9 @@ export async function upsertSheetsSyncLedger(
     entry.connectionId,
     lineAccountId,
     entry.connectionVersion,
+    lease?.token ?? null,
+    lease?.token ?? null,
+    lease?.now ?? null,
   ).run();
   return (result.meta.changes ?? 0) === 1;
 }
@@ -665,6 +719,7 @@ export async function appendSheetsSyncAudit(
   db: D1Database,
   lineAccountId: string,
   entry: AppendSheetsSyncAuditInput,
+  lease?: SheetsSyncLeaseGuard,
 ): Promise<boolean> {
   const parent = db.prepare(
     `INSERT INTO sheets_sync_audit_log
@@ -676,7 +731,13 @@ export async function appendSheetsSyncAudit(
             c.spreadsheet_id, c.sheet_name, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      FROM sheets_connections c
      WHERE c.id = ? AND c.line_account_id = ? AND c.config_version = ?
-       AND c.is_active = 1 AND c.deleted_at IS NULL`,
+       AND c.is_active = 1 AND c.deleted_at IS NULL
+       AND (
+         ? IS NULL OR (
+           c.sync_lock_token = ? AND c.sync_lock_expires_at IS NOT NULL
+           AND julianday(c.sync_lock_expires_at) > julianday(?)
+         )
+       )`,
   ).bind(
     entry.id,
     entry.applySequence,
@@ -694,6 +755,9 @@ export async function appendSheetsSyncAudit(
     entry.connectionId,
     lineAccountId,
     entry.connectionVersion,
+    lease?.token ?? null,
+    lease?.token ?? null,
+    lease?.now ?? null,
   );
   const details = entry.details.map((detail) => db.prepare(
     `INSERT INTO sheets_sync_audit_details

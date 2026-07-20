@@ -128,6 +128,7 @@ interface FriendLedgerDbContract {
       warning: string | null;
       errorCode: string | null;
     },
+    lease?: { token: string; now: string },
   ): Promise<FriendLedgerConnectionContract | null>;
   listActiveSheetsConnectionsForSync(
     db: D1Database,
@@ -153,6 +154,7 @@ interface FriendLedgerDbContract {
     lineAccountId: string,
     connectionId: string,
     connectionVersion: number,
+    lease?: { token: string; now: string },
   ): Promise<boolean>;
   listSheetsSyncLedger(
     db: D1Database,
@@ -163,6 +165,7 @@ interface FriendLedgerDbContract {
     db: D1Database,
     lineAccountId: string,
     entry: Omit<SheetsSyncLedgerContract, 'version'>,
+    lease?: { token: string; now: string },
   ): Promise<boolean>;
   appendSheetsSyncAudit(
     db: D1Database,
@@ -171,6 +174,7 @@ interface FriendLedgerDbContract {
       SheetsSyncAuditContract,
       'lineAccountId' | 'formId' | 'spreadsheetId' | 'sheetName' | 'createdAt'
     >,
+    lease?: { token: string; now: string },
   ): Promise<boolean>;
   listSheetsSyncAudit(
     db: D1Database,
@@ -490,6 +494,43 @@ describe('Sheets connections DB helper', () => {
       .resolves.toBe(true);
     expect(raw.prepare(`SELECT sync_lock_token, sync_lock_expires_at FROM sheets_connections
       WHERE id = ?`).get(created.id)).toEqual({ sync_lock_token: null, sync_lock_expires_at: null });
+  });
+
+  test('rejects guarded state mutations after lease ownership changes or expires', async () => {
+    const created = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'friends-guard', spreadsheetId: 'sheet-friends',
+      sheetName: '友だち台帳', syncDirection: 'bidirectional',
+    });
+    await friendLedgerDb.claimSheetsSyncLock(
+      db, 'acc-1', created.id, 'current-worker',
+      '2026-07-21T10:00:00+09:00', '2026-07-21T10:05:00+09:00', 1,
+    );
+    const status = {
+      status: 'success' as const,
+      lastSyncAt: '2026-07-21T10:01:00+09:00',
+      warning: null,
+      errorCode: null,
+    };
+
+    await expect(friendLedgerDb.updateSheetsSyncStatus(
+      db, 'acc-1', created.id, status,
+      { token: 'stale-worker', now: '2026-07-21T10:01:00+09:00' },
+    )).resolves.toBeNull();
+    const guardedReserve = reserveSheetsSyncSequence as unknown as (
+      ...args: [D1Database, string, string, number, { token: string; now: string }]
+    ) => Promise<number | null>;
+    await expect(guardedReserve(
+      db, 'acc-1', created.id, 1,
+      { token: 'stale-worker', now: '2026-07-21T10:01:00+09:00' },
+    )).resolves.toBeNull();
+    await expect(guardedReserve(
+      db, 'acc-1', created.id, 1,
+      { token: 'current-worker', now: '2026-07-21T10:05:01+09:00' },
+    )).resolves.toBeNull();
+    await expect(guardedReserve(
+      db, 'acc-1', created.id, 1,
+      { token: 'current-worker', now: '2026-07-21T10:01:00+09:00' },
+    )).resolves.toBe(1);
   });
 
   test('binds a sync lock to the captured settings generation and blocks target changes while held', async () => {
