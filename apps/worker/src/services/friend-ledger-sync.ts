@@ -941,12 +941,6 @@ export async function syncFriendLedger(
       );
       if (sequence === null) throw new Error('stale_sheets_connection_generation');
       const identityEdit = ['表示名', 'userId', '登録日'].includes(options.snapshot.header);
-      const answerEdit = columns.some((column) => (
-        column.kind === 'answer' && column.header === options.snapshot!.header
-      ));
-      const redactSkippedCellValues = answerEdit
-        || snapshotTargetError === 'unselected_webhook_column'
-        || snapshotTargetError === 'stale_webhook_target';
       const auditWritten = await appendSheetsSyncAudit(options.db, options.connection.lineAccountId, {
         id: `gsa_${crypto.randomUUID()}`,
         connectionId: options.connection.id,
@@ -964,16 +958,12 @@ export async function syncFriendLedger(
         afterFingerprint: ledger?.rowFingerprint ?? null,
         errorCode: snapshotTargetError,
         webhookEventId: options.webhookEventId ?? null,
-        details: [redactSkippedCellValues
-          ? answerDetail(actor, options.snapshot.header, options.source, 'conflict')
-          : detail(
-            actor,
-            options.snapshot.header,
-            options.snapshot.oldValueKnown ? normalizeSheetCell(options.snapshot.oldValue) : null,
-            normalizeSheetCell(options.snapshot.value),
-            options.source,
-            identityEdit ? 'identity_ignored' : 'conflict',
-          )],
+        details: [answerDetail(
+          actor,
+          options.snapshot.header,
+          options.source,
+          identityEdit ? 'identity_ignored' : 'conflict',
+        )],
       }, lease);
       if (!auditWritten) throw new Error('stale_sheets_audit_generation');
       const finalLease = await renewLease();

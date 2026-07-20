@@ -195,6 +195,7 @@ async function run(
   range?: { rowStart: number; rowEnd: number; columnStart: number; columnEnd: number },
   snapshot?: FriendLedgerWebhookSnapshot,
   webhookEventId?: string,
+  webhookTargetError?: 'stale_webhook_generation',
 ) {
   connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
   return syncFriendLedger({
@@ -206,6 +207,7 @@ async function run(
     range,
     snapshot,
     webhookEventId,
+    webhookTargetError,
     now: () => new Date('2026-07-21T03:00:00.000Z'),
   });
 }
@@ -417,6 +419,42 @@ describe('friend ledger bidirectional sync', () => {
       column_name: '申込者名（変更）', old_value: null, new_value: null,
     });
   });
+
+  test.each([
+    ['stale_webhook_generation', 'U_AYAKO', 'stale_webhook_generation'],
+    ['unsafe_webhook_identity', null, undefined],
+  ] as const)(
+    'redacts a renamed answer value when %s wins before header classification',
+    async (expectedError, rowUserId, webhookTargetError) => {
+      enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
+      insertInternalAnswer('answer-first', { name: '山田花子' }, '2026-07-21T10:00:00+09:00');
+      await run();
+      client.values[0][4] = '申込者名（変更）';
+      client.values[1][4] = '編集後の個人情報';
+      const eventId = `event-renamed-${expectedError}`;
+
+      const result = await run(
+        'webhook',
+        'editor@example.test',
+        { rowStart: 2, rowEnd: 2, columnStart: 5, columnEnd: 5 },
+        {
+          rowNumber: 2, columnNumber: 5, header: '申込者名（変更）', rowUserId,
+          value: '編集後の個人情報', oldValue: '山田花子', oldValueKnown: true,
+        },
+        eventId,
+        webhookTargetError,
+      );
+
+      expect(result).toMatchObject({ status: 'warning', importedFields: 0 });
+      expect(raw.prepare(`SELECT outcome, error_code FROM sheets_sync_audit_log
+        WHERE webhook_event_id=?`).get(eventId)).toEqual({
+        outcome: 'skipped', error_code: expectedError,
+      });
+      expect(raw.prepare(`SELECT old_value, new_value FROM sheets_sync_audit_details
+        WHERE audit_id=(SELECT id FROM sheets_sync_audit_log
+          WHERE webhook_event_id=?)`).get(eventId)).toEqual({ old_value: null, new_value: null });
+    },
+  );
 
   test('imports a sheet answer edit into the latest submission without creating a duplicate or logging answer PII', async () => {
     enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
