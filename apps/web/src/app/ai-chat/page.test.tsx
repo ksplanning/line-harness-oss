@@ -78,6 +78,7 @@ describe('AI chat grandma UX and history', () => {
 
   test('example button fills the question box', async () => {
     render(<Page />)
+    await screen.findByRole('option', { name: 'お客様アンケート' })
     const example = await screen.findByRole('button', { name: '今週の回答の傾向は？' })
     fireEvent.click(example)
     expect((screen.getByRole('textbox', { name: 'AIへの質問' }) as HTMLTextAreaElement).value)
