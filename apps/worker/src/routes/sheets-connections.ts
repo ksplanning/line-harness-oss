@@ -37,6 +37,7 @@ const CONNECTION_TEST_MESSAGES: Record<GoogleSheetsErrorCategory, string> = {
 const VALID_DIRECTIONS = new Set<SheetsSyncDirection>(['to_sheets', 'from_sheets', 'bidirectional']);
 const IDENTITY_HEADERS = new Set(['表示名', 'userId', '登録日']);
 const MAX_SELECTED_FIELDS = 50;
+const MAX_FRIEND_LEDGER_WEBHOOK_BYTES = 32 * 1024;
 
 interface ConnectionInput {
   lineAccountId?: unknown;
@@ -404,7 +405,14 @@ sheetsConnections.get(`${BASE_PATH}/:id/audit`, async (c) => {
 // Apps Script sends only a signed range notification. Cell contents are fetched
 // from Google after verification, so untrusted request data never becomes CRM data.
 sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', async (c) => {
+  const declaredLength = Number(c.req.header('Content-Length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_FRIEND_LEDGER_WEBHOOK_BYTES) {
+    return c.json({ success: false, error: '通知サイズが大きすぎます' }, 413);
+  }
   const rawBody = await c.req.text();
+  if (new TextEncoder().encode(rawBody).byteLength > MAX_FRIEND_LEDGER_WEBHOOK_BYTES) {
+    return c.json({ success: false, error: '通知サイズが大きすぎます' }, 413);
+  }
   const signature = c.req.header('X-Sheets-Signature') ?? '';
   const timestamp = c.req.header('X-Sheets-Timestamp') ?? '';
   const verified = await verifySheetsWebhookSignature({
@@ -434,7 +442,7 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
       || connection.spreadsheetId !== payload.spreadsheetId
       || connection.sheetName !== payload.sheetName
     ) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
-    await syncFriendLedger({
+    const result = await syncFriendLedger({
       db: c.env.DB,
       connection,
       credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
@@ -442,6 +450,10 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
       actor: payload.actor,
       range: payload.range,
     });
+    if (result.busy) {
+      c.header('Retry-After', '2');
+      return c.json({ success: false, error: '同期中のため再試行が必要です' }, 409);
+    }
     return c.json({ success: true }, 202);
   } catch {
     console.error('Friend ledger webhook sync failed');

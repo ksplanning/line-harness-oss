@@ -77,6 +77,7 @@ export interface SyncFriendLedgerOptions {
 
 export interface FriendLedgerSyncResult {
   status: 'success' | 'warning';
+  busy: boolean;
   warning: string | null;
   warnings: string[];
   appendedRows: number;
@@ -406,7 +407,7 @@ export async function syncFriendLedger(
   if (!options.connection.friendLedgerEnabled) {
     const warnings = ['友だち台帳の同期設定が有効ではありません'];
     return {
-      status: 'warning', warning: warnings[0], warnings,
+      status: 'warning', busy: false, warning: warnings[0], warnings,
       appendedRows: 0, updatedRows: 0, importedFields: 0, ignoredIdentityEdits: 0,
     };
   }
@@ -428,7 +429,7 @@ export async function syncFriendLedger(
   if (!acquired) {
     const warnings = ['別の同期処理が実行中です'];
     return {
-      status: 'warning', warning: warnings[0], warnings,
+      status: 'warning', busy: true, warning: warnings[0], warnings,
       appendedRows: 0, updatedRows: 0, importedFields: 0, ignoredIdentityEdits: 0,
     };
   }
@@ -924,6 +925,7 @@ export async function syncFriendLedger(
     if (!statusUpdated) throw new Error('friend_ledger_sync_lock_lost');
     return {
       status,
+      busy: false,
       warning,
       warnings,
       appendedRows,

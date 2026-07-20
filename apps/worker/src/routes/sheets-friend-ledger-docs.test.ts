@@ -22,6 +22,7 @@ describe('Google Sheets friend ledger owner handoff documents', () => {
       'X-Sheets-Signature',
       'X-Sheets-Timestamp',
       'SHEETS_WEBHOOK_SECRET',
+      'Utilities.sleep',
     ]) {
       expect(script).toContain(required);
     }

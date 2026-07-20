@@ -303,6 +303,45 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
     }));
   });
 
+  test('returns a retriable response instead of acknowledging a lock-busy edit', async () => {
+    service.syncFriendLedger.mockResolvedValueOnce({
+      status: 'warning', warning: '別の同期処理が実行中です', busy: true,
+    });
+    const payload = {
+      version: 1,
+      connectionId: 'conn-a',
+      spreadsheetId: 'sheet-a',
+      sheetName: '友だち台帳',
+      range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      actor: 'editor@example.test',
+    };
+    const body = JSON.stringify(payload);
+
+    const response = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+      body,
+      headers: {
+        'X-Sheets-Signature': await hmacHex(body, WEBHOOK_TIMESTAMP),
+        'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+      },
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get('Retry-After')).toBe('2');
+  });
+
+  test('rejects an oversized webhook before signature work or DB access', async () => {
+    const prepare = vi.fn(() => { throw new Error('DB must not be touched'); });
+    const response = await call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+      body: '{}',
+      headers: { 'Content-Length': '65536' },
+      env: { DB: { prepare } as unknown as D1Database },
+    });
+
+    expect(response.status).toBe(413);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(service.syncFriendLedger).not.toHaveBeenCalled();
+  });
+
   test('binds the signed connection id to its saved spreadsheet and tab', async () => {
     const payload = {
       version: 1,

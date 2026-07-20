@@ -77,17 +77,23 @@ function friendLedgerOnEdit(event) {
     actor: actor
   });
   var signature = hmacHex_(timestamp + '.' + payload, values.SHEETS_WEBHOOK_SECRET);
-  var response = UrlFetchApp.fetch(values.SHEETS_WEBHOOK_URL, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: payload,
-    headers: {
-      'X-Sheets-Signature': signature,
-      'X-Sheets-Timestamp': timestamp
-    },
-    muteHttpExceptions: true
-  });
-  var status = response.getResponseCode();
+  var response;
+  var status = 0;
+  for (var attempt = 0; attempt < 3; attempt += 1) {
+    response = UrlFetchApp.fetch(values.SHEETS_WEBHOOK_URL, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: payload,
+      headers: {
+        'X-Sheets-Signature': signature,
+        'X-Sheets-Timestamp': timestamp
+      },
+      muteHttpExceptions: true
+    });
+    status = response.getResponseCode();
+    if ([409, 429, 503].indexOf(status) === -1 || attempt === 2) break;
+    Utilities.sleep(1000 * Math.pow(2, attempt));
+  }
   if (status < 200 || status >= 300) {
     throw new Error('LINE ハーネスへの編集通知に失敗しました。接続設定を確認してください。');
   }
