@@ -114,6 +114,35 @@ describe('TestSendDialog', () => {
     await waitFor(() => expect(screen.getByText('1件の送信先へテスト送信しました')).toBeTruthy())
   })
 
+  it('reports partial multi-account results and keeps per-account idempotency keys for retry', async () => {
+    getTestRecipients.mockImplementation(async (_source: string, accountId: string) => ({
+      success: true,
+      data: [{ id: `friend-${accountId}`, displayName: `担当者 ${accountId}`, pictureUrl: null }],
+    }))
+    sendTest.mockImplementation(async ({ accountId }: { accountId: string }) => {
+      if (accountId === 'acc-2') throw new Error('回線失敗')
+      return { success: true, sent: 1, failed: 0 }
+    })
+
+    render(
+      <TestSendDialog
+        accountIds={['acc-1', 'acc-2']}
+        source="broadcast"
+        messages={[{ type: 'text', content: '確認' }]}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'テスト送信' }))
+    const sendButton = await screen.findByRole('button', { name: 'テスト送信する' })
+
+    fireEvent.click(sendButton)
+    await waitFor(() => expect(screen.getByText('1件成功、1件失敗しました。成功済みの送信は重複しません')).toBeTruthy())
+    const firstKeys = sendTest.mock.calls.map(([payload]) => payload.idempotencyKey)
+
+    fireEvent.click(sendButton)
+    await waitFor(() => expect(sendTest).toHaveBeenCalledTimes(4))
+    expect(sendTest.mock.calls.slice(2).map(([payload]) => payload.idempotencyKey)).toEqual(firstKeys)
+  })
+
   it('shows a retryable error when recipient settings cannot be loaded', async () => {
     getTestRecipients.mockRejectedValue(new Error('network'))
     render(

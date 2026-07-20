@@ -123,7 +123,7 @@ export default function TestSendDialog({
         content: message.content,
         ...(typeof message.altText === 'string' ? { altText: message.altText } : {}),
       }))
-      const responses = await Promise.all(uniqueAccountIds.map(async (accountId) => {
+      const outcomes = await Promise.allSettled(uniqueAccountIds.map(async (accountId) => {
         const idempotencyKey = requestKeysRef.current[accountId] ?? operationKey()
         requestKeysRef.current[accountId] = idempotencyKey
         const response = await api.testSends.send({
@@ -136,10 +136,25 @@ export default function TestSendDialog({
         if (!response.success) throw new Error(response.error || 'テスト送信に失敗しました')
         return response
       }))
-      const sent = responses.reduce((total, response) => total + (response.sent ?? 0), 0)
-      const failed = responses.reduce((total, response) => total + (response.failed ?? 0), 0)
+      let sent = 0
+      let failed = 0
+      let firstError: unknown = null
+      outcomes.forEach((outcome, index) => {
+        if (outcome.status === 'fulfilled') {
+          sent += outcome.value.sent ?? 0
+          failed += outcome.value.failed ?? 0
+          return
+        }
+        firstError ??= outcome.reason
+        failed += groups.find((group) => group.accountId === uniqueAccountIds[index])?.recipients.length ?? 1
+      })
       if (failed > 0) {
-        setResult({ kind: 'error', message: `${sent}件成功、${failed}件失敗しました` })
+        setResult({
+          kind: 'error',
+          message: sent > 0
+            ? `${sent}件成功、${failed}件失敗しました。成功済みの送信は重複しません`
+            : errorMessage(firstError, `${failed}件のテスト送信に失敗しました`),
+        })
       } else {
         setResult({ kind: 'success', message: `${sent}件の送信先へテスト送信しました` })
       }
