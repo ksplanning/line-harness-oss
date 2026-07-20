@@ -768,8 +768,19 @@ export async function claimNextSheetsWebhookEvent(
          processing_token = NULL, processing_expires_at = NULL,
          completed_at = ?, last_error_code = 'webhook_event_expired'
      WHERE line_account_id = ? AND connection_id = ? AND status = 'pending'
-       AND (attempts >= ? OR julianday(received_at) < julianday(?))`,
-  ).bind(input.now, lineAccountId, connectionId, input.maxAttempts, input.discardBefore).run();
+       AND (attempts >= ? OR julianday(received_at) < julianday(?))
+       AND (
+         processing_token IS NULL OR processing_expires_at IS NULL
+         OR julianday(processing_expires_at) <= julianday(?)
+       )`,
+  ).bind(
+    input.now,
+    lineAccountId,
+    connectionId,
+    input.maxAttempts,
+    input.discardBefore,
+    input.now,
+  ).run();
   const row = await db.prepare(
     `UPDATE sheets_sync_webhook_events
      SET processing_token = ?, processing_expires_at = ?
@@ -784,6 +795,14 @@ export async function claimNextSheetsWebhookEvent(
            e.processing_token IS NULL OR e.processing_expires_at IS NULL
            OR julianday(e.processing_expires_at) <= julianday(?)
          )
+         AND NOT EXISTS (
+           SELECT 1 FROM sheets_sync_webhook_events owned
+           WHERE owned.line_account_id = e.line_account_id
+             AND owned.connection_id = e.connection_id
+             AND owned.status = 'pending' AND owned.processing_token IS NOT NULL
+             AND owned.processing_expires_at IS NOT NULL
+             AND julianday(owned.processing_expires_at) > julianday(?)
+         )
          AND c.line_account_id = e.line_account_id
          AND c.config_version = e.connection_version
          AND c.friend_ledger_enabled = 1 AND c.is_active = 1 AND c.deleted_at IS NULL
@@ -794,6 +813,12 @@ export async function claimNextSheetsWebhookEvent(
        ORDER BY e.sequence ASC
        LIMIT 1
      )
+       AND line_account_id = ? AND connection_id = ? AND connection_version = ?
+       AND status = 'pending'
+       AND (
+         processing_token IS NULL OR processing_expires_at IS NULL
+         OR julianday(processing_expires_at) <= julianday(?)
+       )
      RETURNING sequence, connection_id, line_account_id, connection_version, event_id,
                actor, actor_kind, occurred_at, payload_json, status, attempts,
                available_at, processing_token, processing_expires_at, received_at,
@@ -808,8 +833,61 @@ export async function claimNextSheetsWebhookEvent(
     input.now,
     input.now,
     input.now,
+    input.now,
+    lineAccountId,
+    connectionId,
+    connectionVersion,
+    input.now,
   ).first<SheetsWebhookEventRow>();
   return row ? serializeWebhookEvent(row) : null;
+}
+
+export async function expireSheetsWebhookEvents(
+  db: D1Database,
+  input: { now: string; discardBefore: string; maxAttempts: number; limit: number },
+): Promise<number> {
+  const result = await db.prepare(
+    `UPDATE sheets_sync_webhook_events
+     SET status = 'dead', payload_json = NULL, actor = 'redacted', actor_kind = 'unavailable',
+         processing_token = NULL, processing_expires_at = NULL,
+         completed_at = ?, last_error_code = 'webhook_event_expired'
+     WHERE sequence IN (
+       SELECT sequence
+       FROM sheets_sync_webhook_events
+       WHERE status = 'pending' AND (attempts >= ? OR julianday(received_at) < julianday(?))
+         AND (
+           processing_token IS NULL OR processing_expires_at IS NULL
+           OR julianday(processing_expires_at) <= julianday(?)
+         )
+       ORDER BY sequence ASC
+       LIMIT ?
+     )`,
+  ).bind(
+    input.now,
+    input.maxAttempts,
+    input.discardBefore,
+    input.now,
+    boundedLimit(input.limit, 100),
+  ).run();
+  return result.meta.changes ?? 0;
+}
+
+export async function purgeSheetsWebhookEventTombstones(
+  db: D1Database,
+  input: { completedBefore: string; limit: number },
+): Promise<number> {
+  const result = await db.prepare(
+    `DELETE FROM sheets_sync_webhook_events
+     WHERE sequence IN (
+       SELECT sequence
+       FROM sheets_sync_webhook_events
+       WHERE status IN ('applied', 'dead')
+         AND julianday(completed_at) < julianday(?)
+       ORDER BY completed_at ASC, sequence ASC
+       LIMIT ?
+     )`,
+  ).bind(input.completedBefore, boundedLimit(input.limit, 100)).run();
+  return result.meta.changes ?? 0;
 }
 
 export async function finishSheetsWebhookEvent(
@@ -1046,13 +1124,13 @@ export async function clearSheetsSyncLedgerRowNumbers(
   return (result.meta.changes ?? 0) === uniqueRecordKeys.length;
 }
 
-export async function upsertSheetsSyncLedger(
+function prepareSheetsSyncLedgerUpsert(
   db: D1Database,
   lineAccountId: string,
   entry: Omit<SheetsSyncLedgerEntry, 'version'>,
   lease?: SheetsSyncLeaseGuard,
-): Promise<boolean> {
-  const result = await db.prepare(
+): D1PreparedStatement {
+  return db.prepare(
     `INSERT INTO sheets_sync_ledger
        (connection_id, connection_version, record_key, sheet_row_number,
         row_fingerprint, canonical_snapshot_json, harness_updated_at,
@@ -1096,16 +1174,26 @@ export async function upsertSheetsSyncLedger(
     lease?.token ?? null,
     lease?.token ?? null,
     lease?.now ?? null,
-  ).run();
+  );
+}
+
+export async function upsertSheetsSyncLedger(
+  db: D1Database,
+  lineAccountId: string,
+  entry: Omit<SheetsSyncLedgerEntry, 'version'>,
+  lease?: SheetsSyncLeaseGuard,
+): Promise<boolean> {
+  const result = await prepareSheetsSyncLedgerUpsert(db, lineAccountId, entry, lease).run();
   return (result.meta.changes ?? 0) === 1;
 }
 
-export async function appendSheetsSyncAudit(
+function prepareSheetsSyncAuditInserts(
   db: D1Database,
   lineAccountId: string,
   entry: AppendSheetsSyncAuditInput,
   lease?: SheetsSyncLeaseGuard,
-): Promise<boolean> {
+  requiredLedger?: Omit<SheetsSyncLedgerEntry, 'version'>,
+): D1PreparedStatement[] {
   const parent = db.prepare(
     `INSERT INTO sheets_sync_audit_log
        (id, connection_id, connection_version, apply_sequence, line_account_id,
@@ -1122,6 +1210,14 @@ export async function appendSheetsSyncAudit(
          ? IS NULL OR (
            c.sync_lock_token = ? AND c.sync_lock_expires_at IS NOT NULL
            AND julianday(c.sync_lock_expires_at) > julianday(?)
+         )
+       )
+       AND (
+         ? IS NULL OR EXISTS (
+           SELECT 1 FROM sheets_sync_ledger l
+           WHERE l.connection_id = c.id AND l.connection_version = c.config_version
+             AND l.record_key = ? AND l.last_applied_sequence = ?
+             AND l.row_fingerprint = ?
          )
        )`,
   ).bind(
@@ -1145,6 +1241,10 @@ export async function appendSheetsSyncAudit(
     lease?.token ?? null,
     lease?.token ?? null,
     lease?.now ?? null,
+    requiredLedger?.recordKey ?? null,
+    requiredLedger?.recordKey ?? null,
+    requiredLedger?.lastAppliedSequence ?? null,
+    requiredLedger?.rowFingerprint ?? null,
   );
   const details = entry.details.map((detail) => db.prepare(
     `INSERT INTO sheets_sync_audit_details
@@ -1167,8 +1267,53 @@ export async function appendSheetsSyncAudit(
     entry.connectionId,
     lineAccountId,
   ));
-  const [result] = await db.batch([parent, ...details]);
+  return [parent, ...details];
+}
+
+export async function appendSheetsSyncAudit(
+  db: D1Database,
+  lineAccountId: string,
+  entry: AppendSheetsSyncAuditInput,
+  lease?: SheetsSyncLeaseGuard,
+): Promise<boolean> {
+  const [result] = await db.batch(prepareSheetsSyncAuditInserts(db, lineAccountId, entry, lease));
   return (result.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Publishes one row's immutable audit event and mutable ledger baseline in the
+ * same D1 batch. D1 batches are transactional, so a constraint or lease failure
+ * cannot leave an audit saying "applied" without the matching baseline.
+ */
+export async function commitSheetsSyncRow(
+  db: D1Database,
+  lineAccountId: string,
+  input: {
+    audit: AppendSheetsSyncAuditInput;
+    ledger: Omit<SheetsSyncLedgerEntry, 'version'>;
+  },
+  lease?: SheetsSyncLeaseGuard,
+): Promise<boolean> {
+  const { audit, ledger } = input;
+  if (
+    audit.connectionId !== ledger.connectionId
+    || audit.connectionVersion !== ledger.connectionVersion
+    || audit.applySequence !== ledger.lastAppliedSequence
+    || audit.recordKey !== ledger.recordKey
+    || audit.sheetRowNumber !== ledger.sheetRowNumber
+    || audit.afterFingerprint !== ledger.rowFingerprint
+  ) {
+    throw new Error('sheets_sync_row_commit_mismatch');
+  }
+  const ledgerStatement = prepareSheetsSyncLedgerUpsert(db, lineAccountId, ledger, lease);
+  const auditStatements = prepareSheetsSyncAuditInserts(db, lineAccountId, audit, lease, ledger);
+  const results = await db.batch([
+    ledgerStatement,
+    ...auditStatements,
+  ]);
+  const ledgerResult = results[0];
+  const parent = results[1];
+  return (parent.meta.changes ?? 0) === 1 && (ledgerResult.meta.changes ?? 0) === 1;
 }
 
 export async function listSheetsSyncAudit(

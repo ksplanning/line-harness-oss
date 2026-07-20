@@ -208,6 +208,24 @@ describe('migration 119 — friend ledger bidirectional sync contracts', () => {
               'google_email', '2026-07-21T10:00:00+09:00', '{}',
               '2026-07-21T10:00:00+09:00', '2026-07-21T10:00:00+09:00')`).run())
       .toThrow(/UNIQUE constraint failed/i);
+    expect(() => raw.prepare(`UPDATE sheets_sync_webhook_events
+      SET status='applied', payload_json=NULL, completed_at='2026-07-21T10:01:00+09:00'
+      WHERE event_id='event-0000000001'`).run()).toThrow(/CHECK constraint failed/i);
+    expect(() => raw.prepare(`INSERT INTO sheets_sync_webhook_events
+      (connection_id, line_account_id, connection_version, event_id, actor, actor_kind,
+       occurred_at, payload_json, available_at, received_at)
+      VALUES ('connection-1', 'acc-1', 1, 'event-invalid-time', 'editor@example.test',
+              'google_email', 'not-a-date', '{}',
+              '2026-07-21T10:00:00+09:00', '2026-07-21T10:00:00+09:00')`).run())
+      .toThrow(/CHECK constraint failed/i);
+    const indexes = raw.prepare(`SELECT name FROM sqlite_master
+      WHERE type='index' AND tbl_name='sheets_sync_webhook_events'`).all()
+      .map((row) => (row as { name: string }).name);
+    expect(indexes).toEqual(expect.arrayContaining([
+      'idx_sheets_sync_webhook_events_pending',
+      'idx_sheets_sync_webhook_events_lifecycle',
+      'idx_sheets_sync_webhook_events_terminal',
+    ]));
   });
 
   test('keeps schema and generated bootstrap aligned with migration 119', () => {

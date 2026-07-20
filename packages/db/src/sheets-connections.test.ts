@@ -190,6 +190,14 @@ interface FriendLedgerDbContract {
       errorCode: string | null;
     },
   ): Promise<boolean>;
+  expireSheetsWebhookEvents(
+    db: D1Database,
+    input: { now: string; discardBefore: string; maxAttempts: number; limit: number },
+  ): Promise<number>;
+  purgeSheetsWebhookEventTombstones(
+    db: D1Database,
+    input: { completedBefore: string; limit: number },
+  ): Promise<number>;
   claimSheetsSyncLock(
     db: D1Database,
     lineAccountId: string,
@@ -231,6 +239,18 @@ interface FriendLedgerDbContract {
       SheetsSyncAuditContract,
       'lineAccountId' | 'formId' | 'spreadsheetId' | 'sheetName' | 'createdAt'
     >,
+    lease?: { token: string; now: string },
+  ): Promise<boolean>;
+  commitSheetsSyncRow(
+    db: D1Database,
+    lineAccountId: string,
+    input: {
+      audit: Omit<
+        SheetsSyncAuditContract,
+        'lineAccountId' | 'formId' | 'spreadsheetId' | 'sheetName' | 'createdAt'
+      >;
+      ledger: Omit<SheetsSyncLedgerContract, 'version'>;
+    },
     lease?: { token: string; now: string },
   ): Promise<boolean>;
   listSheetsSyncAudit(
@@ -581,6 +601,10 @@ describe('Sheets connections DB helper', () => {
       attempts: 0,
       processingToken: claimInput.token,
     }));
+    await friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, {
+      ...input,
+      eventId: 'event-0000000002',
+    });
     await expect(friendLedgerDb.claimNextSheetsWebhookEvent(
       db, 'acc-1', created.id, 1, { ...claimInput, token: 'claim-token-2' },
     )).resolves.toBeNull();
@@ -623,10 +647,6 @@ describe('Sheets connections DB helper', () => {
       attempts: 0, processing_token: null,
     });
 
-    await friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, {
-      ...input,
-      eventId: 'event-0000000002',
-    });
     await friendLedgerDb.updateSheetsConnection(db, 'acc-1', created.id, {
       spreadsheetId: 'sheet-friends',
       sheetName: '友だち台帳',
@@ -638,6 +658,60 @@ describe('Sheets connections DB helper', () => {
       .get(created.id, 'event-0000000002')).toEqual({
       status: 'dead', payload_json: null, actor: 'redacted', last_error_code: 'connection_changed',
     });
+  });
+
+  test('expires old webhook PII globally but never fences an unexpired event claim', async () => {
+    const created = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'friends-expiry', spreadsheetId: 'sheet-friends',
+      sheetName: '友だち台帳', syncDirection: 'bidirectional', friendLedgerEnabled: true,
+    });
+    const event = {
+      eventId: 'event-expiry-000001',
+      actor: 'editor-expiry@example.test',
+      actorKind: 'google_email' as const,
+      occurredAt: '2026-07-21T09:59:00+09:00',
+      payload: { snapshot: { value: 'private-cell-value' } },
+      receivedAt: '2026-07-21T09:59:01+09:00',
+    };
+    await friendLedgerDb.enqueueSheetsWebhookEvent(db, 'acc-1', created.id, 1, event);
+    await friendLedgerDb.claimNextSheetsWebhookEvent(db, 'acc-1', created.id, 1, {
+      token: 'long-running-claim',
+      now: '2026-07-21T10:00:00+09:00',
+      expiresAt: '2026-07-21T10:02:00+09:00',
+      discardBefore: '2026-07-20T10:00:00+09:00',
+      maxAttempts: 5,
+    });
+    raw.prepare(`UPDATE sheets_sync_webhook_events SET received_at='2026-07-19T10:00:01+09:00'
+      WHERE event_id=?`).run(event.eventId);
+
+    await expect(friendLedgerDb.expireSheetsWebhookEvents(db, {
+      now: '2026-07-21T10:01:00+09:00',
+      discardBefore: '2026-07-20T10:01:00+09:00',
+      maxAttempts: 5,
+      limit: 100,
+    })).resolves.toBe(0);
+    expect(raw.prepare(`SELECT status, actor FROM sheets_sync_webhook_events
+      WHERE event_id=?`).get(event.eventId)).toEqual({
+      status: 'pending', actor: event.actor,
+    });
+
+    await expect(friendLedgerDb.expireSheetsWebhookEvents(db, {
+      now: '2026-07-21T10:03:00+09:00',
+      discardBefore: '2026-07-20T10:03:00+09:00',
+      maxAttempts: 5,
+      limit: 100,
+    })).resolves.toBe(1);
+    expect(raw.prepare(`SELECT status, actor, actor_kind, payload_json, processing_token
+      FROM sheets_sync_webhook_events WHERE event_id=?`).get(event.eventId)).toEqual({
+      status: 'dead', actor: 'redacted', actor_kind: 'unavailable', payload_json: null,
+      processing_token: null,
+    });
+    await expect(friendLedgerDb.purgeSheetsWebhookEventTombstones(db, {
+      completedBefore: '2026-07-21T10:04:00+09:00',
+      limit: 100,
+    })).resolves.toBe(1);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_webhook_events
+      WHERE event_id=?`).get(event.eventId)).toEqual({ count: 0 });
   });
 
   test('claims an expiring sync lock atomically and releases only the owning tenant/token', async () => {
@@ -902,5 +976,92 @@ describe('Sheets connections DB helper', () => {
     });
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_audit_log').get()).toEqual({ count: 2 });
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_audit_details').get()).toEqual({ count: 2 });
+  });
+
+  test('commits a row audit and its canonical ledger baseline atomically', async () => {
+    const created = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'friends-atomic', spreadsheetId: 'sheet-friends',
+      sheetName: '友だち台帳', syncDirection: 'bidirectional', friendLedgerEnabled: true,
+    });
+    const audit = {
+      id: 'audit-atomic',
+      connectionId: created.id,
+      connectionVersion: 1,
+      applySequence: 1,
+      recordKey: 'friend-atomic',
+      sheetRowNumber: 2,
+      direction: 'from_sheets' as const,
+      action: 'update' as const,
+      outcome: 'applied' as const,
+      conflictResolution: null,
+      harnessUpdatedAt: '2026-07-21T10:00:00+09:00',
+      sheetObservedAt: '2026-07-21T10:00:01+09:00',
+      beforeFingerprint: null,
+      afterFingerprint: 'fingerprint-atomic',
+      errorCode: null,
+      details: [],
+    };
+    const ledger = {
+      connectionId: created.id,
+      connectionVersion: 1,
+      recordKey: 'friend-atomic',
+      sheetRowNumber: 2,
+      rowFingerprint: 'fingerprint-atomic',
+      canonicalSnapshot: { 'custom:field': '済' },
+      harnessUpdatedAt: audit.harnessUpdatedAt,
+      sheetObservedAt: audit.sheetObservedAt,
+      lastSyncedAt: audit.sheetObservedAt,
+      lastSyncDirection: 'from_sheets' as const,
+      lastAppliedSequence: 1,
+    };
+
+    await expect(friendLedgerDb.commitSheetsSyncRow(db, 'acc-1', { audit, ledger })).resolves.toBe(true);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_audit_log
+      WHERE id='audit-atomic'`).get()).toEqual({ count: 1 });
+    expect(raw.prepare(`SELECT canonical_snapshot_json FROM sheets_sync_ledger
+      WHERE record_key='friend-atomic'`).get()).toEqual({
+      canonical_snapshot_json: JSON.stringify(ledger.canonicalSnapshot),
+    });
+
+    await expect(friendLedgerDb.commitSheetsSyncRow(db, 'acc-1', {
+      audit: { ...audit, id: 'audit-must-rollback', applySequence: 2 },
+      ledger: {
+        ...ledger,
+        lastAppliedSequence: 2,
+        canonicalSnapshot: [] as unknown as Record<string, CanonicalCellValue>,
+      },
+    })).rejects.toThrow(/CHECK constraint failed/i);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_audit_log
+      WHERE id='audit-must-rollback'`).get()).toEqual({ count: 0 });
+
+    await expect(friendLedgerDb.upsertSheetsSyncLedger(db, 'acc-1', {
+      ...ledger,
+      lastAppliedSequence: 3,
+    })).resolves.toBe(true);
+    await expect(friendLedgerDb.commitSheetsSyncRow(db, 'acc-1', {
+      audit: { ...audit, id: 'audit-older-ledger', applySequence: 2 },
+      ledger: { ...ledger, lastAppliedSequence: 2 },
+    })).resolves.toBe(false);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_audit_log
+      WHERE id='audit-older-ledger'`).get()).toEqual({ count: 0 });
+    expect(raw.prepare(`SELECT last_applied_sequence FROM sheets_sync_ledger
+      WHERE record_key='friend-atomic'`).get()).toEqual({ last_applied_sequence: 3 });
+
+    await expect(friendLedgerDb.commitSheetsSyncRow(db, 'acc-1', {
+      audit: { ...audit, id: 'audit-wrong-lease', applySequence: 4 },
+      ledger: { ...ledger, lastAppliedSequence: 4 },
+    }, {
+      token: 'not-the-owner',
+      now: '2026-07-21T12:00:00+09:00',
+    })).resolves.toBe(false);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_audit_log
+      WHERE id='audit-wrong-lease'`).get()).toEqual({ count: 0 });
+    expect(raw.prepare(`SELECT last_applied_sequence FROM sheets_sync_ledger
+      WHERE record_key='friend-atomic'`).get()).toEqual({ last_applied_sequence: 3 });
+
+    await expect(friendLedgerDb.commitSheetsSyncRow(db, 'acc-1', {
+      audit: { ...audit, id: 'audit-mismatch', afterFingerprint: 'different' },
+      ledger,
+    })).rejects.toThrow('sheets_sync_row_commit_mismatch');
   });
 });

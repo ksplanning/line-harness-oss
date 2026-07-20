@@ -80,17 +80,30 @@ CREATE TABLE IF NOT EXISTS sheets_sync_webhook_events (
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   UNIQUE (connection_id, event_id),
   CHECK ((processing_token IS NULL) = (processing_expires_at IS NULL)),
+  CHECK (processing_token IS NULL OR length(processing_token) BETWEEN 8 AND 200),
+  CHECK (julianday(occurred_at) IS NOT NULL),
+  CHECK (julianday(available_at) IS NOT NULL),
+  CHECK (julianday(received_at) IS NOT NULL),
+  CHECK (processing_expires_at IS NULL OR julianday(processing_expires_at) IS NOT NULL),
+  CHECK (completed_at IS NULL OR julianday(completed_at) IS NOT NULL),
   CHECK (
     (status = 'pending' AND payload_json IS NOT NULL AND completed_at IS NULL)
     OR
     (status IN ('applied', 'dead') AND payload_json IS NULL
-      AND processing_token IS NULL AND completed_at IS NOT NULL)
+      AND processing_token IS NULL AND completed_at IS NOT NULL
+      AND actor = 'redacted' AND actor_kind = 'unavailable')
   )
 );
 
 CREATE INDEX IF NOT EXISTS idx_sheets_sync_webhook_events_pending
   ON sheets_sync_webhook_events
      (line_account_id, connection_id, status, available_at, sequence);
+
+CREATE INDEX IF NOT EXISTS idx_sheets_sync_webhook_events_lifecycle
+  ON sheets_sync_webhook_events (status, received_at, sequence);
+
+CREATE INDEX IF NOT EXISTS idx_sheets_sync_webhook_events_terminal
+  ON sheets_sync_webhook_events (status, completed_at, sequence);
 
 -- A settings generation change or removal invalidates the signed target. Clear
 -- transient values and editor identity immediately instead of stranding PII in
