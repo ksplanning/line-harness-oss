@@ -45,6 +45,15 @@ describe('expandVariables regression and personalization bridge', () => {
     )).toBe('{{field:会員ランク}} / {{field:会員ランク}}');
   });
 
+  test('does not confuse a recipient value with an internal literal marker', () => {
+    const markerLikeDisplayName = '\uE000line_harness_literal_0\uE001';
+
+    expect(expandVariables(
+      '{{uid}} / {{display_name}}',
+      { ...friend, user_id: 'USER', display_name: markerLikeDisplayName },
+    )).toBe(`USER / ${markerLikeDisplayName}`);
+  });
+
   test('keeps variable-free Unicode text byte-for-byte identical', () => {
     const content = '通常のステップ本文 😊\n2行目✨';
     const expanded = expandVariables(content, friend, 'https://worker.example');

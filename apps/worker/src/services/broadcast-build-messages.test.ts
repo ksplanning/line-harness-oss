@@ -62,25 +62,25 @@ describe('buildBroadcastMessages', () => {
   it('keeps recipient variables literal in single broadcast while replacing liff_id', () => {
     const single = bc({
       message_type: 'text',
-      message_content: '{{display_name|お客様}} / {{field:会員ランク|未設定}} / {{liff_id}}',
+      message_content: '{{display_name|お客様}} / {{field:会員ランク}} / {{liff_id}}',
       messages: null,
     });
 
     expect(buildBroadcastMessages(single, 'LIFF-B')).toEqual([{
       type: 'text',
-      text: '{{display_name|お客様}} / {{field:会員ランク|未設定}} / LIFF-B',
+      text: '{{display_name|お客様}} / {{field:会員ランク}} / LIFF-B',
     }]);
   });
 
   it('keeps recipient variables literal in combo broadcast elements', () => {
     const messages = JSON.stringify([
       { type: 'text', content: '{{display_name}} {{liff_id}}' },
-      { type: 'text', content: '{{field:会員ランク|未設定}} {{liff_id}}' },
+      { type: 'text', content: '{{field:会員ランク}} {{liff_id}}' },
     ]);
 
     expect(buildBroadcastMessages(bc({ messages }), 'LIFF-C')).toEqual([
       { type: 'text', text: '{{display_name}} LIFF-C' },
-      { type: 'text', text: '{{field:会員ランク|未設定}} LIFF-C' },
+      { type: 'text', text: '{{field:会員ランク}} LIFF-C' },
     ]);
   });
 

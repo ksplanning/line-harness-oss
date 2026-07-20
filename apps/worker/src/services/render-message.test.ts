@@ -45,9 +45,9 @@ describe('renderMessageContent', () => {
     )).toBe('こんにちは さん / お客様');
   });
 
-  test('replaces defined custom fields, including empty-value fallback and non-string values', () => {
+  test('replaces defined custom fields, including empty and non-string values', () => {
     expect(renderMessageContent(
-      '{{field:会員ランク}} / {{field:担当者|未設定}} / {{field:来店回数}} / {{field:興味}}',
+      '{{field:会員ランク}} / {{field:担当者}} / {{field:来店回数}} / {{field:興味}}',
       null,
       {
         customFields: {
@@ -57,7 +57,7 @@ describe('renderMessageContent', () => {
           興味: ['新商品', 'セール'],
         },
       },
-    )).toBe('ゴールド / 未設定 / 3 / 新商品, セール');
+    )).toBe('ゴールド /  / 3 / 新商品, セール');
   });
 
   test('leaves unknown variables and undefined custom fields unchanged', () => {
@@ -74,6 +74,14 @@ describe('renderMessageContent', () => {
       null,
       { customFields: { A: 'VALUE' } },
     )).toBe('{{unknown {{field:A}}}} / VALUE');
+  });
+
+  test('keeps legacy liff_id replacement inside otherwise unknown syntax', () => {
+    expect(renderMessageContent(
+      '{{unknown {{liff_id}}}} / {{liff_id}}',
+      'LIFF-1',
+      { customFields: { A: 'VALUE' } },
+    )).toBe('{{unknown LIFF-1}} / LIFF-1');
   });
 
   test('keeps a missing display-name context untouched while rendering provided fields', () => {
@@ -100,12 +108,12 @@ describe('renderMessageContent', () => {
     )).toBe('{{field:A}} / $& VIP / $$ / $` and $\' / {{display_name}}');
   });
 
-  test('uses an explicit fallback when an array has no printable values', () => {
+  test('renders an array with no printable values as empty', () => {
     expect(renderMessageContent(
-      '{{field:興味|未設定}} / {{field:空要素|未設定}}',
+      '{{field:興味}} / {{field:空要素}}',
       null,
       { customFields: { 興味: [], 空要素: ['', null] } },
-    )).toBe('未設定 / 未設定');
+    )).toBe(' / ');
   });
 
   test('matches custom field names literally even when they contain token delimiters', () => {
@@ -118,7 +126,15 @@ describe('renderMessageContent', () => {
           '備考}欄': '確認済み',
         },
       },
-    )).toBe(' / 確認済み / 一般');
+    )).toBe(' / 確認済み / {{field:会員|区分|一般}}');
+  });
+
+  test('does not reinterpret an undefined delimiter name as a shorter field plus fallback', () => {
+    expect(renderMessageContent(
+      '{{field:会員|区分}} / {{field:会員}}',
+      null,
+      { customFields: { 会員: 'VIP' } },
+    )).toBe('{{field:会員|区分}} / VIP');
   });
 
   test('does not consume recipient variables when recipient context is absent', () => {

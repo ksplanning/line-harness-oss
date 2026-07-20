@@ -52,6 +52,61 @@ async function getActiveFriendFieldDefinitions(
   }
 }
 
+function findBalancedTokenEnd(content: string, start: number): number {
+  let depth = 1;
+  let cursor = start + 2;
+  while (cursor < content.length) {
+    const nextOpen = content.indexOf('{{', cursor);
+    const nextClose = content.indexOf('}}', cursor);
+    if (nextClose === -1) return content.length;
+    if (nextOpen !== -1 && nextOpen < nextClose) {
+      depth += 1;
+      cursor = nextOpen + 2;
+      continue;
+    }
+    depth -= 1;
+    cursor = nextClose + 2;
+    if (depth === 0) return cursor;
+  }
+  return content.length;
+}
+
+function protectOriginalRecipientTokens(content: string): {
+  content: string;
+  restore: (value: string) => string;
+} {
+  let prefix = '\uE002line_harness_recipient_token_';
+  while (content.includes(prefix)) prefix += '_';
+  const suffix = '\uE003';
+  const tokens: string[] = [];
+  let cursor = 0;
+  let protectedContent = '';
+
+  while (cursor < content.length) {
+    const fieldStart = content.indexOf('{{field:', cursor);
+    const displayStart = content.indexOf('{{display_name', cursor);
+    const starts = [fieldStart, displayStart].filter((index) => index !== -1);
+    if (starts.length === 0) {
+      protectedContent += content.slice(cursor);
+      break;
+    }
+    const start = Math.min(...starts);
+    const end = findBalancedTokenEnd(content, start);
+    protectedContent += content.slice(cursor, start);
+    protectedContent += `${prefix}${tokens.push(content.slice(start, end)) - 1}${suffix}`;
+    cursor = end;
+  }
+
+  if (tokens.length === 0) return { content, restore: (value) => value };
+  const pattern = new RegExp(`${prefix}(\\d+)${suffix}`, 'g');
+  return {
+    content: protectedContent,
+    restore: (value) => value.replace(pattern, (match, index: string) => (
+      tokens[Number(index)] ?? match
+    )),
+  };
+}
+
 /**
  * Replace template variables in message content.
  *
@@ -67,19 +122,39 @@ export function expandVariables(
   friend: { id: string; display_name: string | null; user_id: string | null; ref_code?: string | null; metadata?: Record<string, unknown> | string | null },
   apiOrigin?: string,
 ): string {
+  // Metadata variables: {{metadata.KEY}} → value from friend's metadata.
+  const meta = friend.metadata
+    ? (typeof friend.metadata === 'string' ? JSON.parse(friend.metadata) as Record<string, unknown> : friend.metadata)
+    : {};
+  const customFields = resolvedCustomFields.get(meta);
+  const protectedRecipientTokens = protectOriginalRecipientTokens(content);
+
   // Legacy variables are expanded before the shared renderer for backwards
   // compatibility. Mask their recipient-controlled values so a value that
   // happens to contain a new {{display_name}}/{{field:*}} token stays literal.
-  let literalPrefix = '\uE000line_harness_literal_';
-  while (content.includes(literalPrefix)) literalPrefix += '_';
+  let literalPrefix = '';
   const literalSuffix = '\uE001';
   const literalValues: string[] = [];
   const maskLiteral = (value: string): string => {
+    if (!literalPrefix) {
+      literalPrefix = '\uE000line_harness_literal_';
+      const collisionSources = [
+        content,
+        friend.id,
+        friend.display_name ?? '',
+        friend.user_id ?? '',
+        friend.ref_code ?? '',
+        apiOrigin ?? '',
+        ...Object.values(meta),
+        ...Object.values(customFields ?? {}),
+      ].map((source) => Array.isArray(source) ? source.join(', ') : String(source ?? ''));
+      while (collisionSources.some((source) => source.includes(literalPrefix))) literalPrefix += '_';
+    }
     const index = literalValues.push(value) - 1;
     return `${literalPrefix}${index}${literalSuffix}`;
   };
 
-  let result = content;
+  let result = protectedRecipientTokens.content;
   result = result.replace(/\{\{name\}\}/g, () => maskLiteral(friend.display_name || ''));
   result = result.replace(/\{\{uid\}\}/g, () => maskLiteral(friend.user_id || ''));
   result = result.replace(/\{\{friend_id\}\}/g, () => maskLiteral(friend.id));
@@ -90,10 +165,6 @@ export function expandVariables(
   } else {
     result = result.replace(/\{\{#if_ref\}\}[\s\S]*?\{\{\/if_ref\}\}/g, '');
   }
-  // Metadata variables: {{metadata.KEY}} → value from friend's metadata
-  const meta = friend.metadata
-    ? (typeof friend.metadata === 'string' ? JSON.parse(friend.metadata) as Record<string, unknown> : friend.metadata)
-    : {};
   // Conditional block: {{#if_metadata.KEY}}...{{/if_metadata.KEY}} — only shown if metadata key has a value
   // When inside JSON arrays, removes the element and fixes trailing/leading commas
   result = result.replace(/\{\{#if_metadata\.([^}]+)\}\}([\s\S]*?)\{\{\/if_metadata\.\1\}\}/g, (_match, key, inner) => {
@@ -117,10 +188,11 @@ export function expandVariables(
       return maskLiteral(`${apiOrigin}/auth/line?${params.toString()}`);
     });
   }
-  const rendered = renderMessageContent(result, null, {
+  const rendered = renderMessageContent(protectedRecipientTokens.restore(result), null, {
     displayName: friend.display_name,
-    customFields: resolvedCustomFields.get(meta),
+    customFields,
   });
+  if (literalValues.length === 0) return rendered;
   const literalPattern = new RegExp(`${literalPrefix}(\\d+)${literalSuffix}`, 'g');
   return rendered.replace(literalPattern, (match, index: string) => (
     literalValues[Number(index)] ?? match

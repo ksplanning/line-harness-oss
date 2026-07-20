@@ -80,15 +80,10 @@ function matchOriginalToken(
           value: printableValue(value, undefined),
         };
       }
-      if (content[suffixStart] === '|') {
-        const tokenEnd = content.indexOf('}}', suffixStart + 1);
-        if (tokenEnd !== -1) {
-          return {
-            end: tokenEnd + 2,
-            value: printableValue(value, content.slice(suffixStart + 1, tokenEnd)),
-          };
-        }
-      }
+      // Custom field names may legally contain `|`. Match only the complete
+      // active definition name; missing values use the definition default (or
+      // empty string), so a deleted/inactive longer name is never reinterpreted
+      // as a shorter field plus inline fallback.
     }
   }
 
@@ -126,10 +121,12 @@ export function renderMessageContent(
       // being interpreted and keeps the unknown source bytes unchanged.
       const unknownEnd = content.indexOf('}}', tokenStart + 2);
       if (unknownEnd === -1) {
-        result += content.slice(tokenStart);
+        const unknownSource = content.slice(tokenStart);
+        result += liffId ? unknownSource.replaceAll('{{liff_id}}', liffId) : unknownSource;
         break;
       }
-      result += content.slice(tokenStart, unknownEnd + 2);
+      const unknownSource = content.slice(tokenStart, unknownEnd + 2);
+      result += liffId ? unknownSource.replaceAll('{{liff_id}}', liffId) : unknownSource;
       cursor = unknownEnd + 2;
     }
   }

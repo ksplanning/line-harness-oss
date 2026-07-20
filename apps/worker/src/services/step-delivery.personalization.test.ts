@@ -141,7 +141,7 @@ describe('scenario step personalization payload', () => {
     });
     await createFriendFieldDefinition(db, {
       name: '担当者',
-      defaultValue: '',
+      defaultValue: '未設定',
       displayOrder: 1,
       isActive: true,
     });
@@ -153,13 +153,13 @@ describe('scenario step personalization payload', () => {
     });
 
     await deliverOneStep(
-      '{{display_name|お客様}} / {{field:会員ランク}} / {{field:担当者|未設定}} / {{field:廃止項目}} / {{field:廃止項目|代替}}',
+      '{{display_name|お客様}} / {{field:会員ランク}} / {{field:担当者}} / {{field:廃止項目}}',
       { displayName: null, metadata: { 廃止項目: '旧データ' } },
     );
 
     expect(lineClient.pushMessage).toHaveBeenCalledWith('U-friend-1', [{
       type: 'text',
-      text: 'お客様 / 未登録 / 未設定 / {{field:廃止項目}} / {{field:廃止項目|代替}}',
+      text: 'お客様 / 未登録 / 未設定 / {{field:廃止項目}}',
     }]);
   });
 
@@ -189,13 +189,13 @@ describe('scenario step personalization payload', () => {
 
     const metadata = await resolveMetadata(db, friend);
     const expanded = expandVariables(
-      'こんにちは {{display_name|お客様}}さん / {{field:会員ランク}} / {{field:廃止項目|代替}} 😊',
+      'こんにちは {{display_name|お客様}}さん / {{field:会員ランク}} / {{field:廃止項目}} 😊',
       { ...friend, metadata },
     );
 
     expect(buildMessage('text', expanded)).toEqual({
       type: 'text',
-      text: 'こんにちは 山田花子さん / ゴールド / {{field:廃止項目|代替}} 😊',
+      text: 'こんにちは 山田花子さん / ゴールド / {{field:廃止項目}} 😊',
     });
   });
 
@@ -237,5 +237,28 @@ describe('scenario step personalization payload', () => {
       '{{name}} / {{metadata.inject}} / {{field:会員ランク}}',
       { ...friend, metadata },
     )).toBe('{{field:会員ランク}} / {{field:会員ランク}} / VIP');
+  });
+
+  test('keeps legacy syntax inside a custom-field name opaque until field rendering', async () => {
+    const fieldName = 'A{{name}}B';
+    await createFriendFieldDefinition(db, {
+      name: fieldName,
+      defaultValue: '',
+      displayOrder: 0,
+      isActive: true,
+    });
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, display_name, is_following, metadata)
+       VALUES ('friend-token-name', 'U-token-name', 'Alice', 1, ?)`,
+    ).run(JSON.stringify({ [fieldName]: 'VALUE' }));
+    const friend = raw.prepare('SELECT * FROM friends WHERE id = ?').get('friend-token-name') as {
+      id: string;
+      display_name: string | null;
+      user_id: string | null;
+      metadata: string | null;
+    };
+    const metadata = await resolveMetadata(db, friend);
+
+    expect(expandVariables(`{{field:${fieldName}}}`, { ...friend, metadata })).toBe('VALUE');
   });
 });
