@@ -17,6 +17,7 @@ import {
   switchFormRenderBackendToDraft,
   unpublishInternalFormDefinition,
   updateLatestInternalFormSubmissionAnswersForSheets,
+  updateInternalFormSubmissionAnswers,
 } from './internal-forms.js';
 import {
   acquireFormalooFormOperationLock,
@@ -88,6 +89,8 @@ describe('internal form persistence', () => {
 
     expect(created.id).toMatch(/^ifs_/);
     expect(created.answers_json).toBe('{"name":"佐藤","interests":["A","B"]}');
+    expect(created.origin_channel).toBe('embed');
+    expect(created.edit_version).toBe(0);
     expect(await listInternalFormSubmissions(DB, 'fa_internal', { limit: 20, offset: 0 }))
       .toMatchObject({ total: 1, rows: [expect.objectContaining({ id: created.id })] });
     expect(await getInternalFormSubmission(DB, 'fa_internal', created.id))
@@ -602,5 +605,69 @@ describe('internal form persistence', () => {
     expect(await getFormalooForm(DB, 'fa_internal')).toMatchObject({
       builder_status: 'published',
     });
+  test.each(['line', 'invalid'] as const)(
+    'persists an explicitly classified %s origin channel',
+    async (originChannel) => {
+      const created = await createInternalFormSubmission(DB, {
+        formId: 'fa_internal',
+        answers: { name: '佐藤' },
+        originChannel,
+      });
+
+      expect(created.origin_channel).toBe(originChannel);
+    },
+  );
+
+  test('updates answers with compare-and-swap and returns the current row on a stale edit', async () => {
+    const created = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '変更前' },
+    });
+
+    const updated = await updateInternalFormSubmissionAnswers(DB, {
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 0,
+      answers: { name: '変更後' },
+    });
+    expect(updated).toMatchObject({
+      status: 'updated',
+      submission: {
+        id: created.id,
+        answers_json: '{"name":"変更後"}',
+        edit_version: 1,
+      },
+    });
+
+    const conflict = await updateInternalFormSubmissionAnswers(DB, {
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 0,
+      answers: { name: '競合書き込み' },
+    });
+    expect(conflict).toMatchObject({
+      status: 'conflict',
+      submission: {
+        id: created.id,
+        answers_json: '{"name":"変更後"}',
+        edit_version: 1,
+      },
+    });
+  });
+
+  test('does not update a submission through another form scope', async () => {
+    const created = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '元の回答' },
+    });
+
+    expect(await updateInternalFormSubmissionAnswers(DB, {
+      formId: 'fa_other',
+      submissionId: created.id,
+      expectedEditVersion: 0,
+      answers: { name: '越境更新' },
+    })).toEqual({ status: 'conflict', submission: null });
+    expect(await getInternalFormSubmission(DB, 'fa_internal', created.id))
+      .toMatchObject({ answers_json: '{"name":"元の回答"}', edit_version: 0 });
   });
 });

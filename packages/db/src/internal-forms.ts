@@ -2,12 +2,15 @@ import { jstNow } from './utils.js';
 import type { SheetsSyncLeaseGuard } from './sheets-connections.js';
 
 export type FormRenderBackend = 'formaloo' | 'internal';
+export type InternalFormOriginChannel = 'line' | 'embed' | 'invalid';
 
 export interface InternalFormSubmission {
   id: string;
   form_id: string;
   friend_id: string | null;
   answers_json: string;
+  origin_channel: InternalFormOriginChannel;
+  edit_version: number;
   submitted_at: string;
   created_at: string;
 }
@@ -23,6 +26,10 @@ export interface UpdateLatestInternalFormSubmissionAnswersForSheetsInput {
   answers: Record<string, unknown>;
   lease: SheetsSyncLeaseGuard;
 }
+
+export type UpdateInternalFormSubmissionAnswersResult =
+  | { status: 'updated'; submission: InternalFormSubmission }
+  | { status: 'conflict'; submission: InternalFormSubmission | null };
 
 export async function setFormRenderBackend(
   db: D1Database,
@@ -237,6 +244,7 @@ export async function createInternalFormSubmission(
     formId: string;
     friendId?: string | null;
     answers: Record<string, unknown>;
+    originChannel?: InternalFormOriginChannel;
     submittedAt?: string;
   },
 ): Promise<InternalFormSubmission> {
@@ -245,10 +253,18 @@ export async function createInternalFormSubmission(
   await db
     .prepare(
       `INSERT INTO internal_form_submissions
-         (id, form_id, friend_id, answers_json, submitted_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+         (id, form_id, friend_id, answers_json, origin_channel, submitted_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, input.formId, input.friendId ?? null, JSON.stringify(input.answers), now, now)
+    .bind(
+      id,
+      input.formId,
+      input.friendId ?? null,
+      JSON.stringify(input.answers),
+      input.originChannel ?? 'embed',
+      now,
+      now,
+    )
     .run();
   return (await getInternalFormSubmission(db, input.formId, id))!;
 }
@@ -494,6 +510,36 @@ export async function getInternalFormSubmission(
     .prepare('SELECT * FROM internal_form_submissions WHERE id = ? AND form_id = ?')
     .bind(submissionId, formId)
     .first<InternalFormSubmission>();
+}
+
+export async function updateInternalFormSubmissionAnswers(
+  db: D1Database,
+  input: {
+    formId: string;
+    submissionId: string;
+    expectedEditVersion: number;
+    answers: Record<string, unknown>;
+  },
+): Promise<UpdateInternalFormSubmissionAnswersResult> {
+  const updated = await db
+    .prepare(
+      `UPDATE internal_form_submissions
+       SET answers_json = ?, edit_version = edit_version + 1
+       WHERE id = ? AND form_id = ? AND edit_version = ?
+       RETURNING *`,
+    )
+    .bind(
+      JSON.stringify(input.answers),
+      input.submissionId,
+      input.formId,
+      input.expectedEditVersion,
+    )
+    .first<InternalFormSubmission>();
+  if (updated) return { status: 'updated', submission: updated };
+  return {
+    status: 'conflict',
+    submission: await getInternalFormSubmission(db, input.formId, input.submissionId),
+  };
 }
 
 export async function countInternalFormSubmissionsForForm(

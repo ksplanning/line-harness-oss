@@ -808,11 +808,24 @@ CREATE TABLE incoming_webhooks (
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE internal_form_notification_settings (
+  form_id                  TEXT PRIMARY KEY REFERENCES formaloo_forms (id) ON DELETE CASCADE,
+  enabled                  INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  recipient_email_field_id TEXT,
+  message_template         TEXT,
+  edit_link_epoch          INTEGER NOT NULL DEFAULT 0 CHECK (edit_link_epoch >= 0),
+  created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE internal_form_submissions (
   id           TEXT PRIMARY KEY,
   form_id      TEXT NOT NULL,
   friend_id    TEXT,
   answers_json TEXT NOT NULL DEFAULT '{}',
+  origin_channel TEXT NOT NULL DEFAULT 'embed'
+                 CHECK (origin_channel IN ('line', 'embed', 'invalid')),
+  edit_version INTEGER NOT NULL DEFAULT 0 CHECK (edit_version >= 0),
   submitted_at TEXT NOT NULL,
   created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
