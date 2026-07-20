@@ -2,7 +2,8 @@
 -- Existing forms stay on Formaloo because the additive flag defaults to `formaloo`.
 -- Internal answers use a separate table so the Formaloo mirror and API path remain unchanged.
 
-ALTER TABLE formaloo_forms ADD COLUMN render_backend TEXT NOT NULL DEFAULT 'formaloo';
+ALTER TABLE formaloo_forms ADD COLUMN render_backend TEXT NOT NULL DEFAULT 'formaloo'
+  CHECK (render_backend IN ('formaloo', 'internal'));
 
 CREATE TABLE IF NOT EXISTS internal_form_submissions (
   id           TEXT PRIMARY KEY,

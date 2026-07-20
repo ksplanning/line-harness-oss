@@ -539,6 +539,8 @@ CREATE TABLE formaloo_forms (
   workspace_id          TEXT,                            -- migration 095: 作成先 Formaloo workspace (NULL=env 鍵 fallback / F6-2 本柱④)
   folder_id             TEXT,                            -- migration 096: ハーネス側フォルダ分類 (NULL=未分類 / F6-3 本柱③)
   friend_metadata_mappings_json TEXT NOT NULL DEFAULT '[]', -- migration 103: Formaloo row → friend.metadata (空配列=OFF)
+  render_backend        TEXT NOT NULL DEFAULT 'formaloo' -- migration 113: formaloo|internal (既存は Formaloo 維持)
+                        CHECK (render_backend IN ('formaloo', 'internal')),
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , allow_post_edit INTEGER NOT NULL DEFAULT 0, allow_edit_mail INTEGER NOT NULL DEFAULT 0, edit_mail_field_slug TEXT, edit_link_epoch INTEGER NOT NULL DEFAULT 0, formaloo_webhook_enabled INTEGER NOT NULL DEFAULT 0, formaloo_webhook_id TEXT, formaloo_webhook_secret TEXT, formaloo_webhook_url TEXT, formaloo_webhook_lock_token TEXT, formaloo_webhook_lock_until INTEGER, formaloo_webhook_pull_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_processed_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_lock_token TEXT, formaloo_webhook_pull_lock_until INTEGER, formaloo_webhook_pull_not_before INTEGER NOT NULL DEFAULT 0);
@@ -725,6 +727,15 @@ CREATE TABLE incoming_webhooks (
   is_active   INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE internal_form_submissions (
+  id           TEXT PRIMARY KEY,
+  form_id      TEXT NOT NULL,
+  friend_id    TEXT,
+  answers_json TEXT NOT NULL DEFAULT '{}',
+  submitted_at TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE TABLE knowledge_chunks (
@@ -1523,6 +1534,12 @@ CREATE INDEX idx_friends_user_id ON friends (user_id);
 CREATE INDEX idx_health_logs_account ON account_health_logs (line_account_id);
 
 CREATE INDEX idx_idempotency_expires ON booking_idempotency_keys (expires_at);
+
+CREATE INDEX idx_internal_form_submissions_form
+  ON internal_form_submissions (form_id, submitted_at);
+
+CREATE INDEX idx_internal_form_submissions_friend
+  ON internal_form_submissions (friend_id);
 
 CREATE INDEX idx_knowledge_chunks_acct ON knowledge_chunks(line_account_id);
 

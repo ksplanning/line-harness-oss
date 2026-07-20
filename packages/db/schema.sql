@@ -1391,6 +1391,8 @@ CREATE TABLE IF NOT EXISTS formaloo_forms (
   workspace_id          TEXT,                            -- migration 095: 作成先 Formaloo workspace (NULL=env 鍵 fallback / F6-2 本柱④)
   folder_id             TEXT,                            -- migration 096: ハーネス側フォルダ分類 (NULL=未分類 / F6-3 本柱③)
   friend_metadata_mappings_json TEXT NOT NULL DEFAULT '[]', -- migration 103: Formaloo row → friend.metadata (空配列=OFF)
+  render_backend        TEXT NOT NULL DEFAULT 'formaloo' -- migration 113: formaloo|internal (既存は Formaloo 維持)
+                        CHECK (render_backend IN ('formaloo', 'internal')),
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
@@ -1446,6 +1448,20 @@ CREATE TABLE IF NOT EXISTS formaloo_submissions (
 CREATE INDEX IF NOT EXISTS idx_formaloo_submissions_form ON formaloo_submissions (form_id, submitted_at);
 CREATE INDEX IF NOT EXISTS idx_formaloo_submissions_friend ON formaloo_submissions (friend_id);
 CREATE INDEX IF NOT EXISTS idx_formaloo_submissions_unverified ON formaloo_submissions (form_id, verified);
+
+-- migration 113: 自前配信の回答。Formaloo 回答ミラーとは別 table にして並行運用を保つ。
+CREATE TABLE IF NOT EXISTS internal_form_submissions (
+  id           TEXT PRIMARY KEY,
+  form_id      TEXT NOT NULL,
+  friend_id    TEXT,
+  answers_json TEXT NOT NULL DEFAULT '{}',
+  submitted_at TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_internal_form_submissions_form
+  ON internal_form_submissions (form_id, submitted_at);
+CREATE INDEX IF NOT EXISTS idx_internal_form_submissions_friend
+  ON internal_form_submissions (friend_id);
 
 CREATE TABLE IF NOT EXISTS formaloo_field_map (
   id                  TEXT PRIMARY KEY,

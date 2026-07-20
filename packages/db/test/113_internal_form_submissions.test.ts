@@ -30,6 +30,15 @@ function replayThrough112(db: Database.Database): void {
   }
 }
 
+function applyMigration113(db: Database.Database): void {
+  for (const statement of readFileSync(MIGRATION_PATH, 'utf8')
+    .split(/;\s*(?:\r?\n|$)/).map((part) => part.trim()).filter(Boolean)) {
+    try { db.exec(statement); } catch (error) {
+      if (!BENIGN.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
+  }
+}
+
 describe('migration 113 — internal form submissions', () => {
   test('exists and remains additive-only', () => {
     expect(existsSync(MIGRATION_PATH)).toBe(true);
@@ -38,6 +47,12 @@ describe('migration 113 — internal form submissions', () => {
     const sql = readFileSync(MIGRATION_PATH, 'utf8');
     expect(checkMigration(sql, MIGRATION_PATH)).toEqual({ ok: true });
     expect(sql).not.toMatch(/^\s*(DROP|RENAME|UPDATE|DELETE)\b/im);
+  });
+
+  test('keeps the declarative schema in sync with migration 113', () => {
+    const schema = readFileSync(join(PKG_ROOT, 'schema.sql'), 'utf8');
+    expect(schema).toMatch(/render_backend\s+TEXT NOT NULL DEFAULT 'formaloo'[\s\S]*CHECK \(render_backend IN \('formaloo', 'internal'\)\)/i);
+    expect(schema).toMatch(/CREATE TABLE IF NOT EXISTS internal_form_submissions/i);
   });
 
   test('keeps every existing advanced form on the formaloo backend by default', () => {
@@ -49,18 +64,21 @@ describe('migration 113 — internal form submissions', () => {
        VALUES ('fa_existing', '既存フォーム', '{"fields":[],"logic":[]}')`,
     ).run();
 
-    db.exec(readFileSync(MIGRATION_PATH, 'utf8'));
+    applyMigration113(db);
 
     expect(db.prepare(
       'SELECT render_backend FROM formaloo_forms WHERE id = ?',
     ).get('fa_existing')).toEqual({ render_backend: 'formaloo' });
+    expect(() => db.prepare(
+      "UPDATE formaloo_forms SET render_backend = 'unknown' WHERE id = 'fa_existing'",
+    ).run()).toThrow(/CHECK constraint failed/i);
   });
 
   test('creates a separate internal submission store and lookup indexes', () => {
     if (!existsSync(MIGRATION_PATH)) return;
     const db = new Database(':memory:');
     replayThrough112(db);
-    db.exec(readFileSync(MIGRATION_PATH, 'utf8'));
+    applyMigration113(db);
 
     const columns = db.prepare('PRAGMA table_info(internal_form_submissions)').all()
       .map((row) => (row as { name: string }).name);
