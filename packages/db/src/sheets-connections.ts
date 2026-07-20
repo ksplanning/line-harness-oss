@@ -9,6 +9,11 @@ export interface SheetsFriendFieldMapping {
   header: string;
 }
 
+export interface SheetsFormAnswerHeader {
+  fieldId: string;
+  header: string;
+}
+
 export interface SheetsConnection {
   id: string;
   lineAccountId: string;
@@ -22,6 +27,7 @@ export interface SheetsConnection {
   friendFieldMappings: SheetsFriendFieldMapping[];
   friendLedgerEnabled: boolean;
   friendLedgerHeaders: string[];
+  formAnswerHeaders: SheetsFormAnswerHeader[];
   lastSyncAt: string | null;
   lastSyncStatus: SheetsSyncStatus;
   lastSyncWarning: string | null;
@@ -44,6 +50,7 @@ interface SheetsConnectionRow {
   friend_field_mappings_json: string;
   friend_ledger_enabled: number;
   friend_ledger_headers_json: string;
+  form_answer_headers_json: string;
   last_sync_at: string | null;
   last_sync_status: SheetsSyncStatus;
   last_sync_warning: string | null;
@@ -257,6 +264,27 @@ function parseFriendFieldMappings(value: string): SheetsFriendFieldMapping[] {
   }
 }
 
+function parseFormAnswerHeaders(value: string): SheetsFormAnswerHeader[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    return parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const fieldId = (entry as { fieldId?: unknown }).fieldId;
+      const header = (entry as { header?: unknown }).header;
+      if (
+        typeof fieldId !== 'string' || fieldId.length === 0 || seen.has(fieldId)
+        || typeof header !== 'string' || header.length === 0
+      ) return [];
+      seen.add(fieldId);
+      return [{ fieldId, header }];
+    });
+  } catch {
+    return [];
+  }
+}
+
 function parseStringArray(value: string): string[] {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -363,6 +391,7 @@ function serialize(row: SheetsConnectionRow): SheetsConnection {
     friendFieldMappings: parseFriendFieldMappings(row.friend_field_mappings_json),
     friendLedgerEnabled: row.friend_ledger_enabled === 1,
     friendLedgerHeaders: parseStringArray(row.friend_ledger_headers_json),
+    formAnswerHeaders: parseFormAnswerHeaders(row.form_answer_headers_json),
     lastSyncAt: row.last_sync_at,
     lastSyncStatus: row.last_sync_status,
     lastSyncWarning: row.last_sync_warning,
@@ -377,6 +406,7 @@ const ACTIVE_SELECT = `
   SELECT id, line_account_id, form_id, spreadsheet_id, sheet_name,
          sync_direction, conflict_policy, conflict_clock, config_version,
          friend_field_mappings_json, friend_ledger_enabled, friend_ledger_headers_json,
+         form_answer_headers_json,
          last_sync_at, last_sync_status,
          last_sync_warning, last_sync_error_code,
          is_active, created_at, updated_at
@@ -480,6 +510,10 @@ export async function updateSheetsConnection(
                 )
            ), '[]')
          END,
+         form_answer_headers_json = CASE
+           WHEN spreadsheet_id <> ? OR sheet_name <> ? THEN '[]'
+           ELSE form_answer_headers_json
+         END,
          config_version = config_version + 1, updated_at = ?
      WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
        AND (
@@ -496,6 +530,8 @@ export async function updateSheetsConnection(
     input.sheetName,
     mappingsJson,
     mappingsJson,
+    input.spreadsheetId,
+    input.sheetName,
     now,
     id,
     lineAccountId,
@@ -649,6 +685,38 @@ export async function recordSheetsFriendLedgerHeaders(
     lease?.token ?? null,
     lease?.token ?? null,
     lease?.now ?? null,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+export async function recordSheetsFormAnswerHeaders(
+  db: D1Database,
+  lineAccountId: string,
+  id: string,
+  configVersion: number,
+  headers: SheetsFormAnswerHeader[],
+  lease: SheetsSyncLeaseGuard,
+): Promise<boolean> {
+  const seen = new Set<string>();
+  const normalized = headers.flatMap(({ fieldId, header }) => {
+    if (fieldId.length === 0 || header.length === 0 || seen.has(fieldId)) return [];
+    seen.add(fieldId);
+    return [{ fieldId, header }];
+  });
+  const result = await db.prepare(
+    `UPDATE sheets_connections
+     SET form_answer_headers_json = ?
+     WHERE id = ? AND line_account_id = ? AND config_version = ?
+       AND is_active = 1 AND deleted_at IS NULL
+       AND sync_lock_token = ? AND sync_lock_expires_at IS NOT NULL
+       AND julianday(sync_lock_expires_at) > julianday(?)`,
+  ).bind(
+    JSON.stringify(normalized),
+    id,
+    lineAccountId,
+    configVersion,
+    lease.token,
+    lease.now,
   ).run();
   return (result.meta.changes ?? 0) === 1;
 }

@@ -1206,6 +1206,8 @@ CREATE TABLE sheets_connections (
   friend_ledger_enabled INTEGER NOT NULL DEFAULT 0 CHECK (friend_ledger_enabled IN (0, 1)),
   friend_ledger_headers_json TEXT NOT NULL DEFAULT '[]'
                   CHECK (json_valid(friend_ledger_headers_json) AND json_type(friend_ledger_headers_json) = 'array'),
+  form_answer_headers_json TEXT NOT NULL DEFAULT '[]'
+                  CHECK (json_valid(form_answer_headers_json) AND json_type(form_answer_headers_json) = 'array'),
   last_sync_at    TEXT,
   last_sync_status TEXT NOT NULL DEFAULT 'idle'
                   CHECK (last_sync_status IN ('idle', 'running', 'success', 'warning', 'error')),

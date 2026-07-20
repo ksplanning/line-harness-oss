@@ -15,6 +15,7 @@ const {
 } = sheetsConnectionDb;
 
 type FriendFieldMapping = { fieldId: string; header: string };
+type FormAnswerHeader = { fieldId: string; header: string };
 type SheetsSyncStatus = 'idle' | 'running' | 'success' | 'warning' | 'error';
 type CanonicalCellValue = string | number | boolean | null;
 
@@ -31,6 +32,7 @@ interface FriendLedgerConnectionContract {
   friendFieldMappings: FriendFieldMapping[];
   friendLedgerEnabled: boolean;
   friendLedgerHeaders: string[];
+  formAnswerHeaders: FormAnswerHeader[];
   lastSyncAt: string | null;
   lastSyncStatus: SheetsSyncStatus;
   lastSyncWarning: string | null;
@@ -143,6 +145,14 @@ interface FriendLedgerDbContract {
     configVersion: number,
     headers: string[],
     lease?: { token: string; now: string },
+  ): Promise<boolean>;
+  recordSheetsFormAnswerHeaders(
+    db: D1Database,
+    lineAccountId: string,
+    id: string,
+    configVersion: number,
+    headers: FormAnswerHeader[],
+    lease: { token: string; now: string },
   ): Promise<boolean>;
   enqueueSheetsWebhookEvent(
     db: D1Database,
@@ -429,6 +439,7 @@ describe('Sheets connections DB helper', () => {
       friendFieldMappings: initialMappings,
       friendLedgerEnabled: true,
       friendLedgerHeaders: [],
+      formAnswerHeaders: [],
       lastSyncAt: null,
       lastSyncStatus: 'idle',
       lastSyncWarning: null,
@@ -472,6 +483,85 @@ describe('Sheets connections DB helper', () => {
       configVersion: 3,
       friendLedgerHeaders: [],
     });
+  });
+
+  test('records form-answer header snapshots only under the active lease and resets them only after a target move', async () => {
+    const created = await friendLedgerDb.createSheetsConnection(db, {
+      lineAccountId: 'acc-1',
+      formId: 'form-answers',
+      spreadsheetId: 'sheet-answers',
+      sheetName: '回答',
+      syncDirection: 'bidirectional',
+      friendLedgerEnabled: true,
+    });
+    const lease = {
+      token: 'answer-header-owner',
+      now: '2026-07-21T12:00:00+09:00',
+    };
+    await expect(friendLedgerDb.claimSheetsSyncLock(
+      db,
+      'acc-1',
+      created.id,
+      lease.token,
+      lease.now,
+      '2026-07-21T12:05:00+09:00',
+      created.configVersion,
+    )).resolves.toBe(true);
+    const headers = [
+      { fieldId: 'field-name', header: 'お名前' },
+      { fieldId: 'field-plan', header: '希望プラン' },
+    ];
+
+    await expect(friendLedgerDb.recordSheetsFormAnswerHeaders(
+      db, 'acc-2', created.id, created.configVersion, headers, lease,
+    )).resolves.toBe(false);
+    await expect(friendLedgerDb.recordSheetsFormAnswerHeaders(
+      db, 'acc-1', created.id, created.configVersion + 1, headers, lease,
+    )).resolves.toBe(false);
+    await expect(friendLedgerDb.recordSheetsFormAnswerHeaders(
+      db, 'acc-1', created.id, created.configVersion, headers, { ...lease, token: 'other-owner' },
+    )).resolves.toBe(false);
+    await expect(friendLedgerDb.recordSheetsFormAnswerHeaders(
+      db, 'acc-1', created.id, created.configVersion, headers, lease,
+    )).resolves.toBe(true);
+    await expect(friendLedgerDb.getActiveSheetsConnectionById(db, created.id)).resolves.toMatchObject({
+      formAnswerHeaders: headers,
+    });
+
+    await friendLedgerDb.releaseSheetsSyncLock(db, 'acc-1', created.id, lease.token);
+    const sameTarget = await friendLedgerDb.updateSheetsConnection(db, 'acc-1', created.id, {
+      spreadsheetId: 'sheet-answers',
+      sheetName: '回答',
+      syncDirection: 'to_sheets',
+    });
+    expect(sameTarget).toMatchObject({ formAnswerHeaders: headers });
+
+    const movedTarget = await friendLedgerDb.updateSheetsConnection(db, 'acc-1', created.id, {
+      spreadsheetId: 'sheet-answers',
+      sheetName: '新回答',
+      syncDirection: 'to_sheets',
+    });
+    expect(movedTarget).toMatchObject({ formAnswerHeaders: [] });
+
+    await expect(friendLedgerDb.claimSheetsSyncLock(
+      db,
+      'acc-1',
+      created.id,
+      lease.token,
+      lease.now,
+      '2026-07-21T12:05:00+09:00',
+      movedTarget!.configVersion,
+    )).resolves.toBe(true);
+    await expect(friendLedgerDb.recordSheetsFormAnswerHeaders(
+      db, 'acc-1', created.id, movedTarget!.configVersion, headers, lease,
+    )).resolves.toBe(true);
+    await friendLedgerDb.releaseSheetsSyncLock(db, 'acc-1', created.id, lease.token);
+    const movedSpreadsheet = await friendLedgerDb.updateSheetsConnection(db, 'acc-1', created.id, {
+      spreadsheetId: 'sheet-moved',
+      sheetName: '新回答',
+      syncDirection: 'to_sheets',
+    });
+    expect(movedSpreadsheet).toMatchObject({ formAnswerHeaders: [] });
   });
 
   test('updates observable sync status without changing settings generation and remains tenant-scoped', async () => {
