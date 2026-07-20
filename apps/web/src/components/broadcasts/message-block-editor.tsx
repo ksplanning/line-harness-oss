@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { type MessageBlock } from '@/lib/api'
 import type { EventListItem } from '@/lib/api'
 import FlexPreviewComponent from '@/components/flex-preview'
@@ -17,6 +17,8 @@ import type { BuilderModel, LinkSpec } from '@/lib/flex-builder/types'
 const NEW_MEDIA_TYPES: MediaMessageType[] = ['video', 'audio', 'imagemap', 'richvideo']
 const isMediaType = (t: MessageBlock['type']): t is MediaMessageType =>
   (NEW_MEDIA_TYPES as string[]).includes(t)
+const flexRebuildPrompt = '今の本文はそのままではビジュアル編集できません。新しくビジュアルで作り直しますか？（今のテキストは破棄されます）'
+const flexRebuildGuidance = '今の本文はそのままではビジュアル編集できません。本文を残す場合は、下の「上級者向け」で編集してください。'
 
 interface MessageBlockEditorProps {
   /** このブロックの種別/内容 (親 broadcast-form が保持する messages[i])。 */
@@ -41,13 +43,28 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
   const [builderInitial, setBuilderInitial] = useState<BuilderModel | undefined>(undefined)
   const [advancedJsonOpen, setAdvancedJsonOpen] = useState(false)
   const [builderError, setBuilderError] = useState('')
+  const [rebuildConfirmOpen, setRebuildConfirmOpen] = useState(false)
   const [imageLinkOn, setImageLinkOn] = useState(false)
   const [imageUrl, setImageUrl] = useState('')
   const [imageLink, setImageLink] = useState<LinkSpec>({ type: 'url', uri: '' })
+  const builderTriggerRef = useRef<HTMLButtonElement>(null)
+  const rebuildConfirmButtonRef = useRef<HTMLButtonElement>(null)
+  const rebuildDescriptionId = useId()
+
+  useEffect(() => {
+    if (rebuildConfirmOpen) rebuildConfirmButtonRef.current?.focus()
+  }, [rebuildConfirmOpen])
+
+  const resetBuilderFeedback = () => {
+    setRebuildConfirmOpen(false)
+    setBuilderError('')
+    setAdvancedJsonOpen(false)
+  }
 
   const setType = (type: MessageBlock['type']) => {
     // メディア種別に出入りする切替は内容の形式が変わるため content をリセットする。
     const switchingMedia = isMediaType(type) || isMediaType(block.type)
+    resetBuilderFeedback()
     onChange({ ...block, type, content: switchingMedia ? '' : block.content })
   }
   const setContent = (content: string) => onChange({ ...block, content })
@@ -57,8 +74,9 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
     if (block.content.trim()) {
       const model = flexToModel(block.content)
       if (!model) {
-        setAdvancedJsonOpen(true)
-        setBuilderError('このFlexは高度な形式のため、ビジュアル編集できません。下の「上級者向け」で編集してください。')
+        setBuilderError('')
+        setAdvancedJsonOpen(false)
+        setRebuildConfirmOpen(true)
         return
       }
       setBuilderInitial(model)
@@ -66,7 +84,23 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
       setBuilderInitial(undefined)
     }
     setBuilderError('')
+    setRebuildConfirmOpen(false)
     setBuilderOpen(true)
+  }
+
+  const confirmBuilderRebuild = () => {
+    setBuilderInitial(undefined)
+    setBuilderError('')
+    setRebuildConfirmOpen(false)
+    setAdvancedJsonOpen(false)
+    setBuilderOpen(true)
+  }
+
+  const cancelBuilderRebuild = () => {
+    setRebuildConfirmOpen(false)
+    setAdvancedJsonOpen(true)
+    setBuilderError(flexRebuildGuidance)
+    builderTriggerRef.current?.focus()
   }
 
   const handleBuilderSave = (jsonString: string) => {
@@ -216,6 +250,7 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
                 <FlexPreviewComponent content={block.content} maxWidth={300} />
                 <div className="mt-2 flex gap-2">
                   <button
+                    ref={builderTriggerRef}
                     type="button"
                     onClick={openBuilder}
                     className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100 inline-flex items-center gap-1.5"
@@ -233,6 +268,7 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
               </div>
             ) : (
               <button
+                ref={builderTriggerRef}
                 type="button"
                 onClick={openBuilder}
                 className="w-full min-h-[44px] px-4 py-3 text-sm font-medium text-white rounded-md inline-flex items-center justify-center gap-2"
@@ -240,6 +276,40 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
               >
                 <PaletteIcon /> ビジュアルでカードを作る
               </button>
+            )}
+
+            {rebuildConfirmOpen && (
+              <div
+                role="alertdialog"
+                aria-label="Flexを新しく作り直す確認"
+                aria-describedby={rebuildDescriptionId}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    cancelBuilderRebuild()
+                  }
+                }}
+                className="rounded-lg border border-amber-300 bg-amber-50 p-3"
+              >
+                <p id={rebuildDescriptionId} className="text-sm text-amber-900">{flexRebuildPrompt}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    ref={rebuildConfirmButtonRef}
+                    type="button"
+                    onClick={confirmBuilderRebuild}
+                    className="min-h-[40px] rounded-md bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700"
+                  >
+                    新しく作り直す
+                  </button>
+                  <button
+                    type="button"
+                    onClick={cancelBuilderRebuild}
+                    className="min-h-[40px] rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    キャンセル
+                  </button>
+                </div>
+              </div>
             )}
 
             {/* 上級者向け: 生 JSON 直貼り (既定閉・後方互換) */}
@@ -288,7 +358,7 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
           />
         )}
 
-        {(error || builderError) && <p className="text-xs text-red-600 mt-2">{error || builderError}</p>}
+        {(error || builderError) && <p role="alert" className="text-xs text-red-600 mt-2">{error || builderError}</p>}
       </div>
 
       {builderOpen && (

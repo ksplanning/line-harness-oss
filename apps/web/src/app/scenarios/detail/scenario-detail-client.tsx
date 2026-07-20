@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -42,6 +42,9 @@ const modeBadgeStyle: Record<DeliveryMode, { bg: string; text: string; label: st
   elapsed: { bg: 'bg-blue-50', text: 'text-blue-700', label: '経過時間' },
   absolute_time: { bg: 'bg-amber-50', text: 'text-amber-700', label: '時刻指定' },
 }
+
+const flexRebuildPrompt = '今の本文はそのままではビジュアル編集できません。新しくビジュアルで作り直しますか？（今のテキストは破棄されます）'
+const flexRebuildGuidance = '今の本文はそのままではビジュアル編集できません。本文を残す場合は、下の「上級者向け」で編集してください。'
 
 // 分岐条件の種別。null = 条件なし（常に配信）。タグ ID の有無／タグ名の部分一致と、
 // 回答値の完全一致／部分一致をそれぞれ正負ペアで表現する（spec §2.4）。
@@ -176,19 +179,52 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   const [stepBuilderOpen, setStepBuilderOpen] = useState(false)
   const [stepBuilderInitial, setStepBuilderInitial] = useState<BuilderModel | undefined>(undefined)
   const [stepAdvancedJsonOpen, setStepAdvancedJsonOpen] = useState(false)
+  const [stepRebuildConfirmOpen, setStepRebuildConfirmOpen] = useState(false)
+  const [stepBuilderError, setStepBuilderError] = useState('')
+  const stepBuilderTriggerRef = useRef<HTMLButtonElement>(null)
+  const stepRebuildConfirmButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (stepRebuildConfirmOpen) stepRebuildConfirmButtonRef.current?.focus()
+  }, [stepRebuildConfirmOpen])
+
+  const resetStepBuilderFeedback = () => {
+    setStepRebuildConfirmOpen(false)
+    setStepBuilderError('')
+    setStepAdvancedJsonOpen(false)
+  }
 
   const openStepBuilder = () => {
     if (stepForm.messageContent.trim()) {
       const model = flexToModel(stepForm.messageContent)
       if (!model) {
-        setStepAdvancedJsonOpen(true)
+        setStepBuilderError('')
+        setStepAdvancedJsonOpen(false)
+        setStepRebuildConfirmOpen(true)
         return
       }
       setStepBuilderInitial(model)
     } else {
       setStepBuilderInitial(undefined)
     }
+    setStepBuilderError('')
+    setStepRebuildConfirmOpen(false)
     setStepBuilderOpen(true)
+  }
+
+  const confirmStepBuilderRebuild = () => {
+    setStepBuilderInitial(undefined)
+    setStepBuilderError('')
+    setStepRebuildConfirmOpen(false)
+    setStepAdvancedJsonOpen(false)
+    setStepBuilderOpen(true)
+  }
+
+  const cancelStepBuilderRebuild = () => {
+    setStepRebuildConfirmOpen(false)
+    setStepAdvancedJsonOpen(true)
+    setStepBuilderError(flexRebuildGuidance)
+    stepBuilderTriggerRef.current?.focus()
   }
   const [stepError, setStepError] = useState('')
 
@@ -312,6 +348,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
     setEditingStepId(null)
     setShowStepForm(true)
     setStepError('')
+    resetStepBuilderFeedback()
   }
 
   const openEditStep = (step: ScenarioStep) => {
@@ -357,6 +394,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
     setEditingStepId(step.id)
     setShowStepForm(true)
     setStepError('')
+    resetStepBuilderFeedback()
   }
 
   const handleSaveStep = async () => {
@@ -839,7 +877,10 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                     <select
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
                       value={stepForm.messageType}
-                      onChange={(e) => setStepForm({ ...stepForm, messageType: e.target.value as MessageType })}
+                      onChange={(e) => {
+                        resetStepBuilderFeedback()
+                        setStepForm({ ...stepForm, messageType: e.target.value as MessageType })
+                      }}
                     >
                       {messageTypeOptions.map((opt) => (
                         <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -902,6 +943,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                             <FlexPreviewComponent content={stepForm.messageContent} maxWidth={300} />
                             <div className="mt-2 flex gap-2">
                               <button
+                                ref={stepBuilderTriggerRef}
                                 type="button"
                                 onClick={openStepBuilder}
                                 className="px-3 py-1.5 min-h-[36px] text-xs font-medium text-green-700 border border-green-500 bg-green-50 rounded-md hover:bg-green-100"
@@ -919,6 +961,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                           </div>
                         ) : (
                           <button
+                            ref={stepBuilderTriggerRef}
                             type="button"
                             onClick={openStepBuilder}
                             className="w-full min-h-[44px] px-4 py-3 text-sm font-medium text-white rounded-md"
@@ -926,6 +969,42 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                           >
                             🎨 ビジュアルでカードを作る
                           </button>
+                        )}
+                        {stepRebuildConfirmOpen && (
+                          <div
+                            role="alertdialog"
+                            aria-label="Flexを新しく作り直す確認"
+                            aria-describedby="scenario-flex-rebuild-description"
+                            onKeyDown={(event) => {
+                              if (event.key === 'Escape') {
+                                event.preventDefault()
+                                cancelStepBuilderRebuild()
+                              }
+                            }}
+                            className="rounded-lg border border-amber-300 bg-amber-50 p-3"
+                          >
+                            <p id="scenario-flex-rebuild-description" className="text-sm text-amber-900">{flexRebuildPrompt}</p>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                ref={stepRebuildConfirmButtonRef}
+                                type="button"
+                                onClick={confirmStepBuilderRebuild}
+                                className="min-h-[40px] rounded-md bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700"
+                              >
+                                新しく作り直す
+                              </button>
+                              <button
+                                type="button"
+                                onClick={cancelStepBuilderRebuild}
+                                className="min-h-[40px] rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                              >
+                                キャンセル
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {stepBuilderError && (
+                          <p role="alert" className="text-xs text-red-600">{stepBuilderError}</p>
                         )}
                         <div>
                           <button
@@ -1123,7 +1202,12 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                   {stepSaving ? '保存中...' : editingStepId ? '更新' : '追加'}
                 </button>
                 <button
-                  onClick={() => { setShowStepForm(false); setEditingStepId(null); setStepError('') }}
+                  onClick={() => {
+                    setShowStepForm(false)
+                    setEditingStepId(null)
+                    setStepError('')
+                    resetStepBuilderFeedback()
+                  }}
                   className="px-4 py-2 min-h-[44px] text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                 >
                   キャンセル
