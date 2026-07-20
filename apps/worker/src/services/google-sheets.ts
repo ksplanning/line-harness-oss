@@ -188,11 +188,17 @@ function fetchErrorDetail(cause: unknown): string {
   const error = typeof cause === 'object' && cause !== null
     ? cause as { name?: unknown; message?: unknown }
     : null;
-  const name = typeof error?.name === 'string' && error.name.trim() ? error.name : 'Error';
+  const rawName = typeof error?.name === 'string' && error.name.trim() ? error.name : 'Error';
+  const name = rawName.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 40) || 'Error';
   const message = typeof error?.message === 'string' && error.message.trim()
     ? error.message
     : 'Fetch failed';
-  return `${name}: ${message}`
+  const redactedMessage = message
+    .replace(/https?:\/\/[^\s]+/gi, '[url]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email]')
+    .replace(/\bBearer\s+[^\s]+/gi, 'Bearer [redacted]')
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, '[redacted]');
+  return `${name}: ${redactedMessage}`
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()

@@ -127,9 +127,30 @@ describe('GoogleSheetsClient — WebCrypto service account JWT', () => {
       status: 0,
       category: 'network',
     });
-    expect(error.detail).toMatch(/^TypeError: Network connection lost x+$/);
+    expect(error.detail).toBe('TypeError: Network connection lost [redacted]');
     expect(error.detail).not.toContain('\n');
     expect(error.detail?.length).toBeLessThanOrEqual(160);
+  });
+
+  test('network detail から URL・メール・token らしい値を除く', async () => {
+    const sheetUrl = 'https://sheets.googleapis.com/v4/spreadsheets/private-sheet-id/values/A1';
+    const email = 'owner@example.com';
+    const bearer = 'secret-access-token';
+    const opaque = 's'.repeat(48);
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError(`request to ${sheetUrl} failed for ${email} Bearer ${bearer} id ${opaque}`);
+    }) as unknown as typeof fetch;
+    const client = new GoogleSheetsClient({
+      credentials: parseGoogleServiceAccountCredentials(credentialsJson()),
+      fetchImpl,
+      now: () => FIXED_NOW,
+    });
+
+    const error = await client.getAccessToken().catch((cause: unknown) => cause as GoogleSheetsError);
+    expect(error.detail).toContain('TypeError: request to [url] failed for [email] Bearer [redacted] id [redacted]');
+    for (const secret of [sheetUrl, email, bearer, opaque]) {
+      expect(error.detail).not.toContain(secret);
+    }
   });
 
   test('直接組み立てた credentials でも OAuth 宛先の差し替えを拒否する', () => {
