@@ -99,6 +99,14 @@ describe('migration 114 — self-hosted Google Sheets foundation', () => {
       VALUES ('audit-1', 'connection-1', 1, 2, 'acc-1', 'form-1',
               'tampered', '改ざん', 'to_sheets', 'update', 'failed')`).run())
       .toThrow(/append-only/i);
+    expect(() => raw.prepare(`INSERT OR REPLACE INTO sheets_sync_audit_log
+      (id, connection_id, connection_version, apply_sequence, line_account_id, form_id,
+       spreadsheet_id, sheet_name, direction, action, outcome)
+      VALUES ('audit-2', 'connection-1', 1, 1, 'acc-1', 'form-1',
+              'tampered', '改ざん', 'to_sheets', 'update', 'failed')`).run())
+      .toThrow(/append-only/i);
+    expect(raw.prepare('SELECT id, spreadsheet_id FROM sheets_sync_audit_log').all())
+      .toEqual([{ id: 'audit-1', spreadsheet_id: 'sheet-1' }]);
     expect(() => raw.prepare(`DELETE FROM line_accounts WHERE id='acc-1'`).run()).not.toThrow();
     expect(raw.prepare('SELECT line_account_id, is_active, deleted_at FROM sheets_connections WHERE id=?').get('connection-1'))
       .toMatchObject({ line_account_id: null, is_active: 0, deleted_at: expect.any(String) });

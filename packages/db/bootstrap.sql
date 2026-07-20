@@ -1691,6 +1691,12 @@ BEGIN SELECT RAISE(ABORT, 'sheets_sync_audit_log is append-only'); END;
 CREATE TRIGGER trg_sheets_sync_audit_no_replace
 BEFORE INSERT ON sheets_sync_audit_log
 WHEN EXISTS (SELECT 1 FROM sheets_sync_audit_log WHERE id = NEW.id)
+  OR EXISTS (
+    SELECT 1 FROM sheets_sync_audit_log
+    WHERE connection_id = NEW.connection_id
+      AND connection_version = NEW.connection_version
+      AND apply_sequence = NEW.apply_sequence
+  )
 BEGIN SELECT RAISE(ABORT, 'sheets_sync_audit_log is append-only'); END;
 
 CREATE TRIGGER trg_sheets_sync_audit_no_update
