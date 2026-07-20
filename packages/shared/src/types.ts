@@ -837,10 +837,27 @@ export type AutomationEventType =
   | "score_threshold"
   | "cv_fire"
   | "message_received"
-  | "calendar_booked";
+  | "calendar_booked"
+  | `incoming_webhook.${string}`;
+
+export type AutomationActionType =
+  | "add_tag"
+  | "remove_tag"
+  | "start_scenario"
+  | "send_message"
+  | "send_webhook"
+  | "switch_rich_menu"
+  | "remove_rich_menu"
+  | "set_metadata";
+
+export type AutomationJsonIssue =
+  | "conditions_invalid_json"
+  | "conditions_unsupported_shape"
+  | "actions_invalid_json"
+  | "actions_unsupported_shape";
 
 export interface AutomationAction {
-  type: "add_tag" | "remove_tag" | "start_scenario" | "send_message" | "send_webhook" | "switch_rich_menu";
+  type: AutomationActionType;
   params: Record<string, unknown>;
 }
 
@@ -851,6 +868,10 @@ export interface Automation {
   eventType: AutomationEventType;
   conditions: Record<string, unknown>;
   actions: AutomationAction[];
+  conditionsJson?: string;
+  actionsJson?: string;
+  jsonIssues?: AutomationJsonIssue[];
+  lineAccountId?: string | null;
   isActive: boolean;
   priority: number;
   createdAt: string;
