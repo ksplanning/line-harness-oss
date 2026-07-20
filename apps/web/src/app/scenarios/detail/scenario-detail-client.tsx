@@ -23,6 +23,8 @@ import ScheduleInput, {
 import { formatScheduleLabel } from '@/lib/scenario-schedule'
 import BulkPreviewModal from '@/components/scenarios/bulk-preview-modal'
 import EnrollFriendDialog from '@/components/scenarios/enroll-friend-dialog'
+import TestSendDialog from '@/components/shared/test-send-dialog'
+import { useAccount } from '@/contexts/account-context'
 
 type ScenarioWithSteps = Scenario & { steps: ScenarioStep[] }
 
@@ -160,6 +162,7 @@ function ImagePreview({ content }: { content: string }) {
 export default function ScenarioDetailClient({ scenarioId }: { scenarioId: string }) {
   const id = scenarioId
   const router = useRouter()
+  const { selectedAccountId } = useAccount()
 
   const [scenario, setScenario] = useState<ScenarioWithSteps | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1193,6 +1196,24 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
               {stepError && <p className="text-xs text-red-600">{stepError}</p>}
 
               <div className="flex gap-2">
+                {(() => {
+                  const template = stepForm.inputMode === 'template' && stepForm.templateId
+                    ? templates.find((item) => item.id === stepForm.templateId)
+                    : null
+                  const message = template
+                    ? { type: template.messageType, content: template.messageContent }
+                    : { type: stepForm.messageType, content: stepForm.messageContent }
+                  const accountId = scenario.lineAccountId ?? selectedAccountId
+                  return (
+                    <TestSendDialog
+                      accountIds={accountId ? [accountId] : []}
+                      source={scenario.triggerType === 'friend_add' && stepForm.stepOrder === 1 ? 'greeting' : 'scenario'}
+                      messages={[message]}
+                      buttonLabel="この内容をテスト送信"
+                      disabled={stepSaving || !accountId || !message.content.trim()}
+                    />
+                  )
+                })()}
                 <button
                   onClick={handleSaveStep}
                   disabled={stepSaving}
@@ -1305,6 +1326,23 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                         ↓
                       </button>
                     </div>
+                    {(() => {
+                      const template = step.templateId ? templates.find((item) => item.id === step.templateId) : null
+                      const message = template
+                        ? { type: template.messageType, content: template.messageContent }
+                        : { type: step.messageType, content: step.messageContent }
+                      const accountId = scenario.lineAccountId ?? selectedAccountId
+                      return (
+                        <TestSendDialog
+                          accountIds={accountId ? [accountId] : []}
+                          source={scenario.triggerType === 'friend_add' && idx === 0 ? 'greeting' : 'scenario'}
+                          messages={[message]}
+                          buttonLabel="テスト送信"
+                          disabled={!accountId || !message.content.trim()}
+                          className="px-2 py-1 min-h-0 text-xs"
+                        />
+                      )
+                    })()}
                     <button
                       onClick={() => openEditStep(step)}
                       className="text-xs text-green-600 hover:text-green-700 px-2 py-1 rounded hover:bg-green-50 transition-colors"

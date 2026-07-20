@@ -8,6 +8,7 @@ import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
 import { flexToModel } from '@/lib/flex-builder/from-flex'
 import { validateFlex } from '@/lib/flex-builder/validate'
 import type { BuilderModel } from '@/lib/flex-builder/types'
+import TestSendDialog from '@/components/shared/test-send-dialog'
 
 function formatDate(iso: string): string {
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/)
@@ -322,6 +323,13 @@ function PackEditor({ packId, accountId, onBack }: { packId: string | 'new'; acc
           </div>
 
           <div className="mt-6 flex justify-end gap-2">
+            <TestSendDialog
+              accountIds={[accountId]}
+              source="template_pack"
+              messages={drafts.map((draft) => ({ type: draft.messageType, content: draft.messageContent }))}
+              buttonLabel="テスト送信"
+              disabled={saving || drafts.length === 0 || drafts.some((draft) => !draft.messageContent.trim())}
+            />
             <button onClick={onBack} className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg">キャンセル</button>
             <button onClick={handleSave} disabled={saving} className="px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50" style={{ backgroundColor: '#06C755' }}>
               {saving ? '保存中...' : '保存'}

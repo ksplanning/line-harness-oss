@@ -50,6 +50,35 @@ export interface MessageBlock {
   altText?: string | null;
 }
 
+export type TestSendSource =
+  | 'broadcast'
+  | 'greeting'
+  | 'entry_greeting'
+  | 'scenario'
+  | 'template_pack'
+  | 'reminder'
+
+export interface TestSendMessage {
+  type: string
+  content: string
+  altText?: string | null
+}
+
+export interface TestRecipient {
+  id: string
+  displayName: string
+  pictureUrl: string | null
+}
+
+export interface TestSendResult {
+  success: boolean
+  sent?: number
+  failed?: number
+  deduplicated?: boolean
+  error?: string
+  capBlocked?: boolean
+}
+
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
   targetType: BroadcastTargetType;
@@ -58,6 +87,8 @@ export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
   failedAccountIds: string[] | null;
   /** combo 配信の順序付きメッセージ列 (最大5)。NULL/未指定=従来 single。 */
   messages?: MessageBlock[] | null;
+  /** Legacy single Flex notification text; combo blocks carry their own altText. */
+  altText?: string | null;
 };
 
 export type BroadcastInsight = {
@@ -658,12 +689,31 @@ export const api = {
 
   accountSettings: {
     getTestRecipients: (accountId: string) =>
-      fetchApi<{ success: boolean; data: Array<{ id: string; displayName: string; pictureUrl: string | null }> }>(`/api/account-settings/test-recipients?accountId=${accountId}`),
+      fetchApi<ApiResponse<TestRecipient[]>>(
+        `/api/account-settings/test-recipients?accountId=${encodeURIComponent(accountId)}`,
+      ),
     updateTestRecipients: (accountId: string, friendIds: string[]) =>
-      fetchApi<{ success: boolean }>('/api/account-settings/test-recipients', {
+      fetchApi<{ success: boolean; error?: string }>('/api/account-settings/test-recipients', {
         method: 'PUT',
         body: JSON.stringify({ accountId, friendIds }),
       }),
+  },
+
+  testSends: {
+    getRecipients: (source: TestSendSource, accountId: string) =>
+      fetchApi<ApiResponse<TestRecipient[]>>(
+        `/api/test-sends/${source}/recipients?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    send: (input: {
+      accountId: string
+      source: TestSendSource
+      messages: TestSendMessage[]
+      idempotencyKey: string
+      senderPresetId?: string
+    }) => fetchApi<TestSendResult>(`/api/test-sends/${input.source}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   },
 
   // G28 応答時間帯スケジュール

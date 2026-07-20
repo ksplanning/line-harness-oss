@@ -95,7 +95,7 @@ export default function MonthlyCapSettings({ accountId }: { accountId: string })
         </p>
       )}
 
-      <p className="text-xs text-gray-400 mb-2">※ テスト送信は上限の対象外です。</p>
+      <p className="text-xs text-gray-400 mb-2">※ テスト送信もこの通数に含まれます。</p>
 
       <button
         onClick={save} disabled={saving}

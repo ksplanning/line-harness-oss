@@ -513,6 +513,7 @@ export default function InflowLinksPage() {
           scenarios={scenarios}
           templates={templates}
           tags={tags}
+          accountId={selectedAccountId}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null)

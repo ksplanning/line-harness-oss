@@ -20,13 +20,24 @@ export default function TestRecipientsSetting({ accountId }: TestRecipientsSetti
   const [searchResults, setSearchResults] = useState<Friend[]>([])
   const [searching, setSearching] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
+    setError('')
     try {
       const res = await api.accountSettings.getTestRecipients(accountId)
-      if (res.success) setRecipients(res.data)
-    } catch { /* ignore */ }
+      if (res.success) {
+        setRecipients(res.data)
+      } else {
+        setRecipients([])
+        setError(res.error || 'テスト送信先を読み込めませんでした')
+      }
+    } catch {
+      setRecipients([])
+      setError('テスト送信先を読み込めませんでした')
+    }
     finally { setLoading(false) }
   }, [accountId])
 
@@ -34,9 +45,16 @@ export default function TestRecipientsSetting({ accountId }: TestRecipientsSetti
 
   // Debounced friend search
   useEffect(() => {
-    if (search.length < 2) { setSearchResults([]); return }
+    const query = search.trim()
+    if (query.length < 2) {
+      setSearchResults([])
+      setSearching(false)
+      return
+    }
+    let cancelled = false
     const timer = setTimeout(async () => {
       setSearching(true)
+      setError('')
       try {
         // The worker now ranks friends by match quality (exact > prefix >
         // word-start > generic substring) before created_at DESC. So
@@ -46,42 +64,69 @@ export default function TestRecipientsSetting({ accountId }: TestRecipientsSetti
         // by recently-added friends sharing the same substring.
         // includeTags=false: tags not rendered here; skipping the per-row
         // tag fetch turns ~11 D1 reads/keystroke into 2 (count + list).
-        const res = await api.friends.list({ search, accountId, limit: 10, includeTags: false })
+        const res = await api.friends.list({ search: query, accountId, limit: 10, includeTags: false })
+        if (cancelled) return
         if (res.success) {
           const existing = new Set(recipients.map(r => r.id))
-          const items = (res.data as unknown as { items: Friend[] }).items ?? res.data
+          const items = (res.data as unknown as { items: Friend[] }).items ?? []
           setSearchResults(
-            (Array.isArray(items) ? items : [])
+            items
               .filter((f: Friend) => !existing.has(f.id))
               .map((f: Friend) => ({ id: f.id, displayName: f.displayName, pictureUrl: f.pictureUrl }))
           )
+        } else {
+          setSearchResults([])
+          setError(res.error || '友だちを検索できませんでした')
         }
-      } catch { /* ignore */ }
-      finally { setSearching(false) }
+      } catch {
+        if (!cancelled) {
+          setSearchResults([])
+          setError('友だちを検索できませんでした')
+        }
+      } finally {
+        if (!cancelled) setSearching(false)
+      }
     }, 300)
-    return () => clearTimeout(timer)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [search, accountId, recipients])
 
-  const addRecipient = async (friend: Friend) => {
-    const updated = [...recipients, friend]
+  const saveRecipients = async (updated: Friend[], previous: Friend[]) => {
+    if (saving) return false
     setRecipients(updated)
+    setSaving(true)
+    setError('')
+    setSaved(false)
+    try {
+      const response = await api.accountSettings.updateTestRecipients(accountId, updated.map(r => r.id))
+      if (!response.success) throw new Error(response.error || 'テスト送信先を保存できませんでした')
+      setSaved(true)
+      return true
+    } catch (saveError) {
+      setRecipients(previous)
+      setError(saveError instanceof Error && saveError.message
+        ? saveError.message
+        : 'テスト送信先を保存できませんでした')
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const addRecipient = async (friend: Friend) => {
+    const previous = recipients
+    const updated = [...previous, friend]
     setSearch('')
     setSearchResults([])
-    setSaving(true)
-    try {
-      await api.accountSettings.updateTestRecipients(accountId, updated.map(r => r.id))
-    } catch { /* ignore */ }
-    finally { setSaving(false) }
+    await saveRecipients(updated, previous)
   }
 
   const removeRecipient = async (friendId: string) => {
-    const updated = recipients.filter(r => r.id !== friendId)
-    setRecipients(updated)
-    setSaving(true)
-    try {
-      await api.accountSettings.updateTestRecipients(accountId, updated.map(r => r.id))
-    } catch { /* ignore */ }
-    finally { setSaving(false) }
+    const previous = recipients
+    const updated = previous.filter(r => r.id !== friendId)
+    await saveRecipients(updated, previous)
   }
 
   if (loading) return <p className="text-xs text-gray-400">読み込み中...</p>
@@ -89,28 +134,46 @@ export default function TestRecipientsSetting({ accountId }: TestRecipientsSetti
   return (
     <div className="mt-3 pt-3 border-t border-gray-100">
       <h4 className="text-xs font-semibold text-gray-600 mb-2">テスト送信先</h4>
+      <p className="text-xs text-gray-400 mb-2">
+        テスト送信は、ここで選んだ自分のアカウントだけに届きます。
+      </p>
 
       {/* Current recipients */}
-      {recipients.length > 0 && (
+      {recipients.length > 0 ? (
         <div className="flex flex-wrap gap-1.5 mb-2">
           {recipients.map(r => (
             <span key={r.id} className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 rounded-full text-xs">
               {r.pictureUrl && <img src={r.pictureUrl} alt="" className="w-4 h-4 rounded-full" />}
               {r.displayName}
-              <button onClick={() => removeRecipient(r.id)} className="text-blue-400 hover:text-blue-600 ml-0.5">×</button>
+              <button
+                type="button"
+                aria-label={`${r.displayName}を解除`}
+                onClick={() => void removeRecipient(r.id)}
+                disabled={saving}
+                className="text-blue-400 hover:text-blue-600 ml-0.5 disabled:opacity-50"
+              >
+                ×
+              </button>
             </span>
           ))}
         </div>
+      ) : (
+        <p className="text-xs text-amber-600 mb-2">テスト送信先はまだ設定されていません</p>
       )}
+
+      {error && <p role="alert" className="text-xs text-red-600 mb-2">{error}</p>}
+      {saved && !error && <p role="status" className="text-xs text-green-600 mb-2">保存しました</p>}
 
       {/* Search to add */}
       <div className="relative">
         <input
           type="text"
+          aria-label="テスト送信先を検索"
           placeholder="友だちを検索して追加..."
           value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+          onChange={e => { setSearch(e.target.value); setSaved(false) }}
+          disabled={saving}
+          className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:bg-gray-50"
         />
         {searching && <span className="absolute right-2 top-1.5 text-xs text-gray-400">検索中...</span>}
         {saving && <span className="absolute right-2 top-1.5 text-xs text-green-500">保存中...</span>}
@@ -120,8 +183,11 @@ export default function TestRecipientsSetting({ accountId }: TestRecipientsSetti
             {searchResults.map(f => (
               <li key={f.id}>
                 <button
-                  onClick={() => addRecipient(f)}
-                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left text-xs"
+                  type="button"
+                  aria-label={`${f.displayName}を追加`}
+                  onClick={() => void addRecipient(f)}
+                  disabled={saving}
+                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left text-xs disabled:opacity-50"
                 >
                   {f.pictureUrl ? (
                     <img src={f.pictureUrl} alt="" className="w-5 h-5 rounded-full" />

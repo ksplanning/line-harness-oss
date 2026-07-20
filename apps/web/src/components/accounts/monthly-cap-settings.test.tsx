@@ -16,11 +16,11 @@ beforeEach(() => { updateMock.mockResolvedValue({ success: true, data: { monthly
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
 describe('MonthlyCapSettings (G2)', () => {
-  it('shows progress 今月/上限 and the test-send-exempt note', async () => {
+  it('shows progress 今月/上限 and explains that test sends count', async () => {
     getMock.mockResolvedValue({ success: true, data: { monthlyCap: 100, messagesThisMonth: 50, remaining: 50 } })
     render(<MonthlyCapSettings accountId="acc-1" />)
     await waitFor(() => expect(screen.getByText(/今月 50 \/ 上限 100 通/)).toBeTruthy())
-    expect(screen.getByText(/テスト送信は上限の対象外/)).toBeTruthy()
+    expect(screen.getByText(/テスト送信もこの通数に含まれます/)).toBeTruthy()
   })
 
   it('shows approaching warning at >= 80%', async () => {

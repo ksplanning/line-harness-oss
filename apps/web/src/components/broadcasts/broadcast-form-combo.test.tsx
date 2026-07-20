@@ -48,6 +48,25 @@ vi.mock('@/components/broadcasts/pack-insert-selector', () => ({
     </button>
   ),
 }))
+vi.mock('@/components/shared/test-send-dialog', () => ({
+  default: ({ accountIds, source, messages, disabled }: {
+    accountIds: string[]
+    source: string
+    messages: Array<{ type: string; content: string }>
+    disabled?: boolean
+  }) => (
+    <button
+      type="button"
+      disabled={disabled}
+      data-testid="draft-test-send"
+      data-account-ids={accountIds.join(',')}
+      data-source={source}
+      data-messages={JSON.stringify(messages)}
+    >
+      下書きをテスト送信
+    </button>
+  ),
+}))
 
 import BroadcastForm from './broadcast-form'
 
@@ -131,5 +150,21 @@ describe('U4 broadcast-form: 複数メッセージ・ブロック', () => {
     fireEvent.click(screen.getByRole('button', { name: '__append_pack__' }))
     // 1 + 2 = 3 通
     expect(screen.getByText(/メッセージ（3 \/ 5 通）/)).toBeTruthy()
+  })
+
+  it('保存前の組み合わせ内容を選択中アカウントのテスト送信へ渡す', () => {
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText('配信するメッセージを入力...'), { target: { value: '一通目' } })
+    fireEvent.click(screen.getByRole('button', { name: /メッセージを追加/ }))
+    const areas = screen.getAllByPlaceholderText('配信するメッセージを入力...')
+    fireEvent.change(areas[1], { target: { value: '二通目' } })
+
+    const button = screen.getByTestId('draft-test-send')
+    expect(button.getAttribute('data-account-ids')).toBe('acc-1')
+    expect(button.getAttribute('data-source')).toBe('broadcast')
+    expect(JSON.parse(button.getAttribute('data-messages') ?? '[]')).toEqual([
+      { type: 'text', content: '一通目' },
+      { type: 'text', content: '二通目' },
+    ])
   })
 })

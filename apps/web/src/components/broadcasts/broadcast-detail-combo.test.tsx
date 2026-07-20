@@ -3,7 +3,7 @@
  * U6 (broadcast-combo-messages Batch 2) — 詳細で combo の 2-5 通目の存在を認識できる。
  *  - プレビューが全 N 通を順序どおり列挙 (先頭ミラーだけの「1通」表示にしない)
  *  - 配信設定に「組み合わせ N通」を表示
- *  - TestSendSection に isCombo=true を渡す (combo テスト送信の silent 失敗回避)
+ *  - TestSendSection に全メッセージと送信対象アカウントを渡す
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, cleanup } from '@testing-library/react'
@@ -27,8 +27,11 @@ vi.mock('@/lib/api', () => ({
   },
 }))
 vi.mock('@/components/flex-preview', () => ({ default: () => null }))
-// TestSendSection は isCombo プロップを echo するスタブに (詳細が isCombo を渡すことを検証)。
-vi.mock('@/components/broadcasts/test-send-section', () => ({ default: ({ isCombo }: { isCombo?: boolean }) => <div>combo:{String(!!isCombo)}</div> }))
+vi.mock('@/components/broadcasts/test-send-section', () => ({
+  default: ({ accountIds, messages, senderPresetId }: { accountIds: string[]; messages: Array<{ type: string; content: string }>; senderPresetId?: string | null }) => (
+    <div data-testid="test-send-props" data-account-ids={accountIds.join(',')} data-messages={JSON.stringify(messages)} data-sender-preset-id={senderPresetId ?? ''} />
+  ),
+}))
 vi.mock('@/components/broadcasts/progress-bar', () => ({ default: () => null }))
 vi.mock('@/components/broadcasts/segment-builder', () => ({ default: () => null }))
 vi.mock('@/components/layout/header', () => ({ default: () => null }))
@@ -56,13 +59,37 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
 describe('broadcast-detail combo (U6)', () => {
-  it('プレビューが全2通を順序どおり列挙し、設定に組み合わせ表示、test-send に isCombo=true を渡す', async () => {
+  it('プレビューが全2通を列挙し、テスト送信にも全メッセージを順番どおり渡す', async () => {
     render(<BroadcastDetail broadcastId="b1" />)
     await waitFor(() => expect(screen.getByText(/全2通/)).toBeTruthy())
     expect(screen.getByText(/1通目・テキスト/)).toBeTruthy()
     expect(screen.getByText(/2通目・画像/)).toBeTruthy()
     expect(screen.getByText('一通目')).toBeTruthy()
     expect(screen.getByText(/組み合わせ 2通/)).toBeTruthy()
-    expect(screen.getByText('combo:true')).toBeTruthy()
+    const testSend = screen.getByTestId('test-send-props')
+    expect(testSend.getAttribute('data-account-ids')).toBe('acc-1')
+    expect(JSON.parse(testSend.getAttribute('data-messages') ?? '[]')).toEqual(combo.messages)
+  })
+
+  it('従来singleの altText とaccount-scoped送信者presetをテスト送信へ保つ', async () => {
+    m.get.mockResolvedValue({
+      success: true,
+      data: {
+        ...combo,
+        messageType: 'flex',
+        messageContent: '{"type":"bubble","body":{"type":"box","layout":"vertical","contents":[]}}',
+        messages: null,
+        altText: '通知テキスト',
+        senderPresetId: 'preset-1',
+      },
+    })
+    render(<BroadcastDetail broadcastId="b1" />)
+    const testSend = await screen.findByTestId('test-send-props')
+    expect(JSON.parse(testSend.getAttribute('data-messages') ?? '[]')).toEqual([{
+      type: 'flex',
+      content: '{"type":"bubble","body":{"type":"box","layout":"vertical","contents":[]}}',
+      altText: '通知テキスト',
+    }])
+    expect(testSend.getAttribute('data-sender-preset-id')).toBe('preset-1')
   })
 })

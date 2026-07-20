@@ -200,6 +200,21 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
   const mediaSummary = mediaPreviewSummary(broadcast.messageType, broadcast.messageContent)
   // combo (組み合わせ配信): 先頭ミラーだけを見ると「1通」に見えるため、全 N 通を認識できるよう明示する。
   const comboMessages = broadcast.messages && broadcast.messages.length > 1 ? broadcast.messages : null
+  const testAccountIds = accountId
+    ? [accountId]
+    : broadcast.accountIds && broadcast.accountIds.length > 0
+      ? broadcast.accountIds
+      : selectedAccount
+        ? [selectedAccount.id]
+        : []
+  // 保存済み combo は全ブロック、従来 single は先頭ミラーを共通モーダルへ渡す。
+  const testMessages = broadcast.messages && broadcast.messages.length > 0
+    ? broadcast.messages
+    : [{
+        type: broadcast.messageType,
+        content: broadcast.messageContent,
+        ...(broadcast.altText ? { altText: broadcast.altText } : {}),
+      }]
 
   return (
     <div>
@@ -329,9 +344,15 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
       )}
 
       {/* Test Send */}
-      {broadcast.status === 'draft' && accountId && (
+      {broadcast.status === 'draft' && testAccountIds.length > 0 && (
         <div className="mb-4">
-          <TestSendSection broadcastId={id} accountId={accountId} disabled={false} isCombo={!!comboMessages} />
+          <TestSendSection
+            broadcastId={id}
+            accountIds={testAccountIds}
+            messages={testMessages}
+            disabled={false}
+            senderPresetId={testAccountIds.length === 1 ? broadcast.senderPresetId : null}
+          />
         </div>
       )}
 
@@ -490,7 +511,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
           {/* G2: 通数上限ブロックの行内表示 (送信ボタン付近・理由 + 対処)。 */}
           {capBlock && (
             <div className="mb-2 p-3 rounded-lg text-sm" style={{ backgroundColor: '#FEE2E2', color: '#991B1B' }}>
-              今月の上限に達しています（今月{capBlock.count.toLocaleString('ja-JP')}通 / 上限{capBlock.cap.toLocaleString('ja-JP')}通）。上限を変えるか来月までお待ちください。テスト送信は上限の対象外です。
+              今月の上限に達しています（今月{capBlock.count.toLocaleString('ja-JP')}通 / 上限{capBlock.cap.toLocaleString('ja-JP')}通）。上限を変えるか来月までお待ちください。テスト送信も上限の対象です。
             </div>
           )}
           <button

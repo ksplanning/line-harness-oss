@@ -10,6 +10,7 @@ import { buildModelToFlex } from '@/lib/flex-builder/to-flex'
 const { getScenarioMock } = vi.hoisted(() => ({ getScenarioMock: vi.fn() }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }) }))
+vi.mock('@/contexts/account-context', () => ({ useAccount: () => ({ selectedAccountId: 'acc-selected' }) }))
 vi.mock('@/components/layout/header', () => ({ default: () => null }))
 vi.mock('@/components/shared/image-uploader', () => ({ default: () => null }))
 vi.mock('@/components/flex-preview', () => ({ default: () => <div data-testid="flex-preview" /> }))
@@ -22,6 +23,23 @@ vi.mock('@/components/flex-builder/flex-builder-modal', () => ({
     >
       <button type="button" onClick={onClose}>ビルダーを閉じる</button>
     </div>
+  ),
+}))
+vi.mock('@/components/shared/test-send-dialog', () => ({
+  default: ({ accountIds, source, messages }: {
+    accountIds: string[]
+    source: string
+    messages: Array<{ type: string; content: string }>
+  }) => (
+    <button
+      type="button"
+      data-testid="scenario-test-send"
+      data-account-ids={accountIds.join(',')}
+      data-source={source}
+      data-messages={JSON.stringify(messages)}
+    >
+      テスト送信
+    </button>
   ),
 }))
 vi.mock('@/lib/api', () => ({
@@ -48,6 +66,7 @@ function scenarioWith(messageType: 'text' | 'flex', messageContent: string) {
     description: '',
     triggerType: 'manual',
     isActive: true,
+    lineAccountId: 'acc-scenario',
     deliveryMode: 'relative',
     createdAt: '2026-07-20T00:00:00.000Z',
     updatedAt: '2026-07-20T00:00:00.000Z',
@@ -191,5 +210,34 @@ describe('scenario Flex ビルダーの正常経路', () => {
 
     expect(screen.queryByRole('alertdialog', { name: 'Flexを新しく作り直す確認' })).toBeNull()
     expect((await screen.findByRole('dialog', { name: 'Flexビジュアルビルダー' })).getAttribute('data-initial-model')).toBe('existing')
+  })
+})
+
+describe('scenario ステップのテスト送信', () => {
+  it('友だち追加シナリオの特定ステップを greeting としてそのアカウントへ渡す', async () => {
+    getScenarioMock.mockResolvedValue({
+      success: true,
+      data: { ...scenarioWith('text', '登録ありがとうございます'), triggerType: 'friend_add' },
+    })
+
+    render(<ScenarioDetailClient scenarioId="s1" />)
+
+    const button = await screen.findByTestId('scenario-test-send')
+    expect(button.getAttribute('data-account-ids')).toBe('acc-scenario')
+    expect(button.getAttribute('data-source')).toBe('greeting')
+    expect(JSON.parse(button.getAttribute('data-messages') ?? '[]')).toEqual([
+      { type: 'text', content: '登録ありがとうございます' },
+    ])
+  })
+
+  it('通常シナリオの特定ステップは scenario として渡す', async () => {
+    getScenarioMock.mockResolvedValue({ success: true, data: scenarioWith('text', '通常ステップ') })
+    render(<ScenarioDetailClient scenarioId="s1" />)
+
+    const button = await screen.findByTestId('scenario-test-send')
+    expect(button.getAttribute('data-source')).toBe('scenario')
+    expect(JSON.parse(button.getAttribute('data-messages') ?? '[]')).toEqual([
+      { type: 'text', content: '通常ステップ' },
+    ])
   })
 })

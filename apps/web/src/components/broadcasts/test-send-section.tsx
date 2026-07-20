@@ -1,81 +1,29 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { api } from '@/lib/api'
+import type { TestSendMessage } from '@/lib/api'
+import TestSendDialog from '@/components/shared/test-send-dialog'
 
 interface TestSendSectionProps {
+  /** 保存済み配信との対応を呼び側で追えるよう保持する。送信 payload には含めない。 */
   broadcastId: string
-  accountId: string
+  accountIds: string[]
+  messages: TestSendMessage[]
   disabled: boolean
-  /** 組み合わせ(combo)配信か。combo のテスト送信は worker が 400 で拒否する (Batch 1) ため UI で無効化する。 */
-  isCombo?: boolean
+  senderPresetId?: string | null
 }
 
-export default function TestSendSection({ broadcastId, accountId, disabled, isCombo = false }: TestSendSectionProps) {
-  const [recipients, setRecipients] = useState<Array<{ id: string; displayName: string; pictureUrl: string | null }>>([])
-  const [sending, setSending] = useState(false)
-  const [result, setResult] = useState<{ sent: number; failed: number; at: string; error?: boolean } | null>(null)
-  const [cooldown, setCooldown] = useState(false)
-
-  useEffect(() => {
-    api.accountSettings.getTestRecipients(accountId).then(res => {
-      if (res.success) setRecipients(res.data)
-    })
-  }, [accountId])
-
-  const handleTestSend = async () => {
-    setSending(true)
-    try {
-      const res = await api.broadcasts.testSend(broadcastId)
-      if (res.success) {
-        setResult({
-          sent: res.sent ?? 0,
-          failed: res.failed ?? 0,
-          at: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }),
-        })
-        setCooldown(true)
-        setTimeout(() => setCooldown(false), 10000)
-      }
-    } catch {
-      setResult({ sent: 0, failed: 0, at: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }), error: true })
-    } finally { setSending(false) }
-  }
-
+export default function TestSendSection({ accountIds, messages, disabled, senderPresetId }: TestSendSectionProps) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
       <h3 className="text-sm font-semibold text-gray-700 mb-2">テスト送信</h3>
-      {isCombo ? (
-        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-          組み合わせ配信（複数メッセージ）のテスト送信は今後対応します。今は本番送信でご確認ください。
-        </p>
-      ) : recipients.length === 0 ? (
-        <p className="text-xs text-gray-400">
-          テスト送信先が未設定です。
-          <a href="/accounts" className="text-blue-500 hover:underline ml-1">アカウント設定</a>
-          から設定してください。
-        </p>
-      ) : (
-        <>
-          <p className="text-xs text-gray-500 mb-2">
-            送信先: {recipients.map(r => r.displayName).join(', ')} ({recipients.length}名)
-          </p>
-          <button
-            onClick={handleTestSend}
-            disabled={disabled || sending || cooldown}
-            className="px-4 py-2 min-h-[44px] text-xs font-medium text-white rounded-lg disabled:opacity-50 transition-opacity"
-            style={{ backgroundColor: '#3B82F6' }}
-          >
-            {sending ? 'テスト送信中...' : cooldown ? '送信済み' : 'テスト送信する'}
-          </button>
-          {result && (
-            <p className={`text-xs mt-2 ${result.error ? 'text-red-600' : 'text-green-600'}`}>
-              {result.error
-                ? `${result.at} テスト送信に失敗しました`
-                : `${result.at} テスト送信済み (${result.sent}名成功${result.failed > 0 ? `, ${result.failed}名失敗` : ''})`}
-            </p>
-          )}
-        </>
-      )}
+      <TestSendDialog
+        accountIds={accountIds}
+        source="broadcast"
+        messages={messages}
+        buttonLabel="テスト送信する"
+        disabled={disabled}
+        senderPresetId={accountIds.length === 1 ? senderPresetId : null}
+      />
     </div>
   )
 }

@@ -25,6 +25,8 @@ const scenario = {
 const { updateStep } = vi.hoisted(() => ({ updateStep: vi.fn(async () => ({ success: true, data: {} })) }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }) }))
+vi.mock('@/contexts/account-context', () => ({ useAccount: () => ({ selectedAccountId: 'acc-selected' }) }))
+vi.mock('@/components/shared/test-send-dialog', () => ({ default: () => null }))
 vi.mock('@/components/layout/header', () => ({ default: () => null }))
 vi.mock('@/components/flex-builder/flex-builder-modal', () => ({ default: () => null }))
 vi.mock('@/components/shared/image-uploader', () => ({ default: () => null }))

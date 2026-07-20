@@ -7,6 +7,7 @@ import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
 import EnrollDialog, { type EnrolledFriendRow } from '@/components/reminders/enroll-dialog'
 import { buildReminderCreateBody } from '@/lib/reminders/create-body'
+import TestSendDialog from '@/components/shared/test-send-dialog'
 
 interface Reminder {
   id: string
@@ -482,12 +483,22 @@ export default function RemindersPage() {
                                       {step.messageContent}
                                     </p>
                                   </div>
-                                  <button
-                                    onClick={() => handleDeleteStep(step.id)}
-                                    className="ml-2 shrink-0 min-h-[44px] min-w-[44px] text-xs text-red-400 hover:text-red-600 transition-colors"
-                                  >
-                                    削除
-                                  </button>
+                                  <div className="ml-2 shrink-0 flex items-center gap-1">
+                                    <TestSendDialog
+                                      accountIds={selectedAccountId ? [selectedAccountId] : []}
+                                      source="reminder"
+                                      messages={[{ type: step.messageType, content: step.messageContent }]}
+                                      buttonLabel="テスト送信"
+                                      disabled={!selectedAccountId || !step.messageContent.trim()}
+                                      className="px-2 py-1 min-h-[36px] text-xs"
+                                    />
+                                    <button
+                                      onClick={() => handleDeleteStep(step.id)}
+                                      className="min-h-[44px] min-w-[44px] text-xs text-red-400 hover:text-red-600 transition-colors"
+                                    >
+                                      削除
+                                    </button>
+                                  </div>
                                 </div>
                               ))}
                           </div>
@@ -537,6 +548,13 @@ export default function RemindersPage() {
                               {stepFormError && <p className="text-xs text-red-600">{stepFormError}</p>}
 
                               <div className="flex gap-2">
+                                <TestSendDialog
+                                  accountIds={selectedAccountId ? [selectedAccountId] : []}
+                                  source="reminder"
+                                  messages={[{ type: stepForm.messageType, content: stepForm.messageContent }]}
+                                  buttonLabel="この内容をテスト送信"
+                                  disabled={stepSaving || !selectedAccountId || !stepForm.messageContent.trim()}
+                                />
                                 <button
                                   onClick={handleAddStep}
                                   disabled={stepSaving}

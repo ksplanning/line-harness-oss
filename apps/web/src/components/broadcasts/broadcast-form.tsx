@@ -8,6 +8,7 @@ import MultiAccountDedupSection from './multi-account-dedup-section'
 import PackInsertSelector from './pack-insert-selector'
 import MessageBlockEditor from './message-block-editor'
 import SenderSelect from './sender-select'
+import TestSendDialog from '@/components/shared/test-send-dialog'
 import { validateMediaClient, type MediaMessageType } from '@/lib/broadcast-media'
 import { validateFlex } from '@/lib/flex-builder/validate'
 import type { FlexContents } from '@/lib/flex-builder/types'
@@ -107,6 +108,11 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
   }, [selectedAccountId])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const draftTestAccountIds = form.targetType === 'multi-account-dedup'
+    ? form.accountIds
+    : selectedAccountId
+      ? [selectedAccountId]
+      : []
 
   const handleSave = async () => {
     if (!form.title.trim()) { setError('配信タイトルを入力してください'); return }
@@ -411,6 +417,14 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
 
         {/* Actions */}
         <div className="flex gap-2 pt-1">
+          <TestSendDialog
+            accountIds={draftTestAccountIds}
+            source="broadcast"
+            messages={blocks.map((block) => block.msg)}
+            buttonLabel="下書きをテスト送信"
+            disabled={saving || draftTestAccountIds.length === 0 || blocks.some((block) => !block.msg.content.trim())}
+            senderPresetId={draftTestAccountIds.length === 1 ? form.senderPresetId : null}
+          />
           <button
             onClick={handleSave}
             disabled={saving}

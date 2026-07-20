@@ -66,7 +66,7 @@ describe('broadcast-detail G2 cap-block inline message', () => {
     // 行内に理由 + 対処が出る (汎用「送信に失敗しました」ではない)。
     await waitFor(() => expect(screen.getByText(/今月の上限に達しています/)).toBeTruthy())
     expect(screen.getByText(/上限を変えるか来月まで/)).toBeTruthy()
-    expect(screen.getByText(/テスト送信は上限の対象外/)).toBeTruthy()
+    expect(screen.getByText(/テスト送信も上限の対象/)).toBeTruthy()
     expect(screen.queryByText('送信に失敗しました')).toBeNull()
     // T-C10: 上限到達中は送信ボタンを抑止する (disabled)。
     const sendBtn = screen.getByText(/この配信を送信する/).closest('button') as HTMLButtonElement

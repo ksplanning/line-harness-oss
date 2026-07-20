@@ -9,6 +9,7 @@ import type {
   Scenario,
   Tag,
 } from '@line-crm/shared'
+import TestSendDialog from '@/components/shared/test-send-dialog'
 
 interface MessageTemplate {
   id: string
@@ -23,6 +24,8 @@ interface Props {
   scenarios: Scenario[]
   templates: MessageTemplate[]
   tags: Tag[]
+  /** Sidebar-selected account; entry-route pools may span accounts, so preview is explicit. */
+  accountId: string | null
   /** Pre-filled ref_code for "register an unregistered inflow ref" flow. */
   initialRefCode?: string
   onClose: () => void
@@ -35,6 +38,7 @@ export default function EditRouteModal({
   scenarios,
   templates,
   tags,
+  accountId,
   initialRefCode,
   onClose,
   onSaved,
@@ -78,6 +82,9 @@ export default function EditRouteModal({
   const [submitting, setSubmitting] = useState(false)
   const [warning, setWarning] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const introTemplate = form.introTemplateId
+    ? templates.find((template) => template.id === form.introTemplateId) ?? null
+    : null
 
   const validateBeforeSave = () => {
     const nothingDelivers =
@@ -215,6 +222,20 @@ export default function EditRouteModal({
               </option>
             ))}
           </select>
+          {introTemplate && accountId ? (
+            <div className="mt-2">
+              <TestSendDialog
+                accountIds={[accountId]}
+                source="entry_greeting"
+                messages={[{ type: introTemplate.messageType, content: introTemplate.messageContent }]}
+                buttonLabel="即時 push をテスト送信"
+              />
+            </div>
+          ) : introTemplate ? (
+            <p className="text-xs text-amber-600 mt-1">
+              テスト送信するLINEアカウントをサイドバーで選んでください。
+            </p>
+          ) : null}
         </Field>
 
         <label className="flex items-start gap-2 text-sm">

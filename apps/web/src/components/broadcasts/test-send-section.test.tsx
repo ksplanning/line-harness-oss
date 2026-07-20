@@ -1,37 +1,66 @@
 // @vitest-environment jsdom
-/**
- * combo test-send UX (broadcast-combo-messages Batch 2) — combo 配信のテスト送信は worker が 400
- * で拒否する (Batch 1) ため、UI は silent 失敗させず「今後対応」を明示して送信ボタンを出さない。
- * single 配信は従来どおりテスト送信ボタンが出る。
- */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, cleanup } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
 
-const { getRecipients, testSend } = vi.hoisted(() => ({ getRecipients: vi.fn(), testSend: vi.fn() }))
-vi.mock('@/lib/api', () => ({
-  api: {
-    accountSettings: { getTestRecipients: (...a: unknown[]) => getRecipients(...a) },
-    broadcasts: { testSend: (...a: unknown[]) => testSend(...a) },
-  },
+vi.mock('@/components/shared/test-send-dialog', () => ({
+  default: ({ accountIds, source, messages, disabled }: {
+    accountIds: string[]
+    source: string
+    messages: Array<{ type: string; content: string }>
+    disabled?: boolean
+  }) => (
+    <button
+      type="button"
+      disabled={disabled}
+      data-account-ids={accountIds.join(',')}
+      data-source={source}
+      data-messages={JSON.stringify(messages)}
+    >
+      テスト送信する
+    </button>
+  ),
 }))
 
 import TestSendSection from './test-send-section'
 
-beforeEach(() => {
-  getRecipients.mockReset(); testSend.mockReset()
-  getRecipients.mockResolvedValue({ success: true, data: [{ id: 'u1', displayName: 'テスター', pictureUrl: null }] })
-})
 afterEach(() => cleanup())
 
-describe('TestSendSection combo UX', () => {
-  it('single 配信: テスト送信ボタンが出る', async () => {
-    render(<TestSendSection broadcastId="b1" accountId="acc-1" disabled={false} />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'テスト送信する' })).toBeTruthy())
+describe('TestSendSection', () => {
+  it('単発配信を共通テスト送信モーダルへ渡す', () => {
+    render(
+      <TestSendSection
+        broadcastId="b1"
+        accountIds={['acc-1']}
+        disabled={false}
+        messages={[{ type: 'text', content: '一通目' }]}
+      />,
+    )
+
+    const button = screen.getByRole('button', { name: 'テスト送信する' })
+    expect(button.getAttribute('data-account-ids')).toBe('acc-1')
+    expect(button.getAttribute('data-source')).toBe('broadcast')
+    expect(JSON.parse(button.getAttribute('data-messages') ?? '[]')).toEqual([
+      { type: 'text', content: '一通目' },
+    ])
   })
 
-  it('combo 配信: 送信ボタンを出さず「今後対応」を明示 (silent 失敗にしない)', async () => {
-    render(<TestSendSection broadcastId="b1" accountId="acc-1" disabled={false} isCombo />)
-    await waitFor(() => expect(screen.getByText(/組み合わせ配信.*テスト送信は今後対応/)).toBeTruthy())
-    expect(screen.queryByRole('button', { name: 'テスト送信する' })).toBeNull()
+  it('組み合わせ配信も全メッセージを順番どおり渡し、利用不可案内に戻さない', () => {
+    const messages = [
+      { type: 'text', content: '一通目' },
+      { type: 'image', content: '{"originalContentUrl":"https://img.example/a.png"}' },
+    ]
+    render(
+      <TestSendSection
+        broadcastId="b1"
+        accountIds={['acc-1', 'acc-2']}
+        disabled={false}
+        messages={messages}
+      />,
+    )
+
+    const button = screen.getByRole('button', { name: 'テスト送信する' })
+    expect(button.getAttribute('data-account-ids')).toBe('acc-1,acc-2')
+    expect(JSON.parse(button.getAttribute('data-messages') ?? '[]')).toEqual(messages)
+    expect(screen.queryByText(/今後対応/)).toBeNull()
   })
 })
