@@ -1136,6 +1136,7 @@ CREATE TABLE sheets_connections (
   next_sync_sequence INTEGER NOT NULL DEFAULT 1 CHECK (next_sync_sequence >= 1),
   friend_field_mappings_json TEXT NOT NULL DEFAULT '[]'
                   CHECK (json_valid(friend_field_mappings_json) AND json_type(friend_field_mappings_json) = 'array'),
+  friend_ledger_enabled INTEGER NOT NULL DEFAULT 0 CHECK (friend_ledger_enabled IN (0, 1)),
   last_sync_at    TEXT,
   last_sync_status TEXT NOT NULL DEFAULT 'idle'
                   CHECK (last_sync_status IN ('idle', 'running', 'success', 'warning', 'error')),

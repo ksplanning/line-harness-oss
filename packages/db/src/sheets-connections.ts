@@ -20,6 +20,7 @@ export interface SheetsConnection {
   conflictClock: 'server_sequence';
   configVersion: number;
   friendFieldMappings: SheetsFriendFieldMapping[];
+  friendLedgerEnabled: boolean;
   lastSyncAt: string | null;
   lastSyncStatus: SheetsSyncStatus;
   lastSyncWarning: string | null;
@@ -40,6 +41,7 @@ interface SheetsConnectionRow {
   conflict_clock: 'server_sequence';
   config_version: number;
   friend_field_mappings_json: string;
+  friend_ledger_enabled: number;
   last_sync_at: string | null;
   last_sync_status: SheetsSyncStatus;
   last_sync_warning: string | null;
@@ -56,6 +58,7 @@ export interface CreateSheetsConnectionInput {
   sheetName: string;
   syncDirection: SheetsSyncDirection;
   friendFieldMappings?: SheetsFriendFieldMapping[];
+  friendLedgerEnabled?: boolean;
 }
 
 export interface UpdateSheetsConnectionInput {
@@ -63,6 +66,7 @@ export interface UpdateSheetsConnectionInput {
   sheetName: string;
   syncDirection: SheetsSyncDirection;
   friendFieldMappings?: SheetsFriendFieldMapping[];
+  friendLedgerEnabled?: boolean;
 }
 
 export interface UpdateSheetsSyncStatusInput {
@@ -293,6 +297,7 @@ function serialize(row: SheetsConnectionRow): SheetsConnection {
     conflictClock: row.conflict_clock,
     configVersion: row.config_version,
     friendFieldMappings: parseFriendFieldMappings(row.friend_field_mappings_json),
+    friendLedgerEnabled: row.friend_ledger_enabled === 1,
     lastSyncAt: row.last_sync_at,
     lastSyncStatus: row.last_sync_status,
     lastSyncWarning: row.last_sync_warning,
@@ -306,7 +311,7 @@ function serialize(row: SheetsConnectionRow): SheetsConnection {
 const ACTIVE_SELECT = `
   SELECT id, line_account_id, form_id, spreadsheet_id, sheet_name,
          sync_direction, conflict_policy, conflict_clock, config_version,
-         friend_field_mappings_json, last_sync_at, last_sync_status,
+         friend_field_mappings_json, friend_ledger_enabled, last_sync_at, last_sync_status,
          last_sync_warning, last_sync_error_code,
          is_active, created_at, updated_at
   FROM sheets_connections
@@ -362,8 +367,9 @@ export async function createSheetsConnection(
   await db.prepare(
     `INSERT INTO sheets_connections
        (id, line_account_id, form_id, spreadsheet_id, sheet_name, sync_direction,
-        conflict_policy, friend_field_mappings_json, is_active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'last_write_wins', ?, 1, ?, ?)`,
+        conflict_policy, friend_field_mappings_json, friend_ledger_enabled,
+        is_active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'last_write_wins', ?, ?, 1, ?, ?)`,
   ).bind(
     id,
     input.lineAccountId,
@@ -372,6 +378,7 @@ export async function createSheetsConnection(
     input.sheetName,
     input.syncDirection,
     JSON.stringify(input.friendFieldMappings ?? []),
+    input.friendLedgerEnabled ? 1 : 0,
     now,
     now,
   ).run();
@@ -391,6 +398,7 @@ export async function updateSheetsConnection(
     `UPDATE sheets_connections
      SET spreadsheet_id = ?, sheet_name = ?, sync_direction = ?,
          friend_field_mappings_json = COALESCE(?, friend_field_mappings_json),
+         friend_ledger_enabled = COALESCE(?, friend_ledger_enabled),
          config_version = config_version + 1, updated_at = ?
      WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
        AND (
@@ -402,6 +410,7 @@ export async function updateSheetsConnection(
     input.sheetName,
     input.syncDirection,
     input.friendFieldMappings === undefined ? null : JSON.stringify(input.friendFieldMappings),
+    input.friendLedgerEnabled === undefined ? null : input.friendLedgerEnabled ? 1 : 0,
     now,
     id,
     lineAccountId,
@@ -511,7 +520,7 @@ export async function listActiveSheetsConnectionsForSync(
   limit: number,
 ): Promise<SheetsConnection[]> {
   const result = await db.prepare(
-    `${ACTIVE_SELECT} ORDER BY updated_at ASC, id ASC LIMIT ?`,
+    `${ACTIVE_SELECT} AND friend_ledger_enabled = 1 ORDER BY updated_at ASC, id ASC LIMIT ?`,
   ).bind(boundedLimit(limit)).all<SheetsConnectionRow>();
   return result.results.map(serialize);
 }

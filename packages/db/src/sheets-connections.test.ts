@@ -29,6 +29,7 @@ interface FriendLedgerConnectionContract {
   conflictClock: 'server_sequence';
   configVersion: number;
   friendFieldMappings: FriendFieldMapping[];
+  friendLedgerEnabled: boolean;
   lastSyncAt: string | null;
   lastSyncStatus: SheetsSyncStatus;
   lastSyncWarning: string | null;
@@ -102,6 +103,7 @@ interface FriendLedgerDbContract {
       sheetName: string;
       syncDirection: 'to_sheets' | 'from_sheets' | 'bidirectional';
       friendFieldMappings?: FriendFieldMapping[];
+      friendLedgerEnabled?: boolean;
     },
   ): Promise<FriendLedgerConnectionContract>;
   updateSheetsConnection(
@@ -113,6 +115,7 @@ interface FriendLedgerDbContract {
       sheetName: string;
       syncDirection: 'to_sheets' | 'from_sheets' | 'bidirectional';
       friendFieldMappings?: FriendFieldMapping[];
+      friendLedgerEnabled?: boolean;
     },
   ): Promise<FriendLedgerConnectionContract | null>;
   updateSheetsSyncStatus(
@@ -334,10 +337,12 @@ describe('Sheets connections DB helper', () => {
       sheetName: '友だち台帳',
       syncDirection: 'bidirectional',
       friendFieldMappings: initialMappings,
+      friendLedgerEnabled: true,
     });
 
     expect(created).toMatchObject({
       friendFieldMappings: initialMappings,
+      friendLedgerEnabled: true,
       lastSyncAt: null,
       lastSyncStatus: 'idle',
       lastSyncWarning: null,
@@ -399,20 +404,25 @@ describe('Sheets connections DB helper', () => {
   test('lists all active connections across accounts with a hard caller-supplied bound', async () => {
     const first = await createSheetsConnection(db, {
       lineAccountId: 'acc-1', formId: 'friends-a', spreadsheetId: 'sheet-a',
-      sheetName: '台帳A', syncDirection: 'bidirectional',
+      sheetName: '台帳A', syncDirection: 'bidirectional', friendLedgerEnabled: true,
     });
     const removed = await createSheetsConnection(db, {
       lineAccountId: 'acc-1', formId: 'friends-removed', spreadsheetId: 'sheet-removed',
-      sheetName: '削除', syncDirection: 'to_sheets',
+      sheetName: '削除', syncDirection: 'to_sheets', friendLedgerEnabled: true,
     });
     const second = await createSheetsConnection(db, {
       lineAccountId: 'acc-2', formId: 'friends-b', spreadsheetId: 'sheet-b',
-      sheetName: '台帳B', syncDirection: 'from_sheets',
+      sheetName: '台帳B', syncDirection: 'from_sheets', friendLedgerEnabled: true,
+    });
+    const foundationOnly = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'foundation-only', spreadsheetId: 'sheet-foundation',
+      sheetName: '回答', syncDirection: 'bidirectional',
     });
     await softDeleteSheetsConnection(db, 'acc-1', removed.id);
 
     const all = await friendLedgerDb.listActiveSheetsConnectionsForSync(db, 100);
     expect(all.map((item) => item.id).sort()).toEqual([first.id, second.id].sort());
+    expect(all.map((item) => item.id)).not.toContain(foundationOnly.id);
     expect(new Set(all.map((item) => item.lineAccountId))).toEqual(new Set(['acc-1', 'acc-2']));
     await expect(friendLedgerDb.listActiveSheetsConnectionsForSync(db, 1))
       .resolves.toHaveLength(1);

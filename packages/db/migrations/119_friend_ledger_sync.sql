@@ -5,6 +5,12 @@ ALTER TABLE sheets_connections
   ADD COLUMN friend_field_mappings_json TEXT NOT NULL DEFAULT '[]'
   CHECK (json_valid(friend_field_mappings_json) AND json_type(friend_field_mappings_json) = 'array');
 
+-- Existing migration-114 connections may point at unrelated answer sheets.
+-- Only a settings save through the friend-ledger UI opts a connection in.
+ALTER TABLE sheets_connections
+  ADD COLUMN friend_ledger_enabled INTEGER NOT NULL DEFAULT 0
+  CHECK (friend_ledger_enabled IN (0, 1));
+
 ALTER TABLE sheets_connections ADD COLUMN last_sync_at TEXT;
 
 ALTER TABLE sheets_connections
