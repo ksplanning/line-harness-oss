@@ -797,8 +797,8 @@ async function handleEvent(
     }
 
     // FAQ bot (flag-gated / only when auto-reply did not match / default OFF)
-    if (!matchedRule && !matched && faqBotEnabled === 'true') {
-      if (!skipAutoReply) {
+    if (!matched && faqBotEnabled === 'true') {
+      if (!matchedRule && !skipAutoReply) {
         const { tryFaqReply } = await import('../services/faq-reply.js');
         const faqResult = await tryFaqReply(db, lineClient, {
           friend,
