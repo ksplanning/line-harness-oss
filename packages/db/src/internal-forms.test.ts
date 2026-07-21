@@ -610,6 +610,8 @@ describe('internal form persistence', () => {
     expect(await getFormalooForm(DB, 'fa_internal')).toMatchObject({
       builder_status: 'published',
     });
+  });
+
   test.each(['line', 'invalid'] as const)(
     'persists an explicitly classified %s origin channel',
     async (originChannel) => {

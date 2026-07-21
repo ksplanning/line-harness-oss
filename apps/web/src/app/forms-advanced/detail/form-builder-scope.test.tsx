@@ -467,9 +467,8 @@ describe('詳細画面 scope 照合', () => {
   })
 
   it('自前配信だけに回答者通知設定を表示し、フォーム定義を渡す', async () => {
-    const loaded = { ...form('acc_A'), title: '参加申込', fields: [{ id: 'mail', type: 'email', label: 'メール', required: true, position: 0, config: {} }] }
+    const loaded = { ...form('acc_A', 'internal'), title: '参加申込', fields: [{ id: 'mail', type: 'email', label: 'メール', required: true, position: 0, config: {} }] }
     getMock.mockResolvedValue(loaded)
-    getRenderBackendMock.mockResolvedValue('internal')
     render(<FormBuilderClient id="fa1" />)
 
     await waitFor(() => expect(screen.getByTestId('notification-settings')).toBeTruthy())
