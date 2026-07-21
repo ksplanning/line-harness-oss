@@ -830,6 +830,14 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **正直な観測**: 同一非回答質問の2回目simulateでLLM判定が`answerable=1`に振れる回を観測（AI評価自体の非決定性）。本fixが保証するのは判定不能/不正出力時のfail-closed配線であり、LLMの逐次判定精度そのものではない。1回目のsimulateでは正しく`answerable=0`と判定され、未対応行が実際に作成されることを確認済み。
 - 詳細: `.sola/live-checklist.md`「faq-nonanswer-to-unmatched」節 + REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_124500_faq-nonanswer-to-unmatched.md`（Box working folder 386663013201）。
 
+## selfform-w6-submission-notify — フォーム回答後の自動通知+文面ビルダー+internal編集リンク（2026-07-21 closer / ✅ status: completed / done 5/5・unread-fix 7 commits 同乗デプロイ）
+- owner原文「LINE経由だったらLINEに自動返信な感じで入力内容の通知が飛ぶ…埋め込みからの申し込みはメールアドレスに入力内容の確認と編集用URLの送信」に対応。チャネル判定（LINE経由fr_id→LINE push／埋め込み経由→本人メール）+変数差し込み文面ビルダー（{{display_name}}/{{回答:項目名}}/{{編集リンク}}）+HMAC署名・期限30日・失効世代・edit_version CASの internal編集リンク。migration 124（`internal_form_submissions.origin_channel`/`edit_version` + `internal_form_notification_settings`・additive）を両テナント適用（行数不変）。
+- **4面デプロイ**（unread-fix 7 commits 同乗）: KS worker Version `2df3e81d-8e6b-4796-9dbd-f8b0c764d99f`・admin `https://88b7bb95.line-harness-ks-admin.pages.dev` / piecemaker worker Version `7d40c0fe-d7d6-443f-82a3-24c84f616a10`・admin `https://3304c7b0.line-harness-piecemaker-admin.pages.dev`。4面health200。
+- **deployed実測（piecemaker・使い捨てフォーム1件）**: LINE経路=実あやこ宛LINE Push実送信成功（messages_log確認・埋め込み後も件数不変=漏洩なし）→編集リンクで再編集→保存→反映確認。埋め込み経路=使い捨てメール(mail.tm)で実受信→編集リンクで再編集→保存→反映確認。OFF後は新規送信なし・revoke後は旧リンク403・改ざんURL403。
+- **既知gap再確認**: internal フォームのAPI DELETE一律拒否は selfform-w3-publish-logic-design 節で既報の同一gap（本ケースでも再現・恒久修理は同backlog項目に集約）。本ケースの使い捨てフォームはunpublish+通知OFFで404相当に停止（物理削除は本番DB破壊的書込ガードによりowner未承認のため未実施・正直に未達記録）。あやこ friend行・本番3フォーム・他友だち・他メール宛先は不接触を確認。
+- **unread-fixは本デプロイに同乗のみ**（4面deployの一部として反映）。unread-fix自体のdeployed実機検証は別便が担当。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_145500_selfform-w6-submission-notify.md`（Box working folder 386663013201・box_file_id_md 2359219960467 / box_file_id_html 2359216885203）。
+
 ## selfform-w3-publish-logic-design — 公開フロー+ABC分岐+プレビュー忠実+郵便統合+fr_id internal（2026-07-21 closer / status: blocked）
 - **経緯**: reviewer Round3 PASS（main HEAD `87aaf41`→`326df19`）を受けて4面デプロイ（KS worker Version `cded0e55-4177-4a0a-8af9-59719d561213`・admin `https://ec3ee4f3.line-harness-ks-admin.pages.dev` / piecemaker worker Version `c5abb8c1-c66c-4941-bd1c-c44cf688551e`・admin `https://192acf7a.line-harness-piecemaker-admin.pages.dev`）。migration追加なし・4面health200。
 - **✅ 実機PASS（2点）**: ①郵便番号自動入力の本丸 — headless Chrome実クリックで郵便番号`1000001`→ボタン→都道府県/市区町村/町名の3パーツに実際に自動入力（東京都/千代田区/千代田1-1）。②受付期間の正直表示 — 受付開始前は公開ページが「受付開始前・◯月◯日から」を表示し「テストできます」等の誤誘導なし・受付中に切替えると実送信1件成功。③internal-form-image-1mb-fix closerが発見した design.logoUrl/backgroundImageUrl 未描画は W3(commit `7565c89`)で解消済みを実機確認（`<img>`+CSS background-image実描画）。
