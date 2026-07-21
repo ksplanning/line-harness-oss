@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { api } from '@/lib/api'
+import { api, type FaqDraftReviewListItem } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import { extractKnowledgeText, type PdfjsLike } from '@/lib/knowledge-extract'
@@ -15,6 +15,10 @@ import {
   AI_FREE_TIER_CAP,
 } from '@/components/knowledge/format'
 import { useAutoReplyCenterEmbed } from '@/components/auto-reply-center/embed-context'
+import {
+  notifyFaqDraftReviewChanged,
+  subscribeFaqDraftReviewChanges,
+} from '@/lib/faq-draft-review-sync'
 
 interface KnowledgeDoc {
   id: string
@@ -44,6 +48,165 @@ interface Draft {
 
 type Tab = 'documents' | 'ai'
 
+const draftStatusConfig: Record<string, { label: string; className: string }> = {
+  pending: { label: '下書き', className: 'bg-amber-100 text-amber-800' },
+  editing: { label: '編集中', className: 'bg-blue-100 text-blue-700' },
+  sending: { label: '送信処理中', className: 'bg-blue-100 text-blue-700' },
+  approved: { label: '送信済み', className: 'bg-green-100 text-green-700' },
+  discarded: { label: '破棄済み', className: 'bg-gray-100 text-gray-600' },
+  send_failed: { label: '送信要確認', className: 'bg-red-100 text-red-700' },
+}
+
+function CentralDraftReviewCard({
+  draft,
+  onUpdate,
+  onApprove,
+  onDiscard,
+}: {
+  draft: FaqDraftReviewListItem
+  onUpdate: (draftId: string, draftAnswer: string) => Promise<void>
+  onApprove: (draftId: string) => Promise<void>
+  onDiscard: (draftId: string) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [answer, setAnswer] = useState(draft.draftAnswer)
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false)
+  const [busy, setBusy] = useState<'edit' | 'approve' | 'discard' | null>(null)
+  const [actionError, setActionError] = useState('')
+  const [approvalUncertain, setApprovalUncertain] = useState(false)
+  const lockedRef = useRef(false)
+
+  useEffect(() => {
+    if (!editing) setAnswer(draft.draftAnswer)
+  }, [draft.draftAnswer, editing])
+
+  const run = async (
+    action: 'edit' | 'approve' | 'discard',
+    callback: () => Promise<void>,
+  ) => {
+    if (lockedRef.current) return
+    lockedRef.current = true
+    setBusy(action)
+    setActionError('')
+    try {
+      await callback()
+    } catch {
+      if (action === 'approve') setApprovalUncertain(true)
+      setActionError(action === 'approve'
+        ? '送信結果を確認できません。再送せず管理者へ確認してください。'
+        : '操作に失敗しました。もう一度お試しください。')
+    } finally {
+      lockedRef.current = false
+      setBusy(null)
+    }
+  }
+
+  return (
+    <article
+      data-testid={`central-ai-draft-${draft.id}`}
+      className="rounded-lg border-2 border-dashed border-amber-300 bg-amber-50 p-4"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[11px] font-semibold text-amber-900">AI下書き</span>
+            <span className="text-xs font-medium text-gray-900">{draft.friendName}</span>
+          </div>
+          <p className="mt-2 text-xs text-gray-700">Q: {draft.question}</p>
+        </div>
+        <time className="text-[10px] text-gray-500">{formatDateTime(draft.createdAt)}</time>
+      </div>
+
+      {editing ? (
+        <textarea
+          aria-label="AI下書き本文"
+          rows={4}
+          value={answer}
+          onChange={(event) => setAnswer(event.target.value)}
+          className="mt-3 min-h-[96px] w-full resize-y rounded-md border border-amber-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+        />
+      ) : (
+        <p className="mt-2 whitespace-pre-wrap break-words text-sm text-gray-800">{draft.draftAnswer}</p>
+      )}
+
+      {actionError && <p role="alert" className="mt-2 text-xs text-red-700">{actionError}</p>}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {editing ? (
+          <>
+            <button
+              type="button"
+              disabled={busy !== null || approvalUncertain || !answer.trim()}
+              onClick={() => void run('edit', async () => {
+                await onUpdate(draft.id, answer.trim())
+                setEditing(false)
+              })}
+              className="min-h-[44px] rounded-md bg-amber-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+            >
+              {busy === 'edit' ? '保存中...' : '編集を保存'}
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null || approvalUncertain}
+              onClick={() => { setAnswer(draft.draftAnswer); setEditing(false) }}
+              className="min-h-[44px] rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 disabled:opacity-50"
+            >
+              キャンセル
+            </button>
+          </>
+        ) : confirmingDiscard ? (
+          <>
+            <span className="text-xs font-medium text-red-700">この下書きを破棄しますか？</span>
+            <button
+              type="button"
+              disabled={busy !== null || approvalUncertain}
+              onClick={() => void run('discard', () => onDiscard(draft.id))}
+              className="min-h-[44px] rounded-md bg-red-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+            >
+              {busy === 'discard' ? '破棄中...' : '破棄する'}
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null || approvalUncertain}
+              onClick={() => setConfirmingDiscard(false)}
+              className="min-h-[44px] rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 disabled:opacity-50"
+            >
+              キャンセル
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              disabled={busy !== null || approvalUncertain}
+              onClick={() => setEditing(true)}
+              className="min-h-[44px] rounded-md border border-amber-400 bg-white px-3 py-2 text-xs font-medium text-amber-800 disabled:opacity-50"
+            >
+              下書きを編集
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null || approvalUncertain}
+              onClick={() => void run('approve', () => onApprove(draft.id))}
+              className="min-h-[44px] rounded-md bg-green-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+            >
+              {busy === 'approve' ? '送信中...' : '承認して送信'}
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null || approvalUncertain}
+              onClick={() => setConfirmingDiscard(true)}
+              className="min-h-[44px] rounded-md border border-red-300 bg-white px-3 py-2 text-xs font-medium text-red-700 disabled:opacity-50"
+            >
+              下書きを破棄
+            </button>
+          </>
+        )}
+      </div>
+    </article>
+  )
+}
+
 function formatDateTime(iso: string): string {
   const m = iso.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/)
   return m ? `${m[1]} ${m[2]}` : iso.slice(0, 16)
@@ -62,6 +225,8 @@ export default function KnowledgePage() {
   const centerEmbed = useAutoReplyCenterEmbed()
   const { selectedAccountId } = useAccount()
   const [tab, setTab] = useState<Tab>(centerEmbed?.knowledgeInitialTab ?? 'documents')
+  const isCentralDraftInbox = centerEmbed?.knowledgeTabs?.length === 1
+    && centerEmbed.knowledgeTabs[0] === 'ai'
 
   const [docs, setDocs] = useState<KnowledgeDoc[]>([])
   const [loading, setLoading] = useState(true)
@@ -82,6 +247,13 @@ export default function KnowledgePage() {
   const [usage, setUsage] = useState<{ account: UsageRow[]; global: UsageRow[]; embeddedChunks: number } | null>(null)
   const [drafts, setDrafts] = useState<Draft[]>([])
   const [unresolvedCount, setUnresolvedCount] = useState(0)
+  const [pendingReviewDrafts, setPendingReviewDrafts] = useState<FaqDraftReviewListItem[]>([])
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewError, setReviewError] = useState('')
+  const reviewSyncSourceIdRef = useRef(`knowledge-${Math.random().toString(36).slice(2)}`)
+  const reviewLoadSequenceRef = useRef(0)
+  const reviewAccountIdRef = useRef(selectedAccountId)
+  reviewAccountIdRef.current = selectedAccountId
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -113,8 +285,103 @@ export default function KnowledgePage() {
     }
   }, [selectedAccountId])
 
+  const loadPendingReviewDrafts = useCallback(async () => {
+    const sequence = ++reviewLoadSequenceRef.current
+    if (!isCentralDraftInbox || !selectedAccountId) {
+      setPendingReviewDrafts([])
+      setReviewLoading(false)
+      setReviewError('')
+      return
+    }
+    setReviewLoading(true)
+    setReviewError('')
+    try {
+      const res = await api.faqDraftReviews.list(selectedAccountId)
+      if (sequence !== reviewLoadSequenceRef.current) return
+      if (res.success) setPendingReviewDrafts(res.data)
+      else setReviewError(res.error)
+    } catch {
+      if (sequence === reviewLoadSequenceRef.current) {
+        setReviewError('AI下書きの読み込みに失敗しました。')
+      }
+    } finally {
+      if (sequence === reviewLoadSequenceRef.current) setReviewLoading(false)
+    }
+  }, [isCentralDraftInbox, selectedAccountId])
+
   useEffect(() => { load() }, [load])
   useEffect(() => { if (tab === 'ai') loadAi() }, [tab, loadAi])
+  useEffect(() => {
+    if (tab === 'ai' && isCentralDraftInbox) void loadPendingReviewDrafts()
+  }, [isCentralDraftInbox, loadPendingReviewDrafts, tab])
+  useEffect(() => {
+    if (tab !== 'ai' || !isCentralDraftInbox || !selectedAccountId) return
+    const reload = () => { void loadPendingReviewDrafts() }
+    const unsubscribe = subscribeFaqDraftReviewChanges((event) => {
+      if (event.accountId === selectedAccountId && event.sourceId !== reviewSyncSourceIdRef.current) reload()
+    })
+    window.addEventListener('focus', reload)
+    return () => {
+      unsubscribe()
+      window.removeEventListener('focus', reload)
+    }
+  }, [isCentralDraftInbox, loadPendingReviewDrafts, selectedAccountId, tab])
+
+  const updatePendingReviewDraft = async (draftId: string, draftAnswer: string) => {
+    if (!selectedAccountId) throw new Error('LINEアカウントを選択してください')
+    const accountId = selectedAccountId
+    const res = await api.faqDraftReviews.update(draftId, { accountId, draftAnswer })
+    if (!res.success) throw new Error(res.error)
+    if (reviewAccountIdRef.current === accountId) {
+      setPendingReviewDrafts((current) => current.map((draft) => draft.id === draftId
+        ? { ...draft, ...res.data }
+        : draft))
+      setDrafts((current) => current.map((draft) => draft.id === draftId
+        ? { ...draft, draftAnswer: res.data.draftAnswer }
+        : draft))
+    }
+    notifyFaqDraftReviewChanged({
+      accountId,
+      draftId,
+      sourceId: reviewSyncSourceIdRef.current,
+    })
+  }
+
+  const approvePendingReviewDraft = async (draftId: string) => {
+    if (!selectedAccountId) throw new Error('LINEアカウントを選択してください')
+    const accountId = selectedAccountId
+    const res = await api.faqDraftReviews.approve(draftId, { accountId })
+    if (!res.success) throw new Error(res.error)
+    if (reviewAccountIdRef.current === accountId) {
+      setPendingReviewDrafts((current) => current.filter((draft) => draft.id !== draftId))
+      setDrafts((current) => current.map((draft) => draft.id === draftId
+        ? { ...draft, status: 'approved', draftAnswer: res.data.draft.draftAnswer }
+        : draft))
+    }
+    notifyFaqDraftReviewChanged({
+      accountId,
+      draftId,
+      sourceId: reviewSyncSourceIdRef.current,
+    })
+  }
+
+  const discardPendingReviewDraft = async (draftId: string) => {
+    if (!selectedAccountId) throw new Error('LINEアカウントを選択してください')
+    const accountId = selectedAccountId
+    const res = await api.faqDraftReviews.discard(draftId, { accountId })
+    if (!res.success) throw new Error(res.error)
+    if (reviewAccountIdRef.current === accountId) {
+      setPendingReviewDrafts((current) => current.filter((draft) => draft.id !== draftId))
+      setDrafts((current) => current.map((draft) => draft.id === draftId
+        ? { ...draft, status: 'discarded', draftAnswer: res.data.draftAnswer }
+        : draft))
+    }
+    notifyFaqDraftReviewChanged({
+      accountId,
+      draftId,
+      sourceId: reviewSyncSourceIdRef.current,
+    })
+  }
 
   const ingestText = async (content: string, docTitle: string) => {
     if (!selectedAccountId) { setError('LINEアカウントを選択してください'); return }
@@ -394,6 +661,42 @@ export default function KnowledgePage() {
       {/* ── AI ログ・コスト タブ ── */}
       {tab === 'ai' && (
         <div className="space-y-4">
+          {isCentralDraftInbox && (
+            <section className="rounded-lg border border-amber-200 bg-white p-5">
+              <div className="mb-4">
+                <h3 className="text-sm font-semibold text-gray-900">未送信のAI下書き</h3>
+                <p className="mt-1 text-[11px] text-gray-500">
+                  内容を確認し、必要なら直してから送信します。チャット画面で処理した結果もここへ反映されます。
+                </p>
+              </div>
+              {!selectedAccountId ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                  下書き受信箱を使うには、上の「アカウント切替」でLINEアカウントを選択してください。
+                </div>
+              ) : reviewLoading ? (
+                <p className="py-4 text-center text-xs text-gray-400">下書きを読み込み中...</p>
+              ) : reviewError ? (
+                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                  {reviewError}
+                </div>
+              ) : pendingReviewDrafts.length === 0 ? (
+                <p className="py-4 text-center text-xs text-gray-400">確認待ちの下書きはありません。</p>
+              ) : (
+                <div className="space-y-3">
+                  {pendingReviewDrafts.map((draft) => (
+                    <CentralDraftReviewCard
+                      key={draft.id}
+                      draft={draft}
+                      onUpdate={updatePendingReviewDraft}
+                      onApprove={approvePendingReviewDraft}
+                      onDiscard={discardPendingReviewDraft}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
           {/* コスト dashboard */}
           <div className="bg-white border border-gray-200 rounded-lg p-5 space-y-3">
             <h3 className="text-sm font-semibold text-gray-800">今日のAI使用量（無料枠）</h3>
@@ -485,9 +788,16 @@ export default function KnowledgePage() {
               <div className="space-y-2">
                 {drafts.map((d) => (
                   <div key={d.id} className="border border-gray-100 rounded-md p-3">
-                    <div className="flex justify-between items-center">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-medium text-gray-900 truncate max-w-[360px]">Q: {d.question}</span>
-                      <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatDateTime(d.createdAt)}</span>
+                      <div className="flex flex-shrink-0 items-center gap-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          (draftStatusConfig[d.status] ?? { className: 'bg-gray-100 text-gray-600' }).className
+                        }`}>
+                          {(draftStatusConfig[d.status] ?? { label: d.status }).label}
+                        </span>
+                        <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatDateTime(d.createdAt)}</span>
+                      </div>
                     </div>
                     <p className="mt-1 text-xs text-gray-600 line-clamp-2">A: {d.draftAnswer}</p>
                   </div>

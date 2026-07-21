@@ -12,6 +12,10 @@ import ImageUploader, { type ImageUploaderValue } from '@/components/shared/imag
 import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 import CannedResponsePicker from '@/components/chats/canned-response-picker'
 import { applyCannedSelection } from '@/lib/canned-responses/insert-canned-text'
+import {
+  notifyFaqDraftReviewChanged,
+  subscribeFaqDraftReviewChanges,
+} from '@/lib/faq-draft-review-sync'
 
 interface Chat {
   id: string
@@ -132,7 +136,9 @@ function InlineAiDraftCard({
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
   const [busyAction, setBusyAction] = useState<'edit' | 'approve' | 'discard' | null>(null)
   const [actionError, setActionError] = useState('')
+  const [reviewBlocked, setReviewBlocked] = useState(false)
   const actionLockRef = useRef(false)
+  const controlsDisabled = busyAction !== null || reviewBlocked
 
   useEffect(() => {
     if (!isEditing) setDraftAnswer(draft.draftAnswer)
@@ -149,6 +155,7 @@ function InlineAiDraftCard({
     try {
       await callback()
     } catch {
+      if (action === 'approve') setReviewBlocked(true)
       setActionError(action === 'approve'
         ? '送信結果を確認できません。再送せず管理者へ確認してください。'
         : '操作に失敗しました。もう一度お試しください。')
@@ -191,7 +198,7 @@ function InlineAiDraftCard({
           <>
             <button
               type="button"
-              disabled={busyAction !== null || !draftAnswer.trim()}
+              disabled={controlsDisabled || !draftAnswer.trim()}
               onClick={() => void runAction('edit', async () => {
                 await onUpdate(draft.id, draftAnswer.trim())
                 setIsEditing(false)
@@ -202,7 +209,7 @@ function InlineAiDraftCard({
             </button>
             <button
               type="button"
-              disabled={busyAction !== null}
+              disabled={controlsDisabled}
               onClick={() => {
                 setDraftAnswer(draft.draftAnswer)
                 setIsEditing(false)
@@ -217,7 +224,7 @@ function InlineAiDraftCard({
             <span className="text-xs font-medium text-red-700">この下書きを破棄しますか？</span>
             <button
               type="button"
-              disabled={busyAction !== null}
+              disabled={controlsDisabled}
               onClick={() => void runAction('discard', () => onDiscard(draft.id))}
               className="min-h-[40px] rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
             >
@@ -225,7 +232,7 @@ function InlineAiDraftCard({
             </button>
             <button
               type="button"
-              disabled={busyAction !== null}
+              disabled={controlsDisabled}
               onClick={() => setConfirmingDiscard(false)}
               className="min-h-[40px] rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
             >
@@ -236,7 +243,7 @@ function InlineAiDraftCard({
           <>
             <button
               type="button"
-              disabled={busyAction !== null}
+              disabled={controlsDisabled}
               onClick={() => setIsEditing(true)}
               className="min-h-[40px] rounded-md border border-amber-500 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
             >
@@ -244,7 +251,7 @@ function InlineAiDraftCard({
             </button>
             <button
               type="button"
-              disabled={busyAction !== null}
+              disabled={controlsDisabled}
               onClick={() => void runAction('approve', () => onApprove(draft.id))}
               className="min-h-[40px] rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
             >
@@ -252,7 +259,7 @@ function InlineAiDraftCard({
             </button>
             <button
               type="button"
-              disabled={busyAction !== null}
+              disabled={controlsDisabled}
               onClick={() => setConfirmingDiscard(true)}
               className="min-h-[40px] rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
             >
@@ -368,7 +375,7 @@ function ChatMessageHistory({
               </div>
               {onUpdateDraft && onApproveDraft && onDiscardDraft && draftsAfterMessage.map((draft) => (
                 <InlineAiDraftCard
-                  key={draft.id}
+                  key={`${draft.id}:${draft.draftAnswer}`}
                   draft={draft}
                   onUpdate={onUpdateDraft}
                   onApprove={onApproveDraft}
@@ -611,6 +618,8 @@ export default function ChatsPage() {
   const [showImageUploader, setShowImageUploader] = useState(false)
   const [sending, setSending] = useState(false)
   const sendLockRef = useRef(false)
+  const detailRequestSequenceRef = useRef(0)
+  const draftReviewSyncSourceIdRef = useRef(`chats-${Math.random().toString(36).slice(2)}`)
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [showLoadingIndicator, setShowLoadingIndicator] = useState(false)
@@ -703,10 +712,12 @@ export default function ChatsPage() {
   }, [sendMode])
 
   const loadChatDetail = useCallback(async (chatId: string) => {
+    const requestSequence = ++detailRequestSequenceRef.current
     setDetailLoading(true)
     setError('')
     try {
       const res = await api.chats.get(chatId)
+      if (requestSequence !== detailRequestSequenceRef.current) return
       if (res.success) {
         setChatDetail(res.data as unknown as ChatDetail)
         setNotes((res.data as unknown as ChatDetail).notes || '')
@@ -716,11 +727,12 @@ export default function ChatsPage() {
         setError(`チャット詳細の読み込みに失敗しました: ${errMsg}`)
       }
     } catch (err) {
+      if (requestSequence !== detailRequestSequenceRef.current) return
       // ネットワーク / parse / auth fail などの例外。empty catch だと原因不明だったので詳細を出す。
       const msg = err instanceof Error ? err.message : String(err)
       setError(`チャット詳細の読み込みに失敗しました: ${msg}`)
     } finally {
-      setDetailLoading(false)
+      if (requestSequence === detailRequestSequenceRef.current) setDetailLoading(false)
     }
   }, [])
 
@@ -743,9 +755,27 @@ export default function ChatsPage() {
     if (selectedChatId) {
       loadChatDetail(selectedChatId)
     } else {
+      detailRequestSequenceRef.current += 1
+      setDetailLoading(false)
       setChatDetail(null)
     }
   }, [selectedChatId, loadChatDetail])
+
+  useEffect(() => {
+    if (!selectedChatId || !selectedAccountId) return
+    const reload = () => { void loadChatDetail(selectedChatId) }
+    const unsubscribe = subscribeFaqDraftReviewChanges((event) => {
+      if (
+        event.accountId === selectedAccountId
+        && event.sourceId !== draftReviewSyncSourceIdRef.current
+      ) reload()
+    })
+    window.addEventListener('focus', reload)
+    return () => {
+      unsubscribe()
+      window.removeEventListener('focus', reload)
+    }
+  }, [loadChatDetail, selectedAccountId, selectedChatId])
 
   // Surface deep-linked chats in the sidebar even when the current account
   // filter or status filter would exclude them — otherwise the user replies
@@ -1028,6 +1058,7 @@ export default function ChatsPage() {
   const handleUpdateInlineDraft = async (draftId: string, draftAnswer: string) => {
     if (!selectedChatId || !chatDetail) throw new Error('チャットが選択されていません')
     const friendId = chatDetail.friendId
+    const accountId = selectedAccountId
     try {
       const res = await api.chats.drafts.update(friendId, draftId, { draftAnswer })
       if (!res.success) throw new Error(res.error)
@@ -1039,6 +1070,13 @@ export default function ChatsPage() {
           questionMessageId: draft.questionMessageId,
         } : draft),
       } : prev)
+      if (accountId) {
+        notifyFaqDraftReviewChanged({
+          accountId,
+          draftId,
+          sourceId: draftReviewSyncSourceIdRef.current,
+        })
+      }
     } catch (err) {
       setError('AI下書きの編集に失敗しました。')
       throw err
@@ -1047,8 +1085,8 @@ export default function ChatsPage() {
 
   const handleApproveInlineDraft = async (draftId: string) => {
     if (!selectedChatId || !chatDetail) throw new Error('チャットが選択されていません')
-    const listChatId = selectedChatId
     const friendId = chatDetail.friendId
+    const accountId = selectedAccountId
     try {
       const res = await api.chats.drafts.approve(friendId, draftId)
       if (!res.success) throw new Error(res.error)
@@ -1063,14 +1101,37 @@ export default function ChatsPage() {
         pendingDrafts: (prev.pendingDrafts ?? []).filter((draft) => draft.id !== draftId),
         messages: [...(prev.messages ?? []), message],
       } : prev)
-      setChats((prev) => prev.map((chat) => chat.id === listChatId ? {
-        ...chat,
-        status: 'in_progress',
-        lastMessageAt: message.createdAt,
-        lastMessageContent: message.content,
-        lastMessageDirection: 'outgoing',
-        lastMessageType: message.messageType,
-      } : chat))
+      setChats((prev) => {
+        if (!prev.some((chat) => chat.friendId === friendId)) return prev
+        const updated = prev.map((chat) => chat.friendId === friendId ? {
+          ...chat,
+          status: 'in_progress' as const,
+          lastMessageAt: message.createdAt,
+          lastMessageContent: message.content,
+          lastMessageDirection: 'outgoing' as const,
+          lastMessageType: message.messageType,
+        } : chat)
+        const currentFilter = statusFilterRef.current
+        const currentUnansweredOnly = unansweredOnlyRef.current
+        let filtered = currentFilter === 'all'
+          ? updated
+          : updated.filter((chat) => chat.status === currentFilter)
+        if (currentUnansweredOnly) {
+          filtered = filtered.filter((chat) => chat.friendId !== friendId)
+        }
+        return [...filtered].sort((a, b) => {
+          const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
+          const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
+          return bt - at
+        })
+      })
+      if (accountId) {
+        notifyFaqDraftReviewChanged({
+          accountId,
+          draftId,
+          sourceId: draftReviewSyncSourceIdRef.current,
+        })
+      }
     } catch (err) {
       setError('AI下書きの承認送信に失敗しました。再送せず状況を確認してください。')
       throw err
@@ -1080,6 +1141,7 @@ export default function ChatsPage() {
   const handleDiscardInlineDraft = async (draftId: string) => {
     if (!selectedChatId || !chatDetail) throw new Error('チャットが選択されていません')
     const friendId = chatDetail.friendId
+    const accountId = selectedAccountId
     try {
       const res = await api.chats.drafts.discard(friendId, draftId)
       if (!res.success) throw new Error(res.error)
@@ -1087,6 +1149,13 @@ export default function ChatsPage() {
         ...prev,
         pendingDrafts: (prev.pendingDrafts ?? []).filter((draft) => draft.id !== draftId),
       } : prev)
+      if (accountId) {
+        notifyFaqDraftReviewChanged({
+          accountId,
+          draftId,
+          sourceId: draftReviewSyncSourceIdRef.current,
+        })
+      }
     } catch (err) {
       setError('AI下書きの破棄に失敗しました。')
       throw err

@@ -264,14 +264,21 @@ export interface CannedResponseData {
   updatedAt: string
 }
 
-export interface InlineAiFaqDraftData {
+export interface ReviewedAiFaqDraftData {
   id: string
   question: string
   draftAnswer: string
   createdAt: string
   updatedAt: string
+  status: string
+}
+
+export interface InlineAiFaqDraftData extends ReviewedAiFaqDraftData {
   questionMessageId: string | null
-  status?: string
+}
+
+export interface FaqDraftReviewListItem extends ReviewedAiFaqDraftData {
+  friendName: string
 }
 
 export interface ChatMessageData {
@@ -1283,6 +1290,27 @@ export const api = {
       )
     },
   },
+  faqDraftReviews: {
+    list: (accountId: string) =>
+      fetchApi<ApiResponse<FaqDraftReviewListItem[]>>(
+        `/api/faq-draft-reviews?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    update: (draftId: string, data: { accountId: string; draftAnswer: string }) =>
+      fetchApi<ApiResponse<ReviewedAiFaqDraftData>>(
+        `/api/faq-draft-reviews/${encodeURIComponent(draftId)}`,
+        { method: 'PATCH', body: JSON.stringify(data) },
+      ),
+    approve: (draftId: string, data: { accountId: string }) =>
+      fetchApi<ApiResponse<{ draft: ReviewedAiFaqDraftData }>>(
+        `/api/faq-draft-reviews/${encodeURIComponent(draftId)}/approve`,
+        { method: 'POST', body: JSON.stringify(data) },
+      ),
+    discard: (draftId: string, data: { accountId: string }) =>
+      fetchApi<ApiResponse<ReviewedAiFaqDraftData>>(
+        `/api/faq-draft-reviews/${encodeURIComponent(draftId)}`,
+        { method: 'DELETE', body: JSON.stringify(data) },
+      ),
+  },
   automations: {
     list: (params?: { accountId?: string }) => {
       const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
@@ -1347,17 +1375,17 @@ export const api = {
       }),
     drafts: {
       update: (chatId: string, draftId: string, data: { draftAnswer: string }) =>
-        fetchApi<ApiResponse<InlineAiFaqDraftData>>(
+        fetchApi<ApiResponse<ReviewedAiFaqDraftData>>(
           `/api/chats/${encodeURIComponent(chatId)}/drafts/${encodeURIComponent(draftId)}`,
           { method: 'PATCH', body: JSON.stringify(data) },
         ),
       approve: (chatId: string, draftId: string) =>
-        fetchApi<ApiResponse<{ draft: InlineAiFaqDraftData; message: ChatMessageData }>>(
+        fetchApi<ApiResponse<{ draft: ReviewedAiFaqDraftData; message: ChatMessageData }>>(
           `/api/chats/${encodeURIComponent(chatId)}/drafts/${encodeURIComponent(draftId)}/approve`,
           { method: 'POST' },
         ),
       discard: (chatId: string, draftId: string) =>
-        fetchApi<ApiResponse<InlineAiFaqDraftData>>(
+        fetchApi<ApiResponse<ReviewedAiFaqDraftData>>(
           `/api/chats/${encodeURIComponent(chatId)}/drafts/${encodeURIComponent(draftId)}`,
           { method: 'DELETE' },
         ),

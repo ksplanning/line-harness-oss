@@ -14,6 +14,11 @@ const apiMocks = vi.hoisted(() => ({
   discardDraft: vi.fn(),
 }))
 
+const reviewSyncMocks = vi.hoisted(() => ({
+  notify: vi.fn(),
+  subscribe: vi.fn(),
+}))
+
 vi.mock('@/lib/api', () => ({
   api: {
     chats: {
@@ -33,6 +38,10 @@ vi.mock('@/lib/api', () => ({
 }))
 vi.mock('@/contexts/account-context', () => ({
   useAccount: () => ({ selectedAccountId: 'account-1' }),
+}))
+vi.mock('@/lib/faq-draft-review-sync', () => ({
+  notifyFaqDraftReviewChanged: reviewSyncMocks.notify,
+  subscribeFaqDraftReviewChanges: reviewSyncMocks.subscribe,
 }))
 vi.mock('@/components/layout/header', () => ({
   default: ({ title }: { title: string }) => <h1>{title}</h1>,
@@ -157,6 +166,7 @@ beforeEach(() => {
     },
   })
   apiMocks.discardDraft.mockResolvedValue({ success: true, data: { id: 'draft-1', status: 'discarded' } })
+  reviewSyncMocks.subscribe.mockReturnValue(vi.fn())
 })
 
 afterEach(() => {
@@ -168,6 +178,12 @@ async function openChat() {
   render(<ChatsPage />)
   fireEvent.click(await screen.findByRole('button', { name: /あやこ/ }))
   return await screen.findByTestId('chat-message-history')
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
 }
 
 describe('個別チャットのインラインAI下書き', () => {
@@ -209,6 +225,11 @@ describe('個別チャットのインラインAI下書き', () => {
       { draftAnswer: '11時から営業します' },
     ))
     expect(await screen.findByText('11時から営業します')).toBeTruthy()
+    expect(reviewSyncMocks.notify).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'account-1',
+      draftId: 'draft-1',
+      sourceId: expect.any(String),
+    }))
   })
 
   it('拡大履歴で保存した本文を通常履歴の編集欄にも同期する', async () => {
@@ -228,6 +249,30 @@ describe('個別チャットのインラインAI下書き', () => {
       .toBe('11時から営業します')
   })
 
+  it('片方で編集中でも、もう片方の保存後は古い編集バッファを閉じる', async () => {
+    await openChat()
+    const normalCard = screen.getByTestId('inline-ai-draft')
+    fireEvent.click(within(normalCard).getByRole('button', { name: '下書きを編集' }))
+    fireEvent.change(within(normalCard).getByRole('textbox', { name: 'AI下書き本文' }), {
+      target: { value: '保存前の古い本文' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'チャット履歴を拡大表示' }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: '下書きを編集' }))
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'AI下書き本文' }), {
+      target: { value: '確定した新しい本文' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: '編集を保存' }))
+    await waitFor(() => expect(apiMocks.updateDraft).toHaveBeenCalledTimes(1))
+    fireEvent.click(within(dialog).getByRole('button', { name: '拡大表示を閉じる' }))
+
+    expect(screen.queryByRole('textbox', { name: 'AI下書き本文' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '下書きを編集' }))
+    expect((screen.getByRole('textbox', { name: 'AI下書き本文' }) as HTMLTextAreaElement).value)
+      .toBe('確定した新しい本文')
+  })
+
   it('承認送信後は下書きを消し、同じ内容を通常の送信メッセージとして残す', async () => {
     const history = await openChat()
     fireEvent.click(screen.getByRole('button', { name: '承認して送信' }))
@@ -235,6 +280,11 @@ describe('個別チャットのインラインAI下書き', () => {
     await waitFor(() => expect(apiMocks.approveDraft).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(screen.queryByText('AI下書き')).toBeNull())
     expect(within(history).getByText('10時からです').closest('[data-testid="chat-message-bubble"]')).toBeTruthy()
+    expect(reviewSyncMocks.notify).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'account-1',
+      draftId: 'draft-1',
+      sourceId: expect.any(String),
+    }))
   })
 
   it('承認結果が不明なときはカード内でも再送しないよう案内する', async () => {
@@ -246,6 +296,17 @@ describe('個別チャットのインラインAI下書き', () => {
     const alert = await within(card).findByRole('alert')
     expect(alert.textContent).toContain('再送せず')
     expect(apiMocks.approveDraft).toHaveBeenCalledTimes(1)
+    expect((within(card).getByRole('button', { name: '承認して送信' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('未対応のみ表示で承認した友だちを一覧から即時に外す', async () => {
+    await openChat()
+    fireEvent.click(screen.getByRole('checkbox', { name: /未対応のみ/ }))
+    await waitFor(() => expect(apiMocks.listChats).toHaveBeenLastCalledWith(expect.objectContaining({ unansweredOnly: true })))
+    fireEvent.click(screen.getByRole('button', { name: '承認して送信' }))
+
+    await waitFor(() => expect(apiMocks.approveDraft).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryAllByRole('button', { name: /あやこ/ })).toHaveLength(0))
   })
 
   it('行内確認後に破棄し、同じ下書きをタイムラインから消す', async () => {
@@ -255,6 +316,26 @@ describe('個別チャットのインラインAI下書き', () => {
 
     await waitFor(() => expect(apiMocks.discardDraft).toHaveBeenCalledWith('friend-1', 'draft-1'))
     expect(screen.queryByText('AI下書き')).toBeNull()
+    expect(reviewSyncMocks.notify).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'account-1',
+      draftId: 'draft-1',
+      sourceId: expect.any(String),
+    }))
+  })
+
+  it('中央受信箱の別タブで処理した通知を受けると、選択中チャットを再読込する', async () => {
+    await openChat()
+    await waitFor(() => expect(reviewSyncMocks.subscribe).toHaveBeenCalledTimes(1))
+    const listener = reviewSyncMocks.subscribe.mock.calls[0]?.[0] as ((event: {
+      accountId: string
+      draftId: string
+      sourceId: string
+    }) => void)
+
+    listener({ accountId: 'account-1', draftId: 'draft-1', sourceId: 'central-other-tab' })
+
+    await waitFor(() => expect(apiMocks.getChat).toHaveBeenCalledTimes(2))
+    expect(apiMocks.getChat).toHaveBeenLastCalledWith('chat-row-1')
   })
 })
 
@@ -277,5 +358,47 @@ describe('返信コンポーザの余白', () => {
     expect(screen.getByRole('button', { name: '定型文を選ぶ' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '送信' })).toBeTruthy()
     expect(screen.getByText('送信キー:')).toBeTruthy()
+  })
+})
+
+describe('チャット詳細の切替競合', () => {
+  it('先に選んだ友だちの遅い応答で、後から選んだ友だちを上書きしない', async () => {
+    const firstChat = { ...chat, id: 'friend-a', friendId: 'friend-a', friendName: 'Aさん' }
+    const secondChat = { ...chat, id: 'friend-b', friendId: 'friend-b', friendName: 'Bさん' }
+    const firstResponse = deferred<{ success: true; data: ReturnType<typeof detail> }>()
+    const secondResponse = deferred<{ success: true; data: ReturnType<typeof detail> }>()
+    apiMocks.listChats.mockResolvedValue({ success: true, data: [firstChat, secondChat] })
+    apiMocks.getChat.mockImplementation((id: string) => (
+      id === 'friend-a' ? firstResponse.promise : secondResponse.promise
+    ))
+
+    render(<ChatsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /Aさん/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Bさん/ }))
+    secondResponse.resolve({
+      success: true,
+      data: {
+        ...detail([]),
+        id: 'friend-b',
+        friendId: 'friend-b',
+        friendName: 'Bさん',
+        messages: [{ ...messages[0], id: 'message-b', content: 'Bの詳細' }],
+      },
+    })
+    const history = await screen.findByTestId('chat-message-history')
+    expect(within(history).getByText('Bの詳細')).toBeTruthy()
+
+    firstResponse.resolve({
+      success: true,
+      data: {
+        ...detail([]),
+        id: 'friend-a',
+        friendId: 'friend-a',
+        friendName: 'Aさん',
+        messages: [{ ...messages[0], id: 'message-a', content: 'Aの遅い詳細' }],
+      },
+    })
+    await waitFor(() => expect(within(history).queryByText('Aの遅い詳細')).toBeNull())
+    expect(within(history).getByText('Bの詳細')).toBeTruthy()
   })
 })
