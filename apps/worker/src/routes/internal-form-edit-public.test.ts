@@ -130,12 +130,13 @@ function seedForm(options: {
   status?: string;
   epoch?: number;
   withSettings?: boolean;
+  definition?: unknown;
 } = {}): string {
   const id = options.id ?? 'form-1';
   raw.prepare(
     `INSERT INTO formaloo_forms (id, title, definition_json, builder_status, render_backend)
      VALUES (?, '回答編集テスト', ?, ?, ?)`,
-  ).run(id, JSON.stringify(definition), options.status ?? 'published', options.backend ?? 'internal');
+  ).run(id, JSON.stringify(options.definition ?? definition), options.status ?? 'published', options.backend ?? 'internal');
   if (options.withSettings !== false) {
     raw.prepare(
       `INSERT INTO internal_form_notification_settings
@@ -241,6 +242,48 @@ describe('GET /ife/:token', () => {
 });
 
 describe('POST /ife/:token', () => {
+  test('edits only the active W3 logic branch and drops answers from the branch that became hidden', async () => {
+    const conditionalDefinition = {
+      fields: [
+        { id: 'kind', type: 'choice', label: '区分', required: true, position: 0, config: { choices: ['個人', '法人'] } },
+        { id: 'personal', type: 'text', label: 'お名前', required: true, position: 1, config: {} },
+        { id: 'company', type: 'text', label: '会社名', required: true, position: 2, config: {} },
+      ],
+      logic: [
+        { id: 'show-personal', sourceFieldId: 'kind', operator: 'equals', value: '個人', action: 'show', targetFieldId: 'personal' },
+        { id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'company' },
+      ],
+    };
+    seedForm({ definition: conditionalDefinition });
+    seedSubmission('form-1', { kind: '個人', personal: '佐藤' }, 3);
+    const signed = await token();
+
+    const initial = await app().request(`/ife/${signed}`, {}, bindings());
+    const initialHtml = await initial.text();
+    expect(initialHtml).toContain('name="a_1"');
+    expect(initialHtml).not.toContain('name="a_2"');
+
+    const changedBranch = await app().request(`/ife/${signed}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ editVersion: '3', a_0: '法人' }),
+    }, bindings());
+    const changedHtml = await changedBranch.text();
+    expect(changedBranch.status).toBe(400);
+    expect(changedHtml).not.toContain('name="a_1"');
+    expect(changedHtml).toContain('name="a_2"');
+
+    const saved = await app().request(`/ife/${signed}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ editVersion: '3', a_0: '法人', a_2: '株式会社テスト' }),
+    }, bindings());
+    expect(saved.status).toBe(200);
+    const row = raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+      .get('ifs-1') as { answers_json: string };
+    expect(JSON.parse(row.answers_json)).toEqual({ kind: '法人', company: '株式会社テスト' });
+  });
+
   test('validates and saves editable answers with CAS, ignores forged fields, preserves complex answers, and reads back the change', async () => {
     seedForm();
     seedSubmission();

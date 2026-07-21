@@ -8,7 +8,11 @@ import {
   type InternalFormNotificationSettings,
   type InternalFormSubmission,
 } from '@line-crm/db';
-import { isDecorationType } from '@line-crm/shared';
+import {
+  evaluateInternalFormLogic,
+  isDecorationType,
+  type InternalFormLogicAnswers,
+} from '@line-crm/shared';
 import { verifyEditToken, type EditTokenPayload } from '../services/formaloo-edit-token.js';
 import {
   JAPAN_PREFECTURES,
@@ -189,14 +193,23 @@ function renderInvalidPage(): string {
   return renderDocument('リンクが無効です', '<section class="result"><h1>このリンクは使用できません</h1><p>有効期限が切れているか、リンクが無効になっています。</p></section>');
 }
 
-function renderEditPage(value: ResolvedEdit, error?: string): string {
-  const answers = parseAnswers(value.submission.answers_json);
+function renderEditPage(
+  value: ResolvedEdit,
+  error?: string,
+  currentAnswers: Record<string, unknown> = parseAnswers(value.submission.answers_json),
+): string {
+  const visible = new Set(evaluateInternalFormLogic(
+    value.definition.fields,
+    value.definition.logic,
+    currentAnswers,
+    value.submission.origin_channel === 'line' ? 'line' : 'web',
+  ).visibleFieldIds);
   const templates = repeatingTemplateIds(value.definition.fields);
   const rows = value.definition.fields.map((field, index) => {
-    if (isDecorationType(field.type) || templates.has(field.id)) return '';
+    if (!visible.has(field.id) || isDecorationType(field.type) || templates.has(field.id)) return '';
     return isEditableField(field, templates)
-      ? renderEditableField(field, index, answers[field.id])
-      : renderReadOnlyField(field, answers[field.id]);
+      ? renderEditableField(field, index, currentAnswers[field.id])
+      : renderReadOnlyField(field, currentAnswers[field.id]);
   }).join('');
   const errorHtml = error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : '';
   return renderDocument('回答の編集', `<h1>回答の編集</h1><p class="intro">${escapeHtml(value.form.title)}</p>${errorHtml}<form method="post"><input type="hidden" name="editVersion" value="${value.submission.edit_version}">${rows}<button type="submit">保存する</button></form>`);
@@ -245,6 +258,7 @@ function normalizeBodyValue(value: string | File | (string | File)[] | undefined
 function buildValidationInput(
   definition: InternalFormDefinition,
   body: Record<string, string | File | (string | File)[]>,
+  visibleFieldIds: ReadonlySet<string>,
 ): { fields: InternalFormField[]; input: InternalAnswerInput; editableIds: string[] } {
   const templates = repeatingTemplateIds(definition.fields);
   const fields: InternalFormField[] = [];
@@ -253,16 +267,33 @@ function buildValidationInput(
 
   for (const [originalIndex, field] of definition.fields.entries()) {
     const editable = isEditableField(field, templates);
+    if (editable) editableIds.push(field.id);
+    if (!visibleFieldIds.has(field.id)) continue;
     const formula = field.type === 'variable' && field.config.variableSubType === 'formula';
     if (!editable && !formula) continue;
     const validationIndex = fields.length;
     fields.push(field);
     if (!editable) continue;
-    editableIds.push(field.id);
     const value = normalizeBodyValue(body[`a_${originalIndex}`]);
     if (value !== undefined) input[`a_${validationIndex}`] = value;
   }
   return { fields, input, editableIds };
+}
+
+function buildCandidateLogicAnswers(
+  definition: InternalFormDefinition,
+  body: Record<string, string | File | (string | File)[]>,
+  storedAnswers: Record<string, unknown>,
+): InternalFormLogicAnswers {
+  const candidate: InternalFormLogicAnswers = { ...storedAnswers };
+  const templates = repeatingTemplateIds(definition.fields);
+  for (const [originalIndex, field] of definition.fields.entries()) {
+    if (!isEditableField(field, templates)) continue;
+    const value = normalizeBodyValue(body[`a_${originalIndex}`]);
+    if (value === undefined) delete candidate[field.id];
+    else candidate[field.id] = value;
+  }
+  return candidate;
 }
 
 function parseEditVersion(value: unknown): number | null {
@@ -299,13 +330,21 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
       return c.html(renderEditPage(resolved.value, 'ページを再読み込みしてから、もう一度保存してください。'), 400, PRIVATE_HEADERS);
     }
 
-    const validationInput = buildValidationInput(resolved.value.definition, body);
+    const storedAnswers = parseAnswers(resolved.value.submission.answers_json);
+    const candidateAnswers = buildCandidateLogicAnswers(resolved.value.definition, body, storedAnswers);
+    const visibleFieldIds = new Set(evaluateInternalFormLogic(
+      resolved.value.definition.fields,
+      resolved.value.definition.logic,
+      candidateAnswers,
+      resolved.value.submission.origin_channel === 'line' ? 'line' : 'web',
+    ).visibleFieldIds);
+    const validationInput = buildValidationInput(resolved.value.definition, body, visibleFieldIds);
     const validation = validateInternalFormAnswers(validationInput.fields, validationInput.input);
     if (!validation.ok) {
-      return c.html(renderEditPage(resolved.value, validation.error), 400, PRIVATE_HEADERS);
+      return c.html(renderEditPage(resolved.value, validation.error, candidateAnswers), 400, PRIVATE_HEADERS);
     }
 
-    const merged = parseAnswers(resolved.value.submission.answers_json);
+    const merged = storedAnswers;
     for (const fieldId of validationInput.editableIds) delete merged[fieldId];
     Object.assign(merged, validation.answers);
     const result = await updateInternalFormSubmissionAnswers(c.env.DB, {
