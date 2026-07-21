@@ -75,6 +75,19 @@ describe('formaloo-forms — validateHarnessField (M-21 明示 reject)', () => {
     expect(r.ok).toBe(false);
   });
 
+  test('postalAutofill mapping を whitelist 検証して保存往復でも保持する', () => {
+    const postalAutofill = {
+      zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town',
+    };
+    const result = validateHarnessField({
+      id: 'zip', type: 'text', label: '郵便番号', required: true, position: 0,
+      config: { postalAutofill },
+    }, { allowInternalOnly: true });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.field.config.postalAutofill).toEqual(postalAutofill);
+  });
+
   test('section は config.text を保持し、page_break も受理する (T-B1)', () => {
     const section = validateHarnessField({
       id: 'decoration-section',

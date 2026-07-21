@@ -46,6 +46,18 @@ describe('evaluateInternalFormLogic', () => {
     expect(nextInternalFormFieldId(fields, completed, 'b-name')).toBeNull();
   });
 
+  test("legacy skip は hide ではなく jump として同じルートへ進める", () => {
+    const legacyLogic: HarnessLogicRule[] = abcLogic.map((rule) => (
+      rule.action === 'jump' ? { ...rule, action: 'skip' as const } : rule
+    ));
+
+    const state = evaluateInternalFormLogic(fields, legacyLogic, { route: 'B' }, 'web');
+
+    expect(state.visibleFieldIds).toEqual(['route', 'page-b', 'b-name']);
+    expect(state.activeJumpBySource.route).toBe('page-b');
+    expect(nextInternalFormFieldId(fields, state, 'route')).toBe('page-b');
+  });
+
   test('show/hide は未回答から回答後へ動的に切り替わる', () => {
     const conditionalFields: HarnessField[] = [
       { id: 'kind', type: 'choice', label: '種別', required: true, position: 0, config: { choices: ['法人', '個人'] } },
@@ -133,6 +145,45 @@ describe('evaluateInternalFormLogic', () => {
       { gate: 'いいえ', nested: 'open' },
       'web',
     ).visibleFieldIds).toEqual(['gate']);
+  });
+
+  test('非表示になった分岐元の改ざん回答で別の必須項目を隠せない', () => {
+    const guardedFields: HarnessField[] = [
+      { id: 'gate', type: 'choice', label: '追加質問', required: true, position: 0, config: { choices: ['はい', 'いいえ'] } },
+      { id: 'nested', type: 'text', label: '隠れる分岐元', required: false, position: 1, config: {} },
+      { id: 'required-target', type: 'text', label: '必須回答', required: true, position: 2, config: {} },
+    ];
+    const guardedLogic: HarnessLogicRule[] = [
+      { id: 'show-nested', sourceFieldId: 'gate', operator: 'equals', value: 'はい', action: 'show', targetFieldId: 'nested' },
+      { id: 'forged-hide', sourceFieldId: 'nested', operator: 'equals', value: 'x', action: 'hide', targetFieldId: 'required-target' },
+    ];
+
+    expect(evaluateInternalFormLogic(
+      guardedFields,
+      guardedLogic,
+      { gate: 'いいえ', nested: 'x' },
+      'web',
+    ).visibleFieldIds).toEqual(['gate', 'required-target']);
+  });
+
+  test('表示連鎖の末尾から循環して隠す改ざん回答も過渡状態で打ち切らない', () => {
+    const cyclicFields: HarnessField[] = [
+      { id: 'first', type: 'text', label: '最初の必須回答', required: true, position: 0, config: {} },
+      { id: 'second', type: 'text', label: '二番目の必須回答', required: true, position: 1, config: {} },
+      { id: 'third', type: 'text', label: '三番目の回答', required: false, position: 2, config: {} },
+    ];
+    const cyclicLogic: HarnessLogicRule[] = [
+      { id: 'show-second', sourceFieldId: 'first', operator: 'equals', value: 'open', action: 'show', targetFieldId: 'second' },
+      { id: 'show-third', sourceFieldId: 'second', operator: 'equals', value: 'open', action: 'show', targetFieldId: 'third' },
+      { id: 'hide-first', sourceFieldId: 'third', operator: 'equals', value: 'open', action: 'hide', targetFieldId: 'first' },
+    ];
+
+    expect(evaluateInternalFormLogic(
+      cyclicFields,
+      cyclicLogic,
+      { first: 'open', second: 'open', third: 'open' },
+      'web',
+    ).visibleFieldIds).toEqual(['first']);
   });
 
   test('ここで送信が成立したら同じルートの後続項目を表示・検証対象から外す', () => {

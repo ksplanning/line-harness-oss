@@ -228,6 +228,14 @@ export const FORMALOO_TO_HARNESS_TYPE: Record<string, HarnessFieldType> = Object
   FORMALOO_FIELD_TYPES.map((h) => [HARNESS_TO_FORMALOO_TYPE[h], h]),
 ) as Record<string, HarnessFieldType>;
 
+/** 自前フォームの郵便番号検索で使う、郵便番号欄と住所 3 欄の対応。 */
+export interface PostalAutofillConfig {
+  zipField: string;
+  prefField: string;
+  cityField: string;
+  townField: string;
+}
+
 export interface HarnessFieldConfig {
   /** text/textarea の文字数上限 (R2 / Formaloo max_length。実機で short_text=255 を確認済)。 */
   maxLength?: number;
@@ -255,6 +263,8 @@ export interface HarnessFieldConfig {
   defaultValue?: string;
   /** internal renderer の複数選択型に使う既定値。Formaloo payload には送らない。 */
   defaultValues?: string[];
+  /** 自前 renderer 専用。設定元の text field を郵便番号欄として住所 3 欄を自動補完する。 */
+  postalAutofill?: PostalAutofillConfig;
   /**
    * choice/dropdown/multiple_select の選択肢を title+slug で additive 保持 (form-route-branching)。
    * pull 時に Formaloo `choice_items[].slug` を取り込む (全項目が slug を持つ完全形の時のみ)。既存 `choices`(title のみ) は不変。
@@ -680,6 +690,22 @@ export function validateHarnessField(
         return { ok: false, error: 'config.defaultValues must be string[]' };
       }
       config.defaultValues = [...rawCfg.defaultValues];
+    }
+    if (rawCfg.postalAutofill !== undefined) {
+      if (!rawCfg.postalAutofill || typeof rawCfg.postalAutofill !== 'object' || Array.isArray(rawCfg.postalAutofill)) {
+        return { ok: false, error: 'config.postalAutofill must be an object' };
+      }
+      const postal = rawCfg.postalAutofill as Record<string, unknown>;
+      const keys = ['zipField', 'prefField', 'cityField', 'townField'] as const;
+      if (!keys.every((key) => typeof postal[key] === 'string' && (postal[key] as string).trim())) {
+        return { ok: false, error: 'config.postalAutofill fields must be non-empty strings' };
+      }
+      config.postalAutofill = {
+        zipField: postal.zipField as string,
+        prefField: postal.prefField as string,
+        cityField: postal.cityField as string,
+        townField: postal.townField as string,
+      };
     }
   }
   // treasure-b1-palette: rating の sub_type は 5 enum whitelist で正規化 (M-21 未知素通し禁止)。

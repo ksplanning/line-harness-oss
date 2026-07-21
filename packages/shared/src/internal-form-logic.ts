@@ -30,13 +30,10 @@ export function evaluateInternalFormLogic(
   const ordered = [...fields].sort((a, b) => a.position - b.position);
   const positionById = new Map(ordered.map((field, index) => [field.id, index]));
   const compute = (allowedSources: Set<string>): InternalFormLogicState => {
-    // Once a field is hidden in an evaluation pass, its submitted value cannot
-    // make itself or a later field visible in the next pass. Starting every
-    // top-level evaluation with all fields still lets legitimate answers reveal
-    // nested fields when their visible parent condition matches.
-    const hidden = new Set(
-      ordered.filter((field) => !allowedSources.has(field.id)).map((field) => field.id),
-    );
+    // Visibility is recomputed from scratch on every pass. `allowedSources`
+    // controls which answers may drive rules; it must not permanently hide a
+    // separate target that was affected by a forged answer in an earlier pass.
+    const hidden = new Set<string>();
     const activeJumpBySource: Record<string, string> = {};
 
     const hideTarget = (targetFieldId: string): void => {
@@ -98,14 +95,16 @@ export function evaluateInternalFormLogic(
         : [{ action: rule.action, targetFieldId: rule.targetFieldId }];
       return actions.map((action) => ({
         rule,
-        action: action.action,
+        // `skip` is the legacy projection name for Formaloo jump. Treating it
+        // as hide would change existing definitions when rendered internally.
+        action: action.action === 'skip' ? 'jump' : action.action,
         targetFieldId: action.targetFieldId,
         matches: ruleMatches(rule),
       }));
     });
 
     // A field controlled by one or more `show` rules starts hidden and appears when
-    // any matching rule says so. A matching hide/legacy skip always wins.
+    // any matching rule says so. A matching hide always wins.
     const showTargets = new Set(
       expanded.filter((entry) => entry.action === 'show').map((entry) => entry.targetFieldId),
     );
@@ -115,7 +114,7 @@ export function evaluateInternalFormLogic(
       }
     }
     for (const entry of expanded) {
-      if (entry.matches && (entry.action === 'hide' || entry.action === 'skip')) hideTarget(entry.targetFieldId);
+      if (entry.matches && entry.action === 'hide') hideTarget(entry.targetFieldId);
     }
 
     // Jump rules sharing a source define sibling route segments. Before an answer,
@@ -165,15 +164,35 @@ export function evaluateInternalFormLogic(
     };
   };
 
-  let allowedSources = new Set(ordered.map((field) => field.id));
-  let state = compute(allowedSources);
-  for (let pass = 0; pass <= ordered.length; pass++) {
-    const nextAllowedSources = new Set(state.visibleFieldIds);
-    if (nextAllowedSources.size === allowedSources.size) return state;
+  // Begin with the unconditional/channel-only surface, then admit answers only
+  // after their fields become visible. Sources that later disappear are banned
+  // for the remainder of this evaluation, which gives cyclic/self-hiding rules
+  // a safe deterministic result without letting hidden forged values hide
+  // required fields.
+  let state = compute(new Set());
+  let allowedSources = new Set(state.visibleFieldIds);
+  const bannedSources = new Set<string>();
+  // Each field can enter `allowedSources` once and enter `bannedSources` once,
+  // so at most 2N membership changes are possible before convergence.
+  for (let pass = 0; pass <= ordered.length * 2; pass++) {
+    const nextState = compute(allowedSources);
+    const visible = new Set(nextState.visibleFieldIds);
+    for (const source of allowedSources) {
+      if (!visible.has(source)) bannedSources.add(source);
+    }
+    const nextAllowedSources = new Set(
+      [...allowedSources, ...nextState.visibleFieldIds].filter((id) => !bannedSources.has(id)),
+    );
+    const stable = nextAllowedSources.size === allowedSources.size
+      && [...nextAllowedSources].every((id) => allowedSources.has(id));
+    state = nextState;
+    if (stable) return state;
     allowedSources = nextAllowedSources;
-    state = compute(allowedSources);
   }
-  return state;
+  // Defensive fail-closed fallback: if a future rule kind breaks the monotonic
+  // bound, ignore all submitted field answers instead of trusting a transient
+  // visibility state. Channel-only rules remain deterministic in `compute`.
+  return compute(new Set());
 }
 
 export function nextInternalFormFieldId(
