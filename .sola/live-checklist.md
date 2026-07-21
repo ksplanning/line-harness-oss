@@ -73,6 +73,55 @@
 - [x] 確認専用の自動返信ルール2本（`w5verify_legacy_*` / `w5verify_packrule_*`）とテンプレートパック `w5verify_pack` を DELETE し、`GET /api/auto-replies` と `GET /api/template-packs` が両方空配列に戻ったことを確認した。
 - [x] 確認用キーワードは自動返信ルール削除と同時に消滅（応答経路自体が存在しない状態に戻った）。追加の実射はしていない。
 - [x] 実施日時 2026-07-21 (JST) / 査読済み revision: repo HEAD `36bc6a7`（機能コミットは deploy 済み `c971e358` の祖先・deploy との diff は docs のみ）/ 結果: PASS（D-1〜D-4 の API レベル検証 all green）/ 削除完了: 上記2ルール+1パック DELETE 済み確認。秘密値・本文個人情報は記録していない。
+# faq-nonanswer-to-unmatched — host live checklist
+
+## owner 日常語
+
+資料に答えが書かれていない質問も、見落とさず「答えられなかった質問」に残ります。AI の下書きには「資料不足」と表示されるので、FAQ や資料へ何を足せばよいか確認できます。反対に、資料で答えられた質問は「答えられなかった質問」へ増やしません。
+
+## 目的と安全条件
+
+査読済み revision、migration `123_faq_draft_answerable.sql`、Worker/Web を trusted host の検証環境へ反映した後、closer が「あやこ simulate」で両方向を確認する。sandbox と実 LINE では実施しない。
+
+- 対象は「あやこ」の simulate friend だけにする。実 LINE の reply/push API、一斉配信、Discord、本番 3 フォームには触れない。
+- FAQ 設定は `enabled=true` / `answerMode="draft"` とし、configured handoff を含む LINE outgoing が 0 件になる検証環境を使う。
+- 非回答側は、関連資料は検索できるが申込開始日は書かれていない状態で「申し込みはいつからですか」を使う。検索 floor 未満ではなく AI の `answerable=false` 分岐を通ったことを Worker の理由コードまたは検証ログで確認する。
+- 実回答側は、資料に答えが明記された質問を 1 件選ぶ。本文や個人情報は証跡へ転記せず、質問名、件数差分、ラベル有無、PASS/FAIL だけを残す。
+- 本番相当の共有 DB を使わず、検証後にスナップショットへ戻せる preview/simulate DB を使う。利用できなければ実 LINE へ切り替えず `BLOCKED` とする。
+
+## 事前確認
+
+- [ ] deployment SHA、migration 123 適用、対象 tenant、JST 開始時刻を記録した。
+- [ ] AI 草案、未解決の「答えられなかった質問」、FAQ bot outgoing の開始件数を記録した。
+- [ ] 非回答用の関連資料に申込開始日がないこと、実回答用の資料には答えが明記されていることを確認した。
+- [ ] 「あやこ simulate」が実 LINE API を呼ばず、検証後に DB を復元できることを確認した。
+
+## 1周目: 実質非回答を未対応へ残す
+
+1. 「あやこ simulate」で「申し込みはいつからですか」を 1 回だけ入力する。
+2. AI 草案ログに同じ質問の `pending` 草案が増え、そのカードだけに「資料不足」が表示されることを確認する。
+3. 「答えられなかった質問」に同じ質問の未解決行が 1 件あることを確認する。
+4. 同じ質問をもう 1 回 simulate し、草案は履歴として増えても、未解決行は 1 件のままで重複しないことを確認する。
+5. LINE outgoing と configured handoff の増分がともに 0 件であることを確認する。
+
+## 2周目: 実回答を未対応へ増やさない
+
+1. 「あやこ simulate」で、資料に答えが明記された質問を 1 回だけ入力する。
+2. AI 草案ログに同じ質問の `pending` 草案が増え、そのカードに「資料不足」が表示されないことを確認する。
+3. 「答えられなかった質問」の同じ質問の件数が開始時から増えていないことを確認する。
+4. LINE outgoing と configured handoff の増分がともに 0 件であることを確認する。
+
+## 復元と実施記録
+
+- [ ] simulate DB を開始前スナップショットへ戻し、検証用の草案・未対応行・一時資料が残っていない。
+- [ ] 非回答: 資料不足草案あり / 未対応 1 件 / 再送後も未対応 1 件 / LINE 送信 0 件だった。
+- [ ] 実回答: 資料不足ラベルなし / 未対応増分 0 件 / LINE 送信 0 件だった。
+- 実施日時:
+- 実装 revision:
+- 対象検証環境:
+- 実施者:
+- 結果: PASS / FAIL / BLOCKED
+- 備考:
 
 ---
 
