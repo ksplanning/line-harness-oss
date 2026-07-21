@@ -6,7 +6,7 @@ import { describe, expect, test } from 'vitest';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, '..');
-const MIGRATION_PATH = join(PKG_ROOT, 'migrations', '122_internal_submission_notifications.sql');
+const MIGRATION_PATH = join(PKG_ROOT, 'migrations', '124_internal_submission_notifications.sql');
 
 function legacyDatabase(): Database.Database {
   const db = new Database(':memory:');
@@ -40,7 +40,7 @@ function applyMigration(db: Database.Database): void {
   }
 }
 
-describe('migration 122 — internal submission notifications', () => {
+describe('migration 124 — internal submission notifications', () => {
   test('exists and remains additive-only', () => {
     expect(existsSync(MIGRATION_PATH)).toBe(true);
     if (!existsSync(MIGRATION_PATH)) return;

@@ -1,4 +1,4 @@
--- Migration 122: per-form respondent notifications and internal edit-link state.
+-- Migration 124: per-form respondent notifications and internal edit-link state.
 -- Legacy submissions are embedded-form responses unless a newer caller records
 -- a verified LINE origin (or the fail-closed `invalid` classification).
 

@@ -107,7 +107,7 @@
     "123_ai_faq_draft_review_audit.sql",
     "123_auto_reply_response_messages.sql",
     "123_faq_draft_answerable.sql",
-    "122_internal_submission_notifications.sql"
+    "124_internal_submission_notifications.sql"
   ],
   "migrationCount": 108
 }

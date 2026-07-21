@@ -1722,7 +1722,7 @@ CREATE INDEX IF NOT EXISTS idx_internal_form_submissions_form
 CREATE INDEX IF NOT EXISTS idx_internal_form_submissions_friend
   ON internal_form_submissions (friend_id);
 
--- migration 122: 回答者本人向け通知設定と internal 編集リンクの失効世代。
+-- migration 124: 回答者本人向け通知設定と internal 編集リンクの失効世代。
 CREATE TABLE IF NOT EXISTS internal_form_notification_settings (
   form_id                  TEXT PRIMARY KEY REFERENCES formaloo_forms (id) ON DELETE CASCADE,
   enabled                  INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
