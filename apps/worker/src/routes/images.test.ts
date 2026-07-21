@@ -372,6 +372,28 @@ describe('POST /api/images direct media uploads (D-2)', () => {
     expect([...store.keys()].sort()).toEqual(widths.map((width) => `imagemaps/${id}/${width}`).sort());
   });
 
+  test.each([240, 300, 460, 700, 1040])(
+    'imagemap refuses to overwrite an existing %i-width variant',
+    async (width) => {
+      const id = '123e4567-e89b-42d3-a456-426614174000';
+      const key = `imagemaps/${id}/${width}`;
+      const { r2, store, putValues } = makeR2Stub({ [key]: { size: 4 } });
+      const originalBody = store.get(key)!.body.slice();
+      const app = setupApp(r2);
+
+      const res = await app.request(`/api/images?kind=imagemap&width=${width}&id=${id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'image/png', 'Content-Length': '1' },
+        body: new Uint8Array([255]).buffer,
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ success: false, error: 'Imagemap variant already exists' });
+      expect(putValues).toHaveLength(0);
+      expect(store.get(key)?.body).toEqual(originalBody);
+    },
+  );
+
   test('imagemap rejects an unsafe shared upload id before R2', async () => {
     const { r2, store } = makeR2Stub({});
     const app = setupApp(r2);

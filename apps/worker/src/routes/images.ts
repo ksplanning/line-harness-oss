@@ -210,6 +210,10 @@ images.post('/api/images', async (c) => {
     // library and must not start returning video/audio/imagemap objects.
     const key = uploadKey(kind, id, mimeType, imagemapWidth);
 
+    if (kind === 'imagemap' && await c.env.IMAGES.head(key)) {
+      return c.json({ success: false, error: 'Imagemap variant already exists' }, 409);
+    }
+
     const stored = await c.env.IMAGES.put(key, data, {
       httpMetadata: { contentType: mimeType },
       customMetadata: { originalFilename: filename ?? key },
