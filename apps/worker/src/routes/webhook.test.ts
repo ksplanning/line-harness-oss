@@ -720,11 +720,11 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     ]);
   });
 
-  test('malformed non-null response_messages never falls back to the legacy single response', async () => {
+  test('malformed non-null response_messages never falls back and leaves the message unread', async () => {
     vi.mocked(expandVariables).mockImplementation((content) => content);
     vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
 
-    await postTextWebhook({}, '壊れた設定', [{
+    const { db, preparedStatements } = await postTextWebhook({}, '壊れた設定', [{
       id: 'auto-broken',
       keyword: '壊れた設定',
       match_type: 'exact',
@@ -737,7 +737,14 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     }]);
 
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
-    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    const sourceUpdate = preparedStatements.find(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    );
+    expect(sourceUpdate?.statement.bind).toHaveBeenCalledWith(
+      'user_unmatched',
+      expect.any(String),
+    );
   });
 
   test('FAQ hit consumes reply token and keeps the chat out of unread inbox', async () => {
@@ -811,22 +818,37 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     };
   }
 
-  test('[e] gate ON + within business hours suppresses delivery but not registered-keyword classification', async () => {
+  test('[e] gate ON + within business hours leaves a suppressed registered-keyword reply unread', async () => {
     vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(schedule({}) as never);
     vi.mocked(isWithinBusinessHours).mockReturnValue(true);
 
-    // 営業時間内: LINE 返信は止めるが、固定キーワードを自発メッセージへ誤分類しない。
-    const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' }, '営業時間', SILENT_RULE as never);
+    // 営業時間内: 固定キーワードでも返信が出ないため、オペレーター対応へ fail-closed する。
+    const { db, incomingStatement } = await postTextWebhook(
+      { FAQ_BOT_ENABLED: 'true' },
+      '営業時間',
+      [{
+        ...SILENT_RULE[0],
+        response_type: 'text',
+        response_content: '10時からです',
+      }] as never,
+    );
 
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
     expect(tryFaqReply).not.toHaveBeenCalled();
-    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '営業時間',
+      'user_unmatched',
+      expect.any(String),
+    );
     expect(fireEvent).toHaveBeenCalledWith(
       db,
       'message_received',
       {
         friendId: 'friend-1',
-        eventData: { text: '営業時間', matched: true, businessHoursSuppressed: true },
+        eventData: { text: '営業時間', matched: false, businessHoursSuppressed: true },
         replyToken: 'reply-token',
       },
       'env-default-token',
@@ -876,19 +898,28 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
-  test('[e] gate ON + outside hours + none sends nothing but keeps a registered keyword out of unread', async () => {
+  test('[e] gate ON + outside hours + none sends nothing and leaves a registered keyword unread', async () => {
     vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(schedule({ outsideHoursMode: 'none' }) as never);
     vi.mocked(isWithinBusinessHours).mockReturnValue(false);
 
-    const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' }, '営業時間', SILENT_RULE as never);
+    const { db, incomingStatement } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' }, '営業時間', SILENT_RULE as never);
 
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
     expect(tryFaqReply).not.toHaveBeenCalled();
-    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '営業時間',
+      'user_unmatched',
+      expect.any(String),
+    );
     expect(fireEvent).toHaveBeenCalledWith(
       db,
       'message_received',
-      expect.objectContaining({ eventData: expect.objectContaining({ automaticSendSuppressed: true }) }),
+      expect.objectContaining({
+        eventData: expect.objectContaining({ matched: false, automaticSendSuppressed: true }),
+      }),
       'env-default-token',
       null,
     );

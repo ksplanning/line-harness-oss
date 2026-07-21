@@ -579,7 +579,30 @@ async function handleEvent(
       console.error('Failed to load auto-reply rules for unread classification', err);
     }
 
-    const incomingSource = matchedRule
+    // 応答時間帯 (G28): schedule は 1 度だけ読み、登録キーワードの source と
+    // 実際の返信経路で同じ抑止判定を使う。返信を止める場合は fail-closed で未読にする。
+    const responseSchedule = await getEffectiveResponseSchedule(db, lineAccountId);
+    const businessHoursSuppressed = !!(
+      responseSchedule?.isEnabled && isWithinBusinessHours(responseSchedule, Date.now())
+    );
+    const skipAutoReply = !!(
+      responseSchedule?.isEnabled
+      && (
+        businessHoursSuppressed
+        || responseSchedule.outsideHoursMode === 'away_message'
+        || responseSchedule.outsideHoursMode === 'none'
+      )
+    );
+    const automaticSendSuppressed = !!(
+      responseSchedule?.isEnabled
+      && !businessHoursSuppressed
+      && (
+        responseSchedule.outsideHoursMode === 'away_message'
+        || responseSchedule.outsideHoursMode === 'none'
+      )
+    );
+
+    const incomingSource = matchedRule && !skipAutoReply
       ? AUTO_REPLY_KEYWORD_SOURCE
       : UNMATCHED_USER_SOURCE;
 
@@ -592,23 +615,6 @@ async function handleEvent(
       )
       .bind(logId, friend.id, incomingText, incomingSource, now)
       .run();
-
-    // 応答時間帯 (G28): 営業時間内かを先に判定 (schedule は 1 度だけ読む)。営業時間内
-    // (is_enabled=1 かつ 時間内) は以降の text 自動送信を全て抑止する — auto-reply/FAQ
-    // だけでなく下の cross-account 体験トリガーも含む (reviewer R1: 営業時間内の text
-    // 自動送信を全停止する G28 意図)。is_enabled=0 / schedule 無しは false = 従来 byte-identical。
-    const responseSchedule = await getEffectiveResponseSchedule(db, lineAccountId);
-    const businessHoursSuppressed = !!(
-      responseSchedule?.isEnabled && isWithinBusinessHours(responseSchedule, Date.now())
-    );
-    const automaticSendSuppressed = !!(
-      responseSchedule?.isEnabled
-      && !businessHoursSuppressed
-      && (
-        responseSchedule.outsideHoursMode === 'away_message'
-        || responseSchedule.outsideHoursMode === 'none'
-      )
-    );
 
     // Cross-account trigger: send message from another account via UUID.
     // response schedule が自動送信を止める時間帯は未読へ落とす (下の gate 経由)。
@@ -687,7 +693,13 @@ async function handleEvent(
       }
     }
 
-    let matched = matchedRule !== undefined;
+    // silent は「返信しない」こと自体がルールの処理結果。それ以外は実際の返信処理が
+    // 完了した後にだけ matched=true とし、送信失敗を未読から消さない。
+    let matched = !!(
+      matchedRule
+      && !skipAutoReply
+      && matchedRule.response_type === 'silent'
+    );
     let replyTokenConsumed = false;
 
     // 応答時間帯ゲート (G28) — is_enabled の時だけ介入。既定 OFF / schedule 無しは
@@ -698,14 +710,11 @@ async function handleEvent(
     // 営業時間内に受けた message は event-bus の message_received automation
     // の send_message も抑止する (HIGH-1: auto-reply ループだけ止めると automation 経由の
     // 自動返信が営業時間内に裏口から発火する穴を塞ぐ)。
-    let skipAutoReply = false;
     if (responseSchedule && responseSchedule.isEnabled) {
       if (businessHoursSuppressed) {
-        // 営業時間内 → 自動送信を止める。未読化は後段でキーワード分類後に決める。
-        skipAutoReply = true;
+        // 営業時間内 → 自動送信を止め、後段で未読にする。
       } else if (responseSchedule.outsideHoursMode === 'away_message') {
         // 営業時間外 (不在メッセージ) → 設定文面を 1 回だけ返す (既存 replyMessage 経路)。
-        skipAutoReply = true;
         const awayText = (responseSchedule.awayMessage ?? '').trim();
         if (awayText) {
           try {
@@ -732,8 +741,7 @@ async function handleEvent(
           }
         }
       } else if (responseSchedule.outsideHoursMode === 'none') {
-        // 営業時間外 (なにもしない) → 送信を止める。未読化は後段で分類する。
-        skipAutoReply = true;
+        // 営業時間外 (なにもしない) → 送信を止め、後段で未読にする。
       }
       // outsideHoursMode === 'auto_reply' → skipAutoReply=false → 従来ループ発火。
     }
@@ -771,13 +779,14 @@ async function handleEvent(
           )
           .bind(outLogId, friend.id, wbAutoReplyPayload.messageType, wbAutoReplyPayload.content, jstNow())
           .run();
+        matched = true;
       } catch (err) {
         console.error('Failed to send auto-reply', err);
       }
     }
 
     // FAQ bot (flag-gated / only when auto-reply did not match / default OFF)
-    if (!matched && faqBotEnabled === 'true') {
+    if (!matchedRule && !matched && faqBotEnabled === 'true') {
       if (!skipAutoReply) {
         const { tryFaqReply } = await import('../services/faq-reply.js');
         const faqResult = await tryFaqReply(db, lineClient, {
@@ -797,6 +806,16 @@ async function handleEvent(
 
     // auto_replies にマッチしなかった = 自発メッセージ → unread にする
     if (!matched) {
+      if (incomingSource === AUTO_REPLY_KEYWORD_SOURCE) {
+        try {
+          await db
+            .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
+            .bind(UNMATCHED_USER_SOURCE, logId)
+            .run();
+        } catch (err) {
+          console.error('Failed to mark unsent auto-reply unread', err);
+        }
+      }
       await upsertChatOnMessage(db, friend.id);
     }
 
