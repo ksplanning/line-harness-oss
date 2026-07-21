@@ -22,17 +22,21 @@
 
 ## 実測記入欄
 
-- 実施日時（JST）: 未記入
-- 査読済み revision / deploy revision: 未記入
-- tenant / LINE アカウント / 対象人数: 未記入
-- 実施前 `messages_log` 件数: 未記入
-- job id / 開始・完了時刻: 未記入
-- 個別固定を解除 / 変更なし / 失敗: 未記入
-- サンプル再照会（旧管理外 / 既定一致・404 / 管理画面の別メニュー / タブ2。友だちIDは秘匿可）: 未記入
-- 全員デフォルト API の richMenuId: 未記入
-- オーナー実端末の結果: 未確認
-- 実施後 `messages_log` 件数 / 増分: 未記入
-- 総合結果（PASS / FAIL / BLOCKED）と理由: 未記入
+- 実施日時（JST）: 2026-07-21 20:36〜20:55（piecemaker）／20:36〜20:56（ks）
+- 査読済み revision / deploy revision: main HEAD `9a45671d`（origin+piecemaker dual-push 3ref一致）。ks worker Version `ba8592fd-bf7c-47c1-8c6d-c6953a568cff`／ks admin `https://e7ea7d5e.line-harness-ks-admin.pages.dev`／piecemaker worker Version `98135b7f-e831-4634-8feb-2a4dbe956d8c`／piecemaker admin `https://b3121a41.line-harness-piecemaker-admin.pages.dev`。4面 health 200 確認済み。
+- tenant / LINE アカウント / 対象人数: **piecemaker**（`ad9d30cd-2949-4373-ad52-00e7e0a5b594`）が本ケースの対象＝1,450名（following）。**注（重要な訂正）**: 監督ブリーフの「ks 全1450名」はテナント誤認。ks（`035c6def-fff1-4517-a243-1c9eb2068f42`）は following 130名／総friends142名で、rich_menu_display_rules 0件・published default group なし＝本バグの影響範囲外（対象外）。1,450名は piecemaker 側の実数（D1 `friends` COUNT実測・rows_read=1450で確認）。
+- 実施前 `messages_log` 件数（piecemaker, direction=outgoing, 過去30分窓）: 0件
+- job id / 開始・完了時刻: piecemaker `27fcf1f3-259d-4fa8-ad0a-428c1a525101`（開始 20:36:27 JST → 完了 20:55:09 JST）／ks `4da10274-9b80-4299-8e14-ad7526cee70b`（開始 20:36:32 JST → 完了 20:56:01 JST、即時）。
+- **重要発見（root cause 追加・F-3関連の新事象）**: 自動 cron（5分tick）の自己再dispatch self-fetch（`POST /internal/rich-menu-rule-work`）が Cloudflare WAF error 1010 で毎回サイレント失敗（`console.error('[rich-menu-rules] isolated dispatch error')` のみでジョブは進まず）。手動で同一署名付きエンドポイントをブラウザ相当 User-Agent 付きで叩くと 204 で正常処理されることを実測確認（UA無し=403 code1010／UA有り=204）。closer が host から同一エンドポイントを17回（piecemaker）/1回（ks）手動invokeしてジョブを完了させた。**自動 cron 経路自体は現状壊れたまま**（次回同種再適用は host が手動invoke必要 or 別途 fetch に User-Agent 付与する generator round が必要）。
+- 個別固定を解除 / 変更なし / 失敗（piecemaker, 最終）: **1448 / 2 / 0**（processed 1450/1450・applied 0）。ks（最終）: 0 / 130 / 0（対象外につき期待通り no-op）。
+- サンプル再照会（piecemaker・7名: 廣岡久美/Ben/政子.M/もりとも/藤村真琴/ひろ(`U4a53e...`)/あやこ）:
+  - 実施前（20:36 JST 時点）: 7/7 とも `GET /v2/bot/user/{userId}/richmenu` → 200 `richmenu-4e9176148352e2281ed06658ac56c16d`（旧管理外個別リンク）。
+  - 実施後（20:55 JST 完了直後）: 7/7 とも `GET /v2/bot/user/{userId}/richmenu` → **404 「the user has no richmenu」**（個別固定なし＝アカウント既定 `richmenu-5e23df11ef7fd5c0963ae312d4a4d10d` へ自動追従）。success_observable 達成。
+  - 「変更なし2」の内訳: rich_menu_friend_assignments は0行（管理画面で選んだ個別リンクは現状ゼロ）。タブ2ページ目サンプルは本ラウンドで別途特定できず（display rules 0件のため実質未検証・次回残課題）。
+- 全員デフォルト API の richMenuId: D1 `rich_menu_groups`（piecemaker, `is_default_for_all=1, status='published'`）→ `rich_menu_pages.line_richmenu_id` = `richmenu-5e23df11ef7fd5c0963ae312d4a4d10d`（owner が期待する値と一致）。
+- オーナー実端末の結果: **未確認（closer は物理LINE端末を操作できないため、LINE API 実測で代替。owner 自身のLINEアプリ再起動確認が必要）**
+- 実施後 `messages_log` 件数 / 増分（piecemaker）: 実施前後とも 0件（増分0・実LINE送信なし確認済み）
+- 総合結果（PASS / FAIL / BLOCKED）と理由: **PASS（機能面）＋ owner 立会待ち＋自動cron経路の別問題を新規発見**。foreign unlink 自体は D-1〜D-3相当を実測PASS（7/7サンプル404化・failed0・messages_log増分0）。ただし①owner 実端末での最終目視確認が未実施、②自動cron dispatch が WAF起因で機能しない別バグを発見（本ケースのスコープ外だが次回同種運用で再発するため要フォロー）。
 
 ---
 
