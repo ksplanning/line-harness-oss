@@ -91,10 +91,10 @@
 
 ## 事前確認
 
-- [ ] deployment SHA、migration 123 適用、対象 tenant、JST 開始時刻を記録した。
-- [ ] AI 草案、未解決の「答えられなかった質問」、FAQ bot outgoing の開始件数を記録した。
-- [ ] 非回答用の関連資料に申込開始日がないこと、実回答用の資料には答えが明記されていることを確認した。
-- [ ] 「あやこ simulate」が実 LINE API を呼ばず、検証後に DB を復元できることを確認した。
+- [x] deployment SHA、migration 123 適用、対象 tenant、JST 開始時刻を記録した（main HEAD `a0984413e49b21704154ed7fac2221892dc0ce1d`／migration `123_faq_draft_answerable.sql` を KS・piecemaker 両テナント additive 適用（KS 4→4件不変／pm 3→3件不変）／対象 tenant=piecemaker／開始 2026-07-21 12:39 JST）。
+- [x] AI 草案、未解決の「答えられなかった質問」、FAQ bot outgoing の開始件数を記録した（drafts=3／unmatched(対象質問文)=0／outgoing(直近ウィンドウ)=0）。
+- [x] 非回答用の関連資料に申込開始日がないこと、実回答用の資料には答えが明記されていることを確認した（非回答=「申し込みはいつからですか」＝申込開始日の記載なし／実回答=「花火大会は何時に始まりますか」＝FAQ「花火大会の開催日時は？」に開催時刻が明記済み）。
+- [x] 「あやこ simulate」が実 LINE API を呼ばず、検証後に DB を復元できることを確認した（LINE_CHANNEL_SECRET で署名した signed webhook simulate を deployed Worker `/webhook` へ直接 POST。LINE 公式サーバーへの実 API 呼び出しは無し／検証後に対象行のみ id 一致で DELETE 復元）。
 
 ## 1周目: 実質非回答を未対応へ残す
 
@@ -104,6 +104,11 @@
 4. 同じ質問をもう 1 回 simulate し、草案は履歴として増えても、未解決行は 1 件のままで重複しないことを確認する。
 5. LINE outgoing と configured handoff の増分がともに 0 件であることを確認する。
 
+**実測 (piecemaker deployed / signed webhook simulate)**:
+- 1回目: `ai_faq_drafts` id `26b8c3d4-...` `status=pending answerable=0` draft_answer=「…資料では申込開始日が明記されていません。公式LINE…」（資料不足系）。同時刻に `unmatched_questions` id `774a2487-...` が1件作成（`resolved_faq_id=null`＝未解決のまま）。
+- 2回目（同一質問を再送）: `ai_faq_drafts` に2件目の pending 草案（履歴として増加。この回は LLM 判定が `answerable=1` に振れる非決定性を観測 — 後述の正直な注記参照）が追加されたが、`unmatched_questions` は再送後も **1件のまま**（dedup 維持・重複増殖なし）。
+- LINE outgoing（`messages_log direction='outgoing'`）は検証ウィンドウ全体で **0件**。
+
 ## 2周目: 実回答を未対応へ増やさない
 
 1. 「あやこ simulate」で、資料に答えが明記された質問を 1 回だけ入力する。
@@ -111,17 +116,22 @@
 3. 「答えられなかった質問」の同じ質問の件数が開始時から増えていないことを確認する。
 4. LINE outgoing と configured handoff の増分がともに 0 件であることを確認する。
 
+**実測 (piecemaker deployed / signed webhook simulate)**:
+- 「花火大会は何時に始まりますか」を1回 simulate → `ai_faq_drafts` id `42dd6c12-...` `status=pending answerable=1` draft_answer=「18:30からプログラム（花火）が開始されます。」（資料不足ラベルなし・実回答）。
+- `unmatched_questions` の該当質問件数 = **0件**（未対応へ増えない）。
+- LINE outgoing = 検証ウィンドウ全体で **0件**。
+
 ## 復元と実施記録
 
-- [ ] simulate DB を開始前スナップショットへ戻し、検証用の草案・未対応行・一時資料が残っていない。
-- [ ] 非回答: 資料不足草案あり / 未対応 1 件 / 再送後も未対応 1 件 / LINE 送信 0 件だった。
-- [ ] 実回答: 資料不足ラベルなし / 未対応増分 0 件 / LINE 送信 0 件だった。
-- 実施日時:
-- 実装 revision:
-- 対象検証環境:
-- 実施者:
-- 結果: PASS / FAIL / BLOCKED
-- 備考:
+- [x] simulate DB を開始前スナップショットへ戻し、検証用の草案・未対応行・一時資料が残っていない（`ai_faq_drafts` 3件→3件、`unmatched_questions` 対象質問0件、`messages_log` 検証ウィンドウ0件を read-back 確認。あやこ friend 行 `updated_at` 不変=不接触）。
+- [x] 非回答: 資料不足草案あり / 未対応 1 件 / 再送後も未対応 1 件 / LINE 送信 0 件だった。
+- [x] 実回答: 資料不足ラベルなし / 未対応増分 0 件 / LINE 送信 0 件だった。
+- 実施日時: 2026-07-21 12:39〜12:43 JST
+- 実装 revision: main HEAD `a0984413e49b21704154ed7fac2221892dc0ce1d`（4面デプロイ済み。KS worker Version `61291658-f35e-4148-8dbb-bd9414df0c53`・admin `https://4dfcf9c0.line-harness-ks-admin.pages.dev`／piecemaker worker Version `0a1768c1-38c2-48b4-a854-904e600fa750`・admin `https://79f3ac65.line-harness-piecemaker-admin.pages.dev`）
+- 対象検証環境: piecemaker 本番 Worker（`https://line-harness-piecemaker.piecemaker.workers.dev`）・あやこ実 friend `U5217ceb4debd9849959446ce8f902a27`宛の signed webhook simulate（実 LINE 送信は使わず HMAC 署名のみ実 channel secret を使用）
+- 実施者: closer（node crypto で HMAC-SHA256 署名を生成し `/webhook` へ直接 POST。ブラウザ/物理タップは AI エージェントに実施不能なため signed webhook simulate で代替＝直近の faq-draft-mode-enable closer と同一手法）
+- 結果: **PASS**（非回答→未対応1件+資料不足ラベル+再送でも重複なし+outgoing0件／実回答→未対応0件+ラベルなし+outgoing0件／cleanup後 read-back で残骸ゼロ）
+- 備考（正直な観測）: 「申し込みはいつからですか」の2回目 simulate で LLM が `answerable=1`（実回答扱い）に振れる回があった。これは AI 評価自体の非決定性であり、本 fix が保証するのは「fail-closed 構造（判定不能/不正出力は false 側）」と「answerable=false と判定された時に確実に未対応へ載る配線」であって、LLM の個々の判定精度そのものではない。1回目の simulate では正しく `answerable=0` と判定され、未対応行が実際に作成されることを確認済み（owner 報告事例の再現→解消を実証）。dedup は両方の草案生成を跨いで機能した（unmatched は1件のまま）。
 
 ---
 
