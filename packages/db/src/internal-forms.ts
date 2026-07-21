@@ -36,6 +36,201 @@ export async function setFormRenderBackend(
   return ((result as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
 }
 
+/**
+ * Claim the Formaloo definition-save lane only while this form still uses
+ * Formaloo. Provider switching checks the same sync row, so exactly one side
+ * can win without holding a transaction across a network request.
+ */
+export async function beginFormalooDefinitionSave(
+  db: D1Database,
+  formId: string,
+  expectedFormUpdatedAt: string,
+  startedAt = jstNow(),
+): Promise<boolean> {
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO formaloo_sync_state (form_id, sync_status, last_error, updated_at)
+       SELECT ?, 'idle', NULL, ?
+       WHERE EXISTS (
+         SELECT 1 FROM formaloo_forms
+         WHERE id = ? AND deleted = 0 AND render_backend = 'formaloo' AND updated_at = ?
+       )`,
+    )
+    .bind(formId, startedAt, formId, expectedFormUpdatedAt)
+    .run();
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_sync_state
+       SET sync_status = 'pushing', last_error = NULL, updated_at = ?
+       WHERE form_id = ? AND sync_status <> 'pushing'
+         AND EXISTS (
+           SELECT 1 FROM formaloo_forms
+           WHERE id = ? AND deleted = 0 AND render_backend = 'formaloo' AND updated_at = ?
+         )`,
+    )
+    .bind(startedAt, formId, formId, expectedFormUpdatedAt)
+    .run();
+  return ((result as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
+}
+
+/** Switch provider and force draft, unless an in-flight Formaloo save owns the claim. */
+export async function switchFormRenderBackendToDraft(
+  db: D1Database,
+  input: {
+    formId: string;
+    expectedBackend: FormRenderBackend;
+    nextBackend: FormRenderBackend;
+    expectedDefinitionJson: string;
+    expectedUpdatedAt: string;
+    updatedAt?: string;
+    nowMs?: number;
+  },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET render_backend = ?, builder_status = 'draft', updated_at = ?,
+           formaloo_webhook_enabled = CASE WHEN ? = 'internal' THEN 0 ELSE formaloo_webhook_enabled END,
+           formaloo_webhook_pull_processed_generation = CASE
+             WHEN ? = 'internal' THEN formaloo_webhook_pull_generation
+             ELSE formaloo_webhook_pull_processed_generation
+           END
+       WHERE id = ? AND deleted = 0 AND render_backend = ?
+         AND definition_json = ? AND updated_at = ?
+         AND (formaloo_webhook_lock_token IS NULL
+           OR formaloo_webhook_lock_until IS NULL
+           OR formaloo_webhook_lock_until <= ?)
+         AND (formaloo_webhook_pull_lock_token IS NULL
+           OR formaloo_webhook_pull_lock_until IS NULL
+           OR formaloo_webhook_pull_lock_until <= ?)
+         AND NOT EXISTS (
+           SELECT 1 FROM formaloo_sync_state
+           WHERE form_id = ? AND sync_status = 'pushing'
+         )
+         AND (? <> 'internal' OR NOT EXISTS (
+           SELECT 1 FROM formaloo_recurring_submissions
+           WHERE form_id = ? AND (status != 'cancelled' OR sync_state != 'synced')
+         ))`,
+    )
+    .bind(
+      input.nextBackend,
+      input.updatedAt ?? jstNow(),
+      input.nextBackend,
+      input.nextBackend,
+      input.formId,
+      input.expectedBackend,
+      input.expectedDefinitionJson,
+      input.expectedUpdatedAt,
+      input.nowMs ?? Date.now(),
+      input.nowMs ?? Date.now(),
+      input.formId,
+      input.nextBackend,
+      input.formId,
+    )
+    .run();
+  return ((result as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
+}
+
+/** Save an internal definition and return it to draft in the same row update. */
+export async function saveInternalFormDefinition(
+  db: D1Database,
+  input: {
+    formId: string;
+    definitionJson: string;
+    title: string;
+    description: string | null;
+    updatedAt?: string;
+  },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET definition_json = ?, title = ?, description = ?, builder_status = 'draft', updated_at = ?
+       WHERE id = ? AND deleted = 0 AND render_backend = 'internal'`,
+    )
+    .bind(
+      input.definitionJson,
+      input.title,
+      input.description,
+      input.updatedAt ?? jstNow(),
+      input.formId,
+    )
+    .run();
+  return ((result as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
+}
+
+/** Publish compare-and-set for the exact internal form snapshot shown in confirmation. */
+export async function publishInternalFormDefinition(
+  db: D1Database,
+  input: {
+    formId: string;
+    definitionJson: string;
+    title: string | null;
+    description: string | null;
+    updatedAt: string;
+    publishedAt?: string;
+  },
+): Promise<boolean> {
+  const now = input.publishedAt ?? jstNow();
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET builder_status = 'published', published_at = COALESCE(published_at, ?), updated_at = ?
+       WHERE id = ? AND deleted = 0 AND render_backend = 'internal'
+         AND builder_status IN ('draft', 'in_review', 'published')
+         AND definition_json = ?
+         AND title IS ?
+         AND description IS ?
+         AND updated_at = ?`,
+    )
+    .bind(
+      now,
+      now,
+      input.formId,
+      input.definitionJson,
+      input.title,
+      input.description,
+      input.updatedAt,
+    )
+    .run();
+  return ((result as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
+}
+
+/** Unpublish only the exact internal snapshot the operator was viewing. */
+export async function unpublishInternalFormDefinition(
+  db: D1Database,
+  input: {
+    formId: string;
+    definitionJson: string;
+    title: string | null;
+    description: string | null;
+    updatedAt: string;
+    unpublishedAt?: string;
+  },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_forms
+       SET builder_status = 'draft', updated_at = ?
+       WHERE id = ? AND deleted = 0 AND render_backend = 'internal'
+         AND builder_status = 'published'
+         AND definition_json = ?
+         AND title IS ?
+         AND description IS ?
+         AND updated_at = ?`,
+    )
+    .bind(
+      input.unpublishedAt ?? jstNow(),
+      input.formId,
+      input.definitionJson,
+      input.title,
+      input.description,
+      input.updatedAt,
+    )
+    .run();
+  return ((result as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1;
+}
+
 export async function createInternalFormSubmission(
   db: D1Database,
   input: {
@@ -107,6 +302,8 @@ export async function createInternalFormSubmissionForPublishedDefinition(
     friendId?: string | null;
     answers: Record<string, unknown>;
     maxSubmissions?: number;
+    submitStartTime: string | null;
+    submitEndTime: string | null;
     submittedAt?: string;
   },
 ): Promise<InternalFormSubmission | null> {
@@ -128,7 +325,9 @@ export async function createInternalFormSubmissionForPublishedDefinition(
        )
        AND (? IS NULL OR (
          SELECT COUNT(*) FROM internal_form_submissions WHERE form_id = ?
-       ) < ?)`,
+       ) < ?)
+       AND (? IS NULL OR julianday(?) >= julianday(?))
+       AND (? IS NULL OR julianday(?) < julianday(?))`,
     )
     .bind(
       id,
@@ -142,6 +341,12 @@ export async function createInternalFormSubmissionForPublishedDefinition(
       limit,
       input.formId,
       limit,
+      input.submitStartTime,
+      now,
+      input.submitStartTime,
+      input.submitEndTime,
+      now,
+      input.submitEndTime,
     )
     .run();
   if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) !== 1) return null;

@@ -11,6 +11,7 @@ import {
   createFormalooForm,
   disableFormalooWebhookRegistration,
   getFormalooForm,
+  getFormalooFormBySlug,
   markFormalooWebhookPullPending,
   prepareFormalooWebhookRegistration,
   releaseFormalooWebhookOperationLock,
@@ -300,5 +301,26 @@ describe('Formaloo webhook registration DAO', () => {
     await expect(renewFormalooWebhookPullLock(DB, form.id, {
       token: 'pull-owner', nowMs: 22_002, leaseMs: 12_000,
     })).resolves.toBe(false);
+  });
+
+  test('internal へ切り替わった form は callback と新しい Formaloo 操作を受け付けない', async () => {
+    const form = await createFormalooForm(DB, { title: 'provider 境界フォーム' });
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET formaloo_slug = 'internal-hidden-slug', render_backend = 'internal',
+           formaloo_webhook_enabled = 1,
+           formaloo_webhook_pull_generation = 1,
+           formaloo_webhook_pull_processed_generation = 0
+       WHERE id = ?`,
+    ).run(form.id);
+
+    await expect(acquireFormalooWebhookOperationLock(DB, form.id, {
+      token: 'stale-request', nowMs: 10_000, leaseMs: 30_000,
+    })).resolves.toBe(false);
+    await expect(markFormalooWebhookPullPending(DB, form.id)).resolves.toBe(false);
+    await expect(claimFormalooWebhookPull(DB, form.id, {
+      token: 'stale-callback', nowMs: 10_000, leaseMs: 20_000, cooldownMs: 15_000,
+    })).resolves.toEqual({ claimed: false, pending: false, retryAt: 10_000 });
+    await expect(getFormalooFormBySlug(DB, 'internal-hidden-slug')).resolves.toBeNull();
   });
 });

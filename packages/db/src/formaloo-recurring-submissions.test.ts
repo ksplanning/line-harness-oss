@@ -15,6 +15,7 @@ import {
   listFormalooRecurringSubmissions,
   markFormalooRecurringSubmissionFailed,
   releaseFormalooRecurringSubmissionClaim,
+  FormalooRecurringReservationUnavailableError,
   reserveFormalooRecurringSubmission,
 } from './formaloo-recurring-submissions.js';
 
@@ -117,6 +118,23 @@ describe('Formaloo recurring submission DAO', () => {
     });
     const count = raw.prepare('SELECT COUNT(*) AS n FROM formaloo_recurring_submissions').get() as { n: number };
     expect(count.n).toBe(1);
+  });
+
+  test('does not reserve a new Formaloo schedule after the form switched to internal', async () => {
+    const form = await createFormalooForm(db, { title: '切替競合フォーム' });
+    raw.prepare("UPDATE formaloo_forms SET render_backend = 'internal' WHERE id = ?").run(form.id);
+
+    await expect(reserveFormalooRecurringSubmission(db, {
+      formId: form.id,
+      idempotencyKey: 'late-after-switch',
+      requestFingerprint,
+      schedule,
+      submissionData: { inventory: 12 },
+      status: 'resumed',
+    })).rejects.toBeInstanceOf(FormalooRecurringReservationUnavailableError);
+
+    const count = raw.prepare('SELECT COUNT(*) AS n FROM formaloo_recurring_submissions').get() as { n: number };
+    expect(count.n).toBe(0);
   });
 
   test('different idempotency keys share one active request fingerprint, while cancelled permits a new row', async () => {

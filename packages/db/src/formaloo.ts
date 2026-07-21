@@ -309,6 +309,7 @@ export async function acquireFormalooWebhookOperationLock(
            formaloo_webhook_lock_until = ?
        WHERE id = ?
          AND deleted = 0
+         AND render_backend = 'formaloo'
          AND (formaloo_webhook_lock_token IS NULL
            OR formaloo_webhook_lock_until IS NULL
            OR formaloo_webhook_lock_until <= ?)`,
@@ -351,6 +352,7 @@ export async function renewFormalooWebhookOperationLock(
       `UPDATE formaloo_forms
        SET formaloo_webhook_lock_until = ?
        WHERE id = ?
+         AND render_backend = 'formaloo'
          AND formaloo_webhook_lock_token = ?
          AND formaloo_webhook_lock_until > ?`,
     )
@@ -368,7 +370,8 @@ export async function markFormalooWebhookPullPending(
     .prepare(
       `UPDATE formaloo_forms
        SET formaloo_webhook_pull_generation = formaloo_webhook_pull_generation + 1
-       WHERE id = ? AND deleted = 0 AND formaloo_webhook_enabled = 1`,
+       WHERE id = ? AND deleted = 0 AND render_backend = 'formaloo'
+         AND formaloo_webhook_enabled = 1`,
     )
     .bind(formId)
     .run();
@@ -396,6 +399,7 @@ export async function claimFormalooWebhookPull(
            formaloo_webhook_pull_not_before = ?
        WHERE id = ?
          AND deleted = 0
+         AND render_backend = 'formaloo'
          AND formaloo_webhook_enabled = 1
          AND formaloo_webhook_pull_generation > formaloo_webhook_pull_processed_generation
          AND formaloo_webhook_pull_not_before <= ?
@@ -417,7 +421,7 @@ export async function claimFormalooWebhookPull(
 
   const state = await db
     .prepare(
-      `SELECT deleted, formaloo_webhook_enabled AS enabled,
+      `SELECT deleted, render_backend, formaloo_webhook_enabled AS enabled,
               formaloo_webhook_pull_generation AS generation,
               formaloo_webhook_pull_processed_generation AS processed,
               formaloo_webhook_pull_lock_token AS lock_token,
@@ -428,6 +432,7 @@ export async function claimFormalooWebhookPull(
     .bind(formId)
     .first<{
       deleted: number;
+      render_backend: 'formaloo' | 'internal';
       enabled: number;
       generation: number;
       processed: number;
@@ -438,6 +443,7 @@ export async function claimFormalooWebhookPull(
   const pending = Boolean(
     state
     && state.deleted === 0
+    && state.render_backend === 'formaloo'
     && state.enabled === 1
     && state.generation > state.processed,
   );
@@ -464,6 +470,7 @@ export async function renewFormalooWebhookPullLock(
       `UPDATE formaloo_forms
        SET formaloo_webhook_pull_lock_until = ?
        WHERE id = ?
+         AND render_backend = 'formaloo'
          AND formaloo_webhook_pull_lock_token = ?
          AND formaloo_webhook_pull_lock_until > ?`,
     )
@@ -489,7 +496,8 @@ export async function completeFormalooWebhookPull(
            END,
            formaloo_webhook_pull_lock_token = NULL,
            formaloo_webhook_pull_lock_until = NULL
-       WHERE id = ? AND formaloo_webhook_pull_lock_token = ?`,
+       WHERE id = ? AND render_backend = 'formaloo'
+         AND formaloo_webhook_pull_lock_token = ?`,
     )
     .bind(input.success ? 1 : 0, input.generation, formId, input.token)
     .run();
@@ -514,7 +522,8 @@ export async function setFormalooWebhookRegistration(
            formaloo_webhook_secret = ?,
            formaloo_webhook_url = ?,
            updated_at = ?
-       WHERE id = ? AND formaloo_webhook_lock_token = ?`,
+       WHERE id = ? AND render_backend = 'formaloo'
+         AND formaloo_webhook_lock_token = ?`,
     )
     .bind(
       registration.webhookId,
@@ -551,14 +560,16 @@ export async function prepareFormalooWebhookRegistration(
              ELSE formaloo_webhook_url
            END,
            updated_at = ?
-       WHERE id = ? AND formaloo_webhook_lock_token = ?`,
+       WHERE id = ? AND render_backend = 'formaloo'
+         AND formaloo_webhook_lock_token = ?`,
     )
     .bind(registration.secret, registration.url, jstNow(), formId, operationToken)
     .run();
   const stored = await db
     .prepare(
       `SELECT formaloo_webhook_secret AS secret, formaloo_webhook_url AS url
-       FROM formaloo_forms WHERE id = ? AND formaloo_webhook_lock_token = ?`,
+       FROM formaloo_forms WHERE id = ? AND render_backend = 'formaloo'
+         AND formaloo_webhook_lock_token = ?`,
     )
     .bind(formId, operationToken)
     .first<{ secret: string | null; url: string | null }>();
@@ -580,7 +591,8 @@ export async function disableFormalooWebhookRegistration(
            formaloo_webhook_pull_lock_until = NULL,
            formaloo_webhook_pull_not_before = 0,
            updated_at = ?
-       WHERE id = ? AND formaloo_webhook_lock_token = ?`,
+       WHERE id = ? AND render_backend = 'formaloo'
+         AND formaloo_webhook_lock_token = ?`,
     )
     .bind(jstNow(), formId, operationToken)
     .run();
@@ -605,7 +617,8 @@ export async function clearFormalooWebhookRegistration(
            formaloo_webhook_pull_lock_until = NULL,
            formaloo_webhook_pull_not_before = 0,
            updated_at = ?
-       WHERE id = ? AND formaloo_webhook_lock_token = ?`,
+       WHERE id = ? AND render_backend = 'formaloo'
+         AND formaloo_webhook_lock_token = ?`,
     )
     .bind(jstNow(), formId, operationToken)
     .run();
@@ -715,23 +728,32 @@ export async function updateFormalooBuilderStatus(
   id: string,
   status: string,
   publishedAt?: string | null,
-): Promise<void> {
-  const now = jstNow();
+  expectedStatus?: string,
+  expectedBackend: FormalooForm['render_backend'] = 'formaloo',
+  updatedAt?: string,
+): Promise<boolean> {
+  const now = updatedAt ?? jstNow();
+  const expectedWhere = expectedStatus === undefined
+    ? ''
+    : ' AND render_backend = ? AND builder_status = ?';
+  const expectedBinds = expectedStatus === undefined ? [] : [expectedBackend, expectedStatus];
   if (status === 'published') {
     const pub = publishedAt ?? now;
-    await db
+    const result = await db
       .prepare(
         `UPDATE formaloo_forms
            SET builder_status = ?, published_at = COALESCE(published_at, ?), updated_at = ?
-         WHERE id = ?`,
+         WHERE id = ?${expectedWhere}`,
       )
-      .bind(status, pub, now, id)
+      .bind(status, pub, now, id, ...expectedBinds)
       .run();
+    return (result.meta.changes ?? 0) === 1;
   } else {
-    await db
-      .prepare('UPDATE formaloo_forms SET builder_status = ?, updated_at = ? WHERE id = ?')
-      .bind(status, now, id)
+    const result = await db
+      .prepare(`UPDATE formaloo_forms SET builder_status = ?, updated_at = ? WHERE id = ?${expectedWhere}`)
+      .bind(status, now, id, ...expectedBinds)
       .run();
+    return (result.meta.changes ?? 0) === 1;
   }
 }
 
@@ -821,12 +843,92 @@ export async function setFormalooSyncState(
 }
 
 /**
- * Formaloo 連携済み (formaloo_slug NOT NULL / deleted=0) の全 form を返す (drift-check 走査対象)。
+ * Drift metadata CAS. It never writes sync_status, so an older cron snapshot
+ * cannot release a concurrent Formaloo mutation claim (`pushing`).
+ */
+export async function updateFormalooDriftStateIfCurrent(
+  db: D1Database,
+  formId: string,
+  input: {
+    expectedFormUpdatedAt: string;
+    expectedSyncStatus: string;
+    lastError?: string | null;
+    remoteDefinitionHash?: string | null;
+    pendingRemoteHash?: string | null;
+    driftStatus?: string;
+    driftDetectedAt?: string | null;
+    remoteUpdatedAt?: string | null;
+    updatedAt?: string;
+  },
+): Promise<boolean> {
+  const now = input.updatedAt ?? jstNow();
+  const cols = ['form_id', 'sync_status', 'last_error', 'updated_at'];
+  const insertVals: (string | null)[] = [
+    formId,
+    input.expectedSyncStatus,
+    input.lastError ?? null,
+    now,
+  ];
+  const sets = ['last_error = ?', 'updated_at = ?'];
+  const updateVals: (string | null)[] = [input.lastError ?? null, now];
+  const driftCols: [keyof typeof input, string][] = [
+    ['remoteDefinitionHash', 'remote_definition_hash'],
+    ['pendingRemoteHash', 'pending_remote_hash'],
+    ['driftStatus', 'drift_status'],
+    ['driftDetectedAt', 'drift_detected_at'],
+    ['remoteUpdatedAt', 'remote_updated_at'],
+  ];
+  for (const [key, col] of driftCols) {
+    if (key in input) {
+      cols.push(col);
+      const value = (input[key] as string | null) ?? null;
+      insertVals.push(value);
+      sets.push(`${col} = ?`);
+      updateVals.push(value);
+    }
+  }
+
+  const placeholders = cols.map(() => '?').join(', ');
+  const inserted = await db
+    .prepare(
+      `INSERT OR IGNORE INTO formaloo_sync_state (${cols.join(', ')})
+       SELECT ${placeholders}
+       WHERE EXISTS (
+         SELECT 1 FROM formaloo_forms
+         WHERE id = ? AND deleted = 0 AND render_backend = 'formaloo' AND updated_at = ?
+       )`,
+    )
+    .bind(...insertVals, formId, input.expectedFormUpdatedAt)
+    .run();
+  if ((inserted.meta.changes ?? 0) === 1) return true;
+
+  const updated = await db
+    .prepare(
+      `UPDATE formaloo_sync_state SET ${sets.join(', ')}
+       WHERE form_id = ? AND sync_status = ?
+         AND EXISTS (
+           SELECT 1 FROM formaloo_forms
+           WHERE id = ? AND deleted = 0 AND render_backend = 'formaloo' AND updated_at = ?
+         )`,
+    )
+    .bind(
+      ...updateVals,
+      formId,
+      input.expectedSyncStatus,
+      formId,
+      input.expectedFormUpdatedAt,
+    )
+    .run();
+  return (updated.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Formaloo 配信中かつ連携済み (formaloo_slug NOT NULL / deleted=0) の全 form を返す (drift-check 走査対象)。
  * push 済み (slug 確定) の form のみ = Formaloo 側に定義が存在する = drift 検知の対象。
  */
 export async function listLinkedFormalooForms(db: D1Database): Promise<FormalooForm[]> {
   const r = await db
-    .prepare('SELECT * FROM formaloo_forms WHERE formaloo_slug IS NOT NULL AND deleted = 0 ORDER BY updated_at DESC')
+    .prepare("SELECT * FROM formaloo_forms WHERE formaloo_slug IS NOT NULL AND deleted = 0 AND render_backend = 'formaloo' ORDER BY updated_at DESC")
     .all<FormalooForm>();
   return r.results;
 }
@@ -917,7 +1019,7 @@ export interface FormalooSubmissionRow {
 
 /** webhook 経路: formaloo_slug から台帳を引く (回答をどの harness form に紐付けるか)。 */
 export async function getFormalooFormBySlug(db: D1Database, slug: string): Promise<FormalooForm | null> {
-  return db.prepare('SELECT * FROM formaloo_forms WHERE formaloo_slug = ? AND deleted = 0').bind(slug).first<FormalooForm>();
+  return db.prepare("SELECT * FROM formaloo_forms WHERE formaloo_slug = ? AND deleted = 0 AND render_backend = 'formaloo'").bind(slug).first<FormalooForm>();
 }
 
 export interface UpsertFormalooSubmissionInput {

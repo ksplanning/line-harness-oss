@@ -24,6 +24,13 @@ export interface FormalooRecurringSubmissionMirror {
   updatedAt: string;
 }
 
+export class FormalooRecurringReservationUnavailableError extends Error {
+  constructor() {
+    super('Formaloo recurring reservation is unavailable for this provider');
+    this.name = 'FormalooRecurringReservationUnavailableError';
+  }
+}
+
 interface FormalooRecurringSubmissionRow {
   id: string;
   form_id: string;
@@ -159,7 +166,11 @@ export async function reserveFormalooRecurringSubmission(
     `INSERT OR IGNORE INTO formaloo_recurring_submissions
        (id, form_id, idempotency_key, request_fingerprint, schedule_json, submission_data_json, status,
         sync_state, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+     SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM formaloo_forms
+       WHERE id = ? AND deleted = 0 AND render_backend = 'formaloo'
+     )`,
   ).bind(
     `frs_${crypto.randomUUID()}`,
     input.formId,
@@ -170,6 +181,7 @@ export async function reserveFormalooRecurringSubmission(
     input.status,
     now,
     now,
+    input.formId,
   ).run();
   const row = await getFormalooRecurringSubmissionByIdempotencyKey(
     db,
@@ -180,7 +192,7 @@ export async function reserveFormalooRecurringSubmission(
     input.formId,
     input.requestFingerprint,
   );
-  if (!row) throw new Error('recurring submission reservation failed');
+  if (!row) throw new FormalooRecurringReservationUnavailableError();
   return row;
 }
 

@@ -62,10 +62,12 @@ beforeEach(() => {
 });
 
 describe('① listLinkedFormalooForms — formaloo_slug NOT NULL かつ deleted=0 のみ', () => {
-  test('slug ありの生存 form だけ返す (未 push / 削除済は除外)', async () => {
+  test('slug ありの生存 Formaloo form だけ返す (未 push / 削除済 / internal は除外)', async () => {
     seedForm('f_linked', { slug: 'SLUG_A' });
     seedForm('f_unpushed', { slug: null });
     seedForm('f_deleted', { slug: 'SLUG_B', deleted: 1 });
+    seedForm('f_internal', { slug: 'STALE_SLUG' });
+    raw.prepare("UPDATE formaloo_forms SET render_backend = 'internal' WHERE id = 'f_internal'").run();
     const list = await listLinkedFormalooForms(DB);
     expect(list.map((f) => f.id)).toEqual(['f_linked']);
   });

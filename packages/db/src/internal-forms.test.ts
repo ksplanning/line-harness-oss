@@ -4,16 +4,25 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test } from 'vitest';
 import {
+  beginFormalooDefinitionSave,
   createInternalFormSubmission,
   createInternalFormSubmissionForPublishedDefinition,
   createInternalFormSubmissionWithinLimit,
   getInternalFormSubmission,
   listLatestVerifiedInternalFormSubmissions,
   listInternalFormSubmissions,
+  publishInternalFormDefinition,
+  saveInternalFormDefinition,
   setFormRenderBackend,
+  switchFormRenderBackendToDraft,
+  unpublishInternalFormDefinition,
   updateLatestInternalFormSubmissionAnswersForSheets,
 } from './internal-forms.js';
-import { getFormalooForm } from './formaloo.js';
+import {
+  acquireFormalooFormOperationLock,
+  getFormalooForm,
+  releaseFormalooFormOperationLock,
+} from './formaloo.js';
 import { claimSheetsSyncLock, createSheetsConnection } from './sheets-connections.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -236,16 +245,19 @@ describe('internal form persistence', () => {
 
     const accepted = await createInternalFormSubmissionForPublishedDefinition(DB, {
       formId: 'fa_internal', definitionJson, answers: { name: '公開中' }, maxSubmissions: 2,
+      submitStartTime: null, submitEndTime: null,
     });
     raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'fa_internal'").run();
     const unpublished = await createInternalFormSubmissionForPublishedDefinition(DB, {
       formId: 'fa_internal', definitionJson, answers: { name: '非公開後' }, maxSubmissions: 2,
+      submitStartTime: null, submitEndTime: null,
     });
     raw.prepare(
       "UPDATE formaloo_forms SET builder_status = 'published', definition_json = '{\"fields\":[1]}' WHERE id = 'fa_internal'",
     ).run();
     const changed = await createInternalFormSubmissionForPublishedDefinition(DB, {
       formId: 'fa_internal', definitionJson, answers: { name: '定義変更後' }, maxSubmissions: 2,
+      submitStartTime: null, submitEndTime: null,
     });
 
     expect(accepted?.id).toMatch(/^ifs_/);
@@ -253,6 +265,146 @@ describe('internal form persistence', () => {
     expect(changed).toBeNull();
     expect(await listInternalFormSubmissions(DB, 'fa_internal', { limit: 20, offset: 0 }))
       .toMatchObject({ total: 1 });
+  });
+
+  test('atomically rejects answers outside the saved reception window', async () => {
+    raw.prepare(
+      "UPDATE formaloo_forms SET render_backend = 'internal', builder_status = 'published' WHERE id = 'fa_internal'",
+    ).run();
+    const definitionJson = (await getFormalooForm(DB, 'fa_internal'))!.definition_json;
+
+    const atStart = await createInternalFormSubmissionForPublishedDefinition(DB, {
+      formId: 'fa_internal', definitionJson, answers: { name: '開始時刻' },
+      submitStartTime: '2026-07-21T10:00:00+09:00',
+      submitEndTime: '2026-07-21T11:00:00+09:00',
+      submittedAt: '2026-07-21T10:00:00+09:00',
+    });
+    const atEnd = await createInternalFormSubmissionForPublishedDefinition(DB, {
+      formId: 'fa_internal', definitionJson, answers: { name: '終了時刻' },
+      submitStartTime: '2026-07-21T10:00:00+09:00',
+      submitEndTime: '2026-07-21T11:00:00+09:00',
+      submittedAt: '2026-07-21T11:00:00+09:00',
+    });
+
+    expect(atStart?.id).toMatch(/^ifs_/);
+    expect(atEnd).toBeNull();
+  });
+
+  test('serializes a Formaloo definition save claim against provider switching', async () => {
+    const snapshot = (await getFormalooForm(DB, 'fa_internal'))!;
+    expect(await beginFormalooDefinitionSave(
+      DB,
+      'fa_internal',
+      snapshot.updated_at,
+      '2026-07-21T09:00:00+09:00',
+    )).toBe(true);
+    expect(await switchFormRenderBackendToDraft(DB, {
+      formId: 'fa_internal',
+      expectedBackend: 'formaloo',
+      nextBackend: 'internal',
+      expectedDefinitionJson: snapshot.definition_json,
+      expectedUpdatedAt: snapshot.updated_at,
+      updatedAt: '2026-07-21T09:01:00+09:00',
+    })).toBe(false);
+
+    raw.prepare("UPDATE formaloo_sync_state SET sync_status = 'idle' WHERE form_id = 'fa_internal'").run();
+    expect(await switchFormRenderBackendToDraft(DB, {
+      formId: 'fa_internal',
+      expectedBackend: 'formaloo',
+      nextBackend: 'internal',
+      expectedDefinitionJson: snapshot.definition_json,
+      expectedUpdatedAt: snapshot.updated_at,
+      updatedAt: '2026-07-21T09:02:00+09:00',
+    })).toBe(true);
+    expect(await beginFormalooDefinitionSave(
+      DB,
+      'fa_internal',
+      '2026-07-21T09:02:00+09:00',
+      '2026-07-21T09:03:00+09:00',
+    )).toBe(false);
+    expect(await getFormalooForm(DB, 'fa_internal')).toMatchObject({
+      render_backend: 'internal',
+      builder_status: 'draft',
+    });
+  });
+
+  test('serializes provider switching against every Formaloo form operation lock', async () => {
+    const snapshot = (await getFormalooForm(DB, 'fa_internal'))!;
+    expect(await acquireFormalooFormOperationLock(DB, 'fa_internal', {
+      token: 'webhook-owner', nowMs: 1_000, leaseMs: 30_000,
+    })).toBe(true);
+    expect(await switchFormRenderBackendToDraft(DB, {
+      formId: 'fa_internal',
+      expectedBackend: 'formaloo',
+      nextBackend: 'internal',
+      expectedDefinitionJson: snapshot.definition_json,
+      expectedUpdatedAt: snapshot.updated_at,
+      nowMs: 1_001,
+    })).toBe(false);
+
+    await releaseFormalooFormOperationLock(DB, 'fa_internal', 'webhook-owner');
+    expect(await switchFormRenderBackendToDraft(DB, {
+      formId: 'fa_internal',
+      expectedBackend: 'formaloo',
+      nextBackend: 'internal',
+      expectedDefinitionJson: snapshot.definition_json,
+      expectedUpdatedAt: snapshot.updated_at,
+      nowMs: 1_002,
+    })).toBe(true);
+    expect(await acquireFormalooFormOperationLock(DB, 'fa_internal', {
+      token: 'stale-formaloo-request', nowMs: 1_003, leaseMs: 30_000,
+    })).toBe(false);
+  });
+
+  test('rejects provider switching after the definition snapshot that was validated becomes stale', async () => {
+    const snapshot = (await getFormalooForm(DB, 'fa_internal'))!;
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET definition_json = '{"fields":[{"id":"new"}],"logic":[]}',
+           updated_at = '2026-07-21T12:30:00.000+09:00'
+       WHERE id = 'fa_internal'`,
+    ).run();
+
+    expect(await switchFormRenderBackendToDraft(DB, {
+      formId: 'fa_internal',
+      expectedBackend: 'formaloo',
+      nextBackend: 'internal',
+      expectedDefinitionJson: snapshot.definition_json,
+      expectedUpdatedAt: snapshot.updated_at,
+      updatedAt: '2026-07-21T12:31:00.000+09:00',
+    })).toBe(false);
+    expect((await getFormalooForm(DB, 'fa_internal'))?.render_backend).toBe('formaloo');
+  });
+
+  test('rejects a Formaloo mutation claim for a stale form snapshot', async () => {
+    const staleUpdatedAt = (await getFormalooForm(DB, 'fa_internal'))!.updated_at;
+    raw.prepare("UPDATE formaloo_forms SET updated_at = '2026-07-21T12:00:00.000+09:00' WHERE id = 'fa_internal'").run();
+
+    expect(await beginFormalooDefinitionSave(
+      DB,
+      'fa_internal',
+      staleUpdatedAt,
+      '2026-07-21T12:01:00.000+09:00',
+    )).toBe(false);
+  });
+
+  test('does not switch to internal while a recurring Formaloo answer is active', async () => {
+    const snapshot = (await getFormalooForm(DB, 'fa_internal'))!;
+    raw.prepare(
+      `INSERT INTO formaloo_recurring_submissions
+       (id, form_id, idempotency_key, request_fingerprint, schedule_json,
+        submission_data_json, status, sync_state)
+       VALUES ('frs_switch_guard', 'fa_internal', 'attempt', 'fingerprint', ?, '{}', 'resumed', 'synced')`,
+    ).run(JSON.stringify({ interval: {}, start_time: '2026-07-20T00:00:00Z' }));
+
+    expect(await switchFormRenderBackendToDraft(DB, {
+      formId: 'fa_internal',
+      expectedBackend: 'formaloo',
+      nextBackend: 'internal',
+      expectedDefinitionJson: snapshot.definition_json,
+      expectedUpdatedAt: snapshot.updated_at,
+    })).toBe(false);
+    expect((await getFormalooForm(DB, 'fa_internal'))?.render_backend).toBe('formaloo');
   });
 
   test('returns the known inserted row without a fallible read after commit', async () => {
@@ -276,6 +428,8 @@ describe('internal form persistence', () => {
       definitionJson: '{"fields":[],"logic":[]}',
       friendId: 'friend-1',
       answers: { name: '保存済み' },
+      submitStartTime: null,
+      submitEndTime: null,
       submittedAt: '2026-07-21T12:00:00+09:00',
     });
 
@@ -286,6 +440,167 @@ describe('internal form persistence', () => {
       answers_json: '{"name":"保存済み"}',
       submitted_at: '2026-07-21T12:00:00+09:00',
       created_at: '2026-07-21T12:00:00+09:00',
+    });
+  });
+
+  test('saves an internal definition and draft status in one row update without touching field mappings', async () => {
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET render_backend = 'internal', builder_status = 'published', published_at = '2026-07-20T09:00:00+09:00'
+       WHERE id = 'fa_internal'`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO formaloo_field_map
+         (id, form_id, formaloo_field_slug, field_type, label, position, config_json, created_at, updated_at)
+       VALUES
+         ('map_1', 'fa_internal', 'name', 'text', 'お名前', 0, '{"required":true}',
+          '2026-07-20T08:00:00+09:00', '2026-07-20T08:00:00+09:00')`,
+    ).run();
+    const mappingBefore = raw.prepare(
+      "SELECT * FROM formaloo_field_map WHERE form_id = 'fa_internal'",
+    ).get();
+
+    expect(await saveInternalFormDefinition(DB, {
+      formId: 'fa_internal',
+      definitionJson: '{"fields":[{"id":"name"}],"logic":[]}',
+      title: '更新後タイトル',
+      description: '更新後の説明',
+      updatedAt: '2026-07-21T10:00:00+09:00',
+    })).toBe(true);
+
+    expect(raw.prepare(
+      `SELECT definition_json, title, description, builder_status, published_at, updated_at
+       FROM formaloo_forms WHERE id = 'fa_internal'`,
+    ).get()).toEqual({
+      definition_json: '{"fields":[{"id":"name"}],"logic":[]}',
+      title: '更新後タイトル',
+      description: '更新後の説明',
+      builder_status: 'draft',
+      published_at: '2026-07-20T09:00:00+09:00',
+      updated_at: '2026-07-21T10:00:00+09:00',
+    });
+    expect(raw.prepare(
+      "SELECT * FROM formaloo_field_map WHERE form_id = 'fa_internal'",
+    ).get()).toEqual(mappingBefore);
+  });
+
+  test('definition save and publish both refuse a non-internal backend', async () => {
+    const original = await getFormalooForm(DB, 'fa_internal');
+
+    expect(await saveInternalFormDefinition(DB, {
+      formId: 'fa_internal',
+      definitionJson: '{"fields":[1]}',
+      title: '変更しない',
+      description: null,
+      updatedAt: '2026-07-21T10:00:00+09:00',
+    })).toBe(false);
+    expect(await publishInternalFormDefinition(DB, {
+      formId: 'fa_internal',
+      definitionJson: original!.definition_json,
+      title: original!.title,
+      description: original!.description,
+      updatedAt: original!.updated_at,
+    })).toBe(false);
+    expect(await getFormalooForm(DB, 'fa_internal')).toEqual(original);
+  });
+
+  test('publishes only the exact internal definition snapshot that was confirmed', async () => {
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET render_backend = 'internal', builder_status = 'draft', title = '申込フォーム',
+           description = '公開確認時の説明', updated_at = '2026-07-21T09:00:00+09:00'
+       WHERE id = 'fa_internal'`,
+    ).run();
+    const confirmed = (await getFormalooForm(DB, 'fa_internal'))!;
+
+    expect(await publishInternalFormDefinition(DB, {
+      formId: 'fa_internal',
+      definitionJson: confirmed.definition_json,
+      title: confirmed.title,
+      description: confirmed.description,
+      updatedAt: confirmed.updated_at,
+      publishedAt: '2026-07-21T10:00:00+09:00',
+    })).toBe(true);
+    expect(await getFormalooForm(DB, 'fa_internal')).toMatchObject({
+      builder_status: 'published',
+      published_at: '2026-07-21T10:00:00+09:00',
+      updated_at: '2026-07-21T10:00:00+09:00',
+    });
+
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET builder_status = 'draft', published_at = '2026-07-21T10:00:00+09:00',
+           updated_at = '2026-07-21T11:00:00+09:00'
+       WHERE id = 'fa_internal'`,
+    ).run();
+    expect(await publishInternalFormDefinition(DB, {
+      formId: 'fa_internal',
+      definitionJson: confirmed.definition_json,
+      title: confirmed.title,
+      description: confirmed.description,
+      updatedAt: '2026-07-21T11:00:00+09:00',
+      publishedAt: '2026-07-21T12:00:00+09:00',
+    })).toBe(true);
+    expect(await getFormalooForm(DB, 'fa_internal')).toMatchObject({
+      builder_status: 'published',
+      published_at: '2026-07-21T10:00:00+09:00',
+    });
+  });
+
+  test.each([
+    ['definition_json', '{"fields":[1],"logic":[]}'],
+    ['title', '別のタイトル'],
+    ['description', '別の説明'],
+    ['updated_at', '2026-07-21T09:00:01+09:00'],
+  ] as const)('rejects publish when confirmed %s has become stale', async (column, changedValue) => {
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET render_backend = 'internal', builder_status = 'draft', title = '申込フォーム',
+           description = NULL, updated_at = '2026-07-21T09:00:00+09:00'
+       WHERE id = 'fa_internal'`,
+    ).run();
+    const confirmed = (await getFormalooForm(DB, 'fa_internal'))!;
+    raw.prepare(`UPDATE formaloo_forms SET ${column} = ? WHERE id = 'fa_internal'`).run(changedValue);
+
+    expect(await publishInternalFormDefinition(DB, {
+      formId: 'fa_internal',
+      definitionJson: confirmed.definition_json,
+      title: confirmed.title,
+      description: confirmed.description,
+      updatedAt: confirmed.updated_at,
+      publishedAt: '2026-07-21T10:00:00+09:00',
+    })).toBe(false);
+    expect(await getFormalooForm(DB, 'fa_internal')).toMatchObject({
+      builder_status: 'draft',
+      published_at: null,
+    });
+  });
+
+  test.each([
+    ['definition_json', '{"fields":[1],"logic":[]}'],
+    ['title', '後から変わったタイトル'],
+    ['description', '後から変わった説明'],
+    ['updated_at', '2026-07-21T09:00:01+09:00'],
+  ] as const)('rejects unpublish when displayed %s has become stale', async (column, changedValue) => {
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET render_backend = 'internal', builder_status = 'published', title = '申込フォーム',
+           description = NULL, updated_at = '2026-07-21T09:00:00+09:00'
+       WHERE id = 'fa_internal'`,
+    ).run();
+    const displayed = (await getFormalooForm(DB, 'fa_internal'))!;
+    raw.prepare(`UPDATE formaloo_forms SET ${column} = ? WHERE id = 'fa_internal'`).run(changedValue);
+
+    expect(await unpublishInternalFormDefinition(DB, {
+      formId: displayed.id,
+      definitionJson: displayed.definition_json,
+      title: displayed.title,
+      description: displayed.description,
+      updatedAt: displayed.updated_at,
+      unpublishedAt: '2026-07-21T10:00:00+09:00',
+    })).toBe(false);
+    expect(await getFormalooForm(DB, 'fa_internal')).toMatchObject({
+      builder_status: 'published',
     });
   });
 });
