@@ -48,14 +48,14 @@ function d1(db: Database.Database): D1Database {
   } as unknown as D1Database;
 }
 
-function seed(raw: Database.Database, opts: { enabled?: boolean; answerMode?: string; omitAnswerMode?: boolean; threshold?: number; maxRepliesPerDay?: number } = {}) {
+function seed(raw: Database.Database, opts: { enabled?: boolean; answerMode?: string; omitAnswerMode?: boolean; threshold?: number; maxRepliesPerDay?: number; handoffMessage?: string } = {}) {
   // FK 親行 (messages_log/unmatched_questions → friends / faqs·account_settings → line_accounts)。
   raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret) VALUES ('acc-1','ch','a','t','s')`).run();
   raw.prepare(`INSERT INTO friends (id, line_user_id, line_account_id) VALUES ('f1','u1','acc-1')`).run();
   const settings: Record<string, unknown> = {
     enabled: opts.enabled ?? true,
     threshold: opts.threshold ?? 2, // 常に match=null → AI 経路を決定的に
-    handoffMessage: '',
+    handoffMessage: opts.handoffMessage ?? '',
     autoReplyNotice: '',
     maxRepliesPerDay: opts.maxRepliesPerDay ?? 5,
   };
@@ -220,6 +220,36 @@ describe('tryFaqReply — account gate + AI RAG (T-A2)', () => {
       { draft_answer: 'この資料だけでは申し込み開始日を確認できません', answerable: 0 },
       { draft_answer: 'この資料だけでは申し込み開始日を確認できません', answerable: 0 },
     ]);
+  });
+
+  test('answerMode欠落の既定draft + answerable=false → handoffを送らず草案と未対応を残す', async () => {
+    seed(raw, { omitAnswerMode: true, handoffMessage: '担当者に確認します' });
+    const mock = new MockLlmProvider({
+      text: 'この資料だけでは申し込み開始日を確認できません',
+      answerable: false,
+    });
+
+    await expect(tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか'), rt(mock)))
+      .resolves.toEqual({ replied: false, handoff: false });
+    expect(lineClient.replyMessage).not.toHaveBeenCalled();
+    expect(countDrafts()).toBe(1);
+    expect(countUnmatched()).toBe(1);
+  });
+
+  test('壊れた構造化出力 → fail-closedで未対応1件・草案0件・送信0件', async () => {
+    seed(raw, { omitAnswerMode: true, handoffMessage: '担当者に確認します' });
+    const malformed: LlmProvider = {
+      async generate() {
+        return { text: '{not-json', usage: { inputTokens: 10, outputTokens: 5 } };
+      },
+      async embed() { return []; },
+    };
+
+    await expect(tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか'), rt(malformed)))
+      .resolves.toEqual({ replied: false, handoff: false });
+    expect(lineClient.replyMessage).not.toHaveBeenCalled();
+    expect(countDrafts()).toBe(0);
+    expect(countUnmatched()).toBe(1);
   });
 
   test('ai runtime 無し → match=null は従来通り recordUnmatchedQuestion (Phase A 非回帰)', async () => {
