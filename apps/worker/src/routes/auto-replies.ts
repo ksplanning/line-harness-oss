@@ -7,6 +7,7 @@ import {
   deleteAutoReply,
 } from '@line-crm/db';
 import type { AutoReply as DbAutoReply } from '@line-crm/db';
+import type { AutoReplyResponseMessage } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const autoReplies = new Hono<Env>();
@@ -24,11 +25,55 @@ interface SerializedAutoReply {
   matchType: 'exact' | 'contains';
   responseType: string;
   responseContent: string;
+  responseMessages: AutoReplyResponseMessage[];
   templateId: string | null;
   lineAccountId: string | null;
   isActive: boolean;
   createdAt: string;
   effectiveAccounts?: EffectiveAccount[];
+}
+
+const AUTO_REPLY_MESSAGE_TYPES = new Set(['text', 'flex', 'image']);
+
+function validateResponseMessages(input: unknown): string | null {
+  if (!Array.isArray(input)) return 'responseMessages は配列で指定してください';
+  if (input.length < 1) return '吹き出しは1件以上、最大5件まで指定してください';
+  if (input.length > 5) return '吹き出しは1件以上、最大5件までです';
+  for (const item of input) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return '吹き出しの形式が正しくありません';
+    const message = item as Record<string, unknown>;
+    if (typeof message.messageType !== 'string' || !AUTO_REPLY_MESSAGE_TYPES.has(message.messageType)) {
+      return '吹き出しの種別が正しくありません';
+    }
+    if (typeof message.messageContent !== 'string' || message.messageContent.length === 0) {
+      return '吹き出しの内容が空です';
+    }
+    if (message.messageType === 'flex' || message.messageType === 'image') {
+      try {
+        JSON.parse(message.messageContent);
+      } catch {
+        return `${message.messageType} の内容は正しい JSON で指定してください`;
+      }
+    }
+  }
+  return null;
+}
+
+function responseMessagesFor(row: DbAutoReply): AutoReplyResponseMessage[] {
+  if (row.response_messages === null) {
+    if (row.response_type === 'silent') return [];
+    return [{ messageType: row.response_type, messageContent: row.response_content }];
+  }
+  if (typeof row.response_messages !== 'string') throw new Error('response_messages must be string or null');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.response_messages);
+  } catch {
+    throw new Error('invalid response_messages JSON');
+  }
+  const validationError = validateResponseMessages(parsed);
+  if (validationError) throw new Error(validationError);
+  return parsed as AutoReplyResponseMessage[];
 }
 
 function serializeAutoReply(row: DbAutoReply): SerializedAutoReply {
@@ -38,6 +83,7 @@ function serializeAutoReply(row: DbAutoReply): SerializedAutoReply {
     matchType: row.match_type,
     responseType: row.response_type,
     responseContent: row.response_content,
+    responseMessages: responseMessagesFor(row),
     templateId: row.template_id,
     lineAccountId: row.line_account_id,
     isActive: Boolean(row.is_active),
@@ -155,6 +201,7 @@ autoReplies.post('/api/auto-replies', async (c) => {
       matchType?: 'exact' | 'contains';
       responseType?: string;
       responseContent?: string;
+      responseMessages?: unknown;
       templateId?: string | null;
       lineAccountId?: string | null;
     }>();
@@ -162,9 +209,18 @@ autoReplies.post('/api/auto-replies', async (c) => {
     if (!body.keyword) {
       return c.json({ success: false, error: 'keyword is required' }, 400);
     }
+    const responseMessagesError = body.responseMessages === undefined || body.responseMessages === null
+      ? null
+      : validateResponseMessages(body.responseMessages);
+    if (responseMessagesError) {
+      return c.json({ success: false, error: responseMessagesError }, 400);
+    }
+    const responseMessages = Array.isArray(body.responseMessages)
+      ? body.responseMessages as AutoReplyResponseMessage[]
+      : body.responseMessages === null ? null : undefined;
     // template_id があれば content は空でも OK (template から resolve される)。
     // silent も content 不要。それ以外は inline content 必須。
-    if (!body.templateId && !body.responseContent && body.responseType !== 'silent') {
+    if (!responseMessages && !body.templateId && !body.responseContent && body.responseType !== 'silent') {
       return c.json({ success: false, error: 'templateId or responseContent required (unless responseType=silent)' }, 400);
     }
 
@@ -173,7 +229,11 @@ autoReplies.post('/api/auto-replies', async (c) => {
     // クリアされた時に webhook resolve が空メッセージにフォールバックしてしまう。
     let resolvedResponseType = body.responseType ?? 'text';
     let resolvedResponseContent = body.responseContent ?? '';
-    if (body.templateId && (!body.responseContent || !body.responseType)) {
+    const firstMessage = responseMessages?.[0];
+    if (firstMessage) {
+      resolvedResponseType = firstMessage.messageType;
+      resolvedResponseContent = firstMessage.messageContent;
+    } else if (body.templateId && (!body.responseContent || !body.responseType)) {
       const { getTemplateById } = await import('@line-crm/db');
       const tpl = await getTemplateById(c.env.DB, body.templateId);
       if (tpl) {
@@ -187,6 +247,7 @@ autoReplies.post('/api/auto-replies', async (c) => {
       matchType: body.matchType,
       responseType: resolvedResponseType,
       responseContent: resolvedResponseContent,
+      responseMessages,
       templateId: body.templateId ?? null,
       lineAccountId: body.lineAccountId ?? null,
     });
@@ -207,6 +268,7 @@ autoReplies.put('/api/auto-replies/:id', async (c) => {
       matchType?: 'exact' | 'contains';
       responseType?: string;
       responseContent?: string;
+      responseMessages?: unknown;
       templateId?: string | null;
       lineAccountId?: string | null;
       isActive?: boolean;
@@ -217,13 +279,20 @@ autoReplies.put('/api/auto-replies/:id', async (c) => {
     if (body.matchType !== undefined) input.matchType = body.matchType;
     if (body.responseType !== undefined) input.responseType = body.responseType;
     if (body.responseContent !== undefined) input.responseContent = body.responseContent;
+    if (body.responseMessages !== undefined) {
+      if (body.responseMessages !== null) {
+        const responseMessagesError = validateResponseMessages(body.responseMessages);
+        if (responseMessagesError) return c.json({ success: false, error: responseMessagesError }, 400);
+      }
+      input.responseMessages = body.responseMessages;
+    }
     if ('templateId' in body) input.templateId = body.templateId;
     if ('lineAccountId' in body) input.lineAccountId = body.lineAccountId;
     if (body.isActive !== undefined) input.isActive = body.isActive;
 
     // templateId が新たに set されて responseContent が来てない場合は template の
     // 現在値を inline snapshot として書き込む (ON DELETE SET NULL の fallback 用)。
-    if (body.templateId && body.responseContent === undefined) {
+    if (body.templateId && body.responseContent === undefined && body.responseMessages === undefined) {
       const { getTemplateById } = await import('@line-crm/db');
       const tpl = await getTemplateById(c.env.DB, body.templateId);
       if (tpl) {

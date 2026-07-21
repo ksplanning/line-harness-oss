@@ -9,10 +9,16 @@ export interface AutoReply {
   match_type: 'exact' | 'contains';
   response_type: string;
   response_content: string;
+  response_messages: string | null;
   template_id: string | null;
   line_account_id: string | null;
   is_active: number;
   created_at: string;
+}
+
+export interface AutoReplyResponseMessage {
+  messageType: string;
+  messageContent: string;
 }
 
 // ── CRUD ─────────────────────────────────────────────────────────────────────
@@ -49,6 +55,7 @@ export interface CreateAutoReplyInput {
   matchType?: 'exact' | 'contains';
   responseType?: string;
   responseContent: string;
+  responseMessages?: AutoReplyResponseMessage[] | null;
   templateId?: string | null;
   lineAccountId?: string | null;
 }
@@ -59,21 +66,25 @@ export async function createAutoReply(
 ): Promise<AutoReply> {
   const id = crypto.randomUUID();
   const now = jstNow();
+  const firstMessage = input.responseMessages?.[0];
 
   await db
     .prepare(
       `INSERT INTO auto_replies
-         (id, keyword, match_type, response_type, response_content,
+         (id, keyword, match_type, response_type, response_content, response_messages,
           template_id, line_account_id, is_active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     )
     .bind(
       id,
       input.keyword,
       input.matchType ?? 'exact',
-      input.responseType ?? 'text',
-      input.responseContent,
-      input.templateId ?? null,
+      firstMessage?.messageType ?? input.responseType ?? 'text',
+      firstMessage?.messageContent ?? input.responseContent,
+      input.responseMessages === undefined || input.responseMessages === null
+        ? null
+        : JSON.stringify(input.responseMessages),
+      firstMessage ? null : (input.templateId ?? null),
       input.lineAccountId ?? null,
       now,
     )
@@ -87,6 +98,7 @@ export interface UpdateAutoReplyInput {
   matchType?: 'exact' | 'contains';
   responseType?: string;
   responseContent?: string;
+  responseMessages?: AutoReplyResponseMessage[] | null;
   templateId?: string | null;
   lineAccountId?: string | null;
   isActive?: boolean;
@@ -101,6 +113,10 @@ export async function updateAutoReply(
   if (!existing) return null;
 
   const now = jstNow();
+  const firstMessage = input.responseMessages?.[0];
+  const responseMessages = 'responseMessages' in input
+    ? (input.responseMessages === null ? null : JSON.stringify(input.responseMessages))
+    : existing.response_messages;
 
   await db
     .prepare(
@@ -109,6 +125,7 @@ export async function updateAutoReply(
            match_type = ?,
            response_type = ?,
            response_content = ?,
+           response_messages = ?,
            template_id = ?,
            line_account_id = ?,
            is_active = ?,
@@ -118,9 +135,10 @@ export async function updateAutoReply(
     .bind(
       input.keyword ?? existing.keyword,
       input.matchType ?? existing.match_type,
-      input.responseType ?? existing.response_type,
-      input.responseContent ?? existing.response_content,
-      'templateId' in input ? (input.templateId ?? null) : existing.template_id,
+      firstMessage?.messageType ?? input.responseType ?? existing.response_type,
+      firstMessage?.messageContent ?? input.responseContent ?? existing.response_content,
+      responseMessages,
+      firstMessage ? null : ('templateId' in input ? (input.templateId ?? null) : existing.template_id),
       'lineAccountId' in input ? (input.lineAccountId ?? null) : existing.line_account_id,
       'isActive' in input ? (input.isActive ? 1 : 0) : existing.is_active,
       existing.created_at,

@@ -55,6 +55,11 @@ vi.mock('../services/faq-reply.js', () => ({
 vi.mock('../services/step-delivery.js', () => ({
   buildMessage: vi.fn(),
   expandVariables: vi.fn(),
+  resolveMetadata: vi.fn().mockResolvedValue({}),
+  messageToLogPayload: vi.fn((message: { messageType: string; content: string }) => ({
+    messageType: message.messageType,
+    content: message.content,
+  })),
 }));
 
 import { verifySignature } from '@line-crm/line-sdk';
@@ -80,6 +85,7 @@ import {
 import { isWithinBusinessHours } from '@line-crm/shared';
 import { fireEvent } from '../services/event-bus.js';
 import { tryFaqReply } from '../services/faq-reply.js';
+import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { webhook } from './webhook.js';
 
 function setupApp() {
@@ -312,6 +318,76 @@ describe('POST /webhook — first-contact existing friends', () => {
   });
 });
 
+describe('POST /webhook — multi-bubble postback auto-reply', () => {
+  test('a matched postback sends response_messages in order with one reply token', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U-existing',
+      display_name: 'Existing Friend',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: null,
+      line_account_id: null,
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-07-21T00:00:00+09:00',
+      updated_at: '2026-07-21T00:00:00+09:00',
+    });
+    vi.mocked(expandVariables).mockImplementation((content) => content);
+    vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
+    const statement = {
+      bind: vi.fn(),
+      run: vi.fn().mockResolvedValue({}),
+      all: vi.fn().mockResolvedValue({ results: [{
+        id: 'postback-multi',
+        keyword: 'plan=gold',
+        match_type: 'exact',
+        response_type: 'text',
+        response_content: '旧先頭',
+        response_messages: JSON.stringify([
+          { messageType: 'text', messageContent: '申込を受け付けました' },
+          { messageType: 'flex', messageContent: '{"type":"bubble"}' },
+        ]),
+        template_id: null,
+      }] }),
+    };
+    statement.bind.mockReturnValue(statement);
+    const db = { prepare: vi.fn().mockReturnValue(statement) } as unknown as D1Database;
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const response = await setupApp().request('/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Line-Signature': 'A'.repeat(43) + '=' },
+      body: JSON.stringify({
+        destination: 'bot',
+        events: [{
+          type: 'postback',
+          replyToken: 'postback-token',
+          postback: { data: 'plan=gold' },
+          timestamp: Date.now(),
+          source: { type: 'user', userId: 'U-existing' },
+          webhookEventId: 'event-postback',
+          deliveryContext: { isRedelivery: false },
+          mode: 'active',
+        }],
+      }),
+    }, { ...baseEnv, DB: db }, executionCtx);
+    expect(response.status).toBe(200);
+    await (vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>);
+
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('postback-token', [
+      { messageType: 'text', content: '申込を受け付けました' },
+      { messageType: 'flex', content: '{"type":"bubble"}' },
+    ]);
+  });
+});
+
 describe('POST /webhook — FAQ bot flag gate', () => {
   function existingFriend() {
     vi.mocked(getFriendByLineUserId).mockResolvedValue({
@@ -336,6 +412,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     match_type: 'exact' | 'contains';
     response_type: string;
     response_content: string;
+    response_messages: string | null;
     template_id: string | null;
     is_active: number;
     created_at: string;
@@ -350,7 +427,11 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     return stmt;
   }
 
-  async function postTextWebhook(envOverrides: Record<string, unknown>, incomingText = '営業時間は？', autoReplies = []) {
+  async function postTextWebhook(
+    envOverrides: Record<string, unknown>,
+    incomingText = '営業時間は？',
+    autoReplies: Parameters<typeof makeStmt>[0] = [],
+  ) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     existingFriend();
     vi.mocked(upsertChatOnMessage).mockResolvedValue({
@@ -433,6 +514,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
         match_type: 'exact',
         response_type: 'silent',
         response_content: '',
+        response_messages: null,
         template_id: null,
         is_active: 1,
         created_at: '2026-07-02T00:00:00+09:00',
@@ -441,6 +523,74 @@ describe('POST /webhook — FAQ bot flag gate', () => {
 
     expect(tryFaqReply).not.toHaveBeenCalled();
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('a matched rule sends its ordered response_messages in one LINE reply call', async () => {
+    vi.mocked(expandVariables).mockImplementation((content) => `展開:${content}`);
+    vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
+
+    await postTextWebhook({}, '資料', [{
+      id: 'auto-multi',
+      keyword: '資料',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: '旧先頭',
+      response_messages: JSON.stringify([
+        { messageType: 'text', messageContent: 'A' },
+        { messageType: 'flex', messageContent: '{"type":"bubble"}' },
+        { messageType: 'text', messageContent: 'B' },
+      ]),
+      template_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    }]);
+
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [
+      { messageType: 'text', content: '展開:A' },
+      { messageType: 'flex', content: '展開:{"type":"bubble"}' },
+      { messageType: 'text', content: '展開:B' },
+    ]);
+  });
+
+  test('a legacy matched rule still sends exactly its original single response', async () => {
+    vi.mocked(expandVariables).mockImplementation((content) => content);
+    vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
+
+    await postTextWebhook({}, '営業時間', [{
+      id: 'auto-legacy',
+      keyword: '営業時間',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: '10時からです',
+      response_messages: null,
+      template_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    }]);
+
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [
+      { messageType: 'text', content: '10時からです' },
+    ]);
+  });
+
+  test('malformed non-null response_messages never falls back to the legacy single response', async () => {
+    vi.mocked(expandVariables).mockImplementation((content) => content);
+    vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
+
+    await postTextWebhook({}, '壊れた設定', [{
+      id: 'auto-broken',
+      keyword: '壊れた設定',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: 'この旧本文へ黙って戻してはいけない',
+      response_messages: '{broken',
+      template_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    }]);
+
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
   });
 
   test('FAQ hit consumes reply token and keeps the chat out of unread inbox', async () => {
@@ -495,6 +645,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     match_type: 'exact' as const,
     response_type: 'silent',
     response_content: '',
+    response_messages: null,
     template_id: null,
     is_active: 1,
     created_at: '2026-07-02T00:00:00+09:00',

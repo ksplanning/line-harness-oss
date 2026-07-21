@@ -404,6 +404,7 @@ async function handleEvent(
         match_type: 'exact' | 'contains';
         response_type: string;
         response_content: string;
+        response_messages: string | null;
         template_id: string | null;
       }>();
 
@@ -432,19 +433,23 @@ async function handleEvent(
         try {
           const { resolveMetadata } = await import('../services/step-delivery.js');
           const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-          const resolved = await resolveAutoReplyContent(db, {
+          const resolvedMessages = await resolveAutoReplyMessages(db, {
             template_id: rule.template_id,
             response_type: rule.response_type,
             response_content: rule.response_content,
+            response_messages: rule.response_messages,
           });
-          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl);
-          const replyMsg = buildMessage(resolved.messageType, expandedContent);
-          await lineClient.replyMessage(event.replyToken, [replyMsg]);
+          const replyMessages = resolvedMessages.map((resolved) => {
+            const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl);
+            return buildMessage(resolved.messageType, expandedContent);
+          });
+          await lineClient.replyMessage(event.replyToken, replyMessages);
 
           // 送信ログ — Rich Menu 経由の Flex 応答もチャット詳細に残るようにする。
           // テキスト auto_reply (line ~390) と同じパターン。
           const { messageToLogPayload: logPayload } = await import('../services/step-delivery.js');
-          const replyPayload = logPayload(replyMsg);
+          // 1ルール発火=ログ1行を維持する。吹き出しごとに行を増やすと未返信判定・発火数が水増しされる。
+          const replyPayload = logPayload(replyMessages[0]);
           await db
             .prepare(
               `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, line_account_id, created_at)
@@ -670,6 +675,7 @@ async function handleEvent(
         match_type: 'exact' | 'contains';
         response_type: string;
         response_content: string;
+        response_messages: string | null;
         template_id: string | null;
         is_active: number;
         created_at: string;
@@ -691,14 +697,17 @@ async function handleEvent(
         try {
           const { resolveMetadata: resolveMeta2 } = await import('../services/step-delivery.js');
           const resolvedMeta2 = await resolveMeta2(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-          const resolved = await resolveAutoReplyContent(db, {
+          const resolvedMessages = await resolveAutoReplyMessages(db, {
             template_id: rule.template_id,
             response_type: rule.response_type,
             response_content: rule.response_content,
+            response_messages: rule.response_messages,
           });
-          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
-          const replyMsg = buildMessage(resolved.messageType, expandedContent);
-          await lineClient.replyMessage(event.replyToken, [replyMsg]);
+          const replyMessages = resolvedMessages.map((resolved) => {
+            const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
+            return buildMessage(resolved.messageType, expandedContent);
+          });
+          await lineClient.replyMessage(event.replyToken, replyMessages);
           replyTokenConsumed = true;
 
           // 送信ログ（replyMessage = 無料）— derive content from the built
@@ -706,7 +715,8 @@ async function handleEvent(
           // reflected in the dashboard.
           const outLogId = crypto.randomUUID();
           const { messageToLogPayload: logPayload2 } = await import('../services/step-delivery.js');
-          const wbAutoReplyPayload = logPayload2(replyMsg);
+          // 1ルール発火=ログ1行の既存意味を維持し、複数吹き出しは先頭を代表として記録する。
+          const wbAutoReplyPayload = logPayload2(replyMessages[0]);
           await db
             .prepare(
               `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
@@ -778,6 +788,42 @@ async function resolveAutoReplyContent(
     }
   }
   return { messageType: rule.response_type, content: rule.response_content };
+}
+
+async function resolveAutoReplyMessages(
+  db: D1Database,
+  rule: {
+    template_id: string | null;
+    response_type: string;
+    response_content: string;
+    response_messages: string | null;
+  },
+): Promise<Array<{ messageType: string; content: string }>> {
+  if (rule.response_messages === null) {
+    return [await resolveAutoReplyContent(db, rule)];
+  }
+  if (typeof rule.response_messages !== 'string') {
+    throw new Error('response_messages must be string or null');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rule.response_messages);
+  } catch {
+    throw new Error('invalid response_messages JSON');
+  }
+  if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 5) {
+    throw new Error('response_messages must contain 1 to 5 messages');
+  }
+  return parsed.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('invalid response_messages item');
+    }
+    const message = item as Record<string, unknown>;
+    if (typeof message.messageType !== 'string' || typeof message.messageContent !== 'string') {
+      throw new Error('invalid response_messages item');
+    }
+    return { messageType: message.messageType, content: message.messageContent };
+  });
 }
 
 export { webhook };
