@@ -269,8 +269,8 @@ export default function Sidebar() {
 
   useEffect(() => {
     const stored = readStoredExpandedSections()
-    if (stored) setExpandedSectionIds(stored)
-  }, [])
+    setExpandedSectionIds(stored ?? defaultExpandedSections(pathname))
+  }, [pathname])
 
   useEffect(() => {
     let cancelled = false

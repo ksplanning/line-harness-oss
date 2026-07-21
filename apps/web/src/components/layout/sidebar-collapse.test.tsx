@@ -68,6 +68,21 @@ describe('Sidebar セクション折りたたみ', () => {
     expect(screen.queryByRole('link', { name: 'CV計測' })).toBeNull()
   })
 
+  it('保存値がなければ内部遷移後も現用セクションだけへ追従する', async () => {
+    const { rerender } = render(<Sidebar />)
+
+    expectSectionExpanded('配信', true)
+    expectSectionExpanded('分析', false)
+
+    mocks.pathname = '/conversions'
+    rerender(<Sidebar />)
+
+    await waitFor(() => expectSectionExpanded('配信', false))
+    expectSectionExpanded('分析', true)
+    expect(screen.queryByRole('link', { name: '一斉配信' })).toBeNull()
+    expect(screen.getAllByRole('link', { name: 'CV計測' })).toHaveLength(2)
+  })
+
   it('主要3ルートではラベル付き5セクションを全て閉じ、主要リンクは常時表示する', () => {
     mocks.pathname = '/friends'
 
