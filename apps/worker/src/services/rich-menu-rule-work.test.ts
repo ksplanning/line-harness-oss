@@ -94,6 +94,7 @@ function bulkLineDouble(options: {
   invalidUserIndexesOnce?: number[];
   forbidVerification?: boolean;
   afterVerification?: (userId: string) => void;
+  verificationFailuresPerUser?: number;
 } = {}) {
   const currentMenus = new Map<string, string | null>(Object.entries(options.initialMenus ?? {}));
   const bulkFailureStatuses = [...(options.bulkFailureStatuses ?? [])];
@@ -104,6 +105,7 @@ function bulkLineDouble(options: {
   const individualLinks: Array<{ userId: string; richMenuId: string }> = [];
   const individualUnlinks: string[] = [];
   const verificationCalls: string[] = [];
+  const verificationAttempts = new Map<string, number>();
   const factory = vi.fn(() => ({
     async linkRichMenuToUser(userId: string, richMenuId: string) {
       individualLinks.push({ userId, richMenuId });
@@ -140,6 +142,11 @@ function bulkLineDouble(options: {
       verificationCalls.push(userId);
       options.afterVerification?.(userId);
       if (options.forbidVerification) throw new Error('per-user verification exceeds the Worker budget');
+      const attempt = (verificationAttempts.get(userId) ?? 0) + 1;
+      verificationAttempts.set(userId, attempt);
+      if (attempt <= (options.verificationFailuresPerUser ?? 0)) {
+        throw new LineApiError(503, 'temporary verification failure', '{}');
+      }
       const richMenuId = currentMenus.get(userId) ?? null;
       if (richMenuId === null) throw new LineApiError(404, 'Not Found', '{}');
       return { richMenuId };
@@ -492,6 +499,32 @@ describe('rich menu rule reapply jobs', () => {
     expect(await run()).toEqual({ attempted: 1, queueProcessed: 0, jobsCompleted: 1 });
     expect(line.bulkUnlinks).toEqual([['U0', 'U1'], ['U2', 'U3'], ['U4']]);
     expect((await getLatestRichMenuRuleReapplyJob(db, 'acc-1'))?.foreignUnlinkedCount).toBe(5);
+  });
+
+  test('default foreign verification budget keeps 20 friends per invocation with one retry each', async () => {
+    seedFriends(20);
+    seedAccountDefault();
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({
+      initialMenus: Object.fromEntries(
+        Array.from({ length: 20 }, (_value, index) => [`U${index}`, 'menu-legacy']),
+      ),
+      verificationFailuresPerUser: 1,
+    });
+
+    const result = await processRichMenuRuleWork(db, {
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+
+    expect(result).toEqual({ attempted: 20, queueProcessed: 0, jobsCompleted: 1 });
+    expect(line.verificationCalls).toHaveLength(40);
+    expect(line.bulkUnlinks).toEqual([
+      Array.from({ length: 20 }, (_value, index) => `U${index}`),
+    ]);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'completed', processedCount: 20, foreignUnlinkedCount: 20, failedCount: 0,
+    });
   });
 
   test('shares the foreign verification budget across every account in one invocation', async () => {

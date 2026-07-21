@@ -87,14 +87,15 @@ const LINE_BULK_USER_LIMIT = 500;
 const LINE_SAFE_REQUEST_INTERVAL_MS = 1;
 const LINE_RETRY_BASE_MS = 1_000;
 const LINE_RETRY_ATTEMPTS = 3;
+const LINE_FOREIGN_VERIFY_RETRY_ATTEMPTS = 2;
 // This repository deliberately runs within the Workers Free 50-external-subrequest
 // ceiling. The cron dispatches this work in an isolated HTTP invocation and this
 // lower local ceiling bounds retry/error expansion inside that dedicated budget.
 // https://developers.cloudflare.com/workers/platform/limits/#subrequests
 const LINE_SUBREQUEST_BUDGET = 9;
-// Keep the complete invocation below the Free Worker ceiling: at most 39
-// verification GETs + 9 mutation requests + 1 self-dispatch = 49 requests.
-const LINE_FOREIGN_VERIFY_SUBREQUEST_BUDGET = 39;
+// Keep the complete invocation at the Free Worker ceiling: at most 40
+// verification GETs + 9 mutation requests + 1 self-dispatch = 50 requests.
+const LINE_FOREIGN_VERIFY_SUBREQUEST_BUDGET = 40;
 
 interface RichMenuRuleRequestCounter {
   used: number;
@@ -106,6 +107,7 @@ export interface RichMenuRuleBulkOptions {
   requestIntervalMs?: number;
   retryBaseMs?: number;
   retryAttempts?: number;
+  verificationRetryAttempts?: number;
   maxSubrequests?: number;
   verificationMaxSubrequests?: number;
   requestCounter?: RichMenuRuleRequestCounter;
@@ -115,7 +117,11 @@ export interface RichMenuRuleBulkOptions {
 function remainingForeignVerificationCapacity(options: RichMenuRuleBulkOptions): number {
   const retryAttempts = Math.max(
     1,
-    Math.trunc(options.retryAttempts ?? LINE_RETRY_ATTEMPTS),
+    Math.trunc(
+      options.verificationRetryAttempts
+        ?? options.retryAttempts
+        ?? LINE_FOREIGN_VERIFY_RETRY_ATTEMPTS,
+    ),
   );
   const maxSubrequests = Math.max(
     0,
@@ -424,6 +430,14 @@ async function executeRichMenuMutations(
     1,
     Math.trunc(bulkOptions.retryAttempts ?? LINE_RETRY_ATTEMPTS),
   );
+  const verificationRetryAttempts = Math.max(
+    1,
+    Math.trunc(
+      bulkOptions.verificationRetryAttempts
+        ?? bulkOptions.retryAttempts
+        ?? LINE_FOREIGN_VERIFY_RETRY_ATTEMPTS,
+    ),
+  );
   const maxSubrequests = bulkOptions.maxSubrequests ?? LINE_SUBREQUEST_BUDGET;
   const verificationMaxSubrequests = Math.max(
     0,
@@ -454,22 +468,25 @@ async function executeRichMenuMutations(
   const withRetry = async <T>(
     request: () => Promise<T>,
     pacedRequest: (request: () => Promise<T>) => Promise<T>,
+    maxAttempts: number,
   ): Promise<T> => {
     let lastError: unknown;
-    for (let attempt = 0; attempt < retryAttempts; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         return await pacedRequest(request);
       } catch (error) {
         lastError = error;
-        if (!isRetryableLineError(error) || attempt === retryAttempts - 1) throw error;
+        if (!isRetryableLineError(error) || attempt === maxAttempts - 1) throw error;
         await sleep(retryBaseMs * (2 ** attempt));
       }
     }
     throw lastError;
   };
-  const requestWithRetry = <T>(request: () => Promise<T>): Promise<T> => withRetry(request, paced);
+  const requestWithRetry = <T>(request: () => Promise<T>): Promise<T> => (
+    withRetry(request, paced, retryAttempts)
+  );
   const verificationRequestWithRetry = <T>(request: () => Promise<T>): Promise<T> => (
-    withRetry(request, verificationPaced)
+    withRetry(request, verificationPaced, verificationRetryAttempts)
   );
   const clients = new Map<string, ReturnType<RichMenuRuleLineClientFactory>>();
   const getClient = (token: string) => {
