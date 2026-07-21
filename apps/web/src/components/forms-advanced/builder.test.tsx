@@ -983,7 +983,7 @@ describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
     expect(afterSubmitPanel?.contains(screen.getByTestId('form-copy-section'))).toBe(true)
 
     fireEvent.click(screen.getByRole('tab', { name: '公開と共有' }))
-    expect(screen.getByText('いつ受け付けるか、通知先と共有方法を決めます。')).toBeTruthy()
+    expect(screen.getByText('いつ受け付けるか、公開方法と共有先を決めます。')).toBeTruthy()
     expect(screen.getByTestId('render-backend-section').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(false)
     expect(screen.getByTestId('operations-settings-section').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(false)
     expect(screen.getByTestId('builder-primary-workspace').hidden).toBe(false)
@@ -1035,6 +1035,91 @@ describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
     visitEveryGroup()
 
     expect([...found].sort()).toEqual(legacySettingFields.map(([id, group]) => `${id}:${group}`).sort())
+  })
+
+  it('フォーム単位の旧UI末端設定も配信方式ごとの意味グループから操作できる', () => {
+    const expectReachable = (labels: string[]) => {
+      for (const label of labels) {
+        const controls = screen.getAllByLabelText(label)
+        expect(controls.some((control) => control.closest('[hidden]') === null), label).toBe(true)
+      }
+    }
+    const rating: HarnessField = { id: 'rating', type: 'rating', label: '評価', required: false, position: 0, config: {} }
+    const email: HarnessField = { id: 'email', type: 'email', label: 'メール', required: false, position: 1, config: {} }
+
+    render(<FormBuilder {...base({
+      layoutMode: 'desktop',
+      initialFields: [rating, email],
+      initialAllowPostEdit: 1,
+      initialAllowEditMail: 1,
+      initialEditMailFieldId: 'email',
+      initialSuccessPages: [{ id: 'thanks', title: '受付完了', description: 'ありがとうございました' }],
+      initialFriendMetadataMappings: [{ formalooFieldKey: 'email', friendMetadataKey: '連絡先' }],
+      afterSubmitSettings: <input aria-label="回答通知の設定" />,
+      publishSettings: <input aria-label="共有とシート連携" />,
+    })} />)
+
+    fireEvent.click(screen.getByRole('tab', { name: '回答後の動き' }))
+    expectReachable([
+      '後編集を許可しない',
+      'Formalooの項目ID',
+      '個人情報の項目名',
+      'メールで編集URLを送る',
+      '編集URLメールの宛先項目',
+      '送信ボタンの文言',
+      '送信完了メッセージ',
+      '送信エラー時の文言',
+      '送信後の飛び先 URL',
+      '飛び先の開き方',
+      '完了ページの見出し',
+      '完了ページの説明',
+      '回答通知の設定',
+    ])
+
+    fireEvent.click(screen.getByRole('tab', { name: '公開と共有' }))
+    expectReachable([
+      '配信方式',
+      'reCAPTCHA（ロボット対策）',
+      '下書き保存',
+      '送信上限（先着 N 名）',
+      '受付開始',
+      '受付終了',
+      'UTM 流入元を自動記録',
+      '共有とシート連携',
+    ])
+
+    fireEvent.click(screen.getByRole('tab', { name: 'デザイン' }))
+    expectReachable([
+      'テーマ色',
+      '背景色',
+      'ボタン色',
+      '文字色',
+      '入力欄の色',
+      '枠線の色',
+      '送信ボタンの文字色',
+      'ロゴを選ぶ',
+      '背景画像（全面）を選ぶ',
+    ])
+    expect(screen.getAllByRole('button').filter((button) => button.dataset.testid?.startsWith('preset-'))).toHaveLength(12)
+    expect(screen.getByRole('button', { name: 'スター色 黄' }).closest('[hidden]')).toBeNull()
+
+    cleanup()
+    const channelLogic: HarnessLogicRule[] = [{
+      id: 'channel-rule',
+      sourceFieldId: '__channel__',
+      operator: 'equals',
+      value: 'line',
+      action: 'hide',
+      targetFieldId: 'email',
+    }]
+    render(<FormBuilder {...base({
+      layoutMode: 'desktop',
+      initialRenderBackend: 'internal',
+      initialFields: [email],
+      initialLogic: channelLogic,
+    })} />)
+    fireEvent.click(screen.getByRole('tab', { name: '公開と共有' }))
+    expectReachable(['配信方式', '経由チャネル', 'チャネル分岐アクション', 'チャネル分岐対象', '送信上限（先着 N 名）', '受付開始', '受付終了'])
   })
 
   it('旧UIの項目別設定も「フォームを作る」から型ごとに到達できる', () => {
@@ -1099,7 +1184,7 @@ describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
       {
         name: '画像',
         fields: [field('image', 'image', '会場写真')],
-        labels: ['ラベル(任意)', '画像ファイル', '画像URL', '代替テキスト'],
+        labels: ['ラベル(任意)', '画像ファイル', '画像URL', '代替テキスト', '表示サイズ'],
       },
       {
         name: '計算',
@@ -1138,6 +1223,7 @@ describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
     for (const scenario of cases) {
       cleanup()
       render(<FormBuilder {...base({
+        formId: scenario.name === '動的選択肢' ? 'form-inventory' : undefined,
         layoutMode: 'desktop',
         initialRenderBackend: scenario.backend ?? 'formaloo',
         initialFields: scenario.fields,
@@ -1178,5 +1264,26 @@ describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
         "title": "テスト",
       }
     `)
+  })
+
+  it('スマホ幅では編集・設定・プレビューを縦方向の切替で操作できる', () => {
+    render(<FormBuilder {...base({ layoutMode: 'mobile' })} />)
+
+    expect(screen.getByTestId('builder-primary-workspace').className).toContain('space-y-3')
+    expect(screen.getByTestId('builder-editing-triptych').className).toContain('flex-col')
+    expect(screen.queryByTestId('preview-pane')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('preview-tab-preview'))
+    expect(screen.getByTestId('preview-pane').className).toContain('w-full')
+    expect(screen.queryByTestId('builder-editing-triptych')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: '回答後の動き' }))
+    expect(screen.queryByLabelText('ビルダー表示切替')).toBeNull()
+    expect(screen.getByTestId('form-copy-section').closest('[hidden]')).toBeNull()
+    expect(screen.getByTestId('preview-pane').className).toContain('w-full')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'デザイン' }))
+    expect(screen.getByTestId('design-pane').closest('[hidden]')).toBeNull()
+    expect(screen.getByTestId('preview-pane').className).toContain('w-full')
   })
 })

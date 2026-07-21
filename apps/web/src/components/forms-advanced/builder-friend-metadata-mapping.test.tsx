@@ -41,7 +41,7 @@ describe('FormBuilder — 友だち個人情報への反映 mapping', () => {
     const onSave = vi.fn();
     render(<FormBuilder {...base({ onSave })} />);
     fireEvent.click(screen.getByText('＋反映ルールを追加'));
-    fireEvent.change(screen.getByLabelText('Formaloo field slug / alias'), { target: { value: 'BjEp0J2J' } });
+    fireEvent.change(screen.getByLabelText('Formalooの項目ID'), { target: { value: 'BjEp0J2J' } });
     fireEvent.change(screen.getByLabelText('個人情報の項目名'), { target: { value: '入金確認' } });
     fireEvent.click(screen.getByText('保存'));
     expect(onSave.mock.calls[0][0].friendMetadataMappings).toEqual([
@@ -57,7 +57,7 @@ describe('FormBuilder — 友だち個人情報への反映 mapping', () => {
         { formalooFieldKey: 'payment_alias', friendMetadataKey: '入金確認' },
       ],
     })} />);
-    expect((screen.getByLabelText('Formaloo field slug / alias') as HTMLInputElement).value).toBe('payment_alias');
+    expect((screen.getByLabelText('Formalooの項目ID') as HTMLInputElement).value).toBe('payment_alias');
     expect((screen.getByLabelText('個人情報の項目名') as HTMLInputElement).value).toBe('入金確認');
     fireEvent.click(screen.getByLabelText('反映ルールを削除'));
     fireEvent.click(screen.getByText('保存'));
@@ -80,7 +80,7 @@ describe('FormBuilder — 友だち個人情報への反映 mapping', () => {
     const onSave = vi.fn();
     render(<FormBuilder {...base({ onSave, fieldDefinitions: definitions })} />);
     fireEvent.click(screen.getByText('＋反映ルールを追加'));
-    fireEvent.change(screen.getByLabelText('Formaloo field slug / alias'), { target: { value: 'memo_alias' } });
+    fireEvent.change(screen.getByLabelText('Formalooの項目ID'), { target: { value: 'memo_alias' } });
     fireEvent.change(screen.getByLabelText('個人情報の項目名'), { target: { value: '定義外の自由項目' } });
     fireEvent.click(screen.getByText('保存'));
     expect(onSave.mock.calls[0][0].friendMetadataMappings).toEqual([

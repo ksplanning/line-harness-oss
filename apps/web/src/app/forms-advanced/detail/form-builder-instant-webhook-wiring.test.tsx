@@ -10,7 +10,11 @@ const shareMock = vi.fn()
 
 vi.mock('next/link', () => ({ default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a> }))
 vi.mock('@/components/layout/header', () => ({ default: () => null }))
-vi.mock('@/components/forms-advanced/builder', () => ({ default: () => <div data-testid="form-builder" /> }))
+vi.mock('@/components/forms-advanced/builder', () => ({
+  default: ({ afterSubmitSettings }: { afterSubmitSettings?: ReactNode }) => (
+    <div data-testid="form-builder">{afterSubmitSettings}</div>
+  ),
+}))
 vi.mock('@/components/forms-advanced/share-panel', () => ({ default: () => null }))
 vi.mock('@/components/forms-advanced/instant-webhook-settings', () => ({
   default: ({ formId }: { formId: string }) => <div data-testid="instant-webhook-wiring">{formId}</div>,

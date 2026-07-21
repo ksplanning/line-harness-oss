@@ -66,7 +66,7 @@ export const BUILDER_WORKSPACE_GROUPS: readonly {
 }[] = [
   { id: 'build', label: 'フォームを作る', description: '質問を追加して、並び順と入力内容を整えます。' },
   { id: 'after-submit', label: '回答後の動き', description: '送信したあとに見せる文、次の行き先、誰に知らせるかを決めます。' },
-  { id: 'publish', label: '公開と共有', description: 'いつ受け付けるか、通知先と共有方法を決めます。' },
+  { id: 'publish', label: '公開と共有', description: 'いつ受け付けるか、公開方法と共有先を決めます。' },
   { id: 'design', label: 'デザイン', description: '色や画像を選び、右の見本で見え方を確かめます。' },
 ]
 
@@ -2251,9 +2251,9 @@ export default function FormBuilder(props: BuilderProps) {
               <div key={index} className="rounded border border-gray-200 bg-white px-2 py-2">
                 <div className="grid gap-2 md:grid-cols-2">
                   <label className="block text-[11px] text-gray-500">
-                    Formaloo field slug / alias
+                    Formalooの項目ID
                     <input
-                      aria-label="Formaloo field slug / alias"
+                      aria-label="Formalooの項目ID"
                       value={mapping.formalooFieldKey}
                       onChange={(event) => updateFriendMetadataMapping(index, { formalooFieldKey: event.target.value })}
                       placeholder="例: BjEp0J2J"
