@@ -114,9 +114,9 @@ describe('tryFaqReply — FTS retrieval 差替 + floor 保持 (T-B3)', () => {
     expect(countUnmatched()).toBe(1);
   });
 
-  test('三層目: surface-collision (今日の天気 Dice0.31>floor) → 生成 but LLM __NO_ANSWER__ → no_answer escalate', async () => {
+  test('三層目: surface-collision (今日の天気 Dice0.31>floor) → 生成 but answerable=false → no_answer escalate', async () => {
     seed(raw, { answerMode: 'auto' });
-    const mock = new MockLlmProvider({ text: '__NO_ANSWER__' });
+    const mock = new MockLlmProvider({ text: '資料だけでは回答できません', answerable: false });
     const res = await tryFaqReply(db, lineClient, OPTS('今日の天気を教えて'), rt(mock));
     expect(res.replied).toBe(false);
     expect(lineClient.replyMessage).not.toHaveBeenCalled();

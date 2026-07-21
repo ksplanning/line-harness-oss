@@ -25,9 +25,18 @@ export interface LlmGenerateResult {
   provider?: 'workers_ai' | 'openai';
 }
 
+export interface LlmJsonSchemaResponseFormat {
+  type: 'json_schema';
+  /** Provider-safe schema name (OpenAI requires this wrapper field). */
+  name: string;
+  /** JSON Schema shared by Workers AI and OpenAI. */
+  schema: Record<string, unknown>;
+}
+
 export interface LlmGenerateOptions {
   maxTokens?: number;
   temperature?: number;
+  responseFormat?: LlmJsonSchemaResponseFormat;
 }
 
 export interface LlmProvider {

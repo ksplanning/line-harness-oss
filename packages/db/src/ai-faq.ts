@@ -108,6 +108,8 @@ export interface InsertAiFaqDraftInput {
   question: string;
   draftAnswer: string;
   evidenceFaqIds?: string[];
+  /** false は「資料不足」草案。既存/決定的草案は省略時 true。 */
+  answerable?: boolean;
 }
 
 // =============================================================================
@@ -181,6 +183,7 @@ export interface AiFaqDraftRow {
   friend_id: string | null;
   question: string;
   draft_answer: string;
+  answerable: number;
   evidence_faq_ids: string;
   status: string;
   created_at: string;
@@ -228,8 +231,8 @@ export async function insertAiFaqDraft(db: D1Database, input: InsertAiFaqDraftIn
   await db
     .prepare(
       `INSERT INTO ai_faq_drafts
-         (id, line_account_id, friend_id, question, draft_answer, evidence_faq_ids, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+         (id, line_account_id, friend_id, question, draft_answer, evidence_faq_ids, answerable, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
     )
     .bind(
       id,
@@ -238,6 +241,7 @@ export async function insertAiFaqDraft(db: D1Database, input: InsertAiFaqDraftIn
       input.question,
       input.draftAnswer,
       JSON.stringify(input.evidenceFaqIds ?? []),
+      input.answerable === false ? 0 : 1,
     )
     .run();
   return id;

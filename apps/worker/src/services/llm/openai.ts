@@ -41,6 +41,18 @@ export class OpenAiProvider implements LlmProvider {
         ],
         max_tokens: opts?.maxTokens,
         temperature: opts?.temperature,
+        ...(opts?.responseFormat
+          ? {
+            response_format: {
+              type: 'json_schema',
+              json_schema: {
+                name: opts.responseFormat.name,
+                strict: true,
+                schema: opts.responseFormat.schema,
+              },
+            },
+          }
+          : {}),
       }),
     });
     if (!response.ok) {

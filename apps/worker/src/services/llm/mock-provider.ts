@@ -8,6 +8,8 @@ import {
 
 export interface MockLlmOptions {
   text?: string;
+  /** Structured-output tests use this explicit self-report; omitted means answerable=true. */
+  answerable?: boolean;
   usage?: LlmUsage;
   /** true / Error で generate を失敗させる (timeout/例外の再現)。 */
   throwError?: Error | boolean;
@@ -23,15 +25,18 @@ export class MockLlmProvider implements LlmProvider {
 
   constructor(private readonly opts: MockLlmOptions = {}) {}
 
-  async generate(prompt: LlmPrompt, _opts?: LlmGenerateOptions): Promise<LlmGenerateResult> {
+  async generate(prompt: LlmPrompt, opts?: LlmGenerateOptions): Promise<LlmGenerateResult> {
     this.calls.push(prompt);
     if (this.opts.throwError) {
       throw this.opts.throwError instanceof Error
         ? this.opts.throwError
         : new Error('mock generate error');
     }
+    const answer = this.opts.text ?? '';
     return {
-      text: this.opts.text ?? '',
+      text: opts?.responseFormat
+        ? JSON.stringify({ answerable: this.opts.answerable ?? true, answer })
+        : answer,
       usage: this.opts.usage ?? { inputTokens: 10, outputTokens: 20 },
     };
   }

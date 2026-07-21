@@ -26,6 +26,22 @@ function stmt(overrides: Partial<{
   return s;
 }
 
+function sqliteD1(db: Database.Database): D1Database {
+  return {
+    prepare(sql: string) {
+      const s = db.prepare(sql);
+      let params: unknown[] = [];
+      const api = {
+        bind(...args: unknown[]) { params = args; return api; },
+        async first<T>() { return (s.get(...params) as T) ?? null; },
+        async all<T>() { return { results: s.all(...params) as T[] }; },
+        async run() { s.run(...params); return {}; },
+      };
+      return api;
+    },
+  } as unknown as D1Database;
+}
+
 describe('FAQ DB helpers', () => {
   test('getFaqs includes account-local and global FAQs for an account', async () => {
     const s = stmt({ all: vi.fn().mockResolvedValue({ results: [{ id: 'faq-1' }] }) });
@@ -106,30 +122,57 @@ describe('FAQ DB helpers', () => {
       'friend-1',
       '駐車場ある？',
       0.42,
+      'acc-1',
+      'friend-1',
+      '駐車場ある？',
     );
     expect(update.bind).toHaveBeenCalledWith('faq-1', 'unmatched-1');
+  });
+});
+
+describe('recordUnmatchedQuestion dedup (real SQLite)', () => {
+  function seedDb(): Database.Database {
+    const raw = new Database(':memory:');
+    raw.exec(`CREATE TABLE unmatched_questions (
+      id TEXT PRIMARY KEY,
+      line_account_id TEXT,
+      friend_id TEXT,
+      question TEXT NOT NULL,
+      top_score REAL,
+      resolved_faq_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))
+    )`);
+    return raw;
+  }
+
+  test('同じ友だちの同じ未解決質問は1件を再利用する', async () => {
+    const raw = seedDb();
+    const db = sqliteD1(raw);
+    const input = { lineAccountId: 'acc-1', friendId: 'friend-1', question: '申し込みはいつから？', topScore: 0.4 };
+
+    const first = await recordUnmatchedQuestion(db, input);
+    const second = await recordUnmatchedQuestion(db, input);
+
+    expect(second.id).toBe(first.id);
+    expect((raw.prepare(`SELECT COUNT(*) AS count FROM unmatched_questions`).get() as { count: number }).count).toBe(1);
+  });
+
+  test('別の友だちと、解決後の再質問は別件として記録する', async () => {
+    const raw = seedDb();
+    const db = sqliteD1(raw);
+    const base = { lineAccountId: 'acc-1', friendId: 'friend-1', question: '申し込みはいつから？', topScore: 0.4 };
+    const first = await recordUnmatchedQuestion(db, base);
+    await recordUnmatchedQuestion(db, { ...base, friendId: 'friend-2' });
+    await markUnmatchedResolved(db, first.id, 'faq-1');
+    await recordUnmatchedQuestion(db, base);
+
+    expect((raw.prepare(`SELECT COUNT(*) AS count FROM unmatched_questions`).get() as { count: number }).count).toBe(3);
   });
 });
 
 // reviewer R1-I2/F-2: +09:00 付き実送信と suffix なし JST 草案の 24h 窓を実 SQLite で検証する。
 describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
   // better-sqlite3 の同期 API を D1 の async prepare().bind().first() 形に薄くラップ。
-  function d1(db: Database.Database): D1Database {
-    return {
-      prepare(sql: string) {
-        const s = db.prepare(sql);
-        let params: unknown[] = [];
-        const api = {
-          bind(...args: unknown[]) { params = args; return api; },
-          async first<T>() { return (s.get(...params) as T) ?? null; },
-          async all<T>() { return { results: s.all(...params) as T[] }; },
-          async run() { s.run(...params); return {}; },
-        };
-        return api;
-      },
-    } as unknown as D1Database;
-  }
-
   function jst(d: Date): string {
     // jstNow() と同じ形: JST の ISO 文字列 (末尾 Z を +09:00 に置換)
     return new Date(d.getTime() + 9 * 3_600_000).toISOString().replace('Z', '+09:00');
@@ -168,7 +211,7 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     insertReply(raw, 'f1', jst(new Date(now - 25 * 3_600_000))); // 外 (数えない)
 
     // 旧実装 (辞書比較) なら 2 を返して境界が壊れる。julianday 版は 1。
-    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
+    await expect(countRecentFaqReplies(sqliteD1(raw), 'f1')).resolves.toBe(1);
   });
 
   test('counts faq_bot reply/push rows and excludes unrelated sources inside the window', async () => {
@@ -180,7 +223,7 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     insertReply(raw, 'f1', recent, 'auto_reply', 'reply');  // 別 source
     insertReply(raw, 'f2', recent, 'faq_bot', 'reply');     // 別 friend
 
-    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(2);
+    await expect(countRecentFaqReplies(sqliteD1(raw), 'f1')).resolves.toBe(2);
   });
 
   test('counts recent saved drafts but excludes old and other-friend drafts', async () => {
@@ -191,13 +234,13 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     insertDraft(raw, 'f1', naiveJst(new Date(now - 25 * 3_600_000)));
     insertDraft(raw, 'f2', naiveJst(new Date(now - 1 * 3_600_000)));
 
-    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(2);
+    await expect(countRecentFaqReplies(sqliteD1(raw), 'f1')).resolves.toBe(2);
   });
 
   test('returns 0 when no recent reply or draft exists', async () => {
     const raw = seedDb();
     insertReply(raw, 'f1', jst(new Date(Date.now() - 30 * 3_600_000))); // 30h ago
-    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(0);
+    await expect(countRecentFaqReplies(sqliteD1(raw), 'f1')).resolves.toBe(0);
   });
 
   test('approved draft and its push log consume exactly one slot, not two', async () => {
@@ -206,7 +249,7 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     insertDraft(raw, 'f1', naiveJst(new Date(now - 1 * 3_600_000)), 'approved');
     insertReply(raw, 'f1', jst(new Date(now - 30 * 60_000)), 'faq_bot', 'push');
 
-    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
+    await expect(countRecentFaqReplies(sqliteD1(raw), 'f1')).resolves.toBe(1);
   });
 
   test('approval of a draft created over 24h ago consumes one slot at push time', async () => {
@@ -215,6 +258,6 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     insertDraft(raw, 'f1', naiveJst(new Date(now - 25 * 3_600_000)), 'approved');
     insertReply(raw, 'f1', jst(new Date(now - 5 * 60_000)), 'faq_bot', 'push');
 
-    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
+    await expect(countRecentFaqReplies(sqliteD1(raw), 'f1')).resolves.toBe(1);
   });
 });

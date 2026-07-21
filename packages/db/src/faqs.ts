@@ -209,11 +209,40 @@ export async function recordUnmatchedQuestion(
   await db
     .prepare(
       `INSERT INTO unmatched_questions (id, line_account_id, friend_id, question, top_score)
-       VALUES (?, ?, ?, ?, ?)`,
+       SELECT ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM unmatched_questions
+           WHERE line_account_id IS ?
+             AND friend_id IS ?
+             AND question = ?
+             AND resolved_faq_id IS NULL
+        )`,
     )
-    .bind(id, input.lineAccountId, input.friendId, input.question, input.topScore)
+    .bind(
+      id,
+      input.lineAccountId,
+      input.friendId,
+      input.question,
+      input.topScore,
+      input.lineAccountId,
+      input.friendId,
+      input.question,
+    )
     .run();
-  return (await getUnmatchedById(db, id))!;
+  const row = await db
+    .prepare(
+      `SELECT * FROM unmatched_questions
+        WHERE line_account_id IS ?
+          AND friend_id IS ?
+          AND question = ?
+          AND resolved_faq_id IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1`,
+    )
+    .bind(input.lineAccountId, input.friendId, input.question)
+    .first<UnmatchedQuestion>();
+  if (!row) throw new Error('Failed to record unmatched question');
+  return row;
 }
 
 export async function markUnmatchedResolved(db: D1Database, id: string, faqId: string): Promise<void> {

@@ -197,6 +197,31 @@ describe('tryFaqReply — account gate + AI RAG (T-A2)', () => {
     expect(countUnmatched()).toBe(0);
   });
 
+  test('draft + answerable=false → 資料不足草案を残し未対応へ1件だけ登録・送信しない', async () => {
+    seed(raw, { answerMode: 'draft' });
+    const mock = new MockLlmProvider({
+      text: 'この資料だけでは申し込み開始日を確認できません',
+      answerable: false,
+    });
+
+    await expect(tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか'), rt(mock)))
+      .resolves.toEqual({ replied: false, handoff: false });
+    await expect(tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか'), rt(mock)))
+      .resolves.toEqual({ replied: false, handoff: false });
+
+    expect(lineClient.replyMessage).not.toHaveBeenCalled();
+    expect(countDrafts()).toBe(2);
+    expect(countUnmatched()).toBe(1);
+    const rows = raw.prepare(`SELECT draft_answer, answerable FROM ai_faq_drafts ORDER BY created_at`).all() as Array<{
+      draft_answer: string;
+      answerable: number;
+    }>;
+    expect(rows).toEqual([
+      { draft_answer: 'この資料だけでは申し込み開始日を確認できません', answerable: 0 },
+      { draft_answer: 'この資料だけでは申し込み開始日を確認できません', answerable: 0 },
+    ]);
+  });
+
   test('ai runtime 無し → match=null は従来通り recordUnmatchedQuestion (Phase A 非回帰)', async () => {
     seed(raw, { answerMode: 'auto' });
     const res = await tryFaqReply(db, lineClient, OPTS('営業時間は何時ですか')); // ai 引数なし

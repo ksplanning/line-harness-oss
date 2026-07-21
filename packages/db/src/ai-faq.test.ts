@@ -121,5 +121,18 @@ describe('insertAiFaqDraft', () => {
     expect(row.status).toBe('pending');
     expect(row.draft_answer).toBe('10-19時です');
     expect(JSON.parse(row.evidence_faq_ids)).toEqual(['fq-1', 'fq-2']);
+    expect(row.answerable).toBe(1);
+  });
+
+  test('answerable=false を資料不足ラベル用に保存する', async () => {
+    const id = await insertAiFaqDraft(db, {
+      lineAccountId: 'acc-1',
+      friendId: 'f1',
+      question: '申し込みはいつから？',
+      draftAnswer: 'この資料だけでは確認できません',
+      answerable: false,
+    });
+    const row = raw.prepare(`SELECT answerable FROM ai_faq_drafts WHERE id=?`).get(id) as { answerable: number };
+    expect(row.answerable).toBe(0);
   });
 });

@@ -52,6 +52,30 @@ describe('WorkersAiProvider', () => {
     expect(out.text).toBe('ok');
     expect(out.usage).toBeUndefined();
   });
+
+  test('JSON schema を Workers AI の response_format に渡し object 応答を JSON text 化する', async () => {
+    const { ai, run } = fakeAi(async () => ({
+      response: { answerable: false, answer: '資料だけでは確認できません' },
+      usage: { prompt_tokens: 12, completion_tokens: 9 },
+    }));
+    const provider = new WorkersAiProvider(ai, 'model-x');
+    const responseFormat = {
+      type: 'json_schema' as const,
+      name: 'faq_answer',
+      schema: {
+        type: 'object',
+        properties: { answerable: { type: 'boolean' }, answer: { type: 'string' } },
+        required: ['answerable', 'answer'],
+      },
+    };
+
+    const out = await provider.generate({ system: 's', user: 'u' }, { responseFormat });
+
+    expect(run.mock.calls[0][1]).toMatchObject({
+      response_format: { type: 'json_schema', json_schema: responseFormat.schema },
+    });
+    expect(JSON.parse(out.text)).toEqual({ answerable: false, answer: '資料だけでは確認できません' });
+  });
 });
 
 describe('MockLlmProvider', () => {

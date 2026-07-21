@@ -105,7 +105,8 @@
     "122_faq_personal_context_audit.sql",
     "122_friend_imports.sql",
     "123_ai_faq_draft_review_audit.sql",
-    "123_auto_reply_response_messages.sql"
+    "123_auto_reply_response_messages.sql",
+    "123_faq_draft_answerable.sql"
   ],
-  "migrationCount": 106
+  "migrationCount": 107
 }

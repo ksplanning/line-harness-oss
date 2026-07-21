@@ -12,11 +12,11 @@ import Database from 'better-sqlite3';
 import { describe, expect, test, beforeEach } from 'vitest';
 import {
   buildFaqPrompt,
-  detectNoAnswer,
   validateAnswerGrounding,
   extractUrlsAndPhones,
   runFaqAiAnswer,
-  FAQ_AI_UNKNOWN_SENTINEL,
+  FAQ_AI_RESPONSE_FORMAT,
+  parseFaqAiResponse,
 } from './faq-ai.js';
 import { MockLlmProvider } from './llm/mock-provider.js';
 import { type FaqAiRuntime } from './llm/runtime.js';
@@ -95,7 +95,7 @@ beforeEach(() => {
 describe('buildFaqPrompt (D-2)', () => {
   test('system(上位) + 根拠 + 質問 のみ / friend_id・秘密値を載せない', () => {
     const p = buildFaqPrompt({ question: '営業時間は？', answer: '10-19時' }, '営業時間を教えて');
-    expect(p.system).toContain(FAQ_AI_UNKNOWN_SENTINEL);
+    expect(p.system).toContain('answerable');
     expect(p.user).toContain('営業時間は？');
     expect(p.user).toContain('10-19時');
     expect(p.user).toContain('営業時間を教えて');
@@ -106,11 +106,26 @@ describe('buildFaqPrompt (D-2)', () => {
   });
 });
 
-describe('detectNoAnswer / grounding helpers', () => {
-  test('sentinel / 空文字 は「分からない」', () => {
-    expect(detectNoAnswer(FAQ_AI_UNKNOWN_SENTINEL)).toBe(true);
-    expect(detectNoAnswer('   ')).toBe(true);
-    expect(detectNoAnswer('10時からです')).toBe(false);
+describe('parseFaqAiResponse / grounding helpers', () => {
+  test.each([
+    ['実回答', JSON.stringify({ answerable: true, answer: '10時からです' }), { answerable: true, answer: '10時からです' }],
+    ['実質非回答', JSON.stringify({ answerable: false, answer: '資料だけでは確認できません' }), { answerable: false, answer: '資料だけでは確認できません' }],
+    ['壊れた出力', '{not-json', { answerable: false, answer: '' }],
+    ['型が不正', JSON.stringify({ answerable: 'yes', answer: '10時からです' }), { answerable: false, answer: '' }],
+  ])('%s を構造化判定する', (_label, fixture, expected) => {
+    expect(parseFaqAiResponse(fixture)).toEqual(expected);
+  });
+
+  test('FAQ 回答生成用 schema は answerable/answer を必須にする', () => {
+    expect(FAQ_AI_RESPONSE_FORMAT).toMatchObject({
+      type: 'json_schema',
+      name: 'faq_answer',
+      schema: {
+        type: 'object',
+        required: ['answerable', 'answer'],
+        additionalProperties: false,
+      },
+    });
   });
 
   test('extractUrlsAndPhones は URL と電話を拾う', () => {
@@ -155,9 +170,18 @@ describe('runFaqAiAnswer — 根拠なしエスカレーション (T-A3)', () =>
     expect(out.kind).toBe('escalate');
   });
 
-  test('(ii) LLM「分からない」(sentinel) → escalate', async () => {
-    const mock = new MockLlmProvider({ text: FAQ_AI_UNKNOWN_SENTINEL });
+  test('(ii) LLM が answerable=false を自己申告 → escalate', async () => {
+    const mock = new MockLlmProvider({ text: '資料だけでは確認できません', answerable: false });
     const out = await runFaqAiAnswer(db, detail(0.5), INPUT, rt(mock));
+    expect(out.kind).toBe('escalate');
+  });
+
+  test('壊れた構造化出力 → fail-closed で escalate', async () => {
+    const malformed: LlmProvider = {
+      async generate() { return { text: '{not-json', usage: { inputTokens: 10, outputTokens: 5 } }; },
+      async embed() { return []; },
+    };
+    const out = await runFaqAiAnswer(db, detail(0.5), INPUT, rt(malformed));
     expect(out.kind).toBe('escalate');
   });
 
@@ -196,6 +220,21 @@ describe('runFaqAiAnswer — answer_mode (T-A4)', () => {
     expect(row.status).toBe('pending');
     expect(row.draft_answer).toBe('平日は10時から19時までです');
     expect(JSON.parse(row.evidence_faq_ids)).toEqual(['fq-1']);
+    expect(row.answerable).toBe(1);
+  });
+
+  test('draft + answerable=false → 資料不足草案を保存して unmatched 経路へ escalate', async () => {
+    const mock = new MockLlmProvider({ text: 'この資料だけでは申し込み開始日を確認できません', answerable: false });
+    const out = await runFaqAiAnswer(db, detail(0.5), { ...INPUT, answerMode: 'draft' }, rt(mock));
+    expect(out.kind).toBe('escalate');
+    const row = raw.prepare(`SELECT draft_answer, answerable FROM ai_faq_drafts WHERE friend_id='f1'`).get() as {
+      draft_answer: string;
+      answerable: number;
+    };
+    expect(row).toEqual({
+      draft_answer: 'この資料だけでは申し込み開始日を確認できません',
+      answerable: 0,
+    });
   });
 });
 

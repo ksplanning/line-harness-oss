@@ -63,6 +63,30 @@ describe('OpenAiProvider', () => {
     expect(JSON.parse(String(init.body)).model).toBe('gpt-4o-mini');
   });
 
+  test('maps the shared JSON schema option to OpenAI strict structured outputs', async () => {
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '{"answerable":true,"answer":"10時からです"}' } }],
+    }), { status: 200 }));
+    const openai = new OpenAiProvider('test-secret', 'gpt-test', request as typeof fetch);
+    const responseFormat = {
+      type: 'json_schema' as const,
+      name: 'faq_answer',
+      schema: {
+        type: 'object',
+        properties: { answerable: { type: 'boolean' }, answer: { type: 'string' } },
+        required: ['answerable', 'answer'],
+      },
+    };
+
+    await openai.generate({ system: 's', user: 'u' }, { responseFormat });
+
+    const init = request.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body)).response_format).toEqual({
+      type: 'json_schema',
+      json_schema: { name: 'faq_answer', strict: true, schema: responseFormat.schema },
+    });
+  });
+
   test('rejects a blank key before fetch and does not leak provider response details', async () => {
     const request = vi.fn().mockResolvedValue(new Response('sensitive upstream detail', { status: 429 }));
     const missing = new OpenAiProvider('  ', 'gpt-test', request as typeof fetch);

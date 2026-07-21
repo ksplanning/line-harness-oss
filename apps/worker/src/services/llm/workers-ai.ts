@@ -12,7 +12,7 @@ import {
  * 実 binding (`[ai] binding = "AI"`) は infra 工程 (closer/デプロイ) で wrangler に追記。
  */
 export interface WorkersAiRunResult {
-  response?: string;
+  response?: unknown;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
   /** embedding モデル (`ai.run(embedModel,{text})`) の戻り: data[0] が埋め込みベクトル (B-4 T-D2)。 */
   data?: number[][];
@@ -48,6 +48,14 @@ export class WorkersAiProvider implements LlmProvider {
       ],
       max_tokens: opts?.maxTokens,
       temperature: opts?.temperature,
+      ...(opts?.responseFormat
+        ? {
+          response_format: {
+            type: 'json_schema',
+            json_schema: opts.responseFormat.schema,
+          },
+        }
+        : {}),
     });
 
     const u = res.usage;
@@ -56,7 +64,12 @@ export class WorkersAiProvider implements LlmProvider {
         ? { inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens }
         : undefined;
 
-    return { text: res.response ?? '', usage };
+    const text = typeof res.response === 'string'
+      ? res.response
+      : res.response == null
+        ? ''
+        : JSON.stringify(res.response);
+    return { text, usage };
   }
 
   async embed(text: string): Promise<number[]> {

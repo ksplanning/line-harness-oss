@@ -304,6 +304,7 @@ CREATE TABLE IF NOT EXISTS ai_faq_drafts (
   friend_id         TEXT,
   question          TEXT NOT NULL,
   draft_answer      TEXT NOT NULL,
+  answerable        INTEGER NOT NULL DEFAULT 1 CHECK (answerable IN (0, 1)),
   evidence_faq_ids  TEXT NOT NULL DEFAULT '[]',
   status            TEXT NOT NULL DEFAULT 'pending',
   created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
