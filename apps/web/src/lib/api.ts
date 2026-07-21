@@ -50,6 +50,11 @@ export interface MessageBlock {
   altText?: string | null;
 }
 
+export interface AutoReplyResponseMessage {
+  messageType: 'text' | 'flex' | 'image'
+  messageContent: string
+}
+
 export type TestSendSource =
   | 'broadcast'
   | 'greeting'
@@ -1026,6 +1031,7 @@ export const api = {
         matchType: 'exact' | 'contains';
         responseType: string;
         responseContent: string;
+        responseMessages: AutoReplyResponseMessage[];
         templateId: string | null;
         lineAccountId: string | null;
         isActive: boolean;
@@ -1045,6 +1051,7 @@ export const api = {
         matchType: 'exact' | 'contains';
         responseType: string;
         responseContent: string;
+        responseMessages: AutoReplyResponseMessage[];
         templateId: string | null;
         lineAccountId: string | null;
         isActive: boolean;
@@ -1055,6 +1062,7 @@ export const api = {
       matchType?: 'exact' | 'contains';
       responseType?: string;
       responseContent?: string;
+      responseMessages?: AutoReplyResponseMessage[] | null;
       templateId?: string | null;
       lineAccountId?: string | null;
     }) =>
@@ -1067,6 +1075,7 @@ export const api = {
       matchType?: 'exact' | 'contains';
       responseType?: string;
       responseContent?: string;
+      responseMessages?: AutoReplyResponseMessage[] | null;
       templateId?: string | null;
       lineAccountId?: string | null;
       isActive?: boolean;

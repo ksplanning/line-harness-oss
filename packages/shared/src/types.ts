@@ -332,6 +332,11 @@ export interface MessageLog {
 /** キーワードマッチ種別 */
 export type AutoReplyMatchType = "exact" | "contains";
 
+export interface AutoReplyResponseMessage {
+  messageType: MessageType;
+  messageContent: string;
+}
+
 export interface AutoReply {
   /** 主キー (UUIDv4) */
   id: string;
@@ -343,6 +348,8 @@ export interface AutoReply {
   responseType: MessageType;
   /** レスポンス内容 */
   responseContent: string;
+  /** 1回の返信で順番どおり送る吹き出し (最大5件) */
+  responseMessages: AutoReplyResponseMessage[];
   /** 有効/無効フラグ */
   isActive: boolean;
   /** 作成日時 (ISO 8601) */

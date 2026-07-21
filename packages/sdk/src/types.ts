@@ -460,12 +460,18 @@ export interface FormSubmission {
 }
 
 // ─── Auto-Replies ──────────────────────────────────────
+export interface AutoReplyResponseMessage {
+  messageType: 'text' | 'flex' | 'image'
+  messageContent: string
+}
+
 export interface AutoReply {
   id: string
   keyword: string
   matchType: 'exact' | 'contains'
   responseType: string
   responseContent: string
+  responseMessages: AutoReplyResponseMessage[]
   lineAccountId: string | null
   isActive: boolean
   createdAt: string
@@ -475,7 +481,8 @@ export interface CreateAutoReplyInput {
   keyword: string
   matchType?: 'exact' | 'contains'
   responseType?: string
-  responseContent: string
+  responseContent?: string
+  responseMessages?: AutoReplyResponseMessage[] | null
   lineAccountId?: string | null
 }
 
@@ -484,6 +491,7 @@ export interface UpdateAutoReplyInput {
   matchType?: 'exact' | 'contains'
   responseType?: string
   responseContent?: string
+  responseMessages?: AutoReplyResponseMessage[] | null
   lineAccountId?: string | null
   isActive?: boolean
 }

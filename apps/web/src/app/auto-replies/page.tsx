@@ -20,6 +20,7 @@ interface AutoReply {
   matchType: 'exact' | 'contains'
   responseType: string
   responseContent: string
+  responseMessages: AutoReplyDraft['responseMessages']
   templateId: string | null
   lineAccountId: string | null
   isActive: boolean
@@ -123,9 +124,11 @@ export default function AutoRepliesPage() {
 
   const renderResponseCell = (r: AutoReply) => {
     if (r.responseType === 'silent') return <span className="text-gray-400 text-xs">silent</span>
-    if (r.responseType === 'flex') return <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] font-medium">📋 flex</span>
-    if (r.responseType === 'image') return <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px] font-medium">🖼️ image</span>
-    return <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[10px] font-medium">📝 text</span>
+    const count = r.responseMessages?.length ?? 1
+    const countLabel = count > 1 ? ` · ${count}吹き出し` : ''
+    if (r.responseType === 'flex') return <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] font-medium">📋 flex{countLabel}</span>
+    if (r.responseType === 'image') return <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px] font-medium">🖼️ image{countLabel}</span>
+    return <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[10px] font-medium">📝 text{countLabel}</span>
   }
 
   const renderTemplateCell = (r: AutoReply) => {
@@ -231,6 +234,7 @@ export default function AutoRepliesPage() {
                           matchType: r.matchType,
                           responseType: r.responseType,
                           responseContent: r.responseContent,
+                          responseMessages: r.responseMessages,
                           templateId: r.templateId,
                           lineAccountId: r.lineAccountId,
                           isActive: r.isActive,
