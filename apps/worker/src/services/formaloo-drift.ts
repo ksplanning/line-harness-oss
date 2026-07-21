@@ -15,10 +15,12 @@
 // =============================================================================
 
 import {
+  beginFormalooDefinitionSave,
   listLinkedFormalooForms,
   getFormalooForm,
   getFormalooSyncState,
   setFormalooSyncState,
+  updateFormalooDriftStateIfCurrent,
   getFormalooFieldMap,
   saveFormalooDefinition,
   recordFormalooDriftEvent,
@@ -371,12 +373,18 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
             const isNew = sync?.pending_remote_hash !== combinedPending;
             const transitioned = (sync?.drift_status ?? 'none') !== 'detected';
             if (isNew || transitioned) {
-              await setFormalooSyncState(deps.db, form.id, {
-                syncStatus, driftStatus: 'detected', pendingRemoteHash: combinedPending, driftDetectedAt: nowIso,
+              const updated = await updateFormalooDriftStateIfCurrent(deps.db, form.id, {
+                expectedFormUpdatedAt: form.updated_at,
+                expectedSyncStatus: syncStatus,
+                driftStatus: 'detected', pendingRemoteHash: combinedPending, driftDetectedAt: nowIso,
                 // reviewer R1 P2-3: health 由来 surface の時だけ既存 last_error を保持する (SP 単軸は従来どおり omit=clear で
                 //   byte 不変 = L341 pattern の他 3 箇所は非改変)。
                 ...(healthUnhealthy ? { lastError: sync?.last_error ?? null } : {}),
               });
+              if (!updated) {
+                summary.skipped += 1;
+                return;
+              }
               await recordFormalooDriftEvent(deps.db, {
                 formId: form.id, action: 'notified', detectedAt: nowIso, remoteHash: fp, prevHash: baseline,
                 // SP 単軸 (health off/healthy) は従来どおり hasWarnings=weakened・warningsJson/detail 無し (byte 不変)。
@@ -394,9 +402,12 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
 
         switch (action) {
           case 'bootstrapped': {
-            await setFormalooSyncState(deps.db, form.id, {
-              syncStatus, remoteDefinitionHash: fp, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
+            const updated = await updateFormalooDriftStateIfCurrent(deps.db, form.id, {
+              expectedFormUpdatedAt: form.updated_at,
+              expectedSyncStatus: syncStatus,
+              remoteDefinitionHash: fp, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
             });
+            if (!updated) { summary.skipped += 1; break; }
             await recordFormalooDriftEvent(deps.db, { formId: form.id, action: 'bootstrapped', detectedAt: nowIso, remoteHash: fp, prevHash: null, syncStatusAt: syncStatus });
             summary.bootstrapped += 1;
             break;
@@ -405,7 +416,12 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
             // remote drift 解消 (Formaloo が baseline へ戻った) → 残った remote drift 状態を掃除
             // (sync_status=out_of_sync のローカル編集はそのまま維持 = drift_status は remote 軸で別)。
             if ((sync?.drift_status && sync.drift_status !== 'none') || sync?.pending_remote_hash != null) {
-              await setFormalooSyncState(deps.db, form.id, { syncStatus, driftStatus: 'none', pendingRemoteHash: null, driftDetectedAt: null });
+              const updated = await updateFormalooDriftStateIfCurrent(deps.db, form.id, {
+                expectedFormUpdatedAt: form.updated_at,
+                expectedSyncStatus: syncStatus,
+                driftStatus: 'none', pendingRemoteHash: null, driftDetectedAt: null,
+              });
+              if (!updated) { summary.skipped += 1; break; }
             }
             summary.inSync += 1;
             break;
@@ -420,14 +436,31 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
               summary.skipped += 1;
               break; // 併走保存/in-flight 検知 → 上書きしない (fail-safe)
             }
-            const applied = await applyDriftToD1(deps.db, form, res.data);
-            if (!applied) { summary.skipped += 1; break; } // 変換不能 = fail-safe skip (baseline 不変)
-            await setFormalooSyncState(deps.db, form.id, {
-              syncStatus: 'idle', lastPulledAt: nowIso,
-              remoteDefinitionHash: fp, pendingRemoteHash: null, driftStatus: 'applied', driftDetectedAt: nowIso,
-            });
-            await recordFormalooDriftEvent(deps.db, { formId: form.id, action: 'auto_applied', detectedAt: nowIso, remoteHash: fp, prevHash: baseline, hasWarnings: false, syncStatusAt: syncStatus });
-            summary.autoApplied += 1;
+            const claimed = await beginFormalooDefinitionSave(deps.db, form.id, fresh.updated_at, nowIso);
+            if (!claimed) {
+              summary.skipped += 1;
+              break;
+            }
+            try {
+              const applied = await applyDriftToD1(deps.db, form, res.data);
+              if (!applied) {
+                await setFormalooSyncState(deps.db, form.id, { syncStatus: 'idle' });
+                summary.skipped += 1;
+                break;
+              }
+              await setFormalooSyncState(deps.db, form.id, {
+                syncStatus: 'idle', lastPulledAt: nowIso,
+                remoteDefinitionHash: fp, pendingRemoteHash: null, driftStatus: 'applied', driftDetectedAt: nowIso,
+              });
+              await recordFormalooDriftEvent(deps.db, { formId: form.id, action: 'auto_applied', detectedAt: nowIso, remoteHash: fp, prevHash: baseline, hasWarnings: false, syncStatusAt: syncStatus });
+              summary.autoApplied += 1;
+            } catch (error) {
+              await setFormalooSyncState(deps.db, form.id, {
+                syncStatus: 'out_of_sync',
+                lastError: 'Formaloo の変更を自動反映できませんでした',
+              });
+              throw error;
+            }
             break;
           }
           case 'notified': {
@@ -437,7 +470,12 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
             const isNew = sync?.pending_remote_hash !== fp;
             const transitioned = (sync?.drift_status ?? 'none') !== 'detected';
             if (isNew || transitioned) {
-              await setFormalooSyncState(deps.db, form.id, { syncStatus, driftStatus: 'detected', pendingRemoteHash: fp, driftDetectedAt: nowIso });
+              const updated = await updateFormalooDriftStateIfCurrent(deps.db, form.id, {
+                expectedFormUpdatedAt: form.updated_at,
+                expectedSyncStatus: syncStatus,
+                driftStatus: 'detected', pendingRemoteHash: fp, driftDetectedAt: nowIso,
+              });
+              if (!updated) { summary.skipped += 1; break; }
               await recordFormalooDriftEvent(deps.db, { formId: form.id, action: 'notified', detectedAt: nowIso, remoteHash: fp, prevHash: baseline, hasWarnings: weakened, syncStatusAt: syncStatus });
               summary.notified += 1;
             }
@@ -448,7 +486,12 @@ export async function runFormalooDriftCheck(deps: RunDriftCheckDeps): Promise<Dr
             const isNew = sync?.pending_remote_hash !== fp;
             const transitioned = (sync?.drift_status ?? 'none') !== 'conflict';
             if (isNew || transitioned) {
-              await setFormalooSyncState(deps.db, form.id, { syncStatus, driftStatus: 'conflict', pendingRemoteHash: fp, driftDetectedAt: nowIso });
+              const updated = await updateFormalooDriftStateIfCurrent(deps.db, form.id, {
+                expectedFormUpdatedAt: form.updated_at,
+                expectedSyncStatus: syncStatus,
+                driftStatus: 'conflict', pendingRemoteHash: fp, driftDetectedAt: nowIso,
+              });
+              if (!updated) { summary.skipped += 1; break; }
               await recordFormalooDriftEvent(deps.db, { formId: form.id, action: 'conflict_held', detectedAt: nowIso, remoteHash: fp, prevHash: baseline, hasWarnings: weakened, syncStatusAt: syncStatus });
               summary.conflicts += 1;
             }

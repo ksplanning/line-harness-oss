@@ -104,6 +104,51 @@ function spyClient(bodyFor: (slug: string) => unknown, opts: { failGet?: boolean
 let raw: Database.Database;
 let DB: D1Database;
 
+function beforeFormalooClaim(callback: () => void): void {
+  const base = DB;
+  let called = false;
+  DB = {
+    prepare(sql: string) {
+      if (!sql.includes('INSERT') || !sql.includes('formaloo_sync_state')) return base.prepare(sql);
+      let params: unknown[] = [];
+      const statement = {
+        bind(...values: unknown[]) { params = values; return statement; },
+        async run() {
+          if (!called) {
+            called = true;
+            callback();
+          }
+          return base.prepare(sql).bind(...params).run();
+        },
+      };
+      return statement;
+    },
+  } as unknown as D1Database;
+}
+
+function afterNextSyncSnapshot(callback: () => void): void {
+  const base = DB;
+  let called = false;
+  DB = {
+    prepare(sql: string) {
+      if (!sql.includes('SELECT * FROM formaloo_sync_state')) return base.prepare(sql);
+      let params: unknown[] = [];
+      const statement = {
+        bind(...values: unknown[]) { params = values; return statement; },
+        async first<T>() {
+          const result = await base.prepare(sql).bind(...params).first<T>();
+          if (!called) {
+            called = true;
+            callback();
+          }
+          return result;
+        },
+      };
+      return statement;
+    },
+  } as unknown as D1Database;
+}
+
 /** 連携 form + field_map (slug 付き) を seed。field_map.id は form 毎に一意 (グローバル UNIQUE 罠回避)。 */
 async function seedForm(id: string, slug: string, def = '{"fields":[],"logic":[]}') {
   raw.prepare(
@@ -435,6 +480,46 @@ describe('runFormalooDriftCheck — F1 PUT×cron TOCTOU (auto-apply が併走保
 
     expect(sum.autoApplied).toBe(0); // 併走保存検知 → apply 中止
     expect((await getFormalooForm(DB, 'f1'))!.definition_json).toBe(defBefore); // 併走保存を上書きしない
+  });
+
+  it('auto-apply の claim 前に internal へ切り替わったら定義を上書きしない', async () => {
+    await seedForm('f1', 's_form1');
+    const v1 = body('s_form1', [rawField('s_q1', { title: '氏名' })]);
+    const v2 = body('s_form1', [rawField('s_q1', { title: 'お名前' })]);
+    await setFormalooSyncState(DB, 'f1', { syncStatus: 'idle', remoteDefinitionHash: await fpOf(v1), driftStatus: 'none' });
+    const defBefore = (await getFormalooForm(DB, 'f1'))!.definition_json;
+    beforeFormalooClaim(() => {
+      raw.prepare("UPDATE formaloo_forms SET render_backend = 'internal' WHERE id = 'f1'").run();
+    });
+    const { client } = spyClient(() => v2);
+
+    const sum = await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: true });
+
+    expect(sum.autoApplied).toBe(0);
+    expect(sum.skipped).toBe(1);
+    expect((await getFormalooForm(DB, 'f1'))).toMatchObject({
+      render_backend: 'internal',
+      definition_json: defBefore,
+    });
+  });
+
+  it('古い drift snapshot は併走中の pushing claim を idle に戻さない', async () => {
+    await seedForm('f1', 's_form1');
+    const remote = body('s_form1', [rawField('s_q1')]);
+    await setFormalooSyncState(DB, 'f1', {
+      syncStatus: 'idle', remoteDefinitionHash: null, driftStatus: 'none',
+    });
+    afterNextSyncSnapshot(() => {
+      raw.prepare("UPDATE formaloo_sync_state SET sync_status = 'pushing' WHERE form_id = 'f1'").run();
+    });
+    const { client } = spyClient(() => remote);
+
+    const sum = await runFormalooDriftCheck({ db: DB, resolveClient: async () => client, autoApplyEnabled: true });
+
+    expect((await getFormalooSyncState(DB, 'f1'))?.sync_status).toBe('pushing');
+    expect(sum.bootstrapped).toBe(0);
+    expect(sum.skipped).toBe(1);
+    expect(await listFormalooDriftEvents(DB, 'f1')).toEqual([]);
   });
 });
 

@@ -309,6 +309,7 @@ export function createFormalooInstantWebhookRoutes(
     const requestPath = new URL(c.req.url).pathname;
     const registered = form
       && form.deleted === 0
+      && form.render_backend === 'formaloo'
       && form.formaloo_webhook_enabled === 1
       && Boolean(form.formaloo_slug)
       && Boolean(form.formaloo_webhook_id)
@@ -369,6 +370,7 @@ export function createFormalooInstantWebhookRoutes(
               if (
                 !currentForm
                 || currentForm.deleted === 1
+                || currentForm.render_backend !== 'formaloo'
                 || currentForm.formaloo_webhook_enabled !== 1
                 || !currentForm.formaloo_slug
                 || currentForm.formaloo_webhook_id !== form.formaloo_webhook_id

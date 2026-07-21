@@ -88,6 +88,23 @@ function seedMirror(id: string, formId: string) {
     `INSERT INTO formaloo_submissions (id, form_id, answers_json, submitted_at) VALUES (?,?,?,?)`,
   ).run(id, formId, '{}', '2026-07-17T10:00:00+09:00');
 }
+function seedInternalForm(
+  id: string,
+  operationsSettings: Record<string, unknown> = {},
+) {
+  seedForm(id, id, 99);
+  raw.prepare(
+    `UPDATE formaloo_forms
+     SET render_backend = 'internal', builder_status = 'published', definition_json = ?
+     WHERE id = ?`,
+  ).run(JSON.stringify({ fields: [], logic: [], operationsSettings }), id);
+}
+function seedInternalSubmission(id: string, formId: string) {
+  raw.prepare(
+    `INSERT INTO internal_form_submissions (id, form_id, answers_json, submitted_at)
+     VALUES (?,?,?,?)`,
+  ).run(id, formId, '{}', '2026-07-17T10:00:00+09:00');
+}
 
 beforeEach(() => {
   raw = new Database(':memory:');
@@ -126,6 +143,88 @@ describe('forms-list-count-fix — 一覧の回答数はミラー行数 (T-A2)',
     const a = (await res.json() as { data: Record<string, unknown>[] }).data.find((f) => f.id === 'fa_A');
     expect(a!.submitCount).toBe(2);
     // ミラー集約は local D1 のみ。Formaloo client は解決すらしない (= client.get 到達不能)。
+    expect(hoisted.resolveSpy).not.toHaveBeenCalled();
+  });
+
+  test('internal は専用回答数と定義から正直な受付状態を返し、Formaloo payload は増やさない', async () => {
+    seedForm('formaloo-form', 'Formaloo', 99);
+    seedMirror('formaloo-answer', 'formaloo-form');
+
+    seedInternalForm('internal-upcoming', { submitStartTime: '2099-07-25T00:00:00+09:00' });
+    seedMirror('wrong-mirror-answer', 'internal-upcoming');
+    seedInternalSubmission('internal-answer-1', 'internal-upcoming');
+    seedInternalSubmission('internal-answer-2', 'internal-upcoming');
+    seedInternalForm('internal-ended', { submitEndTime: '2000-01-01T00:00:00+09:00' });
+    seedInternalForm('internal-limit', { maxSubmitCount: 1 });
+    seedInternalSubmission('internal-limit-answer', 'internal-limit');
+    seedInternalForm('internal-open');
+
+    const res = await call('GET', '/api/forms-advanced');
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: Record<string, unknown>[] }).data;
+    const byId = (id: string) => data.find((form) => form.id === id)!;
+
+    expect(byId('internal-upcoming')).toMatchObject({
+      renderBackend: 'internal',
+      submitCount: 2,
+      internalAvailability: { status: 'upcoming', message: '受付開始前・7月25日から' },
+    });
+    expect(byId('internal-ended')).toMatchObject({
+      submitCount: 0,
+      internalAvailability: { status: 'ended', message: '受付は終了しました' },
+    });
+    expect(byId('internal-limit')).toMatchObject({
+      submitCount: 1,
+      internalAvailability: { status: 'limit_reached', message: '回答上限に達したため受付を終了しました' },
+    });
+    expect(byId('internal-open')).toMatchObject({
+      submitCount: 0,
+      internalAvailability: { status: 'open', message: null },
+    });
+    expect(byId('formaloo-form')).toMatchObject({ renderBackend: 'formaloo', submitCount: 1 });
+    expect(byId('formaloo-form')).not.toHaveProperty('internalAvailability');
+    expect(hoisted.resolveSpy).not.toHaveBeenCalled();
+  });
+
+  test('壊れた internal 定義があっても一覧全体を落とさず、受付状態だけを省略する', async () => {
+    seedForm('healthy-form', '正常フォーム', 0);
+    seedInternalForm('broken-internal');
+    raw.prepare('UPDATE formaloo_forms SET definition_json = ? WHERE id = ?')
+      .run('{"fields":"broken","logic":[]}', 'broken-internal');
+
+    const res = await call('GET', '/api/forms-advanced');
+
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: Record<string, unknown>[] }).data;
+    expect(data.map((form) => form.id)).toEqual(expect.arrayContaining(['healthy-form', 'broken-internal']));
+    expect(data.find((form) => form.id === 'broken-internal')).not.toHaveProperty('internalAvailability');
+    expect(hoisted.resolveSpy).not.toHaveBeenCalled();
+  });
+
+  test('internal 一覧には切替前の Formaloo URL を再表示せず、Formaloo の既存 URL は維持する', async () => {
+    const staleAddress = 'https://formaloo.example.test/stale-internal';
+    seedInternalForm('internal-with-stale-url');
+    raw.prepare('UPDATE formaloo_forms SET definition_json = ? WHERE id = ?')
+      .run(JSON.stringify({ fields: [], logic: [], formalooAddress: staleAddress }), 'internal-with-stale-url');
+
+    const formalooAddress = 'https://formaloo.example.test/current';
+    seedForm('formaloo-with-url', 'Formaloo URL', 0);
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'published', definition_json = ? WHERE id = ?")
+      .run(JSON.stringify({ fields: [], logic: [], formalooAddress }), 'formaloo-with-url');
+
+    const res = await call('GET', '/api/forms-advanced');
+
+    expect(res.status).toBe(200);
+    const data = (await res.json() as { data: Record<string, unknown>[] }).data;
+    const internal = data.find((form) => form.id === 'internal-with-stale-url')!;
+    const formaloo = data.find((form) => form.id === 'formaloo-with-url')!;
+    expect(internal).toMatchObject({
+      publicUrl: null,
+      embedCode: null,
+      internalAvailability: { status: 'open', message: null },
+    });
+    expect(formaloo.publicUrl).toBe(formalooAddress);
+    expect(formaloo.embedCode).toContain(formalooAddress);
     expect(hoisted.resolveSpy).not.toHaveBeenCalled();
   });
 });

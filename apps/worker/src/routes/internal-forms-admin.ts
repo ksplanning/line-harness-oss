@@ -4,10 +4,14 @@ import {
   getFormalooFieldMap,
   getFormalooForm,
   getInternalFormSubmission,
+  hasBlockingFormalooRecurringSubmissions,
+  jstNow,
   listInternalFormSubmissions,
+  publishInternalFormDefinition,
   saveFormalooDefinition,
-  setFormRenderBackend,
-  updateFormalooBuilderStatus,
+  saveInternalFormDefinition,
+  switchFormRenderBackendToDraft,
+  unpublishInternalFormDefinition,
   type FormalooForm,
   type InternalFormSubmission,
 } from '@line-crm/db';
@@ -152,6 +156,20 @@ function jsonObject(value: string): Record<string, unknown> {
   }
 }
 
+async function internalPublishRevision(form: FormalooForm): Promise<string> {
+  const snapshot = JSON.stringify([
+    form.id,
+    form.definition_json,
+    form.title,
+    form.description,
+  ]);
+  const digest = new Uint8Array(await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(snapshot),
+  ));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function publicBase(c: Context<Env>): string {
   return (c.env.WORKER_URL || new URL(c.req.url).origin).replace(/\/+$/, '');
 }
@@ -168,6 +186,7 @@ async function serializeInternalForm(c: Context<Env>, form: FormalooForm) {
     title: form.title,
     description: form.description,
     formalooSlug: form.formaloo_slug,
+    renderBackend: 'internal' as const,
     builderStatus: form.builder_status,
     publishedAt: form.published_at,
     submitCount,
@@ -182,6 +201,11 @@ async function serializeInternalForm(c: Context<Env>, form: FormalooForm) {
     logicFingerprint: null,
     design: parsed.definition.design,
     formType: parsed.definition.formType,
+    formCopy: {
+      buttonText: parsed.definition.buttonText ?? '送信する',
+      successMessage: parsed.definition.successMessage ?? form.submit_message ?? '送信ありがとうございました',
+      errorMessage: parsed.definition.errorMessage ?? '送信に失敗しました',
+    },
     localizationJa: raw.localizationJa === true,
     formRedirect: parsed.definition.formRedirect,
     successPages: parsed.definition.successPages,
@@ -195,15 +219,26 @@ async function serializeInternalForm(c: Context<Env>, form: FormalooForm) {
     driftDetectedAt: null,
     driftHasWarnings: false,
     lineAccountId: form.line_account_id,
-    workspaceId: form.workspace_id,
+    ...(c.get('staff')?.role === 'owner' ? { workspaceId: form.workspace_id } : {}),
     folderId: form.folder_id,
     updatedAt: form.updated_at,
+    publishRevision: await internalPublishRevision(form),
     internalAvailability: evaluateInternalFormAvailability(parsed.definition, submitCount),
   };
 }
 
 async function loadInternalOrNext(c: Context<Env>, next: Next) {
+  const expectedBackend = c.req.header('X-Form-Render-Backend');
   const form = await getInternalForm(c.env.DB, c.req.param('id')!);
+  if ((!form && expectedBackend === 'internal') || (form && expectedBackend === 'formaloo')) {
+    return {
+      form: null,
+      response: c.json({
+        success: false,
+        error: '配信方式が更新されました。再読み込みしてください',
+      }, 409),
+    } as const;
+  }
   if (!form) return { form: null, response: await next() } as const;
   return { form, response: null } as const;
 }
@@ -296,7 +331,45 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/render-backend', async (c) => 
       }, 409);
     }
 
-    if (!await setFormRenderBackend(c.env.DB, id, renderBackend)) return notFound(c);
+    if (renderBackend !== form.render_backend) {
+      if (renderBackend === 'internal') {
+        if (await hasBlockingFormalooRecurringSubmissions(c.env.DB, id)) {
+          return c.json({
+            success: false,
+            error: '定期自動回答をすべて取消してから自前配信へ切り替えてください',
+          }, 409);
+        }
+        const parsed = parseInternalFormDefinition(form.definition_json);
+        if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 409);
+      } else {
+        return c.json({
+          success: false,
+          error: '自前配信で編集した内容を失わないため、Formaloo 配信には戻せません',
+        }, 409);
+      }
+
+      // Switching provider and returning to draft must be one visible state
+      // transition: content confirmed for one renderer is never exposed live by
+      // the other renderer without a fresh publish confirmation.
+      const switched = await switchFormRenderBackendToDraft(c.env.DB, {
+        formId: id,
+        expectedBackend: form.render_backend,
+        nextBackend: renderBackend,
+        expectedDefinitionJson: form.definition_json,
+        expectedUpdatedAt: form.updated_at,
+      });
+      if (!switched) {
+        return c.json({
+          success: false,
+          error: '保存処理中のため、完了後にもう一度切り替えてください',
+        }, 409);
+      }
+      return c.json({
+        success: true,
+        data: { renderBackend, builderStatus: 'draft' },
+      });
+    }
+
     return c.json({ success: true, data: { renderBackend } });
   } catch (error) {
     console.error('PATCH /api/forms-advanced/:id/render-backend error:', error);
@@ -532,25 +605,35 @@ internalFormsAdmin.put('/api/forms-advanced/:id', async (c, next) => {
       return c.json({ success: false, error: '画像の保存に失敗しました (サイズ/形式)' }, 400);
     }
 
-    const existingMap = await getFormalooFieldMap(c.env.DB, form.id);
-    const existingSlugs = new Map(existingMap.map((row) => [row.id, row.formaloo_field_slug]));
-    await saveFormalooDefinition(c.env.DB, form.id, {
-      definitionJson,
-      fields: parsed.definition.fields.map((field) => ({
-        id: field.id,
-        formalooFieldSlug: existingSlugs.get(field.id) ?? null,
-        fieldType: field.type,
-        label: field.label,
-        position: field.position,
-        configJson: JSON.stringify(field.config),
-      })),
-      title: typeof body.title === 'string' ? body.title.trim() : form.title,
-      description: body.description === undefined
-        ? form.description
-        : (typeof body.description === 'string' && body.description.trim() ? body.description : null),
+    const title = typeof body.title === 'string' ? body.title.trim() : form.title;
+    const description = body.description === undefined
+      ? form.description
+      : (typeof body.description === 'string' && body.description.trim() ? body.description : null);
+    const updatedAt = jstNow();
+    // Build the exact response before committing. A later editor may win after this
+    // save, but must never make this request return a revision the caller did not save.
+    const responseData = await serializeInternalForm(c, {
+      ...form,
+      definition_json: definitionJson,
+      title,
+      description,
+      builder_status: 'draft',
+      updated_at: updatedAt,
     });
-    const updated = await getInternalForm(c.env.DB, form.id);
-    return c.json({ success: true, data: await serializeInternalForm(c, updated!) });
+    const saved = await saveInternalFormDefinition(c.env.DB, {
+      formId: form.id,
+      definitionJson,
+      title,
+      description,
+      updatedAt,
+    });
+    if (!saved) {
+      return c.json({
+        success: false,
+        error: '配信方式が変更されたため、再読み込みしてください',
+      }, 409);
+    }
+    return c.json({ success: true, data: responseData });
   } catch (error) {
     console.error('PUT internal /api/forms-advanced/:id error:', error);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -575,14 +658,44 @@ internalFormsAdmin.post('/api/forms-advanced/:id/publish', async (c, next) => {
   try {
     const loaded = await loadInternalOrNext(c, next);
     if (!loaded.form) return loaded.response;
+    const parsed = parseInternalFormDefinition(loaded.form.definition_json);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 409);
     if (!['draft', 'in_review', 'published'].includes(loaded.form.builder_status)) {
       return c.json({ success: false, error: 'この状態から公開できません' }, 409);
     }
-    if (loaded.form.builder_status !== 'published') {
-      await updateFormalooBuilderStatus(c.env.DB, loaded.form.id, 'published');
+    const body = await c.req.json<{ publishRevision?: unknown }>().catch(() => null);
+    const revision = await internalPublishRevision(loaded.form);
+    if (typeof body?.publishRevision !== 'string' || body.publishRevision !== revision) {
+      return c.json({
+        success: false,
+        error: 'フォーム内容が更新されたため、もう一度確認して公開してください',
+      }, 409);
     }
-    const updated = await getInternalForm(c.env.DB, loaded.form.id);
-    return c.json({ success: true, data: await serializeInternalForm(c, updated!) });
+    // Build the complete success payload before the state transition. After the
+    // compare-and-set commits, no fallible D1 read may turn a live form into a
+    // client-visible failure response.
+    const committedAt = jstNow();
+    const responseData = await serializeInternalForm(c, {
+      ...loaded.form,
+      builder_status: 'published',
+      published_at: loaded.form.published_at ?? committedAt,
+      updated_at: committedAt,
+    });
+    const published = await publishInternalFormDefinition(c.env.DB, {
+      formId: loaded.form.id,
+      definitionJson: loaded.form.definition_json,
+      title: loaded.form.title,
+      description: loaded.form.description,
+      updatedAt: loaded.form.updated_at,
+      publishedAt: committedAt,
+    });
+    if (!published) {
+      return c.json({
+        success: false,
+        error: 'フォーム内容が更新されたため、もう一度確認して公開してください',
+      }, 409);
+    }
+    return c.json({ success: true, data: responseData });
   } catch (error) {
     console.error('POST internal publish error:', error);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -593,14 +706,40 @@ internalFormsAdmin.post('/api/forms-advanced/:id/unpublish', async (c, next) => 
   try {
     const loaded = await loadInternalOrNext(c, next);
     if (!loaded.form) return loaded.response;
-    if (loaded.form.builder_status !== 'draft' && loaded.form.builder_status !== 'published') {
+    if (loaded.form.builder_status !== 'published') {
       return c.json({ success: false, error: 'この状態から下書きに戻せません' }, 409);
     }
-    if (loaded.form.builder_status !== 'draft') {
-      await updateFormalooBuilderStatus(c.env.DB, loaded.form.id, 'draft');
+    const body = await c.req.json<{ expectedUpdatedAt?: unknown }>().catch(() => null);
+    if (typeof body?.expectedUpdatedAt !== 'string' || !body.expectedUpdatedAt) {
+      return c.json({ success: false, error: '画面を再読み込みしてから非公開にしてください' }, 400);
     }
-    const updated = await getInternalForm(c.env.DB, loaded.form.id);
-    return c.json({ success: true, data: await serializeInternalForm(c, updated!) });
+    if (body.expectedUpdatedAt !== loaded.form.updated_at) {
+      return c.json({
+        success: false,
+        error: 'フォーム内容が更新されたため、再読み込みしてから非公開にしてください',
+      }, 409);
+    }
+    const committedAt = jstNow();
+    const responseData = await serializeInternalForm(c, {
+      ...loaded.form,
+      builder_status: 'draft',
+      updated_at: committedAt,
+    });
+    const unpublished = await unpublishInternalFormDefinition(c.env.DB, {
+      formId: loaded.form.id,
+      definitionJson: loaded.form.definition_json,
+      title: loaded.form.title,
+      description: loaded.form.description,
+      updatedAt: loaded.form.updated_at,
+      unpublishedAt: committedAt,
+    });
+    if (!unpublished) {
+      return c.json({
+        success: false,
+        error: 'フォーム内容が更新されたため、再読み込みしてから非公開にしてください',
+      }, 409);
+    }
+    return c.json({ success: true, data: responseData });
   } catch (error) {
     console.error('POST internal unpublish error:', error);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -610,12 +749,22 @@ internalFormsAdmin.post('/api/forms-advanced/:id/unpublish', async (c, next) => 
 // These routes depend on Formaloo or its D1 mirror. Internal forms must never fall
 // through to them, while Formaloo forms continue to the existing handlers byte-for-byte.
 internalFormsAdmin.get('/api/forms-advanced/:id/export.csv', rejectInternalFormalooMutation);
+internalFormsAdmin.delete('/api/forms-advanced/:id', rejectInternalFormalooMutation);
+internalFormsAdmin.get('/api/forms-advanced/:id/pull', rejectInternalFormalooMutation);
+internalFormsAdmin.get('/api/forms-advanced/:id/embed', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/reapply-hosted', rejectInternalFormalooMutation);
 internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/import', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/rows/bulk-delete', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/gsheet/connect', rejectInternalFormalooMutation);
+internalFormsAdmin.get('/api/forms-advanced/:id/recurring-submissions', rejectInternalFormalooMutation);
+internalFormsAdmin.post('/api/forms-advanced/:id/recurring-submissions', rejectInternalFormalooMutation);
+internalFormsAdmin.put('/api/forms-advanced/:id/recurring-submissions/:slug', rejectInternalFormalooMutation);
+internalFormsAdmin.patch('/api/forms-advanced/:id/recurring-submissions/:slug', rejectInternalFormalooMutation);
+internalFormsAdmin.delete('/api/forms-advanced/:id/recurring-submissions/:slug', rejectInternalFormalooMutation);
+internalFormsAdmin.get('/api/forms-advanced/:id/instant-webhook', rejectInternalFormalooMutation);
 internalFormsAdmin.put('/api/forms-advanced/:id/instant-webhook', rejectInternalFormalooMutation);
+internalFormsAdmin.get('/api/forms-advanced/:id/drift-events', rejectInternalFormalooMutation);
 
 internalFormsAdmin.get('/api/forms-advanced/:id/share', async (c, next) => {
   try {

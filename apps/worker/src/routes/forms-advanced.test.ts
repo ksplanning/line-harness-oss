@@ -90,6 +90,52 @@ function callEnv(method: string, path: string, envOverride: Partial<Env['Binding
     body: body === undefined ? undefined : JSON.stringify(body),
   }, { ...env(), ...envOverride });
 }
+
+function switchToInternalBeforeFormalooStatusWrite(id: string): void {
+  const base = DB;
+  let switched = false;
+  DB = {
+    prepare(sql: string) {
+      const statement = base.prepare(sql);
+      if (!/UPDATE formaloo_forms[\s\S]*SET builder_status/i.test(sql)) return statement;
+      let params: unknown[] = [];
+      const wrapped = {
+        bind(...values: unknown[]) { params = values; return wrapped; },
+        async run() {
+          if (!switched) {
+            switched = true;
+            raw.prepare("UPDATE formaloo_forms SET render_backend = 'internal', builder_status = 'draft' WHERE id = ?").run(id);
+          }
+          return statement.bind(...params).run();
+        },
+      };
+      return wrapped;
+    },
+  } as unknown as D1Database;
+}
+
+function switchToInternalBeforeOperationLock(id: string): void {
+  const base = DB;
+  let switched = false;
+  DB = {
+    prepare(sql: string) {
+      const statement = base.prepare(sql);
+      if (!/SET formaloo_webhook_lock_token = \?/i.test(sql)) return statement;
+      let params: unknown[] = [];
+      const wrapped = {
+        bind(...values: unknown[]) { params = values; return wrapped; },
+        async run() {
+          if (!switched) {
+            switched = true;
+            raw.prepare("UPDATE formaloo_forms SET render_backend = 'internal', builder_status = 'draft' WHERE id = ?").run(id);
+          }
+          return statement.bind(...params).run();
+        },
+      };
+      return wrapped;
+    },
+  } as unknown as D1Database;
+}
 function seedStaff(id: string, role: string, apiKey: string, roleId: string | null = null) {
   const now = jstNow();
   raw.prepare(
@@ -171,6 +217,24 @@ describe('forms-advanced CRUD (T-B1 backend)', () => {
       .toBe(0);
 
     await releaseFormalooFormOperationLock(DB, id, 'in-flight-create');
+  });
+});
+
+describe('Formaloo mutation/provider switch serialization', () => {
+  test.each([
+    ['PATCH', '/rows/row_1', { answers: { name: '更新' } }],
+    ['POST', '/import', { csv: 'name\n佐藤' }],
+    ['POST', '/rows/bulk-delete', { ids: ['row_1'] }],
+    ['POST', '/gsheet/connect', undefined],
+  ] as const)('%s %s does not cross a concurrent switch to internal', async (method, suffix, body) => {
+    const id = await createForm('切替競合フォーム');
+    switchToInternalBeforeOperationLock(id);
+
+    const response = await call(method, `/api/forms-advanced/${id}${suffix}`, body);
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get(id))
+      .toEqual({ render_backend: 'internal' });
   });
 });
 
@@ -446,6 +510,18 @@ describe('forms-advanced publish gate (T-B3 / N-7)', () => {
     const d = (await r2.json() as { data: { builderStatus: string; publishedAt: string | null } }).data;
     expect(d.builderStatus).toBe('published');
     expect(d.publishedAt).not.toBeNull();
+  });
+
+  test('stale Formaloo publish cannot publish a form after it switched to internal', async () => {
+    const id = await createForm();
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'in_review' WHERE id = ?").run(id);
+    switchToInternalBeforeFormalooStatusWrite(id);
+
+    const response = await call('POST', `/api/forms-advanced/${id}/publish`);
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare('SELECT render_backend, builder_status FROM formaloo_forms WHERE id = ?').get(id))
+      .toEqual({ render_backend: 'internal', builder_status: 'draft' });
   });
 
   test('published + Formaloo address 確定 → embed/publicUrl 発行 (published のみ有効)', async () => {

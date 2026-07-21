@@ -2,8 +2,7 @@ import { Hono, type Context, type Next } from 'hono';
 import {
   addTagToFriend,
   countInternalFormSubmissionsForForm,
-  createInternalFormSubmission,
-  createInternalFormSubmissionWithinLimit,
+  createInternalFormSubmissionForPublishedDefinition,
   enrollFriendInScenario,
   getFormalooForm,
   getFriendById,
@@ -13,7 +12,6 @@ import {
   type FormalooForm,
 } from '@line-crm/db';
 import {
-  JAPAN_PREFECTURES,
   buildRedirectTargetUrl,
   evaluateInternalFormLogic,
   nextInternalFormFieldId,
@@ -24,6 +22,7 @@ import {
 import { signFriendToken, verifyFriendToken } from '../services/formaloo-friend-token.js';
 import {
   evaluateInternalFormAvailability,
+  JAPAN_PREFECTURES,
   parseInternalFormDefinition,
   validateInternalFormAnswers,
   type InternalAnswerInput,
@@ -283,30 +282,51 @@ function renderRepeatingRow(field: InternalFormField, fieldIndex: number, rowInd
   return `<div class="repeat-row" data-repeat-row data-row-index="${rowIndex}">${cells}<button type="button" class="secondary" data-repeat-remove>この行を削除</button></div>`;
 }
 
-function renderField(field: InternalFormField, index: number, fields: InternalFormField[]): string {
+function renderField(
+  field: InternalFormField,
+  index: number,
+  fields: InternalFormField[],
+  currentAnswer?: unknown,
+): string {
   const name = `a_${index}`;
   const id = `field-${index}`;
   const required = field.required ? ' required' : '';
+  const hasCurrentAnswer = currentAnswer !== undefined;
+  const scalarAnswer = typeof currentAnswer === 'string' || typeof currentAnswer === 'number'
+    ? String(currentAnswer)
+    : '';
+  const selectedAnswers = new Set(
+    (Array.isArray(currentAnswer) ? currentAnswer : [currentAnswer])
+      .filter((value) => typeof value === 'string' || typeof value === 'number')
+      .map((value) => String(value)),
+  );
 
   if (field.type === 'textarea') {
-    return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}<textarea id="${id}" name="${name}"${required}${placeholderAttribute(field)}${textLengthAttributes(field)} data-answer-field="${escapeHtml(field.id)}" aria-describedby="${id}-counter"></textarea>${renderCounter(field, id)}</div>`;
+    return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}<textarea id="${id}" name="${name}"${required}${placeholderAttribute(field)}${textLengthAttributes(field)} data-answer-field="${escapeHtml(field.id)}" aria-describedby="${id}-counter">${escapeHtml(scalarAnswer)}</textarea>${renderCounter(field, id)}</div>`;
   }
   if (field.type === 'choice' || field.type === 'multiple_select') {
     const inputType = field.type === 'choice' ? 'radio' : 'checkbox';
     // `required` on every checkbox means every option is mandatory. The server validates
     // multiple_select as one group, while radio can safely use the native group constraint.
     const optionRequired = field.type === 'choice' ? required : '';
-    const defaults = field.type === 'choice'
-      ? [field.config.defaultValue]
-      : field.config.defaultValues ?? [];
+    const defaults = hasCurrentAnswer
+      ? [...selectedAnswers]
+      : field.type === 'choice'
+        ? [field.config.defaultValue]
+        : field.config.defaultValues ?? [];
     const options = (field.config.choices ?? []).map((choice) =>
       `<label class="option"><input type="${inputType}" name="${name}" value="${escapeHtml(choice)}"${optionRequired}${checked(defaults.includes(choice))} data-answer-field="${escapeHtml(field.id)}"><span>${escapeHtml(choice)}</span></label>`,
     ).join('');
-    return `<fieldset class="field"><legend>${escapeHtml(field.label)}${requiredMark(field)}</legend>${helpText(field)}${placeholderHint(field)}${options}</fieldset>`;
+    const requiredGroup = field.type === 'multiple_select' && field.required
+      ? ' data-required-group="true"'
+      : '';
+    return `<fieldset class="field"${requiredGroup}><legend>${escapeHtml(field.label)}${requiredMark(field)}</legend>${helpText(field)}${placeholderHint(field)}${options}</fieldset>`;
   }
   if (field.type === 'dropdown') {
     const options = (field.config.choices ?? []).map((choice) =>
-      `<option value="${escapeHtml(choice)}"${selected(field.config.defaultValue === choice)}>${escapeHtml(choice)}</option>`,
+      `<option value="${escapeHtml(choice)}"${selected(hasCurrentAnswer
+        ? selectedAnswers.has(choice)
+        : field.config.defaultValue === choice)}>${escapeHtml(choice)}</option>`,
     ).join('');
     return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}<select id="${id}" name="${name}"${required} data-answer-field="${escapeHtml(field.id)}"><option value="">${escapeHtml(field.config.placeholder ?? '選択してください')}</option>${options}</select></div>`;
   }
@@ -322,11 +342,11 @@ function renderField(field: InternalFormField, index: number, fields: InternalFo
         const score = ratingType === 'nps' ? optionIndex : optionIndex + 1;
         return [String(score), ratingType === 'nps' ? String(score) : `${score}つ星`];
       });
-    return `<fieldset class="field"><legend>${escapeHtml(field.label)}${requiredMark(field)}</legend>${helpText(field)}${placeholderHint(field)}<div class="rating-options">${options.map(([value, label]) => `<label class="option"><input type="radio" name="${name}" value="${value}"${required} data-answer-field="${escapeHtml(field.id)}"><span>${escapeHtml(label)}</span></label>`).join('')}</div></fieldset>`;
+    return `<fieldset class="field"><legend>${escapeHtml(field.label)}${requiredMark(field)}</legend>${helpText(field)}${placeholderHint(field)}<div class="rating-options">${options.map(([value, label]) => `<label class="option"><input type="radio" name="${name}" value="${value}"${required}${checked(selectedAnswers.has(value))} data-answer-field="${escapeHtml(field.id)}"><span>${escapeHtml(label)}</span></label>`).join('')}</div></fieldset>`;
   }
 
   if (field.type === 'yes_no') {
-    return `<fieldset class="field"><legend>${escapeHtml(field.label)}${requiredMark(field)}</legend>${helpText(field)}${placeholderHint(field)}<label class="option"><input type="radio" name="${name}" value="yes"${required} data-answer-field="${escapeHtml(field.id)}"><span>はい</span></label><label class="option"><input type="radio" name="${name}" value="no"${required} data-answer-field="${escapeHtml(field.id)}"><span>いいえ</span></label></fieldset>`;
+    return `<fieldset class="field"><legend>${escapeHtml(field.label)}${requiredMark(field)}</legend>${helpText(field)}${placeholderHint(field)}<label class="option"><input type="radio" name="${name}" value="yes"${required}${checked(selectedAnswers.has('yes'))} data-answer-field="${escapeHtml(field.id)}"><span>はい</span></label><label class="option"><input type="radio" name="${name}" value="no"${required}${checked(selectedAnswers.has('no'))} data-answer-field="${escapeHtml(field.id)}"><span>いいえ</span></label></fieldset>`;
   }
 
   if (field.type === 'signature') {
@@ -395,7 +415,7 @@ function renderField(field: InternalFormField, index: number, fields: InternalFo
           : field.type;
   const inputMode = field.type === 'number' ? ' inputmode="decimal"' : field.type === 'phone' ? ' inputmode="tel"' : '';
   if (field.type === 'prefecture') {
-    const options = JAPAN_PREFECTURES.map((prefecture) => `<option value="${escapeHtml(prefecture)}">${escapeHtml(prefecture)}</option>`).join('');
+    const options = JAPAN_PREFECTURES.map((prefecture) => `<option value="${escapeHtml(prefecture)}"${selected(selectedAnswers.has(prefecture))}>${escapeHtml(prefecture)}</option>`).join('');
     return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}<select id="${id}" name="${name}"${required} data-answer-field="${escapeHtml(field.id)}"><option value="">${escapeHtml(field.config.placeholder ?? '都道府県を選択')}</option>${options}</select></div>`;
   }
   const length = field.type === 'text' ? textLengthAttributes(field) : '';
@@ -403,7 +423,10 @@ function renderField(field: InternalFormField, index: number, fields: InternalFo
   const visiblePlaceholder = field.type === 'date' || field.type === 'time' || field.type === 'datetime'
     ? placeholderHint(field)
     : '';
-  return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}${visiblePlaceholder}<input type="${inputType}" id="${id}" name="${name}"${required}${placeholderAttribute(field)}${length}${inputMode} data-answer-field="${escapeHtml(field.id)}"${counter ? ` aria-describedby="${id}-counter"` : ''}>${counter}${postalControls(field.config.postalAutofill)}</div>`;
+  const value = hasCurrentAnswer && !Array.isArray(currentAnswer)
+    ? ` value="${escapeHtml(scalarAnswer)}"`
+    : '';
+  return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}${visiblePlaceholder}<input type="${inputType}" id="${id}" name="${name}"${required}${placeholderAttribute(field)}${length}${inputMode}${value} data-answer-field="${escapeHtml(field.id)}"${counter ? ` aria-describedby="${id}-counter"` : ''}>${counter}${postalControls(field.config.postalAutofill)}</div>`;
 }
 
 function postalControls(config: PostalAutofillConfig | undefined): string {
@@ -421,14 +444,21 @@ function renderLogicField(
   index: number,
   fields: InternalFormField[],
   visible: boolean,
+  currentAnswer?: unknown,
 ): string {
   const inner = field.type === 'page_break'
     ? `<section class="section-decoration"><h2>${escapeHtml(field.label)}</h2></section>`
-    : renderField(field, index, fields);
-  return `<div data-field-id="${escapeHtml(field.id)}"${visible ? '' : ' hidden'}>${inner}</div>`;
+    : renderField(field, index, fields, currentAnswer);
+  const requiredGroup = field.type === 'multiple_select' && field.required
+    ? ' data-required-group="true"'
+    : '';
+  return `<div data-field-id="${escapeHtml(field.id)}"${requiredGroup}${visible ? '' : ' hidden'}>${inner}</div>`;
 }
 
-function renderRuntimeFields(definition: InternalFormDefinition): { html: string; hasPages: boolean } {
+function renderRuntimeFields(
+  definition: InternalFormDefinition,
+  currentAnswers: InternalFormLogicAnswers = {},
+): { html: string; hasPages: boolean } {
   const repeatingTemplates = new Set(
     definition.fields
       .filter((field) => field.type === 'repeating_section')
@@ -438,7 +468,9 @@ function renderRuntimeFields(definition: InternalFormDefinition): { html: string
   if (!hasPages) {
     return {
       html: `${definition.fields.map((field, index) => (
-        repeatingTemplates.has(field.id) ? '' : renderField(field, index, definition.fields)
+        repeatingTemplates.has(field.id)
+          ? ''
+          : renderField(field, index, definition.fields, currentAnswers[field.id])
       )).join('')}<button type="submit">${escapeHtml(definition.buttonText ?? '送信する')}</button>`,
       hasPages: false,
     };
@@ -452,7 +484,12 @@ function renderRuntimeFields(definition: InternalFormDefinition): { html: string
       pages.push([`<section class="section-decoration"><h2>${escapeHtml(field.label)}</h2></section>`]);
       continue;
     }
-    pages[pages.length - 1].push(renderField(field, index, definition.fields));
+    pages[pages.length - 1].push(renderField(
+      field,
+      index,
+      definition.fields,
+      currentAnswers[field.id],
+    ));
   }
 
   return {
@@ -497,6 +534,17 @@ function runtimeScript(): string {
       updateCounter(control);
       control.addEventListener('input', () => updateCounter(control));
     });
+
+    const updateRequiredGroups = () => {
+      form.querySelectorAll('[data-required-group="true"]').forEach((group) => {
+        const first = group.querySelector('input[type="checkbox"]');
+        const checked = group.querySelector('input[type="checkbox"]:checked');
+        first?.setCustomValidity(checked ? '' : '1つ以上選択してください');
+      });
+    };
+    form.addEventListener('input', updateRequiredGroups);
+    form.addEventListener('change', updateRequiredGroups);
+    updateRequiredGroups();
 
     const pages = Array.from(form.querySelectorAll('[data-page-step]'));
     let currentPage = 0;
@@ -688,6 +736,8 @@ function logicClientScript(definition: InternalFormDefinition): string {
   const wrappers = Array.from(form.querySelectorAll('[data-field-id]'));
   const wrapperById = (id) => wrappers.find((wrapper) => wrapper.dataset.fieldId === id);
   const fieldType = (id) => fields.find((field) => field.id === id)?.type;
+  const isQuestion = (id) => Boolean(wrapperById(id))
+    && !['section', 'page_break', 'video', 'image'].includes(fieldType(id));
   let currentFieldId = null;
 
   const answers = () => {
@@ -706,7 +756,7 @@ function logicClientScript(definition: InternalFormDefinition): string {
 
   const nextQuestion = (state, from) => {
     let next = nextInternalFormFieldId(fields, state, from);
-    while (next && (fieldType(next) === 'page_break' || fieldType(next) === 'section')) {
+    while (next && !isQuestion(next)) {
       next = nextInternalFormFieldId(fields, state, next);
     }
     return next;
@@ -715,7 +765,7 @@ function logicClientScript(definition: InternalFormDefinition): string {
   const apply = () => {
     const state = evaluateInternalFormLogic(fields, logic, answers(), channel);
     const logicVisible = new Set(state.visibleFieldIds);
-    const questions = state.visibleFieldIds.filter((id) => fieldType(id) !== 'page_break' && fieldType(id) !== 'section');
+    const questions = state.visibleFieldIds.filter(isQuestion);
     if (!currentFieldId || !logicVisible.has(currentFieldId)) currentFieldId = questions[0] ?? null;
     for (const wrapper of wrappers) {
       const visible = logicVisible.has(wrapper.dataset.fieldId);
@@ -724,6 +774,11 @@ function logicClientScript(definition: InternalFormDefinition): string {
       for (const control of wrapper.querySelectorAll('input, textarea, select')) {
         control.disabled = !visible;
         if (control.dataset.required === 'true') control.required = visible;
+      }
+      if (wrapper.dataset.requiredGroup === 'true') {
+        const first = wrapper.querySelector('input[type="checkbox"]');
+        const checked = wrapper.querySelector('input[type="checkbox"]:checked');
+        first?.setCustomValidity(visible && !checked ? '1つ以上選択してください' : '');
       }
     }
     if (formType === 'multi_step') {
@@ -762,15 +817,43 @@ function postalClientScript(): string {
     429: '検索が混み合っています。少し待ってからお試しください',
     503: '住所検索を一時的に利用できません。住所を直接入力してください',
   };
-  const field = (id) => Array.from(document.querySelectorAll('[data-field-id]'))
-    .find((element) => element.dataset.fieldId === id)?.querySelector('input, textarea, select');
+  const field = (id) => Array.from(document.querySelectorAll('[data-answer-field]'))
+    .find((element) => element.dataset.answerField === id);
   document.querySelectorAll('.postal-lookup').forEach((button) => {
     let controller = null;
     let generation = 0;
     const status = button.parentElement.querySelector('.postal-status');
+    const zipInput = field(button.dataset.zipField);
+    const normalizedZip = () => String(zipInput?.value ?? '').replace(/[\\s-]/g, '');
+    const initialZip = normalizedZip();
+    const autofilledValues = new Map();
+    const restoredValues = new Map();
+    const manuallyEdited = new Set();
+    for (const targetId of [button.dataset.prefField, button.dataset.cityField, button.dataset.townField]) {
+      const target = field(targetId);
+      if (target?.value) restoredValues.set(targetId, target.value);
+      target?.addEventListener('input', () => {
+        autofilledValues.delete(targetId);
+        manuallyEdited.add(targetId);
+      });
+    }
+    let requestedZip = null;
+    let completedZip = initialZip || null;
+    zipInput?.addEventListener('input', () => {
+      const currentZip = normalizedZip();
+      if (completedZip !== null && currentZip !== completedZip) {
+        status.textContent = '郵便番号が変更されました。もう一度検索してください';
+      }
+      if (!controller || currentZip === requestedZip) return;
+      generation += 1;
+      controller.abort();
+      controller = null;
+      requestedZip = null;
+      button.disabled = false;
+      status.textContent = '郵便番号が変更されました。もう一度検索してください';
+    });
     button.addEventListener('click', async () => {
-      const zipInput = field(button.dataset.zipField);
-      const zip = String(zipInput?.value ?? '').replace(/[\\s-]/g, '');
+      const zip = normalizedZip();
       if (!/^\\d{7}$/.test(zip)) {
         status.textContent = messages[400];
         zipInput?.focus();
@@ -779,6 +862,8 @@ function postalClientScript(): string {
       controller?.abort();
       controller = new AbortController();
       const current = ++generation;
+      requestedZip = zip;
+      const isCurrent = () => current === generation && normalizedZip() === zip;
       button.disabled = true;
       status.textContent = '住所を検索しています';
       try {
@@ -786,9 +871,10 @@ function postalClientScript(): string {
           signal: controller.signal,
           headers: { Accept: 'application/json' },
         });
-        if (current !== generation) return;
+        if (!isCurrent()) return;
         if (!response.ok) throw Object.assign(new Error('postal lookup failed'), { status: response.status });
         const address = await response.json();
+        if (!isCurrent()) return;
         const values = [
           [button.dataset.prefField, address.pref],
           [button.dataset.cityField, address.city],
@@ -796,15 +882,30 @@ function postalClientScript(): string {
         ];
         for (const [targetId, value] of values) {
           const target = field(targetId);
-          if (target && typeof value === 'string' && !target.value) target.value = value;
+          if (!target || typeof value !== 'string' || manuallyEdited.has(targetId)) continue;
+          const previous = autofilledValues.get(targetId);
+          const restored = restoredValues.get(targetId);
+          const correctedRestoredValue = initialZip && zip !== initialZip
+            && restored !== undefined && target.value === restored;
+          if (!target.value || (previous !== undefined && target.value === previous) || correctedRestoredValue) {
+            target.value = value;
+            autofilledValues.set(targetId, value);
+          } else if (previous !== undefined) {
+            autofilledValues.delete(targetId);
+          }
         }
+        completedZip = zip;
         status.textContent = '住所を入力しました';
         document.querySelector('[data-internal-form]')?.dispatchEvent(new Event('change', { bubbles: true }));
       } catch (error) {
-        if (error?.name === 'AbortError' || current !== generation) return;
+        if (error?.name === 'AbortError' || !isCurrent()) return;
         status.textContent = messages[error?.status] ?? '住所検索に失敗しました。住所を直接入力してください';
       } finally {
-        if (current === generation) button.disabled = false;
+        if (current === generation) {
+          controller = null;
+          requestedZip = null;
+          button.disabled = false;
+        }
       }
     });
   });
@@ -823,7 +924,7 @@ function renderFormPage(
   const hidden = friendToken
     ? `<input type="hidden" name="fr_id" value="${escapeHtml(friendToken)}">`
     : '';
-  const hasLogic = definition.logic.length > 0;
+  const usesLogicRuntime = definition.logic.length > 0 || definition.formType === 'multi_step';
   const initial = evaluateInternalFormLogic(definition.fields, definition.logic, currentAnswers, channel);
   const visible = new Set(initial.visibleFieldIds);
   const repeatingTemplates = new Set(
@@ -834,11 +935,17 @@ function renderFormPage(
   const logicFields = definition.fields.map((field, index) => (
     repeatingTemplates.has(field.id)
       ? ''
-      : renderLogicField(field, index, definition.fields, visible.has(field.id))
+      : renderLogicField(
+        field,
+        index,
+        definition.fields,
+        visible.has(field.id),
+        currentAnswers[field.id],
+      )
   )).join('');
-  const rendered = hasLogic
+  const rendered = usesLogicRuntime
     ? `${logicFields}<button type="submit" data-submit>${escapeHtml(definition.buttonText ?? '送信する')}</button>`
-    : renderRuntimeFields(definition).html;
+    : renderRuntimeFields(definition, currentAnswers).html;
   const errorHtml = error ? `<div class="errors" role="alert">${escapeHtml(error)}</div>` : '';
   const logo = definition.design.logoUrl
     ? `<img class="form-logo" src="${escapeHtml(definition.design.logoUrl)}" alt="">`
@@ -857,7 +964,7 @@ function renderFormPage(
       </form>
     </div>
     ${runtimeScript()}
-    ${hasLogic ? logicClientScript(definition) : ''}
+    ${usesLogicRuntime ? logicClientScript(definition) : ''}
     ${hasPostal ? postalClientScript() : ''}`, definition.design);
 }
 
@@ -959,9 +1066,33 @@ function availabilityResponse(runtime: RuntimeForm): Response | null {
   });
 }
 
-async function verifiedFriend(c: Context<Env>, rawToken: string | null) {
+async function submissionConflictResponse(db: D1Database, previous: RuntimeForm): Promise<Response> {
+  const latest = await loadRuntimeForm(db, previous.form.id);
+  if (!latest.ok) return renderUnavailable(latest.status, latest.message);
+  const unavailable = availabilityResponse(latest);
+  if (unavailable) return unavailable;
+  if (latest.form.definition_json !== previous.form.definition_json) {
+    return renderUnavailable(200, 'フォームが更新されました。ページを読み直してもう一度入力してください', {
+      title: latest.form.title,
+      design: latest.definition.design,
+    });
+  }
+  return renderUnavailable(200, 'フォームの受付状態が変わりました。ページを読み直してください', {
+    title: latest.form.title,
+    design: latest.definition.design,
+  });
+}
+
+async function verifiedFriend(
+  c: Context<Env>,
+  rawToken: string | null,
+  formAccountId: string | null,
+) {
   const verifiedFriendId = await verifyFriendToken(rawToken, c.env.FORMALOO_FRIEND_TOKEN_SECRET);
-  return verifiedFriendId ? getFriendById(c.env.DB, verifiedFriendId) : null;
+  if (!verifiedFriendId) return null;
+  const friend = await getFriendById(c.env.DB, verifiedFriendId);
+  if (!friend) return null;
+  return formAccountId === null || friend.line_account_id === formAccountId ? friend : null;
 }
 
 internalFormsPublic.get('/fo/:formId', async (c, next: Next) => {
@@ -1004,14 +1135,17 @@ internalFormsPublic.get('/fo/:formId', async (c, next: Next) => {
     try {
       if (!friendId && lineUserId) {
         const friend = await getFriendByLineUserId(c.env.DB, lineUserId);
-        if (friend) {
+        if (friend && (form.line_account_id === null || friend.line_account_id === form.line_account_id)) {
           friendId = friend.id;
           friendName = friend.display_name ?? null;
         }
       } else if (friendId) {
         const friend = await getFriendById(c.env.DB, friendId);
-        if (friend) friendName = friend.display_name ?? null;
-        else friendId = null;
+        if (friend && (form.line_account_id === null || friend.line_account_id === form.line_account_id)) {
+          friendName = friend.display_name ?? null;
+        } else {
+          friendId = null;
+        }
       }
     } catch (error) {
       console.error(`/fo/${id} internal friend resolve failed (non-blocking):`, error);
@@ -1045,7 +1179,7 @@ internalFormsPublic.get('/f/:formId', async (c) => {
     const unavailable = availabilityResponse(runtime);
     if (unavailable) return unavailable;
     const rawToken = c.req.query('fr_id') ?? null;
-    const friend = await verifiedFriend(c, rawToken);
+    const friend = await verifiedFriend(c, rawToken, runtime.form.line_account_id);
     return c.html(renderFormPage(
       runtime.form,
       runtime.definition,
@@ -1068,7 +1202,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
     const parsedBody = await c.req.parseBody({ all: true }).catch(() => ({}));
     const body = answerInputs(parsedBody);
     const rawToken = typeof body.fr_id === 'string' ? body.fr_id : null;
-    const friend = await verifiedFriend(c, rawToken);
+    const friend = await verifiedFriend(c, rawToken, runtime.form.line_account_id);
     const channel: InternalFormChannel = friend ? 'line' : 'web';
     const submittedLogicAnswers = logicAnswers(runtime.definition.fields, body);
     const logicState = evaluateInternalFormLogic(
@@ -1115,24 +1249,18 @@ internalFormsPublic.post('/f/:formId', async (c) => {
       }
 
       const maxSubmissions = runtime.definition.operationsSettings.maxSubmitCount;
-      const submission = maxSubmissions === undefined
-        ? await createInternalFormSubmission(c.env.DB, {
-          formId: runtime.form.id,
-          friendId: friend?.id ?? null,
-          answers,
-        })
-        : await createInternalFormSubmissionWithinLimit(c.env.DB, {
-          formId: runtime.form.id,
-          friendId: friend?.id ?? null,
-          answers,
-          maxSubmissions,
-        });
+      const submission = await createInternalFormSubmissionForPublishedDefinition(c.env.DB, {
+        formId: runtime.form.id,
+        definitionJson: runtime.form.definition_json,
+        friendId: friend?.id ?? null,
+        answers,
+        maxSubmissions,
+        submitStartTime: runtime.definition.operationsSettings.submitStartTime ?? null,
+        submitEndTime: runtime.definition.operationsSettings.submitEndTime ?? null,
+      });
       if (!submission) {
         await rollbackUploads(c.env.IMAGES, uploadedKeys);
-        return renderUnavailable(200, '回答上限に達したため受付を終了しました', {
-          title: runtime.form.title,
-          design: runtime.definition.design,
-        });
+        return submissionConflictResponse(c.env.DB, runtime);
       }
     } catch (error) {
       await rollbackUploads(c.env.IMAGES, uploadedKeys);

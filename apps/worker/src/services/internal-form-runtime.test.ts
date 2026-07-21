@@ -526,10 +526,51 @@ describe('internal form definition and availability', () => {
       .toEqual({ status: 'open', message: null });
   });
 
+  test('rejects an受付 period whose end is not after its start', () => {
+    const result = parseInternalFormDefinition(JSON.stringify({
+      fields: [source],
+      logic: [],
+      operationsSettings: {
+        submitStartTime: '2026-08-01T00:00:00+09:00',
+        submitEndTime: '2026-07-25T00:00:00+09:00',
+      },
+    }));
+
+    expect(result).toEqual({ ok: false, error: '受付終了は受付開始より後の日時にしてください' });
+  });
+
+  test.each(['\r', '\n', '\t', '\u0000', '\u007f'])('rejects control character %j in an internal redirect URL', (control) => {
+    const result = parseInternalFormDefinition(JSON.stringify({
+      fields: [source],
+      logic: [],
+      formRedirect: { url: `https://example.test/thanks${control}injected`, openExternalBrowser: false },
+    }));
+
+    expect(result).toEqual({ ok: false, error: '送信後の飛び先URLに使用できない文字が含まれています' });
+  });
+
+  test.each([
+    [{ conditions: [null] }, 'condition shape'],
+    [{ conditions: [{ sourceFieldId: 'missing', operator: 'is', value: 'x' }] }, 'condition source'],
+    [{ conditions: [{ sourceFieldId: '__channel__', operator: 'is', value: 'sms' }] }, 'condition channel'],
+    [{ actions: [{ action: 'show', targetFieldId: 'missing' }] }, 'action target'],
+    [{ actions: [{ action: 'send_webhook', targetFieldId: 'company' }] }, 'action verb'],
+  ])('rejects an unsafe compound logic definition: %s', (extra, _name) => {
+    const result = parseInternalFormDefinition(JSON.stringify({
+      fields: [source, company],
+      logic: [{
+        id: 'compound', sourceFieldId: 'kind', operator: 'equals', value: '法人',
+        action: 'show', targetFieldId: 'company', ...extra,
+      }],
+    }));
+
+    expect(result).toEqual({ ok: false, error: '分岐設定を読み込めません' });
+  });
+
   test('does not require or persist a field hidden by the shared logic result', () => {
     expect(validateInternalFormAnswers([source, company], { a_0: '個人' }, {
       visibleFieldIds: ['kind'],
-    })).toEqual({ ok: true, answers: { kind: '個人' } });
+    })).toEqual({ ok: true, answers: { kind: '個人' }, pendingUploads: [] });
   });
 
   test('keeps a valid native postal autofill mapping on the zip field', () => {

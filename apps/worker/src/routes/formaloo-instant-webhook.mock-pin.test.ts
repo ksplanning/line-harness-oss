@@ -16,6 +16,7 @@ describe('D-5 mock pin — 登録→受信→targeted pull→解除', () => {
       formaloo_slug: 'disposable-b5-mock',
       title: 'B5 disposable mock',
       deleted: 0,
+      render_backend: 'formaloo' as const,
       workspace_id: 'fw_tenant_mock',
       friend_metadata_mappings_json: '[]',
       formaloo_webhook_enabled: 0,

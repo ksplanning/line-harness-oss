@@ -499,9 +499,24 @@ export function parseInternalFormDefinition(
       return { ok: false, error: '郵便番号自動入力の項目設定が正しくありません' };
     }
   }
+  if (raw.logic !== undefined && !Array.isArray(raw.logic)) {
+    return { ok: false, error: '分岐設定を読み込めません' };
+  }
   const successPages = normalizeSuccessPages(raw.successPages);
   const successPageIds = new Set(successPages.map((page) => page.id));
   const fieldById = new Map(fields.map((field) => [field.id, field]));
+  const compoundOperators = new Set([
+    'equals', 'not_equals', 'is', 'is_not', 'gt', 'gte', 'lt', 'lte', 'is_answered',
+  ]);
+  const internalActions = new Set(['show', 'hide', 'jump', 'skip', 'submit']);
+  const validSource = (sourceFieldId: string) => (
+    sourceFieldId === INTERNAL_FORM_CHANNEL_SOURCE_ID || fieldById.has(sourceFieldId)
+  );
+  const validTarget = (action: string, targetFieldId: string) => (
+    action === 'submit'
+      ? (!targetFieldId || successPageIds.has(targetFieldId))
+      : fieldById.has(targetFieldId)
+  );
   const logic: HarnessLogicRule[] = [];
   for (const candidate of Array.isArray(raw.logic) ? raw.logic : []) {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
@@ -530,11 +545,50 @@ export function parseInternalFormDefinition(
     } else if (!fieldById.has(rule.targetFieldId)) {
       return { ok: false, error: '分岐先の項目が見つかりません' };
     }
+    if (rule.conditionJoin !== undefined && rule.conditionJoin !== 'and' && rule.conditionJoin !== 'or') {
+      return { ok: false, error: '分岐設定を読み込めません' };
+    }
+    if (rule.conditions !== undefined) {
+      if (!Array.isArray(rule.conditions)) return { ok: false, error: '分岐設定を読み込めません' };
+      for (const condition of rule.conditions) {
+        if (
+          !condition || typeof condition !== 'object' || Array.isArray(condition)
+          || typeof condition.sourceFieldId !== 'string' || !validSource(condition.sourceFieldId)
+          || !compoundOperators.has(String(condition.operator))
+          || typeof condition.value !== 'string'
+          || (condition.sourceFieldId === INTERNAL_FORM_CHANNEL_SOURCE_ID
+            && condition.value !== 'line' && condition.value !== 'web')
+        ) return { ok: false, error: '分岐設定を読み込めません' };
+      }
+    }
+    if (rule.actions !== undefined) {
+      if (!Array.isArray(rule.actions)) return { ok: false, error: '分岐設定を読み込めません' };
+      for (const action of rule.actions) {
+        if (
+          !action || typeof action !== 'object' || Array.isArray(action)
+          || !internalActions.has(String(action.action))
+          || typeof action.targetFieldId !== 'string'
+          || !validTarget(String(action.action), action.targetFieldId)
+        ) return { ok: false, error: '分岐設定を読み込めません' };
+      }
+    }
     logic.push(candidate as HarnessLogicRule);
   }
   const formCopy = raw.formCopy && typeof raw.formCopy === 'object' && !Array.isArray(raw.formCopy)
     ? raw.formCopy as Record<string, unknown>
     : {};
+  const formRedirect = normalizeFormRedirect(raw.formRedirect);
+  if (formRedirect.url && /[\u0000-\u001f\u007f]/.test(formRedirect.url)) {
+    return { ok: false, error: '送信後の飛び先URLに使用できない文字が含まれています' };
+  }
+  const operationsSettings = normalizeFormOperationsSettings(raw.operationsSettings);
+  if (
+    operationsSettings.submitStartTime
+    && operationsSettings.submitEndTime
+    && Date.parse(operationsSettings.submitEndTime) <= Date.parse(operationsSettings.submitStartTime)
+  ) {
+    return { ok: false, error: '受付終了は受付開始より後の日時にしてください' };
+  }
   return {
     ok: true,
     definition: {
@@ -551,9 +605,9 @@ export function parseInternalFormDefinition(
         : null,
       design: normalizeFormDesign(raw.design),
       formType: raw.formType === 'multi_step' ? 'multi_step' : 'simple',
-      formRedirect: normalizeFormRedirect(raw.formRedirect),
+      formRedirect,
       successPages,
-      operationsSettings: normalizeFormOperationsSettings(raw.operationsSettings),
+      operationsSettings,
     },
   };
 }

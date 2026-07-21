@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 import {
   acquireFormalooFormOperationLock,
+  FormalooRecurringReservationUnavailableError,
   claimFormalooRecurringSubmission,
   completeFormalooRecurringSubmission,
   getFormalooForm,
@@ -207,14 +208,23 @@ export function createFormalooRecurringSubmissionRoutes(
       ) {
         return c.json({ success: false, error: providerErrorMessage(mirror.lastError) }, 409);
       }
-      mirror ??= await deps.reserveMirror(c.env.DB, {
-        formId: form.id,
-        idempotencyKey,
-        requestFingerprint,
-        schedule: request.schedule,
-        submissionData: request.submission_data,
-        status: request.status as MirrorStatus,
-      });
+      if (!mirror) {
+        try {
+          mirror = await deps.reserveMirror(c.env.DB, {
+            formId: form.id,
+            idempotencyKey,
+            requestFingerprint,
+            schedule: request.schedule,
+            submissionData: request.submission_data,
+            status: request.status as MirrorStatus,
+          });
+        } catch (error) {
+          if (error instanceof FormalooRecurringReservationUnavailableError) {
+            return c.json({ success: false, error: '配信方式が更新されました。再読込してください' }, 409);
+          }
+          throw error;
+        }
+      }
       // INSERT OR IGNORE may have returned a concurrent winner for the same key/fingerprint.
       if (!mirrorMatches(mirror, requestFingerprint, request.status)) {
         return c.json({ success: false, error: '同時登録された内容と一致しません。再読込してください' }, 409);

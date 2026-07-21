@@ -41,6 +41,30 @@ function d1(db: Database.Database): D1Database {
   } as unknown as D1Database;
 }
 
+function beforeAtomicSubmission(callback: () => void): void {
+  const base = DB;
+  let called = false;
+  DB = {
+    prepare(sql: string) {
+      if (!sql.includes('INSERT INTO internal_form_submissions') || !sql.includes("builder_status = 'published'")) {
+        return base.prepare(sql);
+      }
+      let params: unknown[] = [];
+      const statement = {
+        bind(...values: unknown[]) { params = values; return statement; },
+        async run() {
+          if (!called) {
+            called = true;
+            callback();
+          }
+          return base.prepare(sql).bind(...params).run();
+        },
+      };
+      return statement;
+    },
+  } as unknown as D1Database;
+}
+
 function replayAll(db: Database.Database): void {
   db.exec(readFileSync(join(DB_ROOT, 'schema.sql'), 'utf8'));
   for (const file of readdirSync(join(DB_ROOT, 'migrations')).filter((name) => name.endsWith('.sql')).sort()) {
@@ -258,7 +282,8 @@ describe('internal public form GET /f/:formId', () => {
     expect(html).toContain('/api/postal-lookup?zip=');
     expect(html).toContain("replace(/[\\s-]/g, '')");
     expect(html).toContain('AbortController');
-    expect(html).toContain("typeof value === 'string' && !target.value");
+    expect(html).toContain('const autofilledValues = new Map()');
+    expect(html).toContain('previous !== undefined && target.value === previous');
     for (const status of ['400', '404', '409', '429', '503']) {
       expect(html).toContain(`${status}:`);
     }
@@ -276,6 +301,26 @@ describe('internal public form GET /f/:formId', () => {
     expect(html).toContain('data-form-type="simple"');
     expect(html).toContain('data-channel="web"');
     expect(html).toContain("control.disabled = !visible");
+  });
+
+  test('別 LINE account の署名済み fr_id は web 経由として匿名表示する', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-A', 'ch-A', 'A', 'token-A', 'secret-A'), ('acc-B', 'ch-B', 'B', 'token-B', 'secret-B')`).run();
+    seedForm('fa_scoped_get', { definition: logicDefinition() });
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-A' WHERE id = 'fa_scoped_get'").run();
+    raw.prepare("UPDATE friends SET line_account_id = 'acc-B' WHERE id = 'friend-1'").run();
+    const token = await signFriendToken('friend-1', FRIEND_SECRET);
+
+    const response = await app().request(
+      `/f/fa_scoped_get?fr_id=${encodeURIComponent(token!)}`,
+      {},
+      env(),
+    );
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('data-channel="web"');
+    expect(html).not.toContain('name="fr_id"');
   });
 });
 
@@ -328,6 +373,50 @@ describe('internal public form POST /f/:formId', () => {
     expect(response.status).toBe(400);
     expect(await response.text()).toContain(expected);
     expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 0 });
+  });
+
+  test('400 再描画は入力値を escape して復元し、選択済み分岐の表示を保つ', async () => {
+    seedForm('fa_restore', { definition: {
+      fields: [
+        { id: 'name', type: 'text', label: 'お名前', required: true, position: 0, config: { maxLength: 4 } },
+        { id: 'memo', type: 'textarea', label: '備考', required: false, position: 1, config: {} },
+        { id: 'area', type: 'dropdown', label: '地域', required: true, position: 2, config: { choices: ['東', '西'] } },
+        { id: 'route', type: 'choice', label: 'ルート', required: true, position: 3, config: { choices: ['A', 'B'] } },
+        { id: 'interests', type: 'multiple_select', label: '興味', required: true, position: 4, config: { choices: ['X', 'Y'] } },
+        { id: 'detail-b', type: 'text', label: 'B 詳細', required: true, position: 5, config: {} },
+        { id: 'detail-a', type: 'text', label: 'A 詳細', required: false, position: 6, config: {} },
+      ],
+      logic: [
+        { id: 'show-b', sourceFieldId: 'route', operator: 'equals', value: 'B', action: 'show', targetFieldId: 'detail-b' },
+        { id: 'show-a', sourceFieldId: 'route', operator: 'equals', value: 'A', action: 'show', targetFieldId: 'detail-a' },
+      ],
+    } });
+    const maliciousName = '"><script>alert(1)</script>';
+    const maliciousMemo = '</textarea><script>alert(2)</script>';
+    const body = new URLSearchParams({
+      a_0: maliciousName,
+      a_1: maliciousMemo,
+      a_2: '西',
+      a_3: 'B',
+      a_5: 'B の入力',
+    });
+    body.append('a_4', 'X');
+    body.append('a_4', 'Y');
+
+    const response = await postForm('fa_restore', body);
+    const html = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(html).not.toContain(maliciousName);
+    expect(html).not.toContain(maliciousMemo);
+    expect(html).toContain('value="&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"');
+    expect(html).toContain('&lt;/textarea&gt;&lt;script&gt;alert(2)&lt;/script&gt;</textarea>');
+    expect(html).toMatch(/<option value="西" selected>/);
+    expect(html).toMatch(/<input type="radio" name="a_3" value="B"[^>]*\bchecked\b/);
+    expect(html).toMatch(/<input type="checkbox" name="a_4" value="X"[^>]*\bchecked\b/);
+    expect(html).toMatch(/<input type="checkbox" name="a_4" value="Y"[^>]*\bchecked\b/);
+    expect(html).toMatch(/data-field-id="detail-b"(?! hidden)/);
+    expect(html).toMatch(/data-field-id="detail-a" hidden/);
   });
 
   test('stores normalized answers, runs basic friend post-processing, and shows configured completion copy', async () => {
@@ -387,6 +476,24 @@ describe('internal public form POST /f/:formId', () => {
     expect(raw.prepare('SELECT COUNT(*) AS n FROM friend_tags').get()).toEqual({ n: 0 });
   });
 
+  test('別 LINE account の署名済み fr_id は送信にも紐付けない', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-A', 'ch-A', 'A', 'token-A', 'secret-A'), ('acc-B', 'ch-B', 'B', 'token-B', 'secret-B')`).run();
+    seedForm('fa_scoped_post');
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-A' WHERE id = 'fa_scoped_post'").run();
+    raw.prepare("UPDATE friends SET line_account_id = 'acc-B' WHERE id = 'friend-1'").run();
+    const token = await signFriendToken('friend-1', FRIEND_SECRET);
+    const body = validBody();
+    body.set('fr_id', token!);
+
+    const response = await postForm('fa_scoped_post', body);
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare('SELECT friend_id FROM internal_form_submissions').get()).toEqual({ friend_id: null });
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM friend_tags').get()).toEqual({ n: 0 });
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM friend_scenarios').get()).toEqual({ n: 0 });
+  });
+
   test('enforces the response limit atomically and never shows success for the rejected answer', async () => {
     seedForm('fa_limited', { definition: {
       fields: [fields[0]], logic: [], operationsSettings: { maxSubmitCount: 1 },
@@ -402,6 +509,43 @@ describe('internal public form POST /f/:formId', () => {
     expect(rejectedHtml).toContain('回答上限に達したため受付を終了しました');
     expect(rejectedHtml).not.toContain('受付完了 &lt;b&gt;');
     expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 1 });
+  });
+
+  test.each([
+    ['unpublished', "builder_status = 'draft'"],
+    ['renderer changed', "render_backend = 'formaloo'"],
+  ])('atomic insert 直前に %s になったら上限と誤表示しない', async (_name, update) => {
+    seedForm('fa_state_race', { definition: { fields: [fields[0]], logic: [] } });
+    beforeAtomicSubmission(() => {
+      raw.prepare(`UPDATE formaloo_forms SET ${update} WHERE id = 'fa_state_race'`).run();
+    });
+
+    const response = await postForm('fa_state_race', new URLSearchParams({ a_0: '佐藤' }));
+    const html = await response.text();
+
+    expect(html).toContain('このフォームは現在ご利用いただけません');
+    expect(html).not.toContain('回答上限に達したため');
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 0 });
+  });
+
+  test('atomic insert 直前に definition が更新されたら再読込を案内する', async () => {
+    seedForm('fa_definition_race', { definition: { fields: [fields[0]], logic: [] } });
+    const updatedDefinition = JSON.stringify({
+      fields: [fields[0], { id: 'new', type: 'text', label: '追加項目', required: true, position: 1, config: {} }],
+      logic: [],
+    });
+    beforeAtomicSubmission(() => {
+      raw.prepare("UPDATE formaloo_forms SET definition_json = ? WHERE id = 'fa_definition_race'")
+        .run(updatedDefinition);
+    });
+
+    const response = await postForm('fa_definition_race', new URLSearchParams({ a_0: '佐藤' }));
+    const html = await response.text();
+
+    expect(html).toContain('フォームが更新されました');
+    expect(html).toContain('ページを読み直し');
+    expect(html).not.toContain('回答上限に達したため');
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 0 });
   });
 
   test('uses verified LINE channel logic, drops hidden answers, and selects the server-side route completion', async () => {
@@ -424,10 +568,45 @@ describe('internal public form POST /f/:formId', () => {
     expect(JSON.parse(stored.answers_json)).toEqual({ kind: 'B', 'answer-b': 'Bの回答' });
   });
 
+  test('terminal submit 後の required を検証対象から外し、改ざん値も保存しない', async () => {
+    seedForm('fa_terminal', { definition: {
+      fields: [
+        { id: 'finish', type: 'text', label: '完了条件', required: true, position: 0, config: {} },
+        { id: 'after-terminal', type: 'text', label: '後続必須', required: true, position: 1, config: {} },
+      ],
+      logic: [{
+        id: 'finish-now', sourceFieldId: 'finish', operator: 'equals', value: '', action: 'submit',
+        targetFieldId: 'terminal-done', terminalTrigger: 'on_answered',
+      }],
+      successPages: [{ id: 'terminal-done', title: 'ルート完了', description: '受け付けました' }],
+    } });
+
+    const response = await postForm('fa_terminal', new URLSearchParams({
+      a_0: '完了',
+      a_1: '改ざんされた後続値',
+    }));
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('ルート完了');
+    expect(html).not.toContain('後続必須 は必須項目です');
+    const stored = raw.prepare('SELECT answers_json FROM internal_form_submissions').get() as { answers_json: string };
+    expect(JSON.parse(stored.answers_json)).toEqual({ finish: '完了' });
+  });
+
   test('treats a tampered token as web channel and requires the web-only field', async () => {
-    seedForm('fa_logic', { definition: logicDefinition() });
+    seedForm('fa_logic', { definition: {
+      fields: [
+        { id: 'name', type: 'text', label: 'お名前', required: true, position: 0, config: {} },
+        { id: 'email-web', type: 'email', label: 'メール', required: true, position: 1, config: {} },
+      ],
+      logic: [{
+        id: 'web-email', sourceFieldId: '__channel__', operator: 'equals', value: 'web',
+        action: 'show', targetFieldId: 'email-web',
+      }],
+    } });
     const response = await postForm('fa_logic', new URLSearchParams({
-      a_0: 'B', a_4: 'Bの回答', fr_id: 'friend-1.tampered',
+      a_0: '佐藤', fr_id: 'friend-1.tampered',
     }));
 
     expect(response.status).toBe(400);
@@ -466,6 +645,45 @@ describe('internal LINE distribution GET /fo/:formId', () => {
     expect(raw.prepare('SELECT form_id, friend_id, friend_name FROM form_opens').get()).toEqual({
       form_id: 'fa_internal', friend_id: 'friend-1', friend_name: '佐藤',
     });
+  });
+
+  test.each([
+    ['f', 'friend-1'],
+    ['lu', 'U1'],
+  ])('別 LINE account の friend を %s で指定しても匿名化する', async (key, value) => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-A', 'ch-A', 'A', 'token-A', 'secret-A'), ('acc-B', 'ch-B', 'B', 'token-B', 'secret-B')`).run();
+    seedForm('fa_scoped');
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-A' WHERE id = 'fa_scoped'").run();
+    raw.prepare("UPDATE friends SET line_account_id = 'acc-B' WHERE id = 'friend-1'").run();
+
+    const response = await app().request(`/fo/fa_scoped?${key}=${value}`, {}, env());
+    const location = new URL(response.headers.get('location')!, 'https://worker.example.test');
+
+    expect(response.status).toBe(302);
+    expect(location.pathname).toBe('/f/fa_scoped');
+    expect(location.searchParams.has('fr_id')).toBe(false);
+    expect(raw.prepare('SELECT friend_id, friend_name FROM form_opens').get()).toEqual({
+      friend_id: null,
+      friend_name: null,
+    });
+  });
+
+  test.each([
+    ['scoped match', 'acc-A', 'acc-A'],
+    ['global form', null, 'acc-B'],
+  ])('%s は friend を識別したままにする', async (_name, formAccountId, friendAccountId) => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-A', 'ch-A', 'A', 'token-A', 'secret-A'), ('acc-B', 'ch-B', 'B', 'token-B', 'secret-B')`).run();
+    seedForm('fa_account_ok');
+    raw.prepare('UPDATE formaloo_forms SET line_account_id = ? WHERE id = ?').run(formAccountId, 'fa_account_ok');
+    raw.prepare('UPDATE friends SET line_account_id = ? WHERE id = ?').run(friendAccountId, 'friend-1');
+
+    const response = await app().request('/fo/fa_account_ok?f=friend-1', {}, env());
+    const location = new URL(response.headers.get('location')!, 'https://worker.example.test');
+
+    expect(await verifyFriendToken(location.searchParams.get('fr_id'), FRIEND_SECRET)).toBe('friend-1');
+    expect(raw.prepare('SELECT friend_id FROM form_opens').get()).toEqual({ friend_id: 'friend-1' });
   });
 
   test('uses a one-shot LIFF bounce and then degrades anonymously without a loop', async () => {

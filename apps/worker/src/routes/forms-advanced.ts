@@ -1,5 +1,6 @@
-import { Hono, type Context } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import {
+  beginFormalooDefinitionSave,
   createFormalooForm,
   listFormalooForms,
   getFormalooForm,
@@ -11,6 +12,7 @@ import {
   listFormalooDriftEvents,
   queryFormalooSubmissions,
   countFormalooSubmissionsForForm,
+  countInternalFormSubmissionsForForm,
   upsertFormalooSubmission,
   getFormalooSubmission,
   listFormalooSavedFilters,
@@ -106,6 +108,10 @@ import { formOperationsFields, confirmFormOperationsReflected } from '../service
 import { deleteSuccessPages } from '../services/formaloo-success-page.js';
 import { reapplyHostedAppearance } from '../services/formaloo-reapply.js';
 import { ownerGate } from '../lib/owner-gate.js';
+import {
+  evaluateInternalFormAvailability,
+  parseInternalFormDefinition,
+} from '../services/internal-form-runtime.js';
 import type { Env } from '../index.js';
 
 // =============================================================================
@@ -117,6 +123,51 @@ import type { Env } from '../index.js';
 // =============================================================================
 
 export const formsAdvanced = new Hono<Env>();
+
+const FORMALOO_MUTATION_LOCK_LEASE_MS = 120_000;
+
+function withFormalooMutationLock(method: 'PATCH' | 'POST') {
+  return async (c: Context<Env>, next: Next) => {
+    if (c.req.method !== method) {
+      await next();
+      return;
+    }
+    const formId = c.req.param('id')!;
+    const token = crypto.randomUUID();
+    const acquired = await acquireFormalooFormOperationLock(c.env.DB, formId, {
+      token,
+      nowMs: Date.now(),
+      leaseMs: FORMALOO_MUTATION_LOCK_LEASE_MS,
+    });
+    if (!acquired) {
+      const current = await getFormalooForm(c.env.DB, formId);
+      if (!current || current.deleted) {
+        return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+      }
+      return c.json({
+        success: false,
+        error: current.render_backend !== 'formaloo'
+          ? '配信方式が更新されました。再読み込みしてください'
+          : 'このフォームの Formaloo 操作を処理中です。完了後にもう一度お試しください',
+      }, 409);
+    }
+    try {
+      await next();
+    } finally {
+      await releaseFormalooFormOperationLock(c.env.DB, formId, token).catch(() => {
+        console.error('Formaloo mutation operation lock release failed:', formId);
+      });
+    }
+  };
+}
+
+// These mutations can reach Formaloo after their first D1 read. Sharing the
+// provider-switch lock makes the whole request linearizable: either the
+// mutation owns the Formaloo form, or the switch to internal wins first.
+formsAdvanced.use('/api/forms-advanced/:id/rows/:rowId', withFormalooMutationLock('PATCH'));
+formsAdvanced.use('/api/forms-advanced/:id/import', withFormalooMutationLock('POST'));
+formsAdvanced.use('/api/forms-advanced/:id/rows/bulk-delete', withFormalooMutationLock('POST'));
+formsAdvanced.use('/api/forms-advanced/:id/gsheet/connect', withFormalooMutationLock('POST'));
 
 interface StoredDefinition {
   fields: HarnessField[];
@@ -196,12 +247,17 @@ function isOwnerCtx(c: Context<Env>): boolean {
 async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolean) {
   const def = parseDefinition(form.definition_json);
   const status = (isBuilderStatus(form.builder_status) ? form.builder_status : 'draft') as BuilderStatus;
-  const sync = await getFormalooSyncState(db, form.id);
-  // forms-list-count-fix: 回答数表示源を submit_count(harness-only カウンタ = reconcile/native 投稿を落とす)
-  // から D1 ミラー行数へ切替 (formaloo_submissions の form 別 COUNT)。ミラーは全 public 投稿の完全上位集合ゆえ
-  // 回答を失わず正確。**local D1 のみ・Formaloo 呼出なし** (一覧描画の暴走設計を作らない = failure_observable)。
-  const mirrorCount = await countFormalooSubmissionsForForm(db, form.id);
-  const publicUrl = buildPublicUrl(status, def.formalooAddress ?? null);
+  const isInternal = form.render_backend === 'internal';
+  const sync = isInternal ? null : await getFormalooSyncState(db, form.id);
+  // 一覧の回答数は backend ごとの local D1 テーブルから数える。Formaloo は既存ミラー、
+  // internal は専用回答表が正本。一覧描画中に Formaloo への通信は行わない。
+  const internalDefinition = isInternal
+    ? parseInternalFormDefinition(form.definition_json)
+    : null;
+  const submissionCount = isInternal
+    ? await countInternalFormSubmissionsForForm(db, form.id)
+    : await countFormalooSubmissionsForForm(db, form.id);
+  const publicUrl = isInternal ? null : buildPublicUrl(status, def.formalooAddress ?? null);
   // formaloo-auto-pull: drift 露出 (badge 用)。driftHasWarnings は drift 未解決時のみ最新 event を引く
   // (drift_status='none' の一般ケースは追加 query なし = N+1 回避)。
   const driftStatus = sync?.drift_status ?? 'none';
@@ -224,9 +280,10 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     title: form.title,
     description: form.description,
     formalooSlug: form.formaloo_slug,
+    renderBackend: form.render_backend,
     builderStatus: status,
     publishedAt: form.published_at,
-    submitCount: mirrorCount,
+    submitCount: submissionCount,
     onSubmitTagId: form.on_submit_tag_id,
     onSubmitScenarioId: form.on_submit_scenario_id,
     submitMessage: form.submit_message,
@@ -259,7 +316,9 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     friendMetadataMappings: parseFriendMetadataMappingsJson(form.friend_metadata_mappings_json),
     // N-7: publish 前は null (公開/埋め込み URL 発行不可)
     publicUrl,
-    embedCode: buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
+    embedCode: isInternal
+      ? null
+      : buildEmbedCode(status, def.formalooAddress ?? null, { title: form.title }),
     syncStatus: sync?.sync_status ?? 'idle',
     syncError: sync?.last_error ?? null,
     // formaloo-auto-pull: drift 状態 (pull 軸 / sync_status と直交)。UI badge の入力。
@@ -273,6 +332,9 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     // F6-3 ハーネス側フォルダ分類 (NULL=未分類 / round-trip / M-8)。全 role 露出 (秘密でない・表示に要る)。
     folderId: form.folder_id,
     updatedAt: form.updated_at,
+    ...(internalDefinition?.ok
+      ? { internalAvailability: evaluateInternalFormAvailability(internalDefinition.definition, submissionCount) }
+      : {}),
   };
 }
 
@@ -384,6 +446,15 @@ formsAdvanced.post('/api/forms-advanced/:id/reapply-hosted', async (c) => {
       return c.json({ success: false, error: 'Formaloo への初回同期が完了していません' }, 409);
     }
 
+    const claimed = await beginFormalooDefinitionSave(c.env.DB, id, form.updated_at);
+    if (!claimed) {
+      return c.json({
+        success: false,
+        error: '配信方式が変更されたか、別の保存処理が進行中です。再読み込みしてください',
+      }, 409);
+    }
+    syncStarted = true;
+
     const client = await resolveFormalooClient(c.env, form.workspace_id);
     if (!client) {
       await setFormalooSyncState(c.env.DB, id, {
@@ -401,8 +472,6 @@ formsAdvanced.post('/api/forms-advanced/:id/reapply-hosted', async (c) => {
     }
     const definition = parseDefinition(form.definition_json);
 
-    await setFormalooSyncState(c.env.DB, id, { syncStatus: 'pushing', lastError: null });
-    syncStarted = true;
     const result = await reapplyHostedAppearance(
       client,
       form.formaloo_slug,
@@ -659,7 +728,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     // 新ローカル内容に置き換わり push 完了まで) の窓に cron drift-check が割り込んでも、非 idle を見て auto-apply
     // せず conflict_held に落ちる (ローカル編集の silent 上書き防止)。窓終了時に下の終端 setSyncState が
     // idle/out_of_sync へ確定させる。baseline/drift 列はここでは触らない (終端の T-C2 無効化に委ねる)。
-    await setFormalooSyncState(c.env.DB, id, { syncStatus: 'pushing' });
+    const claimed = await beginFormalooDefinitionSave(c.env.DB, id, form.updated_at);
+    if (!claimed) {
+      return c.json({
+        success: false,
+        error: '配信方式が変更されたか、別の保存処理が進行中です。再読み込みしてください',
+      }, 409);
+    }
     syncStarted = true;
     // まず D1 に保存 (SoT キャッシュ / fail-soft の土台)。field_map の slug は既存分を carry する
     // (現状は無 carry = slug wipe の欠陥。push 失敗時に喪失し次回保存で重複 POST になっていた / B3)。
@@ -1236,7 +1311,10 @@ async function transition(c: Context<Env>, to: BuilderStatus, notAllowedMsg: str
   if (!canTransition(from, to)) {
     return c.json({ success: false, error: notAllowedMsg }, 409);
   }
-  await updateFormalooBuilderStatus(c.env.DB, id, to);
+  const transitioned = await updateFormalooBuilderStatus(c.env.DB, id, to, undefined, from);
+  if (!transitioned) {
+    return c.json({ success: false, error: 'フォーム状態が更新されました。再読み込みしてください' }, 409);
+  }
   const updated = await getFormalooForm(c.env.DB, id);
   return c.json({ success: true, data: await serializeForm(c.env.DB, updated!, isOwnerCtx(c)) });
 }

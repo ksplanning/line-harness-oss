@@ -175,15 +175,24 @@ function call(
   method: string,
   path: string,
   body?: unknown,
-  options: { auth?: string; withInternalRouter?: boolean } = {},
+  options: { auth?: string; withInternalRouter?: boolean; expectedBackend?: 'formaloo' | 'internal' } = {},
 ) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (options.auth !== '') headers.Authorization = options.auth ?? OWNER;
+  if (options.expectedBackend) headers['X-Form-Render-Backend'] = options.expectedBackend;
   return app(options.withInternalRouter ?? true).request(path, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   }, env());
+}
+
+async function currentPublishRevision(id: string): Promise<string> {
+  const response = await call('GET', `/api/forms-advanced/${id}`);
+  const json = await response.json() as { data?: { publishRevision?: unknown } };
+  expect(response.status).toBe(200);
+  expect(typeof json.data?.publishRevision).toBe('string');
+  return json.data!.publishRevision as string;
 }
 
 function seedForm(
@@ -231,6 +240,109 @@ function seedFormalooSubmission(id: string, formId: string) {
   ).run(id, formId, JSON.stringify({ name: '既存回答' }), '2026-07-01T10:00:00+09:00');
 }
 
+function beforeFormalooSaveClaim(callback: () => void): void {
+  const base = DB;
+  let called = false;
+  DB = {
+    prepare(sql: string) {
+      if (!sql.includes('INSERT') || !sql.includes('formaloo_sync_state')) return base.prepare(sql);
+      let params: unknown[] = [];
+      const statement = {
+        bind(...values: unknown[]) { params = values; return statement; },
+        async run() {
+          if (!called) {
+            called = true;
+            callback();
+          }
+          return base.prepare(sql).bind(...params).run();
+        },
+      };
+      return statement;
+    },
+  } as unknown as D1Database;
+}
+
+function failFormReadAfterStatusCommit(status: 'published' | 'draft'): void {
+  const base = DB;
+  let published = false;
+  DB = {
+    prepare(sql: string) {
+      if (published && /SELECT \* FROM formaloo_forms WHERE id = \?/i.test(sql)) {
+        throw new Error('injected post-commit read failure');
+      }
+      const statement = base.prepare(sql);
+      const literalPublish = /UPDATE formaloo_forms[\s\S]*builder_status = 'published'/i.test(sql);
+      const literalDraft = /UPDATE formaloo_forms[\s\S]*builder_status = 'draft'/i.test(sql);
+      const parameterizedStatus = /UPDATE formaloo_forms[\s\S]*SET builder_status = \?/i.test(sql);
+      if (!literalPublish && !literalDraft && !parameterizedStatus) return statement;
+      let params: unknown[] = [];
+      const wrapped = {
+        bind(...values: unknown[]) { params = values; return wrapped; },
+        async run() {
+          const result = await statement.bind(...params).run();
+          if ((result.meta?.changes ?? 0) === 1
+            && ((status === 'published' && literalPublish)
+              || (status === 'draft' && literalDraft)
+              || (parameterizedStatus && params[0] === status))) {
+            published = true;
+          }
+          return result;
+        },
+      };
+      return wrapped;
+    },
+  } as unknown as D1Database;
+}
+
+function afterInternalDefinitionSave(callback: () => void): void {
+  const base = DB;
+  let called = false;
+  DB = {
+    prepare(sql: string) {
+      const statement = base.prepare(sql);
+      if (!/UPDATE formaloo_forms[\s\S]*SET definition_json = \?/i.test(sql)) return statement;
+      let params: unknown[] = [];
+      const wrapped = {
+        bind(...values: unknown[]) { params = values; return wrapped; },
+        async run() {
+          const result = await statement.bind(...params).run();
+          if (!called && (result.meta?.changes ?? 0) === 1) {
+            called = true;
+            callback();
+          }
+          return result;
+        },
+      };
+      return wrapped;
+    },
+  } as unknown as D1Database;
+}
+
+function beforeInternalUnpublishCommit(callback: () => void): void {
+  const base = DB;
+  let called = false;
+  DB = {
+    prepare(sql: string) {
+      const statement = base.prepare(sql);
+      const literalDraft = /UPDATE formaloo_forms[\s\S]*SET builder_status = 'draft'/i.test(sql);
+      const parameterizedStatus = /UPDATE formaloo_forms[\s\S]*SET builder_status = \?/i.test(sql);
+      if (!literalDraft && !parameterizedStatus) return statement;
+      let params: unknown[] = [];
+      const wrapped = {
+        bind(...values: unknown[]) { params = values; return wrapped; },
+        async run() {
+          if (!called && (literalDraft || params[0] === 'draft')) {
+            called = true;
+            callback();
+          }
+          return statement.bind(...params).run();
+        },
+      };
+      return wrapped;
+    },
+  } as unknown as D1Database;
+}
+
 function seedStaff(id: string, apiKey: string, roleId: string) {
   const now = jstNow();
   raw.prepare(
@@ -269,9 +381,13 @@ describe('internal form render backend selector', () => {
       renderBackend: 'internal',
     });
     expect(patched.status).toBe(200);
-    expect(await patched.json()).toEqual({ success: true, data: { renderBackend: 'internal' } });
-    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('default-form'))
-      .toEqual({ render_backend: 'internal' });
+    expect(await patched.json()).toEqual({
+      success: true,
+      data: { renderBackend: 'internal', builderStatus: 'draft' },
+    });
+    expect(raw.prepare(
+      'SELECT render_backend, builder_status FROM formaloo_forms WHERE id = ?',
+    ).get('default-form')).toEqual({ render_backend: 'internal', builder_status: 'draft' });
     expect(externalFetch).not.toHaveBeenCalled();
   });
 
@@ -301,10 +417,17 @@ describe('internal form render backend selector', () => {
         logic: [],
       },
     });
-    seedForm('branched-form', 'formaloo', {
+    seedForm('unsupported-form', 'formaloo', {
       definition: {
-        ...DEFINITION,
-        logic: [{ id: 'rule', sourceFieldId: 'name', operator: 'equals', value: 'A', action: 'show', targetFieldId: 'contact' }],
+        fields: [{
+          id: 'remote-options',
+          type: 'choice_fetch',
+          label: '動的選択肢',
+          required: false,
+          position: 0,
+          config: { choicesSource: 'https://example.test/options' },
+        }],
+        logic: [],
       },
     });
     seedForm('internal-config-form', 'internal', {
@@ -320,7 +443,7 @@ describe('internal form render backend selector', () => {
     expect(toFormaloo.status).toBe(409);
     expect(await toFormaloo.json()).toMatchObject({ error: expect.stringMatching(/切り替えられません/) });
 
-    const toInternal = await call('PATCH', '/api/forms-advanced/branched-form/render-backend', {
+    const toInternal = await call('PATCH', '/api/forms-advanced/unsupported-form/render-backend', {
       renderBackend: 'internal',
     });
     expect(toInternal.status).toBe(409);
@@ -334,7 +457,7 @@ describe('internal form render backend selector', () => {
 
     expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('internal-only-form'))
       .toEqual({ render_backend: 'internal' });
-    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('branched-form'))
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('unsupported-form'))
       .toEqual({ render_backend: 'formaloo' });
     expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('internal-config-form'))
       .toEqual({ render_backend: 'internal' });
@@ -588,6 +711,280 @@ describe('internal definition save boundary', () => {
   });
 });
 
+describe('internal form render backend publication guards', () => {
+  test('switching a published Formaloo form validates the definition and atomically returns it to draft', async () => {
+    seedForm('valid-form', 'formaloo');
+
+    const switched = await call('PATCH', '/api/forms-advanced/valid-form/render-backend', {
+      renderBackend: 'internal',
+    });
+
+    expect(switched.status).toBe(200);
+    expect(await switched.json()).toEqual({
+      success: true,
+      data: { renderBackend: 'internal', builderStatus: 'draft' },
+    });
+    expect(raw.prepare(
+      'SELECT render_backend, builder_status FROM formaloo_forms WHERE id = ?',
+    ).get('valid-form')).toEqual({ render_backend: 'internal', builder_status: 'draft' });
+  });
+
+  test('rejects switching an internal form back to Formaloo without a lossless full-sync path', async () => {
+    seedForm('internal-live', 'internal');
+    const externalFetch = vi.fn(async () => {
+      throw new Error('Formaloo must not be called');
+    });
+    vi.stubGlobal('fetch', externalFetch);
+
+    const switched = await call('PATCH', '/api/forms-advanced/internal-live/render-backend', {
+      renderBackend: 'formaloo',
+    });
+
+    expect(switched.status).toBe(409);
+    expect(await switched.json()).toEqual({
+      success: false,
+      error: '自前配信で編集した内容を失わないため、Formaloo 配信には戻せません',
+    });
+    expect(externalFetch).not.toHaveBeenCalled();
+    expect(raw.prepare(
+      'SELECT render_backend, builder_status FROM formaloo_forms WHERE id = ?',
+    ).get('internal-live')).toEqual({ render_backend: 'internal', builder_status: 'published' });
+  });
+
+  test('rejects stale builder mutations after another tab switched the provider', async () => {
+    seedForm('now-internal', 'internal');
+    const staleFormalooSave = await call('PUT', '/api/forms-advanced/now-internal', {
+      title: '古い Formaloo 画面からの保存',
+      fields: DEFINITION.fields,
+      logic: [],
+    }, { expectedBackend: 'formaloo' });
+    expect(staleFormalooSave.status).toBe(409);
+    expect(raw.prepare('SELECT title, render_backend FROM formaloo_forms WHERE id = ?').get('now-internal'))
+      .toEqual({ title: 'テスト', render_backend: 'internal' });
+
+    seedForm('now-formaloo', 'formaloo');
+    const staleInternalUnpublish = await call(
+      'POST',
+      '/api/forms-advanced/now-formaloo/unpublish',
+      undefined,
+      { expectedBackend: 'internal' },
+    );
+    expect(staleInternalUnpublish.status).toBe(409);
+    expect(raw.prepare('SELECT builder_status, render_backend FROM formaloo_forms WHERE id = ?').get('now-formaloo'))
+      .toEqual({ builder_status: 'published', render_backend: 'formaloo' });
+  });
+
+  test('does not switch provider while a Formaloo definition save owns the sync claim', async () => {
+    seedForm('saving-form', 'formaloo');
+    raw.prepare(
+      "INSERT INTO formaloo_sync_state (form_id, sync_status) VALUES ('saving-form', 'pushing')",
+    ).run();
+
+    const response = await call('PATCH', '/api/forms-advanced/saving-form/render-backend', {
+      renderBackend: 'internal',
+    });
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare(
+      'SELECT render_backend, builder_status FROM formaloo_forms WHERE id = ?',
+    ).get('saving-form')).toEqual({ render_backend: 'formaloo', builder_status: 'published' });
+  });
+
+  test('does not switch internal-only channel logic to Formaloo where it would be silently lost', async () => {
+    seedForm('channel-form', 'internal', { definition: {
+      ...DEFINITION,
+      logic: [{
+        id: 'web-only', sourceFieldId: '__channel__', operator: 'equals', value: 'web',
+        action: 'show', targetFieldId: 'contact',
+      }],
+    } });
+
+    const response = await call('PATCH', '/api/forms-advanced/channel-form/render-backend', {
+      renderBackend: 'formaloo',
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: '自前配信で編集した内容を失わないため、Formaloo 配信には戻せません',
+    });
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('channel-form'))
+      .toEqual({ render_backend: 'internal' });
+  });
+
+  test('does not switch one-page ordinary-field branching to Formaloo where it only works multi-step', async () => {
+    seedForm('one-page-branch', 'internal', { definition: {
+      ...DEFINITION,
+      formType: 'simple',
+      logic: [{
+        id: 'show-contact', sourceFieldId: 'name', operator: 'equals', value: 'A',
+        action: 'show', targetFieldId: 'contact',
+      }],
+    } });
+
+    const response = await call('PATCH', '/api/forms-advanced/one-page-branch/render-backend', {
+      renderBackend: 'formaloo',
+    });
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('one-page-branch'))
+      .toEqual({ render_backend: 'internal' });
+  });
+
+  test('does not switch one-page terminal submission branching to Formaloo', async () => {
+    seedForm('one-page-submit', 'internal', { definition: {
+      ...DEFINITION,
+      formType: 'simple',
+      logic: [{
+        id: 'finish-a', sourceFieldId: 'name', operator: 'equals', value: 'A',
+        action: 'submit', targetFieldId: 'done-a', terminalTrigger: 'on_answered',
+      }],
+      successPages: [{ id: 'done-a', title: 'A完了' }],
+    } });
+
+    const response = await call('PATCH', '/api/forms-advanced/one-page-submit/render-backend', {
+      renderBackend: 'formaloo',
+    });
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('one-page-submit'))
+      .toEqual({ render_backend: 'internal' });
+  });
+
+  test('does not switch compound internal logic to a Formaloo save path that cannot preserve it', async () => {
+    seedForm('compound-branch', 'internal', { definition: {
+      ...DEFINITION,
+      formType: 'multi_step',
+      logic: [{
+        id: 'compound', sourceFieldId: 'name', operator: 'equals', value: 'A',
+        action: 'show', targetFieldId: 'contact', conditionJoin: 'and',
+        conditions: [
+          { sourceFieldId: 'name', operator: 'equals', value: 'A' },
+          { sourceFieldId: 'contact', operator: 'equals', value: 'a@example.com' },
+        ],
+        actions: [{ action: 'show', targetFieldId: 'contact' }],
+      }],
+    } });
+
+    const response = await call('PATCH', '/api/forms-advanced/compound-branch/render-backend', {
+      renderBackend: 'formaloo',
+    });
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('compound-branch'))
+      .toEqual({ render_backend: 'internal' });
+  });
+
+  test('a Formaloo save that loses the provider claim stops before local mapping or external mutation', async () => {
+    seedForm('formaloo-race', 'formaloo');
+    const externalFetch = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', externalFetch);
+    bindingOverrides = { FORMALOO_API_KEY: 'key', FORMALOO_API_SECRET: 'secret' };
+    beforeFormalooSaveClaim(() => {
+      raw.prepare(
+        "UPDATE formaloo_forms SET render_backend = 'internal', builder_status = 'draft' WHERE id = 'formaloo-race'",
+      ).run();
+    });
+
+    const response = await call('PUT', '/api/forms-advanced/formaloo-race', {
+      title: '競合保存', fields: DEFINITION.fields, logic: [],
+    });
+
+    expect(response.status).toBe(409);
+    expect(externalFetch).not.toHaveBeenCalled();
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM formaloo_field_map WHERE form_id = 'formaloo-race'").get())
+      .toEqual({ n: 0 });
+    expect(raw.prepare('SELECT render_backend, builder_status FROM formaloo_forms WHERE id = ?').get('formaloo-race'))
+      .toEqual({ render_backend: 'internal', builder_status: 'draft' });
+  });
+
+  test('a Formaloo save that loses its loaded form revision stops before mutation', async () => {
+    seedForm('formaloo-stale-save', 'formaloo');
+    const externalFetch = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', externalFetch);
+    bindingOverrides = { FORMALOO_API_KEY: 'key', FORMALOO_API_SECRET: 'secret' };
+    beforeFormalooSaveClaim(() => {
+      raw.prepare(
+        "UPDATE formaloo_forms SET updated_at = '2099-01-01T00:00:00.000+09:00' WHERE id = 'formaloo-stale-save'",
+      ).run();
+    });
+
+    const response = await call('PUT', '/api/forms-advanced/formaloo-stale-save', {
+      title: '古い保存', fields: DEFINITION.fields, logic: [],
+    });
+
+    expect(response.status).toBe(409);
+    expect(externalFetch).not.toHaveBeenCalled();
+  });
+
+  test('does not switch a Formaloo form with an active recurring answer to internal', async () => {
+    seedForm('recurring-active', 'formaloo');
+    raw.prepare(
+      `INSERT INTO formaloo_recurring_submissions
+       (id, form_id, idempotency_key, request_fingerprint, schedule_json,
+        submission_data_json, status, sync_state)
+       VALUES ('frs_switch_guard', 'recurring-active', 'attempt', 'fingerprint', ?, '{}', 'resumed', 'synced')`,
+    ).run(JSON.stringify({ interval: {}, start_time: '2026-07-20T00:00:00Z' }));
+
+    const response = await call('PATCH', '/api/forms-advanced/recurring-active/render-backend', {
+      renderBackend: 'internal',
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json() as { error: string }).error).toContain('定期自動回答');
+    expect(raw.prepare('SELECT render_backend FROM formaloo_forms WHERE id = ?').get('recurring-active'))
+      .toEqual({ render_backend: 'formaloo' });
+  });
+
+  test('a hosted reapply that loses the provider claim stops before Formaloo mutation', async () => {
+    seedForm('reapply-race', 'formaloo');
+    const externalFetch = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', externalFetch);
+    bindingOverrides = { FORMALOO_API_KEY: 'key', FORMALOO_API_SECRET: 'secret' };
+    beforeFormalooSaveClaim(() => {
+      raw.prepare(
+        "UPDATE formaloo_forms SET render_backend = 'internal', builder_status = 'draft' WHERE id = 'reapply-race'",
+      ).run();
+    });
+
+    const response = await call('POST', '/api/forms-advanced/reapply-race/reapply-hosted');
+
+    expect(response.status).toBe(409);
+    expect(externalFetch).not.toHaveBeenCalled();
+    expect(raw.prepare('SELECT render_backend, builder_status FROM formaloo_forms WHERE id = ?').get('reapply-race'))
+      .toEqual({ render_backend: 'internal', builder_status: 'draft' });
+  });
+
+  test('rejects switching an unsupported published definition without exposing it on the internal host', async () => {
+    seedForm('unsupported-form', 'formaloo', {
+      definition: {
+        fields: [{
+          id: 'remote-options',
+          type: 'choice_fetch',
+          label: '動的選択肢',
+          required: false,
+          position: 0,
+          config: { choicesSource: 'https://example.test/options' },
+        }],
+        logic: [],
+      },
+    });
+
+    const response = await call('PATCH', '/api/forms-advanced/unsupported-form/render-backend', {
+      renderBackend: 'internal',
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: '現在のフォーム定義では配信先を切り替えられません: 未対応の項目を含むため自前配信できません',
+    });
+    expect(raw.prepare(
+      'SELECT render_backend, builder_status FROM formaloo_forms WHERE id = ?',
+    ).get('unsupported-form')).toEqual({ render_backend: 'formaloo', builder_status: 'published' });
+  });
+});
+
 describe('internal answer admin read path', () => {
   beforeEach(() => {
     seedForm('internal-form', 'internal');
@@ -682,6 +1079,18 @@ describe('internal answer admin read path', () => {
 });
 
 describe('internal hosting provider boundary', () => {
+  test('admin preview copy keeps a legacy submit message when definition copy is absent', async () => {
+    seedForm('legacy-copy-form', 'internal');
+    raw.prepare("UPDATE formaloo_forms SET submit_message = '以前からの完了案内' WHERE id = 'legacy-copy-form'").run();
+
+    const response = await call('GET', '/api/forms-advanced/legacy-copy-form');
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      data: { formCopy: { successMessage: '以前からの完了案内' } },
+    });
+  });
+
   test('definition save stays local and returns an internally consistent admin view', async () => {
     seedForm('internal-form', 'internal');
     raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-form'").run();
@@ -695,6 +1104,7 @@ describe('internal hosting provider boundary', () => {
       fields: DEFINITION.fields,
       logic: [],
       formType: 'simple',
+      formCopy: { buttonText: '申し込む', successMessage: 'お申し込み完了' },
       design: { themeColor: '#123456', backgroundColor: '#F0F0F0' },
       operationsSettings: {
         maxSubmitCount: 2,
@@ -706,8 +1116,9 @@ describe('internal hosting provider boundary', () => {
     expect(await response.json()).toMatchObject({
       success: true,
       data: {
-        id: 'internal-form', title: '自前フォーム', builderStatus: 'draft',
+        id: 'internal-form', title: '自前フォーム', renderBackend: 'internal', builderStatus: 'draft',
         syncStatus: 'idle', syncError: null, publicUrl: null,
+        formCopy: { buttonText: '申し込む', successMessage: 'お申し込み完了', errorMessage: '送信に失敗しました' },
         design: { themeColor: '#123456', backgroundColor: '#F0F0F0' },
         operationsSettings: { maxSubmitCount: 2, submitStartTime: '2026-07-25T00:00:00+09:00' },
       },
@@ -715,8 +1126,332 @@ describe('internal hosting provider boundary', () => {
     const stored = JSON.parse((raw.prepare(
       "SELECT definition_json FROM formaloo_forms WHERE id = 'internal-form'",
     ).get() as { definition_json: string }).definition_json);
-    expect(stored).toMatchObject({ formType: 'simple', design: { themeColor: '#123456' } });
+    expect(stored).toMatchObject({
+      formType: 'simple',
+      formCopy: { buttonText: '申し込む', successMessage: 'お申し込み完了' },
+      design: { themeColor: '#123456' },
+    });
     expect(externalFetch).not.toHaveBeenCalled();
+  });
+
+  test('internal save preserves every existing Formaloo field mapping byte-for-byte', async () => {
+    seedForm('internal-form', 'internal');
+    const now = jstNow();
+    raw.prepare(
+      `INSERT INTO formaloo_field_map
+         (id, form_id, formaloo_field_slug, field_type, label, position, config_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'name', 'internal-form', 'remote-name', 'text', 'お名前', 0, '{"remote":"keep"}', now, now,
+      'legacy', 'internal-form', 'remote-legacy', 'text', '旧項目', 1, '{"legacy":true}', now, now,
+    );
+    const before = raw.prepare(
+      'SELECT * FROM formaloo_field_map WHERE form_id = ? ORDER BY rowid',
+    ).all('internal-form');
+
+    const response = await call('PUT', '/api/forms-advanced/internal-form', {
+      title: '自前保存', fields: DEFINITION.fields, logic: [], formType: 'simple',
+    });
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare(
+      'SELECT * FROM formaloo_field_map WHERE form_id = ? ORDER BY rowid',
+    ).all('internal-form')).toEqual(before);
+  });
+
+  test('resolves internal logo and background replace intents through the existing R2 image host', async () => {
+    seedForm('internal-form', 'internal');
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-form'").run();
+    const put = vi.fn(async () => undefined);
+    bindingOverrides = { IMAGES: { put } as unknown as R2Bucket };
+
+    const response = await call('PUT', '/api/forms-advanced/internal-form', {
+      fields: DEFINITION.fields,
+      logic: [],
+      design: {
+        themeColor: '#123456',
+        logoUrl: 'https://old.example.test/logo.png',
+        backgroundImageUrl: 'https://old.example.test/background.png',
+      },
+      designImages: {
+        logo: {
+          intent: 'replace',
+          dataUrl: 'data:image/png;base64,TE9HTw==',
+          mimeType: 'image/png',
+          filename: 'logo.png',
+        },
+        cover: {
+          intent: 'replace',
+          dataUrl: 'data:image/webp;base64,Q09WRVI=',
+          mimeType: 'image/webp',
+          filename: 'cover.webp',
+        },
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const json = await response.json() as { data: { design: { logoUrl: string; backgroundImageUrl: string } } };
+    expect(json.data.design.logoUrl).toMatch(
+      /^https:\/\/api\.example\.test\/images\/media\/form-image\/internal-form\/[0-9a-f-]+\.png$/,
+    );
+    expect(json.data.design.backgroundImageUrl).toMatch(
+      /^https:\/\/api\.example\.test\/images\/media\/form-image\/internal-form\/[0-9a-f-]+\.webp$/,
+    );
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(put.mock.calls[0]?.[0]).toMatch(/^media\/form-image\/internal-form\/.+\.png$/);
+    expect(put.mock.calls[0]?.[2]).toEqual({ httpMetadata: { contentType: 'image/png' } });
+    expect(put.mock.calls[1]?.[0]).toMatch(/^media\/form-image\/internal-form\/.+\.webp$/);
+    expect(put.mock.calls[1]?.[2]).toEqual({ httpMetadata: { contentType: 'image/webp' } });
+
+    const stored = JSON.parse((raw.prepare(
+      "SELECT definition_json FROM formaloo_forms WHERE id = 'internal-form'",
+    ).get() as { definition_json: string }).definition_json) as { design: Record<string, string> };
+    expect(stored.design).toMatchObject({
+      themeColor: '#123456',
+      logoUrl: json.data.design.logoUrl,
+      backgroundImageUrl: json.data.design.backgroundImageUrl,
+    });
+  });
+
+  test('failed internal design image upload rejects the save and preserves definition and publish state for retry', async () => {
+    seedForm('internal-form', 'internal', {
+      definition: {
+        ...DEFINITION,
+        design: { themeColor: '#123456', logoUrl: 'https://old.example.test/logo.png' },
+      },
+    });
+    const before = raw.prepare(
+      "SELECT definition_json, builder_status FROM formaloo_forms WHERE id = 'internal-form'",
+    ).get() as { definition_json: string; builder_status: string };
+    bindingOverrides = {
+      IMAGES: { put: vi.fn(async () => { throw new Error('R2 unavailable'); }) } as unknown as R2Bucket,
+    };
+
+    const response = await call('PUT', '/api/forms-advanced/internal-form', {
+      fields: DEFINITION.fields,
+      logic: [],
+      design: { themeColor: '#654321', logoUrl: 'https://old.example.test/logo.png' },
+      designImages: {
+        logo: {
+          intent: 'replace',
+          dataUrl: 'data:image/png;base64,TE9HTw==',
+          mimeType: 'image/png',
+        },
+      },
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      success: false,
+      error: expect.stringContaining('画像の保存に失敗しました'),
+    });
+    expect(raw.prepare(
+      "SELECT definition_json, builder_status FROM formaloo_forms WHERE id = 'internal-form'",
+    ).get()).toEqual(before);
+  });
+
+  test('applies remove and keep internal design image intents without touching R2', async () => {
+    seedForm('internal-form', 'internal', {
+      definition: {
+        ...DEFINITION,
+        design: {
+          logoUrl: 'https://old.example.test/logo.png',
+          backgroundImageUrl: 'https://old.example.test/background.png',
+        },
+      },
+    });
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-form'").run();
+    const put = vi.fn(async () => undefined);
+    bindingOverrides = { IMAGES: { put } as unknown as R2Bucket };
+
+    const response = await call('PUT', '/api/forms-advanced/internal-form', {
+      fields: DEFINITION.fields,
+      logic: [],
+      design: {
+        logoUrl: 'https://old.example.test/logo.png',
+        backgroundImageUrl: 'https://old.example.test/background.png',
+      },
+      designImages: {
+        logo: { intent: 'remove' },
+        cover: { intent: 'keep' },
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const json = await response.json() as { data: { design: Record<string, string> } };
+    expect(json.data.design.logoUrl).toBeUndefined();
+    expect(json.data.design.backgroundImageUrl).toBe('https://old.example.test/background.png');
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  test('keep intent preserves an existing image when the design patch omits its URL', async () => {
+    seedForm('internal-form', 'internal', {
+      definition: {
+        ...DEFINITION,
+        design: { logoUrl: 'https://old.example.test/logo.png', themeColor: '#123456' },
+      },
+    });
+    const put = vi.fn(async () => undefined);
+    bindingOverrides = { IMAGES: { put } as unknown as R2Bucket };
+
+    const response = await call('PUT', '/api/forms-advanced/internal-form', {
+      fields: DEFINITION.fields,
+      logic: [],
+      design: { themeColor: '#654321' },
+      designImages: { logo: { intent: 'keep' } },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      data: { design: { themeColor: '#654321', logoUrl: 'https://old.example.test/logo.png' } },
+    });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  test('editing a published definition returns it to draft until publish is confirmed again', async () => {
+    seedForm('internal-form', 'internal');
+
+    const response = await call('PUT', '/api/forms-advanced/internal-form', {
+      title: '公開内容を変更',
+      fields: DEFINITION.fields,
+      logic: [],
+      formType: 'simple',
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      data: {
+        builderStatus: 'draft',
+        publicUrl: null,
+        title: '公開内容を変更',
+      },
+    });
+    expect(raw.prepare(
+      'SELECT builder_status, title FROM formaloo_forms WHERE id = ?',
+    ).get('internal-form')).toEqual({ builder_status: 'draft', title: '公開内容を変更' });
+  });
+
+  test('a definition save always wins a concurrent publish by atomically ending in draft', async () => {
+    seedForm('internal-form', 'internal');
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-form'").run();
+    raw.exec(`
+      CREATE TRIGGER publish_during_definition_replace
+      BEFORE UPDATE OF definition_json ON formaloo_forms
+      BEGIN
+        UPDATE formaloo_forms SET builder_status = 'published' WHERE id = OLD.id;
+      END
+    `);
+
+    const response = await call('PUT', '/api/forms-advanced/internal-form', {
+      title: '競合後の定義', fields: DEFINITION.fields, logic: [], formType: 'simple',
+    });
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare(
+      'SELECT builder_status, title FROM formaloo_forms WHERE id = ?',
+    ).get('internal-form')).toEqual({ builder_status: 'draft', title: '競合後の定義' });
+  });
+
+  test('a successful save responds with its own snapshot when a later save wins before the response', async () => {
+    seedForm('internal-form', 'internal');
+    const laterDefinition = {
+      fields: [{ id: 'later', type: 'text', label: '後から保存', required: false, position: 0, config: {} }],
+      logic: [],
+    };
+    afterInternalDefinitionSave(() => {
+      raw.prepare(
+        `UPDATE formaloo_forms
+         SET definition_json = ?, title = ?, builder_status = 'draft', updated_at = ?
+         WHERE id = ?`,
+      ).run(JSON.stringify(laterDefinition), '後から保存した内容', '2026-07-21T08:30:00+09:00', 'internal-form');
+    });
+
+    const response = await call('PUT', '/api/forms-advanced/internal-form', {
+      title: '先に保存した内容',
+      fields: [{ id: 'first', type: 'text', label: '先に保存', required: false, position: 0, config: {} }],
+      logic: [],
+      formType: 'simple',
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      data: {
+        title: '先に保存した内容',
+        fields: [{ id: 'first', label: '先に保存' }],
+      },
+    });
+    expect(raw.prepare('SELECT title FROM formaloo_forms WHERE id = ?').get('internal-form'))
+      .toEqual({ title: '後から保存した内容' });
+  });
+
+  test('publish compare-and-set rejects a definition changed after confirmation was loaded', async () => {
+    seedForm('internal-form', 'internal');
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-form'").run();
+    const publishRevision = await currentPublishRevision('internal-form');
+    const baseDb = DB;
+    let changed = false;
+    DB = {
+      prepare(sql: string) {
+        if (!changed && sql.includes('UPDATE formaloo_forms') && sql.includes('builder_status')) {
+          changed = true;
+          raw.prepare(
+            "UPDATE formaloo_forms SET definition_json = '{\"fields\":[],\"logic\":[],\"version\":2}' WHERE id = 'internal-form'",
+          ).run();
+        }
+        return baseDb.prepare(sql);
+      },
+    } as D1Database;
+
+    const response = await call('POST', '/api/forms-advanced/internal-form/publish', { publishRevision });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: 'フォーム内容が更新されたため、もう一度確認して公開してください',
+    });
+    expect(raw.prepare(
+      'SELECT builder_status FROM formaloo_forms WHERE id = ?',
+    ).get('internal-form')).toEqual({ builder_status: 'draft' });
+  });
+
+  test('publish rejects a browser confirmation revision after another editor changes only the title', async () => {
+    seedForm('internal-form', 'internal');
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-form'").run();
+    const publishRevision = await currentPublishRevision('internal-form');
+    raw.prepare(
+      "UPDATE formaloo_forms SET title = '別の編集者のタイトル', updated_at = '2026-07-21T15:00:00.000+09:00' WHERE id = 'internal-form'",
+    ).run();
+
+    const response = await call('POST', '/api/forms-advanced/internal-form/publish', { publishRevision });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: 'フォーム内容が更新されたため、もう一度確認して公開してください',
+    });
+    expect(raw.prepare(
+      'SELECT builder_status FROM formaloo_forms WHERE id = ?',
+    ).get('internal-form')).toEqual({ builder_status: 'draft' });
+  });
+
+  test('publish rejects a corrupt internal definition and keeps the draft unavailable', async () => {
+    seedForm('corrupt-form', 'internal', { definition: { fields: 'broken', logic: [] } });
+    raw.prepare(
+      "UPDATE formaloo_forms SET builder_status = 'draft', published_at = NULL WHERE id = 'corrupt-form'",
+    ).run();
+
+    const response = await call('POST', '/api/forms-advanced/corrupt-form/publish', { publishRevision: 'invalid' });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: 'フォーム項目を読み込めません',
+    });
+    expect(raw.prepare(
+      'SELECT builder_status, published_at FROM formaloo_forms WHERE id = ?',
+    ).get('corrupt-form')).toEqual({ builder_status: 'draft', published_at: null });
   });
 
   test('publishes a draft directly, is retry-safe, exposes honest upcoming state, and unpublishes locally', async () => {
@@ -730,9 +1465,11 @@ describe('internal hosting provider boundary', () => {
     const externalFetch = vi.fn(async () => { throw new Error('Formaloo must not run'); });
     vi.stubGlobal('fetch', externalFetch);
 
-    const published = await call('POST', '/api/forms-advanced/internal-form/publish');
+    const publishRevision = await currentPublishRevision('internal-form');
+    const published = await call('POST', '/api/forms-advanced/internal-form/publish', { publishRevision });
     expect(published.status).toBe(200);
-    expect(await published.json()).toMatchObject({
+    const publishedBody = await published.json() as { data: { updatedAt: string } };
+    expect(publishedBody).toMatchObject({
       success: true,
       data: {
         builderStatus: 'published',
@@ -740,7 +1477,11 @@ describe('internal hosting provider boundary', () => {
         internalAvailability: { status: 'upcoming', message: '受付開始前・7月25日から' },
       },
     });
-    expect((await call('POST', '/api/forms-advanced/internal-form/publish')).status).toBe(200);
+    const retriedPublish = await call('POST', '/api/forms-advanced/internal-form/publish', {
+      publishRevision,
+    });
+    expect(retriedPublish.status).toBe(200);
+    const retriedPublishBody = await retriedPublish.json() as { data: { updatedAt: string } };
 
     const share = await call('GET', '/api/forms-advanced/internal-form/share');
     expect(await share.json()).toMatchObject({
@@ -752,13 +1493,102 @@ describe('internal hosting provider boundary', () => {
       },
     });
 
-    const unpublished = await call('POST', '/api/forms-advanced/internal-form/unpublish');
+    const unpublished = await call('POST', '/api/forms-advanced/internal-form/unpublish', {
+      expectedUpdatedAt: retriedPublishBody.data.updatedAt,
+    });
     expect(unpublished.status).toBe(200);
     expect(await unpublished.json()).toMatchObject({
       success: true,
       data: { builderStatus: 'draft', publicUrl: null },
     });
     expect(externalFetch).not.toHaveBeenCalled();
+  });
+
+  test('returns success without a fallible form read after the publish commit', async () => {
+    seedForm('publish-read-failure', 'internal');
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft', published_at = NULL WHERE id = 'publish-read-failure'").run();
+    const publishRevision = await currentPublishRevision('publish-read-failure');
+    failFormReadAfterStatusCommit('published');
+
+    const response = await call('POST', '/api/forms-advanced/publish-read-failure/publish', { publishRevision });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      data: { builderStatus: 'published', publicUrl: 'https://api.example.test/f/publish-read-failure' },
+    });
+    expect(raw.prepare('SELECT builder_status FROM formaloo_forms WHERE id = ?').get('publish-read-failure'))
+      .toEqual({ builder_status: 'published' });
+  });
+
+  test('returns success without a fallible form read after the unpublish commit', async () => {
+    seedForm('unpublish-read-failure', 'internal');
+    const displayed = raw.prepare(
+      'SELECT updated_at FROM formaloo_forms WHERE id = ?',
+    ).get('unpublish-read-failure') as { updated_at: string };
+    failFormReadAfterStatusCommit('draft');
+
+    const response = await call('POST', '/api/forms-advanced/unpublish-read-failure/unpublish', {
+      expectedUpdatedAt: displayed.updated_at,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      data: { builderStatus: 'draft', publicUrl: null },
+    });
+    expect(raw.prepare('SELECT builder_status FROM formaloo_forms WHERE id = ?').get('unpublish-read-failure'))
+      .toEqual({ builder_status: 'draft' });
+  });
+
+  test('a stale browser cannot unpublish a newer internal revision', async () => {
+    seedForm('stale-unpublish', 'internal');
+    const displayed = raw.prepare(
+      'SELECT updated_at FROM formaloo_forms WHERE id = ?',
+    ).get('stale-unpublish') as { updated_at: string };
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET title = '別の編集者が公開した内容', updated_at = '2026-07-21T16:00:00.000+09:00'
+       WHERE id = 'stale-unpublish'`,
+    ).run();
+
+    const response = await call('POST', '/api/forms-advanced/stale-unpublish/unpublish', {
+      expectedUpdatedAt: displayed.updated_at,
+    });
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare(
+      'SELECT title, builder_status FROM formaloo_forms WHERE id = ?',
+    ).get('stale-unpublish')).toEqual({
+      title: '別の編集者が公開した内容',
+      builder_status: 'published',
+    });
+  });
+
+  test('unpublish compare-and-set rejects a newer revision committed after request validation', async () => {
+    seedForm('unpublish-race', 'internal');
+    const displayed = raw.prepare(
+      'SELECT updated_at FROM formaloo_forms WHERE id = ?',
+    ).get('unpublish-race') as { updated_at: string };
+    beforeInternalUnpublishCommit(() => {
+      raw.prepare(
+        `UPDATE formaloo_forms
+         SET title = '競合後に公開された内容', updated_at = '2026-07-21T16:30:00.000+09:00'
+         WHERE id = 'unpublish-race'`,
+      ).run();
+    });
+
+    const response = await call('POST', '/api/forms-advanced/unpublish-race/unpublish', {
+      expectedUpdatedAt: displayed.updated_at,
+    });
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare(
+      'SELECT title, builder_status FROM formaloo_forms WHERE id = ?',
+    ).get('unpublish-race')).toEqual({
+      title: '競合後に公開された内容',
+      builder_status: 'published',
+    });
   });
 
   test('does not introduce a review step for internal forms', async () => {
@@ -809,13 +1639,23 @@ describe('internal hosting provider boundary', () => {
   });
 
   test.each([
+    ['DELETE', '/api/forms-advanced/internal-form', undefined],
+    ['GET', '/api/forms-advanced/internal-form/pull', undefined],
+    ['GET', '/api/forms-advanced/internal-form/embed', undefined],
     ['GET', '/api/forms-advanced/internal-form/export.csv', undefined],
     ['POST', '/api/forms-advanced/internal-form/reapply-hosted', undefined],
     ['PATCH', '/api/forms-advanced/internal-form/rows/formaloo-sub', { answers: { name: '変更' } }],
     ['POST', '/api/forms-advanced/internal-form/import', { csv: 'name\n一郎' }],
     ['POST', '/api/forms-advanced/internal-form/rows/bulk-delete', { ids: ['formaloo-sub'] }],
     ['POST', '/api/forms-advanced/internal-form/gsheet/connect', undefined],
+    ['GET', '/api/forms-advanced/internal-form/recurring-submissions', undefined],
+    ['POST', '/api/forms-advanced/internal-form/recurring-submissions', {}],
+    ['PUT', '/api/forms-advanced/internal-form/recurring-submissions/rs_1', {}],
+    ['PATCH', '/api/forms-advanced/internal-form/recurring-submissions/rs_1', {}],
+    ['DELETE', '/api/forms-advanced/internal-form/recurring-submissions/rs_1', undefined],
+    ['GET', '/api/forms-advanced/internal-form/instant-webhook', undefined],
     ['PUT', '/api/forms-advanced/internal-form/instant-webhook', { enabled: true }],
+    ['GET', '/api/forms-advanced/internal-form/drift-events', undefined],
   ] as const)('%s %s is 409 before any Formaloo request', async (method, path, body) => {
     seedForm('internal-form', 'internal');
     seedFormalooSubmission('formaloo-sub', 'internal-form');
@@ -854,6 +1694,28 @@ describe('auth, permission, and Formaloo passthrough regression', () => {
     expect((await call('GET', '/api/forms-advanced/internal-form/render-backend', undefined, {
       auth: 'Bearer denied-key',
     })).status).toBe(403);
+  });
+
+  test('internal form detail exposes workspaceId to owners only', async () => {
+    seedForm('internal-form', 'internal');
+    raw.prepare(
+      "UPDATE formaloo_forms SET workspace_id = 'workspace-secret' WHERE id = 'internal-form'",
+    ).run();
+    const roleId = (await createRole(DB, { name: 'フォーム閲覧可' })).id;
+    await setRolePermissions(DB, roleId, [{ feature_key: 'forms_advanced', allowed: true }]);
+    seedStaff('allowed-staff', 'allowed-key', roleId);
+
+    const owner = await call('GET', '/api/forms-advanced/internal-form');
+    expect(owner.status).toBe(200);
+    expect((await owner.json() as { data: Record<string, unknown> }).data)
+      .toHaveProperty('workspaceId', 'workspace-secret');
+
+    const staff = await call('GET', '/api/forms-advanced/internal-form', undefined, {
+      auth: 'Bearer allowed-key',
+    });
+    expect(staff.status).toBe(200);
+    expect((await staff.json() as { data: Record<string, unknown> }).data)
+      .not.toHaveProperty('workspaceId');
   });
 
   test.each([

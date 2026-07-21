@@ -280,7 +280,13 @@ const adminCors = cors({
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   // x-admin-api-key: /updates ページが /admin/update/* を呼ぶ際の認証ヘッダ。
   // これが無いと *.pages.dev からの preflight で弾かれ「履歴取得に失敗: Failed to fetch」になる (reviewer G1)。
-  allowHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'x-admin-api-key'],
+  allowHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-CSRF-Token',
+    'X-Form-Render-Backend',
+    'x-admin-api-key',
+  ],
   maxAge: 600,
 });
 

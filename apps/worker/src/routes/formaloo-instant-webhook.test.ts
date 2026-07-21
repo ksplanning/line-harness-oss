@@ -11,6 +11,7 @@ function form(overrides: Record<string, unknown> = {}) {
     formaloo_slug: 'remote-safe-form',
     title: '入金フォーム',
     deleted: 0,
+    render_backend: 'formaloo',
     workspace_id: 'fw_tenant_a',
     friend_metadata_mappings_json: '[]',
     formaloo_webhook_enabled: 0,
@@ -244,6 +245,7 @@ describe('公開受信 — payload 非依存 targeted pull', () => {
   test.each([
     ['未知 form', null, 'stored-secret'],
     ['既定 OFF', form(), 'stored-secret'],
+    ['自前配信へ切替済み', { ...registered, render_backend: 'internal' }, 'stored-secret'],
     ['secret 不一致', registered, 'wrong-secret'],
   ])('%s は同じ 404 で pull しない', async (_label, found, providedSecret) => {
     const deps = makeDeps({ getForm: vi.fn(async () => found as never) });
