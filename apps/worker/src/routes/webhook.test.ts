@@ -880,7 +880,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       'message_received',
       {
         friendId: 'friend-1',
-        eventData: { text: '営業時間は？', matched: true, automaticSendSuppressed: true },
+        eventData: { text: '営業時間は？', matched: true },
         replyToken: undefined,
       },
       'env-default-token',
@@ -917,9 +917,11 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(fireEvent).toHaveBeenCalledWith(
       db,
       'message_received',
-      expect.objectContaining({
-        eventData: expect.objectContaining({ matched: false, automaticSendSuppressed: true }),
-      }),
+      {
+        friendId: 'friend-1',
+        eventData: { text: '営業時間', matched: false },
+        replyToken: 'reply-token',
+      },
       'env-default-token',
       null,
     );
@@ -1089,12 +1091,19 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
     expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1'); // オペレーター対応 (未読)
   });
 
-  test('outside hours + none → cross-account trigger is also suppressed and chat goes to unread', async () => {
-    const { db } = await postExperience({ ...enabled, outsideHoursMode: 'none' }, false);
-    expect(lineClientMocks.pushMessage).not.toHaveBeenCalled();
-    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
-    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
-  });
+  test.each(['none', 'away_message'] as const)(
+    'outside hours + %s → cross-account trigger keeps its pre-change delivery behavior',
+    async (outsideHoursMode) => {
+      const { executed } = await postExperience({ ...enabled, outsideHoursMode }, false);
+      expect(lineClientMocks.pushMessage).toHaveBeenCalledTimes(1);
+      expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+      expect(upsertChatOnMessage).not.toHaveBeenCalled();
+      expect(executed.some(({ sql, binds }) =>
+        sql.includes('UPDATE messages_log SET source = ? WHERE id = ?')
+        && binds[0] === 'auto_reply_handled',
+      )).toBe(true);
+    },
+  );
 
   test('gate disabled → cross-account trigger fires as before (non-regression)', async () => {
     const { executed } = await postExperience({ ...enabled, isEnabled: false }, false);

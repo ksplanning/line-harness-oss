@@ -300,7 +300,7 @@ describe('fireEvent — G28 businessHoursSuppressed gate (HIGH-1)', () => {
     expect(db.addTagToFriend).toHaveBeenCalledWith(dbFake, 'friend-1', 'tag-x');
   });
 
-  it('suppresses send_message for outside-hours none/away delivery gates too', async () => {
+  it('does not suppress send_message without the business-hours gate', async () => {
     const db = await import('@line-crm/db');
     const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: captured });
 
@@ -312,9 +312,10 @@ describe('fireEvent — G28 businessHoursSuppressed gate (HIGH-1)', () => {
       'acc-1',
     );
 
-    expect(lineMessageMocks.replyMessage).not.toHaveBeenCalled();
+    expect(lineMessageMocks.replyMessage).toHaveBeenCalledTimes(1);
     expect(lineMessageMocks.pushMessage).not.toHaveBeenCalled();
-    expect(captured).toHaveLength(0);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].binds[5]).toBe('automation');
     expect(db.addTagToFriend).toHaveBeenCalledWith(dbFake, 'friend-1', 'tag-x');
   });
 

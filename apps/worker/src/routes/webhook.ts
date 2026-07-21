@@ -593,15 +593,6 @@ async function handleEvent(
         || responseSchedule.outsideHoursMode === 'none'
       )
     );
-    const automaticSendSuppressed = !!(
-      responseSchedule?.isEnabled
-      && !businessHoursSuppressed
-      && (
-        responseSchedule.outsideHoursMode === 'away_message'
-        || responseSchedule.outsideHoursMode === 'none'
-      )
-    );
-
     const incomingSource = matchedRule && !skipAutoReply
       ? AUTO_REPLY_KEYWORD_SOURCE
       : UNMATCHED_USER_SOURCE;
@@ -617,12 +608,11 @@ async function handleEvent(
       .run();
 
     // Cross-account trigger: send message from another account via UUID.
-    // response schedule が自動送信を止める時間帯は未読へ落とす (下の gate 経由)。
+    // 営業時間内 (businessHoursSuppressed) は自動送信せず未読へ落とす (下の gate 経由)。
     if (
       incomingText === '体験を完了する'
       && lineAccountId
       && !businessHoursSuppressed
-      && !automaticSendSuppressed
     ) {
       try {
         const friendRecord = await db.prepare('SELECT user_id FROM friends WHERE id = ?').bind(friend.id).first<{ user_id: string | null }>();
@@ -821,15 +811,13 @@ async function handleEvent(
 
     // イベントバス発火: message_received
     // Pass replyToken only when auto_reply didn't actually consume it.
-    // response schedule の自動送信停止合図を event-bus にも渡し、
+    // businessHoursSuppressed は営業時間内にオペレーターへ回した合図 → event-bus 側で
     // message_received automation の send_message を抑止する (HIGH-1)。
     await fireEvent(db, 'message_received', {
       friendId: friend.id,
       eventData: businessHoursSuppressed
         ? { text: incomingText, matched, businessHoursSuppressed: true }
-        : automaticSendSuppressed
-          ? { text: incomingText, matched, automaticSendSuppressed: true }
-          : { text: incomingText, matched },
+        : { text: incomingText, matched },
       replyToken: replyTokenConsumed ? undefined : event.replyToken,
     }, lineAccessToken, lineAccountId);
 
