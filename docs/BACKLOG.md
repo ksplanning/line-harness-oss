@@ -789,6 +789,12 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **残**: Apps Script（即時通知）の owner 自身による設置は owner 任意作業として残る（コード・手順書は完成済み・ポーリング経路のみで双方向実証済み）。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_080800_selfform-w4a-friend-ledger-sync.md`（Box working folder 386663013201・box_file_id_md 2358668404572 / box_file_id_html 2358663208213）。
 
+## selfform-w4b-answers-sheet-join — 回答ブロックのシート結合同期（2026-07-21 closer / ✅ status: completed）
+- **owner の「1人=1行・左=友だち台帳/右=回答」を実シートで稼働化**: reviewer R1 PASS 済み main HEAD `c971e358` を両テナント4面デプロイ + migration 120/122_friend_imports/123_ai_faq_draft_review_audit/123_auto_reply_response_messages を additive 適用（KS friends 142件・piecemaker friends 5件・行数不変）。KS worker Version `80fc6c82-50ff-491d-9bd1-af67b4b8d2d7` / KS admin `b64b10d1` / piecemaker worker Version `aaa29097-7ee1-443b-86db-d75edbfb13ec` / piecemaker admin `99aa6834`。4面 health 200。
+- **owner の実シート（1bJCZHSqVSZstcFcI3c1xlEZKByNdbCMqGC4Sc9NtnGU）実測**: 使い捨て内製フォームへあやこが回答→あやこの既存友だち行の右側へ見出し名ベースで回答列が自動結合出力（行数不変）。再回答3回連続で同一行更新のみ（複製0）。自社列を回答列の左へ挿入しても見出し名一致で追従・値不変。撤収でconnection/form DELETE・挿入2列削除・read-backでbaselineとbyte一致を確認。
+- **残**: シート編集からの逆同期・見出し名変更時の警告挙動はW4aで同一経路の実証済みのため本ラウンドは対象外（次回追加検証余地）。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_114500_selfform-w4b-answers-sheet-join.md`（Box working folder 386663013201）。
+
 ## faq-personal-context — 自動応答AIへの本人コンテキスト注入（2026-07-21 closer / ✅ status: completed）
 - **owner の「LINEユーザーの個人情報・カスタムフィールド・過去フォーム回答も含めて欲しい」に対応**: FAQ AI回答生成時に質問者本人のfriend_idで①表示名②カスタムフィールド値③過去フォーム回答（Formaloo/自社フォーム）を直接assemble（検索空間には混ぜず、friend_id exact assertで他人PIIの構造的混入を排除）。不一致/欠落時は注入なしで従来動作にfail-safe。append-only監査ログ（本文値は保存せずメタデータのみ）。管理設定でON/OFF・対象カスタムフィールド選択が可能（既定ON・全カスタムフィールド+回答要旨）。migration 122（`faq_personal_context_audit_log`・additive）。
 - **4面デプロイ**: ks worker Version `6b9c983d-cfbb-4a5f-9bde-7d1e71c41b27` / piecemaker worker Version `eb5396d1-4dce-4428-9a61-336134dfa92c` / ks admin `https://be8af81f.line-harness-ks-admin.pages.dev` / piecemaker admin `https://d6a6ded1.line-harness-piecemaker-admin.pages.dev`。4面 health 200。
