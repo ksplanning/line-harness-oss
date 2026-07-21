@@ -11,6 +11,7 @@ import {
 } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { buildOutboundMessage, OUTBOUND_MESSAGE_TYPES } from '../services/outbound-message.js';
+import { guardFlexContent } from '../utils/flex-persist-guard.js';
 
 const templatePacks = new Hono<Env>();
 
@@ -27,8 +28,8 @@ function accountScopeReject(existing: TemplatePack, accountId: string | null): R
 }
 
 /**
- * items 配列を検証して PackItemInput[] に正規化する。送信 engine が扱える全 type を共通
- * outbound renderer で検証し、不正 content や未知 type は保存前に fail-closed にする。
+ * items 配列を検証して PackItemInput[] に正規化する。Flex の保存ポリシーは専用 guard、
+ * その他の type は共通 outbound renderer で検証し、保存前に fail-closed にする。
  */
 function validateItems(raw: unknown): PackItemInput[] {
   if (!Array.isArray(raw)) throw new Error('items must be an array');
@@ -42,7 +43,12 @@ function validateItems(raw: unknown): PackItemInput[] {
     if (typeof type !== 'string' || !allowedTypes.has(type)) throw new Error('messageType is not supported');
     if (typeof content !== 'string' || content.length === 0) throw new Error('messageContent is required');
     try {
-      buildOutboundMessage(type, content);
+      if (type === 'flex') {
+        const guard = guardFlexContent(content);
+        if (!guard.ok) throw new Error(guard.messageJa);
+      } else {
+        buildOutboundMessage(type, content);
+      }
     } catch {
       throw new Error(`messageContent is invalid for ${type} type`);
     }

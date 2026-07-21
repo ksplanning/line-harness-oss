@@ -104,6 +104,18 @@ const BROKEN_PACK_MEDIA_FIXTURES = [
   ['richvideo', JSON.stringify({ baseUrl: 'https://cdn.example.com/richvideo', baseSize: { width: 1040, height: 1040 }, actions: [] })],
 ] as const;
 
+const FLEX_REJECTED_BY_SAVE_POLICY = JSON.stringify({
+  type: 'bubble',
+  body: {
+    type: 'box',
+    layout: 'vertical',
+    contents: [{
+      type: 'button',
+      action: { type: 'uri', label: 'LINEを開く', uri: 'line://nv/location' },
+    }],
+  },
+});
+
 beforeEach(() => {
   hoisted.packs.clear();
   hoisted.fetchCalls.length = 0;
@@ -139,6 +151,19 @@ describe('template-packs CRUD (account-scoped)', () => {
       body: JSON.stringify({ name: 'p', items: [{ messageType: 'flex', messageContent: '{not json' }] }),
     });
     expect(res.status).toBe(400);
+  });
+
+  test('POST keeps Flex URI policy in the persistence guard', async () => {
+    const res = await req('/api/template-packs?accountId=acc-1', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: '保存ポリシー',
+        items: [{ messageType: 'flex', messageContent: FLEX_REJECTED_BY_SAVE_POLICY }],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(hoisted.packs.size).toBe(0);
   });
 
   test.each(PACK_MEDIA_FIXTURES)('POST accepts a valid %s item without rewriting its content bytes', async (messageType, messageContent) => {

@@ -10,6 +10,7 @@ import type { AutoReply as DbAutoReply } from '@line-crm/db';
 import type { AutoReplyResponseMessage } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { buildOutboundMessage, OUTBOUND_MESSAGE_TYPES } from '../services/outbound-message.js';
+import { guardFlexContent } from '../utils/flex-persist-guard.js';
 
 const autoReplies = new Hono<Env>();
 
@@ -36,6 +37,16 @@ interface SerializedAutoReply {
 
 const AUTO_REPLY_MESSAGE_TYPES = new Set<string>(OUTBOUND_MESSAGE_TYPES);
 
+function isValidPersistedResponse(messageType: string, messageContent: string): boolean {
+  try {
+    if (messageType === 'flex') return guardFlexContent(messageContent).ok;
+    buildOutboundMessage(messageType, messageContent);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function validateResponseMessagesShape(input: unknown): string | null {
   if (!Array.isArray(input)) return 'responseMessages は配列で指定してください';
   if (input.length < 1) return '吹き出しは1件以上、最大5件まで指定してください';
@@ -59,9 +70,7 @@ function validateResponseMessages(input: unknown): string | null {
   for (const item of input as Array<Record<string, unknown>>) {
     const messageType = item.messageType as string;
     const messageContent = item.messageContent as string;
-    try {
-      buildOutboundMessage(messageType, messageContent);
-    } catch {
+    if (!isValidPersistedResponse(messageType, messageContent)) {
       return `${messageType} の内容が正しくありません`;
     }
   }
@@ -72,12 +81,10 @@ function validateSingleResponse(messageType: string, messageContent: string): st
   if (messageType === 'silent') return null;
   if (!AUTO_REPLY_MESSAGE_TYPES.has(messageType)) return 'responseType が未対応です';
   if (!messageContent) return 'responseContent が空です';
-  try {
-    buildOutboundMessage(messageType, messageContent);
-    return null;
-  } catch {
+  if (!isValidPersistedResponse(messageType, messageContent)) {
     return `${messageType} の内容が正しくありません`;
   }
+  return null;
 }
 
 function responseMessagesFor(row: DbAutoReply): AutoReplyResponseMessage[] {

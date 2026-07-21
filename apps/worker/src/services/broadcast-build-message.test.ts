@@ -32,6 +32,17 @@ const validRichVideo = JSON.stringify({
     externalLink: { linkUri: 'https://example.com/more', label: '詳しく見る' },
   },
 });
+const legacyFlexWithLineDeepLink = JSON.stringify({
+  type: 'bubble',
+  body: {
+    type: 'box',
+    layout: 'vertical',
+    contents: [{
+      type: 'button',
+      action: { type: 'uri', label: 'LINEを開く', uri: 'line://nv/location' },
+    }],
+  },
+});
 
 describe('T-C4 broadcast buildMessage: new type dispatch (G4/G13/G14)', () => {
   test('video → video Message object', () => {
@@ -215,6 +226,32 @@ describe('D-3 shared outbound renderer: step/auto-reply accepts pack media and f
     expect(() => buildStep('flex', '{}')).toThrow(MessageBuildError);
     expect(() => buildStep('text', 'あ'.repeat(5001))).toThrow(MessageBuildError);
     expect(() => buildBroadcast('text', 'あ'.repeat(5001))).toThrow(MessageBuildError);
+  });
+
+  test.each([null, {}, { type: 'box' }])(
+    'Flex carousel rejects a non-bubble child at send-time structure gate (%j)',
+    (invalidChild) => {
+      expect(() => buildStep('flex', JSON.stringify({
+        type: 'carousel',
+        contents: [invalidChild],
+      }))).toThrow(MessageBuildError);
+    },
+  );
+
+  test('legacy Flex with a line:// deep link remains sendable on every shared-renderer path', () => {
+    const broadcast = buildBroadcast('flex', legacyFlexWithLineDeepLink, '従来リンク');
+    const step = buildStep('flex', legacyFlexWithLineDeepLink, '従来リンク');
+
+    expect(broadcast).toMatchObject({
+      type: 'flex',
+      altText: '従来リンク',
+      contents: {
+        body: {
+          contents: [{ action: { uri: 'line://nv/location' } }],
+        },
+      },
+    });
+    expect(step).toEqual(broadcast);
   });
 
   test('reminder remains outside this pack/auto-reply expansion', () => {

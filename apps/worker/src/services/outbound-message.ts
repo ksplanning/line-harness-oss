@@ -1,5 +1,4 @@
 import type { ImageMapVideo, Message, MessageSender } from '@line-crm/line-sdk';
-import { validateFlex, type FlexContents } from '@line-crm/shared';
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
 import { MessageBuildError, unwrapFlexMessageObject } from '../utils/message-build.js';
 
@@ -43,6 +42,26 @@ function requireOptionalString(value: unknown, label: string, maxLength: number)
   if (typeof value !== 'string' || value.length > maxLength) {
     throw new Error(`${label} は${maxLength}文字以内で指定してください`);
   }
+}
+
+/**
+ * Keep send-time Flex checks structural only. Persist-time content policy lives
+ * in guardFlexContent so legacy rows are not re-judged by today's URL rules.
+ */
+function requireFlexContainer(contents: object): void {
+  const container = contents as Record<string, unknown>;
+  if (container.type === 'bubble') return;
+  if (
+    container.type === 'carousel'
+    && Array.isArray(container.contents)
+    && container.contents.every((item) => (
+      item !== null
+      && typeof item === 'object'
+      && !Array.isArray(item)
+      && (item as Record<string, unknown>).type === 'bubble'
+    ))
+  ) return;
+  throw new Error('contents は bubble または carousel の形式が必要');
 }
 
 function requireNumericId(value: unknown, label: string): string {
@@ -211,9 +230,8 @@ export function buildOutboundMessage(
       const parsed = JSON.parse(messageContent) as unknown;
       const { contents, altText: unwrappedAltText } = unwrapFlexMessageObject(parsed);
       transformFlexContents?.(contents);
+      requireFlexContainer(contents);
       const resolvedAltText = altText || unwrappedAltText || extractFlexAltText(contents);
-      const validation = validateFlex(contents as FlexContents, { altText: resolvedAltText });
-      if (!validation.ok) throw new Error(validation.errors[0].messageJa);
       return attachSender({
         type: 'flex',
         altText: resolvedAltText,

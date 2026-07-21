@@ -75,6 +75,18 @@ const mediaResponseMessages = [
   }) },
 ];
 
+const flexRejectedBySavePolicy = JSON.stringify({
+  type: 'bubble',
+  body: {
+    type: 'box',
+    layout: 'vertical',
+    contents: [{
+      type: 'button',
+      action: { type: 'uri', label: 'LINEを開く', uri: 'line://nv/location' },
+    }],
+  },
+});
+
 beforeEach(() => {
   state.row = null;
   state.createInput = null;
@@ -118,6 +130,20 @@ describe('auto-replies API responseMessages contract', () => {
       expect(result.status).toBe(400);
       expect((await result.json<{ error: string }>()).error).toMatch(/1.*5|最大5/);
     }
+    expect(state.createInput).toBeNull();
+  });
+
+  test.each([
+    { responseMessages: [{ messageType: 'flex', messageContent: flexRejectedBySavePolicy }] },
+    { responseType: 'flex', responseContent: flexRejectedBySavePolicy },
+  ])('POST keeps Flex URI policy in every persistence shape', async (response) => {
+    const result = await request('/api/auto-replies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword: '保存ポリシー', ...response }),
+    });
+
+    expect(result.status).toBe(400);
     expect(state.createInput).toBeNull();
   });
 
