@@ -248,7 +248,7 @@ export default function FormsAdvancedListPage() {
 
   return (
     <div>
-      <Header title="高機能フォーム" description="ドラッグ&ドロップで条件分岐・ファイル添付・埋め込み対応の高機能フォームを作れます" />
+      <Header title="フォームビルダー" description="ドラッグ&ドロップで条件分岐・ファイル添付・埋め込み対応のフォームを作れます" />
 
       {/* N-17: 誠実な限界開示 — 表示フィルタ (画面の仕分け) であってアクセス強制ではない。 */}
       <p data-testid="scope-note" className="text-xs text-gray-400 mb-3">
@@ -348,7 +348,7 @@ export default function FormsAdvancedListPage() {
           </div>
         ) : forms.length === 0 ? (
           <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">
-            このアカウントの高機能フォームはまだありません。「＋ 新規フォーム」から作成してください。
+            フォームビルダーで作ったフォームはまだありません。「＋ 新規フォーム」から作成してください。
           </div>
         ) : (
           <div data-testid="forms-grid" className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">

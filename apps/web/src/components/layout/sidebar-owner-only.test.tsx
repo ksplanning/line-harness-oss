@@ -3,7 +3,7 @@
  * M1 (F6-1 / reviewer Round1) — Sidebar の owner 専用導線隠し。
  *   forms_advanced を持つ custom-role 非 owner に「フォーム連携キー」(/settings/formaloo-workspaces) を
  *   出さない (owner 専用判定を custom-role 分岐より先に評価する / spec §2 導線隠し)。
- *   高機能フォーム (/forms-advanced) は forms_advanced 権限で見えるので、両者の差で回帰を固定する。
+ *   フォームビルダー (/forms-advanced) は forms_advanced 権限で見えるので、両者の差で回帰を固定する。
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, waitFor, cleanup } from '@testing-library/react'
@@ -42,7 +42,9 @@ describe('M1 Sidebar owner 専用導線', () => {
     })
     render(<Sidebar />)
     // 権限解決を待つ (forms_advanced 導線が出るのを起点にする)
-    await waitFor(() => expect(screen.getAllByText('高機能フォーム').length).toBeGreaterThan(0))
+    await waitFor(() => expect(screen.getAllByText('フォームビルダー').length).toBeGreaterThan(0))
+    expect(screen.queryByText('高機能フォーム')).toBeNull()
+    expect(document.querySelectorAll('a[href="/forms-advanced"]').length).toBeGreaterThan(0)
     // owner 専用リンクは非 owner には出ない
     expect(screen.queryByText('フォーム連携キー')).toBeNull()
     expect(document.querySelector('a[href="/settings/sheets"]')).toBeNull()

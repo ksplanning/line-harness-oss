@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * submissions-visibility-fix (T-B1) — /form-submissions (旧レール /api/forms) の空表示に、
- * 高機能フォーム (forms-advanced)「回答データ」への誘導 hint を additive 追加した配線 test。
+ * フォームビルダー (forms-advanced)「回答データ」への誘導 hint を additive 追加した配線 test。
  *   - 旧レール forms=0 は仕様どおり「フォームがまだありません」を出す (二重実装しない)。
  *   - その空表示に /forms-advanced へ向かう Link (data-testid=forms-advanced-hint) が出る (additive)。
  *   - forms が 1 件以上ある時は空表示も hint も出さない (通常一覧を表示・旧レール読取無改変)。
@@ -34,6 +34,7 @@ describe('T-B1 forms-advanced 誘導 hint', () => {
     const hint = screen.getByTestId('forms-advanced-hint')
     expect(hint.getAttribute('href')).toBe('/forms-advanced')
     expect(hint.textContent).toContain('回答データ')
+    expect(hint.parentElement?.textContent).toContain('フォームビルダーの回答')
   })
 
   it('forms が 1 件以上 → 空表示も hint も出さない (旧レール一覧を表示)', async () => {

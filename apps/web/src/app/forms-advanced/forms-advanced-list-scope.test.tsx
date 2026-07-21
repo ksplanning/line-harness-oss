@@ -21,7 +21,7 @@ const pushMock = vi.fn()
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: pushMock }) }))
 vi.mock('next/link', () => ({ default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a> }))
-vi.mock('@/components/layout/header', () => ({ default: () => null }))
+vi.mock('@/components/layout/header', () => ({ default: ({ title }: { title: string }) => <h1>{title}</h1> }))
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
 vi.mock('@/lib/formaloo-advanced-api', () => ({
   formsAdvancedApi: { list: (...a: unknown[]) => listMock(...a), create: (...a: unknown[]) => createMock(...a) },
@@ -47,6 +47,11 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('① loading/null 中は list しない', () => {
+  it('ページ見出しを「フォームビルダー」に統一する', () => {
+    render(<Page />)
+    expect(screen.getByRole('heading', { name: 'フォームビルダー' })).toBeTruthy()
+  })
+
   it('account loading 中は list を呼ばない', async () => {
     mockAccount.loading = true; mockAccount.selectedAccountId = null
     render(<Page />)

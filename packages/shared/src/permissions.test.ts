@@ -23,12 +23,14 @@ describe('permissions — feature keys (単一正典 / 20 feature)', () => {
     // ラベル/説明に余分なキーが無い (drift 防止)
     expect(Object.keys(FEATURE_LABELS).sort()).toEqual([...FEATURE_KEYS].sort());
     expect(Object.keys(FEATURE_DESCRIPTIONS).sort()).toEqual([...FEATURE_KEYS].sort());
+    expect(FEATURE_LABELS.forms_advanced).toBe('フォームビルダー');
+    expect(FEATURE_DESCRIPTIONS.forms_advanced).not.toContain('高機能フォーム');
   });
 
   test('isFeatureKey は 20 のみ true / それ以外 false', () => {
     expect(isFeatureKey('chat')).toBe(true);
     expect(isFeatureKey('staff_admin')).toBe(true);
-    expect(isFeatureKey('forms_advanced')).toBe(true); // F-2 で追加した高機能フォーム
+    expect(isFeatureKey('forms_advanced')).toBe(true); // F-2 で追加したフォームビルダー
     expect(isFeatureKey('nope')).toBe(false);
     expect(isFeatureKey('chat:read')).toBe(false);
   });
@@ -83,7 +85,7 @@ describe('permissions — テンプレート (owner Q2=全部 = 7 本)', () => {
     expect(new Set(sub.features)).toEqual(new Set(FEATURE_KEYS.filter((k) => k !== 'staff_admin')));
   });
 
-  test('フォーム・予約担当 (form_booking) は高機能フォームも扱える', () => {
+  test('フォーム・予約担当 (form_booking) はフォームビルダーも扱える', () => {
     expect(getRoleTemplate('form_booking')!.features).toContain('forms_advanced');
   });
 });

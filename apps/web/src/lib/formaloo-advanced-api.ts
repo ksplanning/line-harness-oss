@@ -2,7 +2,7 @@ import { fetchApi, downloadCsv } from './api'
 import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
 
 // =============================================================================
-// 高機能フォーム (Formaloo-backed) API クライアント (F-2 / T-B1)。fetchApi 経由 (cookie 認証 + CSRF)。
+// フォームビルダー (Formaloo-backed) API クライアント (F-2 / T-B1)。fetchApi 経由 (cookie 認証 + CSRF)。
 // =============================================================================
 
 export type BuilderStatus = 'draft' | 'in_review' | 'published'

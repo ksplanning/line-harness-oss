@@ -5,7 +5,7 @@ import type { SubmissionRow, FormStats, SavedFilter, RowsQuery } from '@/lib/for
 import { formatJstMinute } from '@/lib/datetime'
 
 // =============================================================================
-// DataCockpit (F-4 / T-D1・T-D2) — 高機能フォームの回答データページ本体 (presentational)。
+// DataCockpit (F-4 / T-D1・T-D2) — フォームビルダーの回答データページ本体 (presentational)。
 //   検索/絞り込み/ソート/ページング + 統計カード + CSV 出し入れ + 保存フィルタ + 選択削除。
 //   page.tsx が API を叩いてデータ + コールバックを渡す (テスト容易・fetch 非依存)。
 //   owner 向け anti-generic: 既存管理画面トーン (gray 罫線 / rounded-lg / 44px タップ)。破壊操作は

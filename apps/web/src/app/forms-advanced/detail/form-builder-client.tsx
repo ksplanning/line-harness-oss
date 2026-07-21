@@ -269,7 +269,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
 
   return (
     <div>
-      <Header title="フォームビルダー" description="項目をドラッグ&ドロップして高機能フォームを組み立てます" />
+      <Header title="フォームビルダー" description="項目をドラッグ&ドロップしてフォームを組み立てます" />
       <div className="mb-3">
         <Link href="/forms-advanced" className="text-xs text-gray-500 hover:text-gray-800">← 一覧に戻る</Link>
       </div>

@@ -77,7 +77,7 @@ export default function FormalooAiChatPage() {
       setForms(linked)
       setSelectedFormId(linked[0]?.id ?? '')
       setError(linked.length === 0
-        ? 'AIに聞ける Formaloo 連携済みフォームがありません。先に高機能フォームを Formaloo へ保存してください'
+        ? 'AIに聞ける Formaloo 連携済みフォームがありません。先にフォームビルダーでフォームを Formaloo へ保存してください'
         : null)
     }).catch(() => {
       if (token !== formsTokenRef.current || accountRef.current !== selectedAccountId) return

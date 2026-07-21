@@ -173,4 +173,11 @@ describe('AI chat grandma UX and history', () => {
     expect(m.history).not.toHaveBeenCalled()
     expect((screen.getByRole('button', { name: 'AIに聞く' }) as HTMLButtonElement).disabled).toBe(true)
   })
+
+  test('連携済みフォームがない場合も「フォームビルダー」の呼び名で案内する', async () => {
+    m.listForms.mockResolvedValue([])
+    render(<Page />)
+    expect(await screen.findByText(/先にフォームビルダーでフォームを Formaloo へ保存してください/)).toBeTruthy()
+    expect(screen.queryByText(/高機能フォーム/)).toBeNull()
+  })
 })
