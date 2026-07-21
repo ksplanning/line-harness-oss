@@ -319,7 +319,10 @@ describe('POST /webhook — first-contact existing friends', () => {
 });
 
 describe('POST /webhook — multi-bubble postback auto-reply', () => {
-  test('a matched postback sends response_messages in order with one reply token', async () => {
+  async function postPostback(
+    postback: { data: string; displayText?: string },
+    rules: Array<Record<string, unknown>>,
+  ) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getFriendByLineUserId).mockResolvedValue({
       id: 'friend-1',
@@ -340,21 +343,11 @@ describe('POST /webhook — multi-bubble postback auto-reply', () => {
     const statement = {
       bind: vi.fn(),
       run: vi.fn().mockResolvedValue({}),
-      all: vi.fn().mockResolvedValue({ results: [{
-        id: 'postback-multi',
-        keyword: 'plan=gold',
-        match_type: 'exact',
-        response_type: 'text',
-        response_content: '旧先頭',
-        response_messages: JSON.stringify([
-          { messageType: 'text', messageContent: '申込を受け付けました' },
-          { messageType: 'flex', messageContent: '{"type":"bubble"}' },
-        ]),
-        template_id: null,
-      }] }),
+      all: vi.fn().mockResolvedValue({ results: rules }),
     };
     statement.bind.mockReturnValue(statement);
-    const db = { prepare: vi.fn().mockReturnValue(statement) } as unknown as D1Database;
+    const prepare = vi.fn().mockReturnValue(statement);
+    const db = { prepare } as unknown as D1Database;
     const executionCtx = {
       waitUntil: vi.fn(),
       passThroughOnException: vi.fn(),
@@ -369,7 +362,7 @@ describe('POST /webhook — multi-bubble postback auto-reply', () => {
         events: [{
           type: 'postback',
           replyToken: 'postback-token',
-          postback: { data: 'plan=gold' },
+          postback,
           timestamp: Date.now(),
           source: { type: 'user', userId: 'U-existing' },
           webhookEventId: 'event-postback',
@@ -380,11 +373,55 @@ describe('POST /webhook — multi-bubble postback auto-reply', () => {
     }, { ...baseEnv, DB: db }, executionCtx);
     expect(response.status).toBe(200);
     await (vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>);
+    return { db, prepare };
+  }
+
+  test('[c matched] exact postback data fires the rule and remains out of unread', async () => {
+    const { prepare } = await postPostback({ data: 'plan=gold' }, [{
+      id: 'postback-multi',
+      keyword: 'plan=gold',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: '旧先頭',
+      response_messages: JSON.stringify([
+        { messageType: 'text', messageContent: '申込を受け付けました' },
+        { messageType: 'flex', messageContent: '{"type":"bubble"}' },
+      ]),
+      template_id: null,
+      line_account_id: null,
+      is_active: 1,
+    }]);
 
     expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('postback-token', [
       { messageType: 'text', content: '申込を受け付けました' },
       { messageType: 'flex', content: '{"type":"bubble"}' },
     ]);
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    const incomingSql = prepare.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) =>
+        sql.includes('INSERT INTO messages_log')
+        && sql.includes("'incoming', 'text'")
+        && sql.includes("'postback'"),
+      );
+    expect(incomingSql).toContain("'postback'");
+  });
+
+  test('[c unmatched] displayText is not webhook match data and postback still never creates unread', async () => {
+    await postPostback({ data: 'menu=pricing', displayText: '#料金' }, [{
+      id: 'postback-display-only',
+      keyword: '#料金',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: '料金表です',
+      response_messages: null,
+      template_id: null,
+      line_account_id: null,
+      is_active: 1,
+    }]);
+
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -416,11 +453,13 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     template_id: string | null;
     is_active: number;
     created_at: string;
-  }> = []) {
+  }> = [], autoReplyLoadError = false) {
     const stmt = {
       bind: vi.fn(),
       run: vi.fn().mockResolvedValue({}),
-      all: vi.fn().mockResolvedValue({ results: autoReplies }),
+      all: autoReplyLoadError
+        ? vi.fn().mockRejectedValue(new Error('auto-reply query failed'))
+        : vi.fn().mockResolvedValue({ results: autoReplies }),
       first: vi.fn().mockResolvedValue(null),
     };
     stmt.bind.mockReturnValue(stmt);
@@ -431,6 +470,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     envOverrides: Record<string, unknown>,
     incomingText = '営業時間は？',
     autoReplies: Parameters<typeof makeStmt>[0] = [],
+    autoReplyLoadError = false,
   ) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     existingFriend();
@@ -445,8 +485,14 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       updated_at: '2026-07-02T00:00:00+09:00',
     });
 
-    const stmt = makeStmt(autoReplies);
-    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database;
+    const stmt = makeStmt(autoReplies, autoReplyLoadError);
+    const preparedStatements: Array<{ sql: string; statement: ReturnType<typeof makeStmt> }> = [];
+    const prepare = vi.fn((sql: string) => {
+      const statement = sql.includes('FROM auto_replies') ? stmt : makeStmt();
+      preparedStatements.push({ sql, statement });
+      return statement;
+    });
+    const db = { prepare } as unknown as D1Database;
     const executionCtx = {
       waitUntil: vi.fn(),
       passThroughOnException: vi.fn(),
@@ -483,8 +529,100 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(res.status).toBe(200);
     const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
     await processing;
-    return { db };
+    const incomingStatement = preparedStatements.find(({ sql }) =>
+      sql.includes('INSERT INTO messages_log') && sql.includes("'incoming', 'text'"),
+    )?.statement;
+    return { db, prepare, stmt, incomingStatement, preparedStatements };
   }
+
+  test('[a] full-width hash and edge whitespace/newlines still classify an exact registered keyword', async () => {
+    const { incomingStatement, prepare } = await postTextWebhook({}, ' \n#予約\r\n', [{
+      id: 'auto-normalized',
+      keyword: '＃予約',
+      match_type: 'exact',
+      response_type: 'silent',
+      response_content: '',
+      response_messages: null,
+      template_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    }]);
+
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      ' \n#予約\r\n',
+      'auto_reply_keyword',
+      expect.any(String),
+    );
+    expect(incomingStatement?.run).toHaveBeenCalledTimes(1);
+    const preparedSql = prepare.mock.calls.map(([sql]) => String(sql));
+    const ruleLookupIndex = preparedSql.findIndex((sql) => sql.includes('FROM auto_replies'));
+    const incomingInsertIndex = preparedSql.findIndex((sql) =>
+      sql.includes('INSERT INTO messages_log') && sql.includes("'incoming', 'text'"),
+    );
+    expect(ruleLookupIndex).toBeGreaterThanOrEqual(0);
+    expect(incomingInsertIndex).toBeGreaterThan(ruleLookupIndex);
+    expect(preparedSql[incomingInsertIndex]).toMatch(/NULL, NULL, \?, \?\)/);
+  });
+
+  test('[a negative] normalization never drops a meaningful hash from a different phrase', async () => {
+    const { db, incomingStatement } = await postTextWebhook({}, '予約', [{
+      id: 'auto-near-miss',
+      keyword: '＃予約',
+      match_type: 'exact',
+      response_type: 'silent',
+      response_content: '',
+      response_messages: null,
+      template_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    }]);
+
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '予約',
+      'user_unmatched',
+      expect.any(String),
+    );
+  });
+
+  test('[fail-closed] an auto-reply lookup error logs the future message and leaves it unread', async () => {
+    const { db, incomingStatement } = await postTextWebhook({}, '#予約', [], true);
+
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '#予約',
+      'user_unmatched',
+      expect.any(String),
+    );
+    expect(incomingStatement?.run).toHaveBeenCalledTimes(1);
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+  });
+
+  test('[b] an account-mismatched rule stays outside the candidate query and the message stays unread', async () => {
+    vi.mocked(getLineAccounts).mockResolvedValue([{
+      id: 'acc-1',
+      is_active: 1,
+      channel_secret: 'env-default-secret',
+      channel_access_token: 'acc-1-token',
+    }] as never);
+
+    // Empty results model a rule scoped to another account after SQL filtering.
+    const { db, prepare, stmt } = await postTextWebhook({}, '#予約', []);
+    const autoReplySql = prepare.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) => sql.includes('FROM auto_replies'));
+
+    expect(autoReplySql).toMatch(/WHERE is_active = 1/);
+    expect(autoReplySql).toMatch(/line_account_id IS NULL OR line_account_id = \?/);
+    expect(stmt.bind).toHaveBeenCalledWith('acc-1');
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+  });
 
   test('flag OFF keeps text webhook path untouched and does not import/call FAQ reply', async () => {
     const { db } = await postTextWebhook({});
@@ -529,7 +667,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     vi.mocked(expandVariables).mockImplementation((content) => `展開:${content}`);
     vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
 
-    await postTextWebhook({}, '資料', [{
+    const { incomingStatement } = await postTextWebhook({}, '資料', [{
       id: 'auto-multi',
       keyword: '資料',
       match_type: 'exact',
@@ -551,6 +689,14 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       { messageType: 'flex', content: '展開:{"type":"bubble"}' },
       { messageType: 'text', content: '展開:B' },
     ]);
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '資料',
+      'auto_reply_keyword',
+      expect.any(String),
+    );
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
   test('a legacy matched rule still sends exactly its original single response', async () => {
@@ -591,6 +737,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     }]);
 
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
   test('FAQ hit consumes reply token and keeps the chat out of unread inbox', async () => {
@@ -664,22 +811,22 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     };
   }
 
-  test('gate ON + within business hours → auto-reply/FAQ suppressed, chat unread, businessHoursSuppressed flag set', async () => {
+  test('[e] gate ON + within business hours suppresses delivery but not registered-keyword classification', async () => {
     vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(schedule({}) as never);
     vi.mocked(isWithinBusinessHours).mockReturnValue(true);
 
-    // 営業時間内: たとえマッチする auto-reply があってもオペレーター対応に回す。
+    // 営業時間内: LINE 返信は止めるが、固定キーワードを自発メッセージへ誤分類しない。
     const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' }, '営業時間', SILENT_RULE as never);
 
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
     expect(tryFaqReply).not.toHaveBeenCalled();
-    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
     expect(fireEvent).toHaveBeenCalledWith(
       db,
       'message_received',
       {
         friendId: 'friend-1',
-        eventData: { text: '営業時間', matched: false, businessHoursSuppressed: true },
+        eventData: { text: '営業時間', matched: true, businessHoursSuppressed: true },
         replyToken: 'reply-token',
       },
       'env-default-token',
@@ -693,17 +840,25 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     );
     vi.mocked(isWithinBusinessHours).mockReturnValue(false);
 
-    const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' });
+    const { db, preparedStatements } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' });
 
     expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
     expect(tryFaqReply).not.toHaveBeenCalled();
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    const handledUpdate = preparedStatements.find(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    );
+    expect(handledUpdate?.statement.bind).toHaveBeenCalledWith(
+      'auto_reply_handled',
+      expect.any(String),
+    );
+    expect(handledUpdate?.statement.run).toHaveBeenCalledTimes(1);
     expect(fireEvent).toHaveBeenCalledWith(
       db,
       'message_received',
       {
         friendId: 'friend-1',
-        eventData: { text: '営業時間は？', matched: true },
+        eventData: { text: '営業時間は？', matched: true, automaticSendSuppressed: true },
         replyToken: undefined,
       },
       'env-default-token',
@@ -721,11 +876,29 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
-  test('gate ON + outside hours + none → chat unread and nothing sent', async () => {
+  test('[e] gate ON + outside hours + none sends nothing but keeps a registered keyword out of unread', async () => {
     vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(schedule({ outsideHoursMode: 'none' }) as never);
     vi.mocked(isWithinBusinessHours).mockReturnValue(false);
 
     const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' }, '営業時間', SILENT_RULE as never);
+
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+    expect(tryFaqReply).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(fireEvent).toHaveBeenCalledWith(
+      db,
+      'message_received',
+      expect.objectContaining({ eventData: expect.objectContaining({ automaticSendSuppressed: true }) }),
+      'env-default-token',
+      null,
+    );
+  });
+
+  test('[e negative] gate ON + outside hours + none keeps an unrelated message unread', async () => {
+    vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(schedule({ outsideHoursMode: 'none' }) as never);
+    vi.mocked(isWithinBusinessHours).mockReturnValue(false);
+
+    const { db } = await postTextWebhook({ FAQ_BOT_ENABLED: 'true' }, '通常の相談です', SILENT_RULE as never);
 
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
     expect(tryFaqReply).not.toHaveBeenCalled();
@@ -747,11 +920,17 @@ describe('POST /webhook — FAQ bot flag gate', () => {
 
 describe('POST /webhook — G28 gate on the cross-account 体験 trigger (reviewer R1)', () => {
   // user_id + otherFriends を返す db (cross-account トリガーが実際に送信できる状態)。
-  function crossAccountDb(): D1Database {
+  function crossAccountDb(
+    executed: Array<{ sql: string; binds: unknown[] }>,
+    autoReplies: Array<Record<string, unknown>>,
+    failHandledUpdate: boolean,
+  ): D1Database {
     return {
       prepare(sql: string) {
+        let binds: unknown[] = [];
         const api = {
-          bind() {
+          bind(...values: unknown[]) {
+            binds = values;
             return api;
           },
           async first() {
@@ -759,12 +938,17 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
             return null;
           },
           async all() {
+            if (/FROM auto_replies/.test(sql)) return { results: autoReplies };
             if (/la\.channel_access_token/.test(sql)) {
               return { results: [{ line_user_id: 'U2', channel_access_token: 'tok2' }] };
             }
             return { results: [] };
           },
           async run() {
+            executed.push({ sql, binds });
+            if (failHandledUpdate && /UPDATE messages_log SET source/.test(sql)) {
+              throw new Error('marker update failed');
+            }
             return {};
           },
         };
@@ -773,7 +957,11 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
     } as unknown as D1Database;
   }
 
-  async function postExperience(scheduleOverride: unknown, within: boolean) {
+  async function postExperience(
+    scheduleOverride: unknown,
+    within: boolean,
+    options: { autoReplies?: Array<Record<string, unknown>>; failHandledUpdate?: boolean } = {},
+  ) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     // fast path で matchedAccountId='acc-1' を bind させ lineAccountId を truthy にする
     // (baseEnv.LINE_CHANNEL_SECRET='env-default-secret' と channel_secret を一致させる)。
@@ -812,7 +1000,12 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
     vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(scheduleOverride as never);
     vi.mocked(isWithinBusinessHours).mockReturnValue(within);
 
-    const db = crossAccountDb();
+    const executed: Array<{ sql: string; binds: unknown[] }> = [];
+    const db = crossAccountDb(
+      executed,
+      options.autoReplies ?? [],
+      options.failHandledUpdate ?? false,
+    );
     const executionCtx = {
       waitUntil: vi.fn(),
       passThroughOnException: vi.fn(),
@@ -845,7 +1038,7 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
     expect(res.status).toBe(200);
     const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
     await processing;
-    return db;
+    return { db, executed };
   }
 
   const enabled = {
@@ -859,16 +1052,64 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
   };
 
   test('within business hours → cross-account trigger is suppressed and chat goes to unread', async () => {
-    const db = await postExperience(enabled, true);
+    const { db } = await postExperience(enabled, true);
     expect(lineClientMocks.pushMessage).not.toHaveBeenCalled(); // 別アカウントへ送らない
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled(); // 確認返信もしない
     expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1'); // オペレーター対応 (未読)
   });
 
+  test('outside hours + none → cross-account trigger is also suppressed and chat goes to unread', async () => {
+    const { db } = await postExperience({ ...enabled, outsideHoursMode: 'none' }, false);
+    expect(lineClientMocks.pushMessage).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+  });
+
   test('gate disabled → cross-account trigger fires as before (non-regression)', async () => {
-    await postExperience({ ...enabled, isEnabled: false }, false);
+    const { executed } = await postExperience({ ...enabled, isEnabled: false }, false);
     expect(lineClientMocks.pushMessage).toHaveBeenCalledTimes(1); // 別アカウントへ push
     expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1); // 確認返信
     expect(upsertChatOnMessage).not.toHaveBeenCalled(); // trigger 内で return
+    expect(executed.some(({ sql, binds }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?')
+      && binds[0] === 'auto_reply_handled',
+    )).toBe(true);
+  });
+
+  test('an unmatched built-in trigger stays unread if its handled marker cannot be persisted', async () => {
+    const { db, executed } = await postExperience(
+      { ...enabled, isEnabled: false },
+      false,
+      { failHandledUpdate: true },
+    );
+
+    expect(executed.some(({ sql }) => sql.includes('UPDATE messages_log SET source'))).toBe(true);
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(fireEvent).not.toHaveBeenCalled();
+  });
+
+  test('an already matched registered keyword never becomes unread when the built-in trigger succeeds', async () => {
+    const { executed } = await postExperience(
+      { ...enabled, isEnabled: false },
+      false,
+      {
+        failHandledUpdate: true,
+        autoReplies: [{
+          id: 'trigger-rule',
+          keyword: '体験を完了する',
+          match_type: 'exact',
+          response_type: 'silent',
+          response_content: '',
+          response_messages: null,
+          template_id: null,
+          line_account_id: 'acc-1',
+          is_active: 1,
+          created_at: '2026-07-21T00:00:00+09:00',
+        }],
+      },
+    );
+
+    expect(executed.some(({ sql }) => sql.includes('UPDATE messages_log SET source'))).toBe(false);
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 });

@@ -251,11 +251,14 @@ async function executeAction(
       break;
 
     case 'send_message': {
-      // G28 応答時間帯 (HIGH-1): 営業時間内にオペレーターへ回した message_received は
-      // webhook で auto-reply/FAQ を抑止済み。automation の send_message も同様に抑止し、
+      // G28 応答時間帯 (HIGH-1): webhook で auto-reply/FAQ を抑止した
+      // message_received は、automation の send_message も同様に抑止し、
       // 「正面玄関を閉めても automation の裏口から自動返信が出る」穴を塞ぐ。タグ付与など
       // 非送信 action は通す (この case のみ skip)。
-      if (payload.eventData?.businessHoursSuppressed === true) break;
+      if (
+        payload.eventData?.businessHoursSuppressed === true
+        || payload.eventData?.automaticSendSuppressed === true
+      ) break;
       if (!lineAccessToken || !friendId) break;
       const friend = await db
         .prepare('SELECT line_user_id, display_name, user_id, metadata FROM friends WHERE id = ?')

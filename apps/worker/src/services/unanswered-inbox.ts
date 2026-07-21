@@ -1,28 +1,31 @@
+import {
+  AUTO_REPLY_HANDLED_SOURCE,
+  AUTO_REPLY_KEYWORD_SOURCE,
+  UNMATCHED_USER_SOURCE,
+  matchesAutoReplyKeyword,
+} from './auto-reply-keyword-match.js';
+
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 2000;
 
 // auto_reply にマッチした incoming は「人間対応不要」として未対応から除外する。
-// 判定戦略は 2 系統:
+// 判定戦略は 3 系統:
 //
 // (A) 応答ありルール (response_type != 'silent'):
 //     incoming 直後に source='auto_reply' delivery_type='reply' の outgoing が
 //     messages_log に残っているかを「証拠」として確認する。ルール keyword が
 //     後で書き換えられても歴史的判定がブレない。
 //
-// (B) keyword 一致 (応答なしルール / scope 外ルール / 古い証拠なし):
-//     content がいずれかの active 自動返信 keyword と一致するなら、
-//     button label / FAQ キーワードと見なして除外。
-//     - response_type は問わない (応答ありルールも証拠が時間窓外/欠損な
-//       ケースを救済)
-//     - line_account_id scope は無視 (1アカに登録された button label を
-//       別アカでも構造化メッセと判定)
-//     - created_at による後付けルールガードも撤廃 (本番事故 2026-05-08 #2:
-//       ルールが re-create されて created_at が新しくなると、古い incoming
-//       が「ルール後付け」扱いされてフィルタを通り抜けていた。現実的には
-//       button label / FAQ keyword は安定運用なので、現在の active キーワード
-//       が一致したら歴史問わず構造化メッセと判定する。)
+// (B) 今後の incoming:
+//     webhook が受信時点の判定を source に永続化する。auto_reply_keyword と
+//     auto_reply_handled は除外する。user_unmatched は現在のルールで再判定せず、
+//     FAQ の返信証拠だけを確認して、それ以外は未対応として残す。
+//
+// (C) marker 導入前の incoming:
+//     過去表示を遡及変更しないため、従来どおり raw 文字列・全 account の現在 active
+//     keyword で判定する。新しい正規化や account scope は過去行へ適用しない。
 const ACTIVE_AUTO_REPLIES_SQL = `
-  SELECT keyword, match_type
+  SELECT keyword, match_type, line_account_id, is_active
   FROM auto_replies
   WHERE is_active = 1
 `;
@@ -30,6 +33,8 @@ const ACTIVE_AUTO_REPLIES_SQL = `
 interface ActiveRuleRow {
   keyword: string;
   match_type: string;
+  line_account_id: string | null;
+  is_active: number;
 }
 
 function matchesAnyKeyword(
@@ -38,11 +43,10 @@ function matchesAnyKeyword(
   rules: ActiveRuleRow[],
 ): boolean {
   if (messageType !== 'text') return false;
-  for (const ar of rules) {
-    if (ar.match_type === 'exact' && ar.keyword === content) return true;
-    if (ar.match_type === 'contains' && content.includes(ar.keyword)) return true;
-  }
-  return false;
+  return rules.some((rule) => matchesAutoReplyKeyword(content, rule, null, {
+    normalize: false,
+    enforceAccountScope: false,
+  }));
 }
 
 // 同じ incoming に対して outgoing 'auto_reply' (delivery_type='reply') が
@@ -74,10 +78,12 @@ export const HUMAN_APPROVED_REPLY_SQL =
 function consumeAutoReplyEvidence(
   incomingAt: string,
   remainingOutgoings: { created_at: string; source: string }[],
+  requiredSource?: string,
 ): boolean {
   const inMs = new Date(incomingAt).getTime();
   for (let i = 0; i < remainingOutgoings.length; i++) {
     const out = remainingOutgoings[i];
+    if (requiredSource !== undefined && out.source !== requiredSource) continue;
     const win = out.source === 'faq_bot' ? FAQ_AI_EVIDENCE_WINDOW_MS : AUTO_REPLY_EVIDENCE_WINDOW_MS;
     const outMs = new Date(out.created_at).getTime();
     if (outMs >= inMs && outMs - inMs <= win) {
@@ -135,7 +141,7 @@ const RECENT_INCOMINGS_SQL = `
     WHERE direction='outgoing' AND ${HUMAN_APPROVED_REPLY_SQL}
     GROUP BY friend_id
   )
-  SELECT ml.friend_id, ml.message_type, ml.content, ml.created_at
+  SELECT ml.friend_id, ml.message_type, ml.content, ml.created_at, ml.source
   FROM messages_log ml
   LEFT JOIN last_manual lm ON lm.friend_id = ml.friend_id
   WHERE ml.direction='incoming'
@@ -216,6 +222,7 @@ interface RawIncomingRow {
   message_type: string;
   content: string;
   created_at: string;
+  source: string | null;
 }
 
 function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): UnansweredRow[] {
@@ -243,9 +250,9 @@ function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): Unan
  *
  * 1. CANDIDATES_SQL で「last_incoming > last_manual」の friend を取る。
  * 2. 候補 friend に scope して "last_manual 以降の incoming" と "auto_reply outgoing" を取る。
- * 3. silent ルール一覧を取る (応答ありルールは outgoing 証拠で判定するので不要)。
- * 4. JS で各 incoming を判定: 応答あり証拠 OR silent ルール match で「マッチ済」、
- *    マッチしない最新の incoming を preview として採用。全部マッチした thread のみ除外。
+ * 3. marker 導入前の互換判定にだけ使う active ルール一覧を取る。
+ * 4. JS で各 incoming を判定: 将来行は永続 marker、過去行は応答証拠または raw keyword
+ *    match を使う。マッチしない最新 incoming を preview にし、全部マッチした thread を除外。
  */
 async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
   const candidatesResult = await db.prepare(CANDIDATES_SQL).all<RawCandidateRow>();
@@ -288,8 +295,33 @@ async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
     // incomings は新しい順に処理し、各 outgoing を 1 incoming にしか割り当てない。
     const remainingOutgoings = [...(autoReplyOutgoingsByFriend.get(c.friend_id) ?? [])];
 
+    // marker で keyword match / handled と確定している行へ auto_reply 証拠を先に予約する。
+    // これをしないと、別の unmatched/legacy 行が少し遅れて書かれた reply を横取りし、
+    // 本当の未読まで消す。古い順に割り当てて 1:1 を保つ。
+    for (let index = incomings.length - 1; index >= 0; index--) {
+      const incoming = incomings[index];
+      if (
+        incoming.source === AUTO_REPLY_KEYWORD_SOURCE
+        || incoming.source === AUTO_REPLY_HANDLED_SOURCE
+      ) {
+        consumeAutoReplyEvidence(incoming.created_at, remainingOutgoings, 'auto_reply');
+      }
+    }
+
     let nonMatching: RawIncomingRow | undefined;
     for (const i of incomings) {
+      if (
+        i.source === AUTO_REPLY_KEYWORD_SOURCE
+        || i.source === AUTO_REPLY_HANDLED_SOURCE
+      ) continue;
+      if (i.source === UNMATCHED_USER_SOURCE) {
+        // A future unmatched row must never consume a delayed keyword reply.
+        // faq_bot is distinct evidence that this otherwise-unmatched question
+        // was answered automatically; away/structured actions use handled marker.
+        if (consumeAutoReplyEvidence(i.created_at, remainingOutgoings, 'faq_bot')) continue;
+        nonMatching = i;
+        break;
+      }
       if (consumeAutoReplyEvidence(i.created_at, remainingOutgoings)) continue;
       if (matchesAnyKeyword(i.content, i.message_type, activeRules)) continue;
       // この incoming は人間対応必要 → preview として採用 (最新の非マッチ)

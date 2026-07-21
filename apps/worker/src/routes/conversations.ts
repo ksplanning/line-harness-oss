@@ -1,7 +1,15 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
+import {
+  AUTO_REPLY_HANDLED_SOURCE,
+  AUTO_REPLY_KEYWORD_SOURCE,
+} from '../services/auto-reply-keyword-match.js';
 
 const conversations = new Hono<Env>();
+
+function operatorUnreadSourcePredicate(column = 'source'): string {
+  return `(${column} IS NULL OR ${column} NOT IN ('postback', '${AUTO_REPLY_KEYWORD_SOURCE}', '${AUTO_REPLY_HANDLED_SOURCE}'))`;
+}
 
 // GET /api/conversations?lineAccountId=&minHoursSince=&maxHoursSince=&limit=&offset=
 conversations.get('/api/conversations', async (c) => {
@@ -21,13 +29,13 @@ conversations.get('/api/conversations', async (c) => {
         : '';
 
     const sql = `
-      -- conversations queue (要対応の自発メッセージ) は postback (rich menu tap) を除外する。
-      -- postback は button 押下で「人間の返信を要する自発メッセージ」ではないため。
+      -- conversations queue (要対応の自発メッセージ) は postback と、webhook が
+      -- 受信時点で登録 keyword / 処理済み固定動作と確定した行を除外する。
       WITH last_incoming AS (
         SELECT friend_id, MAX(created_at) AS at
         FROM messages_log
         WHERE direction = 'incoming'
-          AND (source IS NULL OR source != 'postback')
+          AND ${operatorUnreadSourcePredicate()}
         GROUP BY friend_id
       ),
       last_human AS (
@@ -43,11 +51,11 @@ conversations.get('/api/conversations', async (c) => {
           SELECT friend_id, MAX(created_at) AS mx
           FROM messages_log
           WHERE direction = 'incoming'
-            AND (source IS NULL OR source != 'postback')
+            AND ${operatorUnreadSourcePredicate()}
           GROUP BY friend_id
         ) lm ON lm.friend_id = ml.friend_id AND lm.mx = ml.created_at
         WHERE ml.direction = 'incoming'
-          AND (ml.source IS NULL OR ml.source != 'postback')
+          AND ${operatorUnreadSourcePredicate('ml.source')}
       )
       SELECT
         f.id AS friend_id,
@@ -87,7 +95,7 @@ conversations.get('/api/conversations', async (c) => {
       WITH last_incoming AS (
         SELECT friend_id, MAX(created_at) AS at FROM messages_log
         WHERE direction = 'incoming'
-          AND (source IS NULL OR source != 'postback')
+          AND ${operatorUnreadSourcePredicate()}
         GROUP BY friend_id
       ),
       last_human AS (

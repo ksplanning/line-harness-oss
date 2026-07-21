@@ -23,6 +23,12 @@ import {
 } from '@line-crm/db';
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
+import {
+  AUTO_REPLY_HANDLED_SOURCE,
+  AUTO_REPLY_KEYWORD_SOURCE,
+  UNMATCHED_USER_SOURCE,
+  matchesAutoReplyKeyword,
+} from '../services/auto-reply-keyword-match.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { createFaqAiRuntime, type FaqAiRuntime } from '../services/llm/runtime.js';
 import type { Env } from '../index.js';
@@ -406,6 +412,8 @@ async function handleEvent(
         response_content: string;
         response_messages: string | null;
         template_id: string | null;
+        line_account_id: string | null;
+        is_active: number;
       }>();
 
     // postback の incoming 自体を messages_log に記録する。Rich Menu のタップで
@@ -425,9 +433,7 @@ async function handleEvent(
     }
 
     for (const rule of autoReplies.results) {
-      const isMatch = rule.match_type === 'exact'
-        ? postbackData === rule.keyword
-        : postbackData.includes(rule.keyword);
+      const isMatch = matchesAutoReplyKeyword(postbackData, rule, lineAccountId);
 
       if (isMatch) {
         try {
@@ -544,13 +550,47 @@ async function handleEvent(
     const now = jstNow();
     const logId = crypto.randomUUID();
 
-    // 受信メッセージをログに記録
+    // 未読判定と返信は、受信時点の同じ rule 判定を使う。照合に失敗した場合は
+    // user_unmatched として記録し、本当の未読を消さない (fail-closed)。
+    const autoReplyQuery = lineAccountId
+      ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
+      : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
+    type TextAutoReplyRule = {
+      id: string;
+      keyword: string;
+      match_type: 'exact' | 'contains';
+      response_type: string;
+      response_content: string;
+      response_messages: string | null;
+      template_id: string | null;
+      line_account_id: string | null;
+      is_active: number;
+      created_at: string;
+    };
+    let matchedRule: TextAutoReplyRule | undefined;
+    try {
+      const autoReplyStmt = db.prepare(autoReplyQuery);
+      const autoReplies = await (lineAccountId ? autoReplyStmt.bind(lineAccountId) : autoReplyStmt)
+        .all<TextAutoReplyRule>();
+      matchedRule = (autoReplies.results ?? []).find((rule) =>
+        matchesAutoReplyKeyword(incomingText, rule, lineAccountId),
+      );
+    } catch (err) {
+      console.error('Failed to load auto-reply rules for unread classification', err);
+    }
+
+    const incomingSource = matchedRule
+      ? AUTO_REPLY_KEYWORD_SOURCE
+      : UNMATCHED_USER_SOURCE;
+
+    // 判定結果を incoming 自身へ保存する。集計画面は今後この marker を読み、
+    // ルール編集後に過去の未読判定を遡及変更しない。
     await db
       .prepare(
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?)`,
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, ?, ?)`,
       )
-      .bind(logId, friend.id, incomingText, now)
+      .bind(logId, friend.id, incomingText, incomingSource, now)
       .run();
 
     // 応答時間帯 (G28): 営業時間内かを先に判定 (schedule は 1 度だけ読む)。営業時間内
@@ -561,10 +601,23 @@ async function handleEvent(
     const businessHoursSuppressed = !!(
       responseSchedule?.isEnabled && isWithinBusinessHours(responseSchedule, Date.now())
     );
+    const automaticSendSuppressed = !!(
+      responseSchedule?.isEnabled
+      && !businessHoursSuppressed
+      && (
+        responseSchedule.outsideHoursMode === 'away_message'
+        || responseSchedule.outsideHoursMode === 'none'
+      )
+    );
 
-    // Cross-account trigger: send message from another account via UUID
-    // 営業時間内 (businessHoursSuppressed) は自動送信せず未読へ落とす (下の gate 経由)。
-    if (incomingText === '体験を完了する' && lineAccountId && !businessHoursSuppressed) {
+    // Cross-account trigger: send message from another account via UUID.
+    // response schedule が自動送信を止める時間帯は未読へ落とす (下の gate 経由)。
+    if (
+      incomingText === '体験を完了する'
+      && lineAccountId
+      && !businessHoursSuppressed
+      && !automaticSendSuppressed
+    ) {
       try {
         const friendRecord = await db.prepare('SELECT user_id FROM friends WHERE id = ?').bind(friend.id).first<{ user_id: string | null }>();
         if (friendRecord?.user_id) {
@@ -608,6 +661,25 @@ async function handleEvent(
               ],
             },
           }))]);
+          // This built-in fixed keyword is a handled structured action too. Rewrite
+          // the provisional fail-closed marker only after every external send succeeds.
+          if (incomingSource === UNMATCHED_USER_SOURCE) {
+            try {
+              await db
+                .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
+                .bind(AUTO_REPLY_HANDLED_SOURCE, logId)
+                .run();
+            } catch (err) {
+              // The external send already succeeded, so do not retry another send path.
+              // Leave the provisional source fail-closed and surface it as unread instead.
+              console.error('Failed to mark cross-account trigger as handled', err);
+              try {
+                await upsertChatOnMessage(db, friend.id);
+              } catch (unreadErr) {
+                console.error('Failed to mark cross-account trigger unread', unreadErr);
+              }
+            }
+          }
           return;
         }
       } catch (err) {
@@ -615,7 +687,7 @@ async function handleEvent(
       }
     }
 
-    let matched = false;
+    let matched = matchedRule !== undefined;
     let replyTokenConsumed = false;
 
     // 応答時間帯ゲート (G28) — is_enabled の時だけ介入。既定 OFF / schedule 無しは
@@ -623,13 +695,13 @@ async function handleEvent(
     // 回すか否か」の判定分岐 + 営業時間外 away_message の 1 回返信のみで、送信ロジック
     // 本体 (replyMessage/buildMessage/step-delivery) は不変。postback ハンドラは対象外。
     // responseSchedule / businessHoursSuppressed は上 (cross-account トリガー前) で算出済。
-    // 営業時間内にオペレーターへ回した message は event-bus の message_received automation
+    // 営業時間内に受けた message は event-bus の message_received automation
     // の send_message も抑止する (HIGH-1: auto-reply ループだけ止めると automation 経由の
     // 自動返信が営業時間内に裏口から発火する穴を塞ぐ)。
     let skipAutoReply = false;
     if (responseSchedule && responseSchedule.isEnabled) {
       if (businessHoursSuppressed) {
-        // 営業時間内 → 自動応答せずオペレーター対応 (未読) に回す。
+        // 営業時間内 → 自動送信を止める。未読化は後段でキーワード分類後に決める。
         skipAutoReply = true;
       } else if (responseSchedule.outsideHoursMode === 'away_message') {
         // 営業時間外 (不在メッセージ) → 設定文面を 1 回だけ返す (既存 replyMessage 経路)。
@@ -640,7 +712,6 @@ async function handleEvent(
             const awayMsg = buildMessage('text', awayText);
             await lineClient.replyMessage(event.replyToken, [awayMsg]);
             replyTokenConsumed = true;
-            matched = true;
             const awayLogId = crypto.randomUUID();
             await db
               .prepare(
@@ -649,107 +720,80 @@ async function handleEvent(
               )
               .bind(awayLogId, friend.id, awayText, jstNow())
               .run();
+            if (incomingSource === UNMATCHED_USER_SOURCE) {
+              await db
+                .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
+                .bind(AUTO_REPLY_HANDLED_SOURCE, logId)
+                .run();
+            }
+            matched = true;
           } catch (err) {
             console.error('Failed to send away message', err);
           }
         }
       } else if (responseSchedule.outsideHoursMode === 'none') {
-        // 営業時間外 (なにもしない) → 未読にしてスタッフ対応。
+        // 営業時間外 (なにもしない) → 送信を止める。未読化は後段で分類する。
         skipAutoReply = true;
       }
       // outsideHoursMode === 'auto_reply' → skipAutoReply=false → 従来ループ発火。
     }
 
-    // 自動返信チェック（このアカウントのルール + グローバルルールのみ）
-    // NOTE: Auto-replies use replyMessage (free, no quota) instead of pushMessage
-    // The replyToken is only valid for ~1 minute after the message event
-    if (!skipAutoReply) {
-    const autoReplyQuery = lineAccountId
-      ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
-      : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
-    const autoReplyStmt = db.prepare(autoReplyQuery);
-    const autoReplies = await (lineAccountId ? autoReplyStmt.bind(lineAccountId) : autoReplyStmt)
-      .all<{
-        id: string;
-        keyword: string;
-        match_type: 'exact' | 'contains';
-        response_type: string;
-        response_content: string;
-        response_messages: string | null;
-        template_id: string | null;
-        is_active: number;
-        created_at: string;
-      }>();
+    // NOTE: Auto-replies use replyMessage (free, no quota) instead of pushMessage.
+    // The replyToken is only valid for ~1 minute after the message event.
+    if (!skipAutoReply && matchedRule && matchedRule.response_type !== 'silent') {
+      try {
+        const { resolveMetadata: resolveMeta2 } = await import('../services/step-delivery.js');
+        const resolvedMeta2 = await resolveMeta2(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
+        const resolvedMessages = await resolveAutoReplyMessages(db, {
+          template_id: matchedRule.template_id,
+          response_type: matchedRule.response_type,
+          response_content: matchedRule.response_content,
+          response_messages: matchedRule.response_messages,
+        });
+        const replyMessages = resolvedMessages.map((resolved) => {
+          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
+          return buildMessage(resolved.messageType, expandedContent);
+        });
+        await lineClient.replyMessage(event.replyToken, replyMessages);
+        replyTokenConsumed = true;
 
-    for (const rule of autoReplies.results) {
-      const isMatch =
-        rule.match_type === 'exact'
-          ? incomingText === rule.keyword
-          : incomingText.includes(rule.keyword);
-
-      if (isMatch) {
-        // silent タイプ: 返信しないが matched=true にして unread / push を抑止する
-        if (rule.response_type === 'silent') {
-          matched = true;
-          break;
-        }
-
-        try {
-          const { resolveMetadata: resolveMeta2 } = await import('../services/step-delivery.js');
-          const resolvedMeta2 = await resolveMeta2(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-          const resolvedMessages = await resolveAutoReplyMessages(db, {
-            template_id: rule.template_id,
-            response_type: rule.response_type,
-            response_content: rule.response_content,
-            response_messages: rule.response_messages,
-          });
-          const replyMessages = resolvedMessages.map((resolved) => {
-            const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
-            return buildMessage(resolved.messageType, expandedContent);
-          });
-          await lineClient.replyMessage(event.replyToken, replyMessages);
-          replyTokenConsumed = true;
-
-          // 送信ログ（replyMessage = 無料）— derive content from the built
-          // reply message so any cleanEmptyNodes / parse-failure fallback is
-          // reflected in the dashboard.
-          const outLogId = crypto.randomUUID();
-          const { messageToLogPayload: logPayload2 } = await import('../services/step-delivery.js');
-          // 1ルール発火=ログ1行の既存意味を維持し、複数吹き出しは先頭を代表として記録する。
-          const wbAutoReplyPayload = logPayload2(replyMessages[0]);
-          await db
-            .prepare(
-              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
-               VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', 'auto_reply', ?)`,
-            )
-            .bind(outLogId, friend.id, wbAutoReplyPayload.messageType, wbAutoReplyPayload.content, jstNow())
-            .run();
-        } catch (err) {
-          console.error('Failed to send auto-reply', err);
-        }
-
-        matched = true;
-        break;
+        // 送信ログ（replyMessage = 無料）— derive content from the built
+        // reply message so any cleanEmptyNodes / parse-failure fallback is
+        // reflected in the dashboard.
+        const outLogId = crypto.randomUUID();
+        const { messageToLogPayload: logPayload2 } = await import('../services/step-delivery.js');
+        // 1ルール発火=ログ1行の既存意味を維持し、複数吹き出しは先頭を代表として記録する。
+        const wbAutoReplyPayload = logPayload2(replyMessages[0]);
+        await db
+          .prepare(
+            `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
+             VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', 'auto_reply', ?)`,
+          )
+          .bind(outLogId, friend.id, wbAutoReplyPayload.messageType, wbAutoReplyPayload.content, jstNow())
+          .run();
+      } catch (err) {
+        console.error('Failed to send auto-reply', err);
       }
     }
 
     // FAQ bot (flag-gated / only when auto-reply did not match / default OFF)
     if (!matched && faqBotEnabled === 'true') {
-      const { tryFaqReply } = await import('../services/faq-reply.js');
-      const faqResult = await tryFaqReply(db, lineClient, {
-        friend,
-        incomingText,
-        lineAccountId,
-        replyToken: event.replyToken,
-      }, faqAiRuntime);
-      if (faqResult.replied) {
-        matched = true;
-        replyTokenConsumed = true;
-      } else if (faqResult.handoff) {
-        replyTokenConsumed = true;
+      if (!skipAutoReply) {
+        const { tryFaqReply } = await import('../services/faq-reply.js');
+        const faqResult = await tryFaqReply(db, lineClient, {
+          friend,
+          incomingText,
+          lineAccountId,
+          replyToken: event.replyToken,
+        }, faqAiRuntime);
+        if (faqResult.replied) {
+          matched = true;
+          replyTokenConsumed = true;
+        } else if (faqResult.handoff) {
+          replyTokenConsumed = true;
+        }
       }
     }
-    } // end if (!skipAutoReply)
 
     // auto_replies にマッチしなかった = 自発メッセージ → unread にする
     if (!matched) {
@@ -758,13 +802,15 @@ async function handleEvent(
 
     // イベントバス発火: message_received
     // Pass replyToken only when auto_reply didn't actually consume it.
-    // businessHoursSuppressed は営業時間内にオペレーターへ回した合図 → event-bus 側で
+    // response schedule の自動送信停止合図を event-bus にも渡し、
     // message_received automation の send_message を抑止する (HIGH-1)。
     await fireEvent(db, 'message_received', {
       friendId: friend.id,
       eventData: businessHoursSuppressed
         ? { text: incomingText, matched, businessHoursSuppressed: true }
-        : { text: incomingText, matched },
+        : automaticSendSuppressed
+          ? { text: incomingText, matched, automaticSendSuppressed: true }
+          : { text: incomingText, matched },
       replyToken: replyTokenConsumed ? undefined : event.replyToken,
     }, lineAccessToken, lineAccountId);
 

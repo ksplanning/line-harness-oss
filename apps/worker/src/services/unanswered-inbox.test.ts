@@ -28,6 +28,7 @@ interface RecentIncoming {
   message_type: string;
   content: string;
   created_at: string;
+  source?: string;
 }
 
 interface AutoReplyOutgoing {
@@ -39,6 +40,7 @@ interface AutoReplyOutgoing {
 function stubDB(canned: {
   rows: InboxRow[];
   recentIncomings?: RecentIncoming[];
+  preparedSql?: string[];
   // Note: autoReplies はテスト便宜上 silent ルールとして扱われる
   // (実装の SILENT_AUTO_REPLIES_SQL は response_type='silent' で filter するため)。
   // 応答ありルールの evidence-based 判定をテストするには autoReplyOutgoings を渡す。
@@ -71,6 +73,7 @@ function stubDB(canned: {
 
   return {
     prepare(sql: string) {
+      canned.preparedSql?.push(sql);
       const isAutoReplies = sql.includes('FROM auto_replies');
       // 候補 friend クエリ (CANDIDATES_SQL): "FROM friends f" を含み、JOIN agg
       const isCandidates = sql.includes('FROM friends f') && sql.includes('JOIN agg');
@@ -342,18 +345,206 @@ describe('auto_reply マッチ除外', () => {
     expect(result.rows[0].friendId).toBe('f2');
   });
 
-  test('auto_reply のスコープを跨いで keyword echo を除外する', async () => {
-    // 1 アカウントだけに登録された button label でも、別アカウントの友だちが
-    // 同じ文字列を送ってきたら button label echo と見なして除外する。
-    // (本番事故 2026-05-08: L Harness ② のユーザーが「体験を完了する」と送って
-    //  ①b 専用ルールしか無かったため未対応に大量出現していた)
+  test('[d future] webhook が記録した keyword marker で固定キーワードを除外する', async () => {
+    const preparedSql: string[] = [];
+    const db = stubDB({
+      rows: [
+        baseRow({ friend_id: 'f1', last_incoming_content: ' \n#予約\r\n' }),
+      ],
+      recentIncomings: [{
+        friend_id: 'f1',
+        message_type: 'text',
+        content: ' \n#予約\r\n',
+        created_at: '2026-05-08T10:00:00+09:00',
+        source: 'auto_reply_keyword',
+      }],
+      preparedSql,
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(0);
+    const incomingSql = preparedSql.find((sql) => sql.includes("ml.direction='incoming'"));
+    expect(incomingSql).toMatch(
+      /SELECT\s+ml\.friend_id,\s*ml\.message_type,\s*ml\.content,\s*ml\.created_at,\s*ml\.source\s+FROM/s,
+    );
+  });
+
+  test('[d future] a successfully handled structured action marker is also excluded', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming_content: '体験を完了する' })],
+      recentIncomings: [{
+        friend_id: 'f1',
+        message_type: 'text',
+        content: '体験を完了する',
+        created_at: '2026-05-08T10:00:00+09:00',
+        source: 'auto_reply_handled',
+      }],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(0);
+  });
+
+  test('[d fail-closed] handled action evidence never hides an older free-form message', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:00:01+09:00' })],
+      recentIncomings: [
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: '営業時間外の確認',
+          created_at: '2026-05-08T10:00:01+09:00',
+          source: 'auto_reply_handled',
+        },
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: '以前から残っている相談',
+          created_at: '2026-05-08T10:00:00+09:00',
+        },
+      ],
+      autoReplyOutgoings: [{
+        friend_id: 'f1',
+        created_at: '2026-05-08T10:00:02+09:00',
+        source: 'auto_reply',
+      }],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].lastIncomingContent).toBe('以前から残っている相談');
+  });
+
+  test('[d fail-closed] keyword reply evidence never hides a later free-form message', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:00:01+09:00' }),
+      ],
+      recentIncomings: [
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: '通常の相談です',
+          created_at: '2026-05-08T10:00:01+09:00',
+          source: 'user_unmatched',
+        },
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: '#予約',
+          created_at: '2026-05-08T10:00:00+09:00',
+          source: 'auto_reply_keyword',
+        },
+      ],
+      autoReplyOutgoings: [{
+        friend_id: 'f1',
+        created_at: '2026-05-08T10:00:02+09:00',
+        source: 'auto_reply',
+      }],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].lastIncomingContent).toBe('通常の相談です');
+  });
+
+  test('[d fail-closed] delayed keyword reply evidence never hides a later free-form message', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:00:06+09:00' })],
+      recentIncomings: [
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: '通常の相談です',
+          created_at: '2026-05-08T10:00:06+09:00',
+          source: 'user_unmatched',
+        },
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: '#予約',
+          created_at: '2026-05-08T10:00:00+09:00',
+          source: 'auto_reply_keyword',
+        },
+      ],
+      autoReplyOutgoings: [{
+        friend_id: 'f1',
+        created_at: '2026-05-08T10:00:06.500+09:00',
+        source: 'auto_reply',
+      }],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].lastIncomingContent).toBe('通常の相談です');
+  });
+
+  test('[d legacy] normalization is not applied retroactively to existing incoming rows', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({ friend_id: 'f1', last_incoming_content: ' \n#予約\r\n' }),
+      ],
+      autoReplies: [
+        { keyword: '＃予約', match_type: 'exact', line_account_id: null },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].friendId).toBe('f1');
+  });
+
+  test('[d negative] a different phrase stays unanswered after conservative normalization', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({ friend_id: 'f1', last_incoming_content: '予約' }),
+        baseRow({ friend_id: 'f2', last_incoming_content: '#予約について' }),
+        baseRow({ friend_id: 'f3', last_incoming_content: '第1希望' }),
+      ],
+      recentIncomings: [
+        { friend_id: 'f1', message_type: 'text', content: '予約', created_at: '2026-05-08T10:00:00+09:00', source: 'user_unmatched' },
+        { friend_id: 'f2', message_type: 'text', content: '#予約について', created_at: '2026-05-08T10:00:00+09:00', source: 'user_unmatched' },
+        { friend_id: 'f3', message_type: 'text', content: '第1希望', created_at: '2026-05-08T10:00:00+09:00', source: 'user_unmatched' },
+      ],
+      autoReplies: [
+        { keyword: '予約', match_type: 'exact', line_account_id: null },
+        { keyword: '＃予約', match_type: 'exact', line_account_id: null },
+        { keyword: '第①希望', match_type: 'exact', line_account_id: null },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.rows.map((row) => row.friendId).sort()).toEqual(['f1', 'f2', 'f3']);
+  });
+
+  test('[b/d] account-scoped keyword suppresses only the same account', async () => {
+    // webhook と同じ account scope。別 account の同文言は本当の相談かもしれないため
+    // 「未対応のみ」から消さず、迷ったら未読へ倒す。
     const db = stubDB({
       rows: [
         baseRow({ friend_id: 'f1', line_account_id: 'a1', last_incoming_content: '導入相談' }),
         baseRow({ friend_id: 'f2', line_account_id: 'a2', account_name: 'L ②', last_incoming_content: '導入相談' }),
       ],
+      recentIncomings: [
+        { friend_id: 'f1', message_type: 'text', content: '導入相談', created_at: '2026-05-08T10:00:00+09:00', source: 'auto_reply_keyword' },
+        { friend_id: 'f2', message_type: 'text', content: '導入相談', created_at: '2026-05-08T10:00:00+09:00', source: 'user_unmatched' },
+      ],
       autoReplies: [
-        // a1 専用ルールでも、a2 の同 keyword incoming にも適用する
+        { keyword: '導入相談', match_type: 'exact', line_account_id: 'a1' },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].friendId).toBe('f2');
+  });
+
+  test('[b legacy] existing cross-account keyword classification remains unchanged', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({ friend_id: 'f1', line_account_id: 'a2', account_name: 'L ②', last_incoming_content: '導入相談' }),
+      ],
+      autoReplies: [
         { keyword: '導入相談', match_type: 'exact', line_account_id: 'a1' },
       ],
     });
