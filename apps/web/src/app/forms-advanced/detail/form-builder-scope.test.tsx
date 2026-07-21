@@ -6,7 +6,7 @@
  *   ※ 表示フィルタで API 直打ちは防げない旨 (N-17) を画面に明記。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, cleanup, act } from '@testing-library/react'
+import { render, screen, waitFor, cleanup, act, fireEvent } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
 const builderProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
@@ -36,19 +36,28 @@ vi.mock('@/components/layout/header', () => ({ default: () => null }))
 vi.mock('@/components/forms-advanced/builder', () => ({
   default: (props: Record<string, unknown>) => {
     builderProps.current = props
-    return <div data-testid="form-builder" />
+    return (
+      <div data-testid="form-builder">
+        {props.afterSubmitSettings as ReactNode}
+        {props.publishSettings as ReactNode}
+      </div>
+    )
   },
 }))
 vi.mock('@/components/forms-advanced/share-panel', () => ({
   default: (props: Record<string, unknown>) => {
     sharePanelProps.current = props
-    return null
+    return <div data-testid="share-panel" />
   },
 }))
 vi.mock('@/components/forms-advanced/internal-submission-notification-settings', () => ({
   default: (props: Record<string, unknown>) => {
     notificationSettingsProps.current = props
-    return <div data-testid="notification-settings" />
+    return (
+      <div data-testid="notification-settings">
+        <input aria-label="通知文面の下書き" defaultValue="" />
+      </div>
+    )
   },
 }))
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
@@ -479,6 +488,66 @@ describe('詳細画面 scope 照合', () => {
     })
   })
 
+  it('公開状態が変わっても未保存の通知文面を消さない', async () => {
+    const draft = { ...form('acc_A', 'internal'), publishRevision: 'revision-1' }
+    getMock.mockResolvedValue(draft)
+    publishMock.mockResolvedValue({ ...draft, builderStatus: 'published' })
+    render(<FormBuilderClient id="fa1" />)
+
+    const message = await screen.findByLabelText('通知文面の下書き') as HTMLInputElement
+    fireEvent.change(message, { target: { value: 'まだ保存していない案内文' } })
+
+    await act(async () => {
+      await (builderProps.current?.onPublish as (revision?: string) => Promise<boolean>)('revision-1')
+    })
+
+    await waitFor(() => expect(builderProps.current?.status).toBe('published'))
+    expect((screen.getByLabelText('通知文面の下書き') as HTMLInputElement).value).toBe('まだ保存していない案内文')
+  })
+
+  it('通知と共有は初期ビューから退避し、それぞれの意味グループで表示する', async () => {
+    getMock.mockResolvedValue(form('acc_A', 'internal'))
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(builderProps.current?.workspaceTab).toBe('build'))
+    expect(screen.getByTestId('notification-settings-group').hidden).toBe(true)
+    expect(screen.getByTestId('share-settings-group').hidden).toBe(true)
+
+    act(() => {
+      (builderProps.current?.onWorkspaceTabChange as (tab: string) => void)('after-submit')
+    })
+
+    await waitFor(() => expect(builderProps.current?.workspaceTab).toBe('after-submit'))
+    expect(screen.getByTestId('notification-settings-group').hidden).toBe(false)
+    expect(screen.getByTestId('share-settings-group').hidden).toBe(true)
+    expect(screen.getByTestId('notification-settings').closest('[hidden]')).toBeNull()
+
+    act(() => {
+      (builderProps.current?.onWorkspaceTabChange as (tab: string) => void)('publish')
+    })
+    await waitFor(() => expect(builderProps.current?.workspaceTab).toBe('publish'))
+    expect(screen.getByTestId('notification-settings-group').hidden).toBe(true)
+    expect(screen.getByTestId('share-settings-group').hidden).toBe(false)
+    expect(screen.getByTestId('share-panel').closest('[hidden]')).toBeNull()
+    expect(screen.getByTestId('notification-settings-group').dataset.settingId).toBe('submission-notifications')
+    expect(screen.getByTestId('share-settings-group').dataset.settingId).toBe('share-and-sheets')
+  })
+
+  it('別フォームを開いたときは「フォームを作る」へ戻す', async () => {
+    getMock.mockResolvedValue(form('acc_A', 'internal'))
+    const { rerender } = render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(builderProps.current?.workspaceTab).toBe('build'))
+
+    act(() => {
+      (builderProps.current?.onWorkspaceTabChange as (tab: string) => void)('publish')
+    })
+    await waitFor(() => expect(builderProps.current?.workspaceTab).toBe('publish'))
+
+    rerender(<FormBuilderClient id="fa2" />)
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('fa2'))
+    expect(builderProps.current?.workspaceTab).toBe('build')
+  })
+
   it('Formaloo 配信の owner は既存共有操作を維持する', async () => {
     getMock.mockResolvedValue(form('acc_A'))
     render(<FormBuilderClient id="fa1" />)
@@ -487,6 +556,7 @@ describe('詳細画面 scope 照合', () => {
     expect(sharePanelProps.current?.renderBackend).toBe('formaloo')
     expect(sheetsListMock).not.toHaveBeenCalled()
     expect(screen.queryByTestId('notification-settings')).toBeNull()
+    expect(screen.getByTestId('notification-settings-group').dataset.settingId).toBe('submission-notifications')
   })
 
   it('internal の NULL 共通 form は選択中アカウントで接続を取得する', async () => {

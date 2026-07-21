@@ -17,9 +17,14 @@ function base(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function openPublishSettings() {
+  fireEvent.click(screen.getByRole('tab', { name: '公開と共有' }))
+}
+
 describe('FormBuilder — 配信方式', () => {
   it('defaults to Formaloo and shows the exact beta label', () => {
     render(<FormBuilder {...base()} />)
+    openPublishSettings()
     const select = screen.getByLabelText('配信方式') as HTMLSelectElement
     expect(select.value).toBe('formaloo')
     expect(screen.getByRole('option', { name: '自前配信 (β)' })).toBeTruthy()
@@ -47,6 +52,7 @@ describe('FormBuilder — 配信方式', () => {
   it('rolls back the selector and shows an honest error when PATCH fails', async () => {
     const onRenderBackendChange = vi.fn().mockRejectedValue({ body: { error: 'この項目があるため切り替えられません' } })
     render(<FormBuilder {...base({ onRenderBackendChange })} />)
+    openPublishSettings()
 
     fireEvent.change(screen.getByLabelText('配信方式'), { target: { value: 'internal' } })
 
@@ -72,6 +78,7 @@ describe('FormBuilder — 配信方式', () => {
       initialRenderBackend: 'internal',
       onRenderBackendChange,
     })} />)
+    openPublishSettings()
 
     fireEvent.change(screen.getByLabelText('配信方式'), { target: { value: 'formaloo' } })
 
@@ -144,6 +151,7 @@ describe('FormBuilder — 配信方式', () => {
       }],
       onRenderBackendChange,
     })} />)
+    openPublishSettings()
 
     fireEvent.change(screen.getByLabelText('配信方式'), { target: { value: 'formaloo' } })
 

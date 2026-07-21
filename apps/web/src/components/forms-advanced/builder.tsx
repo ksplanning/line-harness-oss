@@ -57,6 +57,19 @@ import { popoverPlacement, type PopoverPlacement } from '@/lib/help/popover-plac
 const LINE_GREEN = '#06C755'
 const EMPTY_FIELD_DEFINITIONS: readonly FriendFieldDefinition[] = []
 
+export type BuilderWorkspaceTab = 'build' | 'after-submit' | 'publish' | 'design'
+
+export const BUILDER_WORKSPACE_GROUPS: readonly {
+  id: BuilderWorkspaceTab
+  label: string
+  description: string
+}[] = [
+  { id: 'build', label: 'フォームを作る', description: '質問を追加して、並び順と入力内容を整えます。' },
+  { id: 'after-submit', label: '回答後の動き', description: '送信したあとに見せる文、次の行き先、誰に知らせるかを決めます。' },
+  { id: 'publish', label: '公開と共有', description: 'いつ受け付けるか、通知先と共有方法を決めます。' },
+  { id: 'design', label: 'デザイン', description: '色や画像を選び、右の見本で見え方を確かめます。' },
+]
+
 export const MOUSE_ACTIVATION = { distance: 8 } as const
 export const TOUCH_ACTIVATION = { delay: 200, tolerance: 8 } as const
 
@@ -131,6 +144,13 @@ export interface BuilderProps {
   /** formaloo-auto-pull: Formaloo 側定義変更 (drift) の状態 (none/detected/conflict/applied)。 */
   driftStatus?: string
   layoutMode?: 'mobile' | 'desktop'
+  /** formbuilder-ia-restructure: 親画面と通知/共有パネルを同じ意味グループへ同期する。 */
+  workspaceTab?: BuilderWorkspaceTab
+  onWorkspaceTabChange?: (tab: BuilderWorkspaceTab) => void
+  /** 回答通知など、親画面が持つ既存設定をプレビュー横へ置くための差し込み口。 */
+  afterSubmitSettings?: ReactNode
+  /** 共有 URL・シート連携など、親画面が持つ既存設定をプレビュー横へ置くための差し込み口。 */
+  publishSettings?: ReactNode
 }
 
 function newField(type: HarnessFieldType, allFields: HarnessField[] = []): HarnessField {
@@ -1289,6 +1309,12 @@ export default function FormBuilder(props: BuilderProps) {
     .filter((definition) => definition.isActive)
   const autoMode = useAutoLayoutMode()
   const mode = props.layoutMode ?? autoMode
+  const [localWorkspaceTab, setLocalWorkspaceTab] = useState<BuilderWorkspaceTab>('build')
+  const workspaceTab = props.workspaceTab ?? localWorkspaceTab
+  const selectWorkspaceTab = (tab: BuilderWorkspaceTab) => {
+    setLocalWorkspaceTab(tab)
+    props.onWorkspaceTabChange?.(tab)
+  }
   const [mobileTab, setMobileTab] = useState<'edit' | 'design' | 'preview'>('edit')
   const [fields, setFieldsState] = useState<HarnessField[]>(props.initialFields)
   // React may batch a canvas mutation and the following save before rendering again.
@@ -1850,14 +1876,16 @@ export default function FormBuilder(props: BuilderProps) {
       >
       {/* 上部バー */}
       <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-gray-200">
+        <div id="builder-title-settings" data-settings-group="build" hidden={workspaceTab !== 'build'} className="contents">
         <label className="min-w-48 flex-1">
           <span className="block text-[10px] text-gray-500 mb-0.5">タイトル</span>
-          <input aria-label="フォームタイトル" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm" />
+          <input data-setting-id="form-title" aria-label="フォームタイトル" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm" />
         </label>
         <label className="min-w-56 flex-[2]">
           <span className="block text-[10px] text-gray-500 mb-0.5">説明</span>
-          <textarea aria-label="フォーム説明" rows={1} value={description} onChange={(e) => setDescription(e.target.value)} className="w-full resize-y rounded border border-gray-300 bg-white px-2 py-1 text-sm" />
+          <textarea data-setting-id="form-description" aria-label="フォーム説明" rows={1} value={description} onChange={(e) => setDescription(e.target.value)} className="w-full resize-y rounded border border-gray-300 bg-white px-2 py-1 text-sm" />
         </label>
+        </div>
         <span className="text-xs text-white px-2 py-0.5 rounded" style={{ backgroundColor: statusColor }}>{statusLabel}</span>
         {renderBackend === 'formaloo' && (() => {
           // drift/sync 単一 badge (優先順位: 競合>更新あり>未同期>自動反映 / formSyncBadge 共有)。
@@ -1944,10 +1972,67 @@ export default function FormBuilder(props: BuilderProps) {
         </div>
       )}
 
+      <div className="mb-3" data-testid="builder-group-nav">
+        <div role="tablist" aria-label="フォーム設定の種類" className="grid grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1 lg:grid-cols-4">
+          {BUILDER_WORKSPACE_GROUPS.map((group, index) => (
+            <button
+              key={group.id}
+              id={`builder-workspace-tab-${group.id}`}
+              type="button"
+              role="tab"
+              aria-selected={workspaceTab === group.id}
+              aria-controls={`builder-workspace-content-${group.id}`}
+              tabIndex={workspaceTab === group.id ? 0 : -1}
+              onClick={() => selectWorkspaceTab(group.id)}
+              onKeyDown={(event) => {
+                const last = BUILDER_WORKSPACE_GROUPS.length - 1
+                const nextIndex = event.key === 'ArrowRight' ? (index === last ? 0 : index + 1)
+                  : event.key === 'ArrowLeft' ? (index === 0 ? last : index - 1)
+                    : event.key === 'Home' ? 0
+                      : event.key === 'End' ? last
+                        : null
+                if (nextIndex === null) return
+                event.preventDefault()
+                const next = BUILDER_WORKSPACE_GROUPS[nextIndex]
+                selectWorkspaceTab(next.id)
+                queueMicrotask(() => document.getElementById(`builder-workspace-tab-${next.id}`)?.focus())
+              }}
+              className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 ${workspaceTab === group.id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+            >
+              {group.label}
+            </button>
+          ))}
+        </div>
+        {BUILDER_WORKSPACE_GROUPS.map((group) => (
+          <div
+            key={group.id}
+            id={`builder-workspace-description-${group.id}`}
+            hidden={workspaceTab !== group.id}
+            className="mt-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2"
+          >
+            <p className="text-xs leading-relaxed text-gray-600">{group.description}</p>
+          </div>
+        ))}
+      </div>
+
+      <div
+        data-testid="builder-primary-workspace"
+        className={mode === 'desktop' ? 'grid grid-cols-[minmax(0,1fr)_320px] items-start gap-3' : 'space-y-3'}
+      >
+      <div className="min-w-0">
+      <section
+        id="builder-workspace-content-publish"
+        role="tabpanel"
+        aria-labelledby="builder-workspace-tab-publish"
+        aria-describedby="builder-workspace-description-publish"
+        data-settings-group="publish"
+        hidden={workspaceTab !== 'publish'}
+      >
       <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="render-backend-section">
         <label className="block text-xs font-medium text-gray-600">
           配信方式
           <select
+            data-setting-id="render-backend"
             aria-label="配信方式"
             value={renderBackend}
             disabled={renderBackendSaving || saving || publishing || reimporting}
@@ -1965,7 +2050,7 @@ export default function FormBuilder(props: BuilderProps) {
       </div>
 
       {renderBackend === 'internal' && (
-        <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="channel-logic-section">
+        <div data-setting-id="channel-logic" className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="channel-logic-section">
           <div className="text-xs font-medium text-gray-600">経由チャネルによる表示切替</div>
           <p className="mt-1 text-[10px] leading-snug text-gray-400">
             LINE配信用URL（fr_id あり）と、埋め込み・直接リンクを区別して項目を表示または非表示にできます。
@@ -2042,6 +2127,7 @@ export default function FormBuilder(props: BuilderProps) {
               <label className="flex items-center gap-2 text-xs text-gray-600">
                 <input
                   type="checkbox"
+                  data-setting-id="recaptcha"
                   aria-label="reCAPTCHA（ロボット対策）"
                   disabled={saving}
                   checked={operationsSettings.hasRecaptcha}
@@ -2052,6 +2138,7 @@ export default function FormBuilder(props: BuilderProps) {
               <label className="flex items-center gap-2 text-xs text-gray-600">
                 <input
                   type="checkbox"
+                  data-setting-id="draft-answers"
                   aria-label="下書き保存"
                   disabled={saving}
                   checked={operationsSettings.acceptDraftAnswers}
@@ -2065,6 +2152,7 @@ export default function FormBuilder(props: BuilderProps) {
             送信上限（先着 N 名）
             <input
               type="number"
+              data-setting-id="submit-limit"
               min={1}
               step={1}
               aria-label="送信上限（先着 N 名）"
@@ -2080,6 +2168,7 @@ export default function FormBuilder(props: BuilderProps) {
             受付開始
             <input
               type="datetime-local"
+              data-setting-id="submit-start"
               aria-label="受付開始"
               disabled={saving}
               step="any"
@@ -2092,6 +2181,7 @@ export default function FormBuilder(props: BuilderProps) {
             受付終了
             <input
               type="datetime-local"
+              data-setting-id="submit-end"
               aria-label="受付終了"
               disabled={saving}
               step="any"
@@ -2104,6 +2194,7 @@ export default function FormBuilder(props: BuilderProps) {
             <label className="flex items-center gap-2 text-xs text-gray-600 md:col-span-2">
               <input
                 type="checkbox"
+                data-setting-id="utm-tracking"
                 aria-label="UTM 流入元を自動記録"
                 disabled={saving}
                 checked={operationsSettings.utmTracking}
@@ -2119,14 +2210,24 @@ export default function FormBuilder(props: BuilderProps) {
             : '※ 上限と受付期間は空欄なら制限しません。'}
         </p>
       </div>
+      </section>
 
       {/* form-media-limits ③: フォーム単位「後編集を許可しない」トグル (弾M あと編集の前提スイッチ)。
           弾S は inert = 保存のみ (実効化は弾M)。既定 ON=allow_post_edit 0 = 現状の hosted 挙動と一致。 */}
+      <section
+        id="builder-workspace-content-after-submit"
+        role="tabpanel"
+        aria-labelledby="builder-workspace-tab-after-submit"
+        aria-describedby="builder-workspace-description-after-submit"
+        data-settings-group="after-submit"
+        hidden={workspaceTab !== 'after-submit'}
+      >
       {renderBackend === 'formaloo' && (
       <div className="mb-2 flex flex-wrap items-start gap-x-2 gap-y-1 rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
         <label className="flex items-center gap-2 text-xs text-gray-600">
           <input
             type="checkbox"
+            data-setting-id="allow-post-edit"
             aria-label="後編集を許可しない"
             checked={allowPostEdit === 0}
             onChange={(e) => setAllowPostEdit(e.target.checked ? 0 : 1)}
@@ -2140,7 +2241,7 @@ export default function FormBuilder(props: BuilderProps) {
       )}
 
       {renderBackend === 'formaloo' && (
-      <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="friend-metadata-mapping-section">
+      <div data-setting-id="friend-metadata" className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="friend-metadata-mapping-section">
         <div className="text-xs font-medium text-gray-600 mb-1">友だち個人情報への反映</div>
         {friendMetadataMappings.length === 0 ? (
           <p className="text-[11px] text-gray-400">未設定のため自動反映しません。</p>
@@ -2212,6 +2313,7 @@ export default function FormBuilder(props: BuilderProps) {
         <label className={`flex items-center gap-2 text-xs ${allowPostEdit === 1 ? 'text-gray-600' : 'text-gray-400'}`}>
           <input
             type="checkbox"
+            data-setting-id="allow-edit-mail"
             aria-label="メールで編集URLを送る"
             disabled={allowPostEdit === 0}
             checked={allowEditMail === 1}
@@ -2225,6 +2327,7 @@ export default function FormBuilder(props: BuilderProps) {
         <label className={`basis-full text-[11px] ${allowPostEdit === 1 && allowEditMail === 1 ? 'text-gray-600' : 'text-gray-400'}`}>
           編集URLの送信先メール項目
           <select
+            data-setting-id="edit-mail-field"
             aria-label="編集URLメールの宛先項目"
             disabled={allowPostEdit === 0 || allowEditMail === 0}
             value={editMailFieldId}
@@ -2254,6 +2357,7 @@ export default function FormBuilder(props: BuilderProps) {
           <label className="block text-[11px] text-gray-500">
             送信ボタンの文言
             <input
+              data-setting-id="submit-button-copy"
               aria-label="送信ボタンの文言"
               value={formCopy.buttonText}
               onChange={(e) => updateFormCopy('buttonText', e.target.value)}
@@ -2264,6 +2368,7 @@ export default function FormBuilder(props: BuilderProps) {
           <label className="block text-[11px] text-gray-500">
             送信完了メッセージ
             <input
+              data-setting-id="success-message-copy"
               aria-label="送信完了メッセージ"
               value={formCopy.successMessage}
               onChange={(e) => updateFormCopy('successMessage', e.target.value)}
@@ -2274,6 +2379,7 @@ export default function FormBuilder(props: BuilderProps) {
           {renderBackend === 'formaloo' && <label className="block text-[11px] text-gray-500">
             送信エラー時の文言
             <input
+              data-setting-id="error-message-copy"
               aria-label="送信エラー時の文言"
               value={formCopy.errorMessage}
               onChange={(e) => updateFormCopy('errorMessage', e.target.value)}
@@ -2299,6 +2405,7 @@ export default function FormBuilder(props: BuilderProps) {
           <label className="block text-[11px] text-gray-500">
             送信後の飛び先 URL
             <input
+              data-setting-id="redirect-url"
               aria-label="送信後の飛び先 URL"
               value={formRedirect.url}
               onChange={(e) => updateFormRedirect({ url: e.target.value })}
@@ -2309,6 +2416,7 @@ export default function FormBuilder(props: BuilderProps) {
           <label className="block text-[11px] text-gray-500">
             開き方
             <select
+              data-setting-id="redirect-open-mode"
               aria-label="飛び先の開き方"
               value={formRedirect.openExternalBrowser ? 'external' : 'line'}
               onChange={(e) => updateFormRedirect({ openExternalBrowser: e.target.value === 'external' })}
@@ -2329,7 +2437,7 @@ export default function FormBuilder(props: BuilderProps) {
 
       {/* route-terminal-phase2 (Track 2 / T-F1): ルート別完了ページ (success-page) の作成/命名/編集。
           ABC 分岐の「ここで送信」で per-route に選択する (項目設定内)。本文は書式なし (リンク不可 = M5)。 */}
-      <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="success-page-section">
+      <div data-setting-id="success-pages" className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="success-page-section">
         <div className="text-xs font-medium text-gray-600 mb-1">ルート別の完了ページ</div>
         <div className="flex flex-col gap-2">
           {successPages.length === 0 && (
@@ -2363,7 +2471,10 @@ export default function FormBuilder(props: BuilderProps) {
           ※ 完了ページの説明は書式なし（リンクや自動遷移は使えません）。外部の LP へ飛ばしたい場合は上の「送信後の飛び先」を使ってください。ルートごとの出し分けは各項目の「ここで送信」で完了ページを選びます。
         </p>
       </div>
+      {props.afterSubmitSettings}
+      </section>
 
+      <section data-settings-group="publish" hidden={workspaceTab !== 'publish'}>
       {/* ① 今すぐ同期リカバリ: sync_status=out_of_sync のとき、原因 (syncError) + 再送ヘルプ + 「今すぐ同期」を
           目立つ位置に出す。ボタンは既存の保存/push 経路 (handleSave) を再実行するだけ (新経路を作らず状態機械を壊さない)。 */}
       {renderBackend === 'formaloo' && props.syncStatus === 'out_of_sync' && (
@@ -2417,7 +2528,10 @@ export default function FormBuilder(props: BuilderProps) {
           公開すると回答者用ページが作られ、ここから開いてテストできます。
         </div>
       )}
+      {props.publishSettings}
+      </section>
 
+      <section data-settings-group="build" hidden={workspaceTab !== 'build'}>
       {/* form-route-branching: 表示形式 自動切替の可視通知 (jump 追加時) + save 時の非ブロッキング警告 (backstop)。 */}
       {formTypeNotice && (
         <div data-testid="formtype-notice" role="status" className="mb-2 rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800 flex items-start gap-2">
@@ -2436,8 +2550,9 @@ export default function FormBuilder(props: BuilderProps) {
           {routeTerminalWarnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
         </div>
       )}
+      </section>
 
-      {mode === 'mobile' && (
+      {mode === 'mobile' && workspaceTab === 'build' && (
         <div className="mb-3 grid grid-cols-3 rounded-lg bg-gray-100 p-1" aria-label="ビルダー表示切替">
           <button
             type="button"
@@ -2469,12 +2584,20 @@ export default function FormBuilder(props: BuilderProps) {
         </div>
       )}
 
-      <div className={mode === 'desktop' ? 'flex items-start gap-4' : ''}>
         {(mode === 'desktop' || mobileTab === 'edit') && (
           /* 3 ペイン (375px: 縦 1 カラム / md 以上: 横 3 カラム) */
-          <div className={`flex min-w-0 flex-col gap-3 md:flex-row ${mode === 'desktop' ? 'flex-1' : ''}`}>
+          <div
+            data-testid="builder-editing-triptych"
+            id="builder-workspace-content-build"
+            role="tabpanel"
+            aria-labelledby="builder-workspace-tab-build"
+            aria-describedby="builder-workspace-description-build"
+            data-settings-group="build"
+            hidden={workspaceTab !== 'build'}
+            className="flex min-w-0 flex-col gap-3 md:flex-row"
+          >
             {/* 左: パレット */}
-            <div className="md:w-48 md:shrink-0" data-testid="palette">
+            <div className="md:w-40 md:shrink-0" data-testid="palette">
               <div className="text-xs font-bold text-gray-500 mb-2">項目を追加</div>
               {FIELD_CATEGORIES.map((cat) => (
                 <div key={cat} className="mb-2">
@@ -2500,7 +2623,7 @@ export default function FormBuilder(props: BuilderProps) {
             />
 
             {/* 右: 設定 */}
-            <div className="md:w-64 md:shrink-0" data-testid="settings">
+            <div className="md:w-60 md:shrink-0" data-testid="settings" data-setting-id="field-settings">
               <div className="text-xs font-bold text-gray-500 mb-2">項目の設定</div>
               {selected ? (
                 <>
@@ -2514,25 +2637,25 @@ export default function FormBuilder(props: BuilderProps) {
           </div>
         )}
 
-        {mode !== 'desktop' && mobileTab === 'design' && (
-          <div data-testid="design-pane" className="w-full rounded-xl bg-gray-50 p-3">
+        {mode === 'desktop' && (
+          <div id="builder-workspace-content-design" role="tabpanel" aria-labelledby="builder-workspace-tab-design" aria-describedby="builder-workspace-description-design" data-settings-group="design" hidden={workspaceTab !== 'design'} data-testid="design-pane" className="min-w-0 rounded-xl bg-gray-50 p-3">
             <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={renderBackend === 'formaloo' && hasJumpRule} hasRating={hasRating} internalRenderer={renderBackend === 'internal'} />
           </div>
         )}
 
-        {(mode === 'desktop' || mobileTab === 'preview') && (
+        {mode !== 'desktop' && (workspaceTab === 'design' || (workspaceTab === 'build' && mobileTab === 'design')) && (
+          <div id="builder-workspace-content-design" role="tabpanel" aria-labelledby="builder-workspace-tab-design" aria-describedby="builder-workspace-description-design" data-settings-group="design" data-testid="design-pane" className="w-full rounded-xl bg-gray-50 p-3">
+            <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={renderBackend === 'formaloo' && hasJumpRule} hasRating={hasRating} internalRenderer={renderBackend === 'internal'} />
+          </div>
+        )}
+
+      </div>
+
+        {(mode === 'desktop' || workspaceTab !== 'build' || mobileTab === 'preview') && (
           <div
             data-testid="preview-pane"
-            className={mode === 'desktop' ? 'w-[399px] shrink-0 space-y-3 rounded-xl bg-gray-50 p-3' : 'w-full rounded-xl bg-gray-50 p-3'}
+            className={mode === 'desktop' ? 'sticky top-4 w-80 min-w-0 rounded-xl bg-gray-50 p-3' : 'w-full rounded-xl bg-gray-50 p-3'}
           >
-            {mode === 'desktop' && (
-              <details data-testid="design-pane" className="rounded-lg border border-gray-200 bg-white p-3" open>
-                <summary className="cursor-pointer text-xs font-bold text-gray-500">デザイン</summary>
-                <div className="mt-3">
-                  <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={renderBackend === 'formaloo' && hasJumpRule} hasRating={hasRating} internalRenderer={renderBackend === 'internal'} />
-                </div>
-              </details>
-            )}
             <FormPreview
               title={title}
               description={description}

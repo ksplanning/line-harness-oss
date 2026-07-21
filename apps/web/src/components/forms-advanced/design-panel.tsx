@@ -31,6 +31,16 @@ const COLOR_LABELS: Record<FormDesignColorKey, string> = {
   submitTextColor: '送信ボタンの文字色',
 }
 
+const COLOR_SETTING_IDS: Record<FormDesignColorKey, string> = {
+  themeColor: 'design-theme-color',
+  backgroundColor: 'design-background-color',
+  buttonColor: 'design-button-color',
+  textColor: 'design-text-color',
+  fieldColor: 'design-field-color',
+  borderColor: 'design-border-color',
+  submitTextColor: 'design-submit-text-color',
+}
+
 // form-design-presets: プリセットを温度感で 2 グループに分ける (見出し表示 + 縦伸び対策)。
 //   tone 未指定 (現行 4 種) は 'light' 扱い。カタログ順を各グループ内で維持する。
 const PRESET_GROUPS: { tone: 'light' | 'dark'; label: string; presets: typeof LINE_PRESET_PALETTES }[] = [
@@ -105,7 +115,7 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
     <div data-testid="design-panel" className="space-y-4 text-sm">
       {/* form-route-branching (R2): フォーム表示形式スイッチ (先頭・色設定と区切る)。onFormTypeChange 未接続なら非表示。 */}
       {onFormTypeChange && (
-        <div data-testid="formtype-switch" className="rounded-lg border border-gray-200 p-2.5">
+        <div data-setting-id="form-display-type" data-testid="formtype-switch" className="rounded-lg border border-gray-200 p-2.5">
           <div className="mb-1.5 text-xs font-bold text-gray-500">フォームの表示形式</div>
           <div className="grid grid-cols-2 gap-1 rounded-lg bg-gray-100 p-1">
             {([['multi_step', '1問ずつ表示'], ['simple', '1画面表示']] as [FormDisplayType, string][]).map(([val, label]) => (
@@ -137,7 +147,7 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
 
       {/* 配色プリセット (anti-generic)。form-design-presets: 12 種に増えたので 明るい系/ダーク系 で
           グルーピングし、side panel が縦に伸びすぎないよう max-height + スクロール枠に入れる。 */}
-      <div>
+      <div data-setting-id="design-presets">
         <div className="mb-1.5 text-xs font-bold text-gray-500">配色プリセット</div>
         <div className="max-h-72 space-y-2 overflow-y-auto pr-0.5">
           {PRESET_GROUPS.map(({ tone, label, presets }) =>
@@ -179,6 +189,7 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
               <span className="text-xs text-gray-600">{COLOR_LABELS[key]}</span>
               <input
                 type="color"
+                data-setting-id={COLOR_SETTING_IDS[key]}
                 aria-label={COLOR_LABELS[key]}
                 value={colorInputValue(design[key])}
                 onChange={(e) => setColor(key, e.target.value)}
@@ -192,7 +203,7 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
       {/* b1-field-polish: 評価スターの色 (form-level・rating field 有時のみ)。本文色とは decouple = 星だけ着色。
           form 単位ゆえ per-field settings でなく design region に置く (per-field 誤認防止 / spec §4)。 */}
       {hasRating && (
-        <div data-testid="rating-star-color">
+        <div data-setting-id="design-rating-star-color" data-testid="rating-star-color">
           <div className="mb-1.5 text-xs font-bold text-gray-500">評価スターの色</div>
           <div className="flex flex-wrap gap-2">
             {RATING_STAR_PALETTE.map((c) => {
@@ -239,6 +250,7 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
                   画像を選ぶ
                   <input
                     type="file"
+                    data-setting-id={`design-${slot === 'logo' ? 'logo' : 'cover'}-image`}
                     accept={ALLOWED_IMAGE_MIME.join(',')}
                     aria-label={`${label}を選ぶ`}
                     className="hidden"

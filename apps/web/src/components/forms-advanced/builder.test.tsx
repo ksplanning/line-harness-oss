@@ -905,3 +905,278 @@ describe('FormBuilder — form-design (Batch D)', () => {
     expect((onSave.mock.calls[1][0] as { design?: { logoUrl?: string } }).design?.logoUrl).toBe('https://s3/NEW.png')
   })
 })
+
+describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
+  const legacySettingFields = [
+    ['form-title', 'build'],
+    ['form-description', 'build'],
+    ['field-settings', 'build'],
+    ['render-backend', 'publish'],
+    ['channel-logic', 'publish'],
+    ['recaptcha', 'publish'],
+    ['draft-answers', 'publish'],
+    ['submit-limit', 'publish'],
+    ['submit-start', 'publish'],
+    ['submit-end', 'publish'],
+    ['utm-tracking', 'publish'],
+    ['allow-post-edit', 'after-submit'],
+    ['friend-metadata', 'after-submit'],
+    ['allow-edit-mail', 'after-submit'],
+    ['edit-mail-field', 'after-submit'],
+    ['submit-button-copy', 'after-submit'],
+    ['success-message-copy', 'after-submit'],
+    ['error-message-copy', 'after-submit'],
+    ['redirect-url', 'after-submit'],
+    ['redirect-open-mode', 'after-submit'],
+    ['success-pages', 'after-submit'],
+    ['submission-notifications', 'after-submit'],
+    ['form-display-type', 'design'],
+    ['design-presets', 'design'],
+    ['design-theme-color', 'design'],
+    ['design-background-color', 'design'],
+    ['design-button-color', 'design'],
+    ['design-text-color', 'design'],
+    ['design-field-color', 'design'],
+    ['design-border-color', 'design'],
+    ['design-submit-text-color', 'design'],
+    ['design-rating-star-color', 'design'],
+    ['design-logo-image', 'design'],
+    ['design-cover-image', 'design'],
+    ['share-and-sheets', 'publish'],
+  ] as const
+
+  it('PC1440 の初期表示で編集3要素とプレビューを同じ主作業面に置く', () => {
+    const field: HarnessField = { id: 'initial-field', type: 'text', label: 'お名前', required: false, position: 0, config: {} }
+    render(<FormBuilder {...base({ layoutMode: 'desktop', initialFields: [field] })} />)
+
+    expect(screen.getByRole('tab', { name: 'フォームを作る' }).getAttribute('aria-selected')).toBe('true')
+    const workspace = screen.getByTestId('builder-primary-workspace')
+    const triptych = within(workspace).getByTestId('builder-editing-triptych')
+    expect(within(triptych).getByTestId('palette')).toBeTruthy()
+    expect(within(triptych).getByTestId('canvas')).toBeTruthy()
+    expect(within(triptych).getByTestId('settings')).toBeTruthy()
+    expect(within(workspace).getByTestId('preview-pane')).toBeTruthy()
+    expect(workspace.className).toContain('grid-cols-[minmax(0,1fr)_320px]')
+    expect(screen.getByTestId('operations-settings-section').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(true)
+  })
+
+  it('日本語4グループを切り替え、各グループの説明と設定へ到達できる', () => {
+    render(<FormBuilder {...base({ layoutMode: 'desktop' })} />)
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'フォームを作る',
+      '回答後の動き',
+      '公開と共有',
+      'デザイン',
+    ])
+    expect(screen.getByText('質問を追加して、並び順と入力内容を整えます。')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('tab', { name: '回答後の動き' }))
+    expect(screen.getByText('送信したあとに見せる文、次の行き先、誰に知らせるかを決めます。')).toBeTruthy()
+    expect(screen.getByLabelText('フォームタイトル').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(true)
+    expect(screen.getByTestId('form-copy-section').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(false)
+    expect(screen.getByTestId('form-redirect-section').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(false)
+    expect(screen.getByTestId('success-page-section').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(false)
+    expect(screen.getByTestId('builder-primary-workspace').hidden).toBe(false)
+    expect(screen.getByTestId('preview-pane').closest('[hidden]')).toBeNull()
+    const afterSubmitPanel = document.getElementById(screen.getByRole('tab', { name: '回答後の動き' }).getAttribute('aria-controls') ?? '')
+    expect(afterSubmitPanel?.contains(screen.getByTestId('form-copy-section'))).toBe(true)
+
+    fireEvent.click(screen.getByRole('tab', { name: '公開と共有' }))
+    expect(screen.getByText('いつ受け付けるか、通知先と共有方法を決めます。')).toBeTruthy()
+    expect(screen.getByTestId('render-backend-section').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(false)
+    expect(screen.getByTestId('operations-settings-section').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(false)
+    expect(screen.getByTestId('builder-primary-workspace').hidden).toBe(false)
+    expect(screen.getByTestId('preview-pane').closest('[hidden]')).toBeNull()
+    const publishPanel = document.getElementById(screen.getByRole('tab', { name: '公開と共有' }).getAttribute('aria-controls') ?? '')
+    expect(publishPanel?.contains(screen.getByTestId('operations-settings-section'))).toBe(true)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'デザイン' }))
+    expect(screen.getByText('色や画像を選び、右の見本で見え方を確かめます。')).toBeTruthy()
+    expect(screen.getByTestId('design-pane').closest<HTMLElement>('[data-settings-group]')?.hidden).toBe(false)
+    expect(screen.getByTestId('preview-pane').closest('[hidden]')).toBeNull()
+  })
+
+  it('旧UIの全設定フィールドを新しい意味グループへ欠落なく割り当てる', () => {
+    const found = new Set<string>()
+    const collectVisible = () => {
+      document.querySelectorAll<HTMLElement>('[data-setting-id]').forEach((element) => {
+        if (element.closest('[hidden]')) return
+        const group = element.closest<HTMLElement>('[data-settings-group]')?.dataset.settingsGroup
+        found.add(`${element.dataset.settingId}:${group ?? 'missing'}`)
+      })
+    }
+    const visitEveryGroup = () => {
+      for (const name of ['フォームを作る', '回答後の動き', '公開と共有', 'デザイン']) {
+        fireEvent.click(screen.getByRole('tab', { name }))
+        collectVisible()
+      }
+    }
+    const rating: HarnessField = { id: 'rating', type: 'rating', label: '評価', required: false, position: 0, config: {} }
+    const email: HarnessField = { id: 'email', type: 'email', label: 'メール', required: false, position: 1, config: {} }
+
+    render(<FormBuilder {...base({
+      layoutMode: 'desktop',
+      initialFields: [rating, email],
+      initialSuccessPages: [{ id: 'sp1', title: '完了' }],
+      initialFriendMetadataMappings: [{ formalooFieldKey: 'email', friendMetadataKey: '連絡先' }],
+      afterSubmitSettings: <div data-setting-id="submission-notifications" />,
+      publishSettings: <div data-setting-id="share-and-sheets" />,
+    })} />)
+    visitEveryGroup()
+    cleanup()
+    render(<FormBuilder {...base({
+      layoutMode: 'desktop',
+      initialRenderBackend: 'internal',
+      initialFields: [rating, email],
+      afterSubmitSettings: <div data-setting-id="submission-notifications" />,
+      publishSettings: <div data-setting-id="share-and-sheets" />,
+    })} />)
+    visitEveryGroup()
+
+    expect([...found].sort()).toEqual(legacySettingFields.map(([id, group]) => `${id}:${group}`).sort())
+  })
+
+  it('旧UIの項目別設定も「フォームを作る」から型ごとに到達できる', () => {
+    const field = (id: string, type: HarnessField['type'], label: string, config: HarnessField['config'] = {}): HarnessField => ({
+      id, type, label, required: false, position: 0, config,
+    })
+    const cases: Array<{
+      name: string
+      backend?: 'formaloo' | 'internal'
+      fields: HarnessField[]
+      logic?: HarnessLogicRule[]
+      labels: string[]
+    }> = [
+      {
+        name: '一行テキスト',
+        fields: [field('text', 'text', 'お名前')],
+        labels: ['ラベル', '必須', '補足説明', '最大文字数'],
+      },
+      {
+        name: '自前配信の住所自動入力',
+        backend: 'internal',
+        fields: [
+          field('zip', 'text', '郵便番号', { postalAutofill: { zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town' } }),
+          field('pref', 'text', '都道府県'),
+          field('city', 'text', '市区町村'),
+          field('town', 'text', '町域'),
+        ],
+        labels: ['プレースホルダー', '最小文字数', '最大文字数', '郵便番号から住所を自動入力', '都道府県の入力先', '市区町村の入力先', '町域の入力先'],
+      },
+      {
+        name: '評価',
+        fields: [field('rating', 'rating', '満足度')],
+        labels: ['評価スタイル'],
+      },
+      {
+        name: '単一選択',
+        backend: 'internal',
+        fields: [field('choice', 'choice', '希望', { choices: ['A', 'B'] })],
+        labels: ['選択肢1', '選択肢2', '既定選択肢'],
+      },
+      {
+        name: '複数選択',
+        backend: 'internal',
+        fields: [field('multi', 'multiple_select', '関心', { choices: ['A', 'B'] })],
+        labels: ['既定選択肢: A', '既定選択肢: B'],
+      },
+      {
+        name: 'ファイル',
+        fields: [field('file', 'file', '資料')],
+        labels: ['複数ファイル許可', '最大サイズ', '動画を許可', '許可拡張子'],
+      },
+      {
+        name: '見出し',
+        fields: [field('section', 'section', 'ご案内')],
+        labels: ['見出し', '説明文'],
+      },
+      {
+        name: '動画',
+        fields: [field('video', 'video', '紹介動画')],
+        labels: ['ラベル(任意)', '動画URL', '表示サイズ'],
+      },
+      {
+        name: '画像',
+        fields: [field('image', 'image', '会場写真')],
+        labels: ['ラベル(任意)', '画像ファイル', '画像URL', '代替テキスト'],
+      },
+      {
+        name: '計算',
+        fields: [
+          field('calc', 'variable', '合計', { variableSubType: 'formula', formula: '{price}', decimalPlaces: 0 }),
+          field('price', 'number', '単価'),
+        ],
+        labels: ['ラベル', '計算の種類', '計算式', '小数点以下の桁数', '単価を式に挿入'],
+      },
+      {
+        name: '動的選択肢',
+        fields: [field('fetch', 'choice_fetch', '商品')],
+        labels: ['選択肢リスト'],
+      },
+      {
+        name: '行列',
+        fields: [field('matrix', 'matrix', '評価表', { matrixChoiceGroups: [{ title: '行1' }], matrixChoiceItems: { column_1: { title: '列1' } } })],
+        labels: ['ラベル', '必須', '補足説明', '行（1行に1項目）', '列（1行に1項目）'],
+      },
+      {
+        name: '繰り返し',
+        fields: [
+          field('repeat', 'repeating_section', '同行者', { minRows: 1, maxRows: 3, repeatingColumns: [{ columnField: 'guest', title: 'お名前' }] }),
+          field('guest', 'text', '同行者名'),
+        ],
+        labels: ['ラベル', '必須', '補足説明', '最小行数', '最大行数', '繰り返し列1の項目', '繰り返し列1の見出し'],
+      },
+      {
+        name: '条件分岐',
+        fields: [field('route', 'text', '区分'), field('target', 'text', '連絡先')],
+        logic: [{ id: 'rule', sourceFieldId: 'route', operator: 'equals', value: 'A', action: 'show', targetFieldId: 'target' }],
+        labels: ['分岐の値', '分岐アクション', '分岐対象', '分岐を削除'],
+      },
+    ]
+
+    for (const scenario of cases) {
+      cleanup()
+      render(<FormBuilder {...base({
+        layoutMode: 'desktop',
+        initialRenderBackend: scenario.backend ?? 'formaloo',
+        initialFields: scenario.fields,
+        initialLogic: scenario.logic ?? [],
+      })} />)
+      const buildTab = screen.getByRole('tab', { name: 'フォームを作る' })
+      const buildPanel = document.getElementById(buildTab.getAttribute('aria-controls') ?? '')
+      expect(buildPanel, scenario.name).toBeTruthy()
+      for (const label of scenario.labels) {
+        const control = within(buildPanel as HTMLElement).getByLabelText(label)
+        expect(control.closest('[hidden]'), `${scenario.name}: ${label}`).toBeNull()
+      }
+    }
+  })
+
+  it('グループを巡回しても保存 payload と回答者プレビューを変えない', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ layoutMode: 'desktop', onSave })} />)
+    const previewBefore = screen.getByTestId('preview-pane').innerHTML
+
+    for (const name of ['回答後の動き', '公開と共有', 'デザイン', 'フォームを作る']) {
+      fireEvent.click(screen.getByRole('tab', { name }))
+    }
+    fireEvent.click(screen.getByText('保存'))
+
+    expect(screen.getByTestId('preview-pane').innerHTML).toBe(previewBefore)
+    expect(JSON.parse(JSON.stringify(onSave.mock.calls[0][0]))).toMatchInlineSnapshot(`
+      {
+        "allowEditMail": 0,
+        "allowPostEdit": 0,
+        "description": "",
+        "design": {},
+        "designImages": {},
+        "editMailFieldId": null,
+        "fields": [],
+        "logic": [],
+        "logicFingerprint": null,
+        "title": "テスト",
+      }
+    `)
+  })
+})

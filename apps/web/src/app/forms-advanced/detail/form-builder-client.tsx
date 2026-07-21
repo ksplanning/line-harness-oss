@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
-import FormBuilder from '@/components/forms-advanced/builder'
+import FormBuilder, { type BuilderWorkspaceTab } from '@/components/forms-advanced/builder'
 import SharePanel from '@/components/forms-advanced/share-panel'
 import InstantWebhookSettings from '@/components/forms-advanced/instant-webhook-settings'
 import InternalSubmissionNotificationSettings from '@/components/forms-advanced/internal-submission-notification-settings'
@@ -24,10 +24,15 @@ export default function FormBuilderClient({ id }: { id: string }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [workspaceTab, setWorkspaceTab] = useState<BuilderWorkspaceTab>('build')
   const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
   const [internalSheetConnection, setInternalSheetConnection] = useState<SheetsConnection | null>(null)
   const shareRequestGeneration = useRef(0)
   const loadRequestGeneration = useRef(0)
+
+  useEffect(() => {
+    setWorkspaceTab('build')
+  }, [id])
 
   const invalidateShare = useCallback(() => {
     shareRequestGeneration.current += 1
@@ -288,22 +293,8 @@ export default function FormBuilderClient({ id }: { id: string }) {
           {notice && (
             <div className="mb-3 text-xs px-3 py-2 rounded bg-gray-50 border border-gray-200 text-gray-700">{notice}</div>
           )}
-          {renderBackend === 'formaloo' && (
-            <div className="mb-4">
-              <InstantWebhookSettings formId={form.id} />
-            </div>
-          )}
-          {renderBackend === 'internal' && (
-            <div className="mb-4">
-              <InternalSubmissionNotificationSettings
-                formId={form.id}
-                formTitle={form.title}
-                fields={form.fields}
-              />
-            </div>
-          )}
           <FormBuilder
-            key={`${form.id}:${form.builderStatus}:${renderBackend}`}
+            key={`${form.id}:${renderBackend}`}
             formId={form.id}
             formTitle={form.title}
             formDescription={form.description}
@@ -329,6 +320,38 @@ export default function FormBuilderClient({ id }: { id: string }) {
             driftStatus={form.driftStatus}
             publicUrl={renderBackend === 'internal' ? (share?.publicUrl ?? null) : form.publicUrl}
             embedCode={renderBackend === 'internal' ? null : form.embedCode}
+            workspaceTab={workspaceTab}
+            onWorkspaceTabChange={setWorkspaceTab}
+            afterSubmitSettings={(
+              <div
+                data-testid="notification-settings-group"
+                data-settings-group="after-submit"
+                data-setting-id="submission-notifications"
+                hidden={workspaceTab !== 'after-submit'}
+                className="mt-4"
+              >
+                {renderBackend === 'formaloo' ? (
+                  <InstantWebhookSettings formId={form.id} />
+                ) : (
+                  <InternalSubmissionNotificationSettings
+                    formId={form.id}
+                    formTitle={form.title}
+                    fields={form.fields}
+                  />
+                )}
+              </div>
+            )}
+            publishSettings={(
+              <div
+                data-testid="share-settings-group"
+                data-settings-group="publish"
+                data-setting-id="share-and-sheets"
+                hidden={workspaceTab !== 'publish'}
+                className="mt-4"
+              >
+                <SharePanel share={share} renderBackend={renderBackend} isOwner={isOwner} internalSheetConnection={internalSheetConnection} connecting={connecting} onConnectSheets={handleConnectSheets} />
+              </div>
+            )}
             onSave={handleSave}
             onRenderBackendChange={handleRenderBackendChange}
             onSubmitForReview={renderBackend === 'formaloo' ? withErr(() => formsAdvancedApi.submitForReview(id, renderBackend), 'in_review') : undefined}
@@ -358,9 +381,6 @@ export default function FormBuilderClient({ id }: { id: string }) {
               }
             } : undefined}
           />
-          <div className="mt-4">
-            <SharePanel share={share} renderBackend={renderBackend} isOwner={isOwner} internalSheetConnection={internalSheetConnection} connecting={connecting} onConnectSheets={handleConnectSheets} />
-          </div>
         </>
       ) : null}
     </div>

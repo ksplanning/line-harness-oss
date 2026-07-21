@@ -233,6 +233,7 @@ describe('internal publish confirmation', () => {
       id: 'email', type: 'email', label: 'メール', required: false, position: 1, config: {},
     }
     render(<FormBuilder {...base({ initialFields: [field, email], onSave })} />)
+    fireEvent.click(screen.getByRole('tab', { name: '公開と共有' }))
 
     fireEvent.click(screen.getByRole('button', { name: '経由チャネルの表示ルールを追加' }))
     fireEvent.change(screen.getByLabelText('経由チャネル'), { target: { value: 'web' } })
