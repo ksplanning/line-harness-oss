@@ -2,8 +2,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createRichMenuDisplayRule } from '@line-crm/db';
+import { LineApiError } from '@line-crm/line-sdk';
 import {
   RichMenuRuleReapplyConflictError,
   createRichMenuRuleReapplyJob,
@@ -63,6 +64,69 @@ function seedFriends(count: number, accountId = 'acc-1'): void {
   }
 }
 
+function bulkLineDouble(options: {
+  bulkFailureStatuses?: number[];
+  individualFailureStatuses?: number[];
+  initialMenus?: Record<string, string | null>;
+  invalidUserIndexesOnce?: number[];
+  forbidVerification?: boolean;
+} = {}) {
+  const currentMenus = new Map<string, string | null>(Object.entries(options.initialMenus ?? {}));
+  const bulkFailureStatuses = [...(options.bulkFailureStatuses ?? [])];
+  const individualFailureStatuses = [...(options.individualFailureStatuses ?? [])];
+  let invalidUserIndexes = options.invalidUserIndexesOnce;
+  const bulkLinks: Array<{ userIds: string[]; richMenuId: string }> = [];
+  const bulkUnlinks: string[][] = [];
+  const individualLinks: Array<{ userId: string; richMenuId: string }> = [];
+  const individualUnlinks: string[] = [];
+  const verificationCalls: string[] = [];
+  const factory = vi.fn(() => ({
+    async linkRichMenuToUser(userId: string, richMenuId: string) {
+      individualLinks.push({ userId, richMenuId });
+      const status = individualFailureStatuses.shift();
+      if (status !== undefined) throw new LineApiError(status, 'individual failure', '{}');
+      currentMenus.set(userId, richMenuId);
+    },
+    async unlinkRichMenuFromUser(userId: string) {
+      individualUnlinks.push(userId);
+      const status = individualFailureStatuses.shift();
+      if (status !== undefined) throw new LineApiError(status, 'individual failure', '{}');
+      currentMenus.set(userId, null);
+    },
+    async linkRichMenuToMultipleUsers(userIds: string[], richMenuId: string) {
+      bulkLinks.push({ userIds: [...userIds], richMenuId });
+      const status = bulkFailureStatuses.shift();
+      if (status !== undefined) throw new LineApiError(status, 'temporary', '{}');
+      if (invalidUserIndexes) {
+        const indexes = invalidUserIndexes;
+        invalidUserIndexes = undefined;
+        throw new LineApiError(400, 'Bad Request', JSON.stringify({
+          message: indexes.map((index) => `The property, 'userIds[${index}]', is invalid`).join('; '),
+        }));
+      }
+      for (const userId of userIds) currentMenus.set(userId, richMenuId);
+    },
+    async unlinkRichMenusFromMultipleUsers(userIds: string[]) {
+      bulkUnlinks.push([...userIds]);
+      const status = bulkFailureStatuses.shift();
+      if (status !== undefined) throw new LineApiError(status, 'temporary', '{}');
+      for (const userId of userIds) currentMenus.set(userId, null);
+    },
+    async getRichMenuIdOfUser(userId: string) {
+      verificationCalls.push(userId);
+      if (options.forbidVerification) throw new Error('per-user verification exceeds the Worker budget');
+      const richMenuId = currentMenus.get(userId) ?? null;
+      if (richMenuId === null) throw new LineApiError(404, 'Not Found', '{}');
+      return { richMenuId };
+    },
+    async getDefaultRichMenuId() {
+      if (options.forbidVerification) throw new LineApiError(403, 'Forbidden', '{}');
+      return null;
+    },
+  }));
+  return { bulkLinks, bulkUnlinks, individualLinks, individualUnlinks, verificationCalls, factory };
+}
+
 beforeEach(() => {
   raw = new Database(':memory:');
   raw.pragma('foreign_keys = ON');
@@ -75,6 +139,339 @@ beforeEach(() => {
 });
 
 describe('rich menu rule reapply jobs', () => {
+  test('processes 1,450 friends with exactly three external calls and batches of at most 500', async () => {
+    seedFriends(1_450);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '全員', conditionType: 'tag_not_exists', conditionValue: 'missing',
+      richMenuId: 'menu-all', priority: 10, isActive: true,
+    });
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble();
+    let queryCount = 0;
+    const requestCounter = { used: 0 };
+    const countingDb = {
+      prepare(sql: string) {
+        queryCount++;
+        return db.prepare(sql);
+      },
+    } as unknown as D1Database;
+
+    const result = await processRichMenuRuleWork(countingDb, {
+      limit: 1_450,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined, requestCounter },
+    } as never);
+
+    expect(result).toEqual({ attempted: 1_450, queueProcessed: 0, jobsCompleted: 1 });
+    expect(line.bulkLinks.map((call) => call.userIds.length)).toEqual([500, 500, 450]);
+    expect(requestCounter.used).toBe(3);
+    expect(line.verificationCalls).toEqual([]);
+    expect(line.individualLinks).toEqual([]);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM rich_menu_friend_assignments').get())
+      .toEqual({ count: 1_450 });
+    expect(queryCount).toBeLessThanOrEqual(20);
+  });
+
+  test.each([429, 503])('backs off and retries a bulk link after LINE %s', async (status) => {
+    seedFriends(1);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '全員', conditionType: 'tag_not_exists', conditionValue: 'missing',
+      richMenuId: 'menu-all', priority: 10, isActive: true,
+    });
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({ bulkFailureStatuses: [status] });
+    const sleeps = vi.fn(async (_milliseconds: number) => undefined);
+
+    await processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: sleeps },
+    } as never);
+
+    expect(line.bulkLinks).toHaveLength(2);
+    expect(sleeps).toHaveBeenCalledWith(1_000);
+    expect(sleeps).toHaveBeenCalledWith(1);
+    expect(line.individualLinks).toEqual([]);
+  });
+
+  test('isolates userIds[n] named by LINE 400 and individually retries only those users', async () => {
+    seedFriends(3);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '全員', conditionType: 'tag_not_exists', conditionValue: 'missing',
+      richMenuId: 'menu-all', priority: 10, isActive: true,
+    });
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({ invalidUserIndexesOnce: [1] });
+
+    await processRichMenuRuleWork(db, {
+      limit: 3,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+
+    expect(line.bulkLinks.map((call) => call.userIds)).toEqual([
+      ['U0', 'U1', 'U2'],
+      ['U0', 'U2'],
+    ]);
+    expect(line.individualLinks).toEqual([{ userId: 'U1', richMenuId: 'menu-all' }]);
+    expect((await getLatestRichMenuRuleReapplyJob(db, 'acc-1'))?.failedCount).toBe(0);
+  });
+
+  test('records an individually retried permanent 400 as terminal so one invalid user cannot block the job', async () => {
+    seedFriends(3);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '全員', conditionType: 'tag_not_exists', conditionValue: 'missing',
+      richMenuId: 'menu-all', priority: 10, isActive: true,
+    });
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({
+      invalidUserIndexesOnce: [1],
+      individualFailureStatuses: [400],
+    });
+
+    await processRichMenuRuleWork(db, {
+      limit: 3,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+
+    expect(line.bulkLinks.map((call) => call.userIds)).toEqual([
+      ['U0', 'U1', 'U2'],
+      ['U0', 'U2'],
+    ]);
+    expect(line.individualLinks).toEqual([{ userId: 'U1', richMenuId: 'menu-all' }]);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'completed', processedCount: 3, appliedCount: 2, failedCount: 1,
+    });
+    expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').all()).toEqual([]);
+  });
+
+  test('queues a whole chunk after bulk 5xx retries exhaust instead of overflowing subrequests', async () => {
+    seedFriends(1);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '全員', conditionType: 'tag_not_exists', conditionValue: 'missing',
+      richMenuId: 'menu-all', priority: 10, isActive: true,
+    });
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({ bulkFailureStatuses: [503, 503, 503] });
+    const sleeps = vi.fn(async (_milliseconds: number) => undefined);
+
+    await processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: sleeps },
+    } as never);
+
+    expect(line.bulkLinks).toHaveLength(3);
+    expect(sleeps).toHaveBeenCalledWith(1_000);
+    expect(sleeps).toHaveBeenCalledWith(2_000);
+    expect(line.individualLinks).toEqual([]);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'running', failedCount: 1,
+    });
+    expect(raw.prepare('SELECT attempts FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?').get('friend-000'))
+      .toEqual({ attempts: 1 });
+  });
+
+  test('uses bulk unlink when rules return managed friends to the account default', async () => {
+    seedFriends(2);
+    raw.prepare(
+      `INSERT INTO rich_menu_friend_assignments (friend_id, account_id, rule_id, rich_menu_id)
+       VALUES ('friend-000', 'acc-1', NULL, 'menu-old'),
+              ('friend-001', 'acc-1', NULL, 'menu-old')`,
+    ).run();
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({
+      initialMenus: { U0: 'menu-old', U1: 'menu-old' },
+      forbidVerification: true,
+    });
+
+    await processRichMenuRuleWork(db, {
+      limit: 2,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+
+    expect(line.bulkUnlinks).toEqual([['U0', 'U1']]);
+    expect(line.verificationCalls).toEqual([]);
+    expect(line.individualUnlinks).toEqual([]);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM rich_menu_friend_assignments').get())
+      .toEqual({ count: 0 });
+  });
+
+  test('continues a pre-deploy 20-friend cursor and bulk-applies only the remaining friends', async () => {
+    seedFriends(30);
+    const rule = await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '全員', conditionType: 'tag_not_exists', conditionValue: 'missing',
+      richMenuId: 'menu-all', priority: 10, isActive: true,
+    });
+    const insertAssignment = raw.prepare(
+      `INSERT INTO rich_menu_friend_assignments (friend_id, account_id, rule_id, rich_menu_id)
+       VALUES (?, 'acc-1', ?, 'menu-all')`,
+    );
+    for (let index = 0; index < 20; index++) {
+      insertAssignment.run(`friend-${String(index).padStart(3, '0')}`, rule.id);
+    }
+    raw.prepare(
+      `INSERT INTO rich_menu_rule_reapply_jobs
+       (id, account_id, status, total_count, processed_count, applied_count, last_friend_id)
+       VALUES ('job-old', 'acc-1', 'running', 30, 20, 20, 'friend-019')`,
+    ).run();
+    const line = bulkLineDouble();
+
+    const result = await processRichMenuRuleWork(db, {
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    });
+
+    expect(result).toEqual({ attempted: 10, queueProcessed: 0, jobsCompleted: 1 });
+    expect(line.bulkLinks.map((call) => call.userIds)).toEqual([
+      Array.from({ length: 10 }, (_value, index) => `U${index + 20}`),
+    ]);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM rich_menu_friend_assignments').get())
+      .toEqual({ count: 30 });
+  });
+
+  test('does not advance job progress past a friend whose queue lease cannot be claimed', async () => {
+    seedFriends(3);
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    raw.prepare(
+      `INSERT INTO rich_menu_rule_evaluation_queue (friend_id, available_at)
+       VALUES ('friend-000', '2999-01-01T00:00:00.000')`,
+    ).run();
+
+    await processRichMenuRuleWork(db, { limit: 3 });
+
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'running', processedCount: 0, lastFriendId: null,
+    });
+    raw.prepare('DELETE FROM rich_menu_rule_evaluation_queue').run();
+    await processRichMenuRuleWork(db, { limit: 3 });
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'completed', processedCount: 3,
+    });
+  });
+
+  test('immediately releases an unprocessed suffix even when a dirty trigger increments its revision', async () => {
+    seedFriends(3);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '全員', conditionType: 'tag_not_exists', conditionValue: 'missing',
+      richMenuId: 'menu-all', priority: 10, isActive: true,
+    });
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    raw.prepare(
+      `INSERT INTO rich_menu_rule_evaluation_queue (friend_id, available_at)
+       VALUES ('friend-000', '2999-01-01T00:00:00.000')`,
+    ).run();
+    let injected = false;
+    const racingDb = {
+      prepare(sql: string) {
+        const statement = db.prepare(sql);
+        if (!sql.includes('RETURNING friend_id, revision')) return statement;
+        return {
+          bind(...args: unknown[]) {
+            const bound = statement.bind(...args) as unknown as { all<T>(): Promise<{ results: T[] }> };
+            return {
+              async all<T>() {
+                const result = await bound.all<T>();
+                if (!injected) {
+                  injected = true;
+                  raw.prepare("UPDATE friends SET metadata = '{\"changed\":true}' WHERE id = 'friend-002'").run();
+                }
+                return result;
+              },
+            };
+          },
+        };
+      },
+    } as unknown as D1Database;
+    const line = bulkLineDouble();
+
+    const result = await processRichMenuRuleWork(racingDb, {
+      limit: 3,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    });
+
+    expect(result).toEqual({ attempted: 2, queueProcessed: 2, jobsCompleted: 0 });
+    expect(line.bulkLinks.map((call) => call.userIds)).toEqual([['U1', 'U2']]);
+    expect(raw.prepare(
+      "SELECT friend_id, lease_token FROM rich_menu_rule_evaluation_queue WHERE friend_id = 'friend-002'",
+    ).get()).toBeUndefined();
+  });
+
+  test('a superseded bulk worker invalidates assignment state and leaves a corrective queue generation', async () => {
+    seedFriends(1);
+    raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-paid', '購入済み')").run();
+    raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-000', 'tag-paid')").run();
+    const rule = await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '購入済み', conditionType: 'tag_exists', conditionValue: 'tag-paid',
+      richMenuId: 'menu-old', priority: 10, isActive: true,
+    });
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    let staleStarted!: () => void;
+    let releaseStale!: () => void;
+    const started = new Promise<void>((resolve) => { staleStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseStale = resolve; });
+    let effectiveMenu: string | null = null;
+    const staleFactory = () => ({
+      async linkRichMenuToUser(_userId: string, richMenuId: string) { effectiveMenu = richMenuId; },
+      async unlinkRichMenuFromUser() { effectiveMenu = null; },
+      async linkRichMenuToMultipleUsers(_userIds: string[], richMenuId: string) {
+        staleStarted();
+        await release;
+        effectiveMenu = richMenuId;
+      },
+      async unlinkRichMenusFromMultipleUsers() { effectiveMenu = null; },
+    });
+    const currentFactory = () => ({
+      async linkRichMenuToUser(_userId: string, richMenuId: string) { effectiveMenu = richMenuId; },
+      async unlinkRichMenuFromUser() { effectiveMenu = null; },
+      async linkRichMenuToMultipleUsers(_userIds: string[], richMenuId: string) { effectiveMenu = richMenuId; },
+      async unlinkRichMenusFromMultipleUsers() { effectiveMenu = null; },
+    });
+
+    const stale = processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: staleFactory,
+      bulkOptions: { sleep: async () => undefined },
+    });
+    await started;
+    raw.prepare('UPDATE rich_menu_display_rules SET rich_menu_id = ? WHERE id = ?')
+      .run('menu-new', rule.id);
+    raw.prepare(
+      `UPDATE rich_menu_rule_evaluation_queue
+       SET lease_token = NULL, revision = revision + 1, available_at = '2000-01-01T00:00:00.000'`,
+    ).run();
+    raw.prepare(
+      `UPDATE rich_menu_rule_reapply_jobs
+       SET locked_until = '2000-01-01T00:00:00.000' WHERE id = ?`,
+    ).run((await getLatestRichMenuRuleReapplyJob(db, 'acc-1'))!.id);
+    await processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: currentFactory,
+      bulkOptions: { sleep: async () => undefined },
+    });
+    expect(effectiveMenu).toBe('menu-new');
+
+    releaseStale();
+    await stale;
+    expect(effectiveMenu).toBe('menu-old');
+    expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').all())
+      .toEqual([{ friend_id: 'friend-000' }]);
+    expect(raw.prepare('SELECT rich_menu_id FROM rich_menu_friend_assignments').all()).toEqual([]);
+
+    await processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: currentFactory,
+      bulkOptions: { sleep: async () => undefined },
+    });
+    expect(effectiveMenu).toBe('menu-new');
+    expect(raw.prepare('SELECT rich_menu_id FROM rich_menu_friend_assignments').get())
+      .toEqual({ rich_menu_id: 'menu-new' });
+    expect(raw.prepare('SELECT friend_id FROM rich_menu_rule_evaluation_queue').all()).toEqual([]);
+  });
+
   test('starts one account job with total visibility and blocks repeated clicks for a cooldown window', async () => {
     seedFriends(3);
     const job = await createRichMenuRuleReapplyJob(db, 'acc-1');
@@ -115,7 +512,7 @@ describe('rich menu rule reapply jobs', () => {
     });
   });
 
-  test('a LINE failure advances the sweep, records failure, and leaves retry work for a later tick', async () => {
+  test('a LINE failure records progress but keeps the job running until queued retry work settles', async () => {
     seedFriends(1);
     raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-paid', '購入済み')").run();
     raw.prepare("INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-000', 'tag-paid')").run();
@@ -136,10 +533,11 @@ describe('rich menu rule reapply jobs', () => {
         async linkRichMenuToUser() { throw new Error('temporary'); },
         async unlinkRichMenuFromUser() {},
       }),
+      bulkOptions: { sleep: async () => undefined },
     });
 
     expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
-      status: 'completed',
+      status: 'running',
       processedCount: 1,
       failedCount: 1,
     });
@@ -228,12 +626,83 @@ describe('rich menu rule reapply jobs', () => {
     releaseLine();
     const staleResult = await staleWorker;
 
-    expect(newOwnerResult.jobsCompleted + staleResult.jobsCompleted).toBe(1);
+    expect(newOwnerResult.jobsCompleted + staleResult.jobsCompleted).toBe(0);
+    const closerResult = await processRichMenuRuleWork(db, { limit: 1, clientFactory });
+    expect(closerResult.jobsCompleted).toBe(1);
     expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({ status: 'completed' });
   });
 });
 
 describe('dirty friend queue', () => {
+  test('bulk-drains a 500-plus scheduled boundary queue when no manual sweep is running', async () => {
+    seedFriends(501);
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-1', name: '全員', conditionType: 'tag_not_exists', conditionValue: 'missing',
+      richMenuId: 'menu-all', priority: 10, isActive: true,
+    });
+    const enqueue = raw.prepare('INSERT INTO rich_menu_rule_evaluation_queue (friend_id) VALUES (?)');
+    for (let index = 0; index < 501; index++) {
+      enqueue.run(`friend-${String(index).padStart(3, '0')}`);
+    }
+    const line = bulkLineDouble();
+
+    const result = await processRichMenuRuleWork(db, {
+      limit: 501,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    });
+
+    expect(result).toEqual({ attempted: 501, queueProcessed: 501, jobsCompleted: 0 });
+    expect(line.bulkLinks.map((call) => call.userIds.length)).toEqual([500, 1]);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM rich_menu_rule_evaluation_queue').get())
+      .toEqual({ count: 0 });
+  });
+
+  test('bulk-drains another account scheduled queue while a manual sweep is running', async () => {
+    seedFriends(1);
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-2', 'channel-2', 'B', 'account-token-2', 'secret-2')`,
+    ).run();
+    const insertFriend = raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id, metadata, is_following)
+       VALUES (?, ?, 'acc-2', '{}', 1)`,
+    );
+    const enqueue = raw.prepare('INSERT INTO rich_menu_rule_evaluation_queue (friend_id) VALUES (?)');
+    for (let index = 0; index < 1_450; index++) {
+      const friendId = `other-${String(index).padStart(4, '0')}`;
+      insertFriend.run(friendId, `OTHER-U${index}`);
+      enqueue.run(friendId);
+    }
+    await createRichMenuDisplayRule(db, {
+      accountId: 'acc-2', name: '全員', conditionType: 'tag_not_exists', conditionValue: 'missing',
+      richMenuId: 'menu-other', priority: 10, isActive: true,
+    });
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    raw.prepare(
+      `INSERT INTO rich_menu_rule_evaluation_queue (friend_id, available_at)
+       VALUES ('friend-000', '2999-01-01T00:00:00.000')
+       ON CONFLICT(friend_id) DO UPDATE SET available_at = excluded.available_at`,
+    ).run();
+    const line = bulkLineDouble();
+
+    const result = await processRichMenuRuleWork(db, {
+      limit: 1_500,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    });
+
+    expect(result).toEqual({ attempted: 1_450, queueProcessed: 1_450, jobsCompleted: 0 });
+    expect(line.bulkLinks.map((call) => call.userIds.length)).toEqual([500, 500, 450]);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'running', processedCount: 0,
+    });
+    expect(raw.prepare(
+      `SELECT COUNT(*) AS count FROM rich_menu_rule_evaluation_queue q
+       JOIN friends f ON f.id = q.friend_id WHERE f.line_account_id = 'acc-2'`,
+    ).get()).toEqual({ count: 0 });
+  });
+
   test('deduplicates rapid changes and drains only the global bounded limit', async () => {
     seedFriends(25);
     const enqueue = raw.prepare(
@@ -430,7 +899,7 @@ describe('scheduled rich menu rule transitions', () => {
     });
   });
 
-  test('drains a transition through the existing maximum of 20 friends per five-minute tick', async () => {
+  test('drains a transition through the bulk queue path', async () => {
     seedFriends(25);
     await createRichMenuDisplayRule(db, {
       accountId: 'acc-1', name: '開始境界', conditionType: 'tag_not_exists', conditionValue: 'tag-missing',
@@ -439,15 +908,15 @@ describe('scheduled rich menu rule transitions', () => {
     });
     await enqueueRichMenuRuleScheduleTransitions(db, new Date('2026-07-20T00:15:00.000Z'));
 
+    const line = bulkLineDouble();
     const result = await processRichMenuRuleWork(db, {
       limit: 20,
-      clientFactory: () => ({
-        async linkRichMenuToUser() {},
-        async unlinkRichMenuFromUser() {},
-      }),
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
     });
 
     expect(result).toMatchObject({ attempted: 20, queueProcessed: 20 });
+    expect(line.bulkLinks.map((call) => call.userIds.length)).toEqual([20]);
     expect(raw.prepare('SELECT COUNT(*) AS count FROM rich_menu_rule_evaluation_queue').get())
       .toEqual({ count: 5 });
   });

@@ -186,10 +186,45 @@ export class LineClient {
     return data;
   }
 
+  /**
+   * Link one rich menu to at most 500 users through LINE's asynchronous bulk API.
+   * https://developers.line.biz/en/reference/messaging-api/#link-rich-menu-to-multiple-users
+   */
+  async linkRichMenuToMultipleUsers(
+    userIds: string[],
+    richMenuId: string,
+  ): Promise<unknown> {
+    if (userIds.length < 1 || userIds.length > 500) {
+      throw new RangeError('userIds must contain between 1 and 500 users');
+    }
+    const { data } = await this.request(
+      'POST',
+      '/v2/bot/richmenu/bulk/link',
+      { richMenuId, userIds },
+    );
+    return data;
+  }
+
   async unlinkRichMenuFromUser(userId: string): Promise<unknown> {
     const { data } = await this.request(
       'DELETE',
       `/v2/bot/user/${encodeURIComponent(userId)}/richmenu`,
+    );
+    return data;
+  }
+
+  /**
+   * Remove per-user rich menus from at most 500 users through LINE's asynchronous bulk API.
+   * https://developers.line.biz/en/reference/messaging-api/#unlink-rich-menus-from-multiple-users
+   */
+  async unlinkRichMenusFromMultipleUsers(userIds: string[]): Promise<unknown> {
+    if (userIds.length < 1 || userIds.length > 500) {
+      throw new RangeError('userIds must contain between 1 and 500 users');
+    }
+    const { data } = await this.request(
+      'POST',
+      '/v2/bot/richmenu/bulk/unlink',
+      { userIds },
     );
     return data;
   }

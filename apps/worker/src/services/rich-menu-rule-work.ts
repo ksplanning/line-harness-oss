@@ -1,7 +1,13 @@
+import { LineApiError, LineClient } from '@line-crm/line-sdk';
 import {
   applyRichMenuRulesForFriend,
+  prepareRichMenuRulesForBatch,
+  settleRichMenuRuleMutationBatch,
   type RichMenuRuleApplyResult,
   type RichMenuRuleLineClientFactory,
+  type RichMenuRuleMutationOutcome,
+  type RichMenuRulePendingMutation,
+  type RichMenuRuleQueueLease,
 } from './rich-menu-rule-engine.js';
 
 export interface RichMenuRuleReapplyJob {
@@ -65,12 +71,46 @@ export interface RichMenuRuleScheduleEnqueueResult {
 }
 
 const RICH_MENU_RULE_SCHEDULE_SCAN_INTERVAL_MS = 15 * 60_000;
+export const RICH_MENU_RULE_SWEEP_LIMIT = 1_500;
+const RICH_MENU_RULE_DIRTY_LIMIT = 20;
+const LINE_BULK_USER_LIMIT = 500;
+// LINE currently allows 2,000 requests/second per endpoint/channel. Starting at
+// most one request each millisecond caps this worker at 1,000/second (50%).
+// https://developers.line.biz/en/reference/messaging-api/#rate-limits
+const LINE_SAFE_REQUEST_INTERVAL_MS = 1;
+const LINE_RETRY_BASE_MS = 1_000;
+const LINE_RETRY_ATTEMPTS = 3;
+// This repository deliberately runs within the Workers Free 50-external-subrequest
+// ceiling. The cron dispatches this work in an isolated HTTP invocation and this
+// lower local ceiling bounds retry/error expansion inside that dedicated budget.
+// https://developers.cloudflare.com/workers/platform/limits/#subrequests
+const LINE_SUBREQUEST_BUDGET = 9;
+
+interface RichMenuRuleRequestCounter {
+  used: number;
+  started?: boolean;
+}
+
+export interface RichMenuRuleBulkOptions {
+  sleep?: (milliseconds: number) => Promise<void>;
+  requestIntervalMs?: number;
+  retryBaseMs?: number;
+  retryAttempts?: number;
+  maxSubrequests?: number;
+  requestCounter?: RichMenuRuleRequestCounter;
+}
+
+interface RichMenuRuleWorkOptions {
+  limit?: number;
+  clientFactory?: RichMenuRuleLineClientFactory;
+  bulkOptions?: RichMenuRuleBulkOptions;
+}
 
 /**
  * Materialize rule boundaries into the existing deduplicated friend queue.
  * The checkpoint window is open on the left and closed on the right: (last, scheduled].
- * A normal cron detects a boundary within 15 minutes; the existing worker then drains
- * 20 friends per five-minute tick (10 reserved slots while a manual sweep is running).
+ * A normal cron detects a boundary within 15 minutes. A manual sweep reserves a bounded
+ * 20-item lane for unrelated dirty work; a standalone boundary queue uses the bulk path.
  */
 export async function enqueueRichMenuRuleScheduleTransitions(
   db: D1Database,
@@ -242,7 +282,7 @@ async function claimFriendEvaluation(
     .prepare(
       `UPDATE rich_menu_rule_evaluation_queue
        SET lease_token = ?,
-           available_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+10 minutes'),
+           available_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+15 minutes'),
            updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
        WHERE friend_id = ? AND revision = ?
          AND available_at <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')`,
@@ -252,11 +292,252 @@ async function claimFriendEvaluation(
   return (claimed.meta?.changes ?? 0) === 1 ? { token, revision } : null;
 }
 
+async function claimFriendEvaluations(
+  db: D1Database,
+  friendIds: string[],
+): Promise<RichMenuRuleQueueLease[]> {
+  if (friendIds.length === 0) return [];
+  const friendIdsJson = JSON.stringify(friendIds);
+  await db
+    .prepare(
+      `INSERT INTO rich_menu_rule_evaluation_queue (friend_id)
+       SELECT value FROM json_each(?) WHERE 1
+       ON CONFLICT(friend_id) DO NOTHING`,
+    )
+    .bind(friendIdsJson)
+    .run();
+  const token = crypto.randomUUID();
+  const claimed = await db
+    .prepare(
+      `UPDATE rich_menu_rule_evaluation_queue
+       SET lease_token = ?,
+           available_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+15 minutes'),
+           updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+       WHERE friend_id IN (SELECT value FROM json_each(?))
+         AND available_at <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+       RETURNING friend_id, revision`,
+    )
+    .bind(token, friendIdsJson)
+    .all<{ friend_id: string; revision: number }>();
+  return claimed.results.map((row) => ({ friendId: row.friend_id, token, revision: row.revision }));
+}
+
+async function releaseFriendEvaluations(
+  db: D1Database,
+  leases: RichMenuRuleQueueLease[],
+): Promise<void> {
+  if (leases.length === 0) return;
+  await db
+    .prepare(
+      `UPDATE rich_menu_rule_evaluation_queue SET
+         lease_token = NULL,
+         available_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'),
+         updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+       WHERE EXISTS (
+         SELECT 1 FROM json_each(?) AS item
+         WHERE json_extract(item.value, '$.friendId') = rich_menu_rule_evaluation_queue.friend_id
+           AND json_extract(item.value, '$.token') = rich_menu_rule_evaluation_queue.lease_token
+       )`,
+    )
+    .bind(JSON.stringify(leases))
+    .run();
+}
+
+type BulkCapableLineClient = ReturnType<RichMenuRuleLineClientFactory> & Required<Pick<
+  ReturnType<RichMenuRuleLineClientFactory>,
+  | 'linkRichMenuToMultipleUsers'
+  | 'unlinkRichMenusFromMultipleUsers'
+>>;
+
+function isBulkCapable(client: ReturnType<RichMenuRuleLineClientFactory>): client is BulkCapableLineClient {
+  return typeof client.linkRichMenuToMultipleUsers === 'function'
+    && typeof client.unlinkRichMenusFromMultipleUsers === 'function';
+}
+
+function isRetryableLineError(error: unknown): boolean {
+  if (error instanceof LineApiError) return error.status === 429 || error.status >= 500;
+  // Network timeouts/fetch failures do not carry a LINE status and are safe to retry;
+  // rich-menu link/unlink operations are idempotent desired-state writes.
+  return !(error instanceof RangeError);
+}
+
+function isTerminalLineError(error: unknown): boolean {
+  return error instanceof LineApiError
+    && error.status >= 400
+    && error.status < 500
+    && error.status !== 429;
+}
+
+function failedUserIndexes(error: unknown, userCount: number): number[] {
+  if (!(error instanceof LineApiError) || error.status !== 400) return [];
+  const indexes = new Set<number>();
+  for (const match of error.responseBody.matchAll(/userIds\[(\d+)\]/g)) {
+    const index = Number(match[1]);
+    if (Number.isInteger(index) && index >= 0 && index < userCount) indexes.add(index);
+  }
+  return [...indexes].sort((left, right) => left - right);
+}
+
+async function executeRichMenuMutations(
+  mutations: RichMenuRulePendingMutation[],
+  clientFactory: RichMenuRuleLineClientFactory,
+  bulkOptions: RichMenuRuleBulkOptions = {},
+): Promise<RichMenuRuleMutationOutcome[]> {
+  if (mutations.length === 0) return [];
+  const sleep = bulkOptions.sleep ?? ((milliseconds: number) => new Promise<void>(
+    (resolve) => setTimeout(resolve, milliseconds),
+  ));
+  const requestIntervalMs = bulkOptions.requestIntervalMs ?? LINE_SAFE_REQUEST_INTERVAL_MS;
+  const retryBaseMs = bulkOptions.retryBaseMs ?? LINE_RETRY_BASE_MS;
+  const retryAttempts = bulkOptions.retryAttempts ?? LINE_RETRY_ATTEMPTS;
+  const maxSubrequests = bulkOptions.maxSubrequests ?? LINE_SUBREQUEST_BUDGET;
+  const requestCounter = bulkOptions.requestCounter ?? { used: 0 };
+  const paced = async <T>(request: () => Promise<T>): Promise<T> => {
+    if (requestCounter.used >= maxSubrequests) {
+      throw new RangeError('rich-menu LINE subrequest budget exhausted');
+    }
+    if (requestCounter.started && requestIntervalMs > 0) await sleep(requestIntervalMs);
+    requestCounter.started = true;
+    requestCounter.used++;
+    return request();
+  };
+  const requestWithRetry = async <T>(request: () => Promise<T>): Promise<T> => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < retryAttempts; attempt++) {
+      try {
+        return await paced(request);
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableLineError(error) || attempt === retryAttempts - 1) throw error;
+        await sleep(retryBaseMs * (2 ** attempt));
+      }
+    }
+    throw lastError;
+  };
+  const clients = new Map<string, ReturnType<RichMenuRuleLineClientFactory>>();
+  const getClient = (token: string) => {
+    let client = clients.get(token);
+    if (!client) {
+      client = clientFactory(token);
+      clients.set(token, client);
+    }
+    return client;
+  };
+  const outcomes = new Map<string, RichMenuRuleMutationOutcome>();
+  const bulkGroups = new Map<string, {
+    client: BulkCapableLineClient;
+    action: 'link' | 'unlink';
+    richMenuId: string | null;
+    mutations: RichMenuRulePendingMutation[];
+  }>();
+
+  for (const mutation of mutations) {
+    const client = getClient(mutation.channelAccessToken);
+    if (!isBulkCapable(client)) {
+      try {
+        if (mutation.action === 'link') {
+          await requestWithRetry(() => client.linkRichMenuToUser(mutation.lineUserId, mutation.richMenuId!));
+        } else {
+          await requestWithRetry(() => client.unlinkRichMenuFromUser(mutation.lineUserId));
+        }
+        outcomes.set(mutation.friendId, { mutation });
+      } catch (error) {
+        outcomes.set(mutation.friendId, {
+          mutation,
+          error,
+          terminalFailure: isTerminalLineError(error),
+        });
+      }
+      continue;
+    }
+    const key = `${mutation.channelAccessToken}\u0000${mutation.action}\u0000${mutation.richMenuId ?? ''}`;
+    const group = bulkGroups.get(key) ?? {
+      client,
+      action: mutation.action,
+      richMenuId: mutation.richMenuId,
+      mutations: [],
+    };
+    group.mutations.push(mutation);
+    bulkGroups.set(key, group);
+  }
+
+  const retryIndividually = async (mutation: RichMenuRulePendingMutation): Promise<void> => {
+    try {
+      if (mutation.action === 'link') {
+        await requestWithRetry(
+          () => getClient(mutation.channelAccessToken)
+            .linkRichMenuToUser(mutation.lineUserId, mutation.richMenuId!),
+        );
+      } else {
+        await requestWithRetry(
+          () => getClient(mutation.channelAccessToken).unlinkRichMenuFromUser(mutation.lineUserId),
+        );
+      }
+      outcomes.set(mutation.friendId, { mutation });
+    } catch (error) {
+      outcomes.set(mutation.friendId, {
+        mutation,
+        error,
+        terminalFailure: isTerminalLineError(error),
+      });
+    }
+  };
+
+  // LINE's accepted response is asynchronous and empty. A normal 1,450-user run
+  // therefore stays at exactly three external calls (500 + 500 + 450), which fits
+  // the Free Worker budget. When LINE identifies malformed userIds[n] in a 400,
+  // retry only those users individually and resubmit the unaffected remainder.
+  for (const group of bulkGroups.values()) {
+    for (let offset = 0; offset < group.mutations.length; offset += LINE_BULK_USER_LIMIT) {
+      let pending = group.mutations.slice(offset, offset + LINE_BULK_USER_LIMIT);
+      while (pending.length > 0) {
+        const userIds = pending.map((mutation) => mutation.lineUserId);
+        try {
+          if (group.action === 'link') {
+            await requestWithRetry(() => group.client.linkRichMenuToMultipleUsers(userIds, group.richMenuId!));
+          } else {
+            await requestWithRetry(() => group.client.unlinkRichMenusFromMultipleUsers(userIds));
+          }
+          for (const mutation of pending) outcomes.set(mutation.friendId, { mutation });
+          pending = [];
+        } catch (error) {
+          const indexes = failedUserIndexes(error, pending.length);
+          if (indexes.length === 0) {
+            for (const mutation of pending) {
+              outcomes.set(mutation.friendId, {
+                mutation,
+                error,
+                terminalFailure: isTerminalLineError(error),
+              });
+            }
+            pending = [];
+            continue;
+          }
+          const failedIndexSet = new Set(indexes);
+          const failed = pending.filter((_mutation, index) => failedIndexSet.has(index));
+          pending = pending.filter((_mutation, index) => !failedIndexSet.has(index));
+          for (const mutation of failed) await retryIndividually(mutation);
+        }
+      }
+    }
+  }
+  return mutations.map((mutation) => outcomes.get(mutation.friendId) ?? {
+    mutation,
+    error: new Error('LINE rich menu outcome was not recorded'),
+  });
+}
+
 export async function processRichMenuRuleWork(
   db: D1Database,
-  options: { limit?: number; clientFactory?: RichMenuRuleLineClientFactory } = {},
+  options: RichMenuRuleWorkOptions = {},
 ): Promise<{ attempted: number; queueProcessed: number; jobsCompleted: number }> {
-  const limit = Math.min(20, Math.max(1, Math.trunc(options.limit ?? 20)));
+  const limit = Math.min(
+    RICH_MENU_RULE_SWEEP_LIMIT,
+    Math.max(1, Math.trunc(options.limit ?? RICH_MENU_RULE_SWEEP_LIMIT)),
+  );
+  const clientFactory = options.clientFactory ?? ((token: string) => new LineClient(token));
+  const requestCounter = options.bulkOptions?.requestCounter ?? { used: 0 };
+  const bulkOptions = { ...options.bulkOptions, requestCounter };
   let attempted = 0;
   let jobsCompleted = 0;
 
@@ -267,17 +548,27 @@ export async function processRichMenuRuleWork(
     )
     .all<RichMenuRuleReapplyJobRow>();
 
-  const readyQueueCount = runningJobs.results.length > 0
-    ? await db
-      .prepare(
-        `SELECT COUNT(*) AS count FROM rich_menu_rule_evaluation_queue
-         WHERE available_at <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')`,
-      )
-      .first<{ count: number }>()
-    : null;
+  const readyQueueCount = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM rich_menu_rule_evaluation_queue q
+       LEFT JOIN friends f ON f.id = q.friend_id
+       WHERE q.available_at <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+         AND (
+           f.line_account_id IS NULL
+           OR NOT EXISTS (
+             SELECT 1 FROM rich_menu_rule_reapply_jobs j
+             WHERE j.status = 'running' AND j.account_id = f.line_account_id
+           )
+         )`,
+    )
+    .first<{ count: number }>();
+  const minimumJobCapacity = runningJobs.results.length > 0
+    ? Math.min(RICH_MENU_RULE_DIRTY_LIMIT, Math.ceil(limit / 2))
+    : 0;
   const queueReservation = Math.min(
     readyQueueCount?.count ?? 0,
-    Math.max(1, Math.floor(limit / 2)),
+    Math.max(0, limit - minimumJobCapacity),
   );
   let jobRemaining = limit - queueReservation;
 
@@ -288,7 +579,7 @@ export async function processRichMenuRuleWork(
       .prepare(
         `UPDATE rich_menu_rule_reapply_jobs
          SET lock_token = ?,
-             locked_until = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+10 minutes'),
+             locked_until = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours', '+15 minutes'),
              updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
          WHERE id = ? AND status = 'running'
            AND processed_count = ? AND last_friend_id IS ?
@@ -306,32 +597,53 @@ export async function processRichMenuRuleWork(
       )
       .bind(jobRow.account_id, jobRow.last_friend_id ?? '', jobRemaining + 1)
       .all<{ id: string }>();
-    const hasMore = friendRows.results.length > jobRemaining;
+    const hasMoreFromCursor = friendRows.results.length > jobRemaining;
     const batch = friendRows.results.slice(0, jobRemaining);
     let applied = 0;
     let skipped = 0;
     let failed = 0;
-    for (const friend of batch) {
-      const queueLease = await claimFriendEvaluation(db, friend.id);
-      if (!queueLease) {
-        skipped++;
-        continue;
-      }
-      const result = await applyRichMenuRulesForFriend(
-        db,
-        friend.id,
-        options.clientFactory,
-        { queueLease },
-      );
+    const queueLeases = await claimFriendEvaluations(db, batch.map((friend) => friend.id));
+    const leaseByFriendId = new Map(queueLeases.map((lease) => [lease.friendId, lease]));
+    const firstUnclaimedIndex = batch.findIndex((friend) => !leaseByFriendId.has(friend.id));
+    const processedBatch = firstUnclaimedIndex === -1 ? batch : batch.slice(0, firstUnclaimedIndex);
+    const processedFriendIds = new Set(processedBatch.map((friend) => friend.id));
+    const processedLeases = processedBatch.map((friend) => leaseByFriendId.get(friend.id)!);
+    await releaseFriendEvaluations(
+      db,
+      queueLeases.filter((lease) => !processedFriendIds.has(lease.friendId)),
+    );
+    const prepared = await prepareRichMenuRulesForBatch(
+      db,
+      jobRow.account_id,
+      processedLeases,
+    );
+    const outcomes = await executeRichMenuMutations(
+      prepared.mutations,
+      clientFactory,
+      bulkOptions,
+    );
+    const mutationResults = await settleRichMenuRuleMutationBatch(db, outcomes);
+    for (const result of [...prepared.results, ...mutationResults]) {
       const bucket = resultBucket(result);
       if (bucket === 'applied') applied++;
       else if (bucket === 'failed') failed++;
       else skipped++;
     }
-    attempted += batch.length;
-    jobRemaining -= batch.length;
-    const completed = !hasMore;
-    const lastFriendId = batch.at(-1)?.id ?? jobRow.last_friend_id;
+    attempted += processedBatch.length;
+    jobRemaining -= processedBatch.length;
+    const lastFriendId = processedBatch.at(-1)?.id ?? jobRow.last_friend_id;
+    const pendingQueue = await db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM rich_menu_rule_evaluation_queue q
+         JOIN friends f ON f.id = q.friend_id
+         WHERE f.line_account_id = ?`,
+      )
+      .bind(jobRow.account_id)
+      .first<{ count: number }>();
+    const completed = !hasMoreFromCursor
+      && processedBatch.length === batch.length
+      && (pendingQueue?.count ?? 0) === 0;
     const finalized = await db
       .prepare(
         `UPDATE rich_menu_rule_reapply_jobs SET
@@ -349,7 +661,7 @@ export async function processRichMenuRuleWork(
       )
       .bind(
         completed ? 'completed' : 'running',
-        batch.length,
+        processedBatch.length,
         applied,
         skipped,
         failed,
@@ -367,24 +679,50 @@ export async function processRichMenuRuleWork(
   if (remaining > 0) {
     const queued = await db
       .prepare(
-        `SELECT friend_id, revision FROM rich_menu_rule_evaluation_queue
-         WHERE available_at <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
-         ORDER BY available_at ASC, friend_id ASC LIMIT ?`,
+        `SELECT q.friend_id, q.revision, f.line_account_id AS account_id
+         FROM rich_menu_rule_evaluation_queue q
+         LEFT JOIN friends f ON f.id = q.friend_id
+         WHERE q.available_at <= strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+         ORDER BY
+           CASE WHEN f.line_account_id IS NULL OR NOT EXISTS (
+             SELECT 1 FROM rich_menu_rule_reapply_jobs j
+             WHERE j.status = 'running' AND j.account_id = f.line_account_id
+           ) THEN 0 ELSE 1 END,
+           q.available_at ASC,
+           q.friend_id ASC
+         LIMIT ?`,
       )
       .bind(remaining)
-      .all<{ friend_id: string; revision: number }>();
-    for (const item of queued.results) {
-      const queueLease = await claimFriendEvaluation(db, item.friend_id, item.revision);
-      if (!queueLease) continue;
-      await applyRichMenuRulesForFriend(
-        db,
-        item.friend_id,
-        options.clientFactory,
-        { queueLease },
-      );
-      attempted++;
-      queueProcessed++;
+      .all<{ friend_id: string; revision: number; account_id: string | null }>();
+    const queueLeases = await claimFriendEvaluations(
+      db,
+      queued.results.map((item) => item.friend_id),
+    );
+    const accountByFriendId = new Map(queued.results.map((item) => [item.friend_id, item.account_id]));
+    const leasesByAccount = new Map<string, RichMenuRuleQueueLease[]>();
+    const missingFriendLeases: RichMenuRuleQueueLease[] = [];
+    for (const lease of queueLeases) {
+      const accountId = accountByFriendId.get(lease.friendId);
+      if (!accountId) {
+        missingFriendLeases.push(lease);
+        continue;
+      }
+      const accountLeases = leasesByAccount.get(accountId) ?? [];
+      accountLeases.push(lease);
+      leasesByAccount.set(accountId, accountLeases);
     }
+    const mutations: RichMenuRulePendingMutation[] = [];
+    for (const [accountId, accountLeases] of leasesByAccount) {
+      const prepared = await prepareRichMenuRulesForBatch(db, accountId, accountLeases);
+      mutations.push(...prepared.mutations);
+    }
+    const outcomes = await executeRichMenuMutations(mutations, clientFactory, bulkOptions);
+    await settleRichMenuRuleMutationBatch(db, outcomes);
+    for (const lease of missingFriendLeases) {
+      await applyRichMenuRulesForFriend(db, lease.friendId, clientFactory, { queueLease: lease });
+    }
+    attempted += queueLeases.length;
+    queueProcessed = queueLeases.length;
   }
 
   return { attempted, queueProcessed, jobsCompleted };

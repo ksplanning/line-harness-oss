@@ -274,6 +274,111 @@ export type Env = {
 
 export const app = new Hono<Env>();
 
+const RICH_MENU_RULE_WORK_PATH = '/internal/rich-menu-rule-work';
+const RICH_MENU_RULE_SIGNATURE_MAX_AGE_MS = 60_000;
+const RICH_MENU_RULE_SIGNATURE_PREFIX = 'line-harness:rich-menu-rule-work:v1';
+
+function richMenuRuleSignaturePayload(
+  origin: string,
+  timestamp: string,
+  nonce: string,
+): Uint8Array {
+  return new TextEncoder().encode([
+    RICH_MENU_RULE_SIGNATURE_PREFIX,
+    'POST',
+    RICH_MENU_RULE_WORK_PATH,
+    origin,
+    timestamp,
+    nonce,
+  ].join('\n'));
+}
+
+function bytesToHex(bytes: ArrayBuffer): string {
+  return [...new Uint8Array(bytes)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function hexToBytes(hex: string): Uint8Array | null {
+  if (!/^[0-9a-f]{64}$/i.test(hex)) return null;
+  return new Uint8Array(hex.match(/.{2}/g)!.map((pair) => Number.parseInt(pair, 16)));
+}
+
+async function richMenuRuleSignature(
+  secret: string,
+  origin: string,
+  timestamp: string,
+  nonce: string,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  return bytesToHex(await crypto.subtle.sign(
+    'HMAC',
+    key,
+    richMenuRuleSignaturePayload(origin, timestamp, nonce),
+  ));
+}
+
+async function verifyRichMenuRuleSignature(request: Request, secret: string): Promise<boolean> {
+  if (!secret) return false;
+  const url = new URL(request.url);
+  if (url.protocol !== 'https:' || url.pathname !== RICH_MENU_RULE_WORK_PATH) return false;
+  const timestamp = request.headers.get('x-rich-menu-timestamp') ?? '';
+  const nonce = request.headers.get('x-rich-menu-nonce') ?? '';
+  const signature = hexToBytes(request.headers.get('x-rich-menu-signature') ?? '');
+  const timestampMs = Number(timestamp);
+  if (
+    !Number.isInteger(timestampMs)
+    || Math.abs(Date.now() - timestampMs) > RICH_MENU_RULE_SIGNATURE_MAX_AGE_MS
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(nonce)
+    || !signature
+  ) return false;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify'],
+  );
+  return crypto.subtle.verify(
+    'HMAC',
+    key,
+    signature,
+    richMenuRuleSignaturePayload(url.origin, timestamp, nonce),
+  );
+}
+
+async function dispatchRichMenuRuleWork(env: Env['Bindings']): Promise<void> {
+  if (!env.WORKER_PUBLIC_URL) throw new Error('rich menu worker public URL is not configured');
+  if (!env.LINE_CHANNEL_SECRET) throw new Error('rich menu worker signature key is not configured');
+  const publicUrl = new URL(env.WORKER_PUBLIC_URL);
+  if (publicUrl.protocol !== 'https:') throw new Error('rich menu worker public URL must use HTTPS');
+  const target = new URL(RICH_MENU_RULE_WORK_PATH, publicUrl.origin);
+  const timestamp = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const signature = await richMenuRuleSignature(
+    env.LINE_CHANNEL_SECRET,
+    target.origin,
+    timestamp,
+    nonce,
+  );
+  const response = await fetch(target.toString(), {
+    method: 'POST',
+    headers: {
+      'x-rich-menu-timestamp': timestamp,
+      'x-rich-menu-nonce': nonce,
+      'x-rich-menu-signature': signature,
+    },
+    redirect: 'error',
+  });
+  if (!response.ok) throw new Error(`isolated rich menu worker returned ${response.status}`);
+}
+
 // CORS — credentialed cookie auth cannot use a wildcard origin. Reflect only
 // same-origin requests and origins on the ADMIN_ORIGIN allowlist; everything
 // else gets no Access-Control-Allow-Origin header (browser blocks it). Bearer
@@ -413,6 +518,27 @@ app.route('/admin', adminVersion);
 // Phase 5 Task 18 — self-update endpoints guarded by x-admin-api-key.
 // authMiddleware skips non-/api/ paths so this router owns its own auth gate.
 app.route('/admin/update', adminUpdate);
+
+// The cron re-enters through the public Worker URL so rich-menu LINE calls get
+// their own per-invocation subrequest budget. The raw channel secret never
+// leaves the Worker; it only authenticates a short-lived, domain-separated HMAC.
+app.post(RICH_MENU_RULE_WORK_PATH, async (c) => {
+  if (!await verifyRichMenuRuleSignature(c.req.raw, c.env.LINE_CHANNEL_SECRET)) {
+    return c.text('unauthorized', 401);
+  }
+  try {
+    const result = await processRichMenuRuleWork(c.env.DB);
+    if (result.attempted > 0) {
+      console.log(
+        `[rich-menu-rules] attempted=${result.attempted} queue=${result.queueProcessed} jobsCompleted=${result.jobsCompleted}`,
+      );
+    }
+    return c.body(null, 204);
+  } catch {
+    console.error('[rich-menu-rules] isolated worker error');
+    return c.text('worker error', 500);
+  }
+});
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -777,6 +903,29 @@ async function scheduled(
   env: Env['Bindings'],
   _ctx: ExecutionContext,
 ): Promise<void> {
+  // The schedule scan uses only D1, then one authenticated self-fetch starts a
+  // fresh HTTP invocation before delivery jobs can consume the parent cron's
+  // external subrequest budget. No direct fallback: a failed dispatch leaves
+  // the deduplicated queue intact for the next five-minute tick.
+  if (event.cron === '*/5 * * * *') {
+    const scheduledAt = new Date(event.scheduledTime);
+    if (scheduledAt.getUTCMinutes() % 15 === 0) {
+      try {
+        const result = await enqueueRichMenuRuleScheduleTransitions(env.DB, scheduledAt);
+        if (result.enqueued > 0) {
+          console.log(`[rich-menu-rules] scheduled=${result.enqueued}`);
+        }
+      } catch {
+        console.error('[rich-menu-rules] schedule scan error');
+      }
+    }
+    try {
+      await dispatchRichMenuRuleWork(env);
+    } catch {
+      console.error('[rich-menu-rules] isolated dispatch error');
+    }
+  }
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
@@ -816,8 +965,6 @@ async function scheduled(
 
   await Promise.allSettled(jobs);
 
-  // 条件付きリッチメニューは15分境界で期間またぎをqueue化し、5分tickごとに最大20人だけ処理する。
-  // checkpoint が遅延tickを回収し、タグ/metadata変更と一括再適用も同じ bounded worker で扱う。
   if (event.cron === '*/5 * * * *') {
     try {
       const result = await processDueFollowerImports(env.DB);
@@ -842,27 +989,6 @@ async function scheduled(
       }
     } catch {
       console.error('[friend-ledger-sync] polling error');
-    }
-    const scheduledAt = new Date(event.scheduledTime);
-    if (scheduledAt.getUTCMinutes() % 15 === 0) {
-      try {
-        const result = await enqueueRichMenuRuleScheduleTransitions(env.DB, scheduledAt);
-        if (result.enqueued > 0) {
-          console.log(`[rich-menu-rules] scheduled=${result.enqueued}`);
-        }
-      } catch {
-        console.error('[rich-menu-rules] schedule scan error');
-      }
-    }
-    try {
-      const result = await processRichMenuRuleWork(env.DB);
-      if (result.attempted > 0) {
-        console.log(
-          `[rich-menu-rules] attempted=${result.attempted} queue=${result.queueProcessed} jobsCompleted=${result.jobsCompleted}`,
-        );
-      }
-    } catch {
-      console.error('[rich-menu-rules] worker error');
     }
   }
 

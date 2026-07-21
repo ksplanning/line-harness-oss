@@ -18,6 +18,7 @@ import worker from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
+const WORKER_ROOT = join(__dirname, '../..');
 const BENIGN = /duplicate column name|already exists/i;
 
 function d1(db: Database.Database): D1Database {
@@ -54,6 +55,7 @@ function replayAll(db: Database.Database): void {
 }
 
 let raw: Database.Database;
+let isolatedFetch: ReturnType<typeof vi.fn>;
 const tick = (cron: string, scheduledTime = Date.now()) => ({ cron, scheduledTime, type: 'scheduled' }) as unknown as ScheduledEvent;
 const CTX = {} as ExecutionContext;
 
@@ -70,6 +72,7 @@ function env(): Record<string, unknown> {
     LINE_LOGIN_CHANNEL_ID: 'login-channel',
     LINE_LOGIN_CHANNEL_SECRET: 'login-secret',
     WORKER_URL: 'https://api.example.test',
+    WORKER_PUBLIC_URL: 'https://worker.example.test',
   };
 }
 
@@ -79,19 +82,33 @@ beforeEach(() => {
   enqueueSpy.mockReset();
   enqueueSpy.mockResolvedValue({ enqueued: 0, scannedFrom: '', scannedThrough: '' });
   workSpy.mockClear();
+  isolatedFetch = vi.fn(async () => Response.json({ attempted: 0, queueProcessed: 0, jobsCompleted: 0 }));
+  vi.stubGlobal('fetch', isolatedFetch);
 });
 
 describe('scheduled rich menu rule work', () => {
-  test('runs once on the five-minute tick', async () => {
+  test('dispatches one isolated invocation before other five-minute work', async () => {
     await worker.scheduled(tick('*/5 * * * *'), env() as never, CTX);
-    expect(workSpy).toHaveBeenCalledTimes(1);
-    expect(workSpy).toHaveBeenCalledWith(expect.anything());
+    expect(isolatedFetch).toHaveBeenCalledTimes(1);
+    expect(isolatedFetch).toHaveBeenCalledWith(
+      'https://worker.example.test/internal/rich-menu-rule-work',
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    );
+    const headers = new Headers(isolatedFetch.mock.calls[0][1]?.headers);
+    expect(headers.get('x-rich-menu-timestamp')).toMatch(/^\d+$/);
+    expect(headers.get('x-rich-menu-nonce')).toMatch(/^[0-9a-f-]{36}$/);
+    expect(headers.get('x-rich-menu-signature')).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(isolatedFetch.mock.calls[0])).not.toContain('secret');
+    expect(workSpy).not.toHaveBeenCalled();
   });
 
   test('does not run on the six-hour tick', async () => {
     await worker.scheduled(tick('0 */6 * * *'), env() as never, CTX);
     expect(enqueueSpy).not.toHaveBeenCalled();
     expect(workSpy).not.toHaveBeenCalled();
+    expect(isolatedFetch).not.toHaveBeenCalled();
   });
 
   test('enqueues transitions before work on each fifteen-minute boundary', async () => {
@@ -100,7 +117,7 @@ describe('scheduled rich menu rule work', () => {
 
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
     expect(enqueueSpy).toHaveBeenCalledWith(expect.anything(), new Date(scheduledTime));
-    expect(enqueueSpy.mock.invocationCallOrder[0]).toBeLessThan(workSpy.mock.invocationCallOrder[0]);
+    expect(enqueueSpy.mock.invocationCallOrder[0]).toBeLessThan(isolatedFetch.mock.invocationCallOrder[0]);
   });
 
   test('keeps draining work but skips the transition scan between fifteen-minute boundaries', async () => {
@@ -111,7 +128,7 @@ describe('scheduled rich menu rule work', () => {
     );
 
     expect(enqueueSpy).not.toHaveBeenCalled();
-    expect(workSpy).toHaveBeenCalledTimes(1);
+    expect(isolatedFetch).toHaveBeenCalledTimes(1);
   });
 
   test('keeps draining existing work when the transition scan fails', async () => {
@@ -123,6 +140,106 @@ describe('scheduled rich menu rule work', () => {
     );
 
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    expect(isolatedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('the isolated endpoint rejects missing credentials without running work', async () => {
+    const response = await worker.fetch(
+      new Request('https://worker.example.test/internal/rich-menu-rule-work', { method: 'POST' }),
+      env() as never,
+      CTX,
+    );
+
+    expect(response.status).toBe(401);
+    expect(workSpy).not.toHaveBeenCalled();
+  });
+
+  test('the isolated endpoint runs work with the server-side credential', async () => {
+    const bindings = env();
+    await worker.scheduled(tick('*/5 * * * *'), bindings as never, CTX);
+    const signedHeaders = new Headers(isolatedFetch.mock.calls[0][1]?.headers);
+    const response = await worker.fetch(
+      new Request('https://worker.example.test/internal/rich-menu-rule-work', {
+        method: 'POST',
+        headers: signedHeaders,
+      }),
+      bindings as never,
+      CTX,
+    );
+
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe('');
     expect(workSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('the isolated endpoint rejects an expired signed request', async () => {
+    const signedAt = Date.parse('2026-07-21T10:00:00.000Z');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(signedAt);
+    const bindings = env();
+    await worker.scheduled(tick('*/5 * * * *', signedAt), bindings as never, CTX);
+    const signedHeaders = new Headers(isolatedFetch.mock.calls[0][1]?.headers);
+    clock.mockReturnValue(signedAt + 60_001);
+
+    const response = await worker.fetch(
+      new Request('https://worker.example.test/internal/rich-menu-rule-work', {
+        method: 'POST',
+        headers: signedHeaders,
+      }),
+      bindings as never,
+      CTX,
+    );
+    clock.mockRestore();
+
+    expect(response.status).toBe(401);
+    expect(workSpy).not.toHaveBeenCalled();
+  });
+
+  test('the isolated endpoint rejects a tampered signature without running work', async () => {
+    const bindings = env();
+    await worker.scheduled(tick('*/5 * * * *'), bindings as never, CTX);
+    const signedHeaders = new Headers(isolatedFetch.mock.calls[0][1]?.headers);
+    signedHeaders.set('x-rich-menu-signature', '0'.repeat(64));
+
+    const response = await worker.fetch(
+      new Request('https://worker.example.test/internal/rich-menu-rule-work', {
+        method: 'POST',
+        headers: signedHeaders,
+      }),
+      bindings as never,
+      CTX,
+    );
+
+    expect(response.status).toBe(401);
+    expect(workSpy).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['non-2xx', async () => new Response('unavailable', { status: 503 })],
+    ['network rejection', async () => { throw new TypeError('network unavailable'); }],
+  ])('does not fall back into the shared cron budget after %s', async (_label, implementation) => {
+    isolatedFetch.mockImplementationOnce(implementation);
+
+    await worker.scheduled(tick('*/5 * * * *'), env() as never, CTX);
+
+    expect(isolatedFetch).toHaveBeenCalledTimes(1);
+    expect(workSpy).not.toHaveBeenCalled();
+  });
+
+  test('fails closed when isolated dispatch configuration is missing', async () => {
+    const missingConfig: Record<string, unknown> = env();
+    delete missingConfig.WORKER_PUBLIC_URL;
+
+    await worker.scheduled(tick('*/5 * * * *'), missingConfig as never, CTX);
+
+    expect(isolatedFetch).not.toHaveBeenCalled();
+    expect(workSpy).not.toHaveBeenCalled();
+  });
+
+  test('pins public self-fetch compatibility without changing the two cron triggers', () => {
+    for (const file of ['wrangler.toml', 'wrangler.ks.toml']) {
+      const config = readFileSync(join(WORKER_ROOT, file), 'utf8');
+      expect(config).toContain('"global_fetch_strictly_public"');
+      expect(config).toContain('crons = ["*/5 * * * *", "0 */6 * * *"]');
+    }
   });
 });

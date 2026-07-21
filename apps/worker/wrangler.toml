@@ -6,7 +6,7 @@ compatibility_date = "2024-12-01"
 # (createHash), and the `tar-stream` package for bundle parsing during the
 # /admin/update/* self-update flow. Without this flag the route imports
 # fail at runtime. compatibility_date 2024-09-23+ is required for the flag.
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = true
 
 # ═══════════════════════════════════════════════════════════════
