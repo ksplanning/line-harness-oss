@@ -816,3 +816,9 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **suite green**: 対象ファイル群（`auto-replies.multi-message.test.ts`/`template-packs.test.ts`(worker 16件)・`auto-replies.test.ts`/`template-packs.test.ts`(db 9件)・`edit-dialog.test.tsx`/`faq-answer-mode.test.tsx`/`auto-replies-embed.test.tsx`(web 20件)）+ worker 全体のformaloo/webhook関連62ファイル719テスト green。tsc rc0（worker/web/db/shared/sdk 全パッケージ）。保護4ファイル（formaloo-public/webhook/row-edit/friend-token）のうち webhook.ts のみ D-1 のコアロジック最小変更として意図的に touch（仕様許容範囲）・formaloo-public/row-edit/friend-tokenは byte 不変（git diff 0 hit）。
 - **正直な残課題**: `.sola/live-checklist.md`「あやこへ1回だけ実射」節は本ラウンド未実施（owner指示によるverify-only便のため）。FAQトグルの緑色アクティブ表示はコード読解で確認（`aria-pressed`+`border-green-500`スタイル）したがブラウザ画面での目視は未実施。次回の統合視覚QA（ブラウザ実機+LINE実射）で実施予定。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_120500_auto-reply-rules-power-up.md`（Box working folder 386663013201）。
+
+## chat-inline-draft-review — 個別チャット内下書きレビュー+返信欄改善（2026-07-21 closer / status: pending_owner_confirmation / done 5/5・verify-only便）
+- owner原文「個別チャットのところで質問に対しての下書きが見えて編集や承認送信が出来るようにして欲しい」「返信のところがすごく窮屈」に対応。会話タイムライン内の該当質問直後にAI下書きを点線枠+バッジ表示し、編集/承認送信/破棄の3操作を既存下書き受信箱と完全同期。実装はmain `c971e358`として既にdeploy済み（本便は再デプロイ禁止のverify-only便）。
+- **deployed実射検証（piecemaker・実あやこ・signed webhook simulate→承認送信1回実射）**: marker質問2件をwebhookで発火→チャットAPIで下書き2件がquestionMessageId一致でペアリング表示されることを実測→1件目を編集→承認送信で**実LINE1通があやこへ届いた**（実射証拠）→同一draftへの2回目承認は409で拒否（二重送信不可を実測）→2件目は破棄で送信0件のままpending消滅。監査ログ(edited/approved/discarded)・outgoing+1計上・friend行不変をD1実測。テスト用FAQ2件はAPI DELETE・simulate incoming2件messages_logは`--file`参照2段構成でDB書込みガードを正しく回避し削除。
+- **status: pending_owner_confirmation**: 返信欄の余白改善（D-3）はコード上reviewer確認済みだが、本closerはブラウザ目視をしていないため、owner実機確認を待って`completed`昇格。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_120535_chat-inline-draft-review.md`（Box working folder 386663013201・box_file_id_md=2358993758263/box_file_id_html=2358987057464）。
