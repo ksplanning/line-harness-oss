@@ -64,6 +64,10 @@ const AUTO_REPLY_MESSAGE_TYPES: readonly AutoReplyMessageType[] = [
   'imagemap',
   'richvideo',
 ]
+const autoReplyMessageTypeLabels: Record<AutoReplyMessageType, string> = {
+  ...messageTypeLabels,
+  flex: 'カード（Flex）',
+}
 const MEDIA_MESSAGE_TYPES: readonly MediaMessageType[] = ['video', 'audio', 'imagemap', 'richvideo']
 
 function isMediaMessageType(value: AutoReplyMessageType): value is MediaMessageType {
@@ -405,7 +409,7 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
 
                     <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label={`吹き出し ${index + 1} の種類`}>
                       {AUTO_REPLY_MESSAGE_TYPES.map((type) => (
-                        <button key={type} type="button" aria-pressed={message.messageType === type} onClick={() => updateMessage(index, { messageType: type, messageContent: type === message.messageType ? message.messageContent : '' })} className={`px-3 py-1.5 text-xs rounded-md border ${message.messageType === type ? 'border-green-500 bg-green-50 text-green-800' : 'border-gray-300 bg-white text-gray-600'}`}>{messageTypeLabels[type]}</button>
+                        <button key={type} type="button" aria-pressed={message.messageType === type} onClick={() => updateMessage(index, { messageType: type, messageContent: type === message.messageType ? message.messageContent : '' })} className={`px-3 py-1.5 text-xs rounded-md border ${message.messageType === type ? 'border-green-500 bg-green-50 text-green-800' : 'border-gray-300 bg-white text-gray-600'}`}>{autoReplyMessageTypeLabels[type]}</button>
                       ))}
                     </div>
 

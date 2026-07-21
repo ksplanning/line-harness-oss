@@ -79,6 +79,13 @@ describe('自動返信ルール編集 — 日本語ラベル', () => {
     expect(screen.getByRole('textbox', { name: 'キーワード' })).toBeTruthy()
   })
 
+  it('Flex の技術名を日常語と括弧補足で示す', () => {
+    render(<EditDialog draft={draft()} templates={templates} onClose={vi.fn()} onSaved={vi.fn()} />)
+
+    expect(screen.getByRole('button', { name: 'カード（Flex）' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Flexメッセージ' })).toBeNull()
+  })
+
   it('キーワード未入力を日本語で案内する', async () => {
     render(<EditDialog draft={draft()} templates={templates} onClose={vi.fn()} onSaved={vi.fn()} />)
 
