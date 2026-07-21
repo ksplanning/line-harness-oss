@@ -26,7 +26,7 @@ function stmt(overrides: Partial<{
   return s;
 }
 
-function sqliteD1(db: Database.Database): D1Database {
+function sqliteD1(db: Database.Database, afterRun?: (sql: string) => void): D1Database {
   return {
     prepare(sql: string) {
       const s = db.prepare(sql);
@@ -35,7 +35,11 @@ function sqliteD1(db: Database.Database): D1Database {
         bind(...args: unknown[]) { params = args; return api; },
         async first<T>() { return (s.get(...params) as T) ?? null; },
         async all<T>() { return { results: s.all(...params) as T[] }; },
-        async run() { s.run(...params); return {}; },
+        async run() {
+          const info = s.run(...params);
+          afterRun?.(sql);
+          return { meta: { changes: info.changes } };
+        },
       };
       return api;
     },
@@ -167,6 +171,25 @@ describe('recordUnmatchedQuestion dedup (real SQLite)', () => {
     await recordUnmatchedQuestion(db, base);
 
     expect((raw.prepare(`SELECT COUNT(*) AS count FROM unmatched_questions`).get() as { count: number }).count).toBe(3);
+  });
+
+  test('dedup直後に既存行が解決されても記録処理を例外にしない', async () => {
+    const raw = seedDb();
+    const input = { lineAccountId: 'acc-1', friendId: 'friend-1', question: '申し込みはいつから？', topScore: 0.4 };
+    const existing = await recordUnmatchedQuestion(sqliteD1(raw), input);
+    let resolved = false;
+    const racingDb = sqliteD1(raw, (sql) => {
+      if (!resolved && sql.includes('INSERT INTO unmatched_questions')) {
+        resolved = true;
+        raw.prepare(`UPDATE unmatched_questions SET resolved_faq_id = 'faq-race' WHERE id = ?`)
+          .run(existing.id);
+      }
+    });
+
+    await expect(recordUnmatchedQuestion(racingDb, input)).resolves.toMatchObject({
+      id: existing.id,
+      resolved_faq_id: 'faq-race',
+    });
   });
 });
 

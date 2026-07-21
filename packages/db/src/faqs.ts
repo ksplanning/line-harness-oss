@@ -235,12 +235,14 @@ export async function recordUnmatchedQuestion(
         WHERE line_account_id IS ?
           AND friend_id IS ?
           AND question = ?
-          AND resolved_faq_id IS NULL
-        ORDER BY created_at DESC
+        ORDER BY (resolved_faq_id IS NOT NULL) ASC, created_at DESC
         LIMIT 1`,
     )
     .bind(input.lineAccountId, input.friendId, input.question)
     .first<UnmatchedQuestion>();
+  // The INSERT is the dedup linearization point. If staff resolves the reused
+  // row before this read, return that just-resolved row instead of failing the
+  // webhook after the record operation already completed.
   if (!row) throw new Error('Failed to record unmatched question');
   return row;
 }
