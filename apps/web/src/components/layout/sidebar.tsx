@@ -13,11 +13,13 @@ const appVersion = process.env.APP_VERSION || '0.0.0'
 const appCommitSha = process.env.APP_COMMIT_SHA || 'local'
 const appBuildTime = process.env.APP_BUILD_TIME || ''
 const appBuildDate = appBuildTime ? appBuildTime.replace('T', ' ').replace(/\.\d{3}Z$/, 'Z') : ''
+const SIDEBAR_SECTIONS_STORAGE_KEY = 'line-harness:sidebar-expanded-sections'
 
 // ─── メニュー定義（ユーザー目線のカテゴリ） ───
 
 const menuSections = [
   {
+    id: 'main',
     label: null, // セクションラベルなし（メイン）
     items: [
       { href: '/', label: 'ダッシュボード', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
@@ -26,6 +28,7 @@ const menuSections = [
     ],
   },
   {
+    id: 'delivery',
     label: '配信',
     items: [
       { href: '/friend-add-settings', label: '友だち追加時設定', icon: 'M12 6v6m0 0v6m0-6h6m-6 0H6' },
@@ -40,6 +43,7 @@ const menuSections = [
     ],
   },
   {
+    id: 'analytics',
     label: '分析',
     items: [
       { href: '/inflow-links', label: 'リファラルリンク', icon: 'M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1' },
@@ -56,6 +60,7 @@ const menuSections = [
     ],
   },
   {
+    id: 'automation',
     label: '自動化',
     items: [
       { href: '/automations', label: 'オートメーション', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
@@ -65,6 +70,7 @@ const menuSections = [
     ],
   },
   {
+    id: 'booking',
     label: '予約',
     items: [
       { href: '/booking/bookings', label: '予約管理', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
@@ -75,6 +81,7 @@ const menuSections = [
     ],
   },
   {
+    id: 'settings',
     label: '設定',
     items: [
       { href: '/canned-responses', label: 'チャット定型文', icon: 'M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z' },
@@ -90,6 +97,36 @@ const menuSections = [
     ],
   },
 ]
+
+const COLLAPSIBLE_SECTION_IDS = new Set(
+  menuSections.filter((section) => section.label !== null).map((section) => section.id),
+)
+
+function isNavItemActive(pathname: string, href: string): boolean {
+  return href === '/' ? pathname === '/' : pathname.startsWith(href)
+}
+
+function defaultExpandedSections(pathname: string): Set<string> {
+  const currentSection = menuSections.find(
+    (section) => section.label !== null && section.items.some((item) => isNavItemActive(pathname, item.href)),
+  )
+  return new Set(currentSection ? [currentSection.id] : [])
+}
+
+function readStoredExpandedSections(): Set<string> | null {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_SECTIONS_STORAGE_KEY)
+    if (raw === null) return null
+    const stored = JSON.parse(raw) as unknown
+    if (
+      !Array.isArray(stored) ||
+      !stored.every((id) => typeof id === 'string' && COLLAPSIBLE_SECTION_IDS.has(id))
+    ) return null
+    return new Set(stored as string[])
+  } catch {
+    return null
+  }
+}
 
 // nav href → feature_key は単一正典 (lib/nav-permissions) を参照 (dashboard と共有 / drift 防止 / M-7)。
 
@@ -214,6 +251,9 @@ function NavIcon({ d }: { d: string }) {
 export default function Sidebar() {
   const pathname = usePathname()
   const [isOpen, setIsOpen] = useState(false)
+  const [expandedSectionIds, setExpandedSectionIds] = useState<Set<string>>(
+    () => defaultExpandedSections(pathname),
+  )
   const [staffName, setStaffName] = useState<string | null>(null)
   const [staffRole, setStaffRole] = useState<string | null>(null)
   // /api/staff/me の解決済み権限 (G64)。custom role の人の nav 出し分けに使う。
@@ -225,6 +265,11 @@ export default function Sidebar() {
   useEffect(() => {
     setStaffName(localStorage.getItem('lh_staff_name'))
     setStaffRole(localStorage.getItem('lh_staff_role'))
+  }, [])
+
+  useEffect(() => {
+    const stored = readStoredExpandedSections()
+    if (stored) setExpandedSectionIds(stored)
   }, [])
 
   useEffect(() => {
@@ -292,7 +337,19 @@ export default function Sidebar() {
     return () => { document.body.style.overflow = '' }
   }, [isOpen])
 
-  const isActive = (href: string) => href === '/' ? pathname === '/' : pathname.startsWith(href)
+  const toggleSection = (sectionId: string) => {
+    setExpandedSectionIds((current) => {
+      const next = new Set(current)
+      if (next.has(sectionId)) next.delete(sectionId)
+      else next.add(sectionId)
+      try {
+        window.localStorage.setItem(SIDEBAR_SECTIONS_STORAGE_KEY, JSON.stringify([...next]))
+      } catch {
+        // 保存できない端末でも開閉自体は止めない。
+      }
+      return next
+    })
+  }
 
   const sidebarContent = (
     <>
@@ -314,13 +371,28 @@ export default function Sidebar() {
 
       {/* ナビゲーション */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {menuSections.map((section, si) => (
-          <div key={si}>
+        {menuSections.map((section) => (
+          <div key={section.id}>
             {section.label && (
-              <div className="pt-5 pb-2 px-3">
-                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">{section.label}</p>
-              </div>
+              <button
+                type="button"
+                onClick={() => toggleSection(section.id)}
+                aria-expanded={expandedSectionIds.has(section.id)}
+                className="mt-3 flex min-h-[44px] w-full items-center justify-between rounded-lg px-3 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+              >
+                <span>{section.label}</span>
+                <svg
+                  aria-hidden="true"
+                  className={`h-4 w-4 shrink-0 transition-transform ${expandedSectionIds.has(section.id) ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
             )}
+            <div hidden={section.label !== null && !expandedSectionIds.has(section.id)}>
             {section.items.filter((item) => {
               // legacy forms / submissions が共に 0 と確定した deployment だけ旧導線を隠す。
               if (item.href === '/form-submissions' && !showLegacyFormSubmissions) return false
@@ -340,7 +412,7 @@ export default function Sidebar() {
               if (item.href === '/accounts' && staffRole === 'staff') return false
               return true
             }).map((item) => {
-              const active = isActive(item.href)
+              const active = isNavItemActive(pathname, item.href)
               const isDanger = 'danger' in item && item.danger
               return (
                 <Link
@@ -369,6 +441,7 @@ export default function Sidebar() {
                 </Link>
               )
             })}
+            </div>
           </div>
         ))}
       </nav>
