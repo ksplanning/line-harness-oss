@@ -64,6 +64,7 @@ export type CheckResult = { ok: true } | { ok: false; violation: string };
 export const DOCUMENTED_REBUILD_EXCEPTIONS = new Set<string>([
   '054_broadcasts_message_type_expand.sql',
   '115_messages_log_delivery_type_test.sql',
+  '124_template_pack_message_types.sql',
 ]);
 
 // Labels of the rebuild-specific rules waived for documented exceptions.

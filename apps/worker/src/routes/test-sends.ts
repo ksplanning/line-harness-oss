@@ -12,7 +12,7 @@ import { buildMessage } from '../services/broadcast.js';
 import { resolveSenderForBroadcast } from '@line-crm/db';
 
 const testSends = new Hono<Env>();
-const MESSAGE_TYPES = new Set(['text', 'image', 'flex', 'video', 'audio', 'imagemap', 'richvideo']);
+const MESSAGE_TYPES = new Set(['text', 'image', 'flex', 'video', 'audio', 'sticker', 'imagemap', 'richvideo']);
 
 function isTestSendSource(value: string): value is TestSendSource {
   return (TEST_SEND_SOURCES as readonly string[]).includes(value);

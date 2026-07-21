@@ -6,7 +6,22 @@ import { useState } from 'react'
 import { buildModelToFlex } from '@/lib/flex-builder/to-flex'
 import type { MessageBlock } from '@/lib/api'
 
-vi.mock('@/components/shared/image-uploader', () => ({ default: () => null }))
+vi.mock('@/components/shared/image-uploader', () => ({
+  default: ({ onChange, usage }: { onChange: (value: unknown) => void; usage?: string }) => (
+    <button
+      type="button"
+      data-testid="mock-image-uploader"
+      data-usage={usage ?? 'default'}
+      onClick={() => onChange({
+        mode: 'line-image',
+        originalContentUrl: 'https://cdn.example.test/original.jpg',
+        previewImageUrl: 'https://cdn.example.test/preview.jpg',
+      })}
+    >
+      mock image upload
+    </button>
+  ),
+}))
 vi.mock('@/components/flex-preview', () => ({ default: () => <div data-testid="flex-preview" /> }))
 vi.mock('./broadcast-media-inputs', () => ({ default: () => null }))
 vi.mock('@/lib/api', () => ({
@@ -181,5 +196,33 @@ describe('一斉配信のテキスト入力', () => {
     fireEvent.click(screen.getByRole('button', { name: '絵文字 🎉 を挿入' }))
 
     await waitFor(() => expect(textarea.value).toBe('配信🎉です'))
+  })
+})
+
+describe('リンク付き画像の Flex 寸法検証', () => {
+  it('通常画像を先に選んだ場合はリンクON時に消し、Flex用として選び直させる', async () => {
+    const onChange = vi.fn()
+
+    function Harness() {
+      const [block, setBlock] = useState<MessageBlock>({ type: 'image', content: '' })
+      return (
+        <MessageBlockEditor
+          block={block}
+          onChange={(next) => {
+            onChange(next)
+            setBlock(next)
+          }}
+          linkableEvents={[]}
+        />
+      )
+    }
+
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock image upload' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /リンクを付ける/ }))
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Flex.*選び直/)
+    expect(screen.getByTestId('mock-image-uploader').getAttribute('data-usage')).toBe('flex-image')
+    expect(onChange).toHaveBeenLastCalledWith({ type: 'image', content: '' })
   })
 })

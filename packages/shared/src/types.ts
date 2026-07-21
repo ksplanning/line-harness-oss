@@ -157,7 +157,7 @@ export interface Scenario {
 /** メッセージ種別 */
 export type MessageType = "text" | "image" | "flex";
 
-/** broadcasts 専用の拡張種別 (動画/音声/リッチメッセージ/リッチビデオ)。
+/** broadcasts 専用の拡張種別 (画像/動画/音声/スタンプ/リッチメッセージ/リッチビデオ)。
  *  scenario_steps 等の MessageType とは分離 (broadcasts のみ CHECK 拡張 = migration 054)。 */
 export type BroadcastMessageType =
   | "text"
@@ -165,6 +165,7 @@ export type BroadcastMessageType =
   | "flex"
   | "video"
   | "audio"
+  | "sticker"
   | "imagemap"
   | "richvideo";
 
@@ -333,7 +334,7 @@ export interface MessageLog {
 export type AutoReplyMatchType = "exact" | "contains";
 
 export interface AutoReplyResponseMessage {
-  messageType: MessageType;
+  messageType: BroadcastMessageType;
   messageContent: string;
 }
 
@@ -345,7 +346,7 @@ export interface AutoReply {
   /** マッチ種別 (exact: 完全一致, contains: 部分一致) */
   matchType: AutoReplyMatchType;
   /** レスポンスメッセージ種別 */
-  responseType: MessageType;
+  responseType: BroadcastMessageType;
   /** レスポンス内容 */
   responseContent: string;
   /** 1回の返信で順番どおり送る吹き出し (最大5件) */

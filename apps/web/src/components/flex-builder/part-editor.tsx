@@ -172,6 +172,7 @@ export default function PartEditor({ part, onChange, textEditorMode = 'emoji-onl
           <label className="block text-xs text-gray-600 mb-1">アイコン画像</label>
           <ImageUploader
             mode="url"
+            usage="flex-icon"
             value={part.url ? { mode: 'url', url: part.url } : null}
             onChange={(next) => onChange({ url: next && next.mode === 'url' ? next.url : '' } as Partial<BuilderPart>)}
           />
@@ -366,6 +367,7 @@ export default function PartEditor({ part, onChange, textEditorMode = 'emoji-onl
           <label className="block text-xs text-gray-600 mb-1">画像</label>
           <ImageUploader
             mode="url"
+            usage="flex-image"
             value={part.url ? { mode: 'url', url: part.url } : null}
             onChange={(next) =>
               onChange({ url: next && next.mode === 'url' ? next.url : '' } as Partial<BuilderPart>)

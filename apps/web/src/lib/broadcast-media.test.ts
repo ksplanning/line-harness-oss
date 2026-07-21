@@ -26,8 +26,10 @@ describe('T-C8 buildMediaJson — 種別ごとの messageContent 直列化', () 
     expect(p.actions[0]).toEqual({ type: 'uri', linkUri: 'https://x/lp', area: { x: 0, y: 0, width: 520, height: 520 } })
   })
   it('richvideo → video ブロック + externalLink', () => {
-    const json = buildMediaJson('richvideo', S({ videoUrl: 'https://x/v.mp4', previewUrl: 'https://x/p.png', btnLabel: '詳しく', btnLink: 'https://x/more' }))
+    const json = buildMediaJson('richvideo', S({ baseUrl: 'https://x/base', videoUrl: 'https://x/v.mp4', previewUrl: 'https://x/p.png', btnLabel: '詳しく', btnLink: 'https://x/more' }))
     const p = JSON.parse(json)
+    expect(p.baseUrl).toBe('https://x/base')
+    expect(p.baseUrl).not.toBe(p.video.previewImageUrl)
     expect(p.video.originalContentUrl).toBe('https://x/v.mp4')
     expect(p.video.externalLink).toEqual({ linkUri: 'https://x/more', label: '詳しく' })
   })
@@ -49,13 +51,58 @@ describe('T-C8 validateMediaClient — client 即時検証 (server が正典)', 
   it('audio: duration<=0 はエラー', () => {
     expect(validateMediaClient('audio', JSON.stringify({ originalContentUrl: 'https://x/a.m4a', duration: 0 }))).toBeTruthy()
   })
-  it('imagemap: 領域ゼロはエラー / uri 領域の非 https はエラー', () => {
+  it('imagemap: 領域ゼロはエラー / uri 領域は LINE 対応 scheme のみ受理', () => {
     expect(validateMediaClient('imagemap', JSON.stringify({ baseUrl: 'https://x/im', baseSize: { width: 1, height: 1 }, actions: [] }))).toBeTruthy()
-    expect(validateMediaClient('imagemap', JSON.stringify({ baseUrl: 'https://x/im', baseSize: { width: 1, height: 1 }, actions: [{ type: 'uri', linkUri: 'http://x/lp', area: { x: 0, y: 0, width: 1, height: 1 } }] }))).toBeTruthy()
+    expect(validateMediaClient('imagemap', JSON.stringify({ baseUrl: 'https://x/im', baseSize: { width: 1040, height: 1 }, actions: [{ type: 'uri', linkUri: 'tel:0312345678', area: { x: 0, y: 0, width: 1040, height: 1 } }] }))).toBeNull()
+    expect(validateMediaClient('imagemap', JSON.stringify({ baseUrl: 'https://x/im', baseSize: { width: 1040, height: 1 }, actions: [{ type: 'uri', linkUri: 'ftp://x/lp', area: { x: 0, y: 0, width: 1040, height: 1 } }] }))).toBeTruthy()
+  })
+  it('imagemap: baseSizeの横幅が1040以外なら保存前に明示エラー', () => {
+    const err = validateMediaClient('imagemap', JSON.stringify({
+      baseUrl: 'https://x/im',
+      baseSize: { width: 999, height: 1040 },
+      actions: [{ type: 'uri', linkUri: 'https://x/lp', area: { x: 0, y: 0, width: 999, height: 1040 } }],
+    }))
+    expect(err).not.toBeNull()
+    expect(err ?? '').toMatch(/1040/)
+  })
+  it('imagemap: URI 1000文字・応答文400文字の公式上限を超えるとエラー', () => {
+    const base = { baseUrl: 'https://x/im', baseSize: { width: 1040, height: 1040 } }
+    expect(validateMediaClient('imagemap', JSON.stringify({
+      ...base,
+      actions: [{ type: 'uri', linkUri: `https://${'a'.repeat(993)}`, area: { x: 0, y: 0, width: 10, height: 10 } }],
+    }))).toMatch(/1000/)
+    expect(validateMediaClient('imagemap', JSON.stringify({
+      ...base,
+      actions: [{ type: 'message', text: 'あ'.repeat(401), area: { x: 0, y: 0, width: 10, height: 10 } }],
+    }))).toMatch(/400/)
   })
   it('richvideo: video 非 https はエラー・ボタン非 https もエラー', () => {
-    expect(validateMediaClient('richvideo', JSON.stringify({ video: { originalContentUrl: 'http://x/v.mp4', previewImageUrl: 'https://x/p.png' } }))).toBeTruthy()
-    expect(validateMediaClient('richvideo', JSON.stringify({ video: { originalContentUrl: 'https://x/v.mp4', previewImageUrl: 'https://x/p.png', externalLink: { linkUri: 'http://x/more', label: 'a' } } }))).toBeTruthy()
+    expect(validateMediaClient('richvideo', JSON.stringify({ baseUrl: 'https://x/base', baseSize: { width: 1040, height: 520 }, video: { originalContentUrl: 'http://x/v.mp4', previewImageUrl: 'https://x/p.png' } }))).toBeTruthy()
+    expect(validateMediaClient('richvideo', JSON.stringify({ baseUrl: 'https://x/base', baseSize: { width: 1040, height: 520 }, video: { originalContentUrl: 'https://x/v.mp4', previewImageUrl: 'https://x/p.png', externalLink: { linkUri: 'ftp://x/more', label: 'a' } } }))).toBeTruthy()
+  })
+  it('richvideo: 5サイズ用baseUrl未設定はプレビュ画像URLがあってもエラー', () => {
+    const err = validateMediaClient('richvideo', JSON.stringify({
+      baseUrl: '',
+      baseSize: { width: 1040, height: 520 },
+      video: { originalContentUrl: 'https://x/v.mp4', previewImageUrl: 'https://x/p.png' },
+    }))
+    expect(err).toMatch(/ベース画像/)
+  })
+  it('richvideo: 再生後ラベル30文字・リンク1000文字の公式上限を超えるとエラー', () => {
+    const video = {
+      originalContentUrl: 'https://x/v.mp4',
+      previewImageUrl: 'https://x/p.png',
+      area: { x: 0, y: 0, width: 1040, height: 520 },
+    }
+    const base = { baseUrl: 'https://x/base', baseSize: { width: 1040, height: 520 }, actions: [] }
+    expect(validateMediaClient('richvideo', JSON.stringify({
+      ...base,
+      video: { ...video, externalLink: { linkUri: 'https://x', label: 'あ'.repeat(31) } },
+    }))).toMatch(/30/)
+    expect(validateMediaClient('richvideo', JSON.stringify({
+      ...base,
+      video: { ...video, externalLink: { linkUri: `https://${'a'.repeat(993)}`, label: '詳細' } },
+    }))).toMatch(/1000/)
   })
 })
 
@@ -84,8 +131,27 @@ describe('T-A2 parseMediaJson — 保存済み JSON → 編集 state 復元 (再
     expect(buildMediaJson('video', parseMediaJson('video', buildMediaJson('video', v)))).toBe(buildMediaJson('video', v))
     const a = S({ audioUrl: 'https://x/a.m4a', durationSec: '30' })
     expect(buildMediaJson('audio', parseMediaJson('audio', buildMediaJson('audio', a)))).toBe(buildMediaJson('audio', a))
-    const rv = S({ videoUrl: 'https://x/v.mp4', previewUrl: 'https://x/p.png', btnLabel: '詳しく', btnLink: 'https://x/more' })
+    const rv = S({ baseUrl: 'https://x/base', baseH: '520', videoUrl: 'https://x/v.mp4', previewUrl: 'https://x/p.png', btnLabel: '詳しく', btnLink: 'https://x/more' })
+    expect(parseMediaJson('richvideo', buildMediaJson('richvideo', rv)).baseUrl).toBe('https://x/base')
     expect(buildMediaJson('richvideo', parseMediaJson('richvideo', buildMediaJson('richvideo', rv)))).toBe(buildMediaJson('richvideo', rv))
+  })
+  it('richvideo の公式追加フィールドも編集 round-trip で保持する', () => {
+    const original = JSON.stringify({
+      baseUrl: 'https://x/base',
+      altText: '既存の動画案内',
+      baseSize: { width: 1040, height: 520 },
+      actions: [{ type: 'message', text: '代替', area: { x: 0, y: 0, width: 20, height: 20 } }],
+      video: {
+        originalContentUrl: 'https://x/v.mp4',
+        previewImageUrl: 'https://x/p.png',
+        area: { x: 0, y: 0, width: 1040, height: 520 },
+        customField: 'keep',
+      },
+    })
+    const rebuilt = JSON.parse(buildMediaJson('richvideo', parseMediaJson('richvideo', original)))
+    expect(rebuilt.altText).toBe('既存の動画案内')
+    expect(rebuilt.actions).toHaveLength(1)
+    expect(rebuilt.video.customField).toBe('keep')
   })
   it('空文字 / 壊れた JSON は初期 state を返す (fail-safe)', () => {
     expect(parseMediaJson('imagemap', '')).toEqual(initialMediaState)

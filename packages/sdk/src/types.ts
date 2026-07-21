@@ -25,7 +25,7 @@ export interface PaginatedData<T> {
 // ─── Common ─────────────────────────────────────────────
 export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual'
 export type MessageType = 'text' | 'image' | 'flex'
-/** broadcasts 専用の拡張種別 (動画/音声/リッチメッセージ/リッチビデオ)。
+/** broadcasts 専用の拡張種別 (動画/音声/スタンプ/リッチメッセージ/リッチビデオ)。
  *  scenario_steps 等の MessageType とは分離する (broadcasts のみ CHECK 拡張 = migration 054)。 */
 export type BroadcastMessageType =
   | 'text'
@@ -33,6 +33,7 @@ export type BroadcastMessageType =
   | 'flex'
   | 'video'
   | 'audio'
+  | 'sticker'
   | 'imagemap'
   | 'richvideo'
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent'
@@ -461,7 +462,7 @@ export interface FormSubmission {
 
 // ─── Auto-Replies ──────────────────────────────────────
 export interface AutoReplyResponseMessage {
-  messageType: 'text' | 'flex' | 'image'
+  messageType: BroadcastMessageType
   messageContent: string
 }
 

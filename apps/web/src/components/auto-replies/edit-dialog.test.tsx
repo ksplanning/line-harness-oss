@@ -40,7 +40,7 @@ vi.mock('@/components/shared/image-uploader', () => ({
 
 import EditDialog from './edit-dialog'
 
-type ResponseMessage = { messageType: 'text' | 'flex' | 'image'; messageContent: string }
+type ResponseMessage = { messageType: 'text' | 'flex' | 'image' | 'video'; messageContent: string }
 
 function draft(overrides: Record<string, unknown> = {}): AutoReplyDraft {
   return {
@@ -102,6 +102,37 @@ describe('自動返信ルール編集 — 最大5吹き出し', () => {
 
     expect(screen.getByText('5 / 5 吹き出し')).toBeTruthy()
     expect(screen.getByRole('button', { name: '＋ 吹き出しを追加' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('メディア吹き出しを並べ替えても内部stateが元の吹き出しに追従し、UI専用keyは保存しない', async () => {
+    const videoA = JSON.stringify({ originalContentUrl: 'https://example.com/a.mp4', previewImageUrl: 'https://example.com/a.jpg' })
+    const videoB = JSON.stringify({ originalContentUrl: 'https://example.com/b.mp4', previewImageUrl: 'https://example.com/b.jpg' })
+    render(<EditDialog draft={draft({ responseMessages: [
+      { messageType: 'video', messageContent: videoA },
+      { messageType: 'video', messageContent: videoB },
+    ] })} templates={templates} onClose={vi.fn()} onSaved={vi.fn()} />)
+
+    expect((screen.getAllByPlaceholderText('https://example.com/video.mp4') as HTMLInputElement[]).map((input) => input.value)).toEqual([
+      'https://example.com/a.mp4',
+      'https://example.com/b.mp4',
+    ])
+    fireEvent.click(screen.getByRole('button', { name: '吹き出し 1 を下へ' }))
+    expect((screen.getAllByPlaceholderText('https://example.com/video.mp4') as HTMLInputElement[]).map((input) => input.value)).toEqual([
+      'https://example.com/b.mp4',
+      'https://example.com/a.mp4',
+    ])
+
+    fireEvent.change(screen.getAllByPlaceholderText('https://example.com/video.mp4')[0], { target: { value: 'https://example.com/b-edited.mp4' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(m.update).toHaveBeenCalledWith('rule-1', expect.objectContaining({
+      responseMessages: [
+        { messageType: 'video', messageContent: JSON.stringify({ originalContentUrl: 'https://example.com/b-edited.mp4', previewImageUrl: 'https://example.com/b.jpg' }) },
+        { messageType: 'video', messageContent: videoA },
+      ],
+    })))
+    const savedBody = m.update.mock.calls.at(-1)?.[1] as { responseMessages: Array<Record<string, unknown>> }
+    expect(savedBody.responseMessages.every((message) => !('uiKey' in message))).toBe(true)
   })
 })
 
@@ -188,6 +219,35 @@ describe('自動返信ルール編集 — テンプレートパック展開', ()
     await waitFor(() => expect(m.update).toHaveBeenCalledWith('rule-1', expect.objectContaining({
       lineAccountId: null,
       responseMessages: [{ messageType: 'text', messageContent: '共通パック本文' }],
+    })))
+  })
+
+  it('動画・音声・スタンプ・画像分割・リッチビデオを型落ちさせず展開して保存する', async () => {
+    const expanded = [
+      { messageType: 'video', messageContent: '{"originalContentUrl":"https://example.com/video.mp4","previewImageUrl":"https://example.com/preview.png"}' },
+      { messageType: 'audio', messageContent: '{"originalContentUrl":"https://example.com/audio.m4a","duration":60000}' },
+      { messageType: 'sticker', messageContent: '{"packageId":"11537","stickerId":"52002734"}' },
+      { messageType: 'imagemap', messageContent: '{"baseUrl":"https://example.com/imagemap","altText":"リッチメッセージ","baseSize":{"width":1040,"height":1040},"actions":[{"type":"uri","linkUri":"https://example.com/","area":{"x":0,"y":0,"width":1040,"height":1040}}]}' },
+      { messageType: 'richvideo', messageContent: '{"baseUrl":"https://example.com/preview.png","altText":"動画メッセージ","baseSize":{"width":1040,"height":1040},"actions":[],"video":{"originalContentUrl":"https://example.com/video.mp4","previewImageUrl":"https://example.com/preview.png","area":{"x":0,"y":0,"width":1040,"height":1040}}}' },
+    ] as const
+    m.packList.mockResolvedValue({ success: true, data: [
+      { id: 'pack-media', name: 'メディア5種', itemCount: expanded.length },
+    ] })
+    m.packGet.mockResolvedValue({ success: true, data: { items: expanded.map((message) => ({
+      message_type: message.messageType,
+      message_content: message.messageContent,
+    })) } })
+    render(<EditDialog draft={draft({ responseContent: '' })} templates={templates} onClose={vi.fn()} onSaved={vi.fn()} />)
+
+    fireEvent.change(await screen.findByRole('combobox', { name: 'テンプレートパック' }), { target: { value: 'pack-media' } })
+    fireEvent.click(screen.getByRole('button', { name: 'パックを展開' }))
+    await waitFor(() => expect(screen.getByText('5 / 5 吹き出し')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(m.update).toHaveBeenCalledWith('rule-1', expect.objectContaining({
+      responseMessages: expanded,
+      responseType: 'video',
+      responseContent: expanded[0].messageContent,
     })))
   })
 })

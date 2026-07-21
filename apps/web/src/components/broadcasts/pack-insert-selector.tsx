@@ -10,6 +10,12 @@ import {
   packFitsRemaining,
   type FormBubblePatch,
 } from '@/lib/template-packs/pack-insert'
+import { messageTypeLabels } from '@/lib/broadcast-labels'
+
+function packItemSummary(item: TemplatePackItem): string {
+  if (item.message_type === 'text') return item.message_content.slice(0, 30)
+  return `(${messageTypeLabels[item.message_type]})`
+}
 
 interface Props {
   accountId: string | null
@@ -112,10 +118,10 @@ export default function PackInsertSelector({ accountId, remainingSlots, onAppend
                     <li key={it.id} className="flex items-center justify-between gap-2 px-3 py-2">
                       <div className="min-w-0 flex items-center gap-2">
                         <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${it.message_type === 'flex' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-700'}`}>
-                          {it.message_type === 'flex' ? 'Flex' : 'テキスト'}
+                          {messageTypeLabels[it.message_type]}
                         </span>
                         <span className="text-xs text-gray-600 truncate">
-                          #{i + 1} {it.message_type === 'flex' ? '(Flexメッセージ)' : it.message_content.slice(0, 30)}
+                          #{i + 1} {packItemSummary(it)}
                         </span>
                       </div>
                       <button

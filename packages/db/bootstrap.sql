@@ -230,7 +230,7 @@ CREATE TABLE broadcast_insights (
 CREATE TABLE "broadcasts" (
   id                 TEXT PRIMARY KEY,
   title              TEXT NOT NULL,
-  message_type       TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex', 'video', 'audio', 'imagemap', 'richvideo')),
+  message_type       TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex', 'video', 'audio', 'sticker', 'imagemap', 'richvideo')),
   message_content    TEXT NOT NULL,
   target_type        TEXT NOT NULL CHECK (target_type IN ('all', 'tag', 'segment', 'multi-account-dedup')) DEFAULT 'all',
   target_tag_id      TEXT REFERENCES tags (id) ON DELETE SET NULL,
@@ -251,8 +251,12 @@ CREATE TABLE "broadcasts" (
   failed_account_ids TEXT CHECK (failed_account_ids IS NULL OR json_valid(failed_account_ids)),
   dedup_progress     TEXT,
   batch_lock_at      TEXT,
-  campaign_id        TEXT REFERENCES campaigns (id) ON DELETE SET NULL
-, sender_preset_id TEXT REFERENCES sender_presets (id) ON DELETE SET NULL, ab_test_id TEXT REFERENCES ab_tests (id) ON DELETE SET NULL, ab_variant TEXT, messages TEXT);
+  campaign_id        TEXT REFERENCES campaigns (id) ON DELETE SET NULL,
+  sender_preset_id   TEXT REFERENCES sender_presets (id) ON DELETE SET NULL,
+  ab_test_id         TEXT REFERENCES ab_tests (id) ON DELETE SET NULL,
+  ab_variant         TEXT,
+  messages           TEXT
+);
 
 CREATE TABLE calendar_bookings (
   id             TEXT PRIMARY KEY,
@@ -1423,7 +1427,7 @@ CREATE TABLE template_pack_items (
   id               TEXT PRIMARY KEY,
   pack_id          TEXT NOT NULL REFERENCES template_packs(id) ON DELETE CASCADE,
   order_index      INTEGER NOT NULL,
-  message_type     TEXT NOT NULL CHECK (message_type IN ('text', 'flex')),
+  message_type     TEXT NOT NULL CHECK (message_type IN ('text', 'flex', 'image', 'video', 'audio', 'sticker', 'imagemap', 'richvideo')),
   message_content  TEXT NOT NULL,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
@@ -1858,7 +1862,8 @@ CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
 
 CREATE INDEX idx_stripe_events_type ON stripe_events (event_type);
 
-CREATE INDEX idx_template_pack_items_pack ON template_pack_items(pack_id, order_index);
+CREATE INDEX idx_template_pack_items_pack
+  ON template_pack_items(pack_id, order_index);
 
 CREATE INDEX idx_template_packs_account ON template_packs(account_id);
 

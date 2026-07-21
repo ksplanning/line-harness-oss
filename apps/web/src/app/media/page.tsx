@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
+import { LINE_MEDIA_LIMITS } from '@line-crm/shared'
 
 interface MediaItem {
   key: string
@@ -10,6 +11,8 @@ interface MediaItem {
   size: number
   uploaded: string
 }
+
+const MEDIA_LIBRARY_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const
 
 export default function MediaLibraryPage() {
   const [items, setItems] = useState<MediaItem[]>([])
@@ -71,8 +74,16 @@ export default function MediaLibraryPage() {
     // input を都度リセットして同じファイルの連続選択も onChange 発火させる
     if (e.target) e.target.value = ''
     if (!file) return
-    setUploading(true)
     setError('')
+    if (!MEDIA_LIBRARY_IMAGE_TYPES.includes(file.type as (typeof MEDIA_LIBRARY_IMAGE_TYPES)[number])) {
+      setError('対応形式は JPEG / PNG / GIF / WebP です')
+      return
+    }
+    if (file.size > LINE_MEDIA_LIMITS.messageImageBytes) {
+      setError('画像は10MB以下にしてください')
+      return
+    }
+    setUploading(true)
     try {
       const res = await api.uploads.image(file)
       if (res.success) {
@@ -117,7 +128,7 @@ export default function MediaLibraryPage() {
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept={MEDIA_LIBRARY_IMAGE_TYPES.join(',')}
         onChange={handleFileChange}
         className="hidden"
       />
@@ -139,6 +150,10 @@ export default function MediaLibraryPage() {
         description="配信やビルダーで使う画像を溜めておく場所です。ここにある画像はURLをコピーして何度でも使えます。"
         action={uploadButton}
       />
+
+      <p className="mb-3 text-xs text-gray-500">
+        対応形式: JPEG / PNG / GIF / WebP・10MBまで。LINE配信・Flexで使えるのはJPEG / PNG、GIF / WebPはWebページ用です。
+      </p>
 
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">

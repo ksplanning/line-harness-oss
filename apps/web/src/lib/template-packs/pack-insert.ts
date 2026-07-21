@@ -6,16 +6,15 @@
  * form state (messageType/messageContent) に変換する」だけで、送信 API は一切呼ばない。
  */
 
-import type { TemplatePackItem } from '../api'
+import type { TemplatePackItem, TemplatePackMessageType } from '../api'
 
 export interface FormBubblePatch {
-  messageType: 'text' | 'flex'
+  messageType: TemplatePackMessageType
   messageContent: string
 }
 
 /**
- * パックの 1 吹き出しを form patch に変換する。text/flex をそのまま messageType/messageContent へ。
- * broadcast-form は image も持つが、パックは text/flex のみ (053 CHECK) なので安全。
+ * パックの 1 吹き出しを form patch に変換する。共通送信レンダラの種別と本文を加工せず渡す。
  */
 export function itemToFormPatch(item: Pick<TemplatePackItem, 'message_type' | 'message_content'>): FormBubblePatch {
   return { messageType: item.message_type, messageContent: item.message_content }

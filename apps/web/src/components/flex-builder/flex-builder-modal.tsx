@@ -464,7 +464,7 @@ export default function FlexBuilderModal({ initialModel, textEditorMode = 'emoji
                     <span className="text-xs font-medium text-gray-700">一番上の動画（ヒーロー）</span>
                     <button type="button" onClick={handleHeroRemove} className="text-xs text-red-600 px-2 py-1 hover:bg-red-50 rounded" aria-label="動画を外す">外す</button>
                   </div>
-                  <p className="text-[11px] text-gray-500">動画カードは1枚で使います（ほかのカードと横に並べられません）。</p>
+                  <p className="text-[11px] text-gray-500">動画カードは1枚で使います（ほかのカードと横に並べられません）。MP4はLINE公式上限200MB。プレビュー画像はJPEG / PNG・1MBまで。代替画像はFlex画像として10MBまで（実用上は1MB以下を推奨）。</p>
                   <div>
                     <label className="block text-[11px] text-gray-600 mb-1">動画のリンク（https の .mp4 等）</label>
                     <input type="text" value={heroVideo.url} onChange={(e) => handleHeroVideoChange({ url: e.target.value })}
@@ -472,12 +472,12 @@ export default function FlexBuilderModal({ initialModel, textEditorMode = 'emoji
                   </div>
                   <div>
                     <label className="block text-[11px] text-gray-600 mb-1">プレビュー画像（再生前に見える絵）</label>
-                    <ImageUploader mode="url" value={heroVideo.previewUrl ? { mode: 'url', url: heroVideo.previewUrl } : null}
+                    <ImageUploader mode="url" usage="line-preview" value={heroVideo.previewUrl ? { mode: 'url', url: heroVideo.previewUrl } : null}
                       onChange={(next) => handleHeroVideoChange({ previewUrl: next && next.mode === 'url' ? next.url : '' })} />
                   </div>
                   <div>
                     <label className="block text-[11px] text-gray-600 mb-1">代わりの画像（再生できない端末用・必須）</label>
-                    <ImageUploader mode="url" value={heroVideo.altUrl ? { mode: 'url', url: heroVideo.altUrl } : null}
+                    <ImageUploader mode="url" usage="flex-image" value={heroVideo.altUrl ? { mode: 'url', url: heroVideo.altUrl } : null}
                       onChange={(next) => handleHeroVideoChange({ altUrl: next && next.mode === 'url' ? next.url : '' })} />
                   </div>
                   <div>
@@ -494,6 +494,7 @@ export default function FlexBuilderModal({ initialModel, textEditorMode = 'emoji
                   </div>
                   <ImageUploader
                     mode="url"
+                    usage="flex-image"
                     value={heroImage.url ? { mode: 'url', url: heroImage.url } : null}
                     onChange={(next) => handleHeroChange({ url: next && next.mode === 'url' ? next.url : '' })}
                   />

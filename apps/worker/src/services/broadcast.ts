@@ -1,5 +1,4 @@
-import { extractFlexAltText } from '../utils/flex-alt-text.js';
-import { MessageBuildError, unwrapFlexMessageObject } from '../utils/message-build.js';
+import { MessageBuildError } from '../utils/message-build.js';
 import {
   getBroadcastById,
   getBroadcasts,
@@ -13,10 +12,11 @@ import {
 } from '@line-crm/db';
 import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
-import type { Message, MessageSender, ImageMapVideo } from '@line-crm/line-sdk';
+import type { Message, MessageSender } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
 import { checkMonthlyCap } from './monthly-cap.js';
 import { renderMessageContent } from './render-message.js';
+import { buildOutboundMessage } from './outbound-message.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -502,57 +502,9 @@ async function processQueuedBroadcastBatches(
   await updateBroadcastStatus(db, broadcast.id, 'sent');
 }
 
-/** 送信者プリセット解決済みの sender を Message に付与する (生 sender は attach しない・G25)。 */
-function attachSender(m: Message, sender?: MessageSender): Message {
-  if (sender) (m as { sender?: MessageSender }).sender = sender;
-  return m;
-}
-
-function requireString(v: unknown, label: string): string {
-  if (typeof v !== 'string' || v.length === 0) throw new Error(`${label} は非空文字列が必要`);
-  return v;
-}
-
-/** imagemap / richvideo 共通の content 検証 (baseUrl / baseSize / actions)。 */
-function parseImagemapContent(messageContent: string): {
-  baseUrl: string;
-  altText?: string;
-  baseSize: { width: number; height: number };
-  actions: { type: 'uri' | 'message'; linkUri?: string; text?: string; area: { x: number; y: number; width: number; height: number } }[];
-  video?: ImageMapVideo;
-} {
-  const p = JSON.parse(messageContent) as Record<string, unknown>;
-  const baseUrl = requireString(p.baseUrl, 'baseUrl');
-  const bs = p.baseSize as { width?: unknown; height?: unknown } | undefined;
-  if (!bs || typeof bs.width !== 'number' || typeof bs.height !== 'number') {
-    throw new Error('baseSize は { width, height } (数値) が必要');
-  }
-  if (!Array.isArray(p.actions)) throw new Error('actions は配列が必要');
-  return {
-    baseUrl,
-    altText: typeof p.altText === 'string' ? p.altText : undefined,
-    baseSize: { width: bs.width, height: bs.height },
-    actions: p.actions as {
-      type: 'uri' | 'message';
-      linkUri?: string;
-      text?: string;
-      area: { x: number; y: number; width: number; height: number };
-    }[],
-    video: p.video as ImageMapVideo | undefined,
-  };
-}
-
 /**
- * broadcasts の message_type を LINE Message object に変換する (broadcast 用 impl)。
- *
- * text/image/flex に加え video/audio/imagemap/richvideo を dispatch する (F2 batch3)。
- * 各分岐は parse/検証失敗で MessageBuildError を throw する fail-closed。**未知 type は
- * silent に text 送信せず MessageBuildError を throw する fail-loud** (「動画のつもりが
- * URL テキストが飛ぶ」silent 事故の根治・A5/D-2)。sender は preset 解決済みの値のみ付与する。
- *
- * 注: reminder-delivery.ts / step-delivery.ts に同名の buildMessage が別途あるが、新 type は
- * broadcasts.message_type の CHECK でしか保存できず reminder_steps/scenario_steps には到達しない
- * ため両者は無変更 (本関数のみ拡張)。
+ * broadcasts の message_type を共通 outbound renderer 経由で LINE Message object に変換する。
+ * sender は preset 解決済みの値だけを付与し、未知 type / 不正 content は fail-closed にする。
  */
 export function buildMessage(
   messageType: string,
@@ -560,106 +512,7 @@ export function buildMessage(
   altText?: string,
   sender?: MessageSender,
 ): Message {
-  if (messageType === 'text') {
-    return attachSender({ type: 'text', text: messageContent }, sender);
-  }
-
-  if (messageType === 'image') {
-    try {
-      const parsed = JSON.parse(messageContent) as {
-        originalContentUrl: string;
-        previewImageUrl: string;
-      };
-      return attachSender({
-        type: 'image',
-        originalContentUrl: parsed.originalContentUrl,
-        previewImageUrl: parsed.previewImageUrl,
-      }, sender);
-    } catch (err) {
-      // fail-closed: 生 JSON を text 送信せず送信スキップ (findings HIGH/flex-image, W5 T-E2)
-      throw new MessageBuildError('image', err);
-    }
-  }
-
-  if (messageType === 'flex') {
-    try {
-      const parsed = JSON.parse(messageContent);
-      // top-level が message object ({type:'flex',altText,contents}) の丸ごと貼付を自動アンラップ (W5 T-E3)
-      const { contents, altText: unwrappedAlt } = unwrapFlexMessageObject(parsed);
-      return attachSender({ type: 'flex', altText: altText || unwrappedAlt || extractFlexAltText(contents), contents }, sender);
-    } catch (err) {
-      if (err instanceof MessageBuildError) throw err;
-      throw new MessageBuildError('flex', err);
-    }
-  }
-
-  if (messageType === 'video') {
-    try {
-      const p = JSON.parse(messageContent) as { originalContentUrl?: unknown; previewImageUrl?: unknown };
-      return attachSender({
-        type: 'video',
-        originalContentUrl: requireString(p.originalContentUrl, 'originalContentUrl'),
-        previewImageUrl: requireString(p.previewImageUrl, 'previewImageUrl'),
-      }, sender);
-    } catch (err) {
-      if (err instanceof MessageBuildError) throw err;
-      throw new MessageBuildError('video', err);
-    }
-  }
-
-  if (messageType === 'audio') {
-    try {
-      const p = JSON.parse(messageContent) as { originalContentUrl?: unknown; duration?: unknown };
-      const originalContentUrl = requireString(p.originalContentUrl, 'originalContentUrl');
-      if (typeof p.duration !== 'number' || !(p.duration > 0)) throw new Error('duration は正の数が必要');
-      return attachSender({ type: 'audio', originalContentUrl, duration: p.duration }, sender);
-    } catch (err) {
-      if (err instanceof MessageBuildError) throw err;
-      throw new MessageBuildError('audio', err);
-    }
-  }
-
-  if (messageType === 'imagemap') {
-    try {
-      const c = parseImagemapContent(messageContent);
-      return attachSender({
-        type: 'imagemap',
-        baseUrl: c.baseUrl,
-        altText: altText || c.altText || 'メッセージ',
-        baseSize: c.baseSize,
-        actions: c.actions as unknown as Record<string, unknown>[],
-        ...(c.video ? { video: c.video } : {}),
-      }, sender);
-    } catch (err) {
-      if (err instanceof MessageBuildError) throw err;
-      throw new MessageBuildError('imagemap', err);
-    }
-  }
-
-  if (messageType === 'richvideo') {
-    try {
-      const c = parseImagemapContent(messageContent);
-      // richvideo は動画本体が必須 (再生後アクションを imagemap 領域で出す)。
-      if (!c.video || typeof c.video.originalContentUrl !== 'string' || typeof c.video.previewImageUrl !== 'string') {
-        throw new Error('richvideo は video { originalContentUrl, previewImageUrl } が必要');
-      }
-      return attachSender({
-        type: 'imagemap',
-        baseUrl: c.baseUrl,
-        altText: altText || c.altText || '動画メッセージ',
-        baseSize: c.baseSize,
-        actions: c.actions as unknown as Record<string, unknown>[],
-        video: c.video,
-      }, sender);
-    } catch (err) {
-      if (err instanceof MessageBuildError) throw err;
-      throw new MessageBuildError('richvideo', err);
-    }
-  }
-
-  // fail-loud: text/image/flex/video/audio/imagemap/richvideo 以外の未知 type は silent に text 送信
-  // せず throw して送信をスキップする (「動画を送ったつもりが JSON/URL が text で飛ぶ」silent 事故の根治)。
-  throw new MessageBuildError('unknown');
+  return buildOutboundMessage(messageType, messageContent, { altText, sender });
 }
 
 /**

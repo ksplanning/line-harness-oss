@@ -10,6 +10,7 @@ import {
   type PackItemInput,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { buildOutboundMessage, OUTBOUND_MESSAGE_TYPES } from '../services/outbound-message.js';
 
 const templatePacks = new Hono<Env>();
 
@@ -26,27 +27,26 @@ function accountScopeReject(existing: TemplatePack, accountId: string | null): R
 }
 
 /**
- * items 配列を検証して PackItemInput[] に正規化する。message_type は text/flex のみ。
- * flex は本文が有効な JSON であること (message-templates と同じ検証)。不正なら Error を投げる。
+ * items 配列を検証して PackItemInput[] に正規化する。送信 engine が扱える全 type を共通
+ * outbound renderer で検証し、不正 content や未知 type は保存前に fail-closed にする。
  */
 function validateItems(raw: unknown): PackItemInput[] {
   if (!Array.isArray(raw)) throw new Error('items must be an array');
+  const allowedTypes = new Set<string>(OUTBOUND_MESSAGE_TYPES);
   const items: PackItemInput[] = [];
   for (const it of raw) {
     if (!it || typeof it !== 'object') throw new Error('each item must be an object');
     const r = it as Record<string, unknown>;
     const type = r.messageType;
     const content = r.messageContent;
-    if (type !== 'text' && type !== 'flex') throw new Error('messageType must be text or flex');
+    if (typeof type !== 'string' || !allowedTypes.has(type)) throw new Error('messageType is not supported');
     if (typeof content !== 'string' || content.length === 0) throw new Error('messageContent is required');
-    if (type === 'flex') {
-      try {
-        JSON.parse(content);
-      } catch {
-        throw new Error('messageContent must be valid JSON for flex type');
-      }
+    try {
+      buildOutboundMessage(type, content);
+    } catch {
+      throw new Error(`messageContent is invalid for ${type} type`);
     }
-    items.push({ messageType: type, messageContent: content });
+    items.push({ messageType: type, messageContent: content } as PackItemInput);
   }
   return items;
 }

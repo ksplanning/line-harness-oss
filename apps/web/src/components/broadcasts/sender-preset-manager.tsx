@@ -120,9 +120,10 @@ export default function SenderPresetManager({
         <p className="text-xs font-medium text-gray-600">送信者を追加</p>
         <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="送信者の名前（20文字以内）" />
         <ImageUploader
-          mode="line-image"
-          value={iconUrl ? { mode: 'line-image' as const, originalContentUrl: iconUrl, previewImageUrl: iconUrl } : null}
-          onChange={(v) => setIconUrl(v?.mode === 'line-image' ? v.originalContentUrl : '')}
+          mode="url"
+          usage="sender-icon"
+          value={iconUrl ? { mode: 'url' as const, url: iconUrl } : null}
+          onChange={(v) => setIconUrl(v?.mode === 'url' ? v.url : '')}
           label="アイコン画像（アップロード・任意）"
         />
         <input className={inputCls} value={iconUrl} onChange={(e) => setIconUrl(e.target.value)} placeholder="またはアイコン画像URL (https://...)" />

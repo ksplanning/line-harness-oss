@@ -53,6 +53,19 @@ const decoErr = (): ValidationError => ({
 });
 
 const inSet = (v: unknown, set: readonly string[]): boolean => typeof v === 'string' && set.includes(v);
+const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+const FLEX_COMPONENT_TYPES = [
+  'box',
+  'button',
+  'filler',
+  'icon',
+  'image',
+  'separator',
+  'spacer',
+  'span',
+  'text',
+  'video',
+] as const;
 const isColor = (v: unknown): boolean => typeof v === 'string' && HEX_COLOR_RE.test(v);
 const isSizeKeyword = (v: unknown): boolean => inSet(v, FLEX_SIZE_KEYWORDS);
 const isMargin = (v: unknown): boolean =>
@@ -107,13 +120,14 @@ function validateGradient(bg: FlexBackground | undefined, errors: ValidationErro
 }
 
 /** richtext の span 群を fail-closed で検査 (GC-1 / batch D)。空・不正色/サイズ/太さ/装飾をブロック。 */
-function validateSpans(contents: FlexNode[], errors: ValidationError[]): void {
+function validateSpans(contents: unknown[], errors: ValidationError[]): void {
   if (contents.length === 0) {
     errors.push({ code: 'text_empty', messageJa: '空の文字があります。文字を入れるか、その部品を消してください。' });
     return;
   }
-  for (const sp of contents) {
-    if (sp.type !== 'span') { errors.push(decoErr()); continue; }
+  for (const rawSpan of contents) {
+    if (!isRecord(rawSpan) || rawSpan.type !== 'span') { errors.push(decoErr()); continue; }
+    const sp = rawSpan as unknown as FlexNode;
     if ((sp.text ?? '').length === 0) {
       errors.push({ code: 'text_empty', messageJa: '空の文字があります。文字を入れるか、その部品を消してください。' });
     }
@@ -144,8 +158,17 @@ function collectBubbles(contents: FlexContents): FlexBubble[] {
   return [contents];
 }
 
-function walkNodes(node: FlexNode | undefined, depth: number, errors: ValidationError[]): void {
-  if (!node) return;
+function walkNodes(rawNode: unknown, depth: number, errors: ValidationError[]): void {
+  if (rawNode === undefined) return;
+  if (!isRecord(rawNode) || !inSet(rawNode.type, FLEX_COMPONENT_TYPES)) {
+    errors.push({ code: 'invalid_node', messageJa: 'カード内に正しくない部品があります。作り直してください。' });
+    return;
+  }
+  const node = rawNode as unknown as FlexNode;
+  if (node.type === 'box' && !Array.isArray(node.contents)) {
+    errors.push({ code: 'invalid_node', messageJa: 'カード内に正しくない部品があります。作り直してください。' });
+    return;
+  }
   if (depth > MAX_BOX_NEST_DEPTH) {
     errors.push({ code: 'box_too_deep', messageJa: 'カードの入れ子が深すぎます。構成を簡単にしてください。' });
     return;
@@ -306,15 +329,16 @@ function validateBubble(bubble: FlexBubble, cardIndex: number, errors: Validatio
   if (bubble.hero?.type === 'video' && !inSet(bubble.size, FLEX_VIDEO_BUBBLE_SIZE)) {
     errors.push({ code: 'video_bubble_size', messageJa: '動画カードは大きさを「中・大・特大」から選んでください。', cardIndex });
   }
-  const bodyContents = bubble.body?.contents ?? [];
-  const heroPresent = Boolean(bubble.hero);
-  if (bodyContents.length === 0 && !heroPresent) {
+  const heroPresent = bubble.hero !== undefined && bubble.hero !== null;
+  const boxContentsPresent = [bubble.header, bubble.body, bubble.footer].some((section) => (
+    isRecord(section) && Array.isArray(section.contents) && section.contents.length > 0
+  ));
+  if (!heroPresent && !boxContentsPresent) {
     errors.push({
       code: 'empty_contents',
       messageJa: 'カードに中身がありません。見出しや画像を足してください。',
       cardIndex,
     });
-    return;
   }
   walkNodes(bubble.hero, 0, errors);
   walkNodes(bubble.body, 0, errors);
@@ -328,6 +352,28 @@ function validateBubble(bubble: FlexBubble, cardIndex: number, errors: Validatio
  */
 export function validateFlex(contents: FlexContents, opts: ValidateOptions = {}): ValidationResult {
   const errors: ValidationError[] = [];
+  const rawContents = contents as unknown;
+  if (!rawContents || typeof rawContents !== 'object' || Array.isArray(rawContents)) {
+    return { ok: false, errors: [{ code: 'invalid_container', messageJa: 'カードの形式が正しくありません。もう一度作り直してください。' }] };
+  }
+  const container = rawContents as Record<string, unknown>;
+  if (container.type !== 'bubble' && container.type !== 'carousel') {
+    return { ok: false, errors: [{ code: 'invalid_container', messageJa: 'カードの形式が正しくありません。もう一度作り直してください。' }] };
+  }
+  if (container.type === 'carousel') {
+    if (!Array.isArray(container.contents)) {
+      return { ok: false, errors: [{ code: 'invalid_container', messageJa: 'カード一覧の形式が正しくありません。もう一度作り直してください。' }] };
+    }
+    const invalidBubble = container.contents.some((bubble) => (
+      !bubble
+      || typeof bubble !== 'object'
+      || Array.isArray(bubble)
+      || (bubble as Record<string, unknown>).type !== 'bubble'
+    ));
+    if (invalidBubble) {
+      return { ok: false, errors: [{ code: 'invalid_bubble', messageJa: 'カード一覧に正しくないカードがあります。作り直してください。' }] };
+    }
+  }
 
   if (contents.type === 'carousel') {
     if (contents.contents.length === 0) {

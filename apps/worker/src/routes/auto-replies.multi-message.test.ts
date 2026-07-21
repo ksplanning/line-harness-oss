@@ -58,8 +58,21 @@ function request(path: string, init?: RequestInit) {
 
 const responseMessages = [
   { messageType: 'text', messageContent: 'A' },
-  { messageType: 'flex', messageContent: '{"type":"bubble"}' },
+  { messageType: 'flex', messageContent: '{"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"Flex"}]}}' },
   { messageType: 'text', messageContent: 'B' },
+];
+
+const mediaResponseMessages = [
+  { messageType: 'image', messageContent: JSON.stringify({ originalContentUrl: 'https://cdn.example.com/o.png', previewImageUrl: 'https://cdn.example.com/p.png' }) },
+  { messageType: 'video', messageContent: JSON.stringify({ originalContentUrl: 'https://cdn.example.com/v.mp4', previewImageUrl: 'https://cdn.example.com/v.png' }) },
+  { messageType: 'audio', messageContent: JSON.stringify({ originalContentUrl: 'https://cdn.example.com/a.m4a', duration: 60_000 }) },
+  { messageType: 'sticker', messageContent: JSON.stringify({ packageId: '11537', stickerId: '52002734' }) },
+  { messageType: 'imagemap', messageContent: JSON.stringify({
+    baseUrl: 'https://cdn.example.com/imagemap',
+    altText: '画像分割',
+    baseSize: { width: 1040, height: 1040 },
+    actions: [{ type: 'uri', linkUri: 'https://example.com', area: { x: 0, y: 0, width: 1040, height: 1040 } }],
+  }) },
 ];
 
 beforeEach(() => {
@@ -80,6 +93,19 @@ describe('auto-replies API responseMessages contract', () => {
     expect(result.status).toBe(201);
     expect(state.createInput?.responseMessages).toEqual(responseMessages);
     expect(body.data.responseMessages).toEqual(responseMessages);
+  });
+
+  test('POST accepts a five-item media/sticker pack for the shared auto-reply renderer without rewriting bytes', async () => {
+    const result = await request('/api/auto-replies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword: 'メディア', responseMessages: mediaResponseMessages }),
+    });
+    const body = await result.json<{ data?: { responseMessages: unknown[] }; error?: string }>();
+
+    expect(result.status, body.error).toBe(201);
+    expect(state.createInput?.responseMessages).toEqual(mediaResponseMessages);
+    expect(body.data?.responseMessages).toEqual(mediaResponseMessages);
   });
 
   test('POST rejects an empty response and more than five bubbles with an honest 400', async () => {
@@ -116,6 +142,27 @@ describe('auto-replies API responseMessages contract', () => {
     expect(body.data.responseContent).toBe('10時からです');
   });
 
+  test('GET keeps a legacy parseable-but-now-invalid Flex row readable so the UI can repair it', async () => {
+    const legacyMessages = [{ messageType: 'flex', messageContent: '{}' }];
+    state.row = {
+      id: 'legacy-flex',
+      keyword: '旧Flex',
+      match_type: 'exact',
+      response_type: 'flex',
+      response_content: '{}',
+      response_messages: JSON.stringify(legacyMessages),
+      template_id: null,
+      line_account_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    };
+
+    const result = await request('/api/auto-replies/legacy-flex');
+    const body = await result.json<{ data?: { responseMessages: unknown[] } }>();
+    expect(result.status).toBe(200);
+    expect(body.data?.responseMessages).toEqual(legacyMessages);
+  });
+
   test('PUT validates and forwards five bubbles', async () => {
     state.row = {
       id: 'rule-1', keyword: '資料', match_type: 'exact', response_type: 'text', response_content: 'A',
@@ -131,5 +178,31 @@ describe('auto-replies API responseMessages contract', () => {
 
     expect(result.status).toBe(200);
     expect(state.updateInput?.responseMessages).toEqual(five);
+  });
+
+  test('legacy POST validates responseType/responseContent through the shared renderer', async () => {
+    const result = await request('/api/auto-replies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword: '壊れたスタンプ', responseType: 'sticker', responseContent: '{broken' }),
+    });
+
+    expect(result.status).toBe(400);
+    expect(state.createInput).toBeNull();
+  });
+
+  test('legacy PUT validates the resulting single response through the shared renderer', async () => {
+    state.row = {
+      id: 'rule-1', keyword: '資料', match_type: 'exact', response_type: 'text', response_content: 'A',
+      response_messages: null, template_id: null, line_account_id: null, is_active: 1, created_at: 'now',
+    };
+    const result = await request('/api/auto-replies/rule-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ responseType: 'sticker', responseContent: '{broken' }),
+    });
+
+    expect(result.status).toBe(400);
+    expect(state.updateInput).toBeNull();
   });
 });

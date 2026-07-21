@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { type MessageBlock } from '@/lib/api'
 import type { EventListItem } from '@/lib/api'
 import FlexPreviewComponent from '@/components/flex-preview'
-import ImageUploader from '@/components/shared/image-uploader'
+import ImageUploader, { type ImageUploaderValue } from '@/components/shared/image-uploader'
 import BroadcastMediaInputs from './broadcast-media-inputs'
 import { type MediaMessageType } from '@/lib/broadcast-media'
 import { messageTypeLabels, messageTypeHints } from '@/lib/broadcast-labels'
@@ -20,6 +20,32 @@ const isMediaType = (t: MessageBlock['type']): t is MediaMessageType =>
   (NEW_MEDIA_TYPES as string[]).includes(t)
 const flexRebuildPrompt = '今の本文はそのままではビジュアル編集できません。新しくビジュアルで作り直しますか？（今のテキストは破棄されます）'
 const flexRebuildGuidance = '今の本文はそのままではビジュアル編集できません。本文を残す場合は、下の「上級者向け」で編集してください。'
+
+function parseLineImageValue(content: string): ImageUploaderValue | null {
+  try {
+    const parsed = JSON.parse(content) as { originalContentUrl?: unknown; previewImageUrl?: unknown }
+    if (typeof parsed.originalContentUrl !== 'string' || typeof parsed.previewImageUrl !== 'string') return null
+    return {
+      mode: 'line-image',
+      originalContentUrl: parsed.originalContentUrl,
+      previewImageUrl: parsed.previewImageUrl,
+    }
+  } catch {
+    return null
+  }
+}
+
+function parseStickerValue(content: string): { packageId: string; stickerId: string } {
+  try {
+    const parsed = JSON.parse(content) as { packageId?: unknown; stickerId?: unknown }
+    return {
+      packageId: typeof parsed.packageId === 'string' ? parsed.packageId : '',
+      stickerId: typeof parsed.stickerId === 'string' ? parsed.stickerId : '',
+    }
+  } catch {
+    return { packageId: '', stickerId: '' }
+  }
+}
 
 interface MessageBlockEditorProps {
   /** このブロックの種別/内容 (親 broadcast-form が保持する messages[i])。 */
@@ -46,7 +72,12 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
   const [builderError, setBuilderError] = useState('')
   const [rebuildConfirmOpen, setRebuildConfirmOpen] = useState(false)
   const [imageLinkOn, setImageLinkOn] = useState(false)
-  const [imageUrl, setImageUrl] = useState('')
+  const [lineImage, setLineImage] = useState<ImageUploaderValue | null>(() =>
+    block.type === 'image' ? parseLineImageValue(block.content) : null,
+  )
+  const [sticker, setSticker] = useState(() =>
+    block.type === 'sticker' ? parseStickerValue(block.content) : { packageId: '', stickerId: '' },
+  )
   const [imageLink, setImageLink] = useState<LinkSpec>({ type: 'url', uri: '' })
   const builderTriggerRef = useRef<HTMLButtonElement>(null)
   const rebuildConfirmButtonRef = useRef<HTMLButtonElement>(null)
@@ -64,11 +95,16 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
 
   const setType = (type: MessageBlock['type']) => {
     // メディア種別に出入りする切替は内容の形式が変わるため content をリセットする。
-    const switchingMedia = isMediaType(type) || isMediaType(block.type)
+    const switchingMedia = isMediaType(type) || isMediaType(block.type) || type === 'sticker' || block.type === 'sticker'
     resetBuilderFeedback()
     onChange({ ...block, type, content: switchingMedia ? '' : block.content })
   }
   const setContent = (content: string) => onChange({ ...block, content })
+  const updateSticker = (next: Partial<{ packageId: string; stickerId: string }>) => {
+    const value = { ...sticker, ...next }
+    setSticker(value)
+    setContent(value.packageId || value.stickerId ? JSON.stringify(value) : '')
+  }
 
   // ビルダーを開く。既存 content があれば逆変換して初期モデルに (再編集)。
   const openBuilder = () => {
@@ -111,14 +147,20 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
 
   // 画像リンク化トグル。ON=画像を単一 bubble Flex に変換し type='flex' で保存。
   // OFF=従来の純 image (originalContentUrl/previewImageUrl / type='image') に戻す。
-  const applyImageLink = (on: boolean, url: string, link: LinkSpec) => {
+  const applyImageLink = (on: boolean, image: ImageUploaderValue | null, link: LinkSpec) => {
+    const url = image?.mode === 'line-image' ? image.originalContentUrl : ''
     if (on && url) {
       onChange({ ...block, type: 'flex', content: imageLinkToFlexJson(url, link) })
     } else {
       onChange({
         ...block,
         type: 'image',
-        content: url ? JSON.stringify({ originalContentUrl: url, previewImageUrl: url }) : '',
+        content: image?.mode === 'line-image'
+          ? JSON.stringify({
+            originalContentUrl: image.originalContentUrl,
+            previewImageUrl: image.previewImageUrl,
+          })
+          : '',
       })
     }
   }
@@ -203,11 +245,12 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
           <div className="space-y-2">
             <ImageUploader
               mode="line-image"
-              value={imageUrl ? { mode: 'line-image' as const, originalContentUrl: imageUrl, previewImageUrl: imageUrl } : null}
+              usage={imageLinkOn ? 'flex-image' : undefined}
+              value={lineImage}
               onChange={(v) => {
-                const url = v?.mode === 'line-image' ? v.originalContentUrl : ''
-                setImageUrl(url)
-                applyImageLink(imageLinkOn, url, imageLink)
+                setLineImage(v)
+                setBuilderError('')
+                applyImageLink(imageLinkOn, v, imageLink)
               }}
               label="送信する画像"
             />
@@ -216,8 +259,16 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
                 type="checkbox"
                 checked={imageLinkOn}
                 onChange={(e) => {
-                  setImageLinkOn(e.target.checked)
-                  applyImageLink(e.target.checked, imageUrl, imageLink)
+                  const next = e.target.checked
+                  setImageLinkOn(next)
+                  if (next && lineImage) {
+                    setLineImage(null)
+                    setBuilderError('リンク付き画像はFlex用の寸法確認が必要なため、画像を選び直してください。')
+                    applyImageLink(true, null, imageLink)
+                  } else {
+                    setBuilderError('')
+                    applyImageLink(next, lineImage, imageLink)
+                  }
                 }}
                 className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
               />
@@ -230,7 +281,7 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
                 onChange={(e) => {
                   const link: LinkSpec = { type: 'url', uri: e.target.value }
                   setImageLink(link)
-                  applyImageLink(true, imageUrl, link)
+                  applyImageLink(true, lineImage, link)
                 }}
                 placeholder="押したときの飛び先 (https://...)"
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
@@ -358,7 +409,35 @@ export default function MessageBlockEditor({ block, onChange, linkableEvents, er
           <BroadcastMediaInputs
             messageType={block.type}
             onChange={(content) => setContent(content)}
+            initialContent={block.content}
           />
+        )}
+
+        {block.type === 'sticker' && (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">パッケージID</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={sticker.packageId}
+                onChange={(e) => updateSticker({ packageId: e.target.value })}
+                placeholder="例: 446"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">スタンプID</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={sticker.stickerId}
+                onChange={(e) => updateSticker({ stickerId: e.target.value })}
+                placeholder="例: 1988"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
         )}
 
         {(error || builderError) && <p role="alert" className="text-xs text-red-600 mt-2">{error || builderError}</p>}

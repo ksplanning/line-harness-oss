@@ -107,7 +107,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_friend_scenarios_unique ON friend_scenario
 CREATE TABLE IF NOT EXISTS broadcasts (
   id              TEXT PRIMARY KEY,
   title           TEXT NOT NULL,
-  message_type    TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex', 'video', 'audio', 'imagemap', 'richvideo')),
+  message_type    TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex', 'video', 'audio', 'sticker', 'imagemap', 'richvideo')),
   message_content TEXT NOT NULL,
   target_type     TEXT NOT NULL CHECK (target_type IN ('all', 'tag', 'segment', 'multi-account-dedup')) DEFAULT 'all',
   target_tag_id   TEXT REFERENCES tags (id) ON DELETE SET NULL,
@@ -1587,7 +1587,7 @@ CREATE TABLE IF NOT EXISTS template_pack_items (
   id               TEXT PRIMARY KEY,
   pack_id          TEXT NOT NULL REFERENCES template_packs(id) ON DELETE CASCADE,
   order_index      INTEGER NOT NULL,
-  message_type     TEXT NOT NULL CHECK (message_type IN ('text', 'flex')),
+  message_type     TEXT NOT NULL CHECK (message_type IN ('text', 'flex', 'image', 'video', 'audio', 'sticker', 'imagemap', 'richvideo')),
   message_content  TEXT NOT NULL,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))

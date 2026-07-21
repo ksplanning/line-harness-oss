@@ -26,12 +26,18 @@ vi.mock('@/lib/api', () => ({
 // 画像アップローダは onChange を叩けるスタブに (jsdom で画像 content を設定できるように)。
 vi.mock('@/components/shared/image-uploader', () => ({
   default: ({ onChange }: { onChange: (v: { mode: 'line-image'; originalContentUrl: string; previewImageUrl: string }) => void }) => (
-    <button type="button" onClick={() => onChange({ mode: 'line-image', originalContentUrl: 'https://img/a.png', previewImageUrl: 'https://img/a.png' })}>
+    <button type="button" onClick={() => onChange({ mode: 'line-image', originalContentUrl: 'https://img/original.png', previewImageUrl: 'https://img/preview.png' })}>
       __set_image__
     </button>
   ),
 }))
 vi.mock('@/components/flex-preview', () => ({ default: () => null }))
+// This focused form contract does not need the built @line-crm/shared package;
+// keep the isolated RED about image URLs instead of failing module resolution.
+vi.mock('@/lib/flex-builder/validate', () => ({ validateFlex: () => ({ ok: true, errors: [] }) }))
+vi.mock('@/lib/flex-builder/from-flex', () => ({ flexToModel: () => null }))
+vi.mock('@/lib/flex-builder/image-link', () => ({ imageLinkToFlexJson: () => '' }))
+vi.mock('@/components/flex-builder/flex-builder-modal', () => ({ default: () => null }))
 vi.mock('@/components/broadcasts/multi-account-dedup-section', () => ({ default: () => null }))
 // PackInsertSelector は onAppend を叩けるスタブに (append 配線 + remainingSlots を検証)。
 vi.mock('@/components/broadcasts/pack-insert-selector', () => ({
@@ -95,7 +101,10 @@ describe('U4 broadcast-form: 複数メッセージ・ブロック', () => {
     const messages = payload.messages as Array<{ type: string; content: string }>
     expect(messages).toHaveLength(2)
     expect(messages[0].type).toBe('image')
-    expect(JSON.parse(messages[0].content).originalContentUrl).toBe('https://img/a.png')
+    expect(JSON.parse(messages[0].content)).toEqual({
+      originalContentUrl: 'https://img/original.png',
+      previewImageUrl: 'https://img/preview.png',
+    })
     expect(messages[1]).toEqual({ type: 'text', content: 'テキスト2' })
     // 先頭ミラー: messageType/messageContent は messages[0] と一致
     expect(payload.messageType).toBe('image')

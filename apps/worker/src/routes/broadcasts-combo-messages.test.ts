@@ -75,6 +75,7 @@ beforeEach(() => {
 });
 
 const IMG = '{"originalContentUrl":"https://x/a.jpg","previewImageUrl":"https://x/a.jpg"}';
+const STICKER = '{"packageId":"446","stickerId":"1988"}';
 const base = { title: 'C案', targetType: 'all', lineAccountId: 'acc-1' };
 type PostResp = { data: { id: string; messageType: string; messageContent: string; altText?: string | null; messages: Array<{ type: string; content: string; altText?: string }> | null } };
 
@@ -103,6 +104,34 @@ describe('POST /api/broadcasts combo messages', () => {
     expect(gotBody.data.messages).toHaveLength(2);
   });
 
+  test('sticker-first pack → 201 and preserves the sticker as the first mirror', async () => {
+    const messages = [{ type: 'sticker', content: STICKER }, { type: 'text', content: 'せつめい' }];
+    const res = await app().request('/api/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({ ...base, messageType: 'sticker', messageContent: STICKER, messages }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json() as PostResp;
+    expect(body.data.messages?.[0]).toEqual({ type: 'sticker', content: STICKER });
+    expect(body.data.messageType).toBe('sticker');
+    expect(body.data.messageContent).toBe(STICKER);
+  });
+
+  test('imagemap pack accepts the official tel URI scheme consistently with the common renderer', async () => {
+    const imagemap = JSON.stringify({
+      baseUrl: 'https://cdn.example.com/imagemap',
+      baseSize: { width: 1040, height: 1040 },
+      actions: [{ type: 'uri', linkUri: 'tel:0312345678', area: { x: 0, y: 0, width: 1040, height: 1040 } }],
+    });
+    const messages = [{ type: 'imagemap', content: imagemap }, { type: 'text', content: '電話する' }];
+    const res = await app().request('/api/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({ ...base, messageType: 'imagemap', messageContent: imagemap, messages }),
+    });
+
+    expect(res.status).toBe(201);
+  });
+
   test('messages len6 → 400 (最大5)', async () => {
     const messages = Array.from({ length: 6 }, (_, i) => ({ type: 'text', content: `m${i}` }));
     const res = await app().request('/api/broadcasts', { method: 'POST', body: JSON.stringify({ ...base, messageType: 'text', messageContent: 'm0', messages }) });
@@ -128,6 +157,32 @@ describe('POST /api/broadcasts combo messages', () => {
     expect(body.data.messages).toBeNull();
     const row = raw.prepare(`SELECT messages FROM broadcasts WHERE id=?`).get(body.data.id) as { messages: string | null };
     expect(row.messages).toBeNull();
+  });
+
+  test('legacy single POST rejects malformed sticker content before DB persistence', async () => {
+    const res = await app().request('/api/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({ ...base, messageType: 'sticker', messageContent: 'garbage' }),
+    });
+    expect(res.status).toBe(400);
+    expect((raw.prepare(`SELECT COUNT(*) AS n FROM broadcasts`).get() as { n: number }).n).toBe(0);
+  });
+
+  test.each([
+    ['video', 'null'],
+    ['imagemap', JSON.stringify({
+      baseUrl: 'https://cdn.example.com/im',
+      baseSize: { width: 1040, height: 1040 },
+      actions: [null],
+    })],
+  ])('malformed %s object shape returns 400 instead of leaking a validator 500', async (messageType, messageContent) => {
+    const res = await app().request('/api/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({ ...base, messageType, messageContent }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((raw.prepare(`SELECT COUNT(*) AS n FROM broadcasts`).get() as { n: number }).n).toBe(0);
   });
 });
 
@@ -167,6 +222,22 @@ describe('PUT /api/broadcasts/:id combo messages', () => {
     const row = raw.prepare(`SELECT messages, message_content FROM broadcasts WHERE id=?`).get(id) as { messages: string | null; message_content: string };
     expect(row.messages).toBeNull();
     expect(row.message_content).toBe('updated');
+  });
+
+  test('single 行の type-only PUT validates the resulting type/content pair', async () => {
+    const create = await app().request('/api/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({ ...base, messageType: 'text', messageContent: 'plain text' }),
+    });
+    const id = (await create.json() as PostResp).data.id;
+    const put = await app().request(`/api/broadcasts/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ messageType: 'sticker' }),
+    });
+
+    expect(put.status).toBe(400);
+    const row = raw.prepare(`SELECT message_type, message_content FROM broadcasts WHERE id=?`).get(id) as { message_type: string; message_content: string };
+    expect(row).toEqual({ message_type: 'text', message_content: 'plain text' });
   });
 
   test('PUT messages len6 → 400', async () => {

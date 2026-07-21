@@ -9,6 +9,7 @@ import {
 import type { AutoReply as DbAutoReply } from '@line-crm/db';
 import type { AutoReplyResponseMessage } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { buildOutboundMessage, OUTBOUND_MESSAGE_TYPES } from '../services/outbound-message.js';
 
 const autoReplies = new Hono<Env>();
 
@@ -33,9 +34,9 @@ interface SerializedAutoReply {
   effectiveAccounts?: EffectiveAccount[];
 }
 
-const AUTO_REPLY_MESSAGE_TYPES = new Set(['text', 'flex', 'image']);
+const AUTO_REPLY_MESSAGE_TYPES = new Set<string>(OUTBOUND_MESSAGE_TYPES);
 
-function validateResponseMessages(input: unknown): string | null {
+function validateResponseMessagesShape(input: unknown): string | null {
   if (!Array.isArray(input)) return 'responseMessages は配列で指定してください';
   if (input.length < 1) return '吹き出しは1件以上、最大5件まで指定してください';
   if (input.length > 5) return '吹き出しは1件以上、最大5件までです';
@@ -48,15 +49,35 @@ function validateResponseMessages(input: unknown): string | null {
     if (typeof message.messageContent !== 'string' || message.messageContent.length === 0) {
       return '吹き出しの内容が空です';
     }
-    if (message.messageType === 'flex' || message.messageType === 'image') {
-      try {
-        JSON.parse(message.messageContent);
-      } catch {
-        return `${message.messageType} の内容は正しい JSON で指定してください`;
-      }
+  }
+  return null;
+}
+
+function validateResponseMessages(input: unknown): string | null {
+  const shapeError = validateResponseMessagesShape(input);
+  if (shapeError) return shapeError;
+  for (const item of input as Array<Record<string, unknown>>) {
+    const messageType = item.messageType as string;
+    const messageContent = item.messageContent as string;
+    try {
+      buildOutboundMessage(messageType, messageContent);
+    } catch {
+      return `${messageType} の内容が正しくありません`;
     }
   }
   return null;
+}
+
+function validateSingleResponse(messageType: string, messageContent: string): string | null {
+  if (messageType === 'silent') return null;
+  if (!AUTO_REPLY_MESSAGE_TYPES.has(messageType)) return 'responseType が未対応です';
+  if (!messageContent) return 'responseContent が空です';
+  try {
+    buildOutboundMessage(messageType, messageContent);
+    return null;
+  } catch {
+    return `${messageType} の内容が正しくありません`;
+  }
 }
 
 function responseMessagesFor(row: DbAutoReply): AutoReplyResponseMessage[] {
@@ -71,7 +92,10 @@ function responseMessagesFor(row: DbAutoReply): AutoReplyResponseMessage[] {
   } catch {
     throw new Error('invalid response_messages JSON');
   }
-  const validationError = validateResponseMessages(parsed);
+  // Existing rows may predate today's stricter LINE validation. Keep their
+  // envelope readable so an operator can open and repair them; every write and
+  // actual send still goes through validateResponseMessages/buildOutboundMessage.
+  const validationError = validateResponseMessagesShape(parsed);
   if (validationError) throw new Error(validationError);
   return parsed as AutoReplyResponseMessage[];
 }
@@ -242,6 +266,13 @@ autoReplies.post('/api/auto-replies', async (c) => {
       }
     }
 
+    if (!responseMessages) {
+      const singleResponseError = validateSingleResponse(resolvedResponseType, resolvedResponseContent);
+      if (singleResponseError) {
+        return c.json({ success: false, error: singleResponseError }, 400);
+      }
+    }
+
     const item = await createAutoReply(c.env.DB, {
       keyword: body.keyword,
       matchType: body.matchType,
@@ -299,6 +330,19 @@ autoReplies.put('/api/auto-replies/:id', async (c) => {
         input.responseContent = tpl.message_content;
         if (body.responseType === undefined) input.responseType = tpl.message_type;
       }
+    }
+
+    const needsSingleResponseValidation = body.responseMessages === null || (
+      body.responseMessages === undefined
+      && (body.responseType !== undefined || body.responseContent !== undefined || body.templateId !== undefined)
+    );
+    if (needsSingleResponseValidation) {
+      const existing = await getAutoReplyById(c.env.DB, id);
+      if (!existing) return c.json({ success: false, error: 'Auto-reply not found' }, 404);
+      const messageType = typeof input.responseType === 'string' ? input.responseType : existing.response_type;
+      const messageContent = typeof input.responseContent === 'string' ? input.responseContent : existing.response_content;
+      const singleResponseError = validateSingleResponse(messageType, messageContent);
+      if (singleResponseError) return c.json({ success: false, error: singleResponseError }, 400);
     }
 
     const updated = await updateAutoReply(c.env.DB, id, input as Parameters<typeof updateAutoReply>[2]);

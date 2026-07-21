@@ -72,6 +72,14 @@ function isHttpsUrl(v: unknown): boolean {
   return typeof v === 'string' && /^https:\/\/\S+/.test(v);
 }
 
+function isImagemapLink(v: unknown): boolean {
+  return typeof v === 'string' && /^(?:https?|line|tel):\S+$/.test(v);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 /**
  * A/B 紐付け (abTestId/abVariant) の保存前検証 (G1・E2E CRITICAL fix)。
  *  - 紐付けなし (両方空) → OK
@@ -109,12 +117,14 @@ function validateBroadcastContent(messageType: string, messageContent: string): 
   if (messageType !== 'video' && messageType !== 'audio' && messageType !== 'imagemap' && messageType !== 'richvideo') {
     return null;
   }
-  let p: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    p = JSON.parse(messageContent) as Record<string, unknown>;
+    parsed = JSON.parse(messageContent) as unknown;
   } catch {
     return 'メッセージ内容の形式が正しくありません';
   }
+  if (!isRecord(parsed)) return 'メッセージ内容の形式が正しくありません';
+  const p = parsed;
   if (messageType === 'video') {
     if (!isHttpsUrl(p.originalContentUrl) || !isHttpsUrl(p.previewImageUrl)) {
       return '動画URLとプレビュー画像URLは https で指定してください';
@@ -133,12 +143,16 @@ function validateBroadcastContent(messageType: string, messageContent: string): 
     return '画像サイズ(幅・高さ)を正しく指定してください';
   }
   if (!Array.isArray(p.actions)) return '領域リストの形式が正しくありません';
-  for (const a of p.actions as Array<Record<string, unknown>>) {
+  for (const rawAction of p.actions) {
+    if (!isRecord(rawAction)) return '領域リストの形式が正しくありません';
+    const a = rawAction;
     const area = a.area as Record<string, unknown> | undefined;
     if (!area || (['x', 'y', 'width', 'height'] as const).some((k) => typeof area[k] !== 'number')) {
       return '領域の座標・サイズを正しく指定してください';
     }
-    if (a.type === 'uri' && !isHttpsUrl(a.linkUri)) return '領域のリンクURLは https で指定してください';
+    if (a.type === 'uri' && !isImagemapLink(a.linkUri)) {
+      return '領域のリンク先は http / https / line / tel で指定してください';
+    }
   }
   if (messageType === 'richvideo') {
     const v = p.video as Record<string, unknown> | undefined;
@@ -150,7 +164,7 @@ function validateBroadcastContent(messageType: string, messageContent: string): 
 }
 
 // ---- combo messages (broadcast-combo-messages Batch 1) ----
-const ALLOWED_MESSAGE_TYPES: readonly string[] = ['text', 'image', 'flex', 'video', 'audio', 'imagemap', 'richvideo'];
+const ALLOWED_MESSAGE_TYPES: readonly string[] = ['text', 'image', 'flex', 'video', 'audio', 'sticker', 'imagemap', 'richvideo'];
 
 /** 保存/更新 payload の 1 メッセージブロック (先頭ミラーの正典・messages[0] が message_type/content/alt_text)。 */
 interface MessageBlock {
@@ -455,6 +469,14 @@ broadcasts.post('/api/broadcasts', async (c) => {
     const contentErr = validateBroadcastContent(body.messageType, body.messageContent);
     if (contentErr) return c.json({ success: false, error: contentErr }, 400);
 
+    // 旧 single payload も combo と同じ共通 renderer で保存前に検証する。
+    // sticker/image/unknown 等、type 固有 validator の対象外も fail-loud にする。
+    try {
+      buildMessage(body.messageType, body.messageContent, body.altText ?? undefined);
+    } catch {
+      return c.json({ success: false, error: 'メッセージ内容の形式が正しくありません' }, 400);
+    }
+
     // sender は preset id 参照のみ受理 (生 name/iconUrl は body から読まない = なりすまし防止)。
     // 渡された senderPresetId が request account の実在 preset か server で照合し、別 account/不存在は 400。
     if (body.senderPresetId) {
@@ -619,6 +641,25 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
     if (body.messageContent !== undefined) {
       const contentErr = validateBroadcastContent(effectiveMessageType, body.messageContent);
       if (contentErr) return c.json({ success: false, error: contentErr }, 400);
+    }
+
+    // title-only 更新は既存の壊れたレコードを突然拒否しない。一方、type/content を触る更新は
+    // 未指定側を既存値で補い、更新後に実際に送れる組み合わせか共通 renderer で確定する。
+    if (
+      body.messages === undefined
+      && (body.messageType !== undefined || body.messageContent !== undefined)
+    ) {
+      const effectiveContent = body.messageContent ?? existing.message_content;
+      const effectiveAltText = (existing as unknown as Record<string, unknown>).alt_text;
+      try {
+        buildMessage(
+          effectiveMessageType,
+          effectiveContent,
+          typeof effectiveAltText === 'string' ? effectiveAltText : undefined,
+        );
+      } catch {
+        return c.json({ success: false, error: 'メッセージ内容の形式が正しくありません' }, 400);
+      }
     }
 
     // sender は preset id 参照のみ受理。既存配信の account に属する実在 preset か照合し、別 account/不存在は 400。

@@ -74,6 +74,36 @@ function setupApp() {
 
 const AUTH = { headers: { Authorization: 'Bearer test-key', 'Content-Type': 'application/json' } };
 
+const PACK_MEDIA_FIXTURES = [
+  ['image', JSON.stringify({ originalContentUrl: 'https://cdn.example.com/original.png', previewImageUrl: 'https://cdn.example.com/preview.png' })],
+  ['video', JSON.stringify({ originalContentUrl: 'https://cdn.example.com/video.mp4', previewImageUrl: 'https://cdn.example.com/video-preview.png' })],
+  ['audio', JSON.stringify({ originalContentUrl: 'https://cdn.example.com/audio.m4a', duration: 60_000 })],
+  ['sticker', JSON.stringify({ packageId: '11537', stickerId: '52002734' })],
+  ['imagemap', JSON.stringify({
+    baseUrl: 'https://cdn.example.com/imagemap',
+    altText: '画像分割',
+    baseSize: { width: 1040, height: 1040 },
+    actions: [{ type: 'uri', linkUri: 'https://example.com', area: { x: 0, y: 0, width: 1040, height: 1040 } }],
+  })],
+  ['richvideo', JSON.stringify({
+    baseUrl: 'https://cdn.example.com/richvideo',
+    altText: '動画',
+    baseSize: { width: 1040, height: 1040 },
+    actions: [],
+    video: { originalContentUrl: 'https://cdn.example.com/video.mp4', previewImageUrl: 'https://cdn.example.com/video-preview.png', area: { x: 0, y: 0, width: 1040, height: 1040 } },
+  })],
+] as const;
+
+const BROKEN_PACK_MEDIA_FIXTURES = [
+  ['image', '{broken'],
+  ['video', JSON.stringify({ originalContentUrl: 'https://cdn.example.com/video.mp4' })],
+  ['audio', JSON.stringify({ originalContentUrl: 'https://cdn.example.com/audio.m4a', duration: 0 })],
+  ['sticker', JSON.stringify({ stickerId: '52002734' })],
+  ['imagemap', JSON.stringify({ baseUrl: 'https://cdn.example.com/imagemap', actions: [] })],
+  ['imagemap', JSON.stringify({ baseUrl: 'https://cdn.example.com/imagemap', baseSize: { width: 999, height: 1040 }, actions: [] })],
+  ['richvideo', JSON.stringify({ baseUrl: 'https://cdn.example.com/richvideo', baseSize: { width: 1040, height: 1040 }, actions: [] })],
+] as const;
+
 beforeEach(() => {
   hoisted.packs.clear();
   hoisted.fetchCalls.length = 0;
@@ -107,6 +137,27 @@ describe('template-packs CRUD (account-scoped)', () => {
     const res = await req('/api/template-packs?accountId=acc-1', {
       method: 'POST',
       body: JSON.stringify({ name: 'p', items: [{ messageType: 'flex', messageContent: '{not json' }] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test.each(PACK_MEDIA_FIXTURES)('POST accepts a valid %s item without rewriting its content bytes', async (messageType, messageContent) => {
+    const res = await req('/api/template-packs?accountId=acc-1', {
+      method: 'POST',
+      body: JSON.stringify({ name: `${messageType} pack`, items: [{ messageType, messageContent }] }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json<{ data: { items: Array<{ message_type: string; message_content: string }> } }>();
+    expect(body.data.items).toEqual([
+      expect.objectContaining({ message_type: messageType, message_content: messageContent }),
+    ]);
+    expect(new TextEncoder().encode(body.data.items[0].message_content)).toEqual(new TextEncoder().encode(messageContent));
+  });
+
+  test.each(BROKEN_PACK_MEDIA_FIXTURES)('POST rejects malformed %s content before persistence', async (messageType, messageContent) => {
+    const res = await req('/api/template-packs?accountId=acc-1', {
+      method: 'POST',
+      body: JSON.stringify({ name: `${messageType} broken`, items: [{ messageType, messageContent }] }),
     });
     expect(res.status).toBe(400);
   });

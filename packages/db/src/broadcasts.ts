@@ -7,6 +7,7 @@ export type BroadcastMessageType =
   | 'flex'
   | 'video'
   | 'audio'
+  | 'sticker'
   | 'imagemap'
   | 'richvideo';
 

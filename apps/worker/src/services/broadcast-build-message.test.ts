@@ -1,10 +1,9 @@
 /**
  * T-C4 / A5 / D-2 — broadcast.ts の buildMessage 拡張 (新 type dispatch + fail-loud + sender)。
  *
- * スコープは broadcast 用 impl (broadcast.ts:buildMessage) のみ。新 type(video/audio/imagemap/
- * richvideo) は broadcasts.message_type の CHECK 拡張(054)でしか保存できず、reminder_steps/
- * scenario_steps の CHECK は text/image/flex のまま = reminder-delivery/step-delivery の buildMessage
- * には新 type が到達しない → 両者は無変更。本 test でその分離を behavior で固定する。
+ * D-3 では template pack を auto-reply へ展開した後も同じ outbound renderer を通す。
+ * broadcast と step/auto-reply の両方で media/sticker を同じ LINE Message に変換し、
+ * 未知 type や壊れた JSON は text fallback せず fail-loud にする契約を固定する。
  */
 import { describe, test, expect } from 'vitest';
 import { buildMessage as buildBroadcast } from './broadcast.js';
@@ -14,6 +13,7 @@ import { MessageBuildError } from '../utils/message-build.js';
 
 const validVideo = JSON.stringify({ originalContentUrl: 'https://cdn.example.com/v.mp4', previewImageUrl: 'https://cdn.example.com/p.png' });
 const validAudio = JSON.stringify({ originalContentUrl: 'https://cdn.example.com/a.m4a', duration: 60000 });
+const validSticker = JSON.stringify({ packageId: '11537', stickerId: '52002734' });
 const validImagemap = JSON.stringify({
   baseUrl: 'https://cdn.example.com/im',
   altText: 'メニュー',
@@ -53,6 +53,11 @@ describe('T-C4 broadcast buildMessage: new type dispatch (G4/G13/G14)', () => {
     expect(m.type).toBe('imagemap');
     expect(m.baseUrl).toBe('https://cdn.example.com/im');
     expect(m.actions).toHaveLength(1);
+  });
+
+  test('sticker → outbound sticker Message object', () => {
+    const m = buildBroadcast('sticker', validSticker) as { type: string; packageId: string; stickerId: string };
+    expect(m).toEqual({ type: 'sticker', packageId: '11537', stickerId: '52002734' });
   });
 
   test('T-A2(d): imagemap area 座標は LINE payload に素通しされる (ドラッグ/数値 単一正典の送信保証)', () => {
@@ -97,8 +102,68 @@ describe('T-C4 broadcast buildMessage: fail-loud (silent 事故根治)', () => {
   test('FAIL-CLOSED: imagemap with missing baseSize throws', () => {
     expect(() => buildBroadcast('imagemap', JSON.stringify({ baseUrl: 'https://x/im', actions: [] }))).toThrow(MessageBuildError);
   });
+  test('FAIL-CLOSED: sticker missing packageId throws', () => {
+    expect(() => buildBroadcast('sticker', JSON.stringify({ stickerId: '52002734' }))).toThrow(MessageBuildError);
+  });
+  test('FAIL-CLOSED: sticker IDs must be numeric LINE IDs', () => {
+    expect(() => buildBroadcast('sticker', JSON.stringify({ packageId: 'abc', stickerId: 'xyz' }))).toThrow(MessageBuildError);
+  });
+  test.each([
+    [{}, 'missing action type and area'],
+    [{ type: 'uri', linkUri: 'https://example.com', area: { x: 0, y: 0, width: 1041, height: 10 } }, 'area outside base image'],
+    [{ type: 'message', text: '', area: { x: 0, y: 0, width: 10, height: 10 } }, 'empty message action'],
+  ])('FAIL-CLOSED: imagemap rejects malformed action ($1)', (action) => {
+    expect(() => buildBroadcast('imagemap', JSON.stringify({
+      baseUrl: 'https://x/im',
+      baseSize: { width: 1040, height: 1040 },
+      actions: [action],
+    }))).toThrow(MessageBuildError);
+  });
+  test('FAIL-CLOSED: richvideo requires a valid video area', () => {
+    const parsed = JSON.parse(validRichVideo) as Record<string, unknown>;
+    parsed.video = {
+      originalContentUrl: 'https://cdn.example.com/v.mp4',
+      previewImageUrl: 'https://cdn.example.com/p.png',
+    };
+    expect(() => buildBroadcast('richvideo', JSON.stringify(parsed))).toThrow(MessageBuildError);
+  });
+  test('FAIL-CLOSED: imagemap validates an optional video block when present', () => {
+    const parsed = JSON.parse(validImagemap) as Record<string, unknown>;
+    parsed.video = {};
+    expect(() => buildBroadcast('imagemap', JSON.stringify(parsed))).toThrow(MessageBuildError);
+  });
   test('FAIL-CLOSED: richvideo without a video block throws', () => {
     expect(() => buildBroadcast('richvideo', validImagemap)).toThrow(MessageBuildError);
+  });
+
+  test.each([
+    [{ type: 'message', text: 'あ'.repeat(401), area: { x: 0, y: 0, width: 10, height: 10 } }, 'message text > 400'],
+    [{ type: 'clipboard', clipboardText: 'a'.repeat(1001), area: { x: 0, y: 0, width: 10, height: 10 } }, 'clipboard > 1000'],
+    [{ type: 'uri', linkUri: `https://${'a'.repeat(993)}`, area: { x: 0, y: 0, width: 10, height: 10 } }, 'linkUri > 1000'],
+    [{ type: 'uri', label: 'a'.repeat(101), linkUri: 'https://example.com', area: { x: 0, y: 0, width: 10, height: 10 } }, 'action label > 100'],
+  ])('FAIL-CLOSED: imagemap rejects official action character-limit overage ($1)', (action) => {
+    expect(() => buildBroadcast('imagemap', JSON.stringify({
+      baseUrl: 'https://x/im',
+      baseSize: { width: 1040, height: 1040 },
+      actions: [action],
+    }))).toThrow(MessageBuildError);
+  });
+
+  test('FAIL-CLOSED: imagemap URL and altText official limits are enforced', () => {
+    const parsed = JSON.parse(validImagemap) as Record<string, unknown>;
+    parsed.baseUrl = `https://${'a'.repeat(1993)}`;
+    expect(() => buildBroadcast('imagemap', JSON.stringify(parsed))).toThrow(MessageBuildError);
+    expect(() => buildBroadcast('imagemap', validImagemap, 'あ'.repeat(1501))).toThrow(MessageBuildError);
+  });
+
+  test('FAIL-CLOSED: richvideo URL and external label official limits are enforced', () => {
+    const tooLongLabel = JSON.parse(validRichVideo) as Record<string, unknown>;
+    (tooLongLabel.video as { externalLink: { label: string } }).externalLink.label = 'あ'.repeat(31);
+    expect(() => buildBroadcast('richvideo', JSON.stringify(tooLongLabel))).toThrow(MessageBuildError);
+
+    const tooLongVideoUrl = JSON.parse(validRichVideo) as Record<string, unknown>;
+    (tooLongVideoUrl.video as { originalContentUrl: string }).originalContentUrl = `https://${'a'.repeat(1993)}`;
+    expect(() => buildBroadcast('richvideo', JSON.stringify(tooLongVideoUrl))).toThrow(MessageBuildError);
   });
 
   test('FAIL-LOUD: unknown message_type throws MessageBuildError (NOT silent text fallback)', () => {
@@ -126,11 +191,33 @@ describe('T-C4 sender attachment (G25)', () => {
   });
 });
 
-describe('T-C4 impl separation: reminder/step buildMessage unchanged (new type unreachable there)', () => {
-  test('step-delivery/reminder-delivery still text-fallback on unknown type (proves they are NOT changed)', () => {
-    // broadcast は throw、他 2 impl は従来どおり text fallback = 本 batch で無変更。
-    expect(buildStep('xyz', 'foo')).toEqual({ type: 'text', text: 'foo' });
+describe('D-3 shared outbound renderer: step/auto-reply accepts pack media and fails loud', () => {
+  test.each([
+    ['video', validVideo, 'video'],
+    ['audio', validAudio, 'audio'],
+    ['imagemap', validImagemap, 'imagemap'],
+    ['sticker', validSticker, 'sticker'],
+  ])('%s pack item builds the same outbound type on the step/auto-reply path', (messageType, content, expectedType) => {
+    expect(buildStep(messageType, content).type).toBe(expectedType);
+  });
+
+  test.each([
+    ['video', '{broken'],
+    ['audio', JSON.stringify({ originalContentUrl: 'https://x/a.m4a', duration: 0 })],
+    ['imagemap', JSON.stringify({ baseUrl: 'https://x/im', actions: [] })],
+    ['sticker', JSON.stringify({ stickerId: '52002734' })],
+    ['unknown', 'raw content'],
+  ])('%s is fail-loud on the step/auto-reply path instead of becoming text', (messageType, content) => {
+    expect(() => buildStep(messageType, content)).toThrow(MessageBuildError);
+  });
+
+  test('invalid Flex and text over LINE 5000-character limit fail before pack/auto-reply send', () => {
+    expect(() => buildStep('flex', '{}')).toThrow(MessageBuildError);
+    expect(() => buildStep('text', 'あ'.repeat(5001))).toThrow(MessageBuildError);
+    expect(() => buildBroadcast('text', 'あ'.repeat(5001))).toThrow(MessageBuildError);
+  });
+
+  test('reminder remains outside this pack/auto-reply expansion', () => {
     expect(buildReminder('xyz', 'foo')).toEqual({ type: 'text', text: 'foo' });
-    expect(() => buildBroadcast('xyz', 'foo')).toThrow(MessageBuildError);
   });
 });

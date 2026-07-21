@@ -7,7 +7,7 @@
  *
  * ドラッグ矩形のパターン (toImageCoord / create・move・resize の DragState) は実証済みの
  * rich-menus/canvas-editor.tsx を流用。差分 = (a) 座標空間がベース画像の baseW×baseH
- * (b) action は uri/message (c) LINE imagemap の 50 area 上限。矩形の描画は % 指定で
+ * (b) action は uri/message/clipboard (c) LINE imagemap の 50 area 上限。矩形の描画は % 指定で
  * レスポンシブ、ドラッグ計算のみ getBoundingClientRect を使う。
  */
 import { useEffect, useRef, useState } from 'react'
@@ -314,16 +314,18 @@ export default function ImagemapRegionEditor({
               aria-label="飛び先の種類"
               className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white"
               value={sel.actionType}
-              onChange={(e) => updateSelected({ actionType: e.target.value as 'uri' | 'message' })}
+              onChange={(e) => updateSelected({ actionType: e.target.value as MediaRegion['actionType'] })}
             >
               <option value="uri">リンク</option>
               <option value="message">テキスト応答</option>
+              <option value="clipboard">クリップボードへコピー</option>
             </select>
             <input
               type="text"
+              maxLength={sel.actionType === 'message' ? 400 : 1000}
               aria-label="飛び先や送る言葉"
               className="flex-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-              placeholder={sel.actionType === 'uri' ? '飛び先 (https://...)' : '送るテキスト'}
+              placeholder={sel.actionType === 'uri' ? '飛び先 (http / https / line / tel)' : sel.actionType === 'message' ? '送るテキスト' : 'コピーするテキスト'}
               value={sel.value}
               onChange={(e) => updateSelected({ value: e.target.value })}
             />

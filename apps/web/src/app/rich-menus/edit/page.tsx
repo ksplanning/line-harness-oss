@@ -562,7 +562,7 @@ function Editor({
                   {activePage.imageR2Key ? '画像を差し替え' : '画像を選択'}
                 </button>
                 <p className="mt-1.5 text-[11px] text-gray-500">
-                  PNG / JPEG, {SIZE_LABEL[group.size]}, 1MB 以下
+                  PNG / JPEG, {SIZE_LABEL[group.size]}, 1MB 以下（LINE公式の上限）
                 </p>
                 {activePage.id.startsWith('tmp-') && (
                   <p className="mt-1 text-[11px] text-amber-600">

@@ -1,19 +1,27 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { api } from '@/lib/api'
+import { api, type TemplatePackMessageType } from '@/lib/api'
 import { packToFormMessages } from '@/lib/template-packs/pack-insert'
 import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
 import { flexToModel } from '@/lib/flex-builder/from-flex'
 import type { BuilderModel } from '@/lib/flex-builder/types'
 import ImageUploader from '@/components/shared/image-uploader'
 import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
+import BroadcastMediaInputs from '@/components/broadcasts/broadcast-media-inputs'
+import type { MediaMessageType } from '@/lib/broadcast-media'
+import { messageTypeLabels } from '@/lib/broadcast-labels'
 
-export type AutoReplyMessageType = 'text' | 'flex' | 'image'
+export type AutoReplyMessageType = TemplatePackMessageType
 
 export interface AutoReplyResponseMessage {
   messageType: AutoReplyMessageType
   messageContent: string
+}
+
+interface AutoReplyUiMessage extends AutoReplyResponseMessage {
+  /** React 内部stateを吹き出し本体に追従させるためだけのkey。APIには送らない。 */
+  uiKey: string
 }
 
 export interface AutoReplyDraft {
@@ -46,9 +54,26 @@ interface TemplatePackSummary {
 type ReplyMode = 'messages' | 'silent'
 
 const MAX_MESSAGES = 5
+const AUTO_REPLY_MESSAGE_TYPES: readonly AutoReplyMessageType[] = [
+  'text',
+  'flex',
+  'image',
+  'video',
+  'audio',
+  'sticker',
+  'imagemap',
+  'richvideo',
+]
+const MEDIA_MESSAGE_TYPES: readonly MediaMessageType[] = ['video', 'audio', 'imagemap', 'richvideo']
+
+function isMediaMessageType(value: AutoReplyMessageType): value is MediaMessageType {
+  return (MEDIA_MESSAGE_TYPES as readonly string[]).includes(value)
+}
 
 function supportedType(value: string): AutoReplyMessageType {
-  return value === 'flex' || value === 'image' ? value : 'text'
+  return (AUTO_REPLY_MESSAGE_TYPES as readonly string[]).includes(value)
+    ? value as AutoReplyMessageType
+    : 'text'
 }
 
 function initialMessages(draft: AutoReplyDraft): AutoReplyResponseMessage[] {
@@ -77,11 +102,70 @@ function imageValue(content: string) {
   return null
 }
 
+function stickerValue(content: string): { packageId: string; stickerId: string } {
+  try {
+    const parsed = JSON.parse(content) as { packageId?: unknown; stickerId?: unknown }
+    return {
+      packageId: typeof parsed.packageId === 'string' ? parsed.packageId : '',
+      stickerId: typeof parsed.stickerId === 'string' ? parsed.stickerId : '',
+    }
+  } catch {
+    return { packageId: '', stickerId: '' }
+  }
+}
+
+function StickerInputs({
+  index,
+  content,
+  onChange,
+}: {
+  index: number
+  content: string
+  onChange: (content: string) => void
+}) {
+  const value = stickerValue(content)
+  const patch = (next: Partial<typeof value>) => {
+    const merged = { ...value, ...next }
+    onChange(merged.packageId || merged.stickerId ? JSON.stringify(merged) : '')
+  }
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <div>
+        <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor={`auto-reply-sticker-package-${index}`}>パッケージID</label>
+        <input
+          id={`auto-reply-sticker-package-${index}`}
+          type="text"
+          inputMode="numeric"
+          value={value.packageId}
+          onChange={(event) => patch({ packageId: event.target.value })}
+          className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor={`auto-reply-sticker-id-${index}`}>スタンプID</label>
+        <input
+          id={`auto-reply-sticker-id-${index}`}
+          type="text"
+          inputMode="numeric"
+          value={value.stickerId}
+          onChange={(event) => patch({ stickerId: event.target.value })}
+          className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+        />
+      </div>
+    </div>
+  )
+}
+
 export default function EditDialog({ draft, packAccountId, templates, onClose, onSaved }: Props) {
+  const nextUiKey = useRef(0)
+  const attachUiKey = (message: AutoReplyResponseMessage): AutoReplyUiMessage => ({
+    ...message,
+    uiKey: `auto-reply-message-${nextUiKey.current++}`,
+  })
   const [keyword, setKeyword] = useState(draft.keyword)
   const [matchType, setMatchType] = useState<'exact' | 'contains'>(draft.matchType)
   const [replyMode, setReplyMode] = useState<ReplyMode>(draft.responseType === 'silent' ? 'silent' : 'messages')
-  const [messages, setMessagesState] = useState<AutoReplyResponseMessage[]>(() => initialMessages(draft))
+  const [messages, setMessagesState] = useState<AutoReplyUiMessage[]>(() => initialMessages(draft).map(attachUiKey))
   const messagesRef = useRef(messages)
   const [sourceTemplateId, setSourceTemplateId] = useState<string | null>(draft.templateId)
   const [selectedTemplateId, setSelectedTemplateId] = useState(draft.templateId ?? '')
@@ -112,14 +196,14 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
     return () => { cancelled = true }
   }, [resolvedPackAccountId])
 
-  const replaceMessages = (next: AutoReplyResponseMessage[]) => {
+  const replaceMessages = (next: AutoReplyUiMessage[]) => {
     messagesRef.current = next
     setMessagesState(next)
     setSourceTemplateId(null)
     setError('')
   }
 
-  const restoreMessages = (next: AutoReplyResponseMessage[]) => {
+  const restoreMessages = (next: AutoReplyUiMessage[]) => {
     messagesRef.current = next
     setMessagesState(next)
   }
@@ -130,7 +214,7 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
 
   const addMessage = () => {
     if (messages.length >= MAX_MESSAGES) return
-    replaceMessages([...messages, { messageType: 'text', messageContent: '' }])
+    replaceMessages([...messages, attachUiKey({ messageType: 'text', messageContent: '' })])
   }
 
   const removeMessage = (index: number) => {
@@ -149,10 +233,10 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
   const addTemplate = () => {
     const template = templates.find((item) => item.id === selectedTemplateId)
     if (!template) { setError('テンプレートを選んでください'); return }
-    const message: AutoReplyResponseMessage = {
+    const message = attachUiKey({
       messageType: supportedType(template.messageType),
       messageContent: template.messageContent,
-    }
+    })
     if (onlyBlankMessage(messages)) {
       restoreMessages([message])
       setSourceTemplateId(template.id)
@@ -182,7 +266,7 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
       } else if (base.length + expanded.length > MAX_MESSAGES) {
         setError(`このパックを展開すると${base.length + expanded.length}件になります。吹き出しは最大5件までです`)
       } else {
-        replaceMessages([...base, ...expanded])
+        replaceMessages([...base, ...expanded.map(attachUiKey)])
         setReplyMode('messages')
       }
     } catch (caught) {
@@ -224,14 +308,15 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
     setError('')
     setSaving(true)
     try {
-      const first = replyMode === 'messages' ? messages[0] : null
+      const payloadMessages: AutoReplyResponseMessage[] = messages.map(({ uiKey: _uiKey, ...message }) => message)
+      const first = replyMode === 'messages' ? payloadMessages[0] : null
       const preserveTemplateReference = replyMode === 'messages' && messages.length === 1 && Boolean(sourceTemplateId)
       const body = {
         keyword,
         matchType,
         responseType: first?.messageType ?? 'silent',
         responseContent: first?.messageContent ?? '',
-        responseMessages: preserveTemplateReference || replyMode === 'silent' ? null : messages,
+        responseMessages: preserveTemplateReference || replyMode === 'silent' ? null : payloadMessages,
         templateId: preserveTemplateReference ? sourceTemplateId : null,
         lineAccountId: draft.lineAccountId,
         isActive,
@@ -272,7 +357,7 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
           <div>
             <label className="block text-xs text-gray-600 mb-1">応答方法</label>
             <div className="flex gap-2" role="group" aria-label="応答方法">
-              <button type="button" aria-pressed={replyMode === 'messages'} onClick={() => { setReplyMode('messages'); if (messages.length === 0) restoreMessages([{ messageType: 'text', messageContent: '' }]) }} className={`px-3 py-2 text-xs rounded-md border ${replyMode === 'messages' ? 'border-green-600 bg-green-50 text-green-800 ring-1 ring-green-500' : 'border-gray-200 text-gray-600'}`}>吹き出しを送る</button>
+              <button type="button" aria-pressed={replyMode === 'messages'} onClick={() => { setReplyMode('messages'); if (messages.length === 0) restoreMessages([attachUiKey({ messageType: 'text', messageContent: '' })]) }} className={`px-3 py-2 text-xs rounded-md border ${replyMode === 'messages' ? 'border-green-600 bg-green-50 text-green-800 ring-1 ring-green-500' : 'border-gray-200 text-gray-600'}`}>吹き出しを送る</button>
               <button type="button" aria-pressed={replyMode === 'silent'} onClick={() => setReplyMode('silent')} className={`px-3 py-2 text-xs rounded-md border ${replyMode === 'silent' ? 'border-green-600 bg-green-50 text-green-800 ring-1 ring-green-500' : 'border-gray-200 text-gray-600'}`}>返信なし (silent)</button>
             </div>
           </div>
@@ -308,7 +393,7 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
 
               <div className="space-y-4">
                 {messages.map((message, index) => (
-                  <section key={index} className="rounded-lg border border-gray-200 bg-gray-50 p-4" aria-labelledby={`auto-reply-message-${index}`}>
+                  <section key={message.uiKey} className="rounded-lg border border-gray-200 bg-gray-50 p-4" aria-labelledby={`auto-reply-message-${index}`}>
                     <div className="flex items-center justify-between gap-2">
                       <h4 id={`auto-reply-message-${index}`} className="text-sm font-semibold text-gray-800">吹き出し {index + 1}</h4>
                       <div className="flex gap-1">
@@ -319,12 +404,8 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
                     </div>
 
                     <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label={`吹き出し ${index + 1} の種類`}>
-                      {([
-                        ['text', 'テキスト'],
-                        ['flex', 'Flex'],
-                        ['image', '画像'],
-                      ] as const).map(([type, label]) => (
-                        <button key={type} type="button" aria-pressed={message.messageType === type} onClick={() => updateMessage(index, { messageType: type, messageContent: type === message.messageType ? message.messageContent : '' })} className={`px-3 py-1.5 text-xs rounded-md border ${message.messageType === type ? 'border-green-500 bg-green-50 text-green-800' : 'border-gray-300 bg-white text-gray-600'}`}>{label}</button>
+                      {AUTO_REPLY_MESSAGE_TYPES.map((type) => (
+                        <button key={type} type="button" aria-pressed={message.messageType === type} onClick={() => updateMessage(index, { messageType: type, messageContent: type === message.messageType ? message.messageContent : '' })} className={`px-3 py-1.5 text-xs rounded-md border ${message.messageType === type ? 'border-green-500 bg-green-50 text-green-800' : 'border-gray-300 bg-white text-gray-600'}`}>{messageTypeLabels[type]}</button>
                       ))}
                     </div>
 
@@ -343,6 +424,20 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
                             <textarea aria-label="Flex JSON" rows={8} value={message.messageContent} onChange={(event) => updateMessage(index, { messageContent: event.target.value })} className="w-full border border-gray-300 rounded-md px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y" />
                           )}
                         </div>
+                      )}
+                      {isMediaMessageType(message.messageType) && (
+                        <BroadcastMediaInputs
+                          messageType={message.messageType}
+                          initialContent={message.messageContent}
+                          onChange={(messageContent) => updateMessage(index, { messageContent })}
+                        />
+                      )}
+                      {message.messageType === 'sticker' && (
+                        <StickerInputs
+                          index={index}
+                          content={message.messageContent}
+                          onChange={(messageContent) => updateMessage(index, { messageContent })}
+                        />
                       )}
                     </div>
                   </section>

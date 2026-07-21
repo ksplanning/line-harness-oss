@@ -116,8 +116,8 @@ describe('migration 055: sender_presets + broadcasts.sender_preset_id (additive)
 
 describe('T-C3 db model: BroadcastMessageType + createBroadcast/updateBroadcast sender_preset_id', () => {
   it('BroadcastMessageType includes the new broadcast types', () => {
-    const types: BroadcastMessageType[] = ['text', 'image', 'flex', 'video', 'audio', 'imagemap', 'richvideo'];
-    expect(types).toHaveLength(7);
+    const types: BroadcastMessageType[] = ['text', 'image', 'flex', 'video', 'audio', 'sticker', 'imagemap', 'richvideo'];
+    expect(types).toHaveLength(8);
   });
 
   it('createBroadcast persists a new message type (video) — CHECK now allows it', async () => {

@@ -1,11 +1,14 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ImageUploader from '@/components/shared/image-uploader'
 import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 import { buildMediaJson, initialMediaState, num, parseMediaJson, type MediaMessageType, type MediaState } from '@/lib/broadcast-media'
 import ImagemapRegionEditor from './imagemap-region-editor'
 import HelpPopover from '@/components/help/help-popover'
+import { api } from '@/lib/api'
+import { LINE_MEDIA_LIMITS } from '@line-crm/shared'
+import { createImagemapVariants } from '@/lib/line-image-transform'
 
 /** broadcast の新メッセージ種別 (動画/音声/リッチメッセージ/リッチビデオ) の入力欄。
  *  入力を messageContent の JSON 文字列に直列化して onChange で親へ渡す (server が正典検証)。 */
@@ -30,9 +33,14 @@ export default function BroadcastMediaInputs({
   )
   // ImageMap は Q4=ドラッグ既定。数値入力は補助 (後方互換 + 微調整) としてトグルで併存。
   const [imagemapMode, setImagemapMode] = useState<'drag' | 'numeric'>('drag')
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const previousMessageType = useRef(messageType)
 
   // 種別が切り替わったら、その種別の現在入力から messageContent を再直列化して同期する。
   useEffect(() => {
+    if (previousMessageType.current === messageType) return
+    previousMessageType.current = messageType
     onChange(buildMediaJson(messageType, s))
     // messageType 変更時のみ再同期 (state/onChange の変化では回さない)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -44,24 +52,91 @@ export default function BroadcastMediaInputs({
     onChange(buildMediaJson(messageType, next))
   }
 
+  async function uploadDirect(kind: 'video' | 'audio', file: File | undefined) {
+    if (!file) return
+    if (file.size > LINE_MEDIA_LIMITS.directUploadBytes) {
+      setUploadError('直接アップロードは100MBまでです')
+      return
+    }
+    setUploading(true)
+    setUploadError('')
+    try {
+      const result = kind === 'video'
+        ? await api.uploads.video(file)
+        : await api.uploads.audio(file)
+      if (!result.success) {
+        setUploadError(result.error ?? 'アップロードに失敗しました')
+        return
+      }
+      patch(kind === 'video' ? { videoUrl: result.data.url } : { audioUrl: result.data.url })
+    } catch {
+      setUploadError('アップロードに失敗しました')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function uploadImagemap(file: File | undefined) {
+    if (!file) return
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      setUploadError('ImagemapはJPEGまたはPNGを選んでください')
+      return
+    }
+    if (file.size > LINE_MEDIA_LIMITS.imagemapImageBytes) {
+      setUploadError('Imagemapの元画像は10MBまでです')
+      return
+    }
+    setUploading(true)
+    setUploadError('')
+    try {
+      const variants = await createImagemapVariants(file)
+      const uploadId = crypto.randomUUID()
+      const results = []
+      for (const variant of variants) {
+        results.push(await api.uploads.imagemap(variant.blob, variant.width, uploadId))
+      }
+      const failed = results.find((result) => !result.success)
+      if (failed && !failed.success) {
+        setUploadError(failed.error ?? 'Imagemapのアップロードに失敗しました')
+        return
+      }
+      const first = results[0]
+      const sourceVariant = variants.find((variant) => variant.width === 1040)
+      if (first?.success) patch({
+        baseUrl: first.data.baseUrl,
+        baseW: '1040',
+        baseH: sourceVariant ? String(sourceVariant.height) : s.baseH,
+      })
+    } catch (cause) {
+      setUploadError(cause instanceof Error ? cause.message : 'Imagemapのアップロードに失敗しました')
+    } finally {
+      setUploading(false)
+    }
+  }
+
   if (messageType === 'video') {
     return (
       <div className="space-y-2">
         <div>
+          <label className={labelCls}>動画を直接アップロード（MP4・最大100MB）</label>
+          <input type="file" accept="video/mp4" disabled={uploading} onChange={(e) => void uploadDirect('video', e.target.files?.[0])} className="block w-full text-xs text-gray-600" />
+        </div>
+        <div>
           <label className={labelCls}>動画ファイルのURL（mp4・https）<span className="text-red-500">*</span></label>
-          <input type="text" className={fieldCls} placeholder="https://example.com/video.mp4" value={s.videoUrl} onChange={(e) => patch({ videoUrl: e.target.value })} />
+          <input type="text" maxLength={2000} className={fieldCls} placeholder="https://example.com/video.mp4" value={s.videoUrl} onChange={(e) => patch({ videoUrl: e.target.value })} />
         </div>
         <div>
           <label className={labelCls}>プレビュー画像のURL（https）<span className="text-red-500">*</span></label>
           <ImageUploader
             mode="line-image"
             value={s.previewUrl ? { mode: 'line-image' as const, originalContentUrl: s.previewUrl, previewImageUrl: s.previewUrl } : null}
-            onChange={(v) => patch({ previewUrl: v?.mode === 'line-image' ? v.originalContentUrl : '' })}
+            onChange={(v) => patch({ previewUrl: v?.mode === 'line-image' ? v.previewImageUrl : '' })}
             label="プレビュー画像（アップロード）"
           />
-          <input type="text" className={`${fieldCls} mt-1`} placeholder="または画像URLを直接入力 (https://...)" value={s.previewUrl} onChange={(e) => patch({ previewUrl: e.target.value })} />
+          <input type="text" maxLength={2000} className={`${fieldCls} mt-1`} placeholder="または画像URLを直接入力 (https://...)" value={s.previewUrl} onChange={(e) => patch({ previewUrl: e.target.value })} />
         </div>
-        <p className="text-xs text-gray-500">動画本体は外部URLを貼るか、短い動画なら画像アップロードと同じ手順で上げられます。</p>
+        <p className="text-xs text-gray-500">直接アップロードはMP4・最大100MB。外部HTTPS URLはLINE公式上限の200MBまでです。プレビューはJPEG/PNG・1MB以下へ自動縮小します。</p>
+        {uploadError && <p role="alert" className="text-xs text-rose-600">{uploadError}</p>}
       </div>
     )
   }
@@ -70,14 +145,19 @@ export default function BroadcastMediaInputs({
     return (
       <div className="space-y-2">
         <div>
+          <label className={labelCls}>音声を直接アップロード（M4A / MP3・最大100MB）</label>
+          <input type="file" accept="audio/mp4,audio/x-m4a,audio/mpeg,.m4a,.mp3" disabled={uploading} onChange={(e) => void uploadDirect('audio', e.target.files?.[0])} className="block w-full text-xs text-gray-600" />
+        </div>
+        <div>
           <label className={labelCls}>音声ファイルのURL（m4a・https）<span className="text-red-500">*</span></label>
-          <input type="text" className={fieldCls} placeholder="https://example.com/audio.m4a" value={s.audioUrl} onChange={(e) => patch({ audioUrl: e.target.value })} />
+          <input type="text" maxLength={2000} className={fieldCls} placeholder="https://example.com/audio.m4a" value={s.audioUrl} onChange={(e) => patch({ audioUrl: e.target.value })} />
         </div>
         <div>
           <label className={labelCls}>再生時間（秒）<span className="text-red-500">*</span></label>
           <input type="number" min={1} className={fieldCls} placeholder="例: 30" value={s.durationSec} onChange={(e) => patch({ durationSec: e.target.value })} />
         </div>
-        <p className="text-xs text-gray-500">音声は m4a 形式・再生時間（秒）を入れてください。</p>
+        <p className="text-xs text-gray-500">直接アップロードはM4A / MP3・最大100MB。外部HTTPS URLはLINE公式上限の200MBまでです。再生時間（秒）も入力してください。</p>
+        {uploadError && <p role="alert" className="text-xs text-rose-600">{uploadError}</p>}
       </div>
     )
   }
@@ -90,18 +170,14 @@ export default function BroadcastMediaInputs({
             <label className="text-xs font-medium text-gray-600">ベース画像のURL（https）<span className="text-red-500">*</span></label>
             <HelpPopover helpKey="imagemap.base" />
           </div>
-          <ImageUploader
-            mode="line-image"
-            value={s.baseUrl ? { mode: 'line-image' as const, originalContentUrl: s.baseUrl, previewImageUrl: s.baseUrl } : null}
-            onChange={(v) => patch({ baseUrl: v?.mode === 'line-image' ? v.originalContentUrl : '' })}
-            label="ベース画像（アップロード）"
-          />
-          <input type="text" className={`${fieldCls} mt-1`} placeholder="または画像URLを直接入力 (https://...)" value={s.baseUrl} onChange={(e) => patch({ baseUrl: e.target.value })} />
+          <input type="file" accept="image/jpeg,image/png" disabled={uploading} onChange={(e) => void uploadImagemap(e.target.files?.[0])} className="block w-full text-xs text-gray-600" />
+          <input type="text" maxLength={2000} className={`${fieldCls} mt-1`} placeholder="または画像URLを直接入力 (https://...)" value={s.baseUrl} onChange={(e) => patch({ baseUrl: e.target.value })} />
         </div>
         <div className="flex gap-2">
-          <div className="flex-1"><label className={labelCls}>画像の幅</label><input type="number" className={fieldCls} value={s.baseW} onChange={(e) => patch({ baseW: e.target.value })} /></div>
+          <div className="flex-1"><label className={labelCls}>画像の幅（固定）</label><input type="number" className={`${fieldCls} bg-gray-50`} value="1040" readOnly aria-readonly="true" /></div>
           <div className="flex-1"><label className={labelCls}>画像の高さ</label><input type="number" className={fieldCls} value={s.baseH} onChange={(e) => patch({ baseH: e.target.value })} /></div>
         </div>
+        <p className="text-xs text-gray-500">JPEG / PNG・各サイズ10MBまで。元画像は横幅1040pxで用意すると、LINE用の5サイズを自動生成します。URLを直接入力する場合は末尾の /240・/300・/460・/700・/1040 が取得できるベースURLを指定してください。</p>
         <div>
           <div className="mb-1 flex items-center gap-1">
             <label className="text-xs font-medium text-gray-600">領域（押せる範囲）</label>
@@ -122,7 +198,7 @@ export default function BroadcastMediaInputs({
           </div>
           {imagemapMode === 'drag' && (
             s.baseUrl ? (
-              <ImagemapRegionEditor imageUrl={s.baseUrl} baseW={num(s.baseW)} baseH={num(s.baseH)} regions={s.regions} onChange={(regions) => patch({ regions })} />
+              <ImagemapRegionEditor imageUrl={`${s.baseUrl.replace(/\/$/, '')}/1040`} baseW={num(s.baseW)} baseH={num(s.baseH)} regions={s.regions} onChange={(regions) => patch({ regions })} />
             ) : (
               <p className="text-xs text-gray-500 border border-dashed border-gray-300 rounded-lg p-3 text-center">先にベース画像を選ぶと、ここで指でなぞって領域を描けます。</p>
             )
@@ -139,11 +215,12 @@ export default function BroadcastMediaInputs({
                   </div>
                   <div className="flex gap-1 items-center">
                     <select className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white" value={r.actionType}
-                      onChange={(e) => patch({ regions: s.regions.map((rr, j) => j === i ? { ...rr, actionType: e.target.value as 'uri' | 'message' } : rr) })}>
+                      onChange={(e) => patch({ regions: s.regions.map((rr, j) => j === i ? { ...rr, actionType: e.target.value as MediaState['regions'][number]['actionType'] } : rr) })}>
                       <option value="uri">リンク</option>
                       <option value="message">テキスト応答</option>
+                      <option value="clipboard">クリップボードへコピー</option>
                     </select>
-                    <input type="text" className={`${fieldCls} flex-1`} placeholder={r.actionType === 'uri' ? '飛び先 (https://...)' : '送るテキスト'} value={r.value}
+                    <input type="text" maxLength={r.actionType === 'message' ? 400 : 1000} className={`${fieldCls} flex-1`} placeholder={r.actionType === 'uri' ? '飛び先 (http / https / line / tel)' : r.actionType === 'message' ? '送るテキスト' : 'コピーするテキスト'} value={r.value}
                       onChange={(e) => patch({ regions: s.regions.map((rr, j) => j === i ? { ...rr, value: e.target.value } : rr) })} />
                     <button type="button" className="text-xs text-gray-500 hover:text-red-600 px-2 min-h-[36px]"
                       onClick={() => patch({ regions: s.regions.filter((_, j) => j !== i) })}>削除</button>
@@ -157,6 +234,7 @@ export default function BroadcastMediaInputs({
             </>
           )}
         </div>
+        {uploadError && <p role="alert" className="text-xs text-rose-600">{uploadError}</p>}
       </div>
     )
   }
@@ -165,18 +243,32 @@ export default function BroadcastMediaInputs({
   return (
     <div className="space-y-2">
       <div>
-        <label className={labelCls}>動画ファイルのURL（mp4・https）<span className="text-red-500">*</span></label>
-        <input type="text" className={fieldCls} placeholder="https://example.com/video.mp4" value={s.videoUrl} onChange={(e) => patch({ videoUrl: e.target.value })} />
+        <label className={labelCls}>動画を直接アップロード（MP4・最大100MB）</label>
+        <input type="file" accept="video/mp4" disabled={uploading} onChange={(e) => void uploadDirect('video', e.target.files?.[0])} className="block w-full text-xs text-gray-600" />
       </div>
       <div>
-        <label className={labelCls}>プレビュー画像のURL（https）<span className="text-red-500">*</span></label>
+        <label className={labelCls}>動画ファイルのURL（mp4・https）<span className="text-red-500">*</span></label>
+        <input type="text" maxLength={2000} className={fieldCls} placeholder="https://example.com/video.mp4" value={s.videoUrl} onChange={(e) => patch({ videoUrl: e.target.value })} />
+      </div>
+      <div>
+        <label className={labelCls}>動画表示面のベース画像（JPEG / PNG・原稿幅1040px）<span className="text-red-500">*</span></label>
+        <input type="file" accept="image/jpeg,image/png" disabled={uploading} onChange={(e) => void uploadImagemap(e.target.files?.[0])} className="block w-full text-xs text-gray-600" />
+        <input type="text" maxLength={2000} className={`${fieldCls} mt-1`} placeholder="または5サイズのベースURL (https://...)" value={s.baseUrl} onChange={(e) => patch({ baseUrl: e.target.value })} />
+        <div className="mt-2 flex gap-2">
+          <div className="flex-1"><label className={labelCls}>ベース画像の幅（固定）</label><input type="number" className={`${fieldCls} bg-gray-50`} value="1040" readOnly aria-readonly="true" /></div>
+          <div className="flex-1"><label className={labelCls}>ベース画像の高さ</label><input type="number" min={1} className={fieldCls} value={s.baseH} onChange={(e) => patch({ baseH: e.target.value })} /></div>
+        </div>
+        <p className="mt-1 text-xs text-gray-500">1040px原稿からLINE用の5サイズ（240 / 300 / 460 / 700 / 1040）を同じURL配下へ自動生成します。下のプレビュー画像とは別です。</p>
+      </div>
+      <div>
+        <label className={labelCls}>動画のプレビュー画像（単一URL・1MB以下）<span className="text-red-500">*</span></label>
         <ImageUploader
           mode="line-image"
           value={s.previewUrl ? { mode: 'line-image' as const, originalContentUrl: s.previewUrl, previewImageUrl: s.previewUrl } : null}
-          onChange={(v) => patch({ previewUrl: v?.mode === 'line-image' ? v.originalContentUrl : '' })}
+          onChange={(v) => patch({ previewUrl: v?.mode === 'line-image' ? v.previewImageUrl : '' })}
           label="プレビュー画像（アップロード）"
         />
-        <input type="text" className={`${fieldCls} mt-1`} placeholder="または画像URLを直接入力 (https://...)" value={s.previewUrl} onChange={(e) => patch({ previewUrl: e.target.value })} />
+        <input type="text" maxLength={2000} className={`${fieldCls} mt-1`} placeholder="または画像URLを直接入力 (https://...)" value={s.previewUrl} onChange={(e) => patch({ previewUrl: e.target.value })} />
       </div>
       <div>
         <label className={labelCls}>再生後に出すボタン（任意）</label>
@@ -188,10 +280,12 @@ export default function BroadcastMediaInputs({
           value={s.btnLabel}
           onChange={(btnLabel) => patch({ btnLabel })}
           ariaLabel="再生後に出すボタンの文字"
+          inputProps={{ maxLength: 30 }}
         />
-        <input type="text" className={fieldCls} placeholder="ボタンの飛び先 (https://...)" value={s.btnLink} onChange={(e) => patch({ btnLink: e.target.value })} />
+        <input type="text" maxLength={1000} className={fieldCls} placeholder="ボタンの飛び先 (https://...)" value={s.btnLink} onChange={(e) => patch({ btnLink: e.target.value })} />
       </div>
-      <p className="text-xs text-gray-500">動画の再生後にボタンを出せます。</p>
+      <p className="text-xs text-gray-500">動画は直接MP4・最大100MB、外部HTTPS URLはLINE公式上限200MBまで。ベース画像はJPEG/PNG・各10MBまで、プレビュー画像はJPEG/PNG・1MB以下です。</p>
+      {uploadError && <p role="alert" className="text-xs text-rose-600">{uploadError}</p>}
     </div>
   )
 }

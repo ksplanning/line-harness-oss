@@ -31,6 +31,59 @@ describe('validateFlex (shared)', () => {
     expect(r.ok).toBe(true);
   });
 
+  test.each(['header', 'footer'] as const)('%s だけに内容がある正規 bubble は ok:true', (section) => {
+    const contents = {
+      type: 'bubble',
+      [section]: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [{ type: 'text', text: 'こんにちは', wrap: true }],
+      },
+    } as unknown as FlexContents;
+    expect(validateFlex(contents).ok).toBe(true);
+  });
+
+  test('body.contents が配列でない bubble は throw せず ok:false', () => {
+    const contents = {
+      type: 'bubble',
+      body: { type: 'box', layout: 'vertical', contents: 'not-an-array' },
+    } as unknown as FlexContents;
+    expect(() => validateFlex(contents)).not.toThrow();
+    const r = validateFlex(contents);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error();
+    expect(r.errors.some((error) => error.code === 'invalid_node')).toBe(true);
+  });
+
+  test('未知の hero component は throw せず ok:false', () => {
+    const contents = {
+      type: 'bubble',
+      hero: { type: 'not-a-line-component' },
+    } as unknown as FlexContents;
+    expect(() => validateFlex(contents)).not.toThrow();
+    const r = validateFlex(contents);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error();
+    expect(r.errors.some((error) => error.code === 'invalid_node')).toBe(true);
+  });
+
+  test('未知の top-level type は LINE に送れないため ok:false', () => {
+    const r = validateFlex({
+      type: 'not-a-line-container',
+      hero: { type: 'image', url: 'https://example.com/x.png' },
+    } as unknown as FlexContents);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error();
+    expect(r.errors.some((error) => error.code === 'invalid_container')).toBe(true);
+  });
+
+  test('carousel の非 bubble 要素は throw せず ok:false', () => {
+    const r = validateFlex({ type: 'carousel', contents: [null] } as unknown as FlexContents);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error();
+    expect(r.errors.some((error) => error.code === 'invalid_bubble')).toBe(true);
+  });
+
   test('空 contents (body 空) は ok:false + 日本語エラー', () => {
     const r = validateFlex(bubbleWith([]));
     expect(r.ok).toBe(false);

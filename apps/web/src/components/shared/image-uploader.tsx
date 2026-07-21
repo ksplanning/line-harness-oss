@@ -2,8 +2,11 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import { LINE_MEDIA_LIMITS } from '@line-crm/shared'
+import { createLinePreview, isAnimatedPng, readImageDimensions } from '@/lib/line-image-transform'
 
 export type ImageUploaderMode = 'url' | 'line-image'
+export type ImageUploaderUsage = 'generic' | 'flex-image' | 'flex-icon' | 'line-preview' | 'sender-icon'
 
 export type ImageUploaderValue =
   | { mode: 'url'; url: string }
@@ -14,6 +17,7 @@ export interface ImageUploaderProps {
   value: ImageUploaderValue | null
   onChange: (next: ImageUploaderValue | null) => void
   label?: string
+  usage?: ImageUploaderUsage
 }
 
 /**
@@ -21,9 +25,9 @@ export interface ImageUploaderProps {
  *
  * mode='url' は単一 URL を返す (Event / Staff など)。
  * mode='line-image' は {originalContentUrl, previewImageUrl} を返す (Broadcast / Auto-reply / Template / Chats)。
- * 初版は preview = original の同 URL。後段で本格 resize が必要になれば worker 側で対応。
+ * line-image は原画像を 10MB まで受理し、LINE の preview 上限 1MB 以下を自動生成する。
  */
-export default function ImageUploader({ mode, value, onChange, label }: ImageUploaderProps) {
+export default function ImageUploader({ mode, value, onChange, label, usage = 'generic' }: ImageUploaderProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -35,39 +39,87 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
         setError('画像ファイルのみアップロードできます')
         return
       }
+      if (usage === 'sender-icon' && file.type !== 'image/png') {
+        setError('送信者アイコンは PNG のみ対応しています')
+        return
+      }
       if (mode === 'line-image' && !['image/jpeg', 'image/png'].includes(file.type)) {
         setError('LINE 送信用は JPEG または PNG のみ対応')
         return
       }
-      if (mode === 'line-image' && file.size > 1024 * 1024) {
-        setError('LINE 送信用は 1MB 以下にしてください (preview サイズ制限)')
+      if (mode === 'url' && usage !== 'generic' && !['image/jpeg', 'image/png'].includes(file.type)) {
+        setError('このLINE画像は JPEG または PNG のみ対応しています')
         return
       }
-      if (file.size > 10 * 1024 * 1024) {
-        setError('10MB 以下にしてください')
+      const maxBytes = usage === 'flex-icon' || usage === 'line-preview' || usage === 'sender-icon'
+        ? LINE_MEDIA_LIMITS.previewImageBytes
+        : LINE_MEDIA_LIMITS.messageImageBytes
+      if (file.size > maxBytes) {
+        setError(maxBytes === LINE_MEDIA_LIMITS.previewImageBytes ? '1MB 以下にしてください' : '10MB 以下にしてください')
         return
       }
       setBusy(true)
       setError('')
       try {
-        const res = await api.uploads.image(file)
-        if (!res.success) {
-          setError(res.error ?? 'アップロード失敗')
+        if (
+          usage === 'flex-image'
+          && file.size > LINE_MEDIA_LIMITS.flexAnimatedImageBytes
+          && await isAnimatedPng(file)
+        ) {
+          setError('FlexのアニメーションPNGは300KB以下にしてください')
           return
         }
-        const url = res.data.url
-        if (mode === 'url') {
-          onChange({ mode: 'url', url })
-        } else {
-          onChange({ mode: 'line-image', originalContentUrl: url, previewImageUrl: url })
+        if (usage === 'sender-icon' || usage === 'flex-image' || usage === 'flex-icon') {
+          const { width, height } = await readImageDimensions(file)
+          if (usage === 'sender-icon' && width !== height) {
+            setError('送信者アイコンは正方形（縦横比1:1）にしてください')
+            return
+          }
+          if ((usage === 'flex-image' || usage === 'flex-icon') && (width > 1024 || height > 1024)) {
+            setError('Flex画像の縦横は1024px以下にしてください')
+            return
+          }
         }
-      } catch {
-        setError('アップロード失敗')
+        if (mode === 'url') {
+          const res = await api.uploads.image(file)
+          if (!res.success) {
+            setError(res.error ?? 'アップロード失敗')
+            return
+          }
+          onChange({ mode: 'url', url: res.data.url })
+        } else {
+          const preview = await createLinePreview(file)
+          const originalResult = await api.uploads.image(file)
+          if (!originalResult.success) {
+            setError(originalResult.error ?? '元画像のアップロードに失敗しました')
+            return
+          }
+          if (preview === file) {
+            onChange({
+              mode: 'line-image',
+              originalContentUrl: originalResult.data.url,
+              previewImageUrl: originalResult.data.url,
+            })
+            return
+          }
+          const previewResult = await api.uploads.image(preview as File)
+          if (!previewResult.success) {
+            setError(previewResult.error ?? 'プレビュー画像のアップロードに失敗しました')
+            return
+          }
+          onChange({
+            mode: 'line-image',
+            originalContentUrl: originalResult.data.url,
+            previewImageUrl: previewResult.data.url,
+          })
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'アップロード失敗')
       } finally {
         setBusy(false)
       }
     },
-    [mode, onChange],
+    [mode, onChange, usage],
   )
 
   const handleFiles = useCallback(
@@ -119,6 +171,7 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
       {mode === 'url' && manualUrlMode ? (
         <input
           type="url"
+          maxLength={2000}
           value={value?.mode === 'url' ? value.url : ''}
           onChange={(e) => {
             const url = e.target.value
@@ -172,13 +225,30 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
           <input
             ref={inputRef}
             type="file"
-            accept={mode === 'line-image' ? 'image/jpeg,image/png' : 'image/*'}
+            accept={usage === 'sender-icon'
+              ? 'image/png'
+              : mode === 'line-image' || usage !== 'generic'
+                ? 'image/jpeg,image/png'
+                : 'image/*'}
             className="hidden"
             onChange={(e) => handleFiles(e.target.files)}
           />
         </div>
       )}
       {error && <div className="text-xs text-rose-600">{error}</div>}
+      <p className="text-xs text-gray-400">
+        {mode === 'line-image'
+          ? 'JPEG / PNG・元画像は10MBまで。プレビューは1MB以下へ自動縮小します。'
+          : usage === 'flex-image'
+            ? 'Flex画像はJPEG / PNG・縦横1024px以下・10MBまで（実用上は1MB以下を推奨、アニメーションは300KBまで）。'
+            : usage === 'flex-icon'
+              ? 'FlexアイコンはJPEG / PNG・縦横1024px以下・1MBまで。'
+              : usage === 'line-preview'
+                ? 'プレビュー画像はJPEG / PNG・1MBまで。'
+                : usage === 'sender-icon'
+                  ? '送信者アイコンはPNG・1MBまで・縦横比1:1にしてください（LINE公式仕様）。'
+                  : 'JPEG / PNG / GIF / WebP・10MBまで。'}
+      </p>
     </div>
   )
 }

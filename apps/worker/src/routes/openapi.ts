@@ -83,7 +83,7 @@ const spec = {
         properties: {
           id: { type: 'string', format: 'uuid' },
           title: { type: 'string' },
-          messageType: { type: 'string', enum: ['text', 'image', 'flex', 'video', 'audio', 'imagemap', 'richvideo'] },
+          messageType: { type: 'string', enum: ['text', 'image', 'flex', 'video', 'audio', 'sticker', 'imagemap', 'richvideo'] },
           messageContent: { type: 'string' },
           targetType: { type: 'string', enum: ['all', 'tag', 'segment', 'multi-account-dedup'] },
           targetTagId: { type: 'string', nullable: true },

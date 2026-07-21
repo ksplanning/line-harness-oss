@@ -74,4 +74,21 @@ describe('PackInsertSelector U3: パック全体を追加 + 個別 append', () =
     fireEvent.click(addBtns[0])
     expect(onAppend).not.toHaveBeenCalled()
   })
+
+  it('画像・音声・スタンプ等をテキストと誤表示せず、実際の種別名で表示する', async () => {
+    getMock.mockResolvedValueOnce({
+      success: true,
+      data: {
+        items: [
+          { id: 'm1', message_type: 'image', message_content: '{"originalContentUrl":"https://x/o.png","previewImageUrl":"https://x/p.png"}' },
+          { id: 'm2', message_type: 'audio', message_content: '{"originalContentUrl":"https://x/a.m4a","duration":1000}' },
+          { id: 'm3', message_type: 'sticker', message_content: '{"packageId":"446","stickerId":"1988"}' },
+        ],
+      },
+    })
+    await renderAndSelectPack(5)
+    expect(screen.getByText('画像')).toBeTruthy()
+    expect(screen.getByText('音声')).toBeTruthy()
+    expect(screen.getByText('スタンプ')).toBeTruthy()
+  })
 })

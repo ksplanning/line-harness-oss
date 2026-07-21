@@ -18,6 +18,7 @@ import {
   getTemplatePackWithItems,
   updateTemplatePack,
   deleteTemplatePack,
+  type PackItemInput,
 } from './template-packs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -81,6 +82,35 @@ describe('template-packs helper', () => {
     expect(got!.items.map((i) => i.order_index)).toEqual([0, 1, 2]);
     expect(got!.items.map((i) => i.message_type)).toEqual(['text', 'flex', 'text']);
     expect(got!.items[0].message_content).toBe('こんにちは');
+  });
+
+  test('D-3 mixed media pack round-trips in order without changing legacy text/Flex bytes', async () => {
+    const legacyText = '日本語🙂\r\ntrailing spaces  ';
+    const legacyFlex = '{\n  "type": "bubble",\n  "body": { "type": "box", "layout": "vertical", "contents": [] }\n}';
+    const items: PackItemInput[] = [
+      { messageType: 'text', messageContent: legacyText },
+      { messageType: 'flex', messageContent: legacyFlex },
+      { messageType: 'image', messageContent: '{"originalContentUrl":"https://x/o.png","previewImageUrl":"https://x/p.png"}' },
+      { messageType: 'video', messageContent: '{"originalContentUrl":"https://x/v.mp4","previewImageUrl":"https://x/p.png"}' },
+      { messageType: 'audio', messageContent: '{"originalContentUrl":"https://x/a.m4a","duration":60000}' },
+      { messageType: 'sticker', messageContent: '{"packageId":"11537","stickerId":"52002734"}' },
+      { messageType: 'imagemap', messageContent: '{"baseUrl":"https://x/im","altText":"map","baseSize":{"width":1040,"height":1040},"actions":[]}' },
+      { messageType: 'richvideo', messageContent: '{"originalContentUrl":"https://x/v.mp4","previewImageUrl":"https://x/p.png","altText":"rich video"}' },
+    ];
+
+    const pack = await createTemplatePack(db, { accountId: 'acc-1', name: 'mixed', items });
+    const got = await getTemplatePackWithItems(db, pack.id);
+
+    expect(got!.items.map((item) => item.order_index)).toEqual(items.map((_, index) => index));
+    expect(got!.items.map((item) => item.message_type)).toEqual(items.map((item) => item.messageType));
+    expect(got!.items.map((item) => item.message_content)).toEqual(items.map((item) => item.messageContent));
+    for (let index = 0; index < items.length; index += 1) {
+      expect(Buffer.from(got!.items[index].message_content)).toEqual(Buffer.from(items[index].messageContent));
+    }
+    expect(got!.items.slice(0, 2).map(({ message_type, message_content }) => ({ message_type, message_content }))).toEqual([
+      { message_type: 'text', message_content: legacyText },
+      { message_type: 'flex', message_content: legacyFlex },
+    ]);
   });
 
   test('update replaces items in array order (reorder → order_index re-numbered)', async () => {

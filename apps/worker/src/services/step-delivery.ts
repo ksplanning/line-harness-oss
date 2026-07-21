@@ -1,5 +1,3 @@
-import { extractFlexAltText } from '../utils/flex-alt-text.js';
-import { MessageBuildError, unwrapFlexMessageObject } from '../utils/message-build.js';
 import {
   getFriendScenariosDueForDelivery,
   getScenarioSteps,
@@ -19,6 +17,7 @@ import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
 import { getEffectiveFriendMetadataValue } from './friend-metadata-condition.js';
 import { renderMessageContent } from './render-message.js';
+import { buildOutboundMessage } from './outbound-message.js';
 
 // resolveMetadata must keep the legacy metadata object enumerable shape intact.
 // The active-definition projection travels out-of-band so {{metadata.KEY}} keeps
@@ -639,43 +638,8 @@ export function messageToLogPayload(message: Message): { messageType: string; co
 }
 
 export function buildMessage(messageType: string, messageContent: string, altText?: string): Message {
-  if (messageType === 'text') {
-    return { type: 'text', text: messageContent };
-  }
-
-  if (messageType === 'image') {
-    // messageContent is expected to be JSON: { originalContentUrl, previewImageUrl }
-    try {
-      const parsed = JSON.parse(messageContent) as {
-        originalContentUrl: string;
-        previewImageUrl: string;
-      };
-      return {
-        type: 'image',
-        originalContentUrl: parsed.originalContentUrl,
-        previewImageUrl: parsed.previewImageUrl,
-      };
-    } catch (err) {
-      // fail-closed: 生 JSON を text 送信せず送信スキップ (findings HIGH/flex-image, W5 T-E2)
-      throw new MessageBuildError('image', err);
-    }
-  }
-
-  if (messageType === 'flex') {
-    try {
-      const parsed = JSON.parse(messageContent);
-      // top-level が message object ({type:'flex',altText,contents}) の丸ごと貼付を自動アンラップ (W5 T-E3)
-      const { contents, altText: unwrappedAlt } = unwrapFlexMessageObject(parsed);
-      // Remove empty text nodes (from {{#if_ref}} conditional blocks)
-      cleanEmptyNodes(contents);
-      // Extract first text element for altText (shown in notifications)
-      return { type: 'flex', altText: altText || unwrappedAlt || extractFlexAltText(contents), contents };
-    } catch (err) {
-      if (err instanceof MessageBuildError) throw err;
-      throw new MessageBuildError('flex', err);
-    }
-  }
-
-  // Fallback
-  return { type: 'text', text: messageContent };
+  return buildOutboundMessage(messageType, messageContent, {
+    altText,
+    transformFlexContents: cleanEmptyNodes,
+  });
 }

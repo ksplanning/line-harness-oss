@@ -1,7 +1,13 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { api, type TemplatePackListItem, type TemplatePackItem, type TemplatePackItemInput } from '@/lib/api'
+import {
+  api,
+  type TemplatePackListItem,
+  type TemplatePackItem,
+  type TemplatePackItemInput,
+  type TemplatePackMessageType,
+} from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import FlexBuilderModal from '@/components/flex-builder/flex-builder-modal'
@@ -10,6 +16,23 @@ import { validateFlex } from '@/lib/flex-builder/validate'
 import type { BuilderModel } from '@/lib/flex-builder/types'
 import TestSendDialog from '@/components/shared/test-send-dialog'
 import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
+import MessageBlockEditor from '@/components/broadcasts/message-block-editor'
+import { messageTypeLabels } from '@/lib/broadcast-labels'
+
+const PACK_MESSAGE_TYPES: readonly TemplatePackMessageType[] = [
+  'text',
+  'flex',
+  'image',
+  'video',
+  'audio',
+  'sticker',
+  'imagemap',
+  'richvideo',
+]
+
+function shortTypeLabel(type: TemplatePackMessageType): string {
+  return type === 'flex' ? 'Flex' : messageTypeLabels[type]
+}
 
 function formatDate(iso: string): string {
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/)
@@ -183,7 +206,13 @@ function PackEditor({ packId, accountId, onBack }: { packId: string | 'new'; acc
 
   const newKey = () => `d-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 
-  const addText = () => setDrafts((d) => [...d, { key: newKey(), messageType: 'text', messageContent: '' }])
+  const addItem = (messageType: TemplatePackMessageType) => {
+    if (messageType === 'flex') {
+      setFlexEditor({ mode: 'add' })
+      return
+    }
+    setDrafts((d) => [...d, { key: newKey(), messageType, messageContent: '' }])
+  }
   const removeAt = (key: string) => { setDrafts((d) => d.filter((x) => x.key !== key)); setPendingDeleteKey(null) }
   const move = (idx: number, dir: -1 | 1) => {
     setDrafts((d) => {
@@ -194,7 +223,9 @@ function PackEditor({ packId, accountId, onBack }: { packId: string | 'new'; acc
       return next
     })
   }
-  const setText = (key: string, content: string) => setDrafts((d) => d.map((x) => (x.key === key ? { ...x, messageContent: content } : x)))
+  const updateDraft = (key: string, patch: Partial<TemplatePackItemInput>) => {
+    setDrafts((d) => d.map((x) => (x.key === key ? { ...x, ...patch } : x)))
+  }
 
   const saveFlex = (json: string) => {
     if (flexEditor?.mode === 'edit') {
@@ -218,10 +249,10 @@ function PackEditor({ packId, accountId, onBack }: { packId: string | 'new'; acc
 
   const handleSave = async () => {
     if (!name.trim()) { setError('パック名を入力してください'); return }
-    // client 側 flex 検証 (server も同じ検証で二重)。
+    // 空本文と Flex は client でも検証する (server が全種別の正典検証を行う)。
     for (const [i, it] of drafts.entries()) {
-      if (it.messageType === 'text' && !it.messageContent.trim()) {
-        setError(`#${i + 1} のテキストを入力してください`); return
+      if (!it.messageContent.trim()) {
+        setError(`#${i + 1} の${shortTypeLabel(it.messageType)}を入力してください`); return
       }
       if (it.messageType === 'flex') {
         try {
@@ -279,7 +310,7 @@ function PackEditor({ packId, accountId, onBack }: { packId: string | 'new'; acc
                 <div key={it.key} className="px-4 py-3 flex items-start gap-3">
                   <span className="mt-1 shrink-0 text-xs font-mono text-gray-400">#{i + 1}</span>
                   <span className={`mt-1 shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${it.messageType === 'flex' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-700'}`}>
-                    {it.messageType === 'flex' ? 'Flex' : 'テキスト'}
+                    {shortTypeLabel(it.messageType)}
                   </span>
                   <div className="flex-1 min-w-0">
                     {it.messageType === 'text' ? (
@@ -287,12 +318,12 @@ function PackEditor({ packId, accountId, onBack }: { packId: string | 'new'; acc
                         mode="emoji-only"
                         ariaLabel="テンプレパックのテキスト内容"
                         value={it.messageContent}
-                        onChange={(messageContent) => setText(it.key, messageContent)}
+                        onChange={(messageContent) => updateDraft(it.key, { messageContent })}
                         rows={2}
                         placeholder="こんにちは！初めまして…"
                         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                       />
-                    ) : (
+                    ) : it.messageType === 'flex' ? (
                       <button
                         type="button"
                         onClick={() => setFlexEditor({ mode: 'edit', key: it.key })}
@@ -300,6 +331,15 @@ function PackEditor({ packId, accountId, onBack }: { packId: string | 'new'; acc
                       >
                         Flexメッセージを編集
                       </button>
+                    ) : (
+                      <MessageBlockEditor
+                        block={{ type: it.messageType, content: it.messageContent }}
+                        onChange={(block) => updateDraft(it.key, {
+                          messageType: block.type,
+                          messageContent: block.content,
+                        })}
+                        linkableEvents={[]}
+                      />
                     )}
                   </div>
                   <div className="shrink-0 flex items-center gap-1">
@@ -320,9 +360,21 @@ function PackEditor({ packId, accountId, onBack }: { packId: string | 'new'; acc
             )}
           </div>
 
-          <div className="mt-3 flex gap-2">
-            <button type="button" onClick={addText} className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50">＋ テキスト吹き出しを追加</button>
-            <button type="button" onClick={() => setFlexEditor({ mode: 'add' })} className="px-3 py-1.5 text-xs font-medium text-purple-700 border border-purple-300 rounded-lg hover:bg-purple-50">＋ Flex吹き出しを追加</button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {PACK_MESSAGE_TYPES.map((messageType) => (
+              <button
+                key={messageType}
+                type="button"
+                onClick={() => addItem(messageType)}
+                className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                  messageType === 'flex'
+                    ? 'text-purple-700 border-purple-300 hover:bg-purple-50'
+                    : 'text-gray-600 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                ＋ {shortTypeLabel(messageType)}吹き出しを追加
+              </button>
+            ))}
           </div>
 
           <div className="mt-6 flex justify-end gap-2">

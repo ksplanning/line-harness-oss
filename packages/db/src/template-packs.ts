@@ -1,7 +1,7 @@
 import { jstNow } from './utils.js';
 
 /**
- * F2 G16 テンプレパック — 複数吹き出し (text/flex) の順序付きセット。account-scoped。
+ * F2 G16 テンプレパック — 対応メッセージの順序付きセット。account-scoped。
  * 挿入 UI は broadcast-form の state に載せるだけで送信経路には触れない (挿入と送信の分離)。
  */
 
@@ -13,11 +13,21 @@ export interface TemplatePack {
   updated_at: string;
 }
 
+export type TemplatePackMessageType =
+  | 'text'
+  | 'flex'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'sticker'
+  | 'imagemap'
+  | 'richvideo';
+
 export interface TemplatePackItem {
   id: string;
   pack_id: string;
   order_index: number;
-  message_type: 'text' | 'flex';
+  message_type: TemplatePackMessageType;
   message_content: string;
   created_at: string;
   updated_at: string;
@@ -75,7 +85,7 @@ export async function getTemplatePackWithItems(
 }
 
 export interface PackItemInput {
-  messageType: 'text' | 'flex';
+  messageType: TemplatePackMessageType;
   messageContent: string;
 }
 

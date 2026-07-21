@@ -197,6 +197,13 @@ export interface AudioMessage {
   sender?: MessageSender;
 }
 
+export interface StickerMessage {
+  type: 'sticker';
+  packageId: string;
+  stickerId: string;
+  sender?: MessageSender;
+}
+
 export interface TemplateMessage {
   type: 'template';
   altText: string;
@@ -228,6 +235,7 @@ export type Message =
   | FlexMessage
   | VideoMessage
   | AudioMessage
+  | StickerMessage
   | TemplateMessage
   | ImageMapMessageType;
 

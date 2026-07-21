@@ -11,6 +11,7 @@ export const messageTypeLabels: Record<BroadcastMessageType, string> = {
   flex: 'Flexメッセージ',
   video: '動画',
   audio: '音声',
+  sticker: 'スタンプ',
   imagemap: 'リッチメッセージ (画像分割)',
   richvideo: 'リッチビデオ',
 }
@@ -19,6 +20,7 @@ export const messageTypeLabels: Record<BroadcastMessageType, string> = {
 export const messageTypeHints: Partial<Record<BroadcastMessageType, string>> = {
   video: '動画ファイルのURLを送ります',
   audio: '音声ファイルのURLを送ります',
+  sticker: 'LINEスタンプのパッケージIDとスタンプIDを指定します',
   imagemap: '1枚の画像を複数の領域に分けてリンクを付けられます',
   richvideo: '動画の再生後にボタンを出せます',
 }
@@ -28,7 +30,7 @@ export const messageTypeHints: Partial<Record<BroadcastMessageType, string>> = {
  * 出さず、type に応じた簡潔なサマリを返す (過剰なプレイヤー埋め込みはしない)。対象外 type は null。
  */
 export function mediaPreviewSummary(type: BroadcastMessageType, content: string): string | null {
-  if (type !== 'video' && type !== 'audio' && type !== 'imagemap' && type !== 'richvideo') return null
+  if (type !== 'video' && type !== 'audio' && type !== 'sticker' && type !== 'imagemap' && type !== 'richvideo') return null
   let p: Record<string, unknown>
   try {
     p = JSON.parse(content || '{}') as Record<string, unknown>
@@ -39,6 +41,9 @@ export function mediaPreviewSummary(type: BroadcastMessageType, content: string)
   if (type === 'audio') {
     const ms = typeof p.duration === 'number' ? p.duration : 0
     return `音声: ${(p.originalContentUrl as string) || '(URL未設定)'}（${Math.round(ms / 1000)}秒）`
+  }
+  if (type === 'sticker') {
+    return `スタンプ: パッケージ ${String(p.packageId ?? '(未設定)')} / ID ${String(p.stickerId ?? '(未設定)')}`
   }
   if (type === 'imagemap') {
     const acts = Array.isArray(p.actions) ? p.actions.length : 0

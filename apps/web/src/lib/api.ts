@@ -36,6 +36,8 @@ import type {
   TrafficPool,
   PoolAccount,
   FriendFieldDefinition,
+  ImagemapWidth,
+  BroadcastMessageType,
 } from '@line-crm/shared'
 import { downloadBlob } from './download'
 
@@ -50,8 +52,11 @@ export interface MessageBlock {
   altText?: string | null;
 }
 
+/** 共通送信レンダラが扱える、テンプレパック／自動返信のメッセージ種別。 */
+export type TemplatePackMessageType = BroadcastMessageType
+
 export interface AutoReplyResponseMessage {
-  messageType: 'text' | 'flex' | 'image'
+  messageType: TemplatePackMessageType
   messageContent: string
 }
 
@@ -176,6 +181,54 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
+}
+
+export type UploadedMedia = {
+  id: string
+  key: string
+  url: string
+  mimeType: string
+  size: number
+  kind?: 'image' | 'video' | 'audio' | 'imagemap'
+  baseUrl?: string
+  width?: ImagemapWidth
+}
+
+async function uploadMediaFile(
+  file: Blob,
+  kind: 'image' | 'video' | 'audio' | 'imagemap',
+  options?: { width?: ImagemapWidth; uploadId?: string },
+): Promise<ApiResponse<UploadedMedia>> {
+  const query = new URLSearchParams()
+  if (kind !== 'image') query.set('kind', kind)
+  if (options?.width !== undefined) query.set('width', String(options.width))
+  if (options?.uploadId) query.set('id', options.uploadId)
+  const suffix = query.size > 0 ? `?${query.toString()}` : ''
+  const name = typeof (file as Blob & { name?: unknown }).name === 'string'
+    ? (file as Blob & { name: string }).name.toLowerCase()
+    : ''
+  const inferredType = kind === 'video' && name.endsWith('.mp4')
+    ? 'video/mp4'
+    : kind === 'audio' && name.endsWith('.mp3')
+      ? 'audio/mpeg'
+      : kind === 'audio' && (name.endsWith('.m4a') || name.endsWith('.mp4'))
+        ? 'audio/mp4'
+        : (kind === 'image' || kind === 'imagemap') && (name.endsWith('.jpg') || name.endsWith('.jpeg'))
+          ? 'image/jpeg'
+          : (kind === 'image' || kind === 'imagemap') && name.endsWith('.png')
+            ? 'image/png'
+            : 'application/octet-stream'
+
+  // Passing the Blob/File itself lets the browser stream it. Converting a 100MB
+  // video/audio file to ArrayBuffer here would needlessly duplicate it in JS
+  // memory before the Worker can stream it onward to R2.
+  return fetchApi<ApiResponse<UploadedMedia>>(`/api/images${suffix}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || inferredType,
+    },
+    body: file,
+  })
 }
 
 /**
@@ -1959,14 +2012,12 @@ export const api = {
      * 既存 /api/images エンドポイントを叩いて画像をアップロードする。
      * 10MB 超 / image/* 以外は 400 で返る。
      */
-    image: async (file: File): Promise<ApiResponse<{ id: string; key: string; url: string; mimeType: string; size: number }>> => {
-      const buf = await file.arrayBuffer()
-      return fetchApi<ApiResponse<{ id: string; key: string; url: string; mimeType: string; size: number }>>('/api/images', {
-        method: 'POST',
-        headers: { 'Content-Type': file.type || 'application/octet-stream' },
-        body: buf,
-      })
-    },
+    image: (file: Blob) => uploadMediaFile(file, 'image'),
+    video: (file: Blob) => uploadMediaFile(file, 'video'),
+    audio: (file: Blob) => uploadMediaFile(file, 'audio'),
+    /** Upload one of LINE's five imagemap widths under a caller-shared UUID. */
+    imagemap: (file: Blob, width: ImagemapWidth, uploadId: string) =>
+      uploadMediaFile(file, 'imagemap', { width, uploadId }),
   },
 
   // メディアライブラリ (G15) — worker `GET /api/images` (R2 .list({prefix:'media/'})) と
@@ -2194,7 +2245,7 @@ export interface CampaignDetail extends CampaignSummary {
 }
 
 export interface TemplatePackItemInput {
-  messageType: 'text' | 'flex'
+  messageType: TemplatePackMessageType
   messageContent: string
 }
 
@@ -2211,7 +2262,7 @@ export interface TemplatePackItem {
   id: string
   pack_id: string
   order_index: number
-  message_type: 'text' | 'flex'
+  message_type: TemplatePackMessageType
   message_content: string
   created_at: string
   updated_at: string

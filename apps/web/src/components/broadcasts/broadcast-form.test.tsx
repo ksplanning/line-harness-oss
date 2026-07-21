@@ -3,7 +3,7 @@
  * T-C8 (component-level) — broadcast-form の種別切替 UI・種別別入力・送信者 dropdown・client 検証・
  * 保存 payload を実レンダリングで assert する (純関数テストだけでは表示層バグを検知できない教訓)。
  *
- *  - 全 7 種別ラベルが選択肢として出る (動画/音声/リッチメッセージ(画像分割)/リッチビデオ含む)
+ *  - 全 8 種別ラベルが選択肢として出る (動画/音声/スタンプ/リッチメッセージ/リッチビデオ含む)
  *  - 種別を切替えると種別別の入力欄が表示切替する (text textarea → video URL 入力)
  *  - 送信者は account プリセットからの dropdown のみ (任意の名前/URL 自由入力欄が無い)・既定は「既定の送信者」
  *  - client 検証 (非 https URL) で保存がブロックされ create が呼ばれない
@@ -48,9 +48,9 @@ function renderForm() {
 }
 
 describe('T-C8 broadcast-form: 種別選択 + 送信者 dropdown', () => {
-  it('全 7 種別ラベルが選べる (新 type 含む)', () => {
+  it('全 8 種別ラベルが選べる (新 type 含む)', () => {
     renderForm()
-    for (const label of ['テキスト', '画像', 'Flexメッセージ', '動画', '音声', 'リッチメッセージ (画像分割)', 'リッチビデオ']) {
+    for (const label of ['テキスト', '画像', 'Flexメッセージ', '動画', '音声', 'スタンプ', 'リッチメッセージ (画像分割)', 'リッチビデオ']) {
       expect(screen.getByRole('button', { name: label })).toBeTruthy()
     }
   })
