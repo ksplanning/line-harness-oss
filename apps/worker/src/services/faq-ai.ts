@@ -348,9 +348,6 @@ export async function runFaqAiAnswer(
   // grounding は全根拠 (faq Q/A + 全 chunk content) 横断で「ハルシネーションの連絡先」のみを弾く (§5-3・
   // Codex blocking#4)。埋込済 URL/電話は evidenceText に含まれ通す = その経路の安全は dark-ship + cosine floor
   // + SYSTEM_PROMPT 硬化が担う (grounding の限界は正直に据える・過大約束しない)。
-  if (!result.usage) {
-    return { kind: 'escalate', reason: 'usage_missing' };
-  }
   const structured = parseFaqAiResponse(result.text);
   if (!structured.answerable) {
     // 下書きモードでは owner が資料を補えるよう、モデルの非回答案も明示ラベル付きで残す。
@@ -366,6 +363,9 @@ export async function runFaqAiAnswer(
       });
     }
     return { kind: 'escalate', reason: 'no_answer' };
+  }
+  if (!result.usage) {
+    return { kind: 'escalate', reason: 'usage_missing' };
   }
   const evidenceText = [
     ...faqEvidenceList.map((ev) => `${ev.question}\n${ev.answer}`),

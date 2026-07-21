@@ -236,6 +236,35 @@ describe('runFaqAiAnswer — answer_mode (T-A4)', () => {
       answerable: 0,
     });
   });
+
+  test('draft + answerable=false は usage 欠損でも資料不足草案を失わない', async () => {
+    const noUsage: LlmProvider = {
+      async generate() {
+        return {
+          text: JSON.stringify({
+            answerable: false,
+            answer: 'この資料だけでは申し込み開始日を確認できません',
+          }),
+        };
+      },
+      async embed() { return []; },
+    };
+
+    const out = await runFaqAiAnswer(
+      db,
+      detail(0.5),
+      { ...INPUT, answerMode: 'draft' },
+      rt(noUsage),
+    );
+
+    expect(out).toEqual({ kind: 'escalate', reason: 'no_answer' });
+    expect(raw.prepare(
+      `SELECT draft_answer, answerable FROM ai_faq_drafts WHERE friend_id='f1'`,
+    ).get()).toEqual({
+      draft_answer: 'この資料だけでは申し込み開始日を確認できません',
+      answerable: 0,
+    });
+  });
 });
 
 describe('runFaqAiAnswer — budget 配線 (T-A6)', () => {
