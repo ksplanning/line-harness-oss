@@ -135,3 +135,35 @@
 - Worker / browser log にtoken、氏名、メールアドレスなどのPIIが残っていないことを確認する。
 - 本番3フォームとFormalooに変更がないことを最後に再確認する。
 - 結果: 一部PASS（**プラットフォーム側の既知gapを新規発見**）。unpublish→`/f/:id` が HTTP 404 になることを確認（公開URLでの回答不可）。**削除は不可能と判明**: `internal-forms-admin.ts` の DELETE ルートは `renderBackend=internal` のフォームを一律 `rejectInternalFormalooMutation`（「自前配信では Formaloo 専用操作を利用できません」409）で拒否し、かつ一度 internal へ切替後は render-backend を formaloo へ戻すことも拒否される（「自前配信で編集した内容を失わないため、Formaloo 配信には戻せません」）ため、**internal フォームを API 経由で完全削除する手段が現状存在しない**。scratch form `fa_85a6254d-4642-48e4-a137-bc7b4ef262a9`（`CLOSER-W3-VERIFY-DELETE-ME`）は unpublish 済み・PIIなし・本番3フォーム不接触のまま admin 一覧に残置（BACKLOG記載）。この gap は本 closer が作ったものではなく、起動時点で同種の "新しいフォーム internal draft" 残骸 3件が既に存在しており（過去 closer が同じ壁にぶつかった痕跡と推定）、恒久解決には internal 専用 DELETE エンドポイント新設が必要。本番3フォーム（GMOxoMtK/Z5IEH85R/XqACeA2v）とFormalooは不接触・件数不変を確認。
+
+## 再検証 (2026-07-21 / w3-logic-runtime-fix closer / 🎉 根治確認 PASS)
+
+- 実施者: closer (w3-logic-runtime-fix)
+- deploy: KS worker `ff7da6d2-3724-443d-9092-c38ea9fe3d6d` / KS admin `a17593a3` / piecemaker worker `ec9d1a71-55c7-44a3-82dc-724377403320` / piecemaker admin `d90974fd`（main HEAD `be2f556a6d3110116cb5aedc8eb9f49097310ebc`）
+- 使い捨てフォーム: 既存 `fa_85a6254d-4642-48e4-a137-bc7b4ef262a9`（HC-18 の internal DELETE 不能 gap により残置していたものを再利用・新規orphan増やさず）
+
+### HC-08 再検証 — PASS
+headless Chrome（Playwright connectOverCDP 9222）で公開ページ `/f/fa_85a6254d-...` を実オープンし、choice A/B/A を連続実クリック:
+- INITIAL: `{onlyA_hidden:true, city_hidden:false}`
+- AFTER CLICK A: `{onlyA_hidden:false}` （Aコース専用の質問が実出現）
+- AFTER CLICK B: `{onlyA_hidden:true}` （再度非表示）
+- AFTER CLICK A AGAIN: `{onlyA_hidden:false}` （往復トグル可）
+- console pageerror/console.error 捕捉数 = **0**（`__name is not defined` 再発なし）
+
+### 追加検証 — チャネル条件ルール (`__channel__`) — PASS
+一時的に `r_channel_line_hide_city`（`__channel__ == 'line'` → `f_city` hide）を追加:
+- 直リンク `/f/...`（channel=web）: `data-channel="web"` / `f_city` 表示
+- `/fo/...?lu=U5217ceb4debd9849959446ce8f902a27`（あやこ実LINE userId・LIFF OAuth 不要の `lu` パラメータ経路）→ 署名済 `fr_id` 付き `/f/...?fr_id=...` へ302遷移 → `data-channel="line"` / `f_city` **非表示** を実測
+- console error = 0
+
+### HC-10 再検証 — PASS（プレビュー=公開 一致確認）
+Piecemaker admin にオーナーID/PASSで実ログイン → 対象フォームの詳細画面 → プレビュータブを実クリック:
+- 初期（既定web相当）: 全項目表示（f_onlyA除く）
+- choice A 実クリック → 「Aコース専用の質問」が実出現（公開ページと同一挙動）
+- 「LINE経由」チャネル切替ボタン実クリック → 「市区町村」が実消滅（公開ページの `/fo?lu=` 実測と同一挙動）
+→ **公開ページとプレビューが完全に一致することを実クリックで確認**（W3 導入時に生じていた乖離は解消）
+
+### 撤収
+- チャネル条件ルールは検証用に一時追加したものを撤去し、元の単一ルール（`r_route_a`）へ復元
+- unpublish（`builderStatus: draft` 確認・`publicUrl: null`）→ `/f/fa_85a6254d-...` 直GET **404** 確認
+- 本番3フォーム（GMOxoMtK/Z5IEH85R/XqACeA2v）不接触。Formaloo API不接触（internal render backendのみ操作）
