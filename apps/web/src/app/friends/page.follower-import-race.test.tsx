@@ -27,16 +27,20 @@ vi.mock('@/lib/api', () => ({
 vi.mock('@/components/layout/header', () => ({ default: () => <h1>友だちリスト</h1> }))
 vi.mock('@/components/friends/friend-list-table', () => ({
   default: ({ friends }: { friends: Array<{ displayName: string }> }) => (
-    <div>{friends.map((friend) => <p key={friend.displayName}>{friend.displayName}</p>)}</div>
+    <div data-testid="friend-list">{friends.map((friend) => <p key={friend.displayName}>{friend.displayName}</p>)}</div>
   ),
 }))
 vi.mock('@/components/friends/saved-search-panel', () => ({ default: () => null }))
 vi.mock('@/components/shared/export-csv-button', () => ({ default: () => null }))
 vi.mock('@/components/cc-prompt-button', () => ({ default: () => null }))
-vi.mock('@/components/friends/friend-field-definitions-panel', () => ({ default: () => null }))
+vi.mock('@/components/friends/friend-field-definitions-panel', () => ({
+  default: () => <div data-testid="friend-field-definitions-panel" />,
+}))
 vi.mock('@/components/friends/followers-import-panel', () => ({
   default: ({ onCompleted }: { onCompleted: () => void | Promise<void> }) => (
-    <button type="button" onClick={() => { void onCompleted() }}>import-complete</button>
+    <div data-testid="followers-import-panel">
+      <button type="button" onClick={() => { void onCompleted() }}>import-complete</button>
+    </div>
   ),
 }))
 
@@ -70,6 +74,7 @@ describe('FriendsPage follower-import completion reload', () => {
     await act(async () => { m.pending[0].resolve(response('A initial')) })
     expect(await screen.findByText('A initial')).toBeTruthy()
 
+    fireEvent.click(screen.getByText('取り込み設定'))
     fireEvent.click(screen.getByRole('button', { name: 'import-complete' }))
     await waitFor(() => expect(m.pending).toHaveLength(2))
 
@@ -83,5 +88,24 @@ describe('FriendsPage follower-import completion reload', () => {
     await act(async () => { m.pending[1].resolve(response('A late')) })
     expect(screen.queryByText('A late')).toBeNull()
     expect(screen.getByText('B current')).toBeTruthy()
+  })
+})
+
+describe('FriendsPage first-view layout', () => {
+  test('友だち一覧を先に見せ、取り込みとカスタムフィールド設定は初期状態で閉じる', async () => {
+    render(<FriendsPage />)
+    await waitFor(() => expect(m.pending).toHaveLength(1))
+    await act(async () => { m.pending[0].resolve(response('一覧の先頭')) })
+
+    const friendList = await screen.findByTestId('friend-list')
+    const importPanel = screen.getByTestId('followers-import-panel')
+    const fieldPanel = screen.getByTestId('friend-field-definitions-panel')
+    const importDetails = screen.getByText('取り込み設定').closest('details') as HTMLDetailsElement | null
+    const fieldDetails = screen.getByText('カスタムフィールド設定').closest('details') as HTMLDetailsElement | null
+
+    expect(importDetails?.open).toBe(false)
+    expect(fieldDetails?.open).toBe(false)
+    expect(friendList.compareDocumentPosition(importPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(friendList.compareDocumentPosition(fieldPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 })

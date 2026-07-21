@@ -173,16 +173,6 @@ export default function FriendsPage() {
         description="友だちの検索や、詳細情報の確認ができます。"
       />
 
-      <FollowersImportPanel
-        accountId={selectedAccountId || null}
-        onCompleted={loadFriends}
-      />
-
-      <FriendFieldDefinitionsPanel
-        definitions={fieldDefinitions}
-        onRefresh={loadFieldDefinitions}
-      />
-
       {/* Search + sort bar — L-step style */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
         <form onSubmit={handleSearchSubmit} className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -314,6 +304,45 @@ export default function FriendsPage() {
           </div>
         </div>
       )}
+
+      <div className="mt-6" aria-label="友だち管理の補助設定">
+        <details className="group mb-3">
+          <summary className="flex min-h-[52px] cursor-pointer list-none items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-800 shadow-sm transition-colors hover:bg-gray-50 [&::-webkit-details-marker]:hidden">
+            <span>
+              取り込み設定
+              <span className="mt-0.5 block text-xs font-normal text-gray-500">以前からいる友だちを追加する時だけ開きます</span>
+            </span>
+            <svg aria-hidden="true" className="h-5 w-5 shrink-0 text-gray-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </summary>
+          <div className="mt-2">
+            <FollowersImportPanel
+              accountId={selectedAccountId || null}
+              onCompleted={loadFriends}
+            />
+          </div>
+        </details>
+
+        <details id="friend-custom-fields" className="group scroll-mt-20">
+          <summary className="flex min-h-[52px] cursor-pointer list-none items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-800 shadow-sm transition-colors hover:bg-gray-50 [&::-webkit-details-marker]:hidden">
+            <span>
+              カスタムフィールド設定
+              <span className="mt-0.5 block text-xs font-normal text-gray-500">友だち全員に共通する項目を管理します</span>
+            </span>
+            <svg aria-hidden="true" className="h-5 w-5 shrink-0 text-gray-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </summary>
+          <div className="mt-2">
+            <FriendFieldDefinitionsPanel
+              id="friend-custom-fields-panel"
+              definitions={fieldDefinitions}
+              onRefresh={loadFieldDefinitions}
+            />
+          </div>
+        </details>
+      </div>
 
       <CcPromptButton prompts={ccPrompts} />
     </div>

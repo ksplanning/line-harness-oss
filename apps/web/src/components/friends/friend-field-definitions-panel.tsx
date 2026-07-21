@@ -5,6 +5,7 @@ import type { FriendFieldDefinition } from '@line-crm/shared'
 import { api } from '@/lib/api'
 
 interface Props {
+  id?: string
   definitions: readonly FriendFieldDefinition[]
   onRefresh: () => void | Promise<void>
 }
@@ -118,7 +119,7 @@ function DefinitionRow({
   )
 }
 
-export default function FriendFieldDefinitionsPanel({ definitions, onRefresh }: Props) {
+export default function FriendFieldDefinitionsPanel({ id = 'friend-custom-fields', definitions, onRefresh }: Props) {
   const [name, setName] = useState('')
   const [defaultValue, setDefaultValue] = useState('')
   const [displayOrder, setDisplayOrder] = useState('0')
@@ -148,7 +149,7 @@ export default function FriendFieldDefinitionsPanel({ definitions, onRefresh }: 
   }
 
   return (
-    <section id="friend-custom-fields" className="mb-4 scroll-mt-20 rounded-lg border border-gray-200 bg-white p-4">
+    <section id={id} className="mb-4 scroll-mt-20 rounded-lg border border-gray-200 bg-white p-4">
       <h2 className="text-sm font-semibold text-gray-800">カスタムフィールド（全員共通の項目）</h2>
       <p className="mt-1 text-xs text-gray-500">
         ここで一回作れば、すべての友だちの個人情報欄に同じカスタムフィールドが出ます。全員分の入力は不要で、未入力は既定値を表示します。

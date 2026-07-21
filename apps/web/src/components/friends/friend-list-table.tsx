@@ -180,7 +180,7 @@ export default function FriendListTable({
                         href="/friends#friend-custom-fields"
                         className="mt-2 inline-flex min-h-[44px] items-center text-xs font-medium text-green-600 underline underline-offset-2"
                       >
-                        全員共通のカスタムフィールドはこちら → 友だちリスト上部で設定
+                        全員共通のカスタムフィールドはこちら → 友だちリストの設定欄へ
                       </Link>
                     </div>
                   </div>

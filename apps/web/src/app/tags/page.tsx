@@ -106,7 +106,7 @@ export default function TagsPage() {
           href="/friends#friend-custom-fields"
           className="inline-flex min-h-[44px] items-center font-medium text-green-600 underline underline-offset-2"
         >
-          全員共通のカスタムフィールドはこちら → 友だちリスト上部で設定
+          全員共通のカスタムフィールドはこちら → 友だちリストの設定欄へ
         </Link>
       </p>
 
