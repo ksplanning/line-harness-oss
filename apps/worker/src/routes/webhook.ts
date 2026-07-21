@@ -619,6 +619,11 @@ async function handleEvent(
       .bind(logId, friend.id, incomingText, incomingSource, now)
       .run();
 
+    if (responseScheduleLoadFailed) {
+      await upsertChatOnMessage(db, friend.id);
+      return;
+    }
+
     // Cross-account trigger: send message from another account via UUID.
     // 営業時間内 (businessHoursSuppressed) は自動送信せず未読へ落とす (下の gate 経由)。
     if (

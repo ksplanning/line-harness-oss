@@ -632,17 +632,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       expect.any(String),
     );
     expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
-    expect(fireEvent).toHaveBeenCalledWith(
-      db,
-      'message_received',
-      {
-        friendId: 'friend-1',
-        eventData: { text: '営業時間', matched: false },
-        replyToken: 'reply-token',
-      },
-      'env-default-token',
-      null,
-    );
+    expect(fireEvent).not.toHaveBeenCalled();
   });
 
   test('[b] an account-mismatched rule stays outside the candidate query and the message stays unread', async () => {
@@ -1105,7 +1095,11 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
       created_at: '2026-07-02T00:00:00+09:00',
       updated_at: '2026-07-02T00:00:00+09:00',
     });
-    vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(scheduleOverride as never);
+    if (scheduleOverride instanceof Error) {
+      vi.mocked(getEffectiveResponseSchedule).mockRejectedValueOnce(scheduleOverride);
+    } else {
+      vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(scheduleOverride as never);
+    }
     vi.mocked(isWithinBusinessHours).mockReturnValue(within);
 
     const executed: Array<{ sql: string; binds: unknown[] }> = [];
@@ -1164,6 +1158,14 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
     expect(lineClientMocks.pushMessage).not.toHaveBeenCalled(); // 別アカウントへ送らない
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled(); // 確認返信もしない
     expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1'); // オペレーター対応 (未読)
+  });
+
+  test('a response-schedule lookup error suppresses cross-account delivery and leaves the chat unread', async () => {
+    const { db } = await postExperience(new Error('schedule query failed'), false);
+    expect(lineClientMocks.pushMessage).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(fireEvent).not.toHaveBeenCalled();
   });
 
   test.each(['none', 'away_message'] as const)(
