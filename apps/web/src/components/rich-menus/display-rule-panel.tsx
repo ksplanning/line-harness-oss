@@ -101,6 +101,40 @@ function describePeriod(rule: RichMenuDisplayRule): string {
   return `期間: ${from} から ${until} まで（日本時間）`
 }
 
+function parseJobTimestamp(value: string): number {
+  if (!value) return Number.NaN
+  const hasZone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value)
+  return Date.parse(hasZone ? value : `${value}+09:00`)
+}
+
+function describeEstimatedCompletion(job: RichMenuRuleReapplyJob, now = Date.now()): string {
+  if (job.status === 'completed') {
+    return 'LINEへの一括反映依頼は完了しました。実際の表示はLINE側で数秒後に切り替わります。'
+  }
+  if (job.processedCount <= 0) return '概算完了は、処理実績ができ次第表示します。'
+  if (job.processedCount >= job.totalCount) {
+    return '追加の再評価を処理中です。概算完了はまだ確定できません。'
+  }
+  const createdAt = parseJobTimestamp(job.createdAt)
+  const updatedAt = parseJobTimestamp(job.updatedAt)
+  const referenceTime = Math.max(now, updatedAt)
+  const elapsed = referenceTime - createdAt
+  const remaining = Math.max(0, job.totalCount - job.processedCount)
+  if (!Number.isFinite(createdAt) || !Number.isFinite(updatedAt) || elapsed <= 0) {
+    return '概算完了は、処理実績ができ次第表示します。'
+  }
+  const estimatedAt = referenceTime + (elapsed / job.processedCount) * remaining
+  const formatted = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(estimatedAt))
+  return `実測ペースによる概算完了: ${formatted}ごろ`
+}
+
 function initialForm(menus: MenuOption[], tags: TagOption[], fields: FieldOption[]): RuleForm {
   return {
     id: null,
@@ -509,7 +543,7 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold text-gray-900">既存の友だちへの反映</h3>
-            <p className="text-xs text-gray-600">LINE の負荷を抑えるため、5分ごとに最大20人ずつ反映します。</p>
+            <p className="text-xs text-gray-600">LINE公式の一括処理へ最大500人ずつ反映を依頼します。混雑時は待機して再試行し、完了後は代表の端末でも表示を確認してください。</p>
           </div>
           <button
             type="button"
@@ -525,10 +559,12 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
           <div className="mt-3 rounded bg-gray-50 p-3 text-sm text-gray-700">
             <div className="flex flex-wrap gap-x-4 gap-y-1">
               <strong>{job.processedCount} / {job.totalCount}人</strong>
-              <span>適用 {job.appliedCount}・変更なし {job.skippedCount}・失敗 {job.failedCount}</span>
+              <span>LINE受付 {job.appliedCount}・変更なし {job.skippedCount}・失敗 {job.failedCount}</span>
               <span>{job.status === 'running' ? '処理中' : '完了'}</span>
             </div>
-            {job.failedCount > 0 && <p className="mt-1 text-xs text-amber-700">失敗した友だちは再試行キューに残り、次回以降に再評価されます。</p>}
+            <p className="mt-1 text-xs">一括処理の残り {Math.max(0, job.totalCount - job.processedCount).toLocaleString('ja-JP')}人</p>
+            <p className="mt-1 text-xs">{describeEstimatedCompletion(job)}</p>
+            {job.failedCount > 0 && <p className="mt-1 text-xs text-amber-700">失敗には、次回に自動再試行する一時エラーと、個別再試行後に確定したエラーが含まれます。</p>}
           </div>
         )}
       </div>

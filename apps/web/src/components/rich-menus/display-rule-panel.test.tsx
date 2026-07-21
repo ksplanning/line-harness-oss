@@ -143,20 +143,60 @@ describe('DisplayRulePanel', () => {
   })
 
   test('shows bounded reapply progress and prevents repeated starts while running', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-07-21T10:02:00+09:00'))
     mocks.latestJob.mockResolvedValue({
       success: true,
       data: {
         id: 'job-1', accountId: 'acc-1', status: 'running', totalCount: 30, processedCount: 12,
         appliedCount: 8, skippedCount: 3, failedCount: 1, lastFriendId: 'f12',
-        createdAt: '', updatedAt: '', completedAt: null,
+        createdAt: '2026-07-21T10:00:00.000', updatedAt: '2026-07-21T10:02:00.000', completedAt: null,
       },
     })
     render(<DisplayRulePanel accountId="acc-1" menus={[]} />)
 
     expect(await screen.findByText('12 / 30人')).toBeTruthy()
-    expect(screen.getByText('適用 8・変更なし 3・失敗 1')).toBeTruthy()
-    expect(screen.getByText(/5分ごとに最大20人ずつ/)).toBeTruthy()
+    expect(screen.getByText('LINE受付 8・変更なし 3・失敗 1')).toBeTruthy()
+    expect(screen.getByText('一括処理の残り 18人')).toBeTruthy()
+    expect(screen.getByText(/実測ペースによる概算完了.*7月21日.*10:05ごろ/)).toBeTruthy()
+    expect(screen.getByText(/個別再試行後に確定したエラー/)).toBeTruthy()
+    expect(screen.queryByText(/5分ごとに最大20人ずつ/)).toBeNull()
+    expect(screen.getByText(/最大500人ずつ/)).toBeTruthy()
     expect(screen.getByRole('button', { name: '既存の友だちへ再適用中' }).hasAttribute('disabled')).toBe(true)
+    now.mockRestore()
+  })
+
+  test('shows the remaining count but no invented ETA before any friend is processed', async () => {
+    mocks.latestJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 'job-1', accountId: 'acc-1', status: 'running', totalCount: 1450, processedCount: 0,
+        appliedCount: 0, skippedCount: 0, failedCount: 0, lastFriendId: null,
+        createdAt: '2026-07-21T10:00:00.000', updatedAt: '2026-07-21T10:00:00.000', completedAt: null,
+      },
+    })
+
+    render(<DisplayRulePanel accountId="acc-1" menus={[]} />)
+
+    expect(await screen.findByText('一括処理の残り 1,450人')).toBeTruthy()
+    expect(screen.getByText('概算完了は、処理実績ができ次第表示します。')).toBeTruthy()
+    expect(screen.queryByText(/ごろ/)).toBeNull()
+  })
+
+  test('does not invent an ETA while completed rows still have queued reevaluation work', async () => {
+    mocks.latestJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 'job-1', accountId: 'acc-1', status: 'running', totalCount: 30, processedCount: 30,
+        appliedCount: 29, skippedCount: 0, failedCount: 1, lastFriendId: 'f30',
+        createdAt: '2026-07-21T10:00:00.000', updatedAt: '2026-07-21T10:02:00.000', completedAt: null,
+      },
+    })
+
+    render(<DisplayRulePanel accountId="acc-1" menus={[]} />)
+
+    expect(await screen.findByText('一括処理の残り 0人')).toBeTruthy()
+    expect(screen.getByText('追加の再評価を処理中です。概算完了はまだ確定できません。')).toBeTruthy()
+    expect(screen.queryByText(/ごろ/)).toBeNull()
   })
 
   test('creates an optional period as explicit JST and sends null for an empty bound', async () => {
