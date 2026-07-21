@@ -43,7 +43,7 @@ export default function FriendListRow({ friend, onTagEditClick }: Props) {
           navigateToChat()
         }
       }}
-      className="grid grid-cols-[80px_220px_120px_1fr_280px] gap-3 px-4 py-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer items-start focus:outline-none focus:bg-gray-50"
+      className="grid grid-cols-[80px_minmax(0,1fr)] lg:grid-cols-[80px_220px_120px_1fr_280px] gap-3 px-4 py-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer items-start focus:outline-none focus:bg-gray-50"
     >
       {/* 対応マーク — chats.status 由来 (unread / in_progress / resolved). */}
       <div className="pt-1">
@@ -117,7 +117,7 @@ export default function FriendListRow({ friend, onTagEditClick }: Props) {
       </div>
 
       {/* ★つきタグ・友だち情報 */}
-      <div className="space-y-1">
+      <div className="col-span-2 lg:col-span-1 space-y-1">
         {friend.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {friend.tags.map((tag) => (

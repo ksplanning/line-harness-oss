@@ -92,7 +92,7 @@ export default function FriendListTable({
           horizontally on narrower viewports (e.g. desktop with sidebar open
           and the body forced to min-w-[900px]). */}
       <div className="overflow-x-auto">
-        <div className="min-w-[900px]">
+        <div className="lg:min-w-[900px]">
           <div className="hidden lg:grid grid-cols-[80px_220px_120px_1fr_280px] gap-3 px-4 py-2 bg-gray-50 border-b border-gray-200 text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
             <div>対応マーク</div>
             <div>名前</div>
