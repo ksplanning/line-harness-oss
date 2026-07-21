@@ -136,12 +136,23 @@ export default function TestSendDialog({
         if (!response.success) throw new Error(response.error || 'テスト送信に失敗しました')
         return response
       }))
-      let sent = 0
+      const sentUserIds: string[] = []
       let failed = 0
       let firstError: unknown = null
       outcomes.forEach((outcome, index) => {
         if (outcome.status === 'fulfilled') {
-          sent += outcome.value.sent ?? 0
+          const responseSentUserIds = outcome.value.sentUserIds
+          const responseSent = outcome.value.sent ?? responseSentUserIds?.length ?? 0
+          if (
+            !Array.isArray(responseSentUserIds)
+            || responseSentUserIds.some((userId) => typeof userId !== 'string')
+            || responseSentUserIds.length !== responseSent
+          ) {
+            firstError ??= new Error('送信結果に送信先userIdが含まれていません')
+            failed += Math.max(outcome.value.failed ?? 0, outcome.value.sent ?? 0, 1)
+            return
+          }
+          sentUserIds.push(...responseSentUserIds)
           failed += outcome.value.failed ?? 0
           return
         }
@@ -151,12 +162,17 @@ export default function TestSendDialog({
       if (failed > 0) {
         setResult({
           kind: 'error',
-          message: sent > 0
-            ? `${sent}件成功、${failed}件失敗しました。成功済みの送信は重複しません`
+          message: sentUserIds.length > 0
+            ? `一部失敗しました。送信済みuserId: ${sentUserIds.join(', ')}（失敗${failed}件）`
             : errorMessage(firstError, `${failed}件のテスト送信に失敗しました`),
         })
+      } else if (sentUserIds.length === 0) {
+        setResult({ kind: 'error', message: '送信結果に送信先userIdが含まれていません' })
       } else {
-        setResult({ kind: 'success', message: `${sent}件の送信先へテスト送信しました` })
+        setResult({
+          kind: 'success',
+          message: `テスト送信しました。送信先userId: ${sentUserIds.join(', ')}`,
+        })
       }
     } catch (error) {
       setResult({ kind: 'error', message: errorMessage(error, 'テスト送信に失敗しました') })

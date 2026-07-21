@@ -84,6 +84,7 @@ export interface TestSendResult {
   success: boolean
   sent?: number
   failed?: number
+  sentUserIds?: string[]
   deduplicated?: boolean
   error?: string
   capBlocked?: boolean
@@ -727,7 +728,7 @@ export const api = {
     fetchInsight: (id: string) =>
       fetchApi<ApiResponse<BroadcastInsight>>(`/api/broadcasts/${id}/fetch-insight`, { method: 'POST' }),
     testSend: (id: string) =>
-      fetchApi<{ success: boolean; sent?: number; failed?: number; error?: string }>(`/api/broadcasts/${id}/test-send`, { method: 'POST' }),
+      fetchApi<TestSendResult>(`/api/broadcasts/${id}/test-send`, { method: 'POST' }),
     getProgress: (id: string) =>
       fetchApi<{ success: boolean; data?: { status: string; totalCount: number; successCount: number; batchOffset: number } }>(`/api/broadcasts/${id}/progress`),
     previewCount: (id: string) =>

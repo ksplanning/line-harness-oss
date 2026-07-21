@@ -31,7 +31,12 @@ describe('TestSendDialog', () => {
       success: true,
       data: [{ id: `friend-${accountId}`, displayName: `担当者 ${accountId}`, pictureUrl: null }],
     }))
-    sendTest.mockResolvedValue({ success: true, sent: 1, failed: 0 })
+    sendTest.mockImplementation(async ({ accountId }: { accountId: string }) => ({
+      success: true,
+      sent: 1,
+      failed: 0,
+      sentUserIds: [`U-${accountId}`],
+    }))
 
     render(
       <TestSendDialog
@@ -61,7 +66,8 @@ describe('TestSendDialog', () => {
       expect(payload.idempotencyKey.length).toBeGreaterThanOrEqual(8)
     }
     expect(sendTest.mock.calls.map(([payload]) => payload.accountId)).toEqual(['acc-1', 'acc-2'])
-    await waitFor(() => expect(screen.getByText('2件の送信先へテスト送信しました')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('テスト送信しました。送信先userId: U-acc-1, U-acc-2')).toBeTruthy())
+    expect(screen.queryByText('2件の送信先へテスト送信しました')).toBeNull()
   })
 
   it('guides the operator to settings and does not send when any account has no recipient', async () => {
@@ -110,8 +116,8 @@ describe('TestSendDialog', () => {
     expect(sendTest).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: '送信中...' })).toHaveProperty('disabled', true)
 
-    finish({ success: true, sent: 1, failed: 0 })
-    await waitFor(() => expect(screen.getByText('1件の送信先へテスト送信しました')).toBeTruthy())
+    finish({ success: true, sent: 1, failed: 0, sentUserIds: ['U-reminder-test'] })
+    await waitFor(() => expect(screen.getByText('テスト送信しました。送信先userId: U-reminder-test')).toBeTruthy())
   })
 
   it('reports partial multi-account results and keeps per-account idempotency keys for retry', async () => {
@@ -121,7 +127,7 @@ describe('TestSendDialog', () => {
     }))
     sendTest.mockImplementation(async ({ accountId }: { accountId: string }) => {
       if (accountId === 'acc-2') throw new Error('回線失敗')
-      return { success: true, sent: 1, failed: 0 }
+      return { success: true, sent: 1, failed: 0, sentUserIds: ['U-acc-1'] }
     })
 
     render(
@@ -135,12 +141,34 @@ describe('TestSendDialog', () => {
     const sendButton = await screen.findByRole('button', { name: 'テスト送信する' })
 
     fireEvent.click(sendButton)
-    await waitFor(() => expect(screen.getByText('1件成功、1件失敗しました。成功済みの送信は重複しません')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('一部失敗しました。送信済みuserId: U-acc-1（失敗1件）')).toBeTruthy())
+    expect(screen.queryByText('1件成功、1件失敗しました。成功済みの送信は重複しません')).toBeNull()
     const firstKeys = sendTest.mock.calls.map(([payload]) => payload.idempotencyKey)
 
     fireEvent.click(sendButton)
     await waitFor(() => expect(sendTest).toHaveBeenCalledTimes(4))
     expect(sendTest.mock.calls.slice(2).map(([payload]) => payload.idempotencyKey)).toEqual(firstKeys)
+  })
+
+  it('refuses to present an anonymous success result without the actual userIds', async () => {
+    getTestRecipients.mockResolvedValue({
+      success: true,
+      data: [{ id: 'friend-1', displayName: 'テスター', pictureUrl: null }],
+    })
+    sendTest.mockResolvedValue({ success: true, sent: 1, failed: 0 })
+
+    render(
+      <TestSendDialog
+        accountIds={['acc-1']}
+        source="scenario"
+        messages={[{ type: 'text', content: '確認' }]}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'テスト送信' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'テスト送信する' }))
+
+    await waitFor(() => expect(screen.getByText('送信結果に送信先userIdが含まれていません')).toBeTruthy())
+    expect(screen.queryByText('1件の送信先へテスト送信しました')).toBeNull()
   })
 
   it('shows a retryable error when recipient settings cannot be loaded', async () => {
