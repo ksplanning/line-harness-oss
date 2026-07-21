@@ -351,6 +351,63 @@ describe('rich menu rule reapply jobs', () => {
     });
   });
 
+  test('bulk reapply preserves every managed page and assignment ID while unlinking only a foreign ID', async () => {
+    seedFriends(4);
+    seedAccountDefault();
+    raw.prepare(
+      `INSERT INTO rich_menu_groups
+       (id, account_id, name, chat_bar_text, size, default_page_id, is_default_for_all, status)
+       VALUES ('group-managed', 'acc-1', '個別切替先', 'メニュー', 'large', 'page-managed', 0, 'published')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+       VALUES ('page-managed', 'group-managed', 0, 'ホーム', 'alias-managed', 'menu-managed')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+       VALUES ('page-tab-2', 'group-default', 1, 'タブ2', 'alias-tab-2', 'menu-tab-2')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_areas
+       (id, page_id, bounds_x, bounds_y, bounds_width, bounds_height, action_type, action_data)
+       VALUES ('area-switch', 'page-default', 0, 0, 100, 100, 'richmenuswitch', '{"targetPageId":"page-tab-2"}')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id, metadata, is_following)
+       VALUES ('friend-ledger', 'U-ledger', 'acc-1', '{}', 0)`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_friend_assignments (friend_id, account_id, rule_id, rich_menu_id)
+       VALUES ('friend-ledger', 'acc-1', NULL, 'menu-assignment-managed')`,
+    ).run();
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({
+      initialMenus: {
+        U0: 'menu-legacy',
+        U1: 'menu-managed',
+        U2: 'menu-tab-2',
+        U3: 'menu-assignment-managed',
+      },
+    });
+
+    await processRichMenuRuleWork(db, {
+      limit: 4,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+
+    expect(line.verificationCalls).toEqual(['U0', 'U1', 'U2', 'U3']);
+    expect(line.bulkUnlinks).toEqual([['U0']]);
+    expect(line.individualUnlinks).toEqual([]);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'completed',
+      processedCount: 4,
+      foreignUnlinkedCount: 1,
+      skippedCount: 3,
+      failedCount: 0,
+    });
+  });
+
   test('bulk rechecks the default after LINE lookup and never unlinks a newly matching menu', async () => {
     seedFriends(1);
     seedAccountDefault();

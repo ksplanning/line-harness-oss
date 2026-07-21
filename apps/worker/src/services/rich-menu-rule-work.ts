@@ -2,6 +2,7 @@ import { LineApiError, LineClient } from '@line-crm/line-sdk';
 import {
   applyRichMenuRulesForFriend,
   getAccountDefaultRichMenuId,
+  getAccountManagedRichMenuIds,
   prepareRichMenuRulesForBatch,
   settleRichMenuRuleMutationBatch,
   type RichMenuRuleApplyResult,
@@ -514,7 +515,10 @@ async function executeRichMenuMutations(
       }
     }
   }
-  const latestForeignDefaultByAccount = new Map<string, string | null>();
+  const latestForeignStateByAccount = new Map<string, Promise<{
+    defaultRichMenuId: string | null;
+    managedRichMenuIds: Set<string>;
+  }>>();
   const recheckedReadyMutations: RichMenuRulePendingMutation[] = [];
   for (const mutation of readyMutations) {
     if (!mutation.foreignDefaultRichMenuId) {
@@ -522,20 +526,28 @@ async function executeRichMenuMutations(
       continue;
     }
     try {
-      if (!latestForeignDefaultByAccount.has(mutation.accountId)) {
-        latestForeignDefaultByAccount.set(
-          mutation.accountId,
-          await getAccountDefaultRichMenuId(
+      let latestState = latestForeignStateByAccount.get(mutation.accountId);
+      if (!latestState) {
+        latestState = Promise.all([
+          getAccountDefaultRichMenuId(
             db,
             mutation.accountId,
             { onlyWithoutRules: true },
           ),
-        );
+          getAccountManagedRichMenuIds(db, mutation.accountId),
+        ]).then(([defaultRichMenuId, managedRichMenuIds]) => ({
+          defaultRichMenuId,
+          managedRichMenuIds,
+        }));
+        latestForeignStateByAccount.set(mutation.accountId, latestState);
       }
-      const latestDefaultRichMenuId = latestForeignDefaultByAccount.get(mutation.accountId);
+      const { defaultRichMenuId, managedRichMenuIds } = await latestState;
+      const currentRichMenuId = verifiedForeignCurrent.get(mutation.friendId);
       if (
-        !latestDefaultRichMenuId
-        || verifiedForeignCurrent.get(mutation.friendId) === latestDefaultRichMenuId
+        !defaultRichMenuId
+        || currentRichMenuId === undefined
+        || currentRichMenuId === defaultRichMenuId
+        || managedRichMenuIds.has(currentRichMenuId)
       ) {
         outcomes.set(mutation.friendId, { mutation, verificationSkipped: true });
       } else {

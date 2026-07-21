@@ -347,6 +347,62 @@ describe('applyRichMenuRulesForFriend', () => {
     expect(line.calls).toEqual([{ method: 'get', userId: 'U1' }]);
   });
 
+  test('zero rules preserve an app-managed per-user menu from another group', async () => {
+    seedAccountDefault();
+    raw.prepare(
+      `INSERT INTO rich_menu_groups
+       (id, account_id, name, chat_bar_text, size, default_page_id, is_default_for_all, status)
+       VALUES ('group-managed', 'acc-1', '個別切替先', 'メニュー', 'large', 'page-managed', 0, 'published')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+       VALUES ('page-managed', 'group-managed', 0, 'ホーム', 'alias-managed', 'menu-managed')`,
+    ).run();
+    const line = lineDouble({ currentMenu: 'menu-managed' });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'no_rules', friendId: 'friend-1' });
+    expect(line.calls).toEqual([{ method: 'get', userId: 'U1' }]);
+  });
+
+  test('zero rules preserve the second managed page selected by richmenuswitch', async () => {
+    seedAccountDefault();
+    raw.prepare(
+      `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+       VALUES ('page-tab-2', 'group-default', 1, 'タブ2', 'alias-tab-2', 'menu-tab-2')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_areas
+       (id, page_id, bounds_x, bounds_y, bounds_width, bounds_height, action_type, action_data)
+       VALUES ('area-switch', 'page-default', 0, 0, 100, 100, 'richmenuswitch', '{"targetPageId":"page-tab-2"}')`,
+    ).run();
+    const line = lineDouble({ currentMenu: 'menu-tab-2' });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'no_rules', friendId: 'friend-1' });
+    expect(line.calls).toEqual([{ method: 'get', userId: 'U1' }]);
+  });
+
+  test('zero rules preserve a menu ID retained in the assignment ledger', async () => {
+    seedAccountDefault();
+    raw.prepare(
+      `INSERT INTO friends (id, line_user_id, line_account_id, metadata, is_following)
+       VALUES ('friend-ledger', 'U-ledger', 'acc-1', '{}', 0)`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_friend_assignments (friend_id, account_id, rule_id, rich_menu_id)
+       VALUES ('friend-ledger', 'acc-1', NULL, 'menu-assignment-managed')`,
+    ).run();
+    const line = lineDouble({ currentMenu: 'menu-assignment-managed' });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'no_rules', friendId: 'friend-1' });
+    expect(line.calls).toEqual([{ method: 'get', userId: 'U1' }]);
+  });
+
   test('rechecks the default after LINE lookup and never unlinks a newly matching menu', async () => {
     seedAccountDefault();
     raw.prepare(

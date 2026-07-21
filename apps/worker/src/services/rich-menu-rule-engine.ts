@@ -143,6 +143,27 @@ export async function getAccountDefaultRichMenuId(
   return row?.line_richmenu_id ?? null;
 }
 
+/** Return every per-user rich-menu ID recorded in this account's management ledger. */
+export async function getAccountManagedRichMenuIds(
+  db: D1Database,
+  accountId: string,
+): Promise<Set<string>> {
+  const rows = await db
+    .prepare(
+      `SELECT p.line_richmenu_id AS rich_menu_id
+       FROM rich_menu_pages p
+       JOIN rich_menu_groups g ON g.id = p.group_id
+       WHERE g.account_id = ? AND p.line_richmenu_id IS NOT NULL
+       UNION
+       SELECT assignment.rich_menu_id
+       FROM rich_menu_friend_assignments assignment
+       WHERE assignment.account_id = ? AND assignment.rich_menu_id IS NOT NULL`,
+    )
+    .bind(accountId, accountId)
+    .all<{ rich_menu_id: string }>();
+  return new Set(rows.results.map((row) => row.rich_menu_id));
+}
+
 function isRuleInActivePeriod(
   rule: { activeFrom: string | null; activeUntil: string | null },
   now: Date,
@@ -843,14 +864,18 @@ export async function applyRichMenuRulesForFriend(
           await clearQueue(db, friendId, applyOptions);
           return { status: 'no_rules', friendId };
         }
-        const latestDefaultRichMenuId = await getAccountDefaultRichMenuId(
-          db,
-          friend.line_account_id,
-          { onlyWithoutRules: true },
-        );
+        const [latestDefaultRichMenuId, managedRichMenuIds] = await Promise.all([
+          getAccountDefaultRichMenuId(
+            db,
+            friend.line_account_id,
+            { onlyWithoutRules: true },
+          ),
+          getAccountManagedRichMenuIds(db, friend.line_account_id),
+        ]);
         if (
           latestDefaultRichMenuId
           && current.richMenuId !== latestDefaultRichMenuId
+          && !managedRichMenuIds.has(current.richMenuId)
         ) {
           await line.unlinkRichMenuFromUser(friend.line_user_id);
           await clearQueue(db, friendId, applyOptions);
