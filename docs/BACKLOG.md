@@ -788,3 +788,10 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - piecemaker の実接続 `gsc_4881ef88-e6e4-415e-ab62-c24106c09015`（対象シート「お祝い夢花火2026申し込み管理」）でカスタム項目「入金確認」を選択し友だち台帳同期を有効化。Google Sheets API 直接 read-back（独立検証）で友だち→シート初回同期（4行 appended）・再同期の冪等（0 appended）・シート→ハーネス反映（ポーリング約4分・監査ログ確認）・identity列不変・復元確認まで全て deployed 実測 PASS。
 - **残**: Apps Script（即時通知）の owner 自身による設置は owner 任意作業として残る（コード・手順書は完成済み・ポーリング経路のみで双方向実証済み）。
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_080800_selfform-w4a-friend-ledger-sync.md`（Box working folder 386663013201・box_file_id_md 2358668404572 / box_file_id_html 2358663208213）。
+
+## faq-personal-context — 自動応答AIへの本人コンテキスト注入（2026-07-21 closer / ✅ status: completed）
+- **owner の「LINEユーザーの個人情報・カスタムフィールド・過去フォーム回答も含めて欲しい」に対応**: FAQ AI回答生成時に質問者本人のfriend_idで①表示名②カスタムフィールド値③過去フォーム回答（Formaloo/自社フォーム）を直接assemble（検索空間には混ぜず、friend_id exact assertで他人PIIの構造的混入を排除）。不一致/欠落時は注入なしで従来動作にfail-safe。append-only監査ログ（本文値は保存せずメタデータのみ）。管理設定でON/OFF・対象カスタムフィールド選択が可能（既定ON・全カスタムフィールド+回答要旨）。migration 122（`faq_personal_context_audit_log`・additive）。
+- **4面デプロイ**: ks worker Version `6b9c983d-cfbb-4a5f-9bde-7d1e71c41b27` / piecemaker worker Version `eb5396d1-4dce-4428-9a61-336134dfa92c` / ks admin `https://be8af81f.line-harness-ks-admin.pages.dev` / piecemaker admin `https://d6a6ded1.line-harness-piecemaker-admin.pages.dev`。4面 health 200。
+- **deployed実射検証（piecemaker・実あやこ）**: signed webhook simulateで「私の登録情報の状況を教えてもらえますか」を送信→下書きに「表示名: あやこ」「入金確認: 未」が実際に反映されることをD1実測。実LINE送信0件・他友だちデータ非混入・cleanup後残置ゼロ（あやこfriend行不変）。
+- **⚠️ 教訓（次回同種closer必読）**: 本closer作業中に別案件（automation-rules-gui後続の auto-reply-center統合）が同一main checkoutへ着地し、admin初回デプロイが一時的にそれを巻き戻す形になった。git fetchでHEAD差分に気づき即座に最新コードで再ビルド・再デプロイして復旧（`/auto-reply-center` 200確認）。**並走案件がある共有checkoutでは、デプロイ直前に必ず `git log -1`/`git fetch` でHEADのズレを確認すること**。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_090340_faq-personal-context.md`（Box working folder 386663013201）。
