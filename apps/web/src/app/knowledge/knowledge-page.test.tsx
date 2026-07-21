@@ -236,6 +236,7 @@ describe('/knowledge page — AI ログ・コストタブ', () => {
     await waitFor(() => expect(m.reviewList).toHaveBeenCalledTimes(2))
     fireEvent.focus(window)
     await waitFor(() => expect(m.reviewList).toHaveBeenCalledTimes(3))
+  })
   it('未対応0件を自然な文言で表示する', async () => {
     render(<KnowledgePage />)
     await waitFor(() => expect(screen.getByText('料金表')).toBeTruthy())

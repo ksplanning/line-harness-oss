@@ -792,16 +792,6 @@ export default function KnowledgePage() {
                 {drafts.map((d) => (
                   <div key={d.id} className="border border-gray-100 rounded-md p-3">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-medium text-gray-900 truncate max-w-[360px]">Q: {d.question}</span>
-                      <div className="flex flex-shrink-0 items-center gap-2">
-                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                          (draftStatusConfig[d.status] ?? { className: 'bg-gray-100 text-gray-600' }).className
-                        }`}>
-                          {(draftStatusConfig[d.status] ?? { label: d.status }).label}
-                        </span>
-                        <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatDateTime(d.createdAt)}</span>
-                      </div>
-                    <div className="flex justify-between items-center gap-2">
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="text-xs font-medium text-gray-900 truncate max-w-[360px]">Q: {d.question}</span>
                         {d.answerable === false && (
@@ -810,7 +800,14 @@ export default function KnowledgePage() {
                           </span>
                         )}
                       </div>
-                      <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatDateTime(d.createdAt)}</span>
+                      <div className="flex flex-shrink-0 items-center gap-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          (draftStatusConfig[d.status] ?? { className: 'bg-gray-100 text-gray-600' }).className
+                        }`}>
+                          {(draftStatusConfig[d.status] ?? { label: d.status }).label}
+                        </span>
+                        <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatDateTime(d.createdAt)}</span>
+                      </div>
                     </div>
                     <p className="mt-1 text-xs text-gray-600 line-clamp-2">A: {d.draftAnswer}</p>
                   </div>
