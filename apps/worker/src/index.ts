@@ -60,6 +60,7 @@ import { reminders } from './routes/reminders.js';
 import { scoring } from './routes/scoring.js';
 import { templates } from './routes/templates.js';
 import { chats } from './routes/chats.js';
+import { faqDraftReviews } from './routes/faq-draft-reviews.js';
 import { conversations } from './routes/conversations.js';
 // notifications ルート (notification_rules CRUD + notifications 一覧) は
 // インボックス機能 (/api/inbox/unanswered) に置き換えたため削除。
@@ -334,6 +335,7 @@ app.route('/', reminders);
 app.route('/', scoring);
 app.route('/', templates);
 app.route('/', chats);
+app.route('/', faqDraftReviews);
 app.route('/', conversations);
 app.route('/', stripe);
 app.route('/', health);

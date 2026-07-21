@@ -86,6 +86,8 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/api/friend-field-definitions')).toBe('friend');
     expect(mapPathToFeature('/api/forms')).toBe('form');
     expect(mapPathToFeature('/api/faqs')).toBe('faq');
+    expect(mapPathToFeature('/api/faq-draft-reviews')).toBe('faq');
+    expect(mapPathToFeature('/api/faq-draft-reviews/draft-1/approve')).toBe('chat');
     // Phase B B-3: 取込ナレッジは既存 faq 権限で gate (新 FeatureKey なし / Codex #12)。
     expect(mapPathToFeature('/api/knowledge/ingest')).toBe('faq');
     expect(mapPathToFeature('/api/knowledge/documents')).toBe('faq');
@@ -122,6 +124,8 @@ describe('機微 sub-route の意味的正しさ (reviewer Round1 再発防止 /
   test.each([
     // H-1: 実顧客へ送信 = チャット (friend 管理では送信させない)
     ['/api/friends/abc/messages', 'chat'],
+    // 中央下書き受信箱でも、承認は実顧客への送信なので FAQ 閲覧権限だけでは許可しない。
+    ['/api/faq-draft-reviews/draft-1/approve', 'chat'],
     // H-2: 個別リッチメニュー = rich_menu
     ['/api/friends/abc/rich-menu', 'rich_menu'],
     // M-1: 個別スコア = analytics

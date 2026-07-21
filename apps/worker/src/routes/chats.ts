@@ -449,7 +449,7 @@ chats.get('/api/chats/:id', async (c) => {
 
 function draftReviewFailure(error: unknown): {
   message: string;
-  status: 400 | 404 | 409 | 500 | 502;
+  status: 400 | 403 | 404 | 409 | 500 | 502;
 } {
   if (error instanceof FaqDraftReviewError) {
     return { message: error.message, status: error.status };
@@ -458,9 +458,18 @@ function draftReviewFailure(error: unknown): {
   return { message: 'Internal server error', status: 500 };
 }
 
+async function resolveDraftReviewFriendId(db: D1Database, id: string): Promise<string | null> {
+  const chat = await getChatById(db, id);
+  if (chat) return chat.friend_id;
+  const friend = await getFriendById(db, id);
+  return friend?.id ?? null;
+}
+
 // 同じ review service を編集・破棄・承認の唯一経路として使う。friend id を path に含め、
 // draft id だけを知る別チャットからの cross-friend 操作を拒否する。
 chats.patch('/api/chats/:id/drafts/:draftId', async (c) => {
+  const actor = c.get('staff');
+  if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
   let body: { draftAnswer?: unknown };
   try {
     body = await c.req.json();
@@ -471,11 +480,13 @@ chats.patch('/api/chats/:id/drafts/:draftId', async (c) => {
     return c.json({ success: false, error: 'draftAnswer is required' }, 400);
   }
   try {
+    const friendId = await resolveDraftReviewFriendId(c.env.DB, c.req.param('id'));
+    if (!friendId) return c.json({ success: false, error: 'Chat not found' }, 404);
     const data = await editAiFaqDraft({
       db: c.env.DB,
       draftId: c.req.param('draftId'),
-      friendId: c.req.param('id'),
-      actorStaffId: c.get('staff')?.id ?? 'unknown',
+      friendId,
+      actorStaffId: actor.id,
       draftAnswer: body.draftAnswer,
     });
     return c.json({ success: true, data });
@@ -486,12 +497,16 @@ chats.patch('/api/chats/:id/drafts/:draftId', async (c) => {
 });
 
 chats.delete('/api/chats/:id/drafts/:draftId', async (c) => {
+  const actor = c.get('staff');
+  if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
   try {
+    const friendId = await resolveDraftReviewFriendId(c.env.DB, c.req.param('id'));
+    if (!friendId) return c.json({ success: false, error: 'Chat not found' }, 404);
     const data = await discardAiFaqDraft({
       db: c.env.DB,
       draftId: c.req.param('draftId'),
-      friendId: c.req.param('id'),
-      actorStaffId: c.get('staff')?.id ?? 'unknown',
+      friendId,
+      actorStaffId: actor.id,
     });
     return c.json({ success: true, data });
   } catch (error) {
@@ -501,12 +516,16 @@ chats.delete('/api/chats/:id/drafts/:draftId', async (c) => {
 });
 
 chats.post('/api/chats/:id/drafts/:draftId/approve', async (c) => {
+  const actor = c.get('staff');
+  if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
   try {
+    const friendId = await resolveDraftReviewFriendId(c.env.DB, c.req.param('id'));
+    if (!friendId) return c.json({ success: false, error: 'Chat not found' }, 404);
     const data = await approveAiFaqDraft({
       db: c.env.DB,
       draftId: c.req.param('draftId'),
-      friendId: c.req.param('id'),
-      actorStaffId: c.get('staff')?.id ?? 'unknown',
+      friendId,
+      actorStaffId: actor.id,
     });
     return c.json({ success: true, data });
   } catch (error) {

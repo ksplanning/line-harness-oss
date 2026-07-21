@@ -20,6 +20,8 @@ vi.mock('@line-crm/line-sdk', () => ({
 }));
 
 const { chats } = await import('./chats.js');
+const { faqDraftReviews } = await import('./faq-draft-reviews.js');
+const { approveAiFaqDraft, resolveAiFaqDraftReviewFriend } = await import('../services/faq-draft-review.js');
 
 type SyncStatement = D1PreparedStatement & { __runSync: () => { changes: number } };
 
@@ -52,13 +54,16 @@ function asD1(raw: Database.Database): D1Database {
   } as unknown as D1Database;
 }
 
-function createApp(raw: Database.Database) {
+function createApp(raw: Database.Database, options: { withStaff?: boolean } = {}) {
   const app = new Hono<Env>();
-  app.use('*', async (c, next) => {
-    c.set('staff', { id: 'staff-1', name: '担当者', role: 'staff' });
-    await next();
-  });
+  if (options.withStaff !== false) {
+    app.use('*', async (c, next) => {
+      c.set('staff', { id: 'staff-1', name: '担当者', role: 'staff' });
+      await next();
+    });
+  }
   app.route('/', chats);
+  app.route('/', faqDraftReviews);
   const bindings = {
     DB: asD1(raw),
     LINE_CHANNEL_ACCESS_TOKEN: 'unsafe-default-token',
@@ -214,6 +219,15 @@ describe('GET /api/chats/:id — pending AI drafts in timeline', () => {
     const body = await response.json() as { data: { pendingDrafts: unknown[] } };
     expect(body.data.pendingDrafts).toEqual([]);
   });
+
+  test('does not expose a corrupt cross-account draft in the pending timeline', async () => {
+    seedMessage('question-1', 'friend-1', '営業時間は？', '2026-07-21T10:00:00+09:00');
+    seedDraft({ accountId: 'acc-2' });
+
+    const response = await app.request('/api/chats/friend-1');
+    const body = await response.json() as { data: { pendingDrafts: unknown[] } };
+    expect(body.data.pendingDrafts).toEqual([]);
+  });
 });
 
 describe('inline draft review mutations', () => {
@@ -226,6 +240,31 @@ describe('inline draft review mutations', () => {
       .toEqual({ draft_answer: '11時からです', status: 'pending' });
     expect(raw.prepare(`SELECT draft_id, actor_staff_id, action FROM ai_faq_draft_audit_log`).get())
       .toEqual({ draft_id: 'draft-1', actor_staff_id: 'staff-1', action: 'edited' });
+  });
+
+  test('accepts chats.id as well as friend.id for a chat mutation path', async () => {
+    seedDraft({});
+    const response = await mutate('/api/chats/chat-1/drafts/draft-1', 'PATCH', { draftAnswer: 'チャットID経由' });
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare(`SELECT draft_answer FROM ai_faq_drafts WHERE id='draft-1'`).get())
+      .toEqual({ draft_answer: 'チャットID経由' });
+  });
+
+  test('rejects a missing staff actor instead of writing an unknown audit actor', async () => {
+    seedDraft({});
+    const withoutStaff = createApp(raw, { withStaff: false });
+    const response = await withoutStaff.request('/api/chats/friend-1/drafts/draft-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draftAnswer: '変更しない' }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(raw.prepare(`SELECT draft_answer, status FROM ai_faq_drafts WHERE id='draft-1'`).get())
+      .toEqual({ draft_answer: '10時からです', status: 'pending' });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM ai_faq_draft_audit_log`).get())
+      .toEqual({ count: 0 });
   });
 
   test('discards by status instead of deleting and keeps an audit trail', async () => {
@@ -299,5 +338,119 @@ describe('inline draft review mutations', () => {
     expect(raw.prepare(`SELECT COUNT(*) AS count FROM messages_log`).get()).toEqual({ count: 0 });
     expect(raw.prepare(`SELECT action FROM ai_faq_draft_audit_log`).get())
       .toEqual({ action: 'send_failed' });
+  });
+});
+
+describe('central FAQ draft inbox review mutations', () => {
+  const inboxPath = (draftId = 'draft-1', suffix = '') =>
+    `/api/faq-draft-reviews/${draftId}${suffix}`;
+
+  test('lists only pending drafts in account scope without exposing friend/account internal IDs', async () => {
+    seedDraft({ id: 'draft-visible' });
+    seedDraft({ id: 'draft-approved', status: 'approved' });
+    seedDraft({ id: 'draft-other', friendId: 'friend-2', accountId: 'acc-2' });
+
+    const response = await app.request('/api/faq-draft-reviews?accountId=acc-1');
+    expect(response.status).toBe(200);
+    const body = await response.json() as { data: Array<Record<string, unknown>> };
+    expect(body.data).toEqual([expect.objectContaining({
+      id: 'draft-visible',
+      friendName: 'あやこ',
+      draftAnswer: '10時からです',
+      status: 'pending',
+    })]);
+    expect(JSON.stringify(body)).not.toMatch(/friendId|friend_id|lineAccountId|line_account_id|evidence/i);
+  });
+
+  test('bounds the pending response so a backlog cannot create an unbounded payload', async () => {
+    for (let index = 0; index < 501; index += 1) {
+      seedDraft({ id: `bulk-${index.toString().padStart(3, '0')}` });
+    }
+
+    const response = await app.request('/api/faq-draft-reviews?accountId=acc-1');
+    const body = await response.json() as { data: unknown[] };
+    expect(response.status).toBe(200);
+    expect(body.data).toHaveLength(500);
+  });
+
+  test('edits through the shared review service without exposing internal IDs', async () => {
+    seedDraft({});
+    const response = await mutate(inboxPath(), 'PATCH', {
+      accountId: 'acc-1',
+      draftAnswer: '中央で編集した回答',
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { data: Record<string, unknown> };
+    expect(body.data).toMatchObject({ id: 'draft-1', draftAnswer: '中央で編集した回答', status: 'pending' });
+    expect(JSON.stringify(body)).not.toMatch(/friendId|friend_id|lineAccountId|line_account_id|evidence/i);
+    expect(raw.prepare(`SELECT action, actor_staff_id FROM ai_faq_draft_audit_log`).get())
+      .toEqual({ action: 'edited', actor_staff_id: 'staff-1' });
+  });
+
+  test('discards in account scope and keeps the row/audit instead of deleting it', async () => {
+    seedDraft({});
+    const response = await mutate(inboxPath(), 'DELETE', { accountId: 'acc-1' });
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare(`SELECT status FROM ai_faq_drafts WHERE id='draft-1'`).get())
+      .toEqual({ status: 'discarded' });
+    expect(raw.prepare(`SELECT action FROM ai_faq_draft_audit_log`).get())
+      .toEqual({ action: 'discarded' });
+  });
+
+  test('central and chat approval share one CAS so only one request can send', async () => {
+    seedDraft({ answer: '中央とチャットで競合' });
+    const [central, chat] = await Promise.all([
+      mutate(inboxPath('draft-1', '/approve'), 'POST', { accountId: 'acc-1' }),
+      mutate('/api/chats/friend-1/drafts/draft-1/approve', 'POST'),
+    ]);
+
+    expect([central.status, chat.status].filter((status) => status === 200)).toHaveLength(1);
+    expect([central.status, chat.status].every((status) => status === 200 || status === 409)).toBe(true);
+    expect(lineState.calls).toEqual([{ token: 'token-1', to: 'U-one', text: '中央とチャットで競合' }]);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM messages_log`).get()).toEqual({ count: 1 });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM ai_faq_draft_audit_log WHERE action='approved'`).get())
+      .toEqual({ count: 1 });
+  });
+
+  test('records the actual friend account in audit for a legacy null-account draft', async () => {
+    seedDraft({ accountId: null });
+
+    const response = await mutate(inboxPath('draft-1', '/approve'), 'POST', { accountId: 'acc-1' });
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare(`SELECT line_account_id, action FROM ai_faq_draft_audit_log`).get())
+      .toEqual({ line_account_id: 'acc-1', action: 'approved' });
+  });
+
+  test('rechecks selected account inside the shared service after central route resolution', async () => {
+    seedDraft({ accountId: null });
+    const db = asD1(raw);
+    const friendId = await resolveAiFaqDraftReviewFriend(db, 'draft-1', 'acc-1');
+    raw.prepare(`UPDATE friends SET line_account_id='acc-2' WHERE id='friend-1'`).run();
+
+    await expect(approveAiFaqDraft({
+      db,
+      draftId: 'draft-1',
+      friendId,
+      actorStaffId: 'staff-1',
+      expectedLineAccountId: 'acc-1',
+    })).rejects.toMatchObject({ status: 403 });
+    expect(lineState.calls).toEqual([]);
+    expect(raw.prepare(`SELECT status FROM ai_faq_drafts WHERE id='draft-1'`).get())
+      .toEqual({ status: 'pending' });
+  });
+
+  test('rejects another account before claim, mutation, audit, or LINE send', async () => {
+    seedDraft({});
+    const response = await mutate(inboxPath('draft-1', '/approve'), 'POST', { accountId: 'acc-2' });
+
+    expect(response.status).toBe(403);
+    expect(lineState.calls).toEqual([]);
+    expect(raw.prepare(`SELECT status FROM ai_faq_drafts WHERE id='draft-1'`).get())
+      .toEqual({ status: 'pending' });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM ai_faq_draft_audit_log`).get())
+      .toEqual({ count: 0 });
   });
 });

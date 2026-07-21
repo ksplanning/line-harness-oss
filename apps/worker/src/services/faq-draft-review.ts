@@ -43,10 +43,14 @@ export interface ReviewedDraft {
   updatedAt: string;
 }
 
+export interface PendingAiFaqDraftReview extends ReviewedDraft {
+  friendName: string;
+}
+
 export class FaqDraftReviewError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 | 500 | 502,
+    readonly status: 400 | 403 | 404 | 409 | 500 | 502,
   ) {
     super(message);
     this.name = 'FaqDraftReviewError';
@@ -91,7 +95,10 @@ export async function listInlineAiFaqDrafts(
           LIMIT 1
        ) AS question_message_id
       FROM ai_faq_drafts d
-     WHERE d.friend_id = ? AND d.status = 'pending'
+      JOIN friends f ON f.id = d.friend_id
+     WHERE d.friend_id = ?
+       AND d.status = 'pending'
+       AND (d.line_account_id IS NULL OR d.line_account_id = f.line_account_id)
      ORDER BY julianday(d.created_at, '-9 hours') ASC, d.id ASC`,
   ).bind(friendId).all<InlineDraftRow>();
   return result.results.map((row) => ({
@@ -102,6 +109,62 @@ export async function listInlineAiFaqDrafts(
     updatedAt: row.updated_at,
     questionMessageId: row.question_message_id,
   }));
+}
+
+/** Pending central-inbox rows for exactly one account; internal friend/account IDs stay server-side. */
+export async function listPendingAiFaqDraftReviews(
+  db: D1Database,
+  accountId: string,
+): Promise<PendingAiFaqDraftReview[]> {
+  const result = await db.prepare(
+    `SELECT d.id, d.question, d.draft_answer, d.status, d.created_at, d.updated_at,
+            f.display_name AS friend_name
+       FROM ai_faq_drafts d
+       JOIN friends f ON f.id = d.friend_id
+      WHERE d.status = 'pending'
+        AND f.line_account_id = ?
+        AND (d.line_account_id IS NULL OR d.line_account_id = ?)
+      ORDER BY julianday(d.created_at, '-9 hours') DESC, d.id DESC
+      LIMIT 500`,
+  ).bind(accountId, accountId).all<Pick<
+    ReviewContextRow,
+    'id' | 'question' | 'draft_answer' | 'status' | 'created_at' | 'updated_at'
+  > & { friend_name: string | null }>();
+  return result.results.map((row) => ({
+    ...serializeDraft(row),
+    friendName: row.friend_name || '名前なし',
+  }));
+}
+
+/** Resolve a central-inbox draft to its friend only after enforcing the selected account. */
+export async function resolveAiFaqDraftReviewFriend(
+  db: D1Database,
+  draftId: string,
+  accountId: string,
+): Promise<string> {
+  const row = await db.prepare(
+    `SELECT
+       d.friend_id,
+       d.line_account_id AS draft_account_id,
+       f.line_account_id AS friend_account_id
+      FROM ai_faq_drafts d
+      LEFT JOIN friends f ON f.id = d.friend_id
+     WHERE d.id = ?`,
+  ).bind(draftId).first<{
+    friend_id: string | null;
+    draft_account_id: string | null;
+    friend_account_id: string | null;
+  }>();
+  if (!row?.friend_id || !row.friend_account_id) {
+    throw new FaqDraftReviewError('下書きが見つかりません', 404);
+  }
+  if (
+    row.friend_account_id !== accountId
+    || (row.draft_account_id !== null && row.draft_account_id !== accountId)
+  ) {
+    throw new FaqDraftReviewError('下書きのLINEアカウントが一致しません', 403);
+  }
+  return row.friend_id;
 }
 
 async function getReviewContext(
@@ -130,8 +193,14 @@ async function getReviewContext(
   ).bind(draftId, friendId).first<ReviewContextRow>();
 }
 
-function validateDraftScope(row: ReviewContextRow | null): ReviewContextRow {
+function validateDraftScope(
+  row: ReviewContextRow | null,
+  expectedLineAccountId?: string,
+): ReviewContextRow {
   if (!row) throw new FaqDraftReviewError('下書きが見つかりません', 404);
+  if (expectedLineAccountId && row.friend_account_id !== expectedLineAccountId) {
+    throw new FaqDraftReviewError('下書きのLINEアカウントが一致しません', 403);
+  }
   if (row.line_account_id !== null && row.line_account_id !== row.friend_account_id) {
     throw new FaqDraftReviewError('下書きと友だちのLINEアカウントが一致しません', 409);
   }
@@ -143,17 +212,31 @@ async function claimPending(
   draftId: string,
   friendId: string,
   claimStatus: 'editing' | 'discarding' | 'sending',
+  expectedLineAccountId?: string,
 ): Promise<ReviewContextRow> {
-  const initial = validateDraftScope(await getReviewContext(db, draftId, friendId));
+  const initial = validateDraftScope(
+    await getReviewContext(db, draftId, friendId),
+    expectedLineAccountId,
+  );
   if (initial.status !== 'pending') {
     throw new FaqDraftReviewError('この下書きはすでに処理されています', 409);
   }
   const claimedAt = jstNow();
-  const claim = await db.prepare(
-    `UPDATE ai_faq_drafts
-        SET status = ?, updated_at = ?
-      WHERE id = ? AND friend_id = ? AND status = 'pending'`,
-  ).bind(claimStatus, claimedAt, draftId, friendId).run();
+  const claim = expectedLineAccountId
+    ? await db.prepare(
+      `UPDATE ai_faq_drafts
+          SET status = ?, updated_at = ?
+        WHERE id = ? AND friend_id = ? AND status = 'pending'
+          AND EXISTS (
+            SELECT 1 FROM friends f
+             WHERE f.id = ai_faq_drafts.friend_id AND f.line_account_id = ?
+          )`,
+    ).bind(claimStatus, claimedAt, draftId, friendId, expectedLineAccountId).run()
+    : await db.prepare(
+      `UPDATE ai_faq_drafts
+          SET status = ?, updated_at = ?
+        WHERE id = ? AND friend_id = ? AND status = 'pending'`,
+    ).bind(claimStatus, claimedAt, draftId, friendId).run();
   if ((claim.meta.changes ?? 0) !== 1) {
     throw new FaqDraftReviewError('この下書きは別の操作で処理中です', 409);
   }
@@ -161,7 +244,17 @@ async function claimPending(
   if (!claimed || claimed.status !== claimStatus) {
     throw new FaqDraftReviewError('下書きの処理状態を確認できません', 500);
   }
-  return claimed;
+  try {
+    return validateDraftScope(claimed, expectedLineAccountId);
+  } catch (error) {
+    // No external side effect has happened yet. Release this claim if the selected
+    // account changed between the guarded UPDATE and the verification read.
+    await db.prepare(
+      `UPDATE ai_faq_drafts SET status = 'pending', updated_at = ?
+        WHERE id = ? AND friend_id = ? AND status = ?`,
+    ).bind(jstNow(), draftId, friendId, claimStatus).run();
+    throw error;
+  }
 }
 
 function auditStatement(
@@ -178,7 +271,7 @@ function auditStatement(
   ).bind(
     crypto.randomUUID(),
     row.id,
-    row.line_account_id,
+    row.line_account_id ?? row.friend_account_id,
     row.friend_id,
     actorStaffId,
     action,
@@ -192,12 +285,19 @@ export async function editAiFaqDraft(input: {
   friendId: string;
   actorStaffId: string;
   draftAnswer: string;
+  expectedLineAccountId?: string;
 }): Promise<ReviewedDraft> {
   const answer = input.draftAnswer.trim();
   if (!answer || answer.length > 5_000) {
     throw new FaqDraftReviewError('下書き本文は1〜5000文字で入力してください', 400);
   }
-  const claimed = await claimPending(input.db, input.draftId, input.friendId, 'editing');
+  const claimed = await claimPending(
+    input.db,
+    input.draftId,
+    input.friendId,
+    'editing',
+    input.expectedLineAccountId,
+  );
   const now = jstNow();
   await input.db.batch([
     input.db.prepare(
@@ -207,7 +307,10 @@ export async function editAiFaqDraft(input: {
     ).bind(answer, now, input.draftId, input.friendId),
     auditStatement(input.db, claimed, input.actorStaffId, 'edited', now),
   ]);
-  const updated = validateDraftScope(await getReviewContext(input.db, input.draftId, input.friendId));
+  const updated = validateDraftScope(
+    await getReviewContext(input.db, input.draftId, input.friendId),
+    input.expectedLineAccountId,
+  );
   return serializeDraft(updated);
 }
 
@@ -216,8 +319,15 @@ export async function discardAiFaqDraft(input: {
   draftId: string;
   friendId: string;
   actorStaffId: string;
+  expectedLineAccountId?: string;
 }): Promise<ReviewedDraft> {
-  const claimed = await claimPending(input.db, input.draftId, input.friendId, 'discarding');
+  const claimed = await claimPending(
+    input.db,
+    input.draftId,
+    input.friendId,
+    'discarding',
+    input.expectedLineAccountId,
+  );
   const now = jstNow();
   await input.db.batch([
     input.db.prepare(
@@ -227,7 +337,10 @@ export async function discardAiFaqDraft(input: {
     ).bind(now, input.draftId, input.friendId),
     auditStatement(input.db, claimed, input.actorStaffId, 'discarded', now),
   ]);
-  const updated = validateDraftScope(await getReviewContext(input.db, input.draftId, input.friendId));
+  const updated = validateDraftScope(
+    await getReviewContext(input.db, input.draftId, input.friendId),
+    input.expectedLineAccountId,
+  );
   return serializeDraft(updated);
 }
 
@@ -236,6 +349,7 @@ export async function approveAiFaqDraft(input: {
   draftId: string;
   friendId: string;
   actorStaffId: string;
+  expectedLineAccountId?: string;
 }): Promise<{ draft: ReviewedDraft; message: {
   id: string;
   direction: 'outgoing';
@@ -243,7 +357,10 @@ export async function approveAiFaqDraft(input: {
   content: string;
   createdAt: string;
 } }> {
-  const initial = validateDraftScope(await getReviewContext(input.db, input.draftId, input.friendId));
+  const initial = validateDraftScope(
+    await getReviewContext(input.db, input.draftId, input.friendId),
+    input.expectedLineAccountId,
+  );
   if (
     !initial.friend_account_id
     || initial.account_is_active !== 1
@@ -251,7 +368,13 @@ export async function approveAiFaqDraft(input: {
   ) {
     throw new FaqDraftReviewError('送信できるLINEアカウントが見つかりません', 409);
   }
-  const claimed = await claimPending(input.db, input.draftId, input.friendId, 'sending');
+  const claimed = await claimPending(
+    input.db,
+    input.draftId,
+    input.friendId,
+    'sending',
+    input.expectedLineAccountId,
+  );
   // Re-check after the CAS claim and use this row's answer. An edit cannot win after this point.
   if (
     !claimed.friend_account_id
@@ -309,7 +432,10 @@ export async function approveAiFaqDraft(input: {
     auditStatement(input.db, claimed, input.actorStaffId, 'approved', sentAt),
   ]);
 
-  const updated = validateDraftScope(await getReviewContext(input.db, input.draftId, input.friendId));
+  const updated = validateDraftScope(
+    await getReviewContext(input.db, input.draftId, input.friendId),
+    input.expectedLineAccountId,
+  );
   return {
     draft: serializeDraft(updated),
     message: {

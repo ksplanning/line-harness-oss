@@ -38,6 +38,8 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   //    親 prefix の feature (friend/account/broadcast_settings) に飲まれないようにする。
   // 個別友だちへの送信/会話履歴 = チャット対応 (friend 管理では実顧客に送信させない / 誤送信防止 = H-1)
   { test: /^\/api\/friends\/[^/]+\/messages(?:\/|$)/, feature: 'chat' },
+  // 中央下書き受信箱の承認も実顧客への送信。閲覧・編集の FAQ 権限だけでは送信させない。
+  { test: /^\/api\/faq-draft-reviews\/[^/]+\/approve(?:\/|$)/, feature: 'chat' },
   // 個別リッチメニュー 取得/紐付け/解除 = リッチメニュー (H-2)
   { test: /^\/api\/friends\/[^/]+\/rich-menu(?:\/|$)/, feature: 'rich_menu' },
   // 個別友だちスコア = 分析 (M-1)
@@ -126,6 +128,7 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
   { test: prefix('formaloo-folders'), feature: 'forms_advanced' },
   { test: prefix('forms'), feature: 'form' },
   { test: prefix('faqs'), feature: 'faq' },
+  { test: prefix('faq-draft-reviews'), feature: 'faq' },
   // 取込ナレッジ (Phase B B-3) は FAQ と同じ「よくある質問」機能の一部 = 既存 faq 権限で gate (新 FeatureKey なし)。
   { test: prefix('knowledge'), feature: 'faq' },
 
