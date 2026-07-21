@@ -15,6 +15,13 @@ import {
   jstNow,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import {
+  approveAiFaqDraft,
+  discardAiFaqDraft,
+  editAiFaqDraft,
+  FaqDraftReviewError,
+  listInlineAiFaqDrafts,
+} from '../services/faq-draft-review.js';
 
 const chats = new Hono<Env>();
 
@@ -410,6 +417,7 @@ chats.get('/api/chats/:id', async (c) => {
       .bind(resolvedFriendId)
       .all();
     messages.results = (messages.results as Record<string, unknown>[]).reverse();
+    const pendingDrafts = await listInlineAiFaqDrafts(c.env.DB, resolvedFriendId);
 
     return c.json({
       success: true,
@@ -430,11 +438,80 @@ chats.get('/api/chats/:id', async (c) => {
           content: m.content,
           createdAt: m.created_at,
         })),
+        pendingDrafts,
       },
     });
   } catch (err) {
     console.error('GET /api/chats/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+function draftReviewFailure(error: unknown): {
+  message: string;
+  status: 400 | 404 | 409 | 500 | 502;
+} {
+  if (error instanceof FaqDraftReviewError) {
+    return { message: error.message, status: error.status };
+  }
+  console.error('AI FAQ draft review error:', error instanceof Error ? error.name : 'unknown');
+  return { message: 'Internal server error', status: 500 };
+}
+
+// 同じ review service を編集・破棄・承認の唯一経路として使う。friend id を path に含め、
+// draft id だけを知る別チャットからの cross-friend 操作を拒否する。
+chats.patch('/api/chats/:id/drafts/:draftId', async (c) => {
+  let body: { draftAnswer?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: 'JSON body required' }, 400);
+  }
+  if (typeof body.draftAnswer !== 'string') {
+    return c.json({ success: false, error: 'draftAnswer is required' }, 400);
+  }
+  try {
+    const data = await editAiFaqDraft({
+      db: c.env.DB,
+      draftId: c.req.param('draftId'),
+      friendId: c.req.param('id'),
+      actorStaffId: c.get('staff')?.id ?? 'unknown',
+      draftAnswer: body.draftAnswer,
+    });
+    return c.json({ success: true, data });
+  } catch (error) {
+    const failure = draftReviewFailure(error);
+    return c.json({ success: false, error: failure.message }, failure.status);
+  }
+});
+
+chats.delete('/api/chats/:id/drafts/:draftId', async (c) => {
+  try {
+    const data = await discardAiFaqDraft({
+      db: c.env.DB,
+      draftId: c.req.param('draftId'),
+      friendId: c.req.param('id'),
+      actorStaffId: c.get('staff')?.id ?? 'unknown',
+    });
+    return c.json({ success: true, data });
+  } catch (error) {
+    const failure = draftReviewFailure(error);
+    return c.json({ success: false, error: failure.message }, failure.status);
+  }
+});
+
+chats.post('/api/chats/:id/drafts/:draftId/approve', async (c) => {
+  try {
+    const data = await approveAiFaqDraft({
+      db: c.env.DB,
+      draftId: c.req.param('draftId'),
+      friendId: c.req.param('id'),
+      actorStaffId: c.get('staff')?.id ?? 'unknown',
+    });
+    return c.json({ success: true, data });
+  } catch (error) {
+    const failure = draftReviewFailure(error);
+    return c.json({ success: false, error: failure.message }, failure.status);
   }
 });
 

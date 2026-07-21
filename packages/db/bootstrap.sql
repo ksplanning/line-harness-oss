@@ -91,6 +91,16 @@ CREATE TABLE affiliates (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE ai_faq_draft_audit_log (
+  id              TEXT PRIMARY KEY,
+  draft_id        TEXT NOT NULL REFERENCES ai_faq_drafts(id) ON DELETE RESTRICT,
+  line_account_id TEXT,
+  friend_id       TEXT NOT NULL,
+  actor_staff_id  TEXT NOT NULL,
+  action          TEXT NOT NULL CHECK (action IN ('edited', 'approved', 'discarded', 'send_failed')),
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE ai_faq_drafts (
   id                TEXT PRIMARY KEY,
   line_account_id   TEXT,
@@ -1502,6 +1512,12 @@ CREATE INDEX idx_ad_conversion_logs_status ON ad_conversion_logs (status);
 
 CREATE INDEX idx_affiliate_clicks_affiliate ON affiliate_clicks (affiliate_id);
 
+CREATE INDEX idx_ai_faq_draft_audit_account_created
+  ON ai_faq_draft_audit_log (line_account_id, created_at);
+
+CREATE INDEX idx_ai_faq_draft_audit_draft_created
+  ON ai_faq_draft_audit_log (draft_id, created_at);
+
 CREATE INDEX idx_ai_faq_drafts_account_status ON ai_faq_drafts(line_account_id, status);
 
 CREATE INDEX idx_ai_usage_budget_date ON ai_usage_budget(usage_date);
@@ -1858,6 +1874,19 @@ CREATE TRIGGER knowledge_chunks_fts_ad AFTER DELETE ON knowledge_chunks BEGIN DE
 CREATE TRIGGER knowledge_chunks_fts_ai AFTER INSERT ON knowledge_chunks BEGIN INSERT INTO knowledge_chunks_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
 
 CREATE TRIGGER knowledge_chunks_fts_au AFTER UPDATE ON knowledge_chunks BEGIN DELETE FROM knowledge_chunks_fts WHERE rowid = OLD.rowid; INSERT INTO knowledge_chunks_fts(rowid, search_text) VALUES (NEW.rowid, NEW.search_text); END;
+
+CREATE TRIGGER trg_ai_faq_draft_audit_no_delete
+BEFORE DELETE ON ai_faq_draft_audit_log
+BEGIN SELECT RAISE(ABORT, 'ai_faq_draft_audit_log is append-only'); END;
+
+CREATE TRIGGER trg_ai_faq_draft_audit_no_replace
+BEFORE INSERT ON ai_faq_draft_audit_log
+WHEN EXISTS (SELECT 1 FROM ai_faq_draft_audit_log WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'ai_faq_draft_audit_log is append-only'); END;
+
+CREATE TRIGGER trg_ai_faq_draft_audit_no_update
+BEFORE UPDATE ON ai_faq_draft_audit_log
+BEGIN SELECT RAISE(ABORT, 'ai_faq_draft_audit_log is append-only'); END;
 
 CREATE TRIGGER trg_faq_personal_context_audit_no_delete
 BEFORE DELETE ON faq_personal_context_audit_log

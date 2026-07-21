@@ -141,7 +141,7 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
       id TEXT, friend_id TEXT, direction TEXT, source TEXT, delivery_type TEXT, content TEXT, created_at TEXT
     );
     CREATE TABLE ai_faq_drafts (
-      id TEXT, friend_id TEXT, created_at TEXT
+      id TEXT, friend_id TEXT, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT
     )`);
     return raw;
   }
@@ -152,9 +152,9 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
       .run(crypto.randomUUID(), friendId, source, delivery, createdAt);
   }
 
-  function insertDraft(raw: Database.Database, friendId: string, createdAt: string) {
-    raw.prepare(`INSERT INTO ai_faq_drafts (id, friend_id, created_at) VALUES (?, ?, ?)`)
-      .run(crypto.randomUUID(), friendId, createdAt);
+  function insertDraft(raw: Database.Database, friendId: string, createdAt: string, status = 'pending') {
+    raw.prepare(`INSERT INTO ai_faq_drafts (id, friend_id, status, created_at) VALUES (?, ?, ?, ?)`)
+      .run(crypto.randomUUID(), friendId, status, createdAt);
   }
 
   function naiveJst(d: Date): string {
@@ -171,16 +171,16 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
   });
 
-  test('excludes non-faq_bot and non-reply rows even inside the window', async () => {
+  test('counts faq_bot reply/push rows and excludes unrelated sources inside the window', async () => {
     const raw = seedDb();
     const recent = jst(new Date(Date.now() - 1 * 3_600_000));
     insertReply(raw, 'f1', recent, 'faq_bot', 'reply');    // 数える
+    insertReply(raw, 'f1', recent, 'faq_bot', 'push');     // 承認送信も数える
     insertReply(raw, 'f1', recent, 'faq_handoff', 'reply'); // handoff は数えない
     insertReply(raw, 'f1', recent, 'auto_reply', 'reply');  // 別 source
-    insertReply(raw, 'f1', recent, 'faq_bot', 'push');      // push は数えない
     insertReply(raw, 'f2', recent, 'faq_bot', 'reply');     // 別 friend
 
-    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
+    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(2);
   });
 
   test('counts recent saved drafts but excludes old and other-friend drafts', async () => {
@@ -198,5 +198,23 @@ describe('countRecentFaqReplies 24h window (real SQLite / R1-I2)', () => {
     const raw = seedDb();
     insertReply(raw, 'f1', jst(new Date(Date.now() - 30 * 3_600_000))); // 30h ago
     await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(0);
+  });
+
+  test('approved draft and its push log consume exactly one slot, not two', async () => {
+    const raw = seedDb();
+    const now = Date.now();
+    insertDraft(raw, 'f1', naiveJst(new Date(now - 1 * 3_600_000)), 'approved');
+    insertReply(raw, 'f1', jst(new Date(now - 30 * 60_000)), 'faq_bot', 'push');
+
+    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
+  });
+
+  test('approval of a draft created over 24h ago consumes one slot at push time', async () => {
+    const raw = seedDb();
+    const now = Date.now();
+    insertDraft(raw, 'f1', naiveJst(new Date(now - 25 * 3_600_000)), 'approved');
+    insertReply(raw, 'f1', jst(new Date(now - 5 * 60_000)), 'faq_bot', 'push');
+
+    await expect(countRecentFaqReplies(d1(raw), 'f1')).resolves.toBe(1);
   });
 });

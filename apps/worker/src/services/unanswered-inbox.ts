@@ -57,6 +57,12 @@ const AUTO_REPLY_EVIDENCE_WINDOW_MS = 5_000;
 // owner 立会後に定数調整可 (env スレッドは非導入 = getAllUnansweredRows は db のみ受ける最小改修)。
 const FAQ_AI_EVIDENCE_WINDOW_MS = 30_000;
 
+// Human-approved FAQ drafts are sent later with LINE push, but operationally they are
+// the operator's reply. Treat them as the same handled boundary as a manual message so
+// the answered chat does not reappear in the unanswered-only view after a refresh.
+export const HUMAN_APPROVED_REPLY_SQL =
+  `(source='manual' OR (source='faq_bot' AND delivery_type='push'))`;
+
 /**
  * outgoing 1 件は incoming 1 件にしかマッチさせない。
  * 同じ友だちが短時間に複数メッセを送って auto_reply が 1 件しか飛ばないケース、
@@ -90,7 +96,7 @@ const CANDIDATES_SQL = `
     SELECT
       friend_id,
       MAX(CASE WHEN direction='incoming' AND (source IS NULL OR source != 'postback') THEN created_at END) AS last_incoming,
-      MAX(CASE WHEN direction='outgoing' AND source='manual' THEN created_at END) AS last_manual,
+      MAX(CASE WHEN direction='outgoing' AND ${HUMAN_APPROVED_REPLY_SQL} THEN created_at END) AS last_manual,
       MAX(CASE WHEN direction='outgoing' AND source IN
           ('auto_reply','automation','automation_backfill','scenario','broadcast')
         THEN created_at END) AS last_machine
@@ -126,7 +132,7 @@ const RECENT_INCOMINGS_SQL = `
   WITH last_manual AS (
     SELECT friend_id, MAX(created_at) AS lm
     FROM messages_log
-    WHERE direction='outgoing' AND source='manual'
+    WHERE direction='outgoing' AND ${HUMAN_APPROVED_REPLY_SQL}
     GROUP BY friend_id
   )
   SELECT ml.friend_id, ml.message_type, ml.content, ml.created_at
@@ -146,7 +152,7 @@ const RECENT_AUTO_REPLY_OUTGOINGS_SQL = `
   WITH last_manual AS (
     SELECT friend_id, MAX(created_at) AS lm
     FROM messages_log
-    WHERE direction='outgoing' AND source='manual'
+    WHERE direction='outgoing' AND ${HUMAN_APPROVED_REPLY_SQL}
     GROUP BY friend_id
   )
   SELECT ml.friend_id, ml.created_at, ml.source

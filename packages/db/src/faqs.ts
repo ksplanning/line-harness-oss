@@ -148,6 +148,8 @@ export async function incrementFaqHitCount(db: D1Database, id: string): Promise<
 
 // reviewer R1-I2/F-2: messages_log は +09:00 付き、ai_faq_drafts は suffix なしの JST。
 // julianday() で数値化し、草案だけ -9h して UTC に揃えることで正しく「直近 24h」を数える。
+// pending 等は草案生成時点で枠を予約し、approved は承認 push の時刻で数える。これにより
+// 直近草案の承認を二重計上せず、24h 超の古い草案を今承認した送信も未計上にしない。
 export const RECENT_FAQ_REPLY_COUNT_SQL = `WITH target(friend_id) AS (VALUES (?))
        SELECT
          (SELECT COUNT(*)
@@ -155,13 +157,14 @@ export const RECENT_FAQ_REPLY_COUNT_SQL = `WITH target(friend_id) AS (VALUES (?)
             JOIN target t ON ml.friend_id = t.friend_id
            WHERE ml.direction = 'outgoing'
              AND ml.source = 'faq_bot'
-             AND ml.delivery_type = 'reply'
+             AND ml.delivery_type IN ('reply', 'push')
              AND julianday(ml.created_at) >= julianday('now', '-24 hours'))
          +
          (SELECT COUNT(*)
-            FROM ai_faq_drafts d
+           FROM ai_faq_drafts d
             JOIN target t ON d.friend_id = t.friend_id
-           WHERE julianday(d.created_at, '-9 hours') >= julianday('now', '-24 hours'))
+           WHERE d.status != 'approved'
+             AND julianday(d.created_at, '-9 hours') >= julianday('now', '-24 hours'))
          AS count`;
 
 /** 直近 24h の friend 別 FAQ 枠使用数 (実送信 + 未送信草案)。 */

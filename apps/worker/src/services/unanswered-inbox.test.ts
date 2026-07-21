@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { computeUnansweredInbox, countUnanswered } from './unanswered-inbox.js';
+import { HUMAN_APPROVED_REPLY_SQL, computeUnansweredInbox, countUnanswered } from './unanswered-inbox.js';
 
 // 候補 friend のメタ + タイムスタンプ
 interface InboxRow {
@@ -74,9 +74,11 @@ function stubDB(canned: {
       const isAutoReplies = sql.includes('FROM auto_replies');
       // 候補 friend クエリ (CANDIDATES_SQL): "FROM friends f" を含み、JOIN agg
       const isCandidates = sql.includes('FROM friends f') && sql.includes('JOIN agg');
-      // auto_reply/faq_bot outgoing クエリ: source 条件と outgoing を WHERE に含む
+      // auto_reply/faq_bot outgoing クエリ本体を識別する。last_manual CTE にも
+      // faq_bot push が現れるため、単なる文字列包含では incoming クエリを誤分類する。
       const isAutoReplyOutgoings =
-        (sql.includes("source='auto_reply'") || sql.includes("'faq_bot'")) && sql.includes('outgoing');
+        sql.includes("ml.source IN ('auto_reply','faq_bot')")
+        && sql.includes("ml.direction='outgoing'");
       // それ以外で messages_log を見るのは incomings クエリ
       const isRecentIncomings =
         sql.includes('messages_log') && !isAutoReplyOutgoings && !isCandidates;
@@ -97,6 +99,12 @@ function stubDB(canned: {
 }
 
 describe('computeUnansweredInbox', () => {
+  test('human-approved FAQ draft push is treated as a handled conversation boundary', () => {
+    expect(HUMAN_APPROVED_REPLY_SQL).toContain("source='manual'");
+    expect(HUMAN_APPROVED_REPLY_SQL).toContain("source='faq_bot'");
+    expect(HUMAN_APPROVED_REPLY_SQL).toContain("delivery_type='push'");
+  });
+
   test('incoming のみ / manual 無しの friend は 1 行として返る', async () => {
     const db = stubDB({
       rows: [
