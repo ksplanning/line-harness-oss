@@ -51,7 +51,15 @@ vi.mock('@/components/shared/image-uploader', () => ({
   default: ({ label }: { label: string }) => <div data-testid="chat-image-uploader">{label}</div>,
 }))
 vi.mock('@/components/chats/canned-response-picker', () => ({
-  default: () => <button type="button">定型文を選ぶ</button>,
+  default: ({ compact = false }: { compact?: boolean }) => (
+    <button
+      type="button"
+      aria-label={compact ? '定型文を選ぶ' : undefined}
+      data-compact={compact ? 'true' : 'false'}
+    >
+      {compact ? '□' : '定型文を選ぶ'}
+    </button>
+  ),
 }))
 vi.mock('@/components/shared/personalized-text-editor', () => ({
   default: ({
@@ -62,6 +70,11 @@ vi.mock('@/components/shared/personalized-text-editor', () => ({
     textareaProps,
     className,
     containerClassName,
+    toolbarPlacement = 'above',
+    compactToolbar = false,
+    toolbarClassName,
+    toolbarLeading,
+    toolbarTrailing,
   }: {
     value: string
     onChange: (value: string) => void
@@ -70,8 +83,24 @@ vi.mock('@/components/shared/personalized-text-editor', () => ({
     textareaProps?: React.TextareaHTMLAttributes<HTMLTextAreaElement>
     className?: string
     containerClassName?: string
+    toolbarPlacement?: 'above' | 'below'
+    compactToolbar?: boolean
+    toolbarClassName?: string
+    toolbarLeading?: React.ReactNode
+    toolbarTrailing?: React.ReactNode
   }) => (
     <div data-testid="personalized-editor" className={containerClassName}>
+      {toolbarPlacement === 'above' && (
+        <div role="group" aria-label="テキスト編集ツール" className={toolbarClassName}>
+          {toolbarLeading}
+          <button
+            type="button"
+            aria-label={compactToolbar ? '絵文字を選ぶ' : '絵文字'}
+            data-compact={compactToolbar ? 'true' : 'false'}
+          >☺</button>
+          {toolbarTrailing}
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         aria-label="メッセージを入力"
@@ -81,7 +110,17 @@ vi.mock('@/components/shared/personalized-text-editor', () => ({
         className={className}
         {...textareaProps}
       />
-      <button type="button" aria-label="絵文字を選ぶ">☺</button>
+      {toolbarPlacement === 'below' && (
+        <div role="group" aria-label="テキスト編集ツール" className={toolbarClassName}>
+          {toolbarLeading}
+          <button
+            type="button"
+            aria-label={compactToolbar ? '絵文字を選ぶ' : '絵文字'}
+            data-compact={compactToolbar ? 'true' : 'false'}
+          >☺</button>
+          {toolbarTrailing}
+        </div>
+      )}
     </div>
   ),
 }))
@@ -340,24 +379,33 @@ describe('個別チャットのインラインAI下書き', () => {
 })
 
 describe('返信コンポーザの余白', () => {
-  it('画像は小さいアイコンから到達でき、本文は4行・全幅になる', async () => {
+  it('添付・定型文・絵文字を下段1行へまとめ、本文を従来より2行以上広げる', async () => {
     await openChat()
 
     expect(screen.queryByTestId('chat-image-uploader')).toBeNull()
-    const attachButton = screen.getByRole('button', { name: '画像を添付' })
+    const toolbar = screen.getByRole('group', { name: 'テキスト編集ツール' })
+    const attachButton = within(toolbar).getByRole('button', { name: '画像を添付' })
     expect(attachButton.className).toContain('h-11')
     expect(attachButton.className).toContain('w-11')
+    expect(within(toolbar).getByRole('button', { name: '定型文を選ぶ' }).dataset.compact).toBe('true')
+    expect(within(toolbar).getByRole('button', { name: '絵文字を選ぶ' }).dataset.compact).toBe('true')
+    expect(within(toolbar).getByRole('button', { name: '送信' })).toBeTruthy()
+    expect(toolbar.className).toContain('flex-nowrap')
     fireEvent.click(attachButton)
     expect(screen.getByTestId('chat-image-uploader').textContent).toContain('画像を送る (任意)')
 
     const textarea = screen.getByRole('textbox', { name: 'メッセージを入力' }) as HTMLTextAreaElement
-    expect(textarea.rows).toBeGreaterThanOrEqual(4)
-    expect(textarea.className).toContain('min-h-')
+    const minimumHeight = Number(textarea.className.match(/min-h-\[(\d+)px\]/)?.[1])
+    expect(textarea.rows).toBeGreaterThanOrEqual(6)
+    expect(minimumHeight - 112).toBeGreaterThanOrEqual(40)
+    expect(minimumHeight).toBeLessThanOrEqual(Number.parseInt(textarea.style.maxHeight, 10))
+    expect(textarea.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByTestId('personalized-editor').className).toContain('w-full')
-    expect(screen.getByRole('button', { name: '絵文字を選ぶ' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '定型文を選ぶ' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '送信' })).toBeTruthy()
     expect(screen.getByText('送信キー:')).toBeTruthy()
+    expect(screen.getByTestId('inline-ai-draft')).toBeTruthy()
+    expect(apiMocks.updateDraft).not.toHaveBeenCalled()
+    expect(apiMocks.approveDraft).not.toHaveBeenCalled()
+    expect(apiMocks.discardDraft).not.toHaveBeenCalled()
   })
 })
 

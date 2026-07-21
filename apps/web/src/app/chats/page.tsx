@@ -1509,91 +1509,97 @@ export default function ChatsPage() {
                     <span>Shift+Enter</span>
                   </label>
                 </div>
-                {/* 定型文ピッカー — 選択で messageContent に挿入するだけ (送信経路には触れない) */}
-                <div className="mb-2">
-                  <CannedResponsePicker
-                    accountId={selectedAccountId}
-                    onSelect={(text) => {
-                      applyCannedSelection(text, setMessageContent)
-                      requestAnimationFrame(() => {
-                        const el = textareaRef.current
-                        if (!el) return
-                        el.focus()
-                        const n = el.value.length
-                        el.setSelectionRange(n, n)
-                      })
-                    }}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <PersonalizedTextEditor
-                    mode="emoji-only"
-                    textareaRef={textareaRef}
-                    rows={4}
-                    value={messageContent}
-                    onChange={(value) => {
-                      setMessageContent(value)
-                      if (selectedChatId && isMessageInputFocused && value.trim()) {
-                        void triggerLoadingAnimation(selectedChatId)
-                      }
-                    }}
-                    pickerPlacement="above"
-                    textareaProps={{
-                      style: { maxHeight: '200px', overflowY: 'auto' },
-                      onCompositionStart: () => { isComposingRef.current = true },
-                      onCompositionEnd: () => { isComposingRef.current = false },
-                      onFocus: () => {
-                        setIsMessageInputFocused(true)
-                        if (selectedChatId) {
-                          void triggerLoadingAnimation(selectedChatId)
-                        }
-                      },
-                      onBlur: () => setIsMessageInputFocused(false),
-                      onKeyDown: handleKeyDown,
-                    }}
-                    placeholder="メッセージを入力..."
-                    className="w-full min-h-[112px] text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none overflow-y-auto"
-                    containerClassName="w-full space-y-2"
-                  />
-                  <div className="flex items-end justify-between gap-2">
-                    <div className="relative">
-                      <button
-                        type="button"
-                        aria-label="画像を添付"
-                        aria-expanded={showImageUploader}
-                        onClick={() => setShowImageUploader((shown) => !shown)}
-                        className={`inline-flex h-11 w-11 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
-                          pendingImage
-                            ? 'border-green-500 bg-green-50 text-green-700'
-                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                        }`}
-                        title={pendingImage ? '送信する画像を確認・変更' : '画像を添付'}
-                      >
-                        <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828L18 9.828a4 4 0 10-5.657-5.657L5.757 10.757a6 6 0 108.486 8.486L20.5 13" />
-                        </svg>
-                      </button>
-                      {showImageUploader && (
-                        <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[40vh] w-[min(28rem,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
-                          <ImageUploader
-                            mode="line-image"
-                            value={pendingImage}
-                            onChange={setPendingImage}
-                            label="画像を送る (任意)"
-                          />
-                        </div>
-                      )}
-                    </div>
+                <PersonalizedTextEditor
+                  mode="emoji-only"
+                  ariaLabel="メッセージを入力"
+                  textareaRef={textareaRef}
+                  rows={6}
+                  value={messageContent}
+                  onChange={(value) => {
+                    setMessageContent(value)
+                    if (selectedChatId && isMessageInputFocused && value.trim()) {
+                      void triggerLoadingAnimation(selectedChatId)
+                    }
+                  }}
+                  pickerPlacement="above"
+                  toolbarPlacement="below"
+                  compactToolbar
+                  toolbarClassName="flex-nowrap items-center"
+                  toolbarLeading={(
+                    <>
+                      <div className="relative shrink-0">
+                        <button
+                          type="button"
+                          aria-label="画像を添付"
+                          aria-expanded={showImageUploader}
+                          onClick={() => setShowImageUploader((shown) => !shown)}
+                          className={`inline-flex h-11 w-11 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                            pendingImage
+                              ? 'border-green-500 bg-green-50 text-green-700'
+                              : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                          }`}
+                          title={pendingImage ? '送信する画像を確認・変更' : '画像を添付'}
+                        >
+                          <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828L18 9.828a4 4 0 10-5.657-5.657L5.757 10.757a6 6 0 108.486 8.486L20.5 13" />
+                          </svg>
+                        </button>
+                        {showImageUploader && (
+                          <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[40vh] w-[min(28rem,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
+                            <ImageUploader
+                              mode="line-image"
+                              value={pendingImage}
+                              onChange={setPendingImage}
+                              label="画像を送る (任意)"
+                            />
+                          </div>
+                        )}
+                      </div>
+                      {/* 選択は本文への挿入だけで、送信経路には触れない。 */}
+                      <CannedResponsePicker
+                        accountId={selectedAccountId}
+                        compact
+                        onSelect={(text) => {
+                          applyCannedSelection(text, setMessageContent)
+                          requestAnimationFrame(() => {
+                            const el = textareaRef.current
+                            if (!el) return
+                            el.focus()
+                            const n = el.value.length
+                            el.setSelectionRange(n, n)
+                          })
+                        }}
+                      />
+                    </>
+                  )}
+                  toolbarTrailing={(
                     <button
+                      type="button"
                       onClick={handleSendMessage}
                       disabled={sending || (!messageContent.trim() && !pendingImage)}
-                      className="min-h-[44px] px-5 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="ml-auto min-h-[44px] shrink-0 rounded-lg px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                       style={{ backgroundColor: '#06C755' }}
                     >
                       {sending ? '送信中...' : '送信'}
                     </button>
-                  </div>
-                </div>
+                  )}
+                  textareaProps={{
+                    style: { maxHeight: '200px', overflowY: 'auto' },
+                    onCompositionStart: () => { isComposingRef.current = true },
+                    onCompositionEnd: () => { isComposingRef.current = false },
+                    onFocus: () => {
+                      setIsMessageInputFocused(true)
+                      if (selectedChatId) {
+                        void triggerLoadingAnimation(selectedChatId)
+                      }
+                    },
+                    onBlur: () => setIsMessageInputFocused(false),
+                    onKeyDown: handleKeyDown,
+                  }}
+                  placeholder="メッセージを入力..."
+                  className="w-full min-h-[160px] overflow-y-auto rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+                  containerClassName="w-full space-y-2"
+                />
               </div>
             </>
           ) : null}

@@ -9,12 +9,13 @@ import { loadPickerItems } from '@/lib/canned-responses/picker-load'
 interface Props {
   accountId: string | null
   onSelect: (content: string) => void
+  compact?: boolean
 }
 
 // composer 上に開く定型文ピッカー。行選択で onSelect(content) を呼ぶ "だけ"。
 // 送信系 (api.chats.send / handleSendMessage / triggerLoadingAnimation) を import しない
 // = 構造的に送信不能 (failure_observable 筆頭を構造で潰す)。
-export default function CannedResponsePicker({ accountId, onSelect }: Props) {
+export default function CannedResponsePicker({ accountId, onSelect, compact = false }: Props) {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<CannedResponseData[]>([])
   const [loading, setLoading] = useState(false)
@@ -48,21 +49,41 @@ export default function CannedResponsePicker({ accountId, onSelect }: Props) {
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative shrink-0">
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={toggle}
           disabled={!accountId}
-          className="text-xs text-gray-600 border border-gray-300 rounded-md px-2.5 py-1 min-h-[36px] whitespace-nowrap hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          aria-label={compact ? '定型文を選ぶ' : undefined}
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          title={compact ? '定型文を選ぶ' : undefined}
+          className={compact
+            ? `inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 disabled:cursor-not-allowed disabled:opacity-50 ${
+                open
+                  ? 'border-green-500 bg-green-50 text-green-700'
+                  : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+              }`
+            : 'min-h-[36px] whitespace-nowrap rounded-md border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50'}
         >
-          📋 定型文
+          {compact ? (
+            <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5h6m-6 4h6m-6 4h4m-6 7h10a2 2 0 002-2V6a2 2 0 00-2-2h-1.5a2.5 2.5 0 00-5 0H7a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          ) : '📋 定型文'}
         </button>
-        <span className="text-[11px] text-gray-400">選ぶと下の入力欄に入ります（送信されません）</span>
+        {!compact && (
+          <span className="text-[11px] text-gray-400">選ぶと下の入力欄に入ります（送信されません）</span>
+        )}
       </div>
 
       {open && (
-        <div className="absolute bottom-full mb-2 left-0 z-30 bg-white rounded-lg shadow-lg border border-gray-200 max-h-64 overflow-y-auto w-72 max-w-[calc(100vw-2rem)]">
+        <div
+          role="dialog"
+          aria-label="定型文を選ぶ"
+          className="absolute bottom-full left-0 z-30 mb-2 max-h-64 w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg"
+        >
           <div className="px-3 py-2 text-[11px] text-gray-500 border-b border-gray-100 sticky top-0 bg-white">
             選ぶと下の入力欄に貼り付けます（送信されません）
           </div>

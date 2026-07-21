@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { InputHTMLAttributes, Ref, TextareaHTMLAttributes } from 'react'
+import type { InputHTMLAttributes, ReactNode, Ref, TextareaHTMLAttributes } from 'react'
 import type { FriendFieldDefinition } from '@line-crm/shared'
 
 export type PersonalizedTextEditorMode = 'variables-and-emoji' | 'emoji-only'
@@ -16,6 +16,11 @@ interface PersonalizedTextEditorProps {
   className?: string
   containerClassName?: string
   pickerPlacement?: 'above' | 'below'
+  toolbarPlacement?: 'above' | 'below'
+  compactToolbar?: boolean
+  toolbarClassName?: string
+  toolbarLeading?: ReactNode
+  toolbarTrailing?: ReactNode
   multiline?: boolean
   disabled?: boolean
   textareaRef?: Ref<HTMLTextAreaElement>
@@ -71,6 +76,11 @@ export default function PersonalizedTextEditor({
   className = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y',
   containerClassName = 'space-y-2',
   pickerPlacement = 'below',
+  toolbarPlacement = 'above',
+  compactToolbar = false,
+  toolbarClassName = 'flex-wrap',
+  toolbarLeading,
+  toolbarTrailing,
   multiline = true,
   disabled = false,
   textareaRef,
@@ -150,9 +160,13 @@ export default function PersonalizedTextEditor({
 
   const activeEmojiCategory = EMOJI_CATEGORIES.find((category) => category.id === emojiCategory)!
 
-  return (
-    <div className={containerClassName}>
-      <div className="relative flex flex-wrap gap-2">
+  const toolbar = (
+      <div
+        role="group"
+        aria-label="テキスト編集ツール"
+        className={`relative flex gap-2 ${toolbarClassName}`}
+      >
+        {toolbarLeading}
         {variablesEnabled && (
           <button
             type="button"
@@ -170,9 +184,10 @@ export default function PersonalizedTextEditor({
         )}
         <button
           type="button"
-          aria-label="絵文字"
+          aria-label={compactToolbar ? '絵文字を選ぶ' : '絵文字'}
           aria-expanded={emojiOpen}
           aria-haspopup="dialog"
+          title={compactToolbar ? '絵文字を選ぶ' : undefined}
           onClick={() => {
             if (!emojiOpen) {
               const stored = readRecentEmojis()
@@ -181,10 +196,21 @@ export default function PersonalizedTextEditor({
             setEmojiOpen((open) => !open)
             setVariablesOpen(false)
           }}
-          className="min-h-[44px] rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:border-green-500 hover:text-green-700"
+          className={compactToolbar
+            ? `inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                emojiOpen
+                  ? 'border-green-500 bg-green-50 text-green-700'
+                  : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+              }`
+            : 'min-h-[44px] rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:border-green-500 hover:text-green-700'}
         >
-          😊 絵文字
+          {compactToolbar ? (
+            <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 14s1.5 2 4 2 4-2 4-2m-5-4h.01M16 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          ) : '😊 絵文字'}
         </button>
+        {toolbarTrailing}
 
         {variablesOpen && (
           <div
@@ -278,6 +304,11 @@ export default function PersonalizedTextEditor({
           </div>
         )}
       </div>
+  )
+
+  return (
+    <div className={containerClassName}>
+      {toolbarPlacement === 'above' && toolbar}
 
       {multiline ? (
         <textarea
@@ -310,6 +341,7 @@ export default function PersonalizedTextEditor({
           onChange={(event) => onChange(event.target.value)}
         />
       )}
+      {toolbarPlacement === 'below' && toolbar}
       {variablesEnabled && (
         <p className="text-xs text-gray-400">
           「友だちの名前」は送信時に表示名へ置き換わります。名前がない場合は「お客様」になります。

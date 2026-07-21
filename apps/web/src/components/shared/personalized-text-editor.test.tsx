@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { api } from '@/lib/api';
@@ -184,6 +184,43 @@ describe('PersonalizedTextEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '絵文字' }));
 
     expect(screen.getByRole('dialog', { name: '絵文字を選ぶ' }).className).toContain('bottom-full');
+  });
+
+  test('コンパクト操作を入力欄の下へ置き、アイコンの名前とピッカー開閉を保つ', () => {
+    render(
+      <PersonalizedTextEditor
+        value=""
+        onChange={() => {}}
+        mode="emoji-only"
+        ariaLabel="返信本文"
+        toolbarPlacement="below"
+        compactToolbar
+        toolbarClassName="flex-nowrap items-center"
+        toolbarLeading={<button type="button" aria-label="画像を添付">添付</button>}
+        toolbarTrailing={<button type="button">送信</button>}
+      />,
+    );
+
+    const textarea = screen.getByRole('textbox', { name: '返信本文' });
+    const toolbar = screen.getByRole('group', { name: 'テキスト編集ツール' });
+    const emojiButton = within(toolbar).getByRole('button', { name: '絵文字を選ぶ' });
+    expect(textarea.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(toolbar).getByRole('button', { name: '画像を添付' })).toBeTruthy();
+    expect(within(toolbar).getByRole('button', { name: '送信' })).toBeTruthy();
+    expect(emojiButton.className).toContain('h-11');
+    expect(emojiButton.className).toContain('w-11');
+    expect(emojiButton.className).toContain('shrink-0');
+    expect(emojiButton.textContent).not.toContain('絵文字');
+    expect(emojiButton.getAttribute('title')).toBe('絵文字を選ぶ');
+    expect(emojiButton.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(emojiButton.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(emojiButton);
+    expect(emojiButton.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('dialog', { name: '絵文字を選ぶ' })).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(emojiButton.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('dialog', { name: '絵文字を選ぶ' })).toBeNull();
   });
 
   test('端末内の最近使った絵文字を先頭行へ出し、選択順・重複排除・最大8件を保存する', async () => {
