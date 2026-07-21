@@ -170,6 +170,26 @@ describe('自動返信ルール編集 — テンプレートパック展開', ()
       ],
     })))
   })
+
+  it('全アカウント共通ルールでも画面で選択中のアカウントからパックを読める', async () => {
+    m.packList.mockResolvedValue({ success: true, data: [
+      { id: 'pack-global', name: '共通案内', itemCount: 1 },
+    ] })
+    m.packGet.mockResolvedValue({ success: true, data: { items: [
+      { message_type: 'text', message_content: '共通パック本文' },
+    ] } })
+    render(<EditDialog draft={draft({ lineAccountId: null, responseContent: '' })} packAccountId="acc-selected" templates={templates} onClose={vi.fn()} onSaved={vi.fn()} />)
+
+    await waitFor(() => expect(m.packList).toHaveBeenCalledWith('acc-selected'))
+    fireEvent.change(screen.getByRole('combobox', { name: 'テンプレートパック' }), { target: { value: 'pack-global' } })
+    fireEvent.click(screen.getByRole('button', { name: 'パックを展開' }))
+    await waitFor(() => expect(m.packGet).toHaveBeenCalledWith('pack-global', 'acc-selected'))
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(m.update).toHaveBeenCalledWith('rule-1', expect.objectContaining({
+      lineAccountId: null,
+      responseMessages: [{ messageType: 'text', messageContent: '共通パック本文' }],
+    })))
+  })
 })
 
 describe('自動返信ルール編集 — Flexビルダーと既存テンプレート', () => {

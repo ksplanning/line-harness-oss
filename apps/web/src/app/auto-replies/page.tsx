@@ -261,6 +261,7 @@ export default function AutoRepliesPage() {
       {editing && (
         <EditDialog
           draft={editing}
+          packAccountId={selectedAccountId}
           templates={templates}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); load() }}

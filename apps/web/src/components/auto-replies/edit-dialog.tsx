@@ -30,6 +30,8 @@ export interface AutoReplyDraft {
 
 interface Props {
   draft: AutoReplyDraft
+  /** 共通ルールでパックを読むときだけ使う。ルール自体の適用範囲は変えない。 */
+  packAccountId?: string | null
   templates: Array<{ id: string; name: string; messageType: string; messageContent: string }>
   onClose: () => void
   onSaved: () => void
@@ -75,7 +77,7 @@ function imageValue(content: string) {
   return null
 }
 
-export default function EditDialog({ draft, templates, onClose, onSaved }: Props) {
+export default function EditDialog({ draft, packAccountId, templates, onClose, onSaved }: Props) {
   const [keyword, setKeyword] = useState(draft.keyword)
   const [matchType, setMatchType] = useState<'exact' | 'contains'>(draft.matchType)
   const [replyMode, setReplyMode] = useState<ReplyMode>(draft.responseType === 'silent' ? 'silent' : 'messages')
@@ -92,14 +94,15 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
   const [isActive, setIsActive] = useState(draft.isActive)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const resolvedPackAccountId = draft.lineAccountId ?? packAccountId ?? null
 
   useEffect(() => {
     let cancelled = false
-    if (!draft.lineAccountId) {
+    if (!resolvedPackAccountId) {
       setPacks([])
       return () => { cancelled = true }
     }
-    api.templatePacks.list(draft.lineAccountId)
+    api.templatePacks.list(resolvedPackAccountId)
       .then((result) => {
         if (!cancelled && result.success) setPacks(result.data)
       })
@@ -107,7 +110,7 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
         if (!cancelled) setPacks([])
       })
     return () => { cancelled = true }
-  }, [draft.lineAccountId])
+  }, [resolvedPackAccountId])
 
   const replaceMessages = (next: AutoReplyResponseMessage[]) => {
     messagesRef.current = next
@@ -164,12 +167,12 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
   }
 
   const expandPack = async () => {
-    if (!draft.lineAccountId) { setError('テンプレートパックはLINEアカウントを選んでから使えます'); return }
+    if (!resolvedPackAccountId) { setError('テンプレートパックはLINEアカウントを選んでから使えます'); return }
     if (!selectedPackId) { setError('テンプレートパックを選んでください'); return }
     setPackLoading(true)
     setError('')
     try {
-      const result = await api.templatePacks.get(selectedPackId, draft.lineAccountId)
+      const result = await api.templatePacks.get(selectedPackId, resolvedPackAccountId)
       if (!result.success) throw new Error(result.error ?? 'パックの読み込みに失敗しました')
       const expanded = packToFormMessages(result.data.items)
       const latestMessages = messagesRef.current
