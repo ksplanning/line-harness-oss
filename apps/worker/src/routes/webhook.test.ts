@@ -471,6 +471,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     incomingText = '営業時間は？',
     autoReplies: Parameters<typeof makeStmt>[0] = [],
     autoReplyLoadError = false,
+    sourceUpdateError = false,
   ) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     existingFriend();
@@ -489,6 +490,9 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     const preparedStatements: Array<{ sql: string; statement: ReturnType<typeof makeStmt> }> = [];
     const prepare = vi.fn((sql: string) => {
       const statement = sql.includes('FROM auto_replies') ? stmt : makeStmt();
+      if (sourceUpdateError && sql.includes('UPDATE messages_log SET source = ? WHERE id = ?')) {
+        statement.run.mockRejectedValueOnce(new Error('source update failed'));
+      }
       preparedStatements.push({ sql, statement });
       return statement;
     });
@@ -604,6 +608,43 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
   });
 
+  test('[fail-closed] a response-schedule lookup error logs the message and leaves it unread', async () => {
+    vi.mocked(getEffectiveResponseSchedule).mockRejectedValueOnce(new Error('schedule query failed'));
+
+    const { db, incomingStatement } = await postTextWebhook({}, '営業時間', [{
+      id: 'auto-schedule-error',
+      keyword: '営業時間',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: '10時からです',
+      response_messages: null,
+      template_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    }]);
+
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '営業時間',
+      'user_unmatched',
+      expect.any(String),
+    );
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(fireEvent).toHaveBeenCalledWith(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: '営業時間', matched: false },
+        replyToken: 'reply-token',
+      },
+      'env-default-token',
+      null,
+    );
+  });
+
   test('[b] an account-mismatched rule stays outside the candidate query and the message stays unread', async () => {
     vi.mocked(getLineAccounts).mockResolvedValue([{
       id: 'acc-1',
@@ -667,7 +708,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     vi.mocked(expandVariables).mockImplementation((content) => `展開:${content}`);
     vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
 
-    const { incomingStatement } = await postTextWebhook({}, '資料', [{
+    const { incomingStatement, preparedStatements } = await postTextWebhook({}, '資料', [{
       id: 'auto-multi',
       keyword: '資料',
       match_type: 'exact',
@@ -693,10 +734,44 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       expect.any(String),
       'friend-1',
       '資料',
+      'user_unmatched',
+      expect.any(String),
+    );
+    const sourceUpdate = preparedStatements.find(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    );
+    expect(sourceUpdate?.statement.bind).toHaveBeenCalledWith(
       'auto_reply_keyword',
       expect.any(String),
     );
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('[fail-closed] a sent reply with an unpersisted handled marker remains unread', async () => {
+    vi.mocked(expandVariables).mockImplementation((content) => content);
+    vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
+
+    const { db, incomingStatement } = await postTextWebhook({}, '資料', [{
+      id: 'auto-marker-error',
+      keyword: '資料',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: '資料を送ります',
+      response_messages: null,
+      template_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    }], false, true);
+
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '資料',
+      'user_unmatched',
+      expect.any(String),
+    );
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
   });
 
   test('a legacy matched rule still sends exactly its original single response', async () => {
@@ -724,7 +799,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     vi.mocked(expandVariables).mockImplementation((content) => content);
     vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
 
-    const { db, preparedStatements } = await postTextWebhook({}, '壊れた設定', [{
+    const { db, incomingStatement } = await postTextWebhook({}, '壊れた設定', [{
       id: 'auto-broken',
       keyword: '壊れた設定',
       match_type: 'exact',
@@ -738,10 +813,10 @@ describe('POST /webhook — FAQ bot flag gate', () => {
 
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
     expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
-    const sourceUpdate = preparedStatements.find(({ sql }) =>
-      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
-    );
-    expect(sourceUpdate?.statement.bind).toHaveBeenCalledWith(
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '壊れた設定',
       'user_unmatched',
       expect.any(String),
     );

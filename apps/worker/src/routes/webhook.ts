@@ -580,20 +580,32 @@ async function handleEvent(
     }
 
     // 応答時間帯 (G28): schedule は 1 度だけ読み、登録キーワードの source と
-    // 実際の返信経路で同じ抑止判定を使う。返信を止める場合は fail-closed で未読にする。
-    const responseSchedule = await getEffectiveResponseSchedule(db, lineAccountId);
+    // 実際の返信経路で同じ抑止判定を使う。読込失敗も返信を止め、fail-closed で未読にする。
+    let responseSchedule: Awaited<ReturnType<typeof getEffectiveResponseSchedule>> = null;
+    let responseScheduleLoadFailed = false;
+    try {
+      responseSchedule = await getEffectiveResponseSchedule(db, lineAccountId);
+    } catch (err) {
+      responseScheduleLoadFailed = true;
+      console.error('Failed to load response schedule for auto-reply handling', err);
+    }
     const businessHoursSuppressed = !!(
       responseSchedule?.isEnabled && isWithinBusinessHours(responseSchedule, Date.now())
     );
     const skipAutoReply = !!(
-      responseSchedule?.isEnabled
-      && (
-        businessHoursSuppressed
-        || responseSchedule.outsideHoursMode === 'away_message'
-        || responseSchedule.outsideHoursMode === 'none'
+      responseScheduleLoadFailed
+      || (
+        responseSchedule?.isEnabled
+        && (
+          businessHoursSuppressed
+          || responseSchedule.outsideHoursMode === 'away_message'
+          || responseSchedule.outsideHoursMode === 'none'
+        )
       )
     );
-    const incomingSource = matchedRule && !skipAutoReply
+    const incomingSource = matchedRule
+      && !skipAutoReply
+      && matchedRule.response_type === 'silent'
       ? AUTO_REPLY_KEYWORD_SOURCE
       : UNMATCHED_USER_SOURCE;
 
@@ -769,9 +781,13 @@ async function handleEvent(
           )
           .bind(outLogId, friend.id, wbAutoReplyPayload.messageType, wbAutoReplyPayload.content, jstNow())
           .run();
+        await db
+          .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
+          .bind(AUTO_REPLY_KEYWORD_SOURCE, logId)
+          .run();
         matched = true;
       } catch (err) {
-        console.error('Failed to send auto-reply', err);
+        console.error('Failed to complete auto-reply handling', err);
       }
     }
 
@@ -794,18 +810,8 @@ async function handleEvent(
       }
     }
 
-    // auto_replies にマッチしなかった = 自発メッセージ → unread にする
+    // 実際の自動応答で処理されなかったメッセージは unread にする。
     if (!matched) {
-      if (incomingSource === AUTO_REPLY_KEYWORD_SOURCE) {
-        try {
-          await db
-            .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
-            .bind(UNMATCHED_USER_SOURCE, logId)
-            .run();
-        } catch (err) {
-          console.error('Failed to mark unsent auto-reply unread', err);
-        }
-      }
       await upsertChatOnMessage(db, friend.id);
     }
 
