@@ -102,6 +102,7 @@ describe('scheduled rich menu rule work', () => {
     expect(headers.get('x-rich-menu-timestamp')).toMatch(/^\d+$/);
     expect(headers.get('x-rich-menu-nonce')).toMatch(/^[0-9a-f-]{36}$/);
     expect(headers.get('x-rich-menu-signature')).toMatch(/^[0-9a-f]{64}$/);
+    expect(headers.get('user-agent')).toBe('line-harness-worker/0.0.0-dev');
     expect(JSON.stringify(isolatedFetch.mock.calls[0])).not.toContain('secret');
     expect(workSpy).not.toHaveBeenCalled();
   });
@@ -197,6 +198,36 @@ describe('scheduled rich menu rule work', () => {
     expect(isolatedFetch).toHaveBeenCalledTimes(1);
   });
 
+  test('records the continuation dispatch failure reason', async () => {
+    workSpy.mockResolvedValueOnce({ attempted: 2, queueProcessed: 0, jobsCompleted: 0 });
+    const bindings = env();
+    await worker.scheduled(tick('*/5 * * * *'), bindings as never, CTX);
+    const signedHeaders = new Headers(isolatedFetch.mock.calls[0][1]?.headers);
+    isolatedFetch.mockClear();
+    isolatedFetch.mockResolvedValueOnce(new Response('blocked', { status: 403 }));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://worker.example.test/internal/rich-menu-rule-work', {
+          method: 'POST',
+          headers: signedHeaders,
+        }),
+        bindings as never,
+        CTX,
+      );
+
+      expect(response.status).toBe(204);
+      await waitUntil.mock.calls[0][0];
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[rich-menu-rules] continuation dispatch error',
+        expect.objectContaining({ message: 'isolated rich menu worker returned 403' }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('the isolated endpoint rejects an expired signed request', async () => {
     const signedAt = Date.parse('2026-07-21T10:00:00.000Z');
     const clock = vi.spyOn(Date, 'now').mockReturnValue(signedAt);
@@ -239,15 +270,24 @@ describe('scheduled rich menu rule work', () => {
   });
 
   test.each([
-    ['non-2xx', async () => new Response('unavailable', { status: 503 })],
-    ['network rejection', async () => { throw new TypeError('network unavailable'); }],
-  ])('does not fall back into the shared cron budget after %s', async (_label, implementation) => {
+    ['non-2xx', async () => new Response('unavailable', { status: 503 }), 'isolated rich menu worker returned 503'],
+    ['network rejection', async () => { throw new TypeError('network unavailable'); }, 'network unavailable'],
+  ])('records %s without falling back into the shared cron budget', async (_label, implementation, message) => {
     isolatedFetch.mockImplementationOnce(implementation);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    await worker.scheduled(tick('*/5 * * * *'), env() as never, CTX);
+    try {
+      await worker.scheduled(tick('*/5 * * * *'), env() as never, CTX);
 
-    expect(isolatedFetch).toHaveBeenCalledTimes(1);
-    expect(workSpy).not.toHaveBeenCalled();
+      expect(isolatedFetch).toHaveBeenCalledTimes(1);
+      expect(workSpy).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[rich-menu-rules] isolated dispatch error',
+        expect.objectContaining({ message }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('fails closed when isolated dispatch configuration is missing', async () => {

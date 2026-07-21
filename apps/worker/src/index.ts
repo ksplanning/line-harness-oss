@@ -30,6 +30,7 @@ import { runEventBookingExpirer } from './services/event-booking-expirer.js';
 import { sendEventBookingNotification } from './services/event-booking-notifier.js';
 import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
+import { BUNDLE_VERSION } from './_version.js';
 import {
   enqueueRichMenuRuleScheduleTransitions,
   processRichMenuRuleWork,
@@ -370,6 +371,7 @@ async function dispatchRichMenuRuleWork(env: Env['Bindings']): Promise<void> {
   const response = await fetch(target.toString(), {
     method: 'POST',
     headers: {
+      'User-Agent': `line-harness-worker/${BUNDLE_VERSION}`,
       'x-rich-menu-timestamp': timestamp,
       'x-rich-menu-nonce': nonce,
       'x-rich-menu-signature': signature,
@@ -536,8 +538,8 @@ app.post(RICH_MENU_RULE_WORK_PATH, async (c) => {
       // invocation's LINE/subrequest budget. Continue immediately instead of
       // making the owner wait for the next five-minute cron tick.
       c.executionCtx.waitUntil(
-        dispatchRichMenuRuleWork(c.env).catch(() => {
-          console.error('[rich-menu-rules] continuation dispatch error');
+        dispatchRichMenuRuleWork(c.env).catch((error) => {
+          console.error('[rich-menu-rules] continuation dispatch error', error);
         }),
       );
     }
@@ -929,8 +931,8 @@ async function scheduled(
     }
     try {
       await dispatchRichMenuRuleWork(env);
-    } catch {
-      console.error('[rich-menu-rules] isolated dispatch error');
+    } catch (error) {
+      console.error('[rich-menu-rules] isolated dispatch error', error);
     }
   }
 
