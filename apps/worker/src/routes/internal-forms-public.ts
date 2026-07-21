@@ -15,7 +15,6 @@ import {
 import {
   buildRedirectTargetUrl,
   evaluateInternalFormLogic,
-  nextInternalFormFieldId,
   type FormDesign,
   type InternalFormChannel,
   type InternalFormLogicAnswers,
@@ -721,92 +720,11 @@ function runtimeScript(): string {
   </script>`;
 }
 
-function logicClientScript(definition: InternalFormDefinition): string {
+function logicClientMarkup(definition: InternalFormDefinition): string {
   const fields = definition.fields.map((field) => ({ id: field.id, position: field.position, type: field.type }));
-  return `<script>
-(() => {
-  const evaluateInternalFormLogic = ${evaluateInternalFormLogic.toString()};
-  const nextInternalFormFieldId = ${nextInternalFormFieldId.toString()};
-  const fields = ${scriptJson(fields)};
-  const logic = ${scriptJson(definition.logic)};
-  const form = document.querySelector('[data-internal-form]');
-  if (!form) return;
-  const channel = form.dataset.channel === 'line' ? 'line' : 'web';
-  const formType = form.dataset.formType === 'multi_step' ? 'multi_step' : 'simple';
-  const submitButton = form.querySelector('[data-submit]');
-  const submitLabel = submitButton.textContent;
-  const wrappers = Array.from(form.querySelectorAll('[data-field-id]'));
-  const wrapperById = (id) => wrappers.find((wrapper) => wrapper.dataset.fieldId === id);
-  const fieldType = (id) => fields.find((field) => field.id === id)?.type;
-  const isQuestion = (id) => Boolean(wrapperById(id))
-    && !['section', 'page_break', 'video', 'image'].includes(fieldType(id));
-  let currentFieldId = null;
-
-  const answers = () => {
-    const result = {};
-    for (const wrapper of wrappers) {
-      const id = wrapper.dataset.fieldId;
-      const controls = Array.from(wrapper.querySelectorAll('input, textarea, select'));
-      const checks = controls.filter((control) => control.type === 'checkbox');
-      const radios = controls.filter((control) => control.type === 'radio');
-      if (checks.length) result[id] = checks.filter((control) => control.checked).map((control) => control.value);
-      else if (radios.length) result[id] = radios.find((control) => control.checked)?.value ?? '';
-      else if (controls[0]) result[id] = controls[0].value;
-    }
-    return result;
-  };
-
-  const nextQuestion = (state, from) => {
-    let next = nextInternalFormFieldId(fields, state, from);
-    while (next && !isQuestion(next)) {
-      next = nextInternalFormFieldId(fields, state, next);
-    }
-    return next;
-  };
-
-  const apply = () => {
-    const state = evaluateInternalFormLogic(fields, logic, answers(), channel);
-    const logicVisible = new Set(state.visibleFieldIds);
-    const questions = state.visibleFieldIds.filter(isQuestion);
-    if (!currentFieldId || !logicVisible.has(currentFieldId)) currentFieldId = questions[0] ?? null;
-    for (const wrapper of wrappers) {
-      const visible = logicVisible.has(wrapper.dataset.fieldId);
-      const displayed = formType === 'simple' ? visible : visible && wrapper.dataset.fieldId === currentFieldId;
-      wrapper.hidden = !displayed;
-      for (const control of wrapper.querySelectorAll('input, textarea, select')) {
-        control.disabled = !visible;
-        if (control.dataset.required === 'true') control.required = visible;
-      }
-      if (wrapper.dataset.requiredGroup === 'true') {
-        const first = wrapper.querySelector('input[type="checkbox"]');
-        const checked = wrapper.querySelector('input[type="checkbox"]:checked');
-        first?.setCustomValidity(visible && !checked ? '1つ以上選択してください' : '');
-      }
-    }
-    if (formType === 'multi_step') {
-      const next = currentFieldId ? nextQuestion(state, currentFieldId) : null;
-      submitButton.type = next ? 'button' : 'submit';
-      submitButton.textContent = next ? '次へ' : submitLabel;
-      submitButton.dataset.nextFieldId = next ?? '';
-    }
-  };
-
-  form.addEventListener('input', apply);
-  form.addEventListener('change', apply);
-  submitButton.addEventListener('click', (event) => {
-    if (formType !== 'multi_step' || submitButton.type !== 'button') return;
-    event.preventDefault();
-    const current = currentFieldId ? wrapperById(currentFieldId) : null;
-    const invalid = current && Array.from(current.querySelectorAll('input, textarea, select'))
-      .find((control) => !control.reportValidity());
-    if (invalid) return;
-    currentFieldId = submitButton.dataset.nextFieldId || null;
-    apply();
-    wrapperById(currentFieldId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-  apply();
-})();
-</script>`;
+  const config = scriptJson({ fields, logic: definition.logic });
+  return `<script type="application/json" data-internal-form-logic-config>${config}</script>
+<script type="module" src="/assets/internal-form-logic.js" data-internal-form-logic-client></script>`;
 }
 
 function postalClientScript(): string {
@@ -970,7 +888,7 @@ function renderFormPage(
       </form>
     </div>
     ${runtimeScript()}
-    ${usesLogicRuntime ? logicClientScript(definition) : ''}
+    ${usesLogicRuntime ? logicClientMarkup(definition) : ''}
     ${hasPostal ? postalClientScript() : ''}`, definition.design);
 }
 

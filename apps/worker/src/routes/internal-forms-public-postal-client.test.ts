@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
+import { initInternalFormLogic } from '../client/internal-form-logic.js';
 import { internalFormsPublic } from './internal-forms-public.js';
 import type { Env } from '../index.js';
 
@@ -224,11 +225,9 @@ describe('internal form postal autofill client', () => {
     app.route('/', internalFormsPublic);
     const response = await app.request('/f/postal-form', {}, env());
     const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
-    const script = Array.from(parsed.querySelectorAll('script'))
-      .find((candidate) => candidate.textContent?.includes('nextInternalFormFieldId'));
-    expect(script, '分岐クライアントスクリプト').toBeTruthy();
+    expect(parsed.querySelector('[data-internal-form-logic-config]'), '分岐クライアント設定').toBeTruthy();
     document.body.innerHTML = parsed.body.innerHTML;
-    window.eval(script!.textContent ?? '');
+    initInternalFormLogic();
 
     const button = document.querySelector('[data-submit]') as HTMLButtonElement;
     expect(button.textContent).toBe('次へ');
@@ -261,14 +260,12 @@ describe('internal form postal autofill client', () => {
     app.route('/', internalFormsPublic);
     const response = await app.request('/f/postal-form', {}, env());
     const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
-    const script = Array.from(parsed.querySelectorAll('script'))
-      .find((candidate) => candidate.textContent?.includes('nextInternalFormFieldId'));
-    expect(script, '分岐クライアントスクリプト').toBeTruthy();
+    expect(parsed.querySelector('[data-internal-form-logic-config]'), '分岐クライアント設定').toBeTruthy();
     document.body.innerHTML = parsed.body.innerHTML;
     for (const wrapper of document.querySelectorAll('[data-field-id]')) {
       (wrapper as HTMLElement).scrollIntoView = vi.fn();
     }
-    window.eval(script!.textContent ?? '');
+    initInternalFormLogic();
 
     expect(document.querySelector('[data-field-id="participant"]')).toBeNull();
     const button = document.querySelector('[data-submit]') as HTMLButtonElement;

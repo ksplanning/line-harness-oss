@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./internal-form-logic": {
+      "types": "./dist/internal-form-logic.d.ts",
+      "import": "./dist/internal-form-logic.js",
+      "default": "./src/internal-form-logic.ts"
     }
   },
   "files": [

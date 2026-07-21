@@ -18,8 +18,8 @@ type LogicField = Pick<HarnessField, 'id' | 'position' | 'type'>;
 /**
  * Internal 公開画面と builder preview が共有する分岐評価器。
  *
- * 関数本体は外部 helper を参照しない。Worker の HTML renderer はこの関数を
- * `toString()` で同梱するため、公開画面と React preview が同じ実装を実行できる。
+ * 公開画面のビルド済み client asset と React preview の両方が、この module を
+ * 通常 import して同じ実装を実行する。
  */
 export function evaluateInternalFormLogic(
   fields: LogicField[],

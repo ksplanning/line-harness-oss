@@ -6,10 +6,12 @@ import {
   DEFAULT_VIDEO_HEIGHT,
   IMAGE_WIDTH_TO_MAXWIDTH,
   buildRedirectTargetUrl,
-  evaluateInternalFormLogic,
-  nextInternalFormFieldId,
   normalizeFormRedirect,
 } from '@line-crm/shared'
+import {
+  evaluateInternalFormLogic,
+  nextInternalFormFieldId,
+} from '@line-crm/shared/internal-form-logic'
 import type {
   HarnessField,
   HarnessLogicRule,

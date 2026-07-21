@@ -306,12 +306,14 @@ describe('internal public form GET /f/:formId', () => {
     const html = await response.text();
 
     expect(response.status).toBe(200);
-    expect(html).toContain('function evaluateInternalFormLogic');
+    expect(html).toContain('data-internal-form-logic-config');
+    expect(html).toContain('src="/assets/internal-form-logic.js"');
+    expect(html).not.toContain('function evaluateInternalFormLogic');
     expect(html).toContain('data-field-id="page-a"');
     expect(html).toContain('data-field-id="page-b"');
     expect(html).toContain('data-form-type="simple"');
     expect(html).toContain('data-channel="web"');
-    expect(html).toContain("control.disabled = !visible");
+    expect(html).toContain('"sourceFieldId":"kind"');
   });
 
   test('別 LINE account の署名済み fr_id は web 経由として匿名表示する', async () => {
