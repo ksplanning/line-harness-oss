@@ -11,8 +11,10 @@ import {
 } from '@line-crm/db';
 import {
   isInternalOnlyFieldType,
+  normalizeFormDesign,
   normalizeFormCopy,
   validateHarnessField,
+  type FormDesign,
   type HarnessField,
 } from '@line-crm/shared';
 import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/form-image-upload.js';
@@ -273,6 +275,19 @@ internalFormsAdmin.put('/api/forms-advanced/:id/internal-definition', async (c, 
       fields,
       logic: [],
     };
+    const designProvided = hasOwn(body, 'design');
+    const designImagesProvided = hasOwn(body, 'designImages');
+    let designToResolve: FormDesign | undefined;
+    if (designProvided || designImagesProvided) {
+      const currentDesign = currentDefinition.design
+        && typeof currentDefinition.design === 'object'
+        && !Array.isArray(currentDefinition.design)
+        ? currentDefinition.design as FormDesign
+        : {};
+      designToResolve = designProvided
+        ? { ...currentDesign, ...normalizeFormDesign(body.design) }
+        : { ...currentDesign };
+    }
     if (hasOwn(body, 'formCopy')) {
       const formCopy = normalizeFormCopy(body.formCopy);
       if (Object.keys(formCopy).length > 0) nextDefinition.formCopy = formCopy;
@@ -289,16 +304,34 @@ internalFormsAdmin.put('/api/forms-advanced/:id/internal-definition', async (c, 
     const imageResult = await resolveInBodyImageUploads(
       fields,
       (dataUrl) => uploadImageDataUrlToR2(c.env, dataUrl, id, uploadOrigin),
+      designProvided || designImagesProvided
+        ? {
+            design: designToResolve,
+            designImages: designImagesProvided ? body.designImages : undefined,
+          }
+        : undefined,
     );
     if (!imageResult.ok) {
-      return c.json({ success: false, error: `画像のアップロードに失敗しました：${imageResult.error}` }, 400);
+      return c.json({ success: false, error: '画像の保存に失敗しました (サイズ/形式)' }, 400);
     }
     nextDefinition.fields = fields;
+    if (designProvided || designImagesProvided) {
+      if (imageResult.design && Object.keys(imageResult.design).length > 0) {
+        nextDefinition.design = imageResult.design;
+      } else {
+        delete nextDefinition.design;
+      }
+    }
+
+    const definitionJson = JSON.stringify(nextDefinition);
+    if (definitionJson.includes('data:image')) {
+      return c.json({ success: false, error: '画像の保存に失敗しました (サイズ/形式)' }, 400);
+    }
 
     const existingMap = await getFormalooFieldMap(c.env.DB, id);
     const existingSlugs = new Map(existingMap.map((row) => [row.id, row.formaloo_field_slug]));
     await saveFormalooDefinition(c.env.DB, id, {
-      definitionJson: JSON.stringify(nextDefinition),
+      definitionJson,
       fields: fields.map((field) => ({
         id: field.id,
         formalooFieldSlug: existingSlugs.get(field.id) ?? null,

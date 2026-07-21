@@ -1,10 +1,12 @@
 import { readFileSync, readdirSync } from 'node:fs';
+import { Buffer } from 'node:buffer';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createRole, jstNow, setFormalooSyncState, setRolePermissions } from '@line-crm/db';
+import type { FormDesignImages, HarnessField } from '@line-crm/shared';
 import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formalooInstantWebhook } from './formaloo-instant-webhook.js';
@@ -16,13 +18,33 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
 const BENIGN = /duplicate column name|already exists/i;
 
-function d1(db: Database.Database): D1Database {
+type D1MockOptions = {
+  maxBindingBytes?: number;
+  observedBindingBytes?: number[];
+};
+
+function bindingByteLength(value: unknown): number {
+  if (typeof value === 'string') return new TextEncoder().encode(value).byteLength;
+  if (value instanceof ArrayBuffer) return value.byteLength;
+  if (ArrayBuffer.isView(value)) return value.byteLength;
+  return 0;
+}
+
+function d1(db: Database.Database, options: D1MockOptions = {}): D1Database {
   return {
     prepare(sql: string) {
       const statement = db.prepare(sql);
       let params: unknown[] = [];
       const api = {
-        bind(...args: unknown[]) { params = args; return api; },
+        bind(...args: unknown[]) {
+          const sizes = args.map(bindingByteLength);
+          options.observedBindingBytes?.push(...sizes);
+          if (options.maxBindingBytes !== undefined && sizes.some((size) => size > options.maxBindingBytes!)) {
+            throw new Error(`D1 binding exceeds ${options.maxBindingBytes} bytes`);
+          }
+          params = args;
+          return api;
+        },
         async first<T>() { return (statement.get(...(params as never[])) as T) ?? null; },
         async all<T>() { return { results: statement.all(...(params as never[])) as T[] }; },
         async run() {
@@ -59,6 +81,62 @@ const DEFINITION = {
   ],
   logic: [],
 };
+
+const D1_BINDING_LIMIT_BYTES = 1024 * 1024;
+const PNG_SIGNATURE = Buffer.from('\u0089PNG\r\n\u001a\n', 'latin1');
+const TWO_MIB_PNG_DATA_URL = `data:image/png;base64,${Buffer.concat([
+  PNG_SIGNATURE,
+  Buffer.alloc(2 * 1024 * 1024 - PNG_SIGNATURE.byteLength),
+]).toString('base64')}`;
+const SMALL_PNG_DATA_URL = `data:image/png;base64,${PNG_SIGNATURE.toString('base64')}`;
+
+type InternalDecorationImagePlacement = `design.${keyof FormDesignImages}` | `field.${Extract<HarnessField['type'], 'image'>}`;
+const INTERNAL_DECORATION_IMAGE_PLACEMENTS = [
+  'design.logo',
+  'design.cover',
+  'field.image',
+] as const satisfies readonly InternalDecorationImagePlacement[];
+type MissingInternalDecorationImagePlacement = Exclude<
+  InternalDecorationImagePlacement,
+  (typeof INTERNAL_DECORATION_IMAGE_PLACEMENTS)[number]
+>;
+const ALL_INTERNAL_DECORATION_IMAGE_PLACEMENTS_ARE_COVERED: MissingInternalDecorationImagePlacement extends never
+  ? true
+  : never = true;
+
+function imageSaveBody(placement: InternalDecorationImagePlacement, dataUrl: string) {
+  const fields = placement === 'field.image'
+    ? [{
+        id: 'hero',
+        type: 'image',
+        label: 'ヘッダー画像',
+        required: false,
+        position: 0,
+        config: {
+          imageWidth: 'full',
+          imageUpload: { intent: 'replace', dataUrl, mimeType: 'image/png', filename: 'hero.png' },
+        },
+      }]
+    : DEFINITION.fields;
+  const designImages = placement === 'design.logo'
+    ? { logo: { intent: 'replace', dataUrl, mimeType: 'image/png', filename: 'logo.png' } }
+    : placement === 'design.cover'
+      ? { cover: { intent: 'replace', dataUrl, mimeType: 'image/png', filename: 'background.png' } }
+      : undefined;
+  return {
+    fields,
+    logic: [],
+    design: { themeColor: '#06C755' },
+    ...(designImages ? { designImages } : {}),
+  };
+}
+
+function storedImageUrl(definition: Record<string, unknown>, placement: InternalDecorationImagePlacement): unknown {
+  if (placement === 'design.logo') return (definition.design as Record<string, unknown>)?.logoUrl;
+  if (placement === 'design.cover') return (definition.design as Record<string, unknown>)?.backgroundImageUrl;
+  const field = (definition.fields as Array<{ config?: Record<string, unknown> }>)[0];
+  return field?.config?.imageUrl;
+}
 
 let raw: Database.Database;
 let DB: D1Database;
@@ -263,6 +341,135 @@ describe('internal form render backend selector', () => {
 });
 
 describe('internal definition save boundary', () => {
+  test('2 MiB fixture は logo / cover / image field の全 upload slot を静的列挙する', () => {
+    expect(ALL_INTERNAL_DECORATION_IMAGE_PLACEMENTS_ARE_COVERED).toBe(true);
+    expect(INTERNAL_DECORATION_IMAGE_PLACEMENTS).toEqual([
+      'design.logo',
+      'design.cover',
+      'field.image',
+    ]);
+  });
+
+  test.each(INTERNAL_DECORATION_IMAGE_PLACEMENTS)(
+    '2 MiB PNG at %s is moved to R2 before every D1 binding',
+    async (placement) => {
+      seedForm('internal-image-form', 'internal');
+      const observedBindingBytes: number[] = [];
+      DB = d1(raw, { maxBindingBytes: D1_BINDING_LIMIT_BYTES, observedBindingBytes });
+      const puts: Array<{ key: string; size: number }> = [];
+      bindingOverrides = {
+        IMAGES: {
+          put: vi.fn(async (key: string, value: Uint8Array) => {
+            puts.push({ key, size: value.byteLength });
+          }),
+        } as unknown as R2Bucket,
+      };
+
+      const response = await call(
+        'PUT',
+        '/api/forms-advanced/internal-image-form/internal-definition',
+        imageSaveBody(placement, TWO_MIB_PNG_DATA_URL),
+      );
+
+      expect(response.status).toBe(200);
+      expect(puts).toHaveLength(1);
+      expect(puts[0].size).toBe(2 * 1024 * 1024);
+      const stored = raw.prepare('SELECT definition_json FROM formaloo_forms WHERE id = ?')
+        .get('internal-image-form') as { definition_json: string };
+      const definition = JSON.parse(stored.definition_json) as Record<string, unknown>;
+      expect(stored.definition_json).not.toContain('data:image');
+      expect(storedImageUrl(definition, placement)).toBe(`https://api.example.test/images/${puts[0].key}`);
+      expect(Math.max(...observedBindingBytes)).toBeLessThanOrEqual(D1_BINDING_LIMIT_BYTES);
+    },
+  );
+
+  test('one save resolves all decoration placements and leaves zero data:image bytes in definition_json', async () => {
+    seedForm('internal-all-images', 'internal');
+    const observedBindingBytes: number[] = [];
+    DB = d1(raw, { maxBindingBytes: D1_BINDING_LIMIT_BYTES, observedBindingBytes });
+    const puts: Array<{ key: string; size: number }> = [];
+    bindingOverrides = {
+      IMAGES: {
+        put: vi.fn(async (key: string, value: Uint8Array) => {
+          puts.push({ key, size: value.byteLength });
+        }),
+      } as unknown as R2Bucket,
+    };
+    const fieldBody = imageSaveBody('field.image', TWO_MIB_PNG_DATA_URL);
+
+    const response = await call('PUT', '/api/forms-advanced/internal-all-images/internal-definition', {
+      ...fieldBody,
+      designImages: {
+        logo: { intent: 'replace', dataUrl: TWO_MIB_PNG_DATA_URL, mimeType: 'image/png', filename: 'logo.png' },
+        cover: { intent: 'replace', dataUrl: TWO_MIB_PNG_DATA_URL, mimeType: 'image/png', filename: 'background.png' },
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(puts).toHaveLength(3);
+    expect(puts.map((put) => put.size)).toEqual([2 * 1024 * 1024, 2 * 1024 * 1024, 2 * 1024 * 1024]);
+    const stored = raw.prepare('SELECT definition_json FROM formaloo_forms WHERE id = ?')
+      .get('internal-all-images') as { definition_json: string };
+    const definition = JSON.parse(stored.definition_json) as Record<string, unknown>;
+    expect(stored.definition_json).not.toContain('data:image');
+    for (const placement of INTERNAL_DECORATION_IMAGE_PLACEMENTS) {
+      expect(storedImageUrl(definition, placement)).toMatch(/^https:\/\/api\.example\.test\/images\/media\/form-image\//);
+    }
+    expect(Math.max(...observedBindingBytes)).toBeLessThanOrEqual(D1_BINDING_LIMIT_BYTES);
+  });
+
+  test.each(INTERNAL_DECORATION_IMAGE_PLACEMENTS)(
+    'R2 failure at %s returns an honest 4xx and does not mutate D1',
+    async (placement) => {
+      seedForm('internal-image-failure', 'internal');
+      const before = raw.prepare('SELECT definition_json FROM formaloo_forms WHERE id = ?')
+        .get('internal-image-failure');
+      bindingOverrides = {
+        IMAGES: {
+          put: vi.fn(async () => { throw new Error('secret R2 detail'); }),
+        } as unknown as R2Bucket,
+      };
+
+      const response = await call(
+        'PUT',
+        '/api/forms-advanced/internal-image-failure/internal-definition',
+        imageSaveBody(placement, SMALL_PNG_DATA_URL),
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        success: false,
+        error: '画像の保存に失敗しました (サイズ/形式)',
+      });
+      expect(raw.prepare('SELECT definition_json FROM formaloo_forms WHERE id = ?')
+        .get('internal-image-failure')).toEqual(before);
+    },
+  );
+
+  test('a residual data:image value is rejected before D1 and can never survive definition_json', async () => {
+    seedForm('internal-residual-image', 'internal', {
+      definition: {
+        ...DEFINITION,
+        design: { logoUrl: SMALL_PNG_DATA_URL },
+      },
+    });
+    const before = raw.prepare('SELECT definition_json FROM formaloo_forms WHERE id = ?')
+      .get('internal-residual-image');
+
+    const response = await call('PUT', '/api/forms-advanced/internal-residual-image/internal-definition', {
+      fields: DEFINITION.fields,
+      logic: [],
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: '画像の保存に失敗しました (サイズ/形式)',
+    });
+    expect(raw.prepare('SELECT definition_json FROM formaloo_forms WHERE id = ?')
+      .get('internal-residual-image')).toEqual(before);
+  });
+
   test('saves only the local definition, preserves unrelated keys, and ignores stale Formaloo sync state', async () => {
     seedForm('internal-form', 'internal', {
       definition: {

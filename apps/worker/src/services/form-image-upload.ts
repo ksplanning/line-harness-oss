@@ -1,5 +1,5 @@
 // =============================================================================
-// form-image-upload — 差し込み画像 (in-body decoration image) の R2 host + field 解決 (T-C1/T-C2)
+// form-image-upload — フォーム装飾画像の R2 host + 保存前解決 (T-C1/T-C2)
 // -----------------------------------------------------------------------------
 // spike S-1 実測: 差し込み画像は Formaloo storage (/v3.0/files/=401) を使わず harness R2 に host し、
 //   section description の canonical <img src> に R2 URL を埋める。no-auth GET は images.ts の
@@ -9,7 +9,13 @@
 //   push は toFormalooFieldPayload(image) が imageUrl から canonical <img> description を生成する (shared)。
 // =============================================================================
 
-import type { HarnessField } from '@line-crm/shared';
+import {
+  validateImageUpload,
+  type FormDesign,
+  type FormDesignImageUpload,
+  type FormDesignImages,
+  type HarnessField,
+} from '@line-crm/shared';
 
 const DATAURL_RE = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
 /** decoded byte 上限 (shared MAX_IMAGE_UPLOAD_BYTES と同水準・Worker メモリ保護 / R-4)。 */
@@ -22,6 +28,16 @@ export interface R2UploadEnv {
 }
 
 export type ImageUploadResult = { ok: true; url: string } | { ok: false; error: string };
+
+const DESIGN_IMAGE_URL_KEYS = {
+  logo: 'logoUrl',
+  cover: 'backgroundImageUrl',
+} as const satisfies Record<keyof FormDesignImages, keyof FormDesign>;
+
+type DecorationImageResolveOptions = {
+  design?: FormDesign;
+  designImages?: unknown;
+};
 
 /**
  * data:image/...;base64,... を R2 (IMAGES) へ upload し、no-auth GET URL を返す。
@@ -56,17 +72,19 @@ export async function uploadImageDataUrlToR2(
 }
 
 /**
- * validateHarnessField 済の fields から image field の imageUpload intent を解決する (in-place)。
+ * validateHarnessField 済の fields と、任意の design image intent を保存前に解決する。
  *  - replace + dataUrl: uploader で R2 upload → config.imageUrl 確定 → imageUpload drop。
  *  - remove: imageUrl / imageUpload を消す (画像なし = 保存で description='' に落ちる)。
  *  - keep / dataUrl 無し replace: intent を落とし既存 imageUrl 温存。
+ *  - design.logo / design.cover: 同じ uploader で R2 化し、logoUrl / backgroundImageUrl へ確定。
  * uploader 失敗は全体を止める (silent skip しない = owner に「置いたのに出ない」を出さない honest surface)。
  * non-image field は不変。imageUpload は D1/push いずれにも残さない (巨大 base64 を persist しない)。
  */
 export async function resolveInBodyImageUploads(
   fields: HarnessField[],
   uploader: (dataUrl: string) => Promise<ImageUploadResult>,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+  options?: DecorationImageResolveOptions,
+): Promise<{ ok: true; design?: FormDesign } | { ok: false; error: string }> {
   for (const f of fields) {
     if (f.type !== 'image') continue;
     const up = f.config.imageUpload;
@@ -85,5 +103,36 @@ export async function resolveInBodyImageUploads(
     }
     delete f.config.imageUpload;
   }
-  return { ok: true };
+
+  if (!options) return { ok: true };
+  const design = { ...(options.design ?? {}) };
+  if (options.designImages === undefined) return { ok: true, design };
+  if (
+    typeof options.designImages !== 'object'
+    || options.designImages === null
+    || Array.isArray(options.designImages)
+  ) {
+    return { ok: false, error: '画像の指定が正しくありません' };
+  }
+
+  const designImages = options.designImages as Record<string, unknown>;
+  for (const slot of Object.keys(DESIGN_IMAGE_URL_KEYS) as Array<keyof typeof DESIGN_IMAGE_URL_KEYS>) {
+    const candidate = designImages[slot];
+    if (candidate === undefined) continue;
+    const validation = validateImageUpload(candidate);
+    if (!validation.ok) return { ok: false, error: validation.reason ?? '画像の指定が正しくありません' };
+
+    const upload = candidate as FormDesignImageUpload;
+    const urlKey = DESIGN_IMAGE_URL_KEYS[slot];
+    if (upload.intent === 'remove') {
+      delete design[urlKey];
+      continue;
+    }
+    if (upload.intent === 'replace' && upload.dataUrl) {
+      const result = await uploader(upload.dataUrl);
+      if (!result.ok) return result;
+      design[urlKey] = result.url;
+    }
+  }
+  return { ok: true, design };
 }
