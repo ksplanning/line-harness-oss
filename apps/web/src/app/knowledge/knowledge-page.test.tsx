@@ -236,5 +236,23 @@ describe('/knowledge page — AI ログ・コストタブ', () => {
     await waitFor(() => expect(m.reviewList).toHaveBeenCalledTimes(2))
     fireEvent.focus(window)
     await waitFor(() => expect(m.reviewList).toHaveBeenCalledTimes(3))
+  it('未対応0件を自然な文言で表示する', async () => {
+    render(<KnowledgePage />)
+    await waitFor(() => expect(screen.getByText('料金表')).toBeTruthy())
+    fireEvent.click(screen.getByText('AI ログ・コスト'))
+    await waitFor(() => expect(screen.getByText('未対応の質問はありません。')).toBeTruthy())
+    expect(screen.queryByText('未対応の質問が 0 件あります。')).toBeNull()
+  })
+
+  it('answerable=false の草案だけに資料不足ラベルを表示する', async () => {
+    m.aiDrafts.mockResolvedValue({ success: true, data: [
+      { id: 'd1', question: '申し込みはいつから？', draftAnswer: 'この資料だけでは確認できません', status: 'pending', answerable: false, createdAt: '2026-07-21T10:00:00' },
+      { id: 'd2', question: '営業時間は？', draftAnswer: '10時からです', status: 'pending', answerable: true, createdAt: '2026-07-21T10:01:00' },
+    ] })
+    render(<KnowledgePage />)
+    await waitFor(() => expect(screen.getByText('料金表')).toBeTruthy())
+    fireEvent.click(screen.getByText('AI ログ・コスト'))
+    await waitFor(() => expect(screen.getByText('資料不足')).toBeTruthy())
+    expect(screen.getAllByText('資料不足')).toHaveLength(1)
   })
 })

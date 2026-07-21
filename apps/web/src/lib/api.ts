@@ -1285,7 +1285,7 @@ export const api = {
       if (params.status) p.set('status', params.status)
       if (params.limit) p.set('limit', String(params.limit))
       const qs = p.toString()
-      return fetchApi<ApiResponse<Array<{ id: string; question: string; draftAnswer: string; status: string; createdAt: string }>>>(
+      return fetchApi<ApiResponse<Array<{ id: string; question: string; draftAnswer: string; answerable: boolean; status: string; createdAt: string }>>>(
         `/api/knowledge/ai-drafts${qs ? `?${qs}` : ''}`,
       )
     },

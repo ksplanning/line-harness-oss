@@ -353,6 +353,7 @@ function serializeDraft(r: AiFaqDraftRow) {
     id: r.id,
     question: r.question,
     draftAnswer: r.draft_answer,
+    answerable: Boolean(r.answerable),
     status: r.status,
     createdAt: r.created_at,
   };

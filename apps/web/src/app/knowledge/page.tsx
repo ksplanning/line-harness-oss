@@ -42,6 +42,7 @@ interface Draft {
   id: string
   question: string
   draftAnswer: string
+  answerable: boolean
   status: string
   createdAt: string
 }
@@ -760,7 +761,9 @@ export default function KnowledgePage() {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-gray-800">AIを含む「答えられなかった質問」</h3>
-                <p className="text-[11px] text-gray-500 mt-0.5">未対応の質問が {unresolvedCount} 件あります。</p>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  {unresolvedCount === 0 ? '未対応の質問はありません。' : `未対応の質問が ${unresolvedCount} 件あります。`}
+                </p>
               </div>
               {centerEmbed?.onOpenFaq ? (
                 <button
@@ -798,6 +801,16 @@ export default function KnowledgePage() {
                         </span>
                         <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatDateTime(d.createdAt)}</span>
                       </div>
+                    <div className="flex justify-between items-center gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="text-xs font-medium text-gray-900 truncate max-w-[360px]">Q: {d.question}</span>
+                        {d.answerable === false && (
+                          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                            資料不足
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatDateTime(d.createdAt)}</span>
                     </div>
                     <p className="mt-1 text-xs text-gray-600 line-clamp-2">A: {d.draftAnswer}</p>
                   </div>

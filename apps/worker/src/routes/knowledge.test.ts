@@ -284,10 +284,10 @@ describe('GET /ai-usage + /ai-drafts — AI ログ/コスト (T-E4)', () => {
        VALUES (?,?,?,?,?,?,?)`,
     ).run(`${acct}-${date}`, acct, date, llm, embed, image, reply);
   }
-  function seedDraft(acct: string | null, friend: string | null, q: string, a: string, status = 'pending') {
+  function seedDraft(acct: string | null, friend: string | null, q: string, a: string, status = 'pending', answerable = 1) {
     raw.prepare(
-      `INSERT INTO ai_faq_drafts (id, line_account_id, friend_id, question, draft_answer, status) VALUES (?,?,?,?,?,?)`,
-    ).run(crypto.randomUUID(), acct, friend, q, a, status);
+      `INSERT INTO ai_faq_drafts (id, line_account_id, friend_id, question, draft_answer, status, answerable) VALUES (?,?,?,?,?,?,?)`,
+    ).run(crypto.randomUUID(), acct, friend, q, a, status, answerable);
   }
   test('GET /ai-usage が per-account 行 + global SUM + embeddedChunks を返す', async () => {
     seedUsage('acc-1', '2026-07-11', 100, 10, 0, 2);
@@ -311,15 +311,16 @@ describe('GET /ai-usage + /ai-drafts — AI ログ/コスト (T-E4)', () => {
     expect(res2.status).toBe(200);
   });
   test('GET /ai-drafts が account スコープ草案を返し friend_id/account_id/evidence を露出しない (D-3)', async () => {
-    seedDraft('acc-1', 'friend-secret-123', '営業時間は？', '10時から19時です', 'pending');
+    seedDraft('acc-1', 'friend-secret-123', '営業時間は？', '10時から19時です', 'pending', 0);
     seedDraft('acc-2', 'other-friend', '別アカ', '別回答', 'pending');
     const res = await call('GET', '/api/knowledge/ai-drafts?accountId=acc-1');
     expect(res.status).toBe(200);
     const body = await res.text();
-    const j = JSON.parse(body) as { data: Array<{ id: string; question: string; draftAnswer: string; status: string; createdAt: string }> };
+    const j = JSON.parse(body) as { data: Array<{ id: string; question: string; draftAnswer: string; status: string; answerable: boolean; createdAt: string }> };
     expect(j.data.length).toBe(1);
     expect(j.data[0].question).toBe('営業時間は？');
     expect(j.data[0].draftAnswer).toBe('10時から19時です');
+    expect(j.data[0].answerable).toBe(false);
     // 秘密/内部識別子は載らない (D-3 / B5-6)。
     expect(body).not.toContain('friend-secret-123');
     expect(body).not.toContain('friendId');
