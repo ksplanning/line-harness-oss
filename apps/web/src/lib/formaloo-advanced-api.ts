@@ -13,6 +13,7 @@ export interface AdvancedForm {
   title: string
   description: string | null
   formalooSlug: string | null
+  renderBackend: RenderBackend
   builderStatus: BuilderStatus
   publishedAt: string | null
   submitCount: number
@@ -20,6 +21,10 @@ export interface AdvancedForm {
   logic: HarnessLogicRule[]
   // treasure-b2-form-settings: 非既定値だけを持つ form 単位の運用制御。
   operationsSettings?: FormOperationsSettings | null
+  internalAvailability?: {
+    status: 'open' | 'upcoming' | 'ended' | 'limit_reached'
+    message: string | null
+  }
   publicUrl: string | null
   embedCode: string | null
   syncStatus: string
@@ -34,6 +39,10 @@ export interface AdvancedForm {
   logicFingerprint?: string | null
   // form-design (Batch D): 色/画像テーマ (builder の initialDesign / プレビュー反映用)。未設定は null。
   design?: FormDesign | null
+  // 自前 renderer の公開文言。builder と本番 preview の同じ表示に使う。
+  formCopy?: FormCopy | null
+  // 自前公開の確認モーダルで保存した版だけを公開するための不透明 revision。
+  publishRevision?: string
   // form-route-branching (R2): 表示形式 (builder の initialFormType)。未設定は null。
   formType?: FormDisplayType | null
   // route-terminal-phase2 (Track 1): 送信後リダイレクト設定 (builder の initialFormRedirect)。未設定は null。
@@ -160,9 +169,10 @@ export const formsAdvancedApi = {
       })
     ).data
   },
-  async saveDefinition(id: string, def: SaveDefinitionBody): Promise<AdvancedForm> {
+  async saveDefinition(id: string, def: SaveDefinitionBody, expectedRenderBackend?: RenderBackend): Promise<AdvancedForm> {
     const env = await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}`, {
       method: 'PUT',
+      ...(expectedRenderBackend ? { headers: { 'X-Form-Render-Backend': expectedRenderBackend } } : {}),
       body: JSON.stringify(def),
     })
     // form-route-branching: envelope top-level の warnings (jump+simple backstop 等) を form に搬送 (builder が surface)。
@@ -178,14 +188,33 @@ export const formsAdvancedApi = {
   async reimport(id: string): Promise<PulledDefinition> {
     return (await fetchApi<Envelope<PulledDefinition>>(`/api/forms-advanced/${id}/pull`)).data
   },
-  async submitForReview(id: string): Promise<AdvancedForm> {
-    return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}/submit-for-review`, { method: 'POST' })).data
+  async submitForReview(id: string, expectedRenderBackend?: RenderBackend): Promise<AdvancedForm> {
+    return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}/submit-for-review`, {
+      method: 'POST',
+      ...(expectedRenderBackend ? { headers: { 'X-Form-Render-Backend': expectedRenderBackend } } : {}),
+    })).data
   },
-  async publish(id: string): Promise<AdvancedForm> {
-    return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}/publish`, { method: 'POST' })).data
+  async publish(id: string, publishRevision?: string, expectedRenderBackend?: RenderBackend): Promise<AdvancedForm> {
+    return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}/publish`, {
+      method: 'POST',
+      ...(expectedRenderBackend ? { headers: { 'X-Form-Render-Backend': expectedRenderBackend } } : {}),
+      ...(publishRevision === undefined
+        ? {}
+        : { body: JSON.stringify({ publishRevision }) }),
+    })).data
   },
-  async unpublish(id: string): Promise<AdvancedForm> {
-    return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}/unpublish`, { method: 'POST' })).data
+  async unpublish(
+    id: string,
+    expectedRenderBackend?: RenderBackend,
+    expectedUpdatedAt?: string,
+  ): Promise<AdvancedForm> {
+    return (await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}/unpublish`, {
+      method: 'POST',
+      ...(expectedRenderBackend ? { headers: { 'X-Form-Render-Backend': expectedRenderBackend } } : {}),
+      ...(expectedRenderBackend === 'internal' && expectedUpdatedAt
+        ? { body: JSON.stringify({ expectedUpdatedAt }) }
+        : {}),
+    })).data
   },
   async remove(id: string): Promise<void> {
     await fetchApi<Envelope<null>>(`/api/forms-advanced/${id}`, { method: 'DELETE' })
@@ -209,6 +238,10 @@ export interface ShareInfo {
   scriptCode: string | null
   gsheetConnected: boolean
   gsheetUrl: string | null
+  internalAvailability?: {
+    status: 'open' | 'upcoming' | 'ended' | 'limit_reached'
+    message: string | null
+  }
 }
 
 // =============================================================================

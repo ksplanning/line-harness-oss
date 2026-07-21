@@ -17,9 +17,18 @@ const getRenderBackendMock = vi.fn()
 const setRenderBackendMock = vi.fn()
 const shareMock = vi.fn()
 const saveDefinitionMock = vi.fn()
-const saveInternalDefinitionMock = vi.fn()
 const sheetsListMock = vi.fn()
+const submitForReviewMock = vi.fn()
+const publishMock = vi.fn()
+const unpublishMock = vi.fn()
+const reimportMock = vi.fn()
 const fetchApiMock = vi.fn()
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
 
 vi.mock('next/link', () => ({ default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a> }))
 vi.mock('@/components/layout/header', () => ({ default: () => null }))
@@ -43,7 +52,10 @@ vi.mock('@/lib/formaloo-advanced-api', () => ({
     setRenderBackend: (...a: unknown[]) => setRenderBackendMock(...a),
     share: (...a: unknown[]) => shareMock(...a),
     saveDefinition: (...a: unknown[]) => saveDefinitionMock(...a),
-    saveInternalDefinition: (...a: unknown[]) => saveInternalDefinitionMock(...a),
+    submitForReview: (...a: unknown[]) => submitForReviewMock(...a),
+    publish: (...a: unknown[]) => publishMock(...a),
+    unpublish: (...a: unknown[]) => unpublishMock(...a),
+    reimport: (...a: unknown[]) => reimportMock(...a),
   },
 }))
 vi.mock('@/lib/sheets-connections-api', () => ({
@@ -55,12 +67,12 @@ vi.mock('@/lib/api', () => ({ fetchApi: (...a: unknown[]) => fetchApiMock(...a) 
 
 import FormBuilderClient from './form-builder-client'
 
-function form(lineAccountId: string | null) {
-  return { id: 'fa1', title: 'F', description: null, formalooSlug: null, builderStatus: 'draft', publishedAt: null, submitCount: 0, fields: [], logic: [], publicUrl: null, embedCode: null, syncStatus: 'idle', syncError: null, lineAccountId, updatedAt: 'x' }
+function form(lineAccountId: string | null, renderBackend: 'formaloo' | 'internal' = 'formaloo') {
+  return { id: 'fa1', title: 'F', description: null, formalooSlug: null, renderBackend, builderStatus: 'draft', publishedAt: null, submitCount: 0, fields: [], logic: [], publicUrl: null, embedCode: null, syncStatus: 'idle', syncError: null, lineAccountId, updatedAt: 'x' }
 }
 
 beforeEach(() => {
-  getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); saveInternalDefinitionMock.mockReset(); sheetsListMock.mockReset(); fetchApiMock.mockReset()
+  getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); sheetsListMock.mockReset(); submitForReviewMock.mockReset(); publishMock.mockReset(); unpublishMock.mockReset(); reimportMock.mockReset(); fetchApiMock.mockReset()
   builderProps.current = undefined
   sharePanelProps.current = undefined
   mockAccount.selectedAccountId = 'acc_A'
@@ -137,54 +149,65 @@ describe('詳細画面 scope 照合', () => {
     })
     expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', {
       fields: [], logic: [], title: '新タイトル', description: '',
-    })
+    }, 'formaloo')
   })
 
-  it('自前配信は専用保存後に再取得し、古い Formaloo 未同期状態でも保存成功として扱う', async () => {
-    const loaded = { ...form('acc_A'), title: '旧タイトル', syncStatus: 'out_of_sync', syncError: '古い同期エラー' }
-    const refreshed = { ...loaded, title: '新タイトル' }
-    getMock.mockResolvedValueOnce(loaded).mockResolvedValueOnce(refreshed)
-    getRenderBackendMock.mockResolvedValue('internal')
-    saveInternalDefinitionMock.mockResolvedValue(undefined)
+  it('配信方式と公開状態を同じ詳細応答のスナップショットから復元する', async () => {
+    getMock.mockResolvedValue({
+      ...form('acc_A'),
+      renderBackend: 'internal',
+      builderStatus: 'published',
+      publicUrl: 'https://api.example.test/f/fa1',
+    })
+    getRenderBackendMock.mockResolvedValue('formaloo')
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(builderProps.current?.initialRenderBackend).toBe('internal'))
+    expect(builderProps.current?.status).toBe('published')
+    expect(getRenderBackendMock).not.toHaveBeenCalled()
+  })
+
+  it('自前公開の送信ボタンと完了文言を builder に復元する', async () => {
+    getMock.mockResolvedValue({
+      ...form('acc_A', 'internal'),
+      formCopy: { buttonText: '申し込む', successMessage: '受付完了' },
+    })
+
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(builderProps.current?.initialFormCopy).toEqual({
+      buttonText: '申し込む',
+      successMessage: '受付完了',
+    }))
+  })
+
+  it('自前保存の確認 revision を builder へ欠落なく返す', async () => {
+    const loaded = form('acc_A', 'internal')
+    getMock.mockResolvedValue(loaded)
+    saveDefinitionMock.mockResolvedValue({ ...loaded, publishRevision: 'revision-after-save' })
     render(<FormBuilderClient id="fa1" />)
     await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
 
     let result: unknown
     await act(async () => {
       result = await (builderProps.current?.onSave as (def: Record<string, unknown>) => Promise<unknown>)({
-        fields: [], logic: [], title: '新タイトル',
+        fields: [], logic: [], title: 'F',
       })
     })
 
-    expect(saveInternalDefinitionMock).toHaveBeenCalledWith('fa1', {
-      fields: [], logic: [], title: '新タイトル',
-    })
-    expect(saveDefinitionMock).not.toHaveBeenCalled()
-    expect(getMock).toHaveBeenCalledTimes(2)
-    expect(result).toEqual({ ok: true, design: undefined, warnings: undefined })
-    expect(await screen.findByText('保存しました')).toBeTruthy()
-  })
-
-  it('自前配信では Formaloo 再取り込み callback を builder に渡さない', async () => {
-    getMock.mockResolvedValue(form('acc_A'))
-    getRenderBackendMock.mockResolvedValue('internal')
-    render(<FormBuilderClient id="fa1" />)
-
-    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
-    expect(builderProps.current?.onReimport).toBeUndefined()
-  })
-
-  it('配信方式を別 endpoint から読み、builder に復元する', async () => {
-    getMock.mockResolvedValue(form('acc_A'))
-    getRenderBackendMock.mockResolvedValue('internal')
-    render(<FormBuilderClient id="fa1" />)
-
-    await waitFor(() => expect(builderProps.current?.initialRenderBackend).toBe('internal'))
-    expect(getRenderBackendMock).toHaveBeenCalledWith('fa1')
+    expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', {
+      fields: [], logic: [], title: 'F',
+    }, 'internal')
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      publishRevision: 'revision-after-save',
+    }))
   })
 
   it('builder の配信方式変更を専用 endpoint にだけ保存する', async () => {
-    getMock.mockResolvedValue(form('acc_A'))
+    getMock
+      .mockResolvedValueOnce(form('acc_A'))
+      .mockResolvedValue(form('acc_A', 'internal'))
     render(<FormBuilderClient id="fa1" />)
     await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
 
@@ -196,18 +219,70 @@ describe('詳細画面 scope 照合', () => {
     expect(saveDefinitionMock).not.toHaveBeenCalled()
   })
 
-  it('配信方式の読込だけ失敗した場合は既定 Formaloo のままフォームを表示する', async () => {
-    getMock.mockResolvedValue(form('acc_A'))
-    getRenderBackendMock.mockRejectedValue(new Error('backend unavailable'))
+  it('公開中フォームを自前配信へ切り替えた直後に authoritative draft 状態へ更新する', async () => {
+    const published = { ...form('acc_A'), builderStatus: 'published', publicUrl: 'https://formaloo.example.test/form' }
+    const internalDraft = { ...form('acc_A', 'internal'), builderStatus: 'draft', publicUrl: null }
+    getMock.mockResolvedValueOnce(published).mockResolvedValue(internalDraft)
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(builderProps.current?.status).toBe('published'))
+
+    await act(async () => {
+      await (builderProps.current?.onRenderBackendChange as (backend: string) => Promise<void>)('internal')
+    })
+
+    await waitFor(() => expect(builderProps.current?.status).toBe('draft'))
+    expect(builderProps.current?.publicUrl).toBeNull()
+    expect(getMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('backend切替の応答だけ失われてもauthoritative状態へ同期する', async () => {
+    const initial = form('acc_A')
+    const internalDraft = { ...initial, renderBackend: 'internal', builderStatus: 'draft', publicUrl: null }
+    getMock.mockResolvedValueOnce(initial).mockResolvedValue(internalDraft)
+    setRenderBackendMock.mockRejectedValue(new Error('response lost'))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(builderProps.current?.initialRenderBackend).toBe('formaloo'))
+
+    await act(async () => {
+      await (builderProps.current?.onRenderBackendChange as (backend: string) => Promise<void>)('internal')
+    })
+
+    await waitFor(() => expect(builderProps.current?.initialRenderBackend).toBe('internal'))
+    expect(builderProps.current?.status).toBe('draft')
+    expect(getRenderBackendMock).not.toHaveBeenCalled()
+  })
+
+  it('internalからFormalooへ切替成功後の詳細再取得失敗でもdraftとURL無効を表示する', async () => {
+    const internalPublished = {
+      ...form('acc_A', 'internal'),
+      builderStatus: 'published',
+      publicUrl: 'https://api.example.test/f/fa1',
+      publishRevision: 'internal-revision',
+    }
+    getMock.mockResolvedValueOnce(internalPublished).mockRejectedValueOnce(new Error('detail unavailable'))
+    setRenderBackendMock.mockResolvedValue('formaloo')
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(builderProps.current?.status).toBe('published'))
+
+    await act(async () => {
+      await (builderProps.current?.onRenderBackendChange as (backend: string) => Promise<void>)('formaloo')
+    })
+
+    await waitFor(() => expect(builderProps.current?.initialRenderBackend).toBe('formaloo'))
+    expect(builderProps.current?.status).toBe('draft')
+    expect(builderProps.current?.publicUrl).toBeNull()
+  })
+
+  it('配信方式の読込に失敗した場合はproviderを推測せず編集画面を閉じる', async () => {
+    getMock.mockResolvedValue({ ...form('acc_A'), renderBackend: 'unexpected' })
     render(<FormBuilderClient id="fa1" />)
 
-    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
-    expect(builderProps.current?.initialRenderBackend).toBe('formaloo')
+    expect(await screen.findByText('配信方式を確認できません。再読み込みしてください')).toBeTruthy()
+    expect(screen.queryByTestId('form-builder')).toBeNull()
   })
 
   it('自前配信では local 公開 URL を表示しつつ Formaloo 専用 Sheets 操作を隠す', async () => {
-    getMock.mockResolvedValue(form('acc_A'))
-    getRenderBackendMock.mockResolvedValue('internal')
+    getMock.mockResolvedValue(form('acc_A', 'internal'))
     shareMock.mockResolvedValue({
       published: true,
       publicUrl: 'https://api.example.test/f/fa1',
@@ -236,6 +311,151 @@ describe('詳細画面 scope 照合', () => {
     expect(sharePanelProps.current?.renderBackend).toBe('internal')
     expect(sharePanelProps.current?.isOwner).toBe(true)
     expect(screen.queryByTestId('instant-webhook-settings')).toBeNull()
+    expect(builderProps.current?.onSubmitForReview).toBeUndefined()
+    expect(builderProps.current?.onReimport).toBeUndefined()
+  })
+
+  it('自前公開の応答が失われても authoritative GET が published なら成功扱いにする', async () => {
+    const draft = form('acc_A', 'internal')
+    const published = {
+      ...draft,
+      builderStatus: 'published',
+      publicUrl: 'https://api.example.test/f/fa1',
+      internalAvailability: { status: 'open', message: null },
+      publishRevision: 'revision-1',
+    }
+    getMock.mockResolvedValueOnce(draft).mockResolvedValue(published)
+    publishMock.mockRejectedValue({ body: { error: '通信が途切れました' } })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+
+    let result: unknown
+    await act(async () => {
+      result = await (builderProps.current?.onPublish as (revision: string) => Promise<boolean>)('revision-1')
+    })
+
+    expect(result).toBe(true)
+    expect(publishMock).toHaveBeenCalledWith('fa1', 'revision-1', 'internal')
+    await waitFor(() => expect(builderProps.current?.status).toBe('published'))
+    expect(screen.queryByText('通信が途切れました')).toBeNull()
+  })
+
+  it('別内容の revision が公開済みでも、失敗した公開確認を成功扱いしない', async () => {
+    const draft = { ...form('acc_A', 'internal'), publishRevision: 'revision-a' }
+    const otherPublished = {
+      ...draft,
+      builderStatus: 'published',
+      publicUrl: 'https://api.example.test/f/fa1',
+      publishRevision: 'revision-b',
+    }
+    getMock.mockResolvedValueOnce(draft).mockResolvedValue(otherPublished)
+    publishMock.mockRejectedValue({ body: { error: 'フォーム内容が更新されました' } })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+
+    let result: unknown
+    await act(async () => {
+      result = await (builderProps.current?.onPublish as (revision: string) => Promise<boolean>)('revision-a')
+    })
+
+    expect(result).toBe(false)
+    expect(await screen.findByText('フォーム内容が更新されました')).toBeTruthy()
+    expect(builderProps.current?.status).toBe('published')
+  })
+
+  it('自前公開の再読込も draft のときだけ失敗を表示する', async () => {
+    const draft = form('acc_A', 'internal')
+    getMock.mockResolvedValue(draft)
+    publishMock.mockRejectedValue({ body: { error: '公開できませんでした' } })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+
+    let result: unknown
+    await act(async () => {
+      result = await (builderProps.current?.onPublish as (revision: string) => Promise<boolean>)('revision-1')
+    })
+
+    expect(result).toBe(false)
+    expect(await screen.findByText('公開できませんでした')).toBeTruthy()
+  })
+
+  it('失敗回復の詳細応答で provider も同期し、別 provider の同じ状態を成功扱いしない', async () => {
+    const internalPublished = {
+      ...form('acc_A', 'internal'),
+      builderStatus: 'published',
+      publicUrl: 'https://api.example.test/f/fa1',
+      publishRevision: 'internal-revision',
+    }
+    const formalooDraft = form('acc_A', 'formaloo')
+    getMock.mockResolvedValueOnce(internalPublished).mockResolvedValue(formalooDraft)
+    unpublishMock.mockRejectedValue({ body: { error: '配信方式が更新されました。再読み込みしてください' } })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(builderProps.current?.initialRenderBackend).toBe('internal'))
+
+    let result: unknown
+    await act(async () => {
+      result = await (builderProps.current?.onUnpublish as () => Promise<boolean>)()
+    })
+
+    expect(result).toBe(false)
+    await waitFor(() => expect(builderProps.current?.initialRenderBackend).toBe('formaloo'))
+    expect(builderProps.current?.status).toBe('draft')
+    expect(await screen.findByText('配信方式が更新されました。再読み込みしてください')).toBeTruthy()
+  })
+
+  it('自前非公開の応答だけ失われても同じ内容の authoritative draft を成功として回収する', async () => {
+    const published = {
+      ...form('acc_A', 'internal'),
+      builderStatus: 'published',
+      updatedAt: 'displayed-at',
+      publishRevision: 'displayed-revision',
+      publicUrl: 'https://api.example.test/f/fa1',
+    }
+    const unpublished = {
+      ...published,
+      builderStatus: 'draft',
+      updatedAt: 'unpublished-at',
+      publicUrl: null,
+    }
+    getMock.mockResolvedValueOnce(published).mockResolvedValue(unpublished)
+    unpublishMock.mockRejectedValue({ body: { error: '通信が途切れました' } })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(builderProps.current?.status).toBe('published'))
+
+    let result: unknown
+    await act(async () => {
+      result = await (builderProps.current?.onUnpublish as () => Promise<boolean>)()
+    })
+
+    expect(result).toBe(true)
+    expect(unpublishMock).toHaveBeenCalledWith('fa1', 'internal', 'displayed-at')
+    await waitFor(() => expect(builderProps.current?.status).toBe('draft'))
+    expect(screen.queryByText('通信が途切れました')).toBeNull()
+  })
+
+  it('自前非公開は画面に表示した updatedAt を競合防止条件として送る', async () => {
+    const published = {
+      ...form('acc_A', 'internal'),
+      builderStatus: 'published',
+      updatedAt: 'displayed-at',
+      publishRevision: 'displayed-revision',
+      publicUrl: 'https://api.example.test/f/fa1',
+    }
+    getMock.mockResolvedValue(published)
+    unpublishMock.mockResolvedValue({
+      ...published,
+      builderStatus: 'draft',
+      updatedAt: 'unpublished-at',
+      publicUrl: null,
+    })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(builderProps.current?.status).toBe('published'))
+
+    await act(async () => {
+      await (builderProps.current?.onUnpublish as () => Promise<boolean>)()
+    })
+
+    expect(unpublishMock).toHaveBeenCalledWith('fa1', 'internal', 'displayed-at')
   })
 
   it('Formaloo 配信の owner は既存共有操作を維持する', async () => {
@@ -248,15 +468,16 @@ describe('詳細画面 scope 照合', () => {
   })
 
   it('internal の NULL 共通 form は選択中アカウントで接続を取得する', async () => {
-    getMock.mockResolvedValue(form(null))
-    getRenderBackendMock.mockResolvedValue('internal')
+    getMock.mockResolvedValue(form(null, 'internal'))
     render(<FormBuilderClient id="fa1" />)
 
     await waitFor(() => expect(sheetsListMock).toHaveBeenCalledWith('acc_A', 'fa1'))
   })
 
   it('配信方式を切り替えた直後に共有情報も新しい backend で読み直す', async () => {
-    getMock.mockResolvedValue(form('acc_A'))
+    getMock
+      .mockResolvedValueOnce(form('acc_A'))
+      .mockResolvedValue(form('acc_A', 'internal'))
     shareMock
       .mockResolvedValueOnce({ published: true, publicUrl: 'https://formaloo.example.test/f', gsheetConnected: false })
       .mockResolvedValue({ published: true, publicUrl: 'https://api.example.test/f/fa1', gsheetConnected: false })
@@ -273,6 +494,90 @@ describe('詳細画面 scope 照合', () => {
       publicUrl: 'https://api.example.test/f/fa1',
     })))
     expect(shareMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('backend切替後の共有情報を再読込できなければ旧providerのURLを消す', async () => {
+    const initial = form('acc_A')
+    getMock
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(form('acc_A', 'internal'))
+    shareMock
+      .mockResolvedValueOnce({ published: true, publicUrl: 'https://formaloo.example.test/f', iframeCode: '<iframe />', scriptCode: '<script />', gsheetConnected: false })
+      .mockRejectedValueOnce(new Error('share unavailable'))
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(sharePanelProps.current?.share).toEqual(expect.objectContaining({
+      publicUrl: 'https://formaloo.example.test/f',
+    })))
+
+    await act(async () => {
+      await (builderProps.current?.onRenderBackendChange as (backend: string) => Promise<void>)('internal')
+    })
+
+    await waitFor(() => expect(sharePanelProps.current?.share).toBeNull())
+  })
+
+  it('backend切替開始時に旧URLを即座に消し、遅い旧応答で新URLを上書きしない', async () => {
+    const staleInternalShare = deferred<Record<string, unknown>>()
+    const currentFormalooShare = deferred<Record<string, unknown>>()
+    getMock
+      .mockResolvedValueOnce(form('acc_A'))
+      .mockResolvedValueOnce(form('acc_A', 'internal'))
+      .mockResolvedValue(form('acc_A'))
+    shareMock
+      .mockResolvedValueOnce({ published: true, publicUrl: 'https://formaloo.example.test/old', gsheetConnected: false })
+      .mockReturnValueOnce(staleInternalShare.promise)
+      .mockReturnValueOnce(currentFormalooShare.promise)
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(sharePanelProps.current?.share).toEqual(expect.objectContaining({
+      publicUrl: 'https://formaloo.example.test/old',
+    })))
+
+    let firstSwitch!: Promise<void>
+    act(() => {
+      firstSwitch = (builderProps.current?.onRenderBackendChange as (backend: string) => Promise<void>)('internal')
+    })
+    await waitFor(() => expect(shareMock).toHaveBeenCalledTimes(2))
+    expect(sharePanelProps.current?.share).toBeNull()
+
+    let secondSwitch!: Promise<void>
+    act(() => {
+      secondSwitch = (builderProps.current?.onRenderBackendChange as (backend: string) => Promise<void>)('formaloo')
+    })
+    await waitFor(() => expect(shareMock).toHaveBeenCalledTimes(3))
+    await act(async () => {
+      currentFormalooShare.resolve({ published: true, publicUrl: 'https://formaloo.example.test/current' })
+      await secondSwitch
+    })
+    expect(sharePanelProps.current?.share).toEqual(expect.objectContaining({
+      publicUrl: 'https://formaloo.example.test/current',
+    }))
+
+    await act(async () => {
+      staleInternalShare.resolve({ published: true, publicUrl: 'https://api.example.test/f/fa1' })
+      await firstSwitch
+    })
+    expect(sharePanelProps.current?.share).toEqual(expect.objectContaining({
+      publicUrl: 'https://formaloo.example.test/current',
+    }))
+  })
+
+  it('id が変わった後に届く古い詳細応答で現在のフォームを上書きしない', async () => {
+    const staleA = deferred<ReturnType<typeof form>>()
+    const currentB = { ...form('acc_A'), id: 'form-b', title: 'フォームB' }
+    getMock
+      .mockReturnValueOnce(staleA.promise)
+      .mockResolvedValue(currentB)
+
+    const view = render(<FormBuilderClient id="form-a" />)
+    view.rerender(<FormBuilderClient id="form-b" />)
+    await waitFor(() => expect(builderProps.current?.formTitle).toBe('フォームB'))
+
+    await act(async () => {
+      staleA.resolve({ ...form('acc_A'), id: 'form-a', title: 'フォームA' })
+      await staleA.promise
+    })
+
+    expect(builderProps.current?.formTitle).toBe('フォームB')
   })
 
   it('P2 fail-closed: account 未確定 (selectedAccountId=null) で account-scoped form は描画せず hold', async () => {

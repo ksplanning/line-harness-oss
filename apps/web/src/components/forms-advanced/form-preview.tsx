@@ -1,11 +1,38 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { DEFAULT_RATING_STAR_COLOR, DEFAULT_VIDEO_HEIGHT, IMAGE_WIDTH_TO_MAXWIDTH } from '@line-crm/shared'
-import type { HarnessField, HarnessLogicRule, FormDesign, FormDisplayType } from '@line-crm/shared'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import {
+  DEFAULT_RATING_STAR_COLOR,
+  DEFAULT_VIDEO_HEIGHT,
+  IMAGE_WIDTH_TO_MAXWIDTH,
+  buildRedirectTargetUrl,
+  evaluateInternalFormLogic,
+  nextInternalFormFieldId,
+  normalizeFormRedirect,
+} from '@line-crm/shared'
+import type {
+  HarnessField,
+  HarnessLogicRule,
+  FormDesign,
+  FormDisplayType,
+  FormCopy,
+  FormRedirect,
+  InternalFormChannel,
+  SuccessPageSpec,
+} from '@line-crm/shared'
 import { fieldTypeIcon, isDecoration } from './field-types'
 
 const LINE_GREEN = '#06C755'
+
+function internalPreviewFont(presetId: string | undefined): string {
+  if (presetId && ['dark-sumi', 'sand-washi', 'mono-ink', 'matcha-wa'].includes(presetId)) {
+    return '"Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", serif'
+  }
+  if (presetId === 'coral-pop') {
+    return '"M PLUS Rounded 1c", "Noto Sans JP", "Yu Gothic", sans-serif'
+  }
+  return '"Noto Sans JP", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif'
+}
 
 export interface FormPreviewProps {
   title: string
@@ -19,6 +46,19 @@ export interface FormPreviewProps {
   logic?: HarnessLogicRule[]
   /** 配信先。自前配信でだけ有効な入力自由化をプレビューへ反映する。 */
   renderBackend?: 'formaloo' | 'internal'
+  /**
+   * internal renderer 用の忠実プレビューを有効にする opt-in。
+   * 未指定時は既存 Formaloo preview の静的表示を一切変えない。
+   */
+  internalLogicPreview?: boolean
+  /** internal preview を開いた直後の経由チャネル。未指定は埋め込み・直リンク。 */
+  initialPreviewChannel?: InternalFormChannel
+  /** submit 分岐が参照するルート別完了ページ。 */
+  successPages?: SuccessPageSpec[]
+  /** internal 公開ページの送信ボタンと通常完了文言。 */
+  formCopy?: FormCopy
+  /** internal 公開ページの送信後リダイレクト。プレビューでは遷移せず行き先を示す。 */
+  formRedirect?: FormRedirect
 }
 
 // 入力可能プレビュー (②): type できる control の見た目 (白背景・濃い文字)。
@@ -26,30 +66,101 @@ const inputClassName = 'w-full rounded-lg border border-gray-300 bg-white px-3 p
 // file は type 対象でない (実選択は公開フォーム) ため read-only 表示のまま。
 const disabledClassName = 'w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500 disabled:cursor-not-allowed disabled:opacity-100'
 
-function PreviewControl({ field, ratingStarColor, renderBackend }: { field: HarnessField; ratingStarColor?: string; renderBackend: 'formaloo' | 'internal' }) {
+type PreviewAnswer = string | string[]
+
+function defaultPreviewAnswer(field: HarnessField): PreviewAnswer {
+  if (field.type === 'multiple_select') return field.config.defaultValues ?? []
+  if (field.type === 'choice' || field.type === 'dropdown') return field.config.defaultValue ?? ''
+  return ''
+}
+
+function initialPreviewAnswers(fields: HarnessField[]): Record<string, PreviewAnswer> {
+  const initial: Record<string, PreviewAnswer> = {}
+  for (const field of fields) {
+    const value = defaultPreviewAnswer(field)
+    if ((Array.isArray(value) && value.length > 0) || (!Array.isArray(value) && value !== '')) {
+      initial[field.id] = value
+    }
+  }
+  return initial
+}
+
+function sanitizePreviewAnswers(
+  fields: HarnessField[],
+  answers: Record<string, PreviewAnswer>,
+): Record<string, PreviewAnswer> {
+  const sanitized: Record<string, PreviewAnswer> = {}
+  for (const field of fields) {
+    const answer = answers[field.id]
+    if (answer === undefined) continue
+    if (field.type === 'choice' || field.type === 'dropdown') {
+      sanitized[field.id] = typeof answer === 'string' && (field.config.choices ?? []).includes(answer)
+        ? answer
+        : ''
+      continue
+    }
+    if (field.type === 'multiple_select') {
+      const choices = new Set(field.config.choices ?? [])
+      sanitized[field.id] = Array.isArray(answer) ? answer.filter((item) => choices.has(item)) : []
+      continue
+    }
+    if (field.type === 'yes_no') {
+      sanitized[field.id] = answer === 'yes' || answer === 'no' ? answer : ''
+      continue
+    }
+    sanitized[field.id] = answer
+  }
+  return sanitized
+}
+
+function PreviewControl({
+  field,
+  ratingStarColor,
+  answer,
+  onAnswerChange,
+  controlStyle,
+  optionStyle,
+  themeColor,
+  nativeRequired,
+  internalRenderer,
+}: {
+  field: HarnessField
+  ratingStarColor?: string
+  answer?: PreviewAnswer
+  onAnswerChange?: (value: PreviewAnswer) => void
+  controlStyle?: CSSProperties
+  optionStyle?: CSSProperties
+  themeColor?: string
+  nativeRequired?: boolean
+  internalRenderer: boolean
+}) {
   const controlId = `preview-control-${field.id}`
   const choices = field.config.choices ?? []
   // ② プレビュー入力可能化: 入力値は local state のみ (どこにも送信しない = form/submit 無し)。
   //   自前描画ゆえ、hosted で不可能な「残り文字数ライブカウンター」もプレビュー内で提供できる (text の maxLength)。
-  const [value, setValue] = useState(() => renderBackend === 'internal' ? (field.config.defaultValue ?? '') : '')
-  const [selectedValues, setSelectedValues] = useState<string[]>(() => renderBackend === 'internal' ? (field.config.defaultValues ?? []) : [])
-  const placeholder = renderBackend === 'internal' ? field.config.placeholder : undefined
+  const [localValue, setLocalValue] = useState<PreviewAnswer>(() => (
+    internalRenderer ? defaultPreviewAnswer(field) : ''
+  ))
+  const value = onAnswerChange ? (answer ?? defaultPreviewAnswer(field)) : localValue
+  const stringValue = Array.isArray(value) ? (value[0] ?? '') : value
+  const arrayValue = Array.isArray(value) ? value : []
+  const placeholder = internalRenderer ? field.config.placeholder : undefined
+  const setValue = (next: PreviewAnswer) => {
+    if (onAnswerChange) onAnswerChange(next)
+    else setLocalValue(next)
+  }
 
   useEffect(() => {
-    if (renderBackend !== 'internal') return
-    if (field.type === 'choice' || field.type === 'dropdown') setValue(field.config.defaultValue ?? '')
-  }, [field.id, field.type, field.config.defaultValue, renderBackend])
-
-  useEffect(() => {
-    if (renderBackend === 'internal' && field.type === 'multiple_select') {
-      setSelectedValues(field.config.defaultValues ?? [])
+    if (!internalRenderer || onAnswerChange) return
+    if (field.type === 'choice' || field.type === 'dropdown' || field.type === 'multiple_select') {
+      setLocalValue(defaultPreviewAnswer(field))
     }
-  }, [field.id, field.type, field.config.defaultValues, renderBackend])
+  }, [field.id, field.type, field.config.defaultValue, field.config.defaultValues, internalRenderer, onAnswerChange])
 
   switch (field.type) {
     case 'text': {
       const max = typeof field.config.maxLength === 'number' ? field.config.maxLength : undefined
-      const count = Array.from(value).length
+      const count = Array.from(stringValue).length
       const over = max !== undefined && count > max
       return (
         <div className="space-y-1">
@@ -57,12 +168,14 @@ function PreviewControl({ field, ratingStarColor, renderBackend }: { field: Harn
             id={controlId}
             aria-label={field.label}
             type="text"
-            value={value}
+            required={nativeRequired}
+            value={stringValue}
             placeholder={placeholder}
-            minLength={renderBackend === 'internal' ? field.config.minLength : undefined}
+            minLength={internalRenderer ? field.config.minLength : undefined}
             maxLength={max}
             onChange={(e) => setValue(e.target.value)}
             className={inputClassName}
+            style={controlStyle}
           />
           {max !== undefined && (
             <p data-testid="preview-char-counter" className={`text-xs ${over ? 'text-red-500' : 'text-gray-400'}`}>
@@ -73,38 +186,38 @@ function PreviewControl({ field, ratingStarColor, renderBackend }: { field: Harn
       )
     }
     case 'textarea': {
-      const max = renderBackend === 'internal' && typeof field.config.maxLength === 'number' ? field.config.maxLength : undefined
-      const count = Array.from(value).length
+      const max = internalRenderer && typeof field.config.maxLength === 'number' ? field.config.maxLength : undefined
+      const count = Array.from(stringValue).length
       return (
         <div className="space-y-1">
-          <textarea id={controlId} aria-label={field.label} rows={3} value={value} placeholder={placeholder} minLength={renderBackend === 'internal' ? field.config.minLength : undefined} maxLength={max} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+          <textarea id={controlId} aria-label={field.label} rows={3} required={nativeRequired} value={stringValue} placeholder={placeholder} minLength={internalRenderer ? field.config.minLength : undefined} maxLength={max} onChange={(e) => setValue(e.target.value)} className={inputClassName} style={controlStyle} />
           {max !== undefined && <p data-testid="preview-char-counter" className="text-xs text-gray-400">残り {Math.max(0, max - count)} 文字</p>}
         </div>
       )
     }
     case 'number':
-      return <input id={controlId} aria-label={field.label} type="number" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="number" required={nativeRequired} value={stringValue} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} style={controlStyle} />
     case 'email':
-      return <input id={controlId} aria-label={field.label} type="email" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="email" required={nativeRequired} value={stringValue} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} style={controlStyle} />
     case 'phone':
-      return <input id={controlId} aria-label={field.label} type="tel" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="tel" required={nativeRequired} value={stringValue} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} style={controlStyle} />
     case 'date':
-      return <input id={controlId} aria-label={field.label} type="date" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="date" required={nativeRequired} value={stringValue} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} style={controlStyle} />
     case 'time':
-      return <input id={controlId} aria-label={field.label} type="time" value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="time" required={nativeRequired} value={stringValue} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={inputClassName} style={controlStyle} />
     case 'website':
-      return <input id={controlId} aria-label={field.label} type="url" value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder ?? 'https://example.com'} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="url" required={nativeRequired} value={stringValue} onChange={(e) => setValue(e.target.value)} placeholder={placeholder ?? 'https://example.com'} className={inputClassName} style={controlStyle} />
     case 'city':
-      return <input id={controlId} aria-label={field.label} type="text" value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder ?? '例: 千代田区'} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="text" required={nativeRequired} value={stringValue} onChange={(e) => setValue(e.target.value)} placeholder={placeholder ?? '例: 千代田区'} className={inputClassName} style={controlStyle} />
     case 'datetime':
-      return <input id={controlId} aria-label={field.label} type="datetime-local" value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="datetime-local" required={nativeRequired} value={stringValue} onChange={(e) => setValue(e.target.value)} placeholder={placeholder} className={inputClassName} style={controlStyle} />
     case 'country':
     case 'postal_code':
     case 'prefecture':
     case 'address_city':
     case 'address_street':
     case 'address_building':
-      return <input id={controlId} aria-label={field.label} type="text" value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder} className={inputClassName} />
+      return <input id={controlId} aria-label={field.label} type="text" required={nativeRequired} value={stringValue} onChange={(e) => setValue(e.target.value)} placeholder={placeholder} className={inputClassName} style={controlStyle} />
     case 'yes_no':
       return (
         <div id={controlId} role="group" aria-label={field.label} className="space-y-2">
@@ -112,14 +225,16 @@ function PreviewControl({ field, ratingStarColor, renderBackend }: { field: Harn
             { value: 'yes', label: 'はい' },
             { value: 'no', label: 'いいえ' },
           ].map((option) => (
-            <label key={option.value} className="flex items-center gap-2 text-sm text-gray-700">
+            <label key={option.value} className="flex items-center gap-2 text-sm text-gray-700" style={optionStyle}>
               <input
                 type="radio"
+                required={nativeRequired}
                 name={`preview-${field.id}`}
                 value={option.value}
-                checked={value === option.value}
+                checked={stringValue === option.value}
                 onChange={() => setValue(option.value)}
                 className="h-4 w-4 accent-[#06C755]"
+                style={themeColor ? { accentColor: themeColor } : undefined}
               />
               <span>{option.label}</span>
             </label>
@@ -128,11 +243,21 @@ function PreviewControl({ field, ratingStarColor, renderBackend }: { field: Harn
       )
     case 'choice':
       return (
-        <div className="space-y-2">
+        <div id={controlId} className="space-y-2">
           {choices.map((choice, index) => (
-            <label key={`${choice}-${index}`} className="flex items-center gap-2 text-sm text-gray-700">
+            <label key={`${choice}-${index}`} className="flex items-center gap-2 text-sm text-gray-700" style={optionStyle}>
               <span className="sr-only">プレビュー </span>
-              <input aria-label={`${field.label}: ${choice}`} type="radio" name={`preview-${field.id}`} value={choice} checked={renderBackend === 'internal' ? value === choice : undefined} onChange={renderBackend === 'internal' ? () => setValue(choice) : undefined} className="h-4 w-4 accent-[#06C755]" />
+              <input
+                aria-label={onAnswerChange ? undefined : `${field.label}: ${choice}`}
+                type="radio"
+                required={nativeRequired}
+                name={`preview-${field.id}`}
+                value={choice}
+                checked={internalRenderer ? stringValue === choice : undefined}
+                onChange={internalRenderer ? () => setValue(choice) : undefined}
+                className="h-4 w-4 accent-[#06C755]"
+                style={themeColor ? { accentColor: themeColor } : undefined}
+              />
               <span>{choice}</span>
             </label>
           ))}
@@ -140,25 +265,37 @@ function PreviewControl({ field, ratingStarColor, renderBackend }: { field: Harn
       )
     case 'dropdown':
       return (
-        <select id={controlId} aria-label={field.label} value={renderBackend === 'internal' ? value : undefined} onChange={renderBackend === 'internal' ? (event) => setValue(event.target.value) : undefined} className={inputClassName}>
-          {renderBackend === 'internal' && <option value="">{placeholder ?? '選択してください'}</option>}
+        <select
+          id={controlId}
+          aria-label={field.label}
+          required={nativeRequired}
+          className={inputClassName}
+          style={controlStyle}
+          {...(internalRenderer ? { value: stringValue, onChange: (event) => setValue(event.target.value) } : {})}
+        >
+          {internalRenderer && <option value="">{placeholder ?? '選択してください'}</option>}
           {choices.map((choice, index) => <option key={`${choice}-${index}`} value={choice}>{choice}</option>)}
         </select>
       )
     case 'multiple_select':
       return (
-        <div className="space-y-2">
+        <div id={controlId} className="space-y-2">
           {choices.map((choice, index) => (
-            <label key={`${choice}-${index}`} className="flex items-center gap-2 text-sm text-gray-700">
+            <label key={`${choice}-${index}`} className="flex items-center gap-2 text-sm text-gray-700" style={optionStyle}>
               <span className="sr-only">プレビュー </span>
               <input
-                aria-label={`${field.label}: ${choice}`}
+                aria-label={onAnswerChange ? undefined : `${field.label}: ${choice}`}
                 type="checkbox"
-                checked={renderBackend === 'internal' ? selectedValues.includes(choice) : undefined}
-                onChange={renderBackend === 'internal'
-                  ? (event) => setSelectedValues((current) => event.target.checked ? [...current, choice] : current.filter((value) => value !== choice))
+                checked={internalRenderer ? arrayValue.includes(choice) : undefined}
+                onChange={internalRenderer
+                  ? (event) => setValue(
+                    event.target.checked
+                      ? [...arrayValue, choice]
+                      : arrayValue.filter((item) => item !== choice),
+                  )
                   : undefined}
                 className="h-4 w-4 accent-[#06C755]"
+                style={themeColor ? { accentColor: themeColor } : undefined}
               />
               <span>{choice}</span>
             </label>
@@ -280,7 +417,7 @@ function PreviewControl({ field, ratingStarColor, renderBackend }: { field: Harn
     case 'choice_fetch': {
       const items = field.config.choiceFetchItems ?? []
       return (
-        <select id={controlId} aria-label={field.label} className={inputClassName} disabled={items.length === 0}>
+        <select id={controlId} aria-label={field.label} className={inputClassName} style={controlStyle} disabled={items.length === 0}>
           {items.length === 0
             ? <option>選択肢リストが未設定です</option>
             : items.map((item, index) => <option key={`${item.value}-${index}`} value={item.value}>{item.label}</option>)}
@@ -308,7 +445,7 @@ function PreviewControl({ field, ratingStarColor, renderBackend }: { field: Harn
         )
       }
       if (sub === 'score') {
-        return <input data-testid="preview-rating" id={controlId} aria-label={field.label} type="number" value={value} onChange={(e) => setValue(e.target.value)} className={inputClassName} />
+        return <input data-testid="preview-rating" id={controlId} aria-label={field.label} type="number" required={nativeRequired} value={stringValue} onChange={(e) => setValue(e.target.value)} className={inputClassName} style={controlStyle} />
       }
       // star / embeded → 星 5 個 (embeded は顔アイコン等だが最小描画は星で代表)。
       // b1-field-polish: form-level design.ratingStarColor を反映 (未設定=既定黄)。hosted は custom_css で着色ゆえ近似。
@@ -335,8 +472,37 @@ function PreviewControl({ field, ratingStarColor, renderBackend }: { field: Harn
 //   非退行: textColor 未設定 (design 無し / 未指定) は inline style を付けず従来 gray クラスのまま。
 //   section は自前の固定 light box (bg-[#F0FFF6]) を持つため、box を fieldColor へ追随させて
 //   textColor(=light) を載せる (fieldColor↔textColor は番人テストで >=4.5 保証ゆえ常に可読)。
-function PreviewField({ field, themeColor, textColor, fieldColor, ratingStarColor, renderBackend }: { field: HarnessField; themeColor: string; textColor?: string; fieldColor?: string; ratingStarColor?: string; renderBackend: 'formaloo' | 'internal' }) {
+function PreviewField({
+  field,
+  themeColor,
+  textColor,
+  fieldColor,
+  borderColor,
+  ratingStarColor,
+  answer,
+  onAnswerChange,
+  internalRenderer,
+}: {
+  field: HarnessField
+  themeColor: string
+  textColor?: string
+  fieldColor?: string
+  borderColor?: string
+  ratingStarColor?: string
+  answer?: PreviewAnswer
+  onAnswerChange?: (value: PreviewAnswer) => void
+  internalRenderer?: boolean
+}) {
   const textStyle = textColor ? { color: textColor } : undefined
+  const internalTextColor = textColor ?? '#17202A'
+  const controlStyle: CSSProperties | undefined = internalRenderer
+    ? {
+      backgroundColor: fieldColor ?? '#FFFFFF',
+      borderColor: borderColor ?? '#CBD5E1',
+      color: internalTextColor,
+    }
+    : undefined
+  const optionStyle: CSSProperties | undefined = internalRenderer ? { color: internalTextColor } : undefined
   if (isDecoration(field.type)) {
     if (field.type === 'section') {
       return (
@@ -425,12 +591,35 @@ function PreviewField({ field, themeColor, textColor, fieldColor, ratingStarColo
       )}
       {/* ② 一行テキストの maxLength は入力に実際に効かせ、「残り N 文字」ライブカウンターを PreviewControl 内に表示。
           hosted 公開フォームは「N文字まで」静的注記+超過エラーで実効 (下の忠実性注記で開示)。 */}
-      <PreviewControl field={field} ratingStarColor={ratingStarColor} renderBackend={renderBackend} />
+      <PreviewControl
+        field={field}
+        ratingStarColor={ratingStarColor}
+        answer={answer}
+        onAnswerChange={onAnswerChange}
+        controlStyle={controlStyle}
+        optionStyle={optionStyle}
+        themeColor={internalRenderer ? themeColor : undefined}
+        nativeRequired={internalRenderer && field.required}
+        internalRenderer={internalRenderer ?? false}
+      />
     </div>
   )
 }
 
-export default function FormPreview({ title, description, fields, design, formType, logic, renderBackend = 'formaloo' }: FormPreviewProps) {
+export default function FormPreview({
+  title,
+  description,
+  fields,
+  design,
+  formType,
+  logic,
+  renderBackend = 'formaloo',
+  internalLogicPreview = false,
+  initialPreviewChannel = 'web',
+  successPages = [],
+  formCopy,
+  formRedirect,
+}: FormPreviewProps) {
   const isMultiStep = formType === 'multi_step'
   const hasJump = Array.isArray(logic) && logic.some((r) => r.action === 'jump')
   // route-terminal-submit: 「ここで送信」凡例 + page_break の Continue のみ空画面注記。
@@ -438,14 +627,113 @@ export default function FormPreview({ title, description, fields, design, formTy
   const hasPageBreak = fields.some((f) => f.type === 'page_break')
   const hasVariable = fields.some((field) => field.type === 'variable')
   const hasChoiceFetch = fields.some((field) => field.type === 'choice_fetch')
+  const internalRenderer = renderBackend === 'internal' || internalLogicPreview
+  const orderedFields = useMemo(() => [...fields].sort((a, b) => a.position - b.position), [fields])
+  const [answers, setAnswers] = useState<Record<string, PreviewAnswer>>(() => initialPreviewAnswers(orderedFields))
+  const [previewChannel, setPreviewChannel] = useState<InternalFormChannel>(initialPreviewChannel)
+  const [previewValidationError, setPreviewValidationError] = useState<string | null>(null)
+  const [previewSubmitted, setPreviewSubmitted] = useState(false)
+  useEffect(() => {
+    setAnswers((current) => {
+      const sanitized = sanitizePreviewAnswers(orderedFields, current)
+      const defaults = initialPreviewAnswers(orderedFields)
+      for (const [fieldId, value] of Object.entries(defaults)) {
+        if (sanitized[fieldId] === undefined) sanitized[fieldId] = value
+      }
+      return sanitized
+    })
+  }, [orderedFields])
+  const effectiveAnswers = useMemo(
+    () => sanitizePreviewAnswers(orderedFields, answers),
+    [answers, orderedFields],
+  )
+  const logicState = useMemo(
+    () => evaluateInternalFormLogic(orderedFields, logic ?? [], effectiveAnswers, previewChannel),
+    [orderedFields, logic, effectiveAnswers, previewChannel],
+  )
+  const questionIds = logicState.visibleFieldIds.filter((id) => {
+    const field = orderedFields.find((candidate) => candidate.id === id)
+    return field ? !isDecoration(field.type) : false
+  })
+  const [currentFieldId, setCurrentFieldId] = useState<string | null>(() => (
+    orderedFields.find((field) => !isDecoration(field.type))?.id ?? null
+  ))
+  const visibleIds = new Set(logicState.visibleFieldIds)
+  const effectiveCurrentFieldId = currentFieldId && questionIds.includes(currentFieldId)
+    ? currentFieldId
+    : (questionIds[0] ?? null)
+  const previewFields = !internalLogicPreview
+    ? fields
+    : isMultiStep
+      ? orderedFields.filter((field) => field.id === effectiveCurrentFieldId)
+      : orderedFields.filter((field) => visibleIds.has(field.id))
+  let nextFieldId = internalLogicPreview && isMultiStep && effectiveCurrentFieldId
+    ? nextInternalFormFieldId(orderedFields, logicState, effectiveCurrentFieldId)
+    : null
+  while (nextFieldId) {
+    const field = orderedFields.find((candidate) => candidate.id === nextFieldId)
+    if (field && !isDecoration(field.type)) break
+    nextFieldId = nextInternalFormFieldId(orderedFields, logicState, nextFieldId)
+  }
+  const currentPreviewIsValid = (): boolean => {
+    const fieldIds = isMultiStep
+      ? (effectiveCurrentFieldId ? [effectiveCurrentFieldId] : [])
+      : logicState.visibleFieldIds
+    for (const fieldId of fieldIds) {
+      const current = orderedFields.find((field) => field.id === fieldId)
+      if (!current || isDecoration(current.type)) continue
+      const answer = effectiveAnswers[fieldId]
+      const answered = Array.isArray(answer)
+        ? answer.length > 0
+        : typeof answer === 'string' && answer.trim() !== ''
+      if (current.required && !answered) {
+        setPreviewValidationError(`${current.label} は必須項目です`)
+        return false
+      }
+      const controlRoot = document.getElementById(`preview-control-${fieldId}`)
+      const validityControls = controlRoot?.matches('input, textarea, select')
+        ? [controlRoot as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement]
+        : Array.from(controlRoot?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select') ?? [])
+      if (validityControls.some((control) => !control.reportValidity())) {
+        setPreviewValidationError(`${current.label} の入力内容を確認してください`)
+        return false
+      }
+    }
+    setPreviewValidationError(null)
+    return true
+  }
+  const advancePreview = () => {
+    if (!effectiveCurrentFieldId || !nextFieldId || !currentPreviewIsValid()) return
+    setPreviewSubmitted(false)
+    setCurrentFieldId(nextFieldId)
+  }
+  const submitPreview = () => {
+    if (!currentPreviewIsValid()) return
+    setPreviewSubmitted(true)
+  }
+  const resetPreview = () => {
+    setAnswers(initialPreviewAnswers(orderedFields))
+    setPreviewChannel(initialPreviewChannel)
+    setPreviewValidationError(null)
+    setPreviewSubmitted(false)
+    setCurrentFieldId(orderedFields.find((field) => !isDecoration(field.type))?.id ?? null)
+  }
+  const completionPage = logicState.completionPageId
+    ? successPages.find((page) => page.id === logicState.completionPageId)
+    : undefined
+  const normalizedRedirect = useMemo(() => normalizeFormRedirect(formRedirect), [formRedirect])
+  const previewRedirectUrl = normalizedRedirect.url
+    ? buildRedirectTargetUrl(normalizedRedirect.url, normalizedRedirect.openExternalBrowser)
+    : null
   // form-design (Batch D): テーマ色/ロゴ/カバーを反映。未指定は従来の LINE green 既定 (後方互換)。
   const themeColor = design?.themeColor || LINE_GREEN
-  const buttonColor = design?.buttonColor || LINE_GREEN
+  const buttonColor = design?.buttonColor || themeColor
   const submitTextColor = design?.submitTextColor || '#FFFFFF'
-  const bgColor = design?.backgroundColor || '#FFFFFF'
+  const bgColor = design?.backgroundColor || (internalLogicPreview ? '#F4F6F8' : '#FFFFFF')
   const textColor = design?.textColor || undefined
   // form-design-presets (F-HIGH-1): section の light box をダーク preset で追随させ、textColor(=light) を可読にする。
   const fieldColor = design?.fieldColor || undefined
+  const borderColor = design?.borderColor || undefined
   const logoUrl = design?.logoUrl || null
   const coverUrl = design?.backgroundImageUrl || null
   // b1-field-polish: 星色 (form-level・未設定は PreviewControl が既定黄で描画)。
@@ -460,35 +748,176 @@ export default function FormPreview({ title, description, fields, design, formTy
       <div
         data-testid="preview-frame"
         className="mx-auto w-full overflow-hidden rounded-2xl border border-gray-200 shadow-sm"
-        style={{ maxWidth: 375, backgroundColor: bgColor }}
+        style={{
+          maxWidth: 375,
+          backgroundColor: bgColor,
+          ...(internalLogicPreview ? { fontFamily: internalPreviewFont(design?.presetId ?? undefined) } : {}),
+          ...(internalLogicPreview && coverUrl
+            ? { backgroundImage: `url(${coverUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+            : {}),
+        }}
       >
-        <header
+        <div
+          {...(internalLogicPreview ? { 'data-testid': 'preview-surface' } : {})}
+          className={internalLogicPreview ? 'm-4 overflow-hidden rounded-2xl border shadow-sm' : undefined}
+          style={internalLogicPreview
+            ? {
+              backgroundColor: fieldColor ?? '#FFFFFF',
+              borderColor: borderColor ?? '#CBD5E1',
+              color: textColor ?? '#17202A',
+            }
+            : undefined}
+        >
+        {(!internalLogicPreview || !previewSubmitted) && <header
           className="border-t-4 px-5 pb-4 pt-5"
           style={{
             borderTopColor: themeColor,
-            ...(coverUrl ? { backgroundImage: `url(${coverUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}),
+            ...(!internalLogicPreview && coverUrl
+              ? { backgroundImage: `url(${coverUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+              : {}),
           }}
-          {...(coverUrl ? { 'data-testid': 'preview-cover' } : {})}
+          {...(!internalLogicPreview && coverUrl ? { 'data-testid': 'preview-cover' } : {})}
         >
           {logoUrl && (
             // eslint-disable-next-line @next/next/no-img-element
             <img data-testid="preview-logo" src={logoUrl} alt="ロゴ" className="mb-2 h-10 w-auto object-contain" />
           )}
-          <h2 className="text-xl font-bold" style={{ color: textColor ?? '#111827' }}>{title}</h2>
-          {description && <p className="mt-2 whitespace-pre-wrap text-sm" style={{ color: textColor ?? '#4B5563' }}>{description}</p>}
-        </header>
+          <h2 className="text-xl font-bold" style={{ color: textColor ?? (internalLogicPreview ? '#17202A' : '#111827') }}>{title}</h2>
+          {description && <p className="mt-2 whitespace-pre-wrap text-sm" style={{ color: textColor ?? (internalLogicPreview ? '#17202A' : '#4B5563') }}>{description}</p>}
+        </header>}
 
         <div className="space-y-5 border-t border-gray-100 px-5 py-5" style={textColor ? { color: textColor } : undefined}>
-          {fields.map((field) => <PreviewField key={field.id} field={field} themeColor={themeColor} textColor={textColor} fieldColor={fieldColor} ratingStarColor={ratingStarColor} renderBackend={renderBackend} />)}
+          {internalLogicPreview && !previewSubmitted && (
+            <div data-testid="preview-channel-toggle" className="rounded-lg border border-gray-200 bg-gray-50 p-2">
+              <p className="mb-2 text-xs font-medium text-gray-600">経由チャネルを試す</p>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  aria-pressed={previewChannel === 'line'}
+                  onClick={() => { setPreviewChannel('line'); setPreviewSubmitted(false); setPreviewValidationError(null) }}
+                  className="rounded-md border px-2 py-1.5 text-xs font-medium"
+                  style={previewChannel === 'line' ? { borderColor: themeColor, color: themeColor } : undefined}
+                >
+                  LINE経由
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={previewChannel === 'web'}
+                  onClick={() => { setPreviewChannel('web'); setPreviewSubmitted(false); setPreviewValidationError(null) }}
+                  className="rounded-md border px-2 py-1.5 text-xs font-medium"
+                  style={previewChannel === 'web' ? { borderColor: themeColor, color: themeColor } : undefined}
+                >
+                  埋め込み・直リンク経由
+                </button>
+              </div>
+            </div>
+          )}
 
-          <button
-            type="button"
-            disabled
-            className="w-full rounded-lg px-4 py-2.5 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-60"
-            style={{ backgroundColor: buttonColor, color: submitTextColor }}
-          >
-            送信
-          </button>
+          {internalLogicPreview && !previewSubmitted && previewValidationError && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {previewValidationError}
+            </p>
+          )}
+
+          {(!internalLogicPreview || !previewSubmitted) && previewFields.map((field) => (
+            <PreviewField
+              key={field.id}
+              field={field}
+              themeColor={themeColor}
+              textColor={textColor}
+              fieldColor={fieldColor}
+              borderColor={borderColor}
+              ratingStarColor={ratingStarColor}
+              answer={internalLogicPreview ? effectiveAnswers[field.id] : undefined}
+              onAnswerChange={internalLogicPreview
+                ? (answer) => {
+                  setAnswers((current) => ({ ...current, [field.id]: answer }))
+                  setPreviewSubmitted(false)
+                  if (!isMultiStep || field.id === effectiveCurrentFieldId) setPreviewValidationError(null)
+                }
+                : undefined}
+              internalRenderer={internalRenderer}
+            />
+          ))}
+
+          {internalLogicPreview && previewSubmitted && previewRedirectUrl && (
+            <div
+              data-testid="preview-redirect-completion"
+              role="status"
+              className="rounded-lg border px-4 py-3"
+              style={{ borderColor: themeColor, ...(fieldColor ? { backgroundColor: fieldColor } : {}) }}
+            >
+              <p className={`text-xs font-medium ${textColor ? '' : 'text-gray-500'}`} style={textColor ? { color: textColor, opacity: 0.75 } : undefined}>
+                送信後は次のURLへ移動します
+              </p>
+              <p className={`mt-1 break-all font-bold ${textColor ? '' : 'text-gray-900'}`} style={textColor ? { color: textColor } : undefined}>
+                {previewRedirectUrl}
+              </p>
+              <p className={`mt-2 text-sm ${textColor ? '' : 'text-gray-600'}`} style={textColor ? { color: textColor, opacity: 0.85 } : undefined}>
+                {normalizedRedirect.openExternalBrowser
+                  ? 'LINE外のブラウザで開きます'
+                  : '現在のブラウザで開きます'}
+              </p>
+            </div>
+          )}
+
+          {internalLogicPreview && previewSubmitted && !previewRedirectUrl && (
+            <div
+              data-testid="preview-route-completion"
+              role="status"
+              className="rounded-lg border px-4 py-3"
+              style={{ borderColor: themeColor, ...(fieldColor ? { backgroundColor: fieldColor } : {}) }}
+            >
+              <p className={`text-xs font-medium ${textColor ? '' : 'text-gray-500'}`} style={textColor ? { color: textColor, opacity: 0.75 } : undefined}>
+                {logicState.completionSourceId ? 'この回答後に表示される完了ページ' : '送信後に表示される完了メッセージ'}
+              </p>
+              <p className={`mt-1 font-bold ${textColor ? '' : 'text-gray-900'}`} style={textColor ? { color: textColor } : undefined}>
+                {completionPage?.title || formCopy?.successMessage?.trim() || '送信ありがとうございました'}
+              </p>
+              {completionPage?.description && <p className={`mt-1 whitespace-pre-wrap text-sm ${textColor ? '' : 'text-gray-600'}`} style={textColor ? { color: textColor, opacity: 0.85 } : undefined}>{completionPage.description}</p>}
+            </div>
+          )}
+
+          {internalLogicPreview && previewSubmitted && (
+            <button
+              type="button"
+              onClick={resetPreview}
+              className="w-full rounded-lg border px-4 py-2.5 text-sm font-bold"
+              style={{ borderColor: themeColor, color: themeColor }}
+            >
+              もう一度試す
+            </button>
+          )}
+
+          {internalLogicPreview && isMultiStep && nextFieldId && !logicState.completionSourceId ? (
+            <button
+              type="button"
+              onClick={advancePreview}
+              className="w-full rounded-lg px-4 py-2.5 text-sm font-bold"
+              style={{ backgroundColor: buttonColor, color: submitTextColor }}
+            >
+              次へ
+            </button>
+          ) : internalLogicPreview ? (!previewSubmitted && (
+            <button
+              type="button"
+              onClick={submitPreview}
+              className="w-full rounded-lg px-4 py-2.5 text-sm font-bold"
+              style={{ backgroundColor: buttonColor, color: submitTextColor }}
+            >
+              {formCopy?.buttonText?.trim() || '送信する'}
+            </button>
+          )) : (
+            <button
+              type="button"
+              disabled
+              className="w-full rounded-lg px-4 py-2.5 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-60"
+              style={{ backgroundColor: buttonColor, color: submitTextColor }}
+            >
+              送信
+            </button>
+          )}
+        </div>
         </div>
 
         <div data-testid="preview-fidelity-note" className="space-y-1.5 border-t border-gray-200 bg-gray-50 px-5 py-4 text-[11px] leading-relaxed text-gray-500">
@@ -498,7 +927,11 @@ export default function FormPreview({ title, description, fields, design, formTy
             <p data-testid="preview-multistep-note">このフォームは「1問ずつ表示」です。公開フォームでは1問ずつ順に表示されます。</p>
           )}
           {hasJump && (
-            <p data-testid="preview-jump-note">「ページへ飛ぶ」分岐は、公開フォーム（1問ずつ表示）でのみ動作します。</p>
+            <p data-testid="preview-jump-note">
+              {internalLogicPreview
+                ? '「ページへ飛ぶ」分岐を、本番と同じ判定でこのプレビューに反映しています。'
+                : '「ページへ飛ぶ」分岐は、公開フォーム（1問ずつ表示）でのみ動作します。'}
+            </p>
           )}
           {/* route-terminal-submit: 「ここで送信」凡例 (submit rule のある項目でルートを閉じる)。 */}
           {hasSubmit && (
@@ -506,7 +939,11 @@ export default function FormPreview({ title, description, fields, design, formTy
           )}
           {/* route-terminal-submit: page_break は hosted で Continue のみの空画面を1枚挟む。 */}
           {hasPageBreak && (
-            <p data-testid="preview-pagebreak-note">改ページは、公開フォームでは「Continue」だけの空画面を1枚挟みます（Formaloo の仕様）。</p>
+            <p data-testid="preview-pagebreak-note">
+              {internalLogicPreview
+                ? '改ページはルートの区切りとして扱い、一覧表示では選ばれたルートだけを表示します。'
+                : '改ページは、公開フォームでは「Continue」だけの空画面を1枚挟みます（Formaloo の仕様）。'}
+            </p>
           )}
           {hasVariable && (
             <p data-testid="preview-variable-note">計算項目の実際の結果は、他の回答値を使って公開フォーム側で計算されます。このプレビューでは結果を作りません。</p>
@@ -514,13 +951,25 @@ export default function FormPreview({ title, description, fields, design, formTy
           {hasChoiceFetch && (
             <p data-testid="preview-choice-fetch-note">動的選択肢は現在保存しているリストを表示しています。公開フォームでは供給URLから最新値を読み込みます。</p>
           )}
-          {hasVisualDesign ? (
+          {internalLogicPreview ? (
+            hasVisualDesign
+              ? <p>設定したテーマ色・ロゴ/カバーを、このプレビューと自前公開フォームの両方に反映します。</p>
+              : <p>テーマ色・フォント・ロゴを設定すると、このプレビューと自前公開フォームの両方に反映します。</p>
+          ) : hasVisualDesign ? (
             <p>設定したテーマ色・ロゴ/カバーを反映しています。細かなフォント・余白は公開時に Formaloo 側で微調整されます。</p>
           ) : (
             <p>色・フォント・ロゴは公開時に Formaloo 側のテーマで決まります。</p>
           )}
-          <p>このプレビューでは一行テキストに残り文字数カウンターが出るので、文字数制限をその場で試せます。公開フォーム（Formaloo）では「N文字まで」の静的注記と超過時のエラーで制限され、入力しながら減る残り文字数カウンターは表示されません。</p>
-          <p>このプレビューでは入力を試せます（入力内容はどこにも送信されません）。条件分岐・送信などの実際の動作は公開フォームで動きます。</p>
+          <p>
+            {internalLogicPreview
+              ? 'このプレビューでは一行テキストの残り文字数を確認できます。自前公開フォームでも入力欄の文字数上限として実際に制限します。'
+              : 'このプレビューでは一行テキストに残り文字数カウンターが出るので、文字数制限をその場で試せます。公開フォーム（Formaloo）では「N文字まで」の静的注記と超過時のエラーで制限され、入力しながら減る残り文字数カウンターは表示されません。'}
+          </p>
+          <p>
+            {internalLogicPreview
+              ? 'このプレビューでは入力と条件分岐を本番と同じ判定で試せます（入力内容はどこにも送信されません）。'
+              : 'このプレビューでは入力を試せます（入力内容はどこにも送信されません）。条件分岐・送信などの実際の動作は公開フォームで動きます。'}
+          </p>
         </div>
       </div>
     </div>

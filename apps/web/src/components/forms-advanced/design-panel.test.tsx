@@ -59,6 +59,22 @@ describe('DesignPanel — 個別カラー', () => {
 })
 
 describe('DesignPanel — 画像 (ロゴ / カバー)', () => {
+  it('自前配信ではR2保存と公開ページ上の背景位置を正直に説明する', () => {
+    render(
+      <DesignPanel
+        design={{}}
+        images={{}}
+        onChange={vi.fn()}
+        onImagesChange={vi.fn()}
+        internalRenderer
+      />,
+    )
+
+    expect(screen.getByText(/自社の画像保存先/)).toBeTruthy()
+    expect(screen.getByTestId('cover-readability-note').textContent).toContain('フォーム本体の外側')
+    expect(screen.queryByText(/Formaloo にアップロード/)).toBeNull()
+  })
+
   it('既存 URL をプレビュー表示し、削除で remove intent を送る', () => {
     const { onImagesChange } = setup({ logoUrl: 'https://s3/logo.png' })
     expect((screen.getByTestId('image-preview-logo') as HTMLImageElement).getAttribute('src')).toBe('https://s3/logo.png')
@@ -91,5 +107,24 @@ describe('DesignPanel — 画像 (ロゴ / カバー)', () => {
     fireEvent.change(screen.getByLabelText('ロゴを選ぶ'), { target: { files: [file] } })
     expect(onImagesChange).not.toHaveBeenCalled()
     expect(screen.getByTestId('image-error').textContent).toMatch(/10MB/)
+  })
+})
+
+describe('DesignPanel — 自前一覧分岐の説明', () => {
+  it('自前配信では1画面表示でもページ分岐を試せると正直に説明する', () => {
+    render(
+      <DesignPanel
+        design={{}}
+        images={{}}
+        onChange={vi.fn()}
+        onImagesChange={vi.fn()}
+        formType="simple"
+        onFormTypeChange={vi.fn()}
+        internalRenderer
+      />,
+    )
+
+    expect(screen.getByText(/自前配信では「1画面表示」でも/)).toBeTruthy()
+    expect(screen.queryByText(/「1問ずつ表示」にすると「ページへ飛ぶ」分岐が使えます/)).toBeNull()
   })
 })

@@ -33,7 +33,7 @@ vi.mock('@/lib/api', () => ({ fetchApi: (...a: unknown[]) => fetchApiMock(...a) 
 import Page from './page'
 
 function form(id: string, title: string, lineAccountId: string | null = null) {
-  return { id, title, description: null, formalooSlug: null, builderStatus: 'draft', publishedAt: null, submitCount: 0, fields: [], logic: [], publicUrl: null, embedCode: null, syncStatus: 'idle', syncError: null, lineAccountId, updatedAt: '2026-07-11' }
+  return { id, title, description: null, formalooSlug: null, builderStatus: 'draft', publishedAt: null, submitCount: 0, fields: [], logic: [], publicUrl: null, embedCode: null, syncStatus: 'idle', syncError: null, renderBackend: 'formaloo', lineAccountId, updatedAt: '2026-07-11' }
 }
 
 beforeEach(() => {
@@ -70,6 +70,41 @@ describe('② account 確定で list(selectedAccountId)', () => {
     render(<Page />)
     const link = await screen.findByRole('link', { name: '定期自動回答' })
     expect(link.getAttribute('href')).toBe('/forms-advanced/recurring?id=fa/1')
+  })
+
+  it('自前配信のカードには Formaloo 専用の定期自動回答を表示しない', async () => {
+    mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
+    listMock.mockResolvedValue([{ ...form('internal', '自前フォーム', 'acc_A'), renderBackend: 'internal' }])
+
+    render(<Page />)
+
+    await waitFor(() => expect(screen.getByTestId('form-card-internal')).toBeTruthy())
+    expect(screen.queryByRole('link', { name: '定期自動回答' })).toBeNull()
+  })
+
+  it('自前配信の公開中カードは受付状態を正直に表示し、Formaloo は従来の公開中表示を保つ', async () => {
+    mockAccount.loading = false; mockAccount.selectedAccountId = 'acc_A'
+    const published = (id: string, title: string, internalAvailability?: Record<string, unknown>) => ({
+      ...form(id, title, 'acc_A'),
+      builderStatus: 'published',
+      ...(internalAvailability ? { internalAvailability } : {}),
+    })
+    listMock.mockResolvedValue([
+      published('internal-open', 'フォームA', { status: 'open', message: null }),
+      published('internal-upcoming', 'フォームB', { status: 'upcoming', message: '受付開始前・7月25日から' }),
+      published('internal-ended', 'フォームC', { status: 'ended', message: '受付は終了しました' }),
+      published('internal-limit', 'フォームD', { status: 'limit_reached', message: '回答上限に達したため受付を終了しました' }),
+      published('formaloo', 'Formaloo'),
+    ])
+
+    render(<Page />)
+    const cardText = async (id: string) => (await screen.findByTestId(`form-card-${id}`)).textContent ?? ''
+
+    expect(await cardText('internal-open')).toContain('受付中')
+    expect(await cardText('internal-upcoming')).toContain('受付開始前・7月25日から')
+    expect(await cardText('internal-ended')).toContain('受付は終了しました')
+    expect(await cardText('internal-limit')).toContain('回答上限に達したため受付を終了しました')
+    expect(await cardText('formaloo')).toContain('公開中')
   })
 })
 

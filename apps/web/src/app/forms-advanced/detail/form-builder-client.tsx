@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import FormBuilder from '@/components/forms-advanced/builder'
@@ -25,35 +25,60 @@ export default function FormBuilderClient({ id }: { id: string }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
   const [internalSheetConnection, setInternalSheetConnection] = useState<SheetsConnection | null>(null)
+  const shareRequestGeneration = useRef(0)
+  const loadRequestGeneration = useRef(0)
+
+  const invalidateShare = useCallback(() => {
+    shareRequestGeneration.current += 1
+    setShare(null)
+  }, [])
 
   const loadShare = useCallback(async () => {
-    try { setShare(await formsAdvancedApi.share(id)) } catch { /* fail-soft */ }
+    const generation = ++shareRequestGeneration.current
+    try {
+      const loadedShare = await formsAdvancedApi.share(id)
+      if (generation === shareRequestGeneration.current) setShare(loadedShare)
+    } catch {
+      // Provider/status changes invalidate every previously displayed URL.
+      if (generation === shareRequestGeneration.current) setShare(null)
+    }
   }, [id])
 
   const load = useCallback(async () => {
+    const generation = ++loadRequestGeneration.current
     setLoading(true)
+    invalidateShare()
     try {
-      const [loadedForm, loadedRenderBackend] = await Promise.all([
-        formsAdvancedApi.get(id),
-        formsAdvancedApi.getRenderBackend(id).catch((): RenderBackend => 'formaloo'),
-      ])
+      const loadedForm = await formsAdvancedApi.get(id)
+      if (generation !== loadRequestGeneration.current) return
+      if (loadedForm.renderBackend !== 'formaloo' && loadedForm.renderBackend !== 'internal') {
+        setForm(null)
+        setShare(null)
+        setError('配信方式を確認できません。再読み込みしてください')
+        return
+      }
       setForm(loadedForm)
-      setRenderBackend(loadedRenderBackend)
+      setRenderBackend(loadedForm.renderBackend)
       setError(null)
       await loadShare()
+      if (generation !== loadRequestGeneration.current) return
       try {
         const me = await fetchApi<{ data: { role: string } }>('/api/staff/me')
-        setIsOwner(me.data.role === 'owner')
+        if (generation === loadRequestGeneration.current) setIsOwner(me.data.role === 'owner')
       } catch { /* 非 owner 扱い */ }
     } catch {
-      setError('フォームが見つかりません')
+      if (generation === loadRequestGeneration.current) setError('フォームが見つかりません')
     } finally {
-      setLoading(false)
+      if (generation === loadRequestGeneration.current) setLoading(false)
     }
-  }, [id, loadShare])
+  }, [id, invalidateShare, loadShare])
 
   useEffect(() => {
     void load()
+    return () => {
+      loadRequestGeneration.current += 1
+      shareRequestGeneration.current += 1
+    }
   }, [load])
 
   useEffect(() => {
@@ -96,41 +121,78 @@ export default function FormBuilderClient({ id }: { id: string }) {
     return () => { active = false }
   }, [form?.id, form?.lineAccountId, isOwner, renderBackend, selectedAccountId])
 
-  const withErr = (fn: () => Promise<AdvancedForm>) => async () => {
+  const withErr = (
+    fn: () => Promise<AdvancedForm>,
+    expectedStatus?: AdvancedForm['builderStatus'],
+    expectedPublishRevision?: string,
+  ) => async (): Promise<boolean> => {
+    const expectedBackend = renderBackend
+    invalidateShare()
     try {
-      setForm(await fn())
+      const updated = await fn()
+      setForm(updated)
+      setRenderBackend(updated.renderBackend)
       setNotice(null)
       await loadShare() // publish/unpublish で埋め込みコードの有効/無効が変わる (N-7)
+      return true
     } catch (e) {
+      // 自前公開は D1 が権威。応答ロスト時は再読込し、既に期待状態なら失敗表示へ戻さない。
+      if (expectedBackend === 'internal' && expectedStatus && expectedPublishRevision !== undefined) {
+        try {
+          const authoritative = await formsAdvancedApi.get(id)
+          setForm(authoritative)
+          setRenderBackend(authoritative.renderBackend)
+          await loadShare()
+          if (authoritative.renderBackend === expectedBackend
+            && authoritative.builderStatus === expectedStatus
+            && authoritative.publishRevision === expectedPublishRevision) {
+            setNotice(null)
+            return true
+          }
+        } catch {
+          // 下の元エラー表示へ進む。
+        }
+      }
       const body = (e as { body?: { error?: string } })?.body
       setNotice(body?.error ?? '操作に失敗しました')
+      return false
     }
   }
 
   const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => {
+    const expectedBackend = renderBackend
+    invalidateShare()
     try {
-      if (renderBackend === 'internal') {
-        await formsAdvancedApi.saveInternalDefinition(id, def)
-        const updated = await formsAdvancedApi.get(id)
-        setForm(updated)
-        await loadShare()
-        setNotice('保存しました')
-        return { ok: true, design: updated.design ?? undefined, warnings: updated.warnings }
-      }
       // preserve-raw: builder が carry した rawLogic + logicFingerprint をそのまま save body へ渡す。
       // form-design: design(色) + designImages(画像 intent) / form-route-branching: formType も同梱される。
-      const updated = await formsAdvancedApi.saveDefinition(id, def)
+      const updated = await formsAdvancedApi.saveDefinition(id, def, expectedBackend)
       setForm(updated)
+      setRenderBackend(updated.renderBackend)
       await loadShare()
       const synced = updated.syncStatus !== 'out_of_sync'
       // F1: 画像同期失敗など out_of_sync 時は syncError を honest に表示 (silent success にしない)。
       setNotice(synced ? '保存しました' : (updated.syncError ?? '保存しました（Formaloo 未接続のためローカル保存）'))
       // F3: builder に確定結果を返す (ok=完全同期時のみ pending 画像 intent を消費 / design=新 S3 URL 含む)。
       //     form-route-branching: jump+simple backstop 等の非ブロッキング警告も返す。
-      return { ok: synced, design: updated.design ?? undefined, warnings: updated.warnings }
+      return {
+        ok: synced,
+        design: updated.design ?? undefined,
+        warnings: updated.warnings,
+        publishRevision: updated.publishRevision,
+      }
     } catch (e) {
       const body = (e as { body?: { error?: string } })?.body
       setNotice(body?.error ?? '保存に失敗しました')
+      if (expectedBackend === 'internal') {
+        try {
+          const authoritative = await formsAdvancedApi.get(id)
+          setForm(authoritative)
+          setRenderBackend(authoritative.renderBackend)
+          await loadShare()
+        } catch {
+          // 元の失敗表示を維持する。
+        }
+      }
       // throw 経路は void 返却 = builder は pending 画像 intent を保持し再試行可能。
     }
   }
@@ -150,12 +212,41 @@ export default function FormBuilderClient({ id }: { id: string }) {
   }
 
   const handleRenderBackendChange = async (next: RenderBackend) => {
+    invalidateShare()
     try {
       const confirmed = await formsAdvancedApi.setRenderBackend(id, next)
-      setRenderBackend(confirmed)
+      const authoritative = await formsAdvancedApi.get(id).catch(() => null)
+      if (authoritative) {
+        setRenderBackend(authoritative.renderBackend)
+        setForm(authoritative)
+      } else {
+        // The switch endpoint guarantees either backend starts as draft. Keep
+        // stale provider URLs hidden even if the follow-up detail response is lost.
+        setRenderBackend(confirmed)
+        setForm((current) => current ? {
+          ...current,
+          builderStatus: 'draft',
+          publicUrl: null,
+          embedCode: null,
+        } : current)
+      }
       await loadShare()
-      setNotice(confirmed === 'internal' ? '自前配信 (β) に切り替えました' : 'Formaloo 配信に切り替えました')
+      const currentBackend = authoritative?.renderBackend ?? confirmed
+      setNotice(currentBackend === 'internal' ? '自前配信 (β) に切り替えました' : 'Formaloo 配信に切り替えました')
+      return currentBackend
     } catch (error) {
+      try {
+        const authoritativeForm = await formsAdvancedApi.get(id)
+        setRenderBackend(authoritativeForm.renderBackend)
+        setForm(authoritativeForm)
+        await loadShare()
+        if (authoritativeForm.renderBackend === next) {
+          setNotice(next === 'internal' ? '自前配信 (β) に切り替えました' : 'Formaloo 配信に切り替えました')
+          return authoritativeForm.renderBackend
+        }
+      } catch {
+        // 下の失敗表示へ進む。
+      }
       const body = (error as { body?: { error?: string } })?.body
       setNotice(body?.error ?? '配信方式の変更に失敗しました')
       throw error
@@ -202,7 +293,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             </div>
           )}
           <FormBuilder
-            key={`${form.id}:${form.builderStatus}`}
+            key={`${form.id}:${form.builderStatus}:${renderBackend}`}
             formId={form.id}
             formTitle={form.title}
             formDescription={form.description}
@@ -212,11 +303,13 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialLogicFingerprint={form.logicFingerprint}
             initialDesign={form.design ?? undefined}
             initialFormType={form.formType ?? undefined}
+            initialFormCopy={form.formCopy ?? undefined}
             initialFormRedirect={form.formRedirect ?? undefined}
             initialSuccessPages={form.successPages ?? undefined}
             initialFriendMetadataMappings={form.friendMetadataMappings ?? undefined}
             initialOperationsSettings={form.operationsSettings ?? undefined}
             initialRenderBackend={renderBackend}
+            internalAvailability={form.internalAvailability}
             fieldDefinitions={fieldDefinitions}
             initialAllowPostEdit={form.allowPostEdit}
             initialAllowEditMail={form.allowEditMail}
@@ -228,22 +321,32 @@ export default function FormBuilderClient({ id }: { id: string }) {
             embedCode={renderBackend === 'internal' ? null : form.embedCode}
             onSave={handleSave}
             onRenderBackendChange={handleRenderBackendChange}
-            onSubmitForReview={withErr(() => formsAdvancedApi.submitForReview(id))}
-            onPublish={withErr(() => formsAdvancedApi.publish(id))}
-            onUnpublish={withErr(() => formsAdvancedApi.unpublish(id))}
-            onReimport={renderBackend === 'formaloo'
-              ? async () => {
-                  try {
-                    const d = await formsAdvancedApi.reimport(id)
-                    setNotice(d.note)
-                    return d
-                  } catch (e) {
-                    const body = (e as { body?: { error?: string } })?.body
-                    setNotice(body?.error ?? '再取り込みに失敗しました')
-                    return null
-                  }
-                }
-              : undefined}
+            onSubmitForReview={renderBackend === 'formaloo' ? withErr(() => formsAdvancedApi.submitForReview(id, renderBackend), 'in_review') : undefined}
+            onPublish={renderBackend === 'internal'
+              ? (publishRevision) => withErr(
+                  () => formsAdvancedApi.publish(id, publishRevision, renderBackend),
+                  'published',
+                  publishRevision,
+                )()
+              : withErr(() => formsAdvancedApi.publish(id, undefined, renderBackend), 'published')}
+            onUnpublish={renderBackend === 'internal'
+              ? withErr(
+                  () => formsAdvancedApi.unpublish(id, renderBackend, form.updatedAt),
+                  'draft',
+                  form.publishRevision,
+                )
+              : withErr(() => formsAdvancedApi.unpublish(id, renderBackend), 'draft')}
+            onReimport={renderBackend === 'formaloo' ? async () => {
+              try {
+                const d = await formsAdvancedApi.reimport(id)
+                setNotice(d.note)
+                return d
+              } catch (e) {
+                const body = (e as { body?: { error?: string } })?.body
+                setNotice(body?.error ?? '再取り込みに失敗しました')
+                return null
+              }
+            } : undefined}
           />
           <div className="mt-4">
             <SharePanel share={share} renderBackend={renderBackend} isOwner={isOwner} internalSheetConnection={internalSheetConnection} connecting={connecting} onConnectSheets={handleConnectSheets} />

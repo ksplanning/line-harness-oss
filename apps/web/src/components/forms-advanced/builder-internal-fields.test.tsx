@@ -150,7 +150,7 @@ describe('internal default selections', () => {
 })
 
 describe('internal-only editor boundaries', () => {
-  test('hides Formaloo sync recovery and out-of-scope branching controls', () => {
+  test('hides Formaloo sync recovery while keeping internal branching controls', () => {
     render(<FormBuilder {...base({
       initialFields: [field('text', '名前'), { ...field('email', 'メール'), position: 1 }],
       syncStatus: 'out_of_sync',
@@ -159,7 +159,7 @@ describe('internal-only editor boundaries', () => {
 
     expect(screen.queryByTestId('sync-badge')).toBeNull()
     expect(screen.queryByTestId('sync-recovery')).toBeNull()
-    expect(screen.queryByText('＋ 分岐を追加')).toBeNull()
-    expect(screen.getByTestId('internal-logic-note').textContent).toContain('条件分岐')
+    expect(screen.getByText('＋ 分岐を追加')).toBeTruthy()
+    expect(screen.getByText(/条件分岐（この項目の回答で他項目を出し分け）/)).toBeTruthy()
   })
 })

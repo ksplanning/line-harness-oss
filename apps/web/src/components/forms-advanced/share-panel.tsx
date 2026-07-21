@@ -62,6 +62,8 @@ function CodeBox({ label, code, testid }: { label: string; code: string; testid:
 export default function SharePanel({ share, renderBackend, isOwner, internalSheetConnection, connecting, onConnectSheets }: SharePanelProps) {
   if (!share) return null
 
+  const isInternal = renderBackend === 'internal'
+
   return (
     <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-4" data-testid="share-panel">
       <h3 className="text-sm font-bold text-gray-900">共有・連携</h3>
@@ -74,17 +76,26 @@ export default function SharePanel({ share, renderBackend, isOwner, internalShee
             配信URL：<a href={share.lineDistUrl} target="_blank" rel="noreferrer" className="text-blue-600 underline break-all">{share.lineDistUrl}</a>
           </div>
           <p className="text-[11px] leading-relaxed text-gray-400" data-testid="line-dist-note">
-            LINE の配信・導線ではこの URL を使ってください。開いた友だちの識別変数（fr_id / fr_name）が自動で付き、
-            スプレッドシートに「どの LINE アカウントの回答か」が並びます。
-            <br />
-            ※ Formaloo フォーム側に alias「fr_id」「fr_name」の hidden field と Google スプレッドシート連携の設定が必要です。
+            {isInternal ? (
+              <>
+                LINE の配信・導線ではこの URL を使ってください。LINE で確認できた fr_id を自前フォームの回答に紐づけます。
+                埋め込み・直接リンク用 URL から開いた回答には fr_id は付きません。
+              </>
+            ) : (
+              <>
+                LINE の配信・導線ではこの URL を使ってください。開いた友だちの識別変数（fr_id / fr_name）が自動で付き、
+                スプレッドシートに「どの LINE アカウントの回答か」が並びます。
+                <br />
+                ※ Formaloo フォーム側に alias「fr_id」「fr_name」の hidden field と Google スプレッドシート連携の設定が必要です。
+              </>
+            )}
           </p>
         </section>
       )}
 
       {/* HP 埋め込み */}
       <section className="space-y-2 border-t border-gray-100 pt-3">
-        <div className="text-xs font-medium text-gray-700">ホームページに埋め込む</div>
+        <div className="text-xs font-medium text-gray-700">{isInternal ? '埋め込み・直接リンク用 URL' : 'ホームページに埋め込む'}</div>
         {share.published ? (
           <>
             {share.publicUrl && (
@@ -92,12 +103,14 @@ export default function SharePanel({ share, renderBackend, isOwner, internalShee
                 HP公開URL：<a href={share.publicUrl} target="_blank" rel="noreferrer" className="text-blue-600 underline break-all">{share.publicUrl}</a>
               </div>
             )}
-            {share.iframeCode && <CodeBox label="iframe（枠で埋め込み）" code={share.iframeCode} testid="iframe-code" />}
-            {share.scriptCode && <CodeBox label="script（1行タグで埋め込み）" code={share.scriptCode} testid="script-code" />}
+            {!isInternal && share.iframeCode && <CodeBox label="iframe（枠で埋め込み）" code={share.iframeCode} testid="iframe-code" />}
+            {!isInternal && share.scriptCode && <CodeBox label="script（1行タグで埋め込み）" code={share.scriptCode} testid="script-code" />}
           </>
         ) : (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800" data-testid="unpublished-note">
-            フォームを公開すると、埋め込みコードが発行されます（誤配信防止のため下書き中は無効です）。
+            {isInternal
+              ? 'フォームを公開すると、公開用 URL と LINE 配信用 URL が使えるようになります（誤配信防止のため下書き中は無効です）。'
+              : 'フォームを公開すると、埋め込みコードが発行されます（誤配信防止のため下書き中は無効です）。'}
           </div>
         )}
       </section>
@@ -134,31 +147,29 @@ export default function SharePanel({ share, renderBackend, isOwner, internalShee
           )}
         </section>
       ) : (
-        <>
-      {/* Google Sheets 再同期 */}
-      <section className="space-y-2 border-t border-gray-100 pt-3">
-        <div className="text-xs font-medium text-gray-700">Google Sheets 再同期</div>
-        <p className="text-xs leading-relaxed text-gray-500" data-testid="gsheet-sync-description">
-          Formaloo で接続済みの Google スプレッドシートへ回答を再同期します。この画面から初回接続はできません。
-        </p>
-        {share.gsheetConnected ? (
-          <div className="flex items-center gap-2 text-xs text-gray-600" data-testid="gsheet-connected">
-            <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: LINE_GREEN }} />
-            連携済み
-            {share.gsheetUrl && <a href={share.gsheetUrl} target="_blank" rel="noreferrer" className="text-blue-600 underline">シートを開く</a>}
-          </div>
-        ) : (
-          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800" data-testid="gsheet-unconnected-note">
-            未接続です。初回接続は Formaloo ダッシュボードで対象フォームを開き、「Google Sheets 連携」から設定してください。
-          </div>
-        )}
-        {isOwner && (
-          <button type="button" onClick={onConnectSheets} disabled={connecting} className="min-h-[40px] rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
-            {connecting ? '再同期中…' : '再同期する'}
-          </button>
-        )}
-      </section>
-        </>
+        <section className="space-y-2 border-t border-gray-100 pt-3">
+          {/* Google Sheets 再同期 */}
+          <div className="text-xs font-medium text-gray-700">Google Sheets 再同期</div>
+          <p className="text-xs leading-relaxed text-gray-500" data-testid="gsheet-sync-description">
+            Formaloo で接続済みの Google スプレッドシートへ回答を再同期します。この画面から初回接続はできません。
+          </p>
+          {share.gsheetConnected ? (
+            <div className="flex items-center gap-2 text-xs text-gray-600" data-testid="gsheet-connected">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: LINE_GREEN }} />
+              連携済み
+              {share.gsheetUrl && <a href={share.gsheetUrl} target="_blank" rel="noreferrer" className="text-blue-600 underline">シートを開く</a>}
+            </div>
+          ) : (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800" data-testid="gsheet-unconnected-note">
+              未接続です。初回接続は Formaloo ダッシュボードで対象フォームを開き、「Google Sheets 連携」から設定してください。
+            </div>
+          )}
+          {isOwner && (
+            <button type="button" onClick={onConnectSheets} disabled={connecting} className="min-h-[40px] rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+              {connecting ? '再同期中…' : '再同期する'}
+            </button>
+          )}
+        </section>
       )}
     </div>
   )

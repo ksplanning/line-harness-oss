@@ -263,11 +263,10 @@ describe('FormBuilder — 入力項目の補足説明 (field-help-charlimit T-A3
   ]
 
   it('全入力型の設定パネルに「補足説明」textarea が描画される', () => {
+    render(<FormBuilder {...base()} />)
     for (const [addLabel] of addLabels) {
-      render(<FormBuilder {...base()} />)
       fireEvent.click(screen.getByLabelText(addLabel))
       expect(screen.getByLabelText('補足説明')).toBeTruthy()
-      cleanup()
     }
   })
 

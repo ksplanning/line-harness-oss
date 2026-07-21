@@ -29,7 +29,7 @@ import FormBuilderClient from './form-builder-client'
 
 function form(lineAccountId: string | null) {
   return {
-    id: 'fa_1', title: 'F', description: null, formalooSlug: 'remote', builderStatus: 'draft', publishedAt: null,
+    id: 'fa_1', title: 'F', description: null, formalooSlug: 'remote', renderBackend: 'formaloo', builderStatus: 'draft', publishedAt: null,
     submitCount: 0, fields: [], logic: [], publicUrl: null, embedCode: null, syncStatus: 'idle', syncError: null,
     lineAccountId, updatedAt: 'x',
   }

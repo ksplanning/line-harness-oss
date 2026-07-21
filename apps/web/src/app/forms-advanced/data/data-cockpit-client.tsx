@@ -63,17 +63,15 @@ export default function DataCockpitClient({ id }: { id: string }) {
     setLoading(true)
     setRenderBackend('unknown')
     try {
-      const [form, backend] = await Promise.all([
+      const [form] = await Promise.all([
         formsAdvancedApi.get(id).catch(() => null),
-        formsAdvancedApi.getRenderBackend(id)
-          .then((value): RenderBackendState => (
-            value === 'internal' || value === 'formaloo' ? value : 'unknown'
-          ))
-          .catch((): RenderBackendState => 'unknown'),
         refreshStats(),
         formalooDataApi.listFilters(id).then(setFilters).catch(() => setFilters([])),
         loadRows(DEFAULT_QUERY),
       ])
+      const backend: RenderBackendState = form?.renderBackend === 'internal' || form?.renderBackend === 'formaloo'
+        ? form.renderBackend
+        : 'unknown'
       setRenderBackend(backend)
       if (form) {
         setTitle(form.title)

@@ -35,3 +35,37 @@ describe('formsAdvancedApi.saveDefinition — formCopy 配線 (T-C2)', () => {
     expect('formCopy' in JSON.parse((opts as { body: string }).body)).toBe(false)
   })
 })
+
+describe('formsAdvancedApi.publish — 自前公開 revision 配線', () => {
+  it('revision 指定時だけ確認済み revision を JSON body に載せる', async () => {
+    await formsAdvancedApi.publish('f1', 'revision-1')
+    expect(fetchApi).toHaveBeenCalledWith('/api/forms-advanced/f1/publish', {
+      method: 'POST',
+      body: JSON.stringify({ publishRevision: 'revision-1' }),
+    })
+  })
+
+  it('revision 未指定の既存 Formaloo 公開は body を追加しない', async () => {
+    await formsAdvancedApi.publish('f1')
+    expect(fetchApi).toHaveBeenCalledWith('/api/forms-advanced/f1/publish', { method: 'POST' })
+  })
+})
+
+describe('formsAdvancedApi.unpublish — 自前公開世代の配線', () => {
+  it('自前配信だけ画面表示時の updatedAt を JSON body に載せる', async () => {
+    await formsAdvancedApi.unpublish('f1', 'internal', 'shown-at')
+    expect(fetchApi).toHaveBeenCalledWith('/api/forms-advanced/f1/unpublish', {
+      method: 'POST',
+      headers: { 'X-Form-Render-Backend': 'internal' },
+      body: JSON.stringify({ expectedUpdatedAt: 'shown-at' }),
+    })
+  })
+
+  it('既存 Formaloo 非公開は body を追加しない', async () => {
+    await formsAdvancedApi.unpublish('f1', 'formaloo')
+    expect(fetchApi).toHaveBeenCalledWith('/api/forms-advanced/f1/unpublish', {
+      method: 'POST',
+      headers: { 'X-Form-Render-Backend': 'formaloo' },
+    })
+  })
+})

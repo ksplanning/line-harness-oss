@@ -25,7 +25,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { ChoiceFetchItem, FriendFieldDefinition, HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, VariableSubType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
-import { computeRouteTerminalWarnings, MAX_FRIEND_METADATA_MAPPINGS, validateRedirectUrl } from '@line-crm/shared'
+import { computeRouteTerminalWarnings, INTERNAL_FORM_CHANNEL_SOURCE_ID, MAX_FRIEND_METADATA_MAPPINGS, validateRedirectUrl } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
   FIELD_CATEGORIES,
@@ -112,13 +112,15 @@ export interface BuilderProps {
   initialOperationsSettings?: FormOperationsSettings
   /** 自前配信 W1: 既存フォームは Formaloo が既定。定義保存とは別 endpoint で切り替える。 */
   initialRenderBackend?: RenderBackend
-  onRenderBackendChange?: (renderBackend: RenderBackend) => Promise<void> | void
+  /** 自前配信の受付状態。公開済みでも受付前/終了/上限を「公開中」と誤表示しない。 */
+  internalAvailability?: { status: 'open' | 'upcoming' | 'ended' | 'limit_reached'; message: string | null }
+  onRenderBackendChange?: (renderBackend: RenderBackend) => Promise<RenderBackend | void> | RenderBackend | void
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[] } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[]; publishRevision?: string } | void> | void
   onSubmitForReview?: () => void
-  onPublish?: () => void
-  onUnpublish?: () => void
+  onPublish?: (publishRevision?: string) => Promise<boolean | void> | boolean | void
+  onUnpublish?: () => Promise<boolean | void> | boolean | void
   /** Formaloo から定義を再取り込み (pull / N-8)。ok===true の時だけ editor に反映する (B2)。design/formType/successPages も復元 (F2)。 */
   onReimport?: () => Promise<{ ok: boolean; fields: HarnessField[]; logic: HarnessLogicRule[]; note?: string; rawLogic?: unknown; logicFingerprint?: string | null; design?: FormDesign; formType?: FormDisplayType; successPages?: SuccessPageSpec[]; operationsSettings?: FormOperationsSettings } | null>
   publicUrl?: string | null
@@ -533,6 +535,7 @@ function SettingsPanel({
   onLogicChange,
   formType,
   onEnsureMultiStep,
+  internalRenderer = false,
   successPages = [],
   renderBackend,
 }: {
@@ -548,6 +551,8 @@ function SettingsPanel({
   formType?: FormDisplayType
   /** jump アクション選択時に simple なら multi_step へ自動切替 (可視通知) させる親コールバック。 */
   onEnsureMultiStep?: () => void
+  /** 自前 renderer は一覧表示の jump と section 単位の show/hide を実行できる。 */
+  internalRenderer?: boolean
   /** route-terminal-phase2 (Track 2 / T-F1): submit rule の per-route 完了ページ候補 (successPages)。 */
   successPages?: SuccessPageSpec[]
   /** 自前配信だけで有効な設定を Formaloo 編集画面へ露出しない。 */
@@ -556,6 +561,9 @@ function SettingsPanel({
   const cfg = field.config
   const set = (patch: Partial<HarnessField>) => onChange({ ...field, ...patch })
   const setCfg = (patch: Partial<HarnessField['config']>) => onChange({ ...field, config: { ...cfg, ...patch } })
+  const isBranchTarget = (candidate: HarnessField) => (
+    isScalarReferenceType(candidate.type) || (internalRenderer && candidate.type === 'section')
+  )
 
   if (isDecoration(field.type)) {
     const label = field.type === 'section' ? '見出し' : 'ラベル(任意)'
@@ -711,7 +719,7 @@ function SettingsPanel({
 
   const rulesForField = logic.filter((r) => r.sourceFieldId === field.id)
   const addRule = () => {
-    const other = allFields.find((f) => f.id !== field.id && isScalarReferenceType(f.type))
+    const other = allFields.find((f) => f.id !== field.id && isBranchTarget(f))
     if (!other) return
     onLogicChange([
       ...logic,
@@ -722,7 +730,7 @@ function SettingsPanel({
   //   host required は「残存 submit があれば true / 無ければ元値 (terminalHostWasRequired) へ復元」で再計算する。
   const hostHasSubmit = (list: HarnessLogicRule[]) => list.some((r) => r.sourceFieldId === field.id && r.action === 'submit')
   const firstPageId = () => allFields.find((f) => f.type === 'page_break')?.id ?? ''
-  const firstOtherFieldId = () => allFields.find((f) => f.id !== field.id && isScalarReferenceType(f.type))?.id ?? ''
+  const firstOtherFieldId = () => allFields.find((f) => f.id !== field.id && isBranchTarget(f))?.id ?? ''
   // logic 差替 + required 再計算。restoreRequired = submit が host から消えた時に戻す元値。
   const applyLogic = (nextLogic: HarnessLogicRule[], restoreRequired?: boolean) => {
     onLogicChange(nextLogic)
@@ -760,7 +768,7 @@ function SettingsPanel({
           const curIsPage = allFields.some((f) => f.id === r.targetFieldId && f.type === 'page_break')
           next.targetFieldId = curIsPage ? r.targetFieldId : firstPageId()
         } else {
-          const curValid = allFields.some((f) => f.id === r.targetFieldId && f.id !== field.id && isScalarReferenceType(f.type))
+          const curValid = allFields.some((f) => f.id === r.targetFieldId && f.id !== field.id && isBranchTarget(f))
           next.targetFieldId = curValid ? r.targetFieldId : firstOtherFieldId()
         }
       }
@@ -774,6 +782,58 @@ function SettingsPanel({
   // rule 削除。submit rule 削除は host の required を再計算 (残存 submit 無ければ元値へ復元)。
   const onDeleteRule = (rule: HarnessLogicRule) => {
     applyLogic(logic.filter((r) => r.id !== rule.id), rule.action === 'submit' ? (rule.terminalHostWasRequired ?? false) : undefined)
+  }
+  const postalDestinationFields = allFields.filter((candidate) => candidate.type === 'text' && candidate.id !== field.id)
+  const postalAutofill = cfg.postalAutofill
+  const togglePostalAutofill = (enabled: boolean) => {
+    if (!enabled) {
+      const nextConfig = { ...cfg }
+      delete nextConfig.postalAutofill
+      onChange({ ...field, config: nextConfig })
+      return
+    }
+    const [prefecture, city, town] = postalDestinationFields
+    if (!prefecture || !city || !town) return
+    setCfg({
+      postalAutofill: {
+        zipField: field.id,
+        prefField: prefecture.id,
+        cityField: city.id,
+        townField: town.id,
+      },
+    })
+  }
+  const updatePostalDestination = (key: 'prefField' | 'cityField' | 'townField', value: string) => {
+    if (!postalAutofill) return
+    const otherDestinations = [postalAutofill.prefField, postalAutofill.cityField, postalAutofill.townField]
+      .filter((_, index) => index !== ({ prefField: 0, cityField: 1, townField: 2 } as const)[key])
+    if (otherDestinations.includes(value)) return
+    setCfg({ postalAutofill: { ...postalAutofill, zipField: field.id, [key]: value } })
+  }
+  const postalDestinationSelect = (
+    key: 'prefField' | 'cityField' | 'townField',
+    label: string,
+  ) => {
+    if (!postalAutofill) return null
+    const otherDestinations = [postalAutofill.prefField, postalAutofill.cityField, postalAutofill.townField]
+      .filter((_, index) => index !== ({ prefField: 0, cityField: 1, townField: 2 } as const)[key])
+    return (
+      <label className="block text-xs text-gray-500">
+        {label}
+        <select
+          aria-label={label}
+          value={postalAutofill[key]}
+          onChange={(event) => updatePostalDestination(key, event.target.value)}
+          className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1"
+        >
+          {postalDestinationFields.map((candidate) => (
+            <option key={candidate.id} value={candidate.id} disabled={otherDestinations.includes(candidate.id)}>
+              {candidate.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    )
   }
 
   return (
@@ -810,6 +870,36 @@ function SettingsPanel({
           className="w-full border border-gray-300 rounded px-2 py-1"
         />
       </div>
+
+      {internalRenderer && field.type === 'text' && (
+        <div className="space-y-2 border-t border-gray-100 pt-3" data-testid="postal-autofill-settings">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              aria-label="郵便番号から住所を自動入力"
+              checked={Boolean(postalAutofill)}
+              disabled={!postalAutofill && postalDestinationFields.length < 3}
+              onChange={(event) => togglePostalAutofill(event.target.checked)}
+            />
+            <span>郵便番号から住所を自動入力する</span>
+          </label>
+          {postalDestinationFields.length < 3 && !postalAutofill ? (
+            <p className="text-[10px] leading-snug text-amber-600">
+              都道府県・市区町村・町域の入力先に使うテキスト項目を、あと3つ用意してください。
+            </p>
+          ) : null}
+          {postalAutofill ? (
+            <div className="grid gap-2">
+              {postalDestinationSelect('prefField', '都道府県の入力先')}
+              {postalDestinationSelect('cityField', '市区町村の入力先')}
+              {postalDestinationSelect('townField', '町域の入力先')}
+              <p className="text-[10px] leading-snug text-gray-400">
+                3つの入力先には、それぞれ別の一行テキスト項目を選んでください。
+              </p>
+            </div>
+          ) : null}
+        </div>
+      )}
 
       {field.type === 'choice_fetch' && (
         <ChoiceFetchFieldPanel
@@ -987,12 +1077,13 @@ function SettingsPanel({
       })()}
 
       {/* 条件分岐 (R1 / T-B2 GUI + form-route-branching jump) */}
-      {renderBackend === 'formaloo' ? (
-        <div className="pt-2 border-t border-gray-100">
+      <div className="pt-2 border-t border-gray-100">
         <div className="text-xs text-gray-500 mb-1">条件分岐（この項目の回答で他項目を出し分け）</div>
         {/* R3: 既存 show/hide の実質ルート活用案内 (文言のみ・機能追加なし)。 */}
         <div className="text-[10px] text-gray-400 mb-1 leading-snug">
-          「表示/隠す」でも回答ごとに出す項目を変えられます。ページ単位で丸ごと分けたい時は「ページへ飛ぶ」（1問ずつ表示）を使います。
+          {internalRenderer
+            ? '「表示/隠す」は項目またはセクション全体に効き、一覧表示でも同じ分岐をその場で動かせます。ABCのルート分けには「ページへ飛ぶ」も使えます。'
+            : '「表示/隠す」でも回答ごとに出す項目を変えられます。ページ単位で丸ごと分けたい時は「ページへ飛ぶ」（1問ずつ表示）を使います。'}
         </div>
         {rulesForField.map((rule) => {
           const isJump = rule.action === 'jump'
@@ -1006,7 +1097,7 @@ function SettingsPanel({
           // jump 飛び先は page_break (改ページ) / show・hide・skip は非装飾 field。
           const targetOptions = isJump
             ? allFields.filter((f) => f.type === 'page_break')
-            : allFields.filter((f) => f.id !== field.id && isScalarReferenceType(f.type))
+            : allFields.filter((f) => f.id !== field.id && isBranchTarget(f))
           // 分岐アクション select (submit option 含む・route-terminal-submit)。
           const actionSelect = (
             <select
@@ -1076,23 +1167,18 @@ function SettingsPanel({
               </select>
               {deleteBtn}
               {/* case-b 注記: choice source だが choice_slug 未取得 (新規フォーム) → 保存後 再取り込みで有効化。 */}
-              {isJump && isChoiceSource && !cfg.choiceItems ? (
+              {!internalRenderer && isJump && isChoiceSource && !cfg.choiceItems ? (
                 <div className="w-full text-[10px] text-amber-600">この選択肢での分岐は「保存」後に有効になります（保存で選択肢が Formaloo に登録されます）。</div>
               ) : null}
             </div>
           )
         })}
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={addRule} disabled={allFields.filter((f) => f.id !== field.id && isScalarReferenceType(f.type)).length < 1} className="text-xs disabled:opacity-40" style={{ color: LINE_GREEN }}>＋ 分岐を追加</button>
+          <button type="button" onClick={addRule} disabled={allFields.filter((f) => f.id !== field.id && isBranchTarget(f)).length < 1} className="text-xs disabled:opacity-40" style={{ color: LINE_GREEN }}>＋ 分岐を追加</button>
           {/* route-terminal-submit: 「ここで送信」は他 field を要さず追加可 (入力1項目でも可)。 */}
           <button type="button" onClick={addSubmitRule} className="text-xs" style={{ color: LINE_GREEN }}>＋「ここで送信」を追加</button>
         </div>
-        </div>
-      ) : (
-        <p data-testid="internal-logic-note" className="border-t border-gray-100 pt-2 text-[10px] leading-snug text-gray-400">
-          条件分岐は自前配信の次段階で対応します。現在は項目の入力・保存だけを設定できます。
-        </p>
-      )}
+      </div>
     </div>
   )
 }
@@ -1191,6 +1277,13 @@ function operationsSettingsPatch(
   return patch
 }
 
+function publishSummaryDate(value: string): string {
+  if (!value) return '未設定'
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value)
+  if (!match) return value
+  return `${Number(match[1])}年${Number(match[2])}月${Number(match[3])}日 ${match[4]}:${match[5]}`
+}
+
 export default function FormBuilder(props: BuilderProps) {
   const fieldDefinitionOptions = (props.fieldDefinitions ?? EMPTY_FIELD_DEFINITIONS)
     .filter((definition) => definition.isActive)
@@ -1207,6 +1300,29 @@ export default function FormBuilder(props: BuilderProps) {
     setFieldsState(next)
   }
   const [logic, setLogic] = useState<HarnessLogicRule[]>(props.initialLogic)
+  const channelRules = logic.filter((rule) => rule.sourceFieldId === INTERNAL_FORM_CHANNEL_SOURCE_ID)
+  const channelTargetFields = fields.filter((field) => isScalarReferenceType(field.type) || field.type === 'section')
+  const addChannelRule = () => {
+    const target = channelTargetFields[0]
+    if (!target) return
+    setLogic((current) => [
+      ...current,
+      {
+        id: `channel_${(crypto.randomUUID?.() ?? String(Math.random())).slice(0, 8)}`,
+        sourceFieldId: INTERNAL_FORM_CHANNEL_SOURCE_ID,
+        operator: 'equals',
+        value: 'line',
+        action: 'hide',
+        targetFieldId: target.id,
+      },
+    ])
+  }
+  const updateChannelRule = (id: string, patch: Partial<Pick<HarnessLogicRule, 'value' | 'action' | 'targetFieldId'>>) => {
+    setLogic((current) => current.map((rule) => rule.id === id ? { ...rule, ...patch } : rule))
+  }
+  const removeChannelRule = (id: string) => {
+    setLogic((current) => current.filter((rule) => rule.id !== id))
+  }
   const [title, setTitle] = useState(props.formTitle)
   const [description, setDescription] = useState(props.formDescription ?? '')
   // preserve-raw: rawLogic (pull 由来の Formaloo logic 逐語) + logicFingerprint (未編集判定) を opaque 保持。
@@ -1320,16 +1436,64 @@ export default function FormBuilder(props: BuilderProps) {
   const [renderBackendSaving, setRenderBackendSaving] = useState(false)
   const [renderBackendError, setRenderBackendError] = useState<string | null>(null)
   const [confirmPublish, setConfirmPublish] = useState(false)
+  const [publishError, setPublishError] = useState<string | null>(null)
+  const [publishing, setPublishing] = useState(false)
   const [reimportConfirm, setReimportConfirm] = useState(false)
   const [reimporting, setReimporting] = useState(false)
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
   const [overId, setOverId] = useState<string | null>(null)
   const [dropFeedback, setDropFeedback] = useState<string | null>(null)
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const publishDialogRef = useRef<HTMLDivElement | null>(null)
+  const publishConfirmRef = useRef<HTMLButtonElement | null>(null)
+  const publishTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const publishBusyRef = useRef({ saving, publishing })
 
   useEffect(() => () => {
     if (feedbackTimerRef.current !== null) clearTimeout(feedbackTimerRef.current)
   }, [])
+
+  useEffect(() => {
+    publishBusyRef.current = { saving, publishing }
+  }, [publishing, saving])
+
+  useEffect(() => {
+    if (renderBackend !== 'internal' || !confirmPublish) return
+    publishConfirmRef.current?.focus()
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !publishBusyRef.current.saving && !publishBusyRef.current.publishing) {
+        event.preventDefault()
+        setConfirmPublish(false)
+        setPublishError(null)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = Array.from(publishDialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) ?? [])
+      if (focusable.length === 0) {
+        event.preventDefault()
+        publishDialogRef.current?.focus()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      queueMicrotask(() => publishTriggerRef.current?.focus())
+    }
+  }, [confirmPublish, renderBackend])
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: MOUSE_ACTIVATION }),
@@ -1340,16 +1504,21 @@ export default function FormBuilder(props: BuilderProps) {
   const reposition = (list: HarnessField[]) => list.map((f, i) => ({ ...f, position: i }))
 
   const changeRenderBackend = async (next: RenderBackend) => {
-    if (next === renderBackend || renderBackendSaving) return
-    const previous = renderBackend
-    setRenderBackend(next)
+    if (next === renderBackend || renderBackendSaving || saving || publishing || reimporting) return
     setRenderBackendError(null)
-    if (!props.onRenderBackendChange) return
+    if (next === 'formaloo') {
+      setRenderBackendError('自前配信で編集した内容を失わないため、Formaloo 配信には戻せません')
+      return
+    }
+    if (!props.onRenderBackendChange) {
+      setRenderBackend(next)
+      return
+    }
     setRenderBackendSaving(true)
     try {
-      await props.onRenderBackendChange(next)
+      const confirmed = await props.onRenderBackendChange(next)
+      setRenderBackend(confirmed === 'formaloo' || confirmed === 'internal' ? confirmed : next)
     } catch (error) {
-      setRenderBackend(previous)
       const body = (error as { body?: { error?: string } })?.body
       setRenderBackendError(body?.error ?? '配信方式の変更に失敗しました。時間をおいて再度お試しください。')
     } finally {
@@ -1453,7 +1622,15 @@ export default function FormBuilder(props: BuilderProps) {
     }
     setDropFeedback(null)
     const deletingDecoration = fields.some((field) => field.id === id && isDecoration(field.type))
-    setFields((cur) => reposition(cur.filter((f) => f.id !== id)))
+    setFields((cur) => reposition(cur
+      .filter((field) => field.id !== id)
+      .map((field) => {
+        const postalAutofill = field.config.postalAutofill
+        if (!postalAutofill || !Object.values(postalAutofill).includes(id)) return field
+        const config = { ...field.config }
+        delete config.postalAutofill
+        return { ...field, config }
+      })))
     setLogic((cur) => cur.filter((r) =>
       r.sourceFieldId !== id
       && r.targetFieldId !== id
@@ -1464,13 +1641,13 @@ export default function FormBuilder(props: BuilderProps) {
     if (editMailFieldId === id) setEditMailFieldId('')
   }
 
-  const handleSave = async () => {
-    if (!title.trim() || reimporting) return
+  const handleSave = async (): Promise<{ publishRevision?: string } | null> => {
+    if (!title.trim() || reimporting || renderBackendSaving) return null
     // route-terminal-phase2 (T-C1): 危険/不正な redirect URL は保存を阻む (inline error を先に直させる)。
-    if (redirectUrlError) return
-    if (allowEditMail === 1 && !editMailFieldId) {
+    if (redirectUrlError) return null
+    if (renderBackend === 'formaloo' && allowEditMail === 1 && !editMailFieldId) {
       setEditMailFieldError('編集URLの送信先に使うメール項目を選んでください。')
-      return
+      return null
     }
     setEditMailFieldError(null)
     setSaving(true)
@@ -1478,7 +1655,27 @@ export default function FormBuilder(props: BuilderProps) {
       // preserve-raw: rawLogic + logicFingerprint を同梱。未編集なら route が raw を Formaloo へ verbatim 再送。
       // form-design: design(色) + designImages(画像 intent) を同梱。
       // form-jp-localization: 文言を触ったときだけ完全 object で載せる (初期未編集は absent = 既存不干渉)。
-      const result = await props.onSave({ fields: reposition(fieldsRef.current), logic, rawLogic, logicFingerprint, title, description, design, designImages, formType, ...(formCopyTouched ? { formCopy } : {}), ...(formRedirectTouched ? { formRedirect } : {}), ...(successPagesTouched ? { successPages } : {}), ...(friendMetadataMappingsTouched ? { friendMetadataMappings } : {}), ...(operationsSettingsTouched.size > 0 ? { operationsSettings: operationsSettingsPatch(operationsSettings, operationsSettingsTouched) } : {}), allowPostEdit, allowEditMail, editMailFieldId: editMailFieldId || null })
+      const result = await props.onSave({
+        fields: reposition(fieldsRef.current),
+        logic,
+        rawLogic,
+        logicFingerprint,
+        title,
+        description,
+        design,
+        designImages,
+        formType,
+        ...(formCopyTouched ? { formCopy } : {}),
+        ...(formRedirectTouched ? { formRedirect } : {}),
+        ...(successPagesTouched ? { successPages } : {}),
+        ...(renderBackend === 'formaloo' && friendMetadataMappingsTouched ? { friendMetadataMappings } : {}),
+        ...(operationsSettingsTouched.size > 0 ? { operationsSettings: operationsSettingsPatch(operationsSettings, operationsSettingsTouched) } : {}),
+        ...(renderBackend === 'formaloo' ? {
+          allowPostEdit,
+          allowEditMail,
+          editMailFieldId: editMailFieldId || null,
+        } : {}),
+      })
       // F3: server 確定 design(新 S3 URL 含む)を adopt し、以後の save で旧値に revert しない。
       if (result && typeof result === 'object') {
         if (result.design) setDesign(result.design)
@@ -1497,8 +1694,41 @@ export default function FormBuilder(props: BuilderProps) {
         // form-route-branching: jump+simple backstop 等の非ブロッキング警告を surface。
         setSaveWarnings(Array.isArray(result.warnings) ? result.warnings : [])
       }
+      return result && typeof result === 'object' && result.ok
+        ? { publishRevision: result.publishRevision }
+        : null
+    } catch {
+      return null
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleInternalPublish = async () => {
+    if (!props.onPublish || saving || publishing) return
+    setPublishError(null)
+    const saved = await handleSave()
+    if (!saved) {
+      setPublishError('保存できなかったため、公開していません。入力内容を確認して、もう一度お試しください。')
+      return
+    }
+    if (!saved.publishRevision) {
+      setPublishError('保存した内容を確認できなかったため、公開していません。再読み込みして、もう一度お試しください。')
+      return
+    }
+    setPublishing(true)
+    try {
+      const result = await props.onPublish(saved.publishRevision)
+      if (result === false) {
+        setPublishError('公開できませんでした。現在の状態を確認して、もう一度お試しください。')
+      } else {
+        setConfirmPublish(false)
+        setPublishError(null)
+      }
+    } catch {
+      setPublishError('公開できませんでした。現在の状態を確認して、もう一度お試しください。')
+    } finally {
+      setPublishing(false)
     }
   }
 
@@ -1574,7 +1804,11 @@ export default function FormBuilder(props: BuilderProps) {
   const hasRating = fields.some((f) => f.type === 'rating')
   // route-terminal-submit (T-B2): lint(a)なだれ込み/(b)送信不能/(d)データ損失 の非ブロッキング警告。
   //   純 show/hide フォームは空 = 誤警告 0 (computeRouteTerminalWarnings が保証)。
-  const routeTerminalWarnings = computeRouteTerminalWarnings(fields, logic, formType)
+  const routeTerminalWarnings = computeRouteTerminalWarnings(
+    fields,
+    logic,
+    renderBackend === 'internal' && formType === 'simple' ? 'multi_step' : formType,
+  )
   const onFormTypeSwitch = (t: FormDisplayType) => { setFormType(t); setFormTypeNotice(null) }
   // プレビューは pending 画像 (dataUrl) を即時反映する (upload 前でも見た目を確認できる)。
   const previewDesign: FormDesign = {
@@ -1584,8 +1818,20 @@ export default function FormBuilder(props: BuilderProps) {
     ...(designImages.cover?.intent === 'replace' && designImages.cover.dataUrl ? { backgroundImageUrl: designImages.cover.dataUrl } : {}),
     ...(designImages.cover?.intent === 'remove' ? { backgroundImageUrl: undefined } : {}),
   }
-  const statusLabel = props.status === 'published' ? '公開中' : props.status === 'in_review' ? 'レビュー中' : '下書き'
-  const statusColor = props.status === 'published' ? LINE_GREEN : props.status === 'in_review' ? '#F59E0B' : '#9CA3AF'
+  const internalAvailabilityLabel = props.internalAvailability?.message ?? (
+    props.internalAvailability?.status === 'upcoming' ? '受付開始前'
+      : props.internalAvailability?.status === 'ended' ? '受付終了'
+        : props.internalAvailability?.status === 'limit_reached' ? '回答上限に達しました'
+          : '受付中'
+  )
+  const internalUnavailable = renderBackend === 'internal'
+    && props.status === 'published'
+    && props.internalAvailability?.status !== undefined
+    && props.internalAvailability.status !== 'open'
+  const statusLabel = renderBackend === 'internal' && props.status === 'published'
+    ? internalAvailabilityLabel
+    : props.status === 'published' ? '公開中' : props.status === 'in_review' ? 'レビュー中' : '下書き'
+  const statusColor = internalUnavailable ? '#D97706' : props.status === 'published' ? LINE_GREEN : props.status === 'in_review' ? '#F59E0B' : '#9CA3AF'
 
   return (
     <DndContext
@@ -1596,6 +1842,12 @@ export default function FormBuilder(props: BuilderProps) {
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
     >
+      <fieldset
+        data-testid="builder-edit-surface"
+        disabled={renderBackendSaving}
+        aria-busy={renderBackendSaving}
+        className={`min-w-0 border-0 p-0 ${renderBackendSaving ? 'pointer-events-none opacity-75' : ''}`}
+      >
       {/* 上部バー */}
       <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-gray-200">
         <label className="min-w-48 flex-1">
@@ -1620,40 +1872,77 @@ export default function FormBuilder(props: BuilderProps) {
           )
         })()}
         <div className="flex-1" />
-        <button type="button" onClick={handleSave} disabled={saving || reimporting || !title.trim()} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>
+        <button type="button" onClick={handleSave} disabled={saving || reimporting || renderBackendSaving || !title.trim()} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>
           {saving ? '保存中...' : '保存'}
         </button>
-        {props.onReimport && !reimportConfirm && (
-          <button type="button" onClick={() => setReimportConfirm(true)} disabled={reimporting || saving} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200 disabled:opacity-50">
+        {renderBackend === 'formaloo' && props.onReimport && !reimportConfirm && (
+          <button type="button" onClick={() => setReimportConfirm(true)} disabled={reimporting || saving || renderBackendSaving} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200 disabled:opacity-50">
             {reimporting ? '取り込み中...' : 'Formaloo から再取り込み'}
           </button>
         )}
-        {props.onReimport && reimportConfirm && (
+        {renderBackend === 'formaloo' && props.onReimport && reimportConfirm && (
           // 行内確認 (window.confirm 不使用 / M-16): 未保存の編集が Formaloo の内容に置き換わる旨
           <span className="flex items-center gap-1 text-xs" data-testid="reimport-confirm">
             <span>未保存の変更は破棄され Formaloo の内容に置き換わります。よろしいですか？</span>
-            <button type="button" onClick={handleReimport} disabled={saving || reimporting} className="text-white px-2 py-0.5 rounded disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>はい</button>
+            <button type="button" onClick={handleReimport} disabled={saving || reimporting || renderBackendSaving} className="text-white px-2 py-0.5 rounded disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>はい</button>
             <button type="button" onClick={() => setReimportConfirm(false)} className="text-gray-500">いいえ</button>
           </span>
         )}
-        {props.status === 'draft' && props.onSubmitForReview && (
-          <button type="button" onClick={props.onSubmitForReview} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200">レビュー依頼</button>
+        {renderBackend === 'formaloo' && props.status === 'draft' && props.onSubmitForReview && (
+          <button type="button" onClick={props.onSubmitForReview} disabled={renderBackendSaving || saving || reimporting || publishing} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200 disabled:opacity-50">レビュー依頼</button>
         )}
-        {props.status === 'in_review' && props.onPublish && !confirmPublish && (
-          <button type="button" onClick={() => setConfirmPublish(true)} className="px-3 py-1.5 rounded-lg text-xs text-white" style={{ backgroundColor: LINE_GREEN }}>公開</button>
+        {renderBackend === 'formaloo' && props.status === 'in_review' && props.onPublish && !confirmPublish && (
+          <button type="button" onClick={() => setConfirmPublish(true)} disabled={renderBackendSaving || saving || reimporting || publishing} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>公開</button>
         )}
-        {props.status === 'in_review' && props.onPublish && confirmPublish && (
+        {renderBackend === 'formaloo' && props.status === 'in_review' && props.onPublish && confirmPublish && (
           // publish gate 確認カード (N-7)
           <span className="flex items-center gap-1 text-xs" data-testid="publish-confirm">
             <span>公開すると埋め込み・配信リンクが有効になります。</span>
-            <button type="button" onClick={props.onPublish} className="text-white px-2 py-0.5 rounded" style={{ backgroundColor: LINE_GREEN }}>公開する</button>
+            <button type="button" onClick={() => props.onPublish?.()} className="text-white px-2 py-0.5 rounded" style={{ backgroundColor: LINE_GREEN }}>公開する</button>
             <button type="button" onClick={() => setConfirmPublish(false)} className="text-gray-500">やめる</button>
           </span>
         )}
+        {renderBackend === 'internal' && (props.status === 'draft' || props.status === 'in_review') && props.onPublish && !confirmPublish && (
+          <button ref={publishTriggerRef} type="button" onClick={() => { setPublishError(null); setConfirmPublish(true) }} disabled={renderBackendSaving || saving || reimporting || publishing} className="px-3 py-1.5 rounded-lg text-xs text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>公開</button>
+        )}
         {props.status === 'published' && props.onUnpublish && (
-          <button type="button" onClick={props.onUnpublish} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200">非公開に戻す</button>
+          <button type="button" onClick={props.onUnpublish} disabled={renderBackendSaving || saving || reimporting || publishing} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 hover:bg-gray-200 disabled:opacity-50">非公開に戻す</button>
         )}
       </div>
+
+      {renderBackend === 'internal' && confirmPublish && props.onPublish && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-testid="internal-publish-overlay">
+          <div
+            ref={publishDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="internal-publish-title"
+            tabIndex={-1}
+            className="w-full max-w-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl md:p-8"
+          >
+            <h2 id="internal-publish-title" className="text-xl font-bold text-gray-900">自前フォームを公開</h2>
+            <p className="mt-2 text-sm leading-relaxed text-gray-600">
+              回答者に見える内容と受付条件を確認してください。この1回の確認で公開します。
+            </p>
+            <dl className="mt-5 grid gap-3 rounded-xl bg-gray-50 p-4 text-sm sm:grid-cols-[9rem_1fr]">
+              <dt className="font-medium text-gray-500">フォーム名</dt><dd className="font-semibold text-gray-900">{title}</dd>
+              <dt className="font-medium text-gray-500">受付開始</dt><dd>{publishSummaryDate(operationsSettings.submitStartTime)}</dd>
+              <dt className="font-medium text-gray-500">受付終了</dt><dd>{publishSummaryDate(operationsSettings.submitEndTime)}</dd>
+              <dt className="font-medium text-gray-500">回答上限</dt><dd>{operationsSettings.maxSubmitCount ? `${operationsSettings.maxSubmitCount}件` : '無制限'}</dd>
+            </dl>
+            <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              公開後は回答用URLとLINE配信用URLが有効になります。受付前なら回答者にも「受付開始前」と表示します。
+            </p>
+            {publishError && <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{publishError}</p>}
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => { setConfirmPublish(false); setPublishError(null) }} disabled={saving || publishing} className="min-h-12 rounded-lg border border-gray-300 px-5 text-sm text-gray-700 disabled:opacity-50">戻って確認する</button>
+              <button ref={publishConfirmRef} type="button" onClick={() => void handleInternalPublish()} disabled={saving || publishing} className="min-h-12 rounded-lg px-5 text-sm font-bold text-white disabled:opacity-50" style={{ backgroundColor: LINE_GREEN }}>
+                {saving ? '保存中...' : publishing ? '公開中...' : 'この内容で公開する'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="render-backend-section">
         <label className="block text-xs font-medium text-gray-600">
@@ -1661,7 +1950,7 @@ export default function FormBuilder(props: BuilderProps) {
           <select
             aria-label="配信方式"
             value={renderBackend}
-            disabled={renderBackendSaving}
+            disabled={renderBackendSaving || saving || publishing || reimporting}
             onChange={(event) => void changeRenderBackend(event.target.value as RenderBackend)}
             className="mt-1 block w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm md:w-64"
           >
@@ -1675,31 +1964,103 @@ export default function FormBuilder(props: BuilderProps) {
         {renderBackendError && <p role="alert" className="mt-1 text-xs text-red-600">{renderBackendError}</p>}
       </div>
 
+      {renderBackend === 'internal' && (
+        <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="channel-logic-section">
+          <div className="text-xs font-medium text-gray-600">経由チャネルによる表示切替</div>
+          <p className="mt-1 text-[10px] leading-snug text-gray-400">
+            LINE配信用URL（fr_id あり）と、埋め込み・直接リンクを区別して項目を表示または非表示にできます。
+          </p>
+          <div className="mt-2 space-y-2">
+            {channelRules.map((rule) => (
+              <div key={rule.id} className="grid gap-2 rounded border border-gray-200 bg-white p-2 md:grid-cols-[9rem_8rem_1fr_auto]">
+                <label className="text-[11px] text-gray-500">
+                  経由チャネル
+                  <select
+                    aria-label="経由チャネル"
+                    value={rule.value === 'web' ? 'web' : 'line'}
+                    onChange={(event) => updateChannelRule(rule.id, { value: event.target.value })}
+                    className="mt-0.5 block w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+                  >
+                    <option value="line">LINE経由</option>
+                    <option value="web">埋め込み・直接リンク</option>
+                  </select>
+                </label>
+                <label className="text-[11px] text-gray-500">
+                  動作
+                  <select
+                    aria-label="チャネル分岐アクション"
+                    value={rule.action === 'show' ? 'show' : 'hide'}
+                    onChange={(event) => updateChannelRule(rule.id, { action: event.target.value as 'show' | 'hide' })}
+                    className="mt-0.5 block w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+                  >
+                    <option value="show">表示する</option>
+                    <option value="hide">非表示にする</option>
+                  </select>
+                </label>
+                <label className="text-[11px] text-gray-500">
+                  対象項目
+                  <select
+                    aria-label="チャネル分岐対象"
+                    value={rule.targetFieldId}
+                    onChange={(event) => updateChannelRule(rule.id, { targetFieldId: event.target.value })}
+                    className="mt-0.5 block w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+                  >
+                    {channelTargetFields.map((field) => <option key={field.id} value={field.id}>{field.label}</option>)}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  aria-label="経由チャネルの表示ルールを削除"
+                  onClick={() => removeChannelRule(rule.id)}
+                  className="self-end rounded border border-gray-300 px-2 py-1 text-xs text-gray-500 hover:bg-gray-50"
+                >
+                  削除
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            aria-label="経由チャネルの表示ルールを追加"
+            disabled={channelTargetFields.length === 0}
+            onClick={addChannelRule}
+            className="mt-2 text-xs disabled:opacity-50"
+            style={{ color: LINE_GREEN }}
+          >
+            ＋ 表示ルールを追加
+          </button>
+        </div>
+      )}
+
       {/* treasure-b2-form-settings: Formaloo の form-meta と公開導線を form 単位で制御する。
           touched key のみ保存するため、未設定の既存フォームは従来どおりの挙動を保つ。 */}
       <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="operations-settings-section">
         <div className="mb-2 text-xs font-medium text-gray-600">運用制御</div>
         <div className="grid gap-2 md:grid-cols-2">
-          <label className="flex items-center gap-2 text-xs text-gray-600">
-            <input
-              type="checkbox"
-              aria-label="reCAPTCHA（ロボット対策）"
-              disabled={saving}
-              checked={operationsSettings.hasRecaptcha}
-              onChange={(event) => updateOperationsSetting('hasRecaptcha', event.target.checked)}
-            />
-            <span>reCAPTCHA（ロボット対策）</span>
-          </label>
-          <label className="flex items-center gap-2 text-xs text-gray-600">
-            <input
-              type="checkbox"
-              aria-label="下書き保存"
-              disabled={saving}
-              checked={operationsSettings.acceptDraftAnswers}
-              onChange={(event) => updateOperationsSetting('acceptDraftAnswers', event.target.checked)}
-            />
-            <span>回答の下書き保存</span>
-          </label>
+          {renderBackend === 'formaloo' && (
+            <>
+              <label className="flex items-center gap-2 text-xs text-gray-600">
+                <input
+                  type="checkbox"
+                  aria-label="reCAPTCHA（ロボット対策）"
+                  disabled={saving}
+                  checked={operationsSettings.hasRecaptcha}
+                  onChange={(event) => updateOperationsSetting('hasRecaptcha', event.target.checked)}
+                />
+                <span>reCAPTCHA（ロボット対策）</span>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-gray-600">
+                <input
+                  type="checkbox"
+                  aria-label="下書き保存"
+                  disabled={saving}
+                  checked={operationsSettings.acceptDraftAnswers}
+                  onChange={(event) => updateOperationsSetting('acceptDraftAnswers', event.target.checked)}
+                />
+                <span>回答の下書き保存</span>
+              </label>
+            </>
+          )}
           <label className="block text-[11px] text-gray-500">
             送信上限（先着 N 名）
             <input
@@ -1714,7 +2075,7 @@ export default function FormBuilder(props: BuilderProps) {
               className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
             />
           </label>
-          <span className="hidden md:block" aria-hidden />
+          {renderBackend === 'formaloo' && <span className="hidden md:block" aria-hidden />}
           <label className="block text-[11px] text-gray-500">
             受付開始
             <input
@@ -1739,24 +2100,29 @@ export default function FormBuilder(props: BuilderProps) {
               className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
             />
           </label>
-          <label className="flex items-center gap-2 text-xs text-gray-600 md:col-span-2">
-            <input
-              type="checkbox"
-              aria-label="UTM 流入元を自動記録"
-              disabled={saving}
-              checked={operationsSettings.utmTracking}
-              onChange={(event) => updateOperationsSetting('utmTracking', event.target.checked)}
-            />
-            <span>UTM 流入元を自動記録</span>
-          </label>
+          {renderBackend === 'formaloo' && (
+            <label className="flex items-center gap-2 text-xs text-gray-600 md:col-span-2">
+              <input
+                type="checkbox"
+                aria-label="UTM 流入元を自動記録"
+                disabled={saving}
+                checked={operationsSettings.utmTracking}
+                onChange={(event) => updateOperationsSetting('utmTracking', event.target.checked)}
+              />
+              <span>UTM 流入元を自動記録</span>
+            </label>
+          )}
         </div>
         <p className="mt-2 text-[10px] text-gray-400 leading-snug">
-          ※ 上限と受付期間は空欄なら制限しません。UTM を有効にすると、公開 URL の utm_source / utm_medium / utm_campaign を回答へ記録します。
+          {renderBackend === 'formaloo'
+            ? '※ 上限と受付期間は空欄なら制限しません。UTM を有効にすると、公開 URL の utm_source / utm_medium / utm_campaign を回答へ記録します。'
+            : '※ 上限と受付期間は空欄なら制限しません。'}
         </p>
       </div>
 
       {/* form-media-limits ③: フォーム単位「後編集を許可しない」トグル (弾M あと編集の前提スイッチ)。
           弾S は inert = 保存のみ (実効化は弾M)。既定 ON=allow_post_edit 0 = 現状の hosted 挙動と一致。 */}
+      {renderBackend === 'formaloo' && (
       <div className="mb-2 flex flex-wrap items-start gap-x-2 gap-y-1 rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
         <label className="flex items-center gap-2 text-xs text-gray-600">
           <input
@@ -1771,7 +2137,9 @@ export default function FormBuilder(props: BuilderProps) {
           ※ この設定はいまは保存のみで、実際に効き始めるのは「あと編集」機能（次の弾）を作ってからです。
         </span>
       </div>
+      )}
 
+      {renderBackend === 'formaloo' && (
       <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="friend-metadata-mapping-section">
         <div className="text-xs font-medium text-gray-600 mb-1">友だち個人情報への反映</div>
         {friendMetadataMappings.length === 0 ? (
@@ -1835,9 +2203,11 @@ export default function FormBuilder(props: BuilderProps) {
           ※ 設定した項目は Formaloo の値を正とし、手動で直しても次の回答再取得時に Formaloo の値へ戻ります。設定していない個人情報項目は変更しません。
         </p>
       </div>
+      )}
 
       {/* form-edit-mail-link (弾L): フォーム単位「メールで編集 URL を送る」トグル。
           「あと編集を許可する」(allow_post_edit=1) のときだけ有効 (依存を UI で表現・disabled で示す)。 */}
+      {renderBackend === 'formaloo' && (
       <div className="mb-2 flex flex-wrap items-start gap-x-2 gap-y-1 rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
         <label className={`flex items-center gap-2 text-xs ${allowPostEdit === 1 ? 'text-gray-600' : 'text-gray-400'}`}>
           <input
@@ -1875,9 +2245,9 @@ export default function FormBuilder(props: BuilderProps) {
           ※ 「回答者による後からの編集」を許可したフォームでのみ設定できます。メール送信の実際の有効化は運用側の設定が必要です。
         </span>
       </div>
+      )}
 
-      {/* form-jp-localization: 公開ページ文言 (送信ボタン/完了/送信エラー) を日本語で個別指定。
-          未入力は Formaloo 既定 (英語) のまま。空欄=未指定=触らない (既存文言を消さない)。 */}
+      {/* form-jp-localization: 公開ページ文言を配信方式ごとに、実際に効く項目だけ表示する。 */}
       <div className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="form-copy-section">
         <div className="text-xs font-medium text-gray-600 mb-1">公開ページの文言（日本語）</div>
         <div className="flex flex-col gap-2">
@@ -1887,7 +2257,7 @@ export default function FormBuilder(props: BuilderProps) {
               aria-label="送信ボタンの文言"
               value={formCopy.buttonText}
               onChange={(e) => updateFormCopy('buttonText', e.target.value)}
-              placeholder="Submit（未入力なら英語の既定）"
+              placeholder={renderBackend === 'internal' ? '送信する（未入力なら既定）' : 'Submit（未入力なら英語の既定）'}
               className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
             />
           </label>
@@ -1897,11 +2267,11 @@ export default function FormBuilder(props: BuilderProps) {
               aria-label="送信完了メッセージ"
               value={formCopy.successMessage}
               onChange={(e) => updateFormCopy('successMessage', e.target.value)}
-              placeholder="Thanks! submitted successfully（未入力なら英語の既定）"
+              placeholder={renderBackend === 'internal' ? '受付完了（未入力なら既定）' : 'Thanks! submitted successfully（未入力なら英語の既定）'}
               className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
             />
           </label>
-          <label className="block text-[11px] text-gray-500">
+          {renderBackend === 'formaloo' && <label className="block text-[11px] text-gray-500">
             送信エラー時の文言
             <input
               aria-label="送信エラー時の文言"
@@ -1910,11 +2280,13 @@ export default function FormBuilder(props: BuilderProps) {
               placeholder="送信に失敗したときのメッセージ"
               className="mt-0.5 w-full rounded border border-gray-300 bg-white px-2 py-1 text-sm"
             />
-          </label>
+          </label>}
         </div>
         {/* AC-6 制約注記: ①文字数オーバー/必須 等は Formaloo 側固定で変更不可 (できない事をできる風に見せない)。 */}
         <p className="mt-2 text-[10px] text-gray-400 leading-snug" data-testid="form-copy-constraint-note">
-          ※ 文字数オーバー時のエラー（例: the answer should be less than 10 characters）や「必須です」等の入力チェック文言・入力欄の案内文は、Formaloo 側で固定のため変更できません。日本語にできるのは上の 3 つ（送信ボタン／完了メッセージ／送信エラー）です。
+          {renderBackend === 'internal'
+            ? '※ 自前配信では送信ボタンと完了メッセージを変更できます。入力チェックの案内は、入力内容に合わせて自動表示します。'
+            : '※ 文字数オーバー時のエラー（例: the answer should be less than 10 characters）や「必須です」等の入力チェック文言・入力欄の案内文は、Formaloo 側で固定のため変更できません。日本語にできるのは上の 3 つ（送信ボタン／完了メッセージ／送信エラー）です。'}
         </p>
       </div>
 
@@ -2015,8 +2387,15 @@ export default function FormBuilder(props: BuilderProps) {
       {/* ③ 公開ページを開いてテスト導線: 公開済み+URL 確定でテストリンク / 準備中 or 未公開は案内。 */}
       {props.status === 'published' ? (
         props.publicUrl ? (
-          <div data-testid="public-test-link" className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-            <span>公開中です。回答者と同じ画面でテストできます。</span>
+          <div
+            data-testid="public-test-link"
+            className={`mb-2 flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-xs ${internalUnavailable ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}
+          >
+            <span>
+              {renderBackend === 'internal'
+                ? `${internalAvailabilityLabel}。回答者に見える画面を確認できます。`
+                : '公開中です。回答者と同じ画面でテストできます。'}
+            </span>
             <a
               href={props.publicUrl}
               target="_blank"
@@ -2025,7 +2404,7 @@ export default function FormBuilder(props: BuilderProps) {
               className="ml-auto rounded-lg px-3 py-1 font-medium text-white"
               style={{ backgroundColor: LINE_GREEN }}
             >
-              公開ページを開いてテスト
+              {renderBackend === 'internal' ? '回答者画面を確認' : '公開ページを開いてテスト'}
             </a>
           </div>
         ) : (
@@ -2126,7 +2505,7 @@ export default function FormBuilder(props: BuilderProps) {
               {selected ? (
                 <>
                   <AdvancedFieldGuide type={selected.type} />
-                  <SettingsPanel formId={props.formId} field={selected} allFields={fields} logic={logic} onChange={updateField} onFieldConfigPatch={patchFieldConfig} onManagedChoiceListChange={updateManagedChoiceListReferences} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={ensureMultiStep} successPages={successPages} renderBackend={renderBackend} />
+                  <SettingsPanel formId={props.formId} field={selected} allFields={fields} logic={logic} onChange={updateField} onFieldConfigPatch={patchFieldConfig} onManagedChoiceListChange={updateManagedChoiceListReferences} onLogicChange={setLogic} formType={formType} onEnsureMultiStep={renderBackend === 'formaloo' ? ensureMultiStep : undefined} internalRenderer={renderBackend === 'internal'} successPages={successPages} renderBackend={renderBackend} />
                 </>
               ) : (
                 <div className="text-xs text-gray-400">項目を選ぶと設定が表示されます</div>
@@ -2137,7 +2516,7 @@ export default function FormBuilder(props: BuilderProps) {
 
         {mode !== 'desktop' && mobileTab === 'design' && (
           <div data-testid="design-pane" className="w-full rounded-xl bg-gray-50 p-3">
-            <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={hasJumpRule} hasRating={hasRating} />
+            <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={renderBackend === 'formaloo' && hasJumpRule} hasRating={hasRating} internalRenderer={renderBackend === 'internal'} />
           </div>
         )}
 
@@ -2150,11 +2529,23 @@ export default function FormBuilder(props: BuilderProps) {
               <details data-testid="design-pane" className="rounded-lg border border-gray-200 bg-white p-3" open>
                 <summary className="cursor-pointer text-xs font-bold text-gray-500">デザイン</summary>
                 <div className="mt-3">
-                  <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={hasJumpRule} hasRating={hasRating} />
+                  <DesignPanel design={design} images={designImages} onChange={setDesign} onImagesChange={setDesignImages} formType={formType} onFormTypeChange={onFormTypeSwitch} hasJumpRule={renderBackend === 'formaloo' && hasJumpRule} hasRating={hasRating} internalRenderer={renderBackend === 'internal'} />
                 </div>
               </details>
             )}
-            <FormPreview title={title} description={description} fields={fields} design={previewDesign} formType={formType} logic={logic} renderBackend={renderBackend} />
+            <FormPreview
+              title={title}
+              description={description}
+              fields={fields}
+              design={previewDesign}
+              formType={formType}
+              logic={logic}
+              renderBackend={renderBackend}
+              internalLogicPreview={renderBackend === 'internal'}
+              successPages={successPages}
+              formCopy={formCopy}
+              formRedirect={formRedirect}
+            />
           </div>
         )}
       </div>
@@ -2164,6 +2555,7 @@ export default function FormBuilder(props: BuilderProps) {
           {activeDragId ? <DragGhost activeDragId={activeDragId} fields={fields} /> : null}
         </DragOverlay>
       </div>
+      </fieldset>
     </DndContext>
   )
 }

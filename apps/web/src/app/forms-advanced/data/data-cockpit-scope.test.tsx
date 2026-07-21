@@ -50,8 +50,8 @@ vi.mock('@/lib/api', () => ({ fetchApi: (...a: unknown[]) => fetchApiMock(...a) 
 
 import DataCockpitClient from './data-cockpit-client'
 
-function form(lineAccountId: string | null) {
-  return { id: 'fa1', title: 'F', lineAccountId }
+function form(lineAccountId: string | null, renderBackend: string = 'formaloo') {
+  return { id: 'fa1', title: 'F', lineAccountId, renderBackend }
 }
 
 beforeEach(() => {
@@ -114,22 +114,22 @@ describe('データ画面 scope 照合', () => {
 
 describe('自前配信の回答表示', () => {
   it('internal は自前回答と明示し、Formaloo 専用の owner 操作を隠す', async () => {
-    getMock.mockResolvedValue(form('acc_A'))
-    getRenderBackendMock.mockResolvedValue('internal')
+    getMock.mockResolvedValue(form('acc_A', 'internal'))
+    // 別 endpoint の古い応答ではなく、form と同じ snapshot の backend を正本にする。
+    getRenderBackendMock.mockResolvedValue('formaloo')
 
     render(<DataCockpitClient id="fa1" />)
 
     await waitFor(() => expect(screen.getByTestId('data-cockpit')).toBeTruthy())
     expect(screen.getByTestId('header-description').textContent).toContain('自前回答')
     expect(cockpitProps.current?.isOwner).toBe(false)
-    expect(getRenderBackendMock).toHaveBeenCalledWith('fa1')
+    expect(getRenderBackendMock).not.toHaveBeenCalled()
     expect(rowsMock).toHaveBeenCalledWith('fa1', expect.objectContaining({ page: 1, pageSize: 25 }))
     expect(statsMock).toHaveBeenCalledWith('fa1')
   })
 
   it('internal の回答詳細では取得元を「自前配信」と表示する', async () => {
-    getMock.mockResolvedValue(form('acc_A'))
-    getRenderBackendMock.mockResolvedValue('internal')
+    getMock.mockResolvedValue(form('acc_A', 'internal'))
     rowMock.mockResolvedValue({
       id: 'row_internal',
       answers: { name: '大学生' },
@@ -145,20 +145,19 @@ describe('自前配信の回答表示', () => {
     expect(rowMock).toHaveBeenCalledWith('fa1', 'row_internal')
   })
 
-  it('backend 取得失敗は fail-closed にし、Formaloo 専用 owner 操作を出さない', async () => {
-    getMock.mockResolvedValue(form(null))
-    getRenderBackendMock.mockRejectedValue(new Error('backend unavailable'))
+  it('form snapshot に backend が無い場合は fail-closed にし、Formaloo 専用 owner 操作を出さない', async () => {
+    getMock.mockResolvedValue({ ...form(null), renderBackend: undefined })
 
     render(<DataCockpitClient id="fa1" />)
 
     await waitFor(() => expect(screen.getByTestId('data-cockpit')).toBeTruthy())
     expect(screen.getByTestId('header-description').textContent).toContain('配信方式を確認できません')
     expect(cockpitProps.current?.isOwner).toBe(false)
+    expect(getRenderBackendMock).not.toHaveBeenCalled()
   })
 
   it('backend の不正値も Formaloo と推測せず owner 操作を出さない', async () => {
-    getMock.mockResolvedValue(form(null))
-    getRenderBackendMock.mockResolvedValue('unexpected')
+    getMock.mockResolvedValue(form(null, 'unexpected'))
 
     render(<DataCockpitClient id="fa1" />)
 

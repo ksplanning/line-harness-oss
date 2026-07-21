@@ -61,6 +61,57 @@ describe('SharePanel — 配布 URL 2 本 (T-A5 / 順方向)', () => {
     render(<SharePanel {...base({ share: { ...PUBLISHED, published: false, lineDistUrl: null, publicUrl: null, iframeCode: null, scriptCode: null } })} />)
     expect(screen.queryByTestId('line-dist-url')).toBeNull()
   })
+
+  it('自前配信は公開用と LINE 配信用の URL を示し、fr_id の扱いを日常語で説明する', () => {
+    const internalShare: ShareInfo = {
+      ...PUBLISHED,
+      publicUrl: 'https://api.example.com/f/internal-form',
+      lineDistUrl: 'https://api.example.com/fo/internal-form',
+      iframeCode: '<iframe src="https://formaloo.example.test/legacy"></iframe>',
+      scriptCode: '<script src="https://formaloo.example.test/legacy.js"></script>',
+    }
+    render(<SharePanel {...base({ renderBackend: 'internal', share: internalShare })} />)
+
+    expect(screen.getByTestId('line-dist-url').textContent).toContain('/fo/internal-form')
+    expect(screen.getByTestId('hp-public-url').textContent).toContain('/f/internal-form')
+    const note = screen.getByTestId('line-dist-note').textContent ?? ''
+    expect(note).toContain('fr_id')
+    expect(note).toContain('自前フォーム')
+    expect(note).toContain('埋め込み・直接リンク')
+    expect(screen.queryByTestId('iframe-code')).toBeNull()
+    expect(screen.queryByTestId('script-code')).toBeNull()
+  })
+
+  it('自前配信は Formaloo alias 指示と Google Sheets / W4 の操作を一切表示しない', () => {
+    const internalShare: ShareInfo = {
+      ...PUBLISHED,
+      publicUrl: 'https://api.example.com/f/internal-form',
+      lineDistUrl: 'https://api.example.com/fo/internal-form',
+      iframeCode: null,
+      scriptCode: null,
+    }
+    const { container } = render(<SharePanel {...base({ renderBackend: 'internal', share: internalShare })} />)
+
+    expect(container.textContent).not.toContain('Formaloo')
+    expect(container.textContent).not.toContain('alias')
+    expect(container.textContent).not.toContain('Google Sheets')
+    expect(screen.queryByTestId('iframe-code')).toBeNull()
+    expect(screen.queryByTestId('script-code')).toBeNull()
+    expect(screen.queryByTestId('gsheet-sync-description')).toBeNull()
+    expect(screen.queryByText('再同期する')).toBeNull()
+  })
+
+  it('自前配信の下書きは、埋め込みコードではなく 2 本の公開 URL がまだ使えないと案内する', () => {
+    render(<SharePanel {...base({
+      renderBackend: 'internal',
+      share: { ...PUBLISHED, published: false, lineDistUrl: null, publicUrl: null, iframeCode: null, scriptCode: null },
+    })} />)
+
+    const note = screen.getByTestId('unpublished-note').textContent ?? ''
+    expect(note).toContain('公開用 URL')
+    expect(note).toContain('LINE 配信用 URL')
+    expect(note).not.toContain('埋め込みコード')
+  })
 })
 
 describe('SharePanel — 埋め込みコード (T-E1)', () => {

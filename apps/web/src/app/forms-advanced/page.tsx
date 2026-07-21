@@ -17,7 +17,21 @@ const LINE_GREEN = '#06C755'
 // フォルダ絞り: null=すべて / 'none'=未分類 (sentinel = §3.3b) / それ以外=フォルダ id。
 type FolderFilter = string | null
 
-function statusBadge(status: AdvancedForm['builderStatus']) {
+function statusBadge(form: Pick<AdvancedForm, 'builderStatus' | 'internalAvailability'>) {
+  const status = form.builderStatus
+  if (status === 'published' && form.internalAvailability) {
+    const availability = form.internalAvailability
+    if (availability.status === 'upcoming') {
+      return { label: availability.message ?? '受付開始前', color: '#D97706' }
+    }
+    if (availability.status === 'ended') {
+      return { label: availability.message ?? '受付終了', color: '#6B7280' }
+    }
+    if (availability.status === 'limit_reached') {
+      return { label: availability.message ?? '回答上限', color: '#DC2626' }
+    }
+    return { label: '受付中', color: LINE_GREEN }
+  }
   if (status === 'published') return { label: '公開中', color: LINE_GREEN }
   if (status === 'in_review') return { label: 'レビュー中', color: '#F59E0B' }
   return { label: '下書き', color: '#9CA3AF' }
@@ -339,7 +353,7 @@ export default function FormsAdvancedListPage() {
         ) : (
           <div data-testid="forms-grid" className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             {forms.map((form) => {
-              const badge = statusBadge(form.builderStatus)
+              const badge = statusBadge(form)
               const syncBadge = formSyncBadge(form)
               return (
                 <div key={form.id} data-testid={`form-card-${form.id}`} className="bg-white rounded-lg border border-gray-200 p-4">
@@ -370,7 +384,9 @@ export default function FormsAdvancedListPage() {
                   <div className="flex flex-wrap gap-2 text-xs">
                     <Link href={`/forms-advanced/detail?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">編集</Link>
                     <Link href={`/forms-advanced/data?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">データ</Link>
-                    <Link href={`/forms-advanced/recurring?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">定期自動回答</Link>
+                    {form.renderBackend !== 'internal' && (
+                      <Link href={`/forms-advanced/recurring?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">定期自動回答</Link>
+                    )}
                   </div>
                 </div>
               )

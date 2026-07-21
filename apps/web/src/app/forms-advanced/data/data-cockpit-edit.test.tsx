@@ -64,7 +64,7 @@ beforeEach(() => {
   getMock.mockReset(); getRenderBackendMock.mockReset(); rowsMock.mockReset(); rowMock.mockReset(); editRowMock.mockReset()
   statsMock.mockReset(); listFiltersMock.mockReset(); fetchApiMock.mockReset()
   mockAccount.selectedAccountId = null
-  getMock.mockResolvedValue({ id: 'fa1', title: 'F', lineAccountId: null })
+  getMock.mockResolvedValue({ id: 'fa1', title: 'F', lineAccountId: null, renderBackend: 'formaloo' })
   getRenderBackendMock.mockResolvedValue('formaloo')
   rowsMock.mockResolvedValue({ rows: [], total: 0, page: 1, pageSize: 25 })
   statsMock.mockResolvedValue({ total: 0, verified: 0, daily: [], formaloo: null })

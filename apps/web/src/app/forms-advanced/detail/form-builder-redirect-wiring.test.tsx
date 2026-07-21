@@ -43,7 +43,7 @@ import FormBuilderClient from './form-builder-client'
 
 function form(extra: Record<string, unknown> = {}) {
   return {
-    id: 'fa1', title: 'F', description: null, formalooSlug: null, builderStatus: 'draft', publishedAt: null,
+    id: 'fa1', title: 'F', description: null, formalooSlug: null, renderBackend: 'formaloo', builderStatus: 'draft', publishedAt: null,
     submitCount: 0, fields: [], logic: [], publicUrl: null, embedCode: null, syncStatus: 'idle', syncError: null,
     lineAccountId: null, updatedAt: 'x', ...extra,
   }
@@ -86,7 +86,7 @@ describe('詳細画面 redirect load/relay 配線', () => {
     })
     expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', expect.objectContaining({
       formRedirect: { url: 'https://example.com/lp', openExternalBrowser: false },
-    }))
+    }), 'formaloo')
   })
 
   it('CX-4 relay: url 空の formRedirect(clear 意図) も saveDefinition へ転送される', async () => {
@@ -101,7 +101,7 @@ describe('詳細画面 redirect load/relay 配線', () => {
     })
     expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', expect.objectContaining({
       formRedirect: { url: '', openExternalBrowser: false },
-    }))
+    }), 'formaloo')
   })
 
   it('未編集: onSave が formRedirect を送らなければ body にも載らない (absent)', async () => {
@@ -135,7 +135,7 @@ describe('詳細画面 redirect load/relay 配線', () => {
     })
     expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', expect.objectContaining({
       successPages: [{ id: 'sp1', title: 'A完了' }],
-    }))
+    }), 'formaloo')
   })
 
   it('D-1 load: GET の friendMetadataMappings を builder の初期値へ渡す', async () => {
@@ -157,6 +157,6 @@ describe('詳細画面 redirect load/relay 配線', () => {
         fields: [], logic: [], title: 'F', friendMetadataMappings: mappings,
       })
     })
-    expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', expect.objectContaining({ friendMetadataMappings: mappings }))
+    expect(saveDefinitionMock).toHaveBeenCalledWith('fa1', expect.objectContaining({ friendMetadataMappings: mappings }), 'formaloo')
   })
 })

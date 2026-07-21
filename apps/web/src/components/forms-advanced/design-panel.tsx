@@ -57,6 +57,8 @@ export interface DesignPanelProps {
   hasJumpRule?: boolean
   /** b1-field-polish: rating field 存在フラグ。true のとき form-level「評価スターの色」picker を出す。 */
   hasRating?: boolean
+  /** 自前公開では画像をR2へ保存し、背景はフォームカードの外側全面に描画する。 */
+  internalRenderer?: boolean
 }
 
 /** 表示中の画像プレビュー URL: pending replace(dataUrl) > 既存 URL (remove 指定なら null)。 */
@@ -71,7 +73,7 @@ function colorInputValue(v: string | null | undefined): string {
   return typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v : '#FFFFFF'
 }
 
-export default function DesignPanel({ design, images, onChange, onImagesChange, formType, onFormTypeChange, hasJumpRule, hasRating }: DesignPanelProps) {
+export default function DesignPanel({ design, images, onChange, onImagesChange, formType, onFormTypeChange, hasJumpRule, hasRating, internalRenderer = false }: DesignPanelProps) {
   const [imageError, setImageError] = useState<string | null>(null)
   const effectiveFormType: FormDisplayType = formType ?? 'simple'
   const setColor = (key: FormDesignColorKey, value: string) => {
@@ -119,9 +121,13 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
               </button>
             ))}
           </div>
-          <p className="mt-1 text-[11px] leading-relaxed text-gray-400">「1問ずつ表示」にすると「ページへ飛ぶ」分岐が使えます。</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-gray-400">
+            {internalRenderer
+              ? '自前配信では「1画面表示」でも、項目・セクションの表示切替とABCルート分岐を試せます。'
+              : '「1問ずつ表示」にすると「ページへ飛ぶ」分岐が使えます。'}
+          </p>
           {/* 逆ガード: jump rule があるのに simple を選んでいる → 動かない旨を警告 (許可はする=owner 自律尊重)。 */}
-          {hasJumpRule && effectiveFormType === 'simple' && (
+          {!internalRenderer && hasJumpRule && effectiveFormType === 'simple' && (
             <p data-testid="formtype-reverse-guard" role="alert" className="mt-1 text-[11px] leading-relaxed text-amber-600">
               ⚠️ ページ移動の分岐があります。「1画面表示」ではページ移動は動作しません。
             </p>
@@ -246,10 +252,12 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
                 )}
               </div>
               {slot === 'cover' && (
-                // form-image-decoration (S-3 honest surface): 全面背景は Formaloo が可読性 scrim を自動付与しない。
-                //   文字が写真に直接乗るため読みにくくなり得る旨を明示し、帯にしたい場合の代替(差し込み画像)を案内する。
                 <p data-testid="cover-readability-note" className="mt-1.5 text-[11px] leading-relaxed text-amber-600">
-                  背景画像は公開ページの<strong>全面</strong>に敷かれます。文字が写真の上に直接乗るため、明るい・淡い写真を選ぶか、読みやすさを優先する場合は「装飾 ＞ 画像」をフォームの先頭に置いて<strong>帯（ヘッダー画像）</strong>にするのがおすすめです。
+                  {internalRenderer ? (
+                    <>背景画像は公開ページの<strong>フォーム本体の外側全面</strong>に敷かれ、入力部分は「入力欄の色」のカードとして重なります。</>
+                  ) : (
+                    <>背景画像は公開ページの<strong>全面</strong>に敷かれます。文字が写真の上に直接乗るため、明るい・淡い写真を選ぶか、読みやすさを優先する場合は「装飾 ＞ 画像」をフォームの先頭に置いて<strong>帯（ヘッダー画像）</strong>にするのがおすすめです。</>
+                  )}
                 </p>
               )}
             </div>
@@ -259,7 +267,9 @@ export default function DesignPanel({ design, images, onChange, onImagesChange, 
           <p data-testid="image-error" role="alert" className="mb-1 text-[11px] text-red-600">{imageError}</p>
         )}
         <p className="text-[11px] leading-relaxed text-gray-400">
-          画像は保存時に Formaloo にアップロードされ、公開ページに反映されます（PNG / JPG / GIF / WebP・10MB まで）。
+          {internalRenderer
+            ? '画像は保存時に自社の画像保存先へアップロードされ、公開ページに反映されます（PNG / JPG / GIF / WebP・10MB まで）。'
+            : '画像は保存時に Formaloo にアップロードされ、公開ページに反映されます（PNG / JPG / GIF / WebP・10MB まで）。'}
         </p>
       </div>
     </div>

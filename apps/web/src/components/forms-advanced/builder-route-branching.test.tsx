@@ -81,6 +81,47 @@ describe('T-D1 — jump 選択で form_type 自動切替 + 可視通知', () => 
     fireEvent.change(screen.getByLabelText('分岐アクション'), { target: { value: 'jump' } })
     expect(screen.queryByTestId('formtype-notice')).toBeNull()
   })
+
+  it('自前配信の一覧形式では jump を追加しても simple のまま保存する', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({
+      onSave,
+      initialRenderBackend: 'internal',
+      initialFields: [choiceSrc, pageBreak, textTgt],
+      initialFormType: 'simple',
+      initialLogic: [
+        { id: 'r1', sourceFieldId: 'q1', operator: 'equals', value: 'Cルート', action: 'show', targetFieldId: 't1' },
+      ],
+    })} />)
+    selectField('ルート')
+    fireEvent.change(screen.getByLabelText('分岐アクション'), { target: { value: 'jump' } })
+    expect(screen.queryByTestId('formtype-notice')).toBeNull()
+
+    fireEvent.click(screen.getByText('保存'))
+    expect((onSave.mock.calls[0][0] as { formType: string }).formType).toBe('simple')
+  })
+
+  it('自前配信では section 全体を show/hide の対象に選べる', () => {
+    const onSave = vi.fn()
+    const section: HarnessField = {
+      id: 'company-section', type: 'section', label: '法人向けセクション', required: false, position: 1, config: {},
+    }
+    render(<FormBuilder {...base({
+      onSave,
+      initialRenderBackend: 'internal',
+      initialFields: [choiceSrc, section, textTgt],
+      initialLogic: [
+        { id: 'r1', sourceFieldId: 'q1', operator: 'equals', value: 'Cルート', action: 'show', targetFieldId: 't1' },
+      ],
+    })} />)
+
+    selectField('ルート')
+    fireEvent.change(screen.getByLabelText('分岐対象'), { target: { value: 'company-section' } })
+    fireEvent.click(screen.getByText('保存'))
+
+    expect((onSave.mock.calls[0][0] as { logic: HarnessLogicRule[] }).logic[0].targetFieldId).toBe('company-section')
+    expect(screen.getByText(/一覧表示でも同じ分岐/)).toBeTruthy()
+  })
 })
 
 describe('T-D1 — choice source の分岐値は選択肢 select', () => {
