@@ -534,7 +534,7 @@ export default function FaqsPage() {
           {/* 回答モード (下書き / 自動送信) */}
           <div className="bg-white border border-gray-200 rounded-lg p-5">
             <h3 className="text-sm font-semibold text-gray-800">AIの答えをどうする？</h3>
-            <div className="mt-3 inline-flex bg-gray-100 rounded-lg p-1 w-fit">
+            <div className="mt-3 inline-flex bg-gray-100 rounded-lg p-1 w-fit" role="group" aria-label="返信方法">
               {([
                 { key: 'draft', label: '下書きにする' },
                 { key: 'auto', label: '自動で送信する' },
@@ -542,9 +542,12 @@ export default function FaqsPage() {
                 <button
                   key={key}
                   type="button"
+                  aria-pressed={settings.answerMode === key}
                   onClick={() => selectAnswerMode(key)}
-                  className={`min-h-[44px] px-4 rounded-md text-sm font-medium transition-colors ${
-                    settings.answerMode === key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
+                  className={`min-h-[44px] px-4 rounded-md border text-sm font-medium transition-colors ${
+                    settings.answerMode === key
+                      ? 'border-green-500 bg-green-50 text-green-900 shadow-sm ring-1 ring-green-200'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
                   }`}
                 >
                   {label}

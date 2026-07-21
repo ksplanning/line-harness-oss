@@ -99,19 +99,36 @@ describe('/faqs 設定タブ — 回答モード切替 (下書き / 自動送信
     expect(screen.queryByTestId('legacy-page-header')).toBeNull()
   })
 
-  it('GET が draft のとき「下書き」説明が表示される', async () => {
+  it('GET が draft のとき「下書き」が見た目とARIAでも選択中になる', async () => {
     await openSettingsTab('draft')
     await waitFor(() => expect(screen.getByText(/草案を作るだけ/)).toBeTruthy())
+    const selected = screen.getByRole('button', { name: '下書きにする' })
+    const other = screen.getByRole('button', { name: '自動で送信する' })
+    expect(selected.getAttribute('aria-pressed')).toBe('true')
+    expect(other.getAttribute('aria-pressed')).toBe('false')
+    expect(selected.classList.contains('border-green-500')).toBe(true)
+    expect(selected.classList.contains('bg-green-50')).toBe(true)
+    expect(other.classList.contains('border-green-500')).toBe(false)
   })
 
-  it('GET が auto のとき「自動で返信します」説明が表示される', async () => {
+  it('GET が auto のとき「自動送信」が見た目とARIAでも選択中になる', async () => {
     await openSettingsTab('auto')
     await waitFor(() => expect(screen.getByText(/自動で返信します/)).toBeTruthy())
+    const selected = screen.getByRole('button', { name: '自動で送信する' })
+    const other = screen.getByRole('button', { name: '下書きにする' })
+    expect(selected.getAttribute('aria-pressed')).toBe('true')
+    expect(other.getAttribute('aria-pressed')).toBe('false')
+    expect(selected.classList.contains('border-green-500')).toBe(true)
+    expect(selected.classList.contains('bg-green-50')).toBe(true)
+    expect(other.classList.contains('border-green-500')).toBe(false)
   })
 
   it('下書き選択 → 確認なし → 保存で PUT answerMode=draft + 他フィールド保持', async () => {
     await openSettingsTab('auto')
     fireEvent.click(await screen.findByText('下書きにする'))
+    const draftButton = screen.getByRole('button', { name: '下書きにする' })
+    expect(draftButton.getAttribute('aria-pressed')).toBe('true')
+    expect(draftButton.classList.contains('border-green-500')).toBe(true)
     // 下書きは安全方向 → 行内確認は出ない。
     expect(screen.queryByText('自動送信にする')).toBeNull()
     fireEvent.click(screen.getByText('設定を保存'))
@@ -139,6 +156,9 @@ describe('/faqs 設定タブ — 回答モード切替 (下書き / 自動送信
     // 行内確認 (M-16) が出る。確認前は state 未変更。
     const confirmBtn = await screen.findByText('自動送信にする')
     fireEvent.click(confirmBtn)
+    const autoButton = screen.getByRole('button', { name: '自動で送信する' })
+    expect(autoButton.getAttribute('aria-pressed')).toBe('true')
+    expect(autoButton.classList.contains('border-green-500')).toBe(true)
     fireEvent.click(screen.getByText('設定を保存'))
     await waitFor(() => expect(m.settingsPut).toHaveBeenCalledTimes(1))
     expect(m.settingsPut).toHaveBeenCalledWith(
