@@ -15,14 +15,6 @@ export const TEST_SEND_SOURCES = [
 
 export type TestSendSource = typeof TEST_SEND_SOURCES[number];
 
-/**
- * Deployment-controlled safety boundary. The account setting chooses a subset
- * of these LINE userIds; it cannot expand this server-side allowlist.
- */
-export const DEFAULT_TEST_SEND_ALLOWED_USER_IDS = [
-  'U5217ceb4debd9849959446ce8f902a27',
-] as const;
-
 export interface TestSendMessageInput {
   type: string;
   content: string;
@@ -73,11 +65,9 @@ function parseConfiguredFriendIds(value: string | null | undefined): string[] {
   }
 }
 
-function serverAllowedUserIds(configured: string | undefined): Set<string> {
-  const values = configured === undefined
-    ? [...DEFAULT_TEST_SEND_ALLOWED_USER_IDS]
-    : configured.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
-  return new Set(values);
+function deploymentAllowedUserIds(configured: string | undefined): Set<string> | null {
+  if (configured === undefined) return null;
+  return new Set(configured.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean));
 }
 
 export async function getTestRecipients(
@@ -105,17 +95,19 @@ export async function getTestRecipients(
     const friend = byId.get(id);
     return friend ? [friend] : [];
   });
-  const allowedUserIds = serverAllowedUserIds(configuredAllowedUserIds);
-  const blockedUserIds = [...new Set(
-    recipients
-      .map((friend) => friend.line_user_id)
-      .filter((userId) => !allowedUserIds.has(userId)),
-  )];
-  if (blockedUserIds.length > 0) {
-    throw new TestSendError(
-      `テスト送信先にサーバー許可リスト外のuserIdが含まれています: ${blockedUserIds.join(', ')}`,
-      400,
-    );
+  const allowedUserIds = deploymentAllowedUserIds(configuredAllowedUserIds);
+  if (allowedUserIds) {
+    const blockedUserIds = [...new Set(
+      recipients
+        .map((friend) => friend.line_user_id)
+        .filter((userId) => !allowedUserIds.has(userId)),
+    )];
+    if (blockedUserIds.length > 0) {
+      throw new TestSendError(
+        `テスト送信先にサーバー許可リスト外のuserIdが含まれています: ${blockedUserIds.join(', ')}`,
+        400,
+      );
+    }
   }
   return recipients;
 }
@@ -206,7 +198,7 @@ export async function sendTestMessages(input: {
   messages: readonly TestSendMessageInput[];
   idempotencyKey: string;
   workerUrl?: string;
-  /** Comma/whitespace separated deployment binding; undefined uses the safe current default. */
+  /** Optional comma/whitespace separated ceiling over the DB-configured recipients. */
   allowedUserIds?: string;
   /** Server-resolved only. Public routes never accept a raw LINE sender object. */
   sender?: MessageSender;

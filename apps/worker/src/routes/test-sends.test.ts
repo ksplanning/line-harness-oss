@@ -220,6 +220,7 @@ describe('POST /api/test-sends', () => {
   });
 
   test('rejects the whole request when a mistaken setting includes a same-account user outside the server allowlist', async () => {
+    app = createApp(raw, ALLOWED_TEST_USER_ID);
     configure(['test-friend', 'real-recipient']);
     const res = await post(app, {
       accountId: 'acc-1',
@@ -235,6 +236,53 @@ describe('POST /api/test-sends', () => {
     expect(pushCalls).toEqual([]);
     expect(raw.prepare(`SELECT COUNT(*) AS count FROM messages_log`).get()).toEqual({ count: 0 });
     expect(raw.prepare(`SELECT COUNT(*) AS count FROM test_send_requests`).get()).toEqual({ count: 0 });
+  });
+
+  test('uses all DB-configured recipients for preview and send when the deployment ceiling is unset', async () => {
+    configure(['test-friend', 'real-recipient']);
+
+    const preview = await app.request('/api/test-sends/broadcast/recipients?accountId=acc-1');
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toEqual({
+      success: true,
+      data: [
+        { id: 'test-friend', displayName: 'テスター', pictureUrl: null },
+        { id: 'real-recipient', displayName: '本番受信者', pictureUrl: null },
+      ],
+    });
+
+    const res = await post(app, {
+      accountId: 'acc-1',
+      source: 'broadcast',
+      messages: [{ type: 'text', content: 'DB設定の2名へ送信' }],
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      sent: 2,
+      failed: 0,
+      sentUserIds: [ALLOWED_TEST_USER_ID, 'U-real'],
+    });
+    expect(pushCalls.map((call) => call.to)).toEqual([ALLOWED_TEST_USER_ID, 'U-real']);
+  });
+
+  test('does not apply a tenant-specific default ceiling when the deployment binding is unset', async () => {
+    raw.prepare(`INSERT INTO account_settings (id, line_account_id, key, value) VALUES ('setting-2', 'acc-2', 'test_recipients', ?)`)
+      .run(JSON.stringify(['other-account']));
+
+    const res = await post(app, {
+      accountId: 'acc-2',
+      source: 'broadcast',
+      messages: [{ type: 'text', content: '別テナントの登録済み受信者' }],
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      sent: 1,
+      failed: 0,
+      sentUserIds: ['U-other'],
+    });
+    expect(pushCalls).toEqual([expect.objectContaining({ token: 'token-2', to: 'U-other' })]);
   });
 
   test('allows multiple configured recipients only when every userId is in the deployment allowlist', async () => {
