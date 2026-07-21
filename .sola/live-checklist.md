@@ -1,3 +1,39 @@
+# richmenu-dispatch-ua-fix — host closer 実測チェック
+
+## オーナー向けの説明
+
+「既存の友だちへ再適用」を1回始めた後は、Worker が次の処理を自分で呼び起こし、残りを続けます。以前のように担当者が内部URLを何度も手動で呼ぶ必要はありません。もし Cloudflare などに拒否された場合も、今度は HTTP 状態や通信エラーの理由がログに残るため、「止まったのに理由が分からない」状態を避けられます。
+
+## 安全境界
+
+- [ ] 査読済み revision の Worker を、許可された検証 tenant へ反映してから始める。
+- [ ] token、署名、key、顧客情報を記録へ貼らない。LINE API 呼び出しロジックと unlink 判定の確認は本チェックの対象外とする。
+- [ ] 再適用の開始操作は1回だけにする。`POST /internal/rich-menu-rule-work` の手動 invoke、再適用ボタンの連打、D1 の直接書換えは行わない。
+- [ ] sandbox から本番操作をしない。以下は trusted host の closer が実施する。
+
+## cron / 自動 dispatch の実測手順
+
+1. [ ] 実施日時（JST）、査読済み revision、対象 tenant、LINE アカウント、対象人数、開始前のジョブ状態を記録する。
+2. [ ] 通常の管理画面から「既存の友だちへ再適用」を1回だけ開始し、job id と開始時刻を記録する。
+3. [ ] 5分 cron または最初の自動 dispatch が `POST /internal/rich-menu-rule-work` を実行し、403 / Cloudflare error 1010 ではなく 2xx になったことを Worker の request log で確認する。
+4. [ ] 内部URLを手動で呼ばずに待ち、ジョブの processed 件数が増えることを2回以上の観測点で確認する。1回の処理で完了した場合は、完了直後の continuation が自動で2xxになり、残件0を確認したことを代わりに記録する。
+5. [ ] ジョブが `completed` まで進み、対象件数と `processed_count` が一致し、`failed_count=0` であることを確認する。失敗する場合は、`[rich-menu-rules] isolated dispatch error` または `continuation dispatch error` と同じログ行に HTTP 状態または例外理由が残ることを確認し、PASS にしない。
+6. [ ] 実施中の手動 internal invoke が0回、再適用開始が1回だけだったことを記録する。これで「人が継ぎ足さなくても自動で進んだ」を判定する。
+
+## 実測記入欄
+
+- 実施日時（JST）: 未実施（査読・host 反映後に closer が記入）
+- 査読済み revision / deploy revision: 未記入
+- tenant / LINE アカウント / 対象人数: 未記入
+- job id / 開始時刻 / 完了時刻: 未記入
+- 自動 dispatch の request log（2xx、403/1010なし）: 未記入
+- processed_count の観測（時刻と件数）: 未記入
+- 手動 internal invoke 回数 / 再適用開始回数: 0回 / 1回（実測後に確定）
+- 失敗ログの観測（失敗時のみ）: 該当なし、または理由を秘密値なしで記入
+- 結果（PASS / FAIL / BLOCKED）と理由: 未記入
+
+---
+
 # richmenu-foreign-unlink-fix — host closer 実測チェック
 
 ## オーナー向けの説明
