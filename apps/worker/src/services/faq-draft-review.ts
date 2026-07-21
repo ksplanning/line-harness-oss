@@ -207,6 +207,18 @@ function validateDraftScope(
   return row;
 }
 
+async function releaseClaim(
+  db: D1Database,
+  draftId: string,
+  friendId: string,
+  claimStatus: 'editing' | 'discarding' | 'sending',
+): Promise<void> {
+  await db.prepare(
+    `UPDATE ai_faq_drafts SET status = 'pending', updated_at = ?
+      WHERE id = ? AND friend_id = ? AND status = ?`,
+  ).bind(jstNow(), draftId, friendId, claimStatus).run();
+}
+
 async function claimPending(
   db: D1Database,
   draftId: string,
@@ -249,10 +261,7 @@ async function claimPending(
   } catch (error) {
     // No external side effect has happened yet. Release this claim if the selected
     // account changed between the guarded UPDATE and the verification read.
-    await db.prepare(
-      `UPDATE ai_faq_drafts SET status = 'pending', updated_at = ?
-        WHERE id = ? AND friend_id = ? AND status = ?`,
-    ).bind(jstNow(), draftId, friendId, claimStatus).run();
+    await releaseClaim(db, draftId, friendId, claimStatus);
     throw error;
   }
 }
@@ -263,13 +272,34 @@ function auditStatement(
   actorStaffId: string,
   action: 'edited' | 'approved' | 'discarded' | 'send_failed',
   createdAt: string,
+  guard?: { expectedLineAccountId: string; finalizedStatus: string },
 ) {
+  const auditId = crypto.randomUUID();
+  if (guard) {
+    return db.prepare(
+      `INSERT INTO ai_faq_draft_audit_log
+         (id, draft_id, line_account_id, friend_id, actor_staff_id, action, created_at)
+       SELECT ?, d.id, COALESCE(d.line_account_id, f.line_account_id), d.friend_id, ?, ?, ?
+         FROM ai_faq_drafts d
+         JOIN friends f ON f.id = d.friend_id
+        WHERE d.id = ? AND d.friend_id = ? AND d.status = ? AND f.line_account_id = ?`,
+    ).bind(
+      auditId,
+      actorStaffId,
+      action,
+      createdAt,
+      row.id,
+      row.friend_id,
+      guard.finalizedStatus,
+      guard.expectedLineAccountId,
+    );
+  }
   return db.prepare(
     `INSERT INTO ai_faq_draft_audit_log
        (id, draft_id, line_account_id, friend_id, actor_staff_id, action, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
-    crypto.randomUUID(),
+    auditId,
     row.id,
     row.line_account_id ?? row.friend_account_id,
     row.friend_id,
@@ -277,6 +307,61 @@ function auditStatement(
     action,
     createdAt,
   );
+}
+
+async function finalizeLocalReview(input: {
+  db: D1Database;
+  row: ReviewContextRow;
+  actorStaffId: string;
+  action: 'edited' | 'discarded';
+  claimStatus: 'editing' | 'discarding';
+  finalizedStatus: 'pending' | 'discarded';
+  finalizedAt: string;
+  updateStatement: D1PreparedStatement;
+  expectedLineAccountId?: string;
+}): Promise<void> {
+  let results: D1Result[];
+  try {
+    results = await input.db.batch([
+      input.updateStatement,
+      auditStatement(
+        input.db,
+        input.row,
+        input.actorStaffId,
+        input.action,
+        input.finalizedAt,
+        input.expectedLineAccountId
+          ? {
+            expectedLineAccountId: input.expectedLineAccountId,
+            finalizedStatus: input.finalizedStatus,
+          }
+          : undefined,
+      ),
+    ]);
+  } catch (error) {
+    // Editing/discarding has no external side effect, so a failed DB finalization
+    // can safely release its claim for a later retry.
+    await releaseClaim(input.db, input.row.id, input.row.friend_id, input.claimStatus);
+    throw error;
+  }
+
+  const updateChanges = results[0]?.meta.changes ?? 0;
+  const auditChanges = results[1]?.meta.changes ?? 0;
+  if (updateChanges === 1 && auditChanges === 1) return;
+
+  if (updateChanges === 0) {
+    await releaseClaim(input.db, input.row.id, input.row.friend_id, input.claimStatus);
+    const current = await getReviewContext(input.db, input.row.id, input.row.friend_id);
+    if (
+      input.expectedLineAccountId
+      && current?.friend_account_id !== input.expectedLineAccountId
+    ) {
+      throw new FaqDraftReviewError('下書きのLINEアカウントが一致しません', 403);
+    }
+    throw new FaqDraftReviewError('この下書きは別の操作で処理中です', 409);
+  }
+
+  throw new FaqDraftReviewError('下書きの監査記録を確認できません', 500);
 }
 
 export async function editAiFaqDraft(input: {
@@ -299,19 +384,38 @@ export async function editAiFaqDraft(input: {
     input.expectedLineAccountId,
   );
   const now = jstNow();
-  await input.db.batch([
-    input.db.prepare(
+  const updateStatement = input.expectedLineAccountId
+    ? input.db.prepare(
+      `UPDATE ai_faq_drafts
+          SET draft_answer = ?, status = 'pending', updated_at = ?
+        WHERE id = ? AND friend_id = ? AND status = 'editing'
+          AND EXISTS (
+            SELECT 1 FROM friends f
+             WHERE f.id = ai_faq_drafts.friend_id AND f.line_account_id = ?
+          )`,
+    ).bind(answer, now, input.draftId, input.friendId, input.expectedLineAccountId)
+    : input.db.prepare(
       `UPDATE ai_faq_drafts
           SET draft_answer = ?, status = 'pending', updated_at = ?
         WHERE id = ? AND friend_id = ? AND status = 'editing'`,
-    ).bind(answer, now, input.draftId, input.friendId),
-    auditStatement(input.db, claimed, input.actorStaffId, 'edited', now),
-  ]);
-  const updated = validateDraftScope(
-    await getReviewContext(input.db, input.draftId, input.friendId),
-    input.expectedLineAccountId,
-  );
-  return serializeDraft(updated);
+    ).bind(answer, now, input.draftId, input.friendId);
+  await finalizeLocalReview({
+    db: input.db,
+    row: claimed,
+    actorStaffId: input.actorStaffId,
+    action: 'edited',
+    claimStatus: 'editing',
+    finalizedStatus: 'pending',
+    finalizedAt: now,
+    updateStatement,
+    expectedLineAccountId: input.expectedLineAccountId,
+  });
+  return {
+    ...serializeDraft(claimed),
+    draftAnswer: answer,
+    status: 'pending',
+    updatedAt: now,
+  };
 }
 
 export async function discardAiFaqDraft(input: {
@@ -329,19 +433,37 @@ export async function discardAiFaqDraft(input: {
     input.expectedLineAccountId,
   );
   const now = jstNow();
-  await input.db.batch([
-    input.db.prepare(
+  const updateStatement = input.expectedLineAccountId
+    ? input.db.prepare(
+      `UPDATE ai_faq_drafts
+          SET status = 'discarded', updated_at = ?
+        WHERE id = ? AND friend_id = ? AND status = 'discarding'
+          AND EXISTS (
+            SELECT 1 FROM friends f
+             WHERE f.id = ai_faq_drafts.friend_id AND f.line_account_id = ?
+          )`,
+    ).bind(now, input.draftId, input.friendId, input.expectedLineAccountId)
+    : input.db.prepare(
       `UPDATE ai_faq_drafts
           SET status = 'discarded', updated_at = ?
         WHERE id = ? AND friend_id = ? AND status = 'discarding'`,
-    ).bind(now, input.draftId, input.friendId),
-    auditStatement(input.db, claimed, input.actorStaffId, 'discarded', now),
-  ]);
-  const updated = validateDraftScope(
-    await getReviewContext(input.db, input.draftId, input.friendId),
-    input.expectedLineAccountId,
-  );
-  return serializeDraft(updated);
+    ).bind(now, input.draftId, input.friendId);
+  await finalizeLocalReview({
+    db: input.db,
+    row: claimed,
+    actorStaffId: input.actorStaffId,
+    action: 'discarded',
+    claimStatus: 'discarding',
+    finalizedStatus: 'discarded',
+    finalizedAt: now,
+    updateStatement,
+    expectedLineAccountId: input.expectedLineAccountId,
+  });
+  return {
+    ...serializeDraft(claimed),
+    status: 'discarded',
+    updatedAt: now,
+  };
 }
 
 export async function approveAiFaqDraft(input: {
@@ -381,6 +503,7 @@ export async function approveAiFaqDraft(input: {
     || claimed.account_is_active !== 1
     || !claimed.channel_access_token
   ) {
+    await releaseClaim(input.db, input.draftId, input.friendId, 'sending');
     throw new FaqDraftReviewError('送信できるLINEアカウントが見つかりません', 409);
   }
 
@@ -432,12 +555,12 @@ export async function approveAiFaqDraft(input: {
     auditStatement(input.db, claimed, input.actorStaffId, 'approved', sentAt),
   ]);
 
-  const updated = validateDraftScope(
-    await getReviewContext(input.db, input.draftId, input.friendId),
-    input.expectedLineAccountId,
-  );
   return {
-    draft: serializeDraft(updated),
+    draft: {
+      ...serializeDraft(claimed),
+      status: 'approved',
+      updatedAt: sentAt,
+    },
     message: {
       id: messageId,
       direction: 'outgoing',

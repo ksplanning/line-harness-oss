@@ -21,21 +21,37 @@ vi.mock('@line-crm/line-sdk', () => ({
 
 const { chats } = await import('./chats.js');
 const { faqDraftReviews } = await import('./faq-draft-reviews.js');
-const { approveAiFaqDraft, resolveAiFaqDraftReviewFriend } = await import('../services/faq-draft-review.js');
+const {
+  approveAiFaqDraft,
+  discardAiFaqDraft,
+  editAiFaqDraft,
+  resolveAiFaqDraftReviewFriend,
+} = await import('../services/faq-draft-review.js');
 
 type SyncStatement = D1PreparedStatement & { __runSync: () => { changes: number } };
 
-function asD1(raw: Database.Database): D1Database {
+function asD1(
+  raw: Database.Database,
+  options: {
+    afterFirst?: (sql: string) => void;
+    afterRun?: (sql: string) => void;
+  } = {},
+): D1Database {
   return {
     prepare(sql: string) {
       const statement = raw.prepare(sql);
       let params: unknown[] = [];
       const api = {
         bind(...values: unknown[]) { params = values; return api; },
-        async first<T>() { return (statement.get(...(params as never[])) as T) ?? null; },
+        async first<T>() {
+          const result = (statement.get(...(params as never[])) as T) ?? null;
+          options.afterFirst?.(sql);
+          return result;
+        },
         async all<T>() { return { results: statement.all(...(params as never[])) as T[] }; },
         async run() {
           const result = statement.run(...(params as never[]));
+          options.afterRun?.(sql);
           return { meta: { changes: result.changes } };
         },
         __runSync() {
@@ -323,6 +339,31 @@ describe('inline draft review mutations', () => {
     expect(lineState.calls).toEqual([]);
   });
 
+  test('releases the sending claim when the account becomes unavailable before LINE is called', async () => {
+    seedDraft({});
+    let deactivated = false;
+    const db = asD1(raw, {
+      afterRun(sql) {
+        if (!deactivated && sql.includes(`SET status = ?, updated_at = ?`)) {
+          deactivated = true;
+          raw.prepare(`UPDATE line_accounts SET is_active=0 WHERE id='acc-1'`).run();
+        }
+      },
+    });
+
+    await expect(approveAiFaqDraft({
+      db,
+      draftId: 'draft-1',
+      friendId: 'friend-1',
+      actorStaffId: 'staff-1',
+    })).rejects.toMatchObject({ status: 409 });
+    expect(lineState.calls).toEqual([]);
+    expect(raw.prepare(`SELECT status FROM ai_faq_drafts WHERE id='draft-1'`).get())
+      .toEqual({ status: 'pending' });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM ai_faq_draft_audit_log`).get())
+      .toEqual({ count: 0 });
+  });
+
   test('an ambiguous LINE failure cannot be retried into a duplicate send', async () => {
     seedDraft({});
     lineState.fail = true;
@@ -440,6 +481,69 @@ describe('central FAQ draft inbox review mutations', () => {
     expect(lineState.calls).toEqual([]);
     expect(raw.prepare(`SELECT status FROM ai_faq_drafts WHERE id='draft-1'`).get())
       .toEqual({ status: 'pending' });
+  });
+
+  test.each([
+    ['edit', async (db: D1Database) => editAiFaqDraft({
+      db,
+      draftId: 'draft-1',
+      friendId: 'friend-1',
+      actorStaffId: 'staff-1',
+      draftAnswer: '越境させない編集',
+      expectedLineAccountId: 'acc-1',
+    })],
+    ['discard', async (db: D1Database) => discardAiFaqDraft({
+      db,
+      draftId: 'draft-1',
+      friendId: 'friend-1',
+      actorStaffId: 'staff-1',
+      expectedLineAccountId: 'acc-1',
+    })],
+  ])('guards central %s finalization when friend account changes after claim verification', async (_action, review) => {
+    seedDraft({ accountId: null });
+    let contextReads = 0;
+    const db = asD1(raw, {
+      afterFirst(sql) {
+        if (!sql.includes('FROM ai_faq_drafts d')) return;
+        contextReads += 1;
+        if (contextReads === 2) {
+          raw.prepare(`UPDATE friends SET line_account_id='acc-2' WHERE id='friend-1'`).run();
+        }
+      },
+    });
+
+    await expect(review(db)).rejects.toMatchObject({ status: 403 });
+    expect(raw.prepare(`SELECT draft_answer, status FROM ai_faq_drafts WHERE id='draft-1'`).get())
+      .toEqual({ draft_answer: '10時からです', status: 'pending' });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM ai_faq_draft_audit_log`).get())
+      .toEqual({ count: 0 });
+  });
+
+  test('finalizes an already-sent approval from the claimed account snapshot if friend ownership changes', async () => {
+    seedDraft({ accountId: null });
+    let contextReads = 0;
+    const db = asD1(raw, {
+      afterFirst(sql) {
+        if (!sql.includes('FROM ai_faq_drafts d')) return;
+        contextReads += 1;
+        if (contextReads === 3) {
+          raw.prepare(`UPDATE friends SET line_account_id='acc-2' WHERE id='friend-1'`).run();
+        }
+      },
+    });
+
+    await expect(approveAiFaqDraft({
+      db,
+      draftId: 'draft-1',
+      friendId: 'friend-1',
+      actorStaffId: 'staff-1',
+      expectedLineAccountId: 'acc-1',
+    })).resolves.toMatchObject({ draft: { status: 'approved' } });
+    expect(lineState.calls).toEqual([{ token: 'token-1', to: 'U-one', text: '10時からです' }]);
+    expect(raw.prepare(`SELECT status FROM ai_faq_drafts WHERE id='draft-1'`).get())
+      .toEqual({ status: 'approved' });
+    expect(raw.prepare(`SELECT line_account_id, action FROM ai_faq_draft_audit_log`).get())
+      .toEqual({ line_account_id: 'acc-1', action: 'approved' });
   });
 
   test('rejects another account before claim, mutation, audit, or LINE send', async () => {
