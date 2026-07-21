@@ -757,8 +757,15 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_060500_selfform-w2-full-parts.md`。
 
 ## 自動応答まわりの owner 要望 (2026-07-21 04:4x 登録)
-- **自動応答センター統合 (改修・selfform 波の後に設計提示)**: 自動返信ルール/よくある質問/資料AI の3画面を「受付階層」1画面に統合 — ①機械ルール(安全弁・定型・エスカレーション) → ②AI回答(FAQ+資料=統合ナレッジ) → ③自信なし→人間へ(下書き)。owner 洞察「FAQもナレッジの一つ・機械ルールはナレッジではない(=安全弁)」を設計原則に。どの層で返ったかの可視化込み
+- **✅ 自動応答センター統合 — 2026-07-21 closer(verify-only便)で解消（下記 auto-reply-center-unify 節参照）**
 - **✅ オートメーション画面の JSON 直書き → GUI 化 — 2026-07-21 closer で解消（下記 automation-rules-gui 節参照）**
+
+## auto-reply-center-unify — 自動応答3画面統合（2026-07-21 closer / ✅ status: completed / done 4/4・verify-only便）
+- **owner 洞察「自動返信・よくある質問・資料AIは本質は一緒（ナレッジ参照で自動応答）」を型に**: `/auto-reply-center` 1画面を新設し、受付階層（①主スイッチ+動作モード ②ナレッジ源一覧(FAQ/資料/今後は本人情報) ③機械的ルールを「AIより先に発動する例外ルール」と正直に位置づけ ④下書き受信箱導線）で整理。既存 `/auto-replies` `/faqs` `/knowledge` の3画面はコンポーネントを embed-context 経由で内部改変せず参照（並走中の faq-personal-context lane と非衝突）。**worker 側ロジック diff = 0**（UI/IA のみ）。
+- 実装 commit（main HEAD `4fe1277`・Generator-LLM: codex）は既に本 repo に着地済み。本 closer は**deploy 済み実測のみ**（W4b closer が既に4面デプロイ・health 200 確認済みのため再デプロイ禁止の verify-only 便）。
+- **deployed 実機検証（両テナント production admin・curl レベル）**: `https://line-harness-ks-admin.pages.dev` と `https://line-harness-piecemaker-admin.pages.dev` の両方で `/auto-reply-center`→200、旧3画面 `/auto-replies`→301 `?view=rules`、`/faqs`→301 `?view=knowledge&source=faq`、`/knowledge`→301 `?view=knowledge&source=documents` を実測確認（ブックマーク破壊なし）。
+- reviewer PASS（Round1・独立 checkout で D-1〜D-4 全充足を自ら再実行確認・diff sha256 一致・headSHA `69d875dc`→main 上は rebase 後 `4fe1277`）。
+- 詳細: REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_100500_auto-reply-center-unify.md`。
 
 ## automation-rules-gui — オートメーション JSON→GUI ビルダー化（2026-07-21 closer / ✅ status: completed）
 - **owner の「JSONで意味がわからない」を解消**: `/automations` に trigger→action の2段GUIビルダーを実装（全トリガー種別/全アクション種別を静的テストで網羅・`AUTOMATION_ACTION_DEFINITIONS` は `satisfies Record<AutomationActionType,…>` でコンパイル時網羅担保）。上級者向けJSON表示は読み取り専用で併存（無編集時は byte 不変・fingerprint pin `fnv1a32:74440fd9` で保証）。壊れた/未知形式JSONは silent 破壊せず正直に fail-safe 表示。worker実行系(automations.ts以外)は無改変(diff 0)。main HEAD `85b3e2d`(origin+piecemaker dual-push)。
