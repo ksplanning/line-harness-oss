@@ -264,6 +264,24 @@ export interface CannedResponseData {
   updatedAt: string
 }
 
+export interface InlineAiFaqDraftData {
+  id: string
+  question: string
+  draftAnswer: string
+  createdAt: string
+  updatedAt: string
+  questionMessageId: string | null
+  status?: string
+}
+
+export interface ChatMessageData {
+  id: string
+  direction: 'incoming' | 'outgoing'
+  messageType: string
+  content: string
+  createdAt: string
+}
+
 export type FriendWithTags = Friend & { tags: Tag[] }
 export type FriendFieldDefinitionInput = Pick<
   FriendFieldDefinition,
@@ -1327,6 +1345,23 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
+    drafts: {
+      update: (chatId: string, draftId: string, data: { draftAnswer: string }) =>
+        fetchApi<ApiResponse<InlineAiFaqDraftData>>(
+          `/api/chats/${encodeURIComponent(chatId)}/drafts/${encodeURIComponent(draftId)}`,
+          { method: 'PATCH', body: JSON.stringify(data) },
+        ),
+      approve: (chatId: string, draftId: string) =>
+        fetchApi<ApiResponse<{ draft: InlineAiFaqDraftData; message: ChatMessageData }>>(
+          `/api/chats/${encodeURIComponent(chatId)}/drafts/${encodeURIComponent(draftId)}/approve`,
+          { method: 'POST' },
+        ),
+      discard: (chatId: string, draftId: string) =>
+        fetchApi<ApiResponse<InlineAiFaqDraftData>>(
+          `/api/chats/${encodeURIComponent(chatId)}/drafts/${encodeURIComponent(draftId)}`,
+          { method: 'DELETE' },
+        ),
+    },
   },
   reminders: {
     list: (params?: { accountId?: string }) => {

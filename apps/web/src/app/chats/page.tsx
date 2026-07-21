@@ -37,10 +37,20 @@ interface ChatMessage {
   createdAt: string
 }
 
+interface InlineAiFaqDraft {
+  id: string
+  question: string
+  draftAnswer: string
+  createdAt: string
+  updatedAt: string
+  questionMessageId: string | null
+}
+
 interface ChatDetail extends Chat {
   friendName: string
   friendPictureUrl: string | null
   messages?: ChatMessage[]
+  pendingDrafts?: InlineAiFaqDraft[]
 }
 
 type StatusFilter = 'all' | 'unread' | 'in_progress' | 'resolved'
@@ -106,15 +116,172 @@ function formatYmdSlash(iso: string): string {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
 }
 
+function InlineAiDraftCard({
+  draft,
+  onUpdate,
+  onApprove,
+  onDiscard,
+}: {
+  draft: InlineAiFaqDraft
+  onUpdate: (draftId: string, draftAnswer: string) => Promise<void>
+  onApprove: (draftId: string) => Promise<void>
+  onDiscard: (draftId: string) => Promise<void>
+}) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [draftAnswer, setDraftAnswer] = useState(draft.draftAnswer)
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false)
+  const [busyAction, setBusyAction] = useState<'edit' | 'approve' | 'discard' | null>(null)
+  const [actionError, setActionError] = useState('')
+  const actionLockRef = useRef(false)
+
+  useEffect(() => {
+    if (!isEditing) setDraftAnswer(draft.draftAnswer)
+  }, [draft.draftAnswer, isEditing])
+
+  const runAction = async (
+    action: 'edit' | 'approve' | 'discard',
+    callback: () => Promise<void>,
+  ) => {
+    if (actionLockRef.current) return
+    actionLockRef.current = true
+    setBusyAction(action)
+    setActionError('')
+    try {
+      await callback()
+    } catch {
+      setActionError(action === 'approve'
+        ? '送信結果を確認できません。再送せず管理者へ確認してください。'
+        : '操作に失敗しました。もう一度お試しください。')
+    } finally {
+      actionLockRef.current = false
+      setBusyAction(null)
+    }
+  }
+
+  return (
+    <div
+      data-testid="inline-ai-draft"
+      className="ml-10 mt-2 rounded-xl border-2 border-dashed border-amber-400 bg-amber-50 p-3 text-gray-900 shadow-sm"
+    >
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="inline-flex items-center rounded-full bg-amber-200 px-2 py-0.5 text-xs font-semibold text-amber-900">
+          AI下書き
+        </span>
+        <span className="text-[11px] text-amber-800">確認後に送信されます</span>
+      </div>
+
+      {isEditing ? (
+        <textarea
+          aria-label="AI下書き本文"
+          rows={4}
+          value={draftAnswer}
+          onChange={(event) => setDraftAnswer(event.target.value)}
+          className="min-h-[96px] w-full resize-y rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-200"
+        />
+      ) : (
+        <p className="whitespace-pre-wrap break-words text-sm">{draft.draftAnswer}</p>
+      )}
+
+      {actionError && (
+        <p role="alert" className="mt-2 text-xs text-red-700">{actionError}</p>
+      )}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {isEditing ? (
+          <>
+            <button
+              type="button"
+              disabled={busyAction !== null || !draftAnswer.trim()}
+              onClick={() => void runAction('edit', async () => {
+                await onUpdate(draft.id, draftAnswer.trim())
+                setIsEditing(false)
+              })}
+              className="min-h-[40px] rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busyAction === 'edit' ? '保存中...' : '編集を保存'}
+            </button>
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => {
+                setDraftAnswer(draft.draftAnswer)
+                setIsEditing(false)
+              }}
+              className="min-h-[40px] rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              キャンセル
+            </button>
+          </>
+        ) : confirmingDiscard ? (
+          <>
+            <span className="text-xs font-medium text-red-700">この下書きを破棄しますか？</span>
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => void runAction('discard', () => onDiscard(draft.id))}
+              className="min-h-[40px] rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {busyAction === 'discard' ? '破棄中...' : '破棄する'}
+            </button>
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => setConfirmingDiscard(false)}
+              className="min-h-[40px] rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              キャンセル
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => setIsEditing(true)}
+              className="min-h-[40px] rounded-md border border-amber-500 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+            >
+              下書きを編集
+            </button>
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => void runAction('approve', () => onApprove(draft.id))}
+              className="min-h-[40px] rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
+            >
+              {busyAction === 'approve' ? '送信中...' : '承認して送信'}
+            </button>
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => setConfirmingDiscard(true)}
+              className="min-h-[40px] rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+            >
+              下書きを破棄
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ChatMessageHistory({
   messages,
   friendPictureUrl,
   scrollRef,
+  pendingDrafts = [],
+  onUpdateDraft,
+  onApproveDraft,
+  onDiscardDraft,
   expanded = false,
 }: {
   messages: ChatMessage[]
   friendPictureUrl: string | null
   scrollRef: React.RefObject<HTMLDivElement | null>
+  pendingDrafts?: InlineAiFaqDraft[]
+  onUpdateDraft?: (draftId: string, draftAnswer: string) => Promise<void>
+  onApproveDraft?: (draftId: string) => Promise<void>
+  onDiscardDraft?: (draftId: string) => Promise<void>
   expanded?: boolean
 }) {
   return (
@@ -133,6 +300,7 @@ function ChatMessageHistory({
           const prevMsg = idx > 0 ? messages[idx - 1] : null
           const showDateSep = !prevMsg || !sameYmd(prevMsg.createdAt, msg.createdAt)
           const isOutgoing = msg.direction === 'outgoing'
+          const draftsAfterMessage = pendingDrafts.filter((draft) => draft.questionMessageId === msg.id)
 
           let bubbleContent: React.ReactNode
           if (msg.messageType === 'flex') {
@@ -198,6 +366,15 @@ function ChatMessageHistory({
                   </span>
                 </div>
               </div>
+              {onUpdateDraft && onApproveDraft && onDiscardDraft && draftsAfterMessage.map((draft) => (
+                <InlineAiDraftCard
+                  key={draft.id}
+                  draft={draft}
+                  onUpdate={onUpdateDraft}
+                  onApprove={onApproveDraft}
+                  onDiscard={onDiscardDraft}
+                />
+              ))}
             </div>
           )
         })
@@ -431,6 +608,7 @@ export default function ChatsPage() {
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
   const [pendingImage, setPendingImage] = useState<ImageUploaderValue | null>(null)
+  const [showImageUploader, setShowImageUploader] = useState(false)
   const [sending, setSending] = useState(false)
   const sendLockRef = useRef(false)
   const [notes, setNotes] = useState('')
@@ -707,6 +885,7 @@ export default function ChatsPage() {
     setSelectedChatId(chatId)
     setMessageContent('')
     setPendingImage(null)
+    setShowImageUploader(false)
   }
 
   const triggerLoadingAnimation = useCallback(async (chatId: string) => {
@@ -744,6 +923,7 @@ export default function ChatsPage() {
         })
         await api.chats.send(sendingChatId, { messageType: 'image', content: imgPayload })
         setPendingImage(null)
+        setShowImageUploader(false)
         // Optimistic update for image
         setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
           ...prev,
@@ -842,6 +1022,74 @@ export default function ChatsPage() {
     } finally {
       setSending(false)
       sendLockRef.current = false
+    }
+  }
+
+  const handleUpdateInlineDraft = async (draftId: string, draftAnswer: string) => {
+    if (!selectedChatId || !chatDetail) throw new Error('チャットが選択されていません')
+    const friendId = chatDetail.friendId
+    try {
+      const res = await api.chats.drafts.update(friendId, draftId, { draftAnswer })
+      if (!res.success) throw new Error(res.error)
+      setChatDetail((prev) => (prev && prev.friendId === friendId) ? {
+        ...prev,
+        pendingDrafts: (prev.pendingDrafts ?? []).map((draft) => draft.id === draftId ? {
+          ...draft,
+          ...res.data,
+          questionMessageId: draft.questionMessageId,
+        } : draft),
+      } : prev)
+    } catch (err) {
+      setError('AI下書きの編集に失敗しました。')
+      throw err
+    }
+  }
+
+  const handleApproveInlineDraft = async (draftId: string) => {
+    if (!selectedChatId || !chatDetail) throw new Error('チャットが選択されていません')
+    const listChatId = selectedChatId
+    const friendId = chatDetail.friendId
+    try {
+      const res = await api.chats.drafts.approve(friendId, draftId)
+      if (!res.success) throw new Error(res.error)
+      const { message } = res.data
+      setChatDetail((prev) => (prev && prev.friendId === friendId) ? {
+        ...prev,
+        status: 'in_progress',
+        lastMessageAt: message.createdAt,
+        lastMessageContent: message.content,
+        lastMessageDirection: 'outgoing',
+        lastMessageType: message.messageType,
+        pendingDrafts: (prev.pendingDrafts ?? []).filter((draft) => draft.id !== draftId),
+        messages: [...(prev.messages ?? []), message],
+      } : prev)
+      setChats((prev) => prev.map((chat) => chat.id === listChatId ? {
+        ...chat,
+        status: 'in_progress',
+        lastMessageAt: message.createdAt,
+        lastMessageContent: message.content,
+        lastMessageDirection: 'outgoing',
+        lastMessageType: message.messageType,
+      } : chat))
+    } catch (err) {
+      setError('AI下書きの承認送信に失敗しました。再送せず状況を確認してください。')
+      throw err
+    }
+  }
+
+  const handleDiscardInlineDraft = async (draftId: string) => {
+    if (!selectedChatId || !chatDetail) throw new Error('チャットが選択されていません')
+    const friendId = chatDetail.friendId
+    try {
+      const res = await api.chats.drafts.discard(friendId, draftId)
+      if (!res.success) throw new Error(res.error)
+      setChatDetail((prev) => (prev && prev.friendId === friendId) ? {
+        ...prev,
+        pendingDrafts: (prev.pendingDrafts ?? []).filter((draft) => draft.id !== draftId),
+      } : prev)
+    } catch (err) {
+      setError('AI下書きの破棄に失敗しました。')
+      throw err
     }
   }
 
@@ -1124,6 +1372,10 @@ export default function ChatsPage() {
                 messages={chatDetail.messages ?? []}
                 friendPictureUrl={chatDetail.friendPictureUrl}
                 scrollRef={messagesScrollRef}
+                pendingDrafts={chatDetail.pendingDrafts}
+                onUpdateDraft={handleUpdateInlineDraft}
+                onApproveDraft={handleApproveInlineDraft}
+                onDiscardDraft={handleDiscardInlineDraft}
               />
 
               {/* Notes */}
@@ -1188,14 +1440,6 @@ export default function ChatsPage() {
                     <span>Shift+Enter</span>
                   </label>
                 </div>
-                <div className="mb-2">
-                  <ImageUploader
-                    mode="line-image"
-                    value={pendingImage}
-                    onChange={setPendingImage}
-                    label="画像を送る (任意)"
-                  />
-                </div>
                 {/* 定型文ピッカー — 選択で messageContent に挿入するだけ (送信経路には触れない) */}
                 <div className="mb-2">
                   <CannedResponsePicker
@@ -1212,11 +1456,11 @@ export default function ChatsPage() {
                     }}
                   />
                 </div>
-                <div className="flex items-end gap-2">
+                <div className="space-y-2">
                   <PersonalizedTextEditor
                     mode="emoji-only"
                     textareaRef={textareaRef}
-                    rows={2}
+                    rows={4}
                     value={messageContent}
                     onChange={(value) => {
                       setMessageContent(value)
@@ -1239,17 +1483,47 @@ export default function ChatsPage() {
                       onKeyDown: handleKeyDown,
                     }}
                     placeholder="メッセージを入力..."
-                    className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none overflow-y-auto"
-                    containerClassName="flex-1 space-y-2"
+                    className="w-full min-h-[112px] text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none overflow-y-auto"
+                    containerClassName="w-full space-y-2"
                   />
-                  <button
-                    onClick={handleSendMessage}
-                    disabled={sending || (!messageContent.trim() && !pendingImage)}
-                    className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                    style={{ backgroundColor: '#06C755' }}
-                  >
-                    {sending ? '送信中...' : '送信'}
-                  </button>
+                  <div className="flex items-end justify-between gap-2">
+                    <div className="relative">
+                      <button
+                        type="button"
+                        aria-label="画像を添付"
+                        aria-expanded={showImageUploader}
+                        onClick={() => setShowImageUploader((shown) => !shown)}
+                        className={`inline-flex h-11 w-11 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                          pendingImage
+                            ? 'border-green-500 bg-green-50 text-green-700'
+                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                        }`}
+                        title={pendingImage ? '送信する画像を確認・変更' : '画像を添付'}
+                      >
+                        <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828L18 9.828a4 4 0 10-5.657-5.657L5.757 10.757a6 6 0 108.486 8.486L20.5 13" />
+                        </svg>
+                      </button>
+                      {showImageUploader && (
+                        <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[40vh] w-[min(28rem,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
+                          <ImageUploader
+                            mode="line-image"
+                            value={pendingImage}
+                            onChange={setPendingImage}
+                            label="画像を送る (任意)"
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleSendMessage}
+                      disabled={sending || (!messageContent.trim() && !pendingImage)}
+                      className="min-h-[44px] px-5 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      style={{ backgroundColor: '#06C755' }}
+                    >
+                      {sending ? '送信中...' : '送信'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </>
@@ -1316,6 +1590,10 @@ export default function ChatsPage() {
               messages={chatDetail.messages ?? []}
               friendPictureUrl={chatDetail.friendPictureUrl}
               scrollRef={expandedMessagesScrollRef}
+              pendingDrafts={chatDetail.pendingDrafts}
+              onUpdateDraft={handleUpdateInlineDraft}
+              onApproveDraft={handleApproveInlineDraft}
+              onDiscardDraft={handleDiscardInlineDraft}
               expanded
             />
           </section>
