@@ -559,7 +559,7 @@ export function DisplayRulePanel({ accountId, menus }: { accountId: string; menu
           <div className="mt-3 rounded bg-gray-50 p-3 text-sm text-gray-700">
             <div className="flex flex-wrap gap-x-4 gap-y-1">
               <strong>{job.processedCount} / {job.totalCount}人</strong>
-              <span>LINE受付 {job.appliedCount}・変更なし {job.skippedCount}・失敗 {job.failedCount}</span>
+              <span>LINE受付 {job.appliedCount}・個別固定を解除 {job.foreignUnlinkedCount ?? 0}・変更なし {job.skippedCount}・失敗 {job.failedCount}</span>
               <span>{job.status === 'running' ? '処理中' : '完了'}</span>
             </div>
             <p className="mt-1 text-xs">一括処理の残り {Math.max(0, job.totalCount - job.processedCount).toLocaleString('ja-JP')}人</p>

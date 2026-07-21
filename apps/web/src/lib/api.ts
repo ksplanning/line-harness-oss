@@ -393,6 +393,7 @@ export interface RichMenuRuleReapplyJob {
   totalCount: number
   processedCount: number
   appliedCount: number
+  foreignUnlinkedCount: number
   skippedCount: number
   failedCount: number
   lastFriendId: string | null

@@ -148,14 +148,14 @@ describe('DisplayRulePanel', () => {
       success: true,
       data: {
         id: 'job-1', accountId: 'acc-1', status: 'running', totalCount: 30, processedCount: 12,
-        appliedCount: 8, skippedCount: 3, failedCount: 1, lastFriendId: 'f12',
+        appliedCount: 6, foreignUnlinkedCount: 2, skippedCount: 3, failedCount: 1, lastFriendId: 'f12',
         createdAt: '2026-07-21T10:00:00.000', updatedAt: '2026-07-21T10:02:00.000', completedAt: null,
       },
     })
     render(<DisplayRulePanel accountId="acc-1" menus={[]} />)
 
     expect(await screen.findByText('12 / 30人')).toBeTruthy()
-    expect(screen.getByText('LINE受付 8・変更なし 3・失敗 1')).toBeTruthy()
+    expect(screen.getByText('LINE受付 6・個別固定を解除 2・変更なし 3・失敗 1')).toBeTruthy()
     expect(screen.getByText('一括処理の残り 18人')).toBeTruthy()
     expect(screen.getByText(/実測ペースによる概算完了.*7月21日.*10:05ごろ/)).toBeTruthy()
     expect(screen.getByText(/個別再試行後に確定したエラー/)).toBeTruthy()
@@ -178,6 +178,7 @@ describe('DisplayRulePanel', () => {
     render(<DisplayRulePanel accountId="acc-1" menus={[]} />)
 
     expect(await screen.findByText('一括処理の残り 1,450人')).toBeTruthy()
+    expect(screen.getByText('LINE受付 0・個別固定を解除 0・変更なし 0・失敗 0')).toBeTruthy()
     expect(screen.getByText('概算完了は、処理実績ができ次第表示します。')).toBeTruthy()
     expect(screen.queryByText(/ごろ/)).toBeNull()
   })
