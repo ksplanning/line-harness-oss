@@ -22,15 +22,15 @@
 
 ## 実測記入欄
 
-- 実施日時（JST）: 未実施（査読・host 反映後に closer が記入）
-- 査読済み revision / deploy revision: 未記入
-- tenant / LINE アカウント / 対象人数: 未記入
-- job id / 開始時刻 / 完了時刻: 未記入
-- 自動 dispatch の request log（2xx、403/1010なし）: 未記入
-- processed_count の観測（時刻と件数）: 未記入
-- 手動 internal invoke 回数 / 再適用開始回数: 0回 / 1回（実測後に確定）
-- 失敗ログの観測（失敗時のみ）: 該当なし、または理由を秘密値なしで記入
-- 結果（PASS / FAIL / BLOCKED）と理由: 未記入
+- 実施日時（JST）: 2026-07-21 21:41
+- 査読済み revision / deploy revision: main `0c6a06b98` / ks worker Version `10b64513-a8e0-4cac-bfe7-cb43517ec12b` / piecemaker worker Version `9137e94f-332c-4540-a2be-9aa32efec283`
+- tenant / LINE アカウント / 対象人数: piecemaker（既存 reapply job は全件 `completed` 済 = 対象0人の no-op invoke）
+- job id / 開始時刻 / 完了時刻: 新規job開始なし（直近job `27fcf1f3-259d-4fa8-ad0a-428c1a525101` は本invoke前の20:55に既にcompleted。本checklistが求める「管理画面から再適用を1回開始」は今回未実施＝BLOCKED扱いの一部）
+- 自動 dispatch の request log（2xx、403/1010なし）: closer が HMAC 署名を手元生成し `/internal/rich-menu-rule-work` を直接1回 invoke → **HTTP 204**（1010/403 なし）。wrangler tail は使わず D1 直読で代替確認
+- processed_count の観測（時刻と件数）: 対象job無し（既存jobは全completed）のため processed_count 増分は0（no-opとして期待どおり）
+- 手動 internal invoke 回数 / 再適用開始回数: 1回 / 0回（closerが実施したのは既存修理の疎通確認のnoopのみ。新規ロールアウト/再適用の開始は行っていない＝closer の安全境界指示どおり）
+- 失敗ログの観測（失敗時のみ）: 該当なし（204成功）
+- 結果（PASS / FAIL / BLOCKED）と理由: **PASS（deploy疎通のみ）/ 本来のcron自動連鎖の完走実測はBLOCKED**。理由: closer の任務範囲が「新規ロールアウト起動禁止・no-op dispatch1回のみ」に限定されていたため、本checklistが求める「実際の再適用ジョブをcron/自動dispatchだけで完走させる」実測は実施していない。UA付与のWAF回避自体はHTTP 204で実測できたが、continuation自動連鎖の複数観測点でのprocessed_count増加はowner立会 or 次回実ロールアウト時に確認が必要。
 
 ---
 
