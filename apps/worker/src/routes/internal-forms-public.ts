@@ -727,112 +727,6 @@ function logicClientMarkup(definition: InternalFormDefinition): string {
 <script type="module" src="/assets/internal-form-logic.js" data-internal-form-logic-client></script>`;
 }
 
-function postalClientScript(): string {
-  return `<script>
-(() => {
-  const messages = {
-    400: '郵便番号は半角数字7桁で入力してください',
-    404: '住所が見つかりませんでした',
-    409: '住所候補が複数あります。住所を直接入力してください',
-    429: '検索が混み合っています。少し待ってからお試しください',
-    503: '住所検索を一時的に利用できません。住所を直接入力してください',
-  };
-  const field = (id) => Array.from(document.querySelectorAll('[data-answer-field]'))
-    .find((element) => element.dataset.answerField === id);
-  document.querySelectorAll('.postal-lookup').forEach((button) => {
-    let controller = null;
-    let generation = 0;
-    const status = button.parentElement.querySelector('.postal-status');
-    const zipInput = field(button.dataset.zipField);
-    const normalizedZip = () => String(zipInput?.value ?? '').replace(/[\\s-]/g, '');
-    const initialZip = normalizedZip();
-    const autofilledValues = new Map();
-    const restoredValues = new Map();
-    const manuallyEdited = new Set();
-    for (const targetId of [button.dataset.prefField, button.dataset.cityField, button.dataset.townField]) {
-      const target = field(targetId);
-      if (target?.value) restoredValues.set(targetId, target.value);
-      target?.addEventListener('input', () => {
-        autofilledValues.delete(targetId);
-        manuallyEdited.add(targetId);
-      });
-    }
-    let requestedZip = null;
-    let completedZip = initialZip || null;
-    zipInput?.addEventListener('input', () => {
-      const currentZip = normalizedZip();
-      if (completedZip !== null && currentZip !== completedZip) {
-        status.textContent = '郵便番号が変更されました。もう一度検索してください';
-      }
-      if (!controller || currentZip === requestedZip) return;
-      generation += 1;
-      controller.abort();
-      controller = null;
-      requestedZip = null;
-      button.disabled = false;
-      status.textContent = '郵便番号が変更されました。もう一度検索してください';
-    });
-    button.addEventListener('click', async () => {
-      const zip = normalizedZip();
-      if (!/^\\d{7}$/.test(zip)) {
-        status.textContent = messages[400];
-        zipInput?.focus();
-        return;
-      }
-      controller?.abort();
-      controller = new AbortController();
-      const current = ++generation;
-      requestedZip = zip;
-      const isCurrent = () => current === generation && normalizedZip() === zip;
-      button.disabled = true;
-      status.textContent = '住所を検索しています';
-      try {
-        const response = await fetch('/api/postal-lookup?zip=' + encodeURIComponent(zip), {
-          signal: controller.signal,
-          headers: { Accept: 'application/json' },
-        });
-        if (!isCurrent()) return;
-        if (!response.ok) throw Object.assign(new Error('postal lookup failed'), { status: response.status });
-        const address = await response.json();
-        if (!isCurrent()) return;
-        const values = [
-          [button.dataset.prefField, address.pref],
-          [button.dataset.cityField, address.city],
-          [button.dataset.townField, address.town],
-        ];
-        for (const [targetId, value] of values) {
-          const target = field(targetId);
-          if (!target || typeof value !== 'string' || manuallyEdited.has(targetId)) continue;
-          const previous = autofilledValues.get(targetId);
-          const restored = restoredValues.get(targetId);
-          const correctedRestoredValue = initialZip && zip !== initialZip
-            && restored !== undefined && target.value === restored;
-          if (!target.value || (previous !== undefined && target.value === previous) || correctedRestoredValue) {
-            target.value = value;
-            autofilledValues.set(targetId, value);
-          } else if (previous !== undefined) {
-            autofilledValues.delete(targetId);
-          }
-        }
-        completedZip = zip;
-        status.textContent = '住所を入力しました';
-        document.querySelector('[data-internal-form]')?.dispatchEvent(new Event('change', { bubbles: true }));
-      } catch (error) {
-        if (error?.name === 'AbortError' || !isCurrent()) return;
-        status.textContent = messages[error?.status] ?? '住所検索に失敗しました。住所を直接入力してください';
-      } finally {
-        if (current === generation) {
-          controller = null;
-          requestedZip = null;
-          button.disabled = false;
-        }
-      }
-    });
-  });
-})();
-</script>`;
-}
-
 function renderFormPage(
   form: FormalooForm,
   definition: InternalFormDefinition,
@@ -888,8 +782,7 @@ function renderFormPage(
       </form>
     </div>
     ${runtimeScript()}
-    ${usesLogicRuntime ? logicClientMarkup(definition) : ''}
-    ${hasPostal ? postalClientScript() : ''}`, definition.design);
+    ${usesLogicRuntime || hasPostal ? logicClientMarkup(definition) : ''}`, definition.design);
 }
 
 function renderCompletion(

@@ -16,6 +16,15 @@ export interface InternalFormLogicState {
 type LogicField = Pick<HarnessField, 'id' | 'position' | 'type'>;
 
 /**
+ * 郵便番号検索へ渡す値だけを正規化する。入力欄の表示値は呼び出し側で保持する。
+ */
+export function normalizePostalLookupCode(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[０-９]/g, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0))
+    .replace(/[\s\-－ー−‐‑]/g, '');
+}
+
+/**
  * Internal 公開画面と builder preview が共有する分岐評価器。
  *
  * 公開画面のビルド済み client asset と React preview の両方が、この module を

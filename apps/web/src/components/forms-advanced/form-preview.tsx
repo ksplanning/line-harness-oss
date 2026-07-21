@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   DEFAULT_RATING_STAR_COLOR,
   DEFAULT_VIDEO_HEIGHT,
@@ -11,6 +11,7 @@ import {
 import {
   evaluateInternalFormLogic,
   nextInternalFormFieldId,
+  normalizePostalLookupCode,
 } from '@line-crm/shared/internal-form-logic'
 import type {
   HarnessField,
@@ -25,6 +26,13 @@ import type {
 import { fieldTypeIcon, isDecoration } from './field-types'
 
 const LINE_GREEN = '#06C755'
+const POSTAL_LOOKUP_MESSAGES: Record<number, string> = {
+  400: '郵便番号は半角数字7桁で入力してください',
+  404: '住所が見つかりませんでした',
+  409: '住所候補が複数あります。住所を直接入力してください',
+  429: '検索が混み合っています。少し待ってからお試しください',
+  503: '住所検索を一時的に利用できません。住所を直接入力してください',
+}
 
 function internalPreviewFont(presetId: string | undefined): string {
   if (presetId && ['dark-sumi', 'sand-washi', 'mono-ink', 'matcha-wa'].includes(presetId)) {
@@ -483,6 +491,7 @@ function PreviewField({
   ratingStarColor,
   answer,
   onAnswerChange,
+  postalLookup,
   internalRenderer,
 }: {
   field: HarnessField
@@ -493,6 +502,7 @@ function PreviewField({
   ratingStarColor?: string
   answer?: PreviewAnswer
   onAnswerChange?: (value: PreviewAnswer) => void
+  postalLookup?: { busy: boolean; message: string; run: () => void }
   internalRenderer?: boolean
 }) {
   const textStyle = textColor ? { color: textColor } : undefined
@@ -604,6 +614,20 @@ function PreviewField({
         nativeRequired={internalRenderer && field.required}
         internalRenderer={internalRenderer ?? false}
       />
+      {postalLookup && (
+        <div className="space-y-1">
+          <button
+            type="button"
+            disabled={postalLookup.busy}
+            onClick={postalLookup.run}
+            className="min-h-12 rounded-lg border px-4 py-2 text-sm font-bold disabled:cursor-wait disabled:opacity-60"
+            style={{ borderColor: themeColor, color: themeColor }}
+          >
+            郵便番号から住所を入力
+          </button>
+          <p aria-live="polite" className="text-xs text-gray-500" style={textStyle}>{postalLookup.message}</p>
+        </div>
+      )}
     </div>
   )
 }
@@ -629,12 +653,17 @@ export default function FormPreview({
   const hasPageBreak = fields.some((f) => f.type === 'page_break')
   const hasVariable = fields.some((field) => field.type === 'variable')
   const hasChoiceFetch = fields.some((field) => field.type === 'choice_fetch')
+  const hasPostalAutofill = fields.some((field) => Boolean(field.config.postalAutofill))
   const internalRenderer = renderBackend === 'internal' || internalLogicPreview
   const orderedFields = useMemo(() => [...fields].sort((a, b) => a.position - b.position), [fields])
   const [answers, setAnswers] = useState<Record<string, PreviewAnswer>>(() => initialPreviewAnswers(orderedFields))
   const [previewChannel, setPreviewChannel] = useState<InternalFormChannel>(initialPreviewChannel)
   const [previewValidationError, setPreviewValidationError] = useState<string | null>(null)
   const [previewSubmitted, setPreviewSubmitted] = useState(false)
+  const [postalLookupState, setPostalLookupState] = useState<Record<string, { busy: boolean; message: string }>>({})
+  const postalLookupGeneration = useRef<Record<string, number>>({})
+  const postalAutofilledValues = useRef<Record<string, Record<string, string>>>({})
+  const postalManuallyEdited = useRef<Record<string, Set<string>>>({})
   useEffect(() => {
     setAnswers((current) => {
       const sanitized = sanitizePreviewAnswers(orderedFields, current)
@@ -653,6 +682,75 @@ export default function FormPreview({
     () => evaluateInternalFormLogic(orderedFields, logic ?? [], effectiveAnswers, previewChannel),
     [orderedFields, logic, effectiveAnswers, previewChannel],
   )
+  const runPostalLookup = async (field: HarnessField): Promise<void> => {
+    const config = field.config.postalAutofill
+    if (!config) return
+    const answer = effectiveAnswers[config.zipField]
+    const rawZip = Array.isArray(answer) ? (answer[0] ?? '') : (answer ?? '')
+    const zip = normalizePostalLookupCode(rawZip)
+    const generation = (postalLookupGeneration.current[field.id] ?? 0) + 1
+    postalLookupGeneration.current[field.id] = generation
+    if (!/^\d{7}$/.test(zip)) {
+      setPostalLookupState((current) => ({
+        ...current,
+        [field.id]: { busy: false, message: POSTAL_LOOKUP_MESSAGES[400] },
+      }))
+      document.getElementById(`preview-control-${config.zipField}`)?.focus()
+      return
+    }
+    setPostalLookupState((current) => ({
+      ...current,
+      [field.id]: { busy: true, message: '住所を検索しています' },
+    }))
+    try {
+      const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? '').replace(/\/+$/, '')
+      const response = await fetch(`${apiBase}/api/postal-lookup?zip=${encodeURIComponent(zip)}`, {
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) throw Object.assign(new Error('postal lookup failed'), { status: response.status })
+      const address = await response.json() as Record<string, unknown>
+      if (postalLookupGeneration.current[field.id] !== generation) return
+      const values: Array<[string, unknown]> = [
+        [config.prefField, address.pref],
+        [config.cityField, address.city],
+        [config.townField, address.town],
+      ]
+      const autofilled = postalAutofilledValues.current[field.id] ?? {}
+      postalAutofilledValues.current[field.id] = autofilled
+      const manuallyEdited = postalManuallyEdited.current[field.id] ?? new Set<string>()
+      postalManuallyEdited.current[field.id] = manuallyEdited
+      setAnswers((current) => {
+        const updated = { ...current }
+        for (const [targetId, value] of values) {
+          if (manuallyEdited.has(targetId)) continue
+          const existing = current[targetId]
+          const empty = existing === undefined || existing === '' || (Array.isArray(existing) && existing.length === 0)
+          const previous = autofilled[targetId]
+          if (typeof value === 'string' && (empty || (previous !== undefined && existing === previous))) {
+            updated[targetId] = value
+            autofilled[targetId] = value
+          } else if (previous !== undefined) {
+            delete autofilled[targetId]
+          }
+        }
+        return updated
+      })
+      setPostalLookupState((current) => ({
+        ...current,
+        [field.id]: { busy: false, message: '住所を入力しました' },
+      }))
+    } catch (error) {
+      if (postalLookupGeneration.current[field.id] !== generation) return
+      const status = (error as { status?: number }).status ?? 0
+      setPostalLookupState((current) => ({
+        ...current,
+        [field.id]: {
+          busy: false,
+          message: POSTAL_LOOKUP_MESSAGES[status] ?? '住所検索に失敗しました。住所を直接入力してください',
+        },
+      }))
+    }
+  }
   const questionIds = logicState.visibleFieldIds.filter((id) => {
     const field = orderedFields.find((candidate) => candidate.id === id)
     return field ? !isDecoration(field.type) : false
@@ -718,6 +816,12 @@ export default function FormPreview({
     setPreviewChannel(initialPreviewChannel)
     setPreviewValidationError(null)
     setPreviewSubmitted(false)
+    setPostalLookupState({})
+    for (const fieldId of Object.keys(postalLookupGeneration.current)) {
+      postalLookupGeneration.current[fieldId] += 1
+    }
+    postalAutofilledValues.current = {}
+    postalManuallyEdited.current = {}
     setCurrentFieldId(orderedFields.find((field) => !isDecoration(field.type))?.id ?? null)
   }
   const completionPage = logicState.completionPageId
@@ -833,9 +937,38 @@ export default function FormPreview({
               answer={internalLogicPreview ? effectiveAnswers[field.id] : undefined}
               onAnswerChange={internalLogicPreview
                 ? (answer) => {
+                  for (const sourceField of orderedFields) {
+                    const config = sourceField.config.postalAutofill
+                    if (!config) continue
+                    if ([config.prefField, config.cityField, config.townField].includes(field.id)) {
+                      const manuallyEdited = postalManuallyEdited.current[sourceField.id] ?? new Set<string>()
+                      manuallyEdited.add(field.id)
+                      postalManuallyEdited.current[sourceField.id] = manuallyEdited
+                      delete postalAutofilledValues.current[sourceField.id]?.[field.id]
+                    }
+                  }
                   setAnswers((current) => ({ ...current, [field.id]: answer }))
                   setPreviewSubmitted(false)
+                  if (field.config.postalAutofill) {
+                    postalLookupGeneration.current[field.id] = (postalLookupGeneration.current[field.id] ?? 0) + 1
+                    setPostalLookupState((current) => ({
+                      ...current,
+                      [field.id]: {
+                        busy: false,
+                        message: current[field.id]?.message
+                          ? '郵便番号が変更されました。もう一度検索してください'
+                          : '',
+                      },
+                    }))
+                  }
                   if (!isMultiStep || field.id === effectiveCurrentFieldId) setPreviewValidationError(null)
+                }
+                : undefined}
+              postalLookup={internalLogicPreview && field.config.postalAutofill
+                ? {
+                  busy: postalLookupState[field.id]?.busy ?? false,
+                  message: postalLookupState[field.id]?.message ?? '',
+                  run: () => { void runPostalLookup(field) },
                 }
                 : undefined}
               internalRenderer={internalRenderer}
@@ -969,7 +1102,9 @@ export default function FormPreview({
           </p>
           <p>
             {internalLogicPreview
-              ? 'このプレビューでは入力と条件分岐を本番と同じ判定で試せます（入力内容はどこにも送信されません）。'
+              ? hasPostalAutofill
+                ? 'このプレビューでは入力と条件分岐を本番と同じ判定で試せます。入力内容は保存・送信されず、住所検索を押した時だけ郵便番号を検索APIへ送ります。'
+                : 'このプレビューでは入力と条件分岐を本番と同じ判定で試せます（入力内容はどこにも送信されません）。'
               : 'このプレビューでは入力を試せます（入力内容はどこにも送信されません）。条件分岐・送信などの実際の動作は公開フォームで動きます。'}
           </p>
         </div>

@@ -25,7 +25,7 @@ function importSourceFor(source: string, symbol: string): string | null {
 }
 
 describe('internal form logic import wire', () => {
-  test.each(['evaluateInternalFormLogic', 'nextInternalFormFieldId'])(
+  test.each(['evaluateInternalFormLogic', 'nextInternalFormFieldId', 'normalizePostalLookupCode'])(
     'published client and preview import %s from the exact shared engine module',
     (symbol) => {
       expect(importSourceFor(publicClientSource, symbol)).toBe('@line-crm/shared/internal-form-logic');
@@ -36,5 +36,6 @@ describe('internal form logic import wire', () => {
   test('public route never serializes shared logic functions into HTML', () => {
     expect(publicRouteSource).not.toContain('evaluateInternalFormLogic.toString()');
     expect(publicRouteSource).not.toContain('nextInternalFormFieldId.toString()');
+    expect(publicRouteSource).not.toContain('normalizePostalLookupCode.toString()');
   });
 });

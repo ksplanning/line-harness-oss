@@ -290,14 +290,10 @@ describe('internal public form GET /f/:formId', () => {
     expect(html).toContain('@media (min-width: 600px)');
     expect(html).toContain('type="button" class="postal-lookup"');
     expect(html).toContain('aria-live="polite"');
-    expect(html).toContain('/api/postal-lookup?zip=');
-    expect(html).toContain("replace(/[\\s-]/g, '')");
-    expect(html).toContain('AbortController');
-    expect(html).toContain('const autofilledValues = new Map()');
-    expect(html).toContain('previous !== undefined && target.value === previous');
-    for (const status of ['400', '404', '409', '429', '503']) {
-      expect(html).toContain(`${status}:`);
-    }
+    expect(html).toContain('data-internal-form-logic-config');
+    expect(html).toContain('src="/assets/internal-form-logic.js"');
+    expect(html).not.toContain('postal lookup failed');
+    expect(html).not.toContain("replace(/[\\s-]/g, '')");
   });
 
   test('ships the same internal logic engine for one-page ABC and channel branching', async () => {

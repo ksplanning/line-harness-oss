@@ -4,6 +4,7 @@ import {
   INTERNAL_FORM_CHANNEL_SOURCE_ID,
   evaluateInternalFormLogic,
   nextInternalFormFieldId,
+  normalizePostalLookupCode,
 } from './internal-form-logic.js';
 
 const fields: HarnessField[] = [
@@ -24,6 +25,27 @@ const abcLogic: HarnessLogicRule[] = [
   { id: 'submit-b', sourceFieldId: 'b-name', operator: 'equals', value: '', action: 'submit', targetFieldId: 'done-b', terminalTrigger: 'on_answered' },
   { id: 'submit-c', sourceFieldId: 'c-name', operator: 'equals', value: '', action: 'submit', targetFieldId: 'done-c', terminalTrigger: 'on_answered' },
 ];
+
+describe('normalizePostalLookupCode', () => {
+  test('全角数字を半角数字へ変換する', () => {
+    expect(normalizePostalLookupCode('０１２３４５６７８９')).toBe('0123456789');
+  });
+
+  test.each(['-', '－', 'ー', '−', '‐', '‑'])(
+    '検索用の区切り %s を除去する',
+    (separator) => {
+      expect(normalizePostalLookupCode(`１２３${separator}４５６７`)).toBe('1234567');
+    },
+  );
+
+  test('半角・全角の空白を除去する', () => {
+    expect(normalizePostalLookupCode(' １\t２　３\n４ ５６７ ')).toBe('1234567');
+  });
+
+  test.each(['１２３－４５Ａ７', '１２３－４５６'])('推測補完せず不正な値を不正なまま残す: %s', (value) => {
+    expect(normalizePostalLookupCode(value)).not.toMatch(/^\d{7}$/);
+  });
+});
 
 describe('evaluateInternalFormLogic', () => {
   test('一覧形式でも回答に応じて ABC の対象セクションだけを同一ページに出す', () => {

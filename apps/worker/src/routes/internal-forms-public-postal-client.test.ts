@@ -74,16 +74,17 @@ async function mountPostalPage(initialValues: Partial<Record<'zip' | 'pref' | 'c
   expect(response.status).toBe(200);
 
   const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
-  const script = Array.from(parsed.querySelectorAll('script'))
-    .find((candidate) => candidate.textContent?.includes('postal lookup failed'));
-  expect(script, '郵便番号補完のクライアントスクリプト').toBeTruthy();
+  const client = parsed.querySelector<HTMLScriptElement>('script[data-internal-form-logic-client]');
+  expect(client?.getAttribute('src'), '郵便番号補完のクライアントasset').toBe('/assets/internal-form-logic.js');
+  expect(Array.from(parsed.querySelectorAll('script'))
+    .some((candidate) => candidate.textContent?.includes('postal lookup failed'))).toBe(false);
 
   document.body.innerHTML = parsed.body.innerHTML;
   for (const [id, value] of Object.entries(initialValues)) {
     const control = document.querySelector(`[data-answer-field="${id}"]`) as HTMLInputElement | null;
     if (control) control.value = value;
   }
-  window.eval(script!.textContent ?? '');
+  initInternalFormLogic();
 
   const input = (id: string) => document.querySelector(`[data-answer-field="${id}"]`) as HTMLInputElement;
   return {
@@ -128,6 +129,38 @@ describe('internal form postal autofill client', () => {
     expect(controls.city.value).toBe('高槻市');
     expect(controls.town.value).toBe('町域A');
     expect(controls.button.disabled).toBe(false);
+  });
+
+  test('全角数字と全ハイフン変種を検索用だけ半角7桁にし、入力欄は書き換えない', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {
+      pref: '東京都', city: '千代田区', town: '千代田',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controls = await mountPostalPage();
+    const rawZip = '１－２ー３−４‐５‑６-７';
+
+    controls.zip.value = rawZip;
+    controls.button.click();
+
+    await vi.waitFor(() => expect(controls.status.textContent).toBe('住所を入力しました'));
+    expect(fetchMock).toHaveBeenCalledWith('/api/postal-lookup?zip=1234567', expect.any(Object));
+    expect(controls.zip.value).toBe(rawZip);
+    expect(controls.pref.value).toBe('東京都');
+  });
+
+  test('変換後も7桁数字でない入力は推測せず従来エラーにし、APIを呼ばない', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const controls = await mountPostalPage();
+    const rawZip = '１２３－４５Ａ７';
+
+    controls.zip.value = rawZip;
+    controls.button.click();
+
+    expect(controls.status.textContent).toBe('郵便番号は半角数字7桁で入力してください');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(controls.zip.value).toBe(rawZip);
+    expect(document.activeElement).toBe(controls.zip);
   });
 
   test('既に入力された住所は上書きせず、空欄だけを補完する', async () => {
