@@ -318,6 +318,7 @@ export async function createInternalFormSubmissionForPublishedDefinition(
     definitionJson: string;
     friendId?: string | null;
     answers: Record<string, unknown>;
+    originChannel?: InternalFormOriginChannel;
     maxSubmissions?: number;
     submitStartTime: string | null;
     submitEndTime: string | null;
@@ -333,8 +334,8 @@ export async function createInternalFormSubmissionForPublishedDefinition(
   const result = await db
     .prepare(
       `INSERT INTO internal_form_submissions
-         (id, form_id, friend_id, answers_json, submitted_at, created_at)
-       SELECT ?, ?, ?, ?, ?, ?
+         (id, form_id, friend_id, answers_json, origin_channel, submitted_at, created_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?
        WHERE EXISTS (
          SELECT 1 FROM formaloo_forms
          WHERE id = ? AND deleted = 0 AND render_backend = 'internal'
@@ -351,6 +352,7 @@ export async function createInternalFormSubmissionForPublishedDefinition(
       input.formId,
       input.friendId ?? null,
       answersJson,
+      input.originChannel ?? 'embed',
       now,
       now,
       input.formId,
@@ -372,6 +374,8 @@ export async function createInternalFormSubmissionForPublishedDefinition(
     form_id: input.formId,
     friend_id: input.friendId ?? null,
     answers_json: answersJson,
+    origin_channel: input.originChannel ?? 'embed',
+    edit_version: 0,
     submitted_at: now,
     created_at: now,
   };
