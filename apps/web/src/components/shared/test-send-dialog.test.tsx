@@ -171,6 +171,32 @@ describe('TestSendDialog', () => {
     expect(screen.queryByText('1件の送信先へテスト送信しました')).toBeNull()
   })
 
+  it('accepts an idempotent replay backed by a legacy result without sentUserIds', async () => {
+    getTestRecipients.mockResolvedValue({
+      success: true,
+      data: [{ id: 'friend-1', displayName: 'テスター', pictureUrl: null }],
+    })
+    sendTest.mockResolvedValue({
+      success: true,
+      sent: 1,
+      failed: 0,
+      sentUserIds: [],
+      deduplicated: true,
+    })
+
+    render(
+      <TestSendDialog
+        accountIds={['acc-1']}
+        source="scenario"
+        messages={[{ type: 'text', content: '確認' }]}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'テスト送信' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'テスト送信する' }))
+
+    await waitFor(() => expect(screen.getByText('テスト送信済みです。過去の保存結果には送信先userIdの記録がありません')).toBeTruthy())
+  })
+
   it('shows a retryable error when recipient settings cannot be loaded', async () => {
     getTestRecipients.mockRejectedValue(new Error('network'))
     render(

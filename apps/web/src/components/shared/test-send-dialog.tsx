@@ -137,12 +137,24 @@ export default function TestSendDialog({
         return response
       }))
       const sentUserIds: string[] = []
+      let hasLegacyReplayWithoutUserIds = false
       let failed = 0
       let firstError: unknown = null
       outcomes.forEach((outcome, index) => {
         if (outcome.status === 'fulfilled') {
           const responseSentUserIds = outcome.value.sentUserIds
           const responseSent = outcome.value.sent ?? responseSentUserIds?.length ?? 0
+          const isLegacyReplayWithoutUserIds = outcome.value.deduplicated === true
+            && responseSent > 0
+            && (
+              responseSentUserIds === undefined
+              || (Array.isArray(responseSentUserIds) && responseSentUserIds.length === 0)
+            )
+          if (isLegacyReplayWithoutUserIds) {
+            hasLegacyReplayWithoutUserIds = true
+            failed += outcome.value.failed ?? 0
+            return
+          }
           if (
             !Array.isArray(responseSentUserIds)
             || responseSentUserIds.some((userId) => typeof userId !== 'string')
@@ -167,11 +179,15 @@ export default function TestSendDialog({
             : errorMessage(firstError, `${failed}件のテスト送信に失敗しました`),
         })
       } else if (sentUserIds.length === 0) {
-        setResult({ kind: 'error', message: '送信結果に送信先userIdが含まれていません' })
+        setResult(hasLegacyReplayWithoutUserIds
+          ? { kind: 'success', message: 'テスト送信済みです。過去の保存結果には送信先userIdの記録がありません' }
+          : { kind: 'error', message: '送信結果に送信先userIdが含まれていません' })
       } else {
         setResult({
           kind: 'success',
-          message: `テスト送信しました。送信先userId: ${sentUserIds.join(', ')}`,
+          message: hasLegacyReplayWithoutUserIds
+            ? `テスト送信しました。送信先userId: ${sentUserIds.join(', ')}。一部の過去の保存結果にはuserIdの記録がありません`
+            : `テスト送信しました。送信先userId: ${sentUserIds.join(', ')}`,
         })
       }
     } catch (error) {
