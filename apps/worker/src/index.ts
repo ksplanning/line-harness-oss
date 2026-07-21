@@ -532,6 +532,14 @@ app.post(RICH_MENU_RULE_WORK_PATH, async (c) => {
       console.log(
         `[rich-menu-rules] attempted=${result.attempted} queue=${result.queueProcessed} jobsCompleted=${result.jobsCompleted}`,
       );
+      // A foreign-link sweep is intentionally split to stay within one
+      // invocation's LINE/subrequest budget. Continue immediately instead of
+      // making the owner wait for the next five-minute cron tick.
+      c.executionCtx.waitUntil(
+        dispatchRichMenuRuleWork(c.env).catch(() => {
+          console.error('[rich-menu-rules] continuation dispatch error');
+        }),
+      );
     }
     return c.body(null, 204);
   } catch {

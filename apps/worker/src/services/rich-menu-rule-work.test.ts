@@ -53,15 +53,38 @@ function d1(db: Database.Database): D1Database {
 let raw: Database.Database;
 let db: D1Database;
 
-function seedFriends(count: number, accountId = 'acc-1'): void {
+function seedFriends(
+  count: number,
+  accountId = 'acc-1',
+  friendPrefix = 'friend',
+  userPrefix = 'U',
+): void {
   const insert = raw.prepare(
     `INSERT INTO friends (id, line_user_id, line_account_id, metadata, is_following)
      VALUES (?, ?, ?, '{}', 1)`,
   );
   for (let index = 0; index < count; index++) {
-    const id = `friend-${String(index).padStart(3, '0')}`;
-    insert.run(id, `U${index}`, accountId);
+    const id = `${friendPrefix}-${String(index).padStart(3, '0')}`;
+    insert.run(id, `${userPrefix}${index}`, accountId);
   }
+}
+
+function seedAccountDefault(
+  richMenuId = 'menu-default',
+  accountId = 'acc-1',
+  suffix = 'default',
+): void {
+  raw.prepare(
+    `INSERT INTO rich_menu_groups
+     (id, account_id, name, chat_bar_text, size, is_default_for_all, status)
+     VALUES (?, ?, '既定', 'メニュー', 'large', 1, 'published')`,
+  ).run(`group-${suffix}`, accountId);
+  raw.prepare(
+    `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+     VALUES (?, ?, 0, 'ホーム', ?, ?)`,
+  ).run(`page-${suffix}`, `group-${suffix}`, `alias-${suffix}`, richMenuId);
+  raw.prepare('UPDATE rich_menu_groups SET default_page_id = ? WHERE id = ?')
+    .run(`page-${suffix}`, `group-${suffix}`);
 }
 
 function bulkLineDouble(options: {
@@ -70,6 +93,7 @@ function bulkLineDouble(options: {
   initialMenus?: Record<string, string | null>;
   invalidUserIndexesOnce?: number[];
   forbidVerification?: boolean;
+  afterVerification?: (userId: string) => void;
 } = {}) {
   const currentMenus = new Map<string, string | null>(Object.entries(options.initialMenus ?? {}));
   const bulkFailureStatuses = [...(options.bulkFailureStatuses ?? [])];
@@ -114,6 +138,7 @@ function bulkLineDouble(options: {
     },
     async getRichMenuIdOfUser(userId: string) {
       verificationCalls.push(userId);
+      options.afterVerification?.(userId);
       if (options.forbidVerification) throw new Error('per-user verification exceeds the Worker budget');
       const richMenuId = currentMenus.get(userId) ?? null;
       if (richMenuId === null) throw new LineApiError(404, 'Not Found', '{}');
@@ -297,6 +322,240 @@ describe('rich menu rule reapply jobs', () => {
     expect(line.individualUnlinks).toEqual([]);
     expect(raw.prepare('SELECT COUNT(*) AS count FROM rich_menu_friend_assignments').get())
       .toEqual({ count: 0 });
+  });
+
+  test('bulk reapply verifies unmanaged links and reports foreign unlinks separately from no-ops', async () => {
+    seedFriends(3);
+    seedAccountDefault();
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({
+      initialMenus: { U0: 'menu-legacy', U1: 'menu-default', U2: null },
+    });
+
+    await processRichMenuRuleWork(db, {
+      limit: 3,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+
+    expect(line.verificationCalls).toEqual(['U0', 'U1', 'U2']);
+    expect(line.bulkUnlinks).toEqual([['U0']]);
+    expect(line.individualUnlinks).toEqual([]);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'completed',
+      processedCount: 3,
+      appliedCount: 0,
+      foreignUnlinkedCount: 1,
+      skippedCount: 2,
+      failedCount: 0,
+    });
+  });
+
+  test('bulk rechecks the default after LINE lookup and never unlinks a newly matching menu', async () => {
+    seedFriends(1);
+    seedAccountDefault();
+    raw.prepare(
+      `INSERT INTO rich_menu_groups
+       (id, account_id, name, chat_bar_text, size, default_page_id, is_default_for_all, status)
+       VALUES ('group-new', 'acc-1', '新既定', 'メニュー', 'large', 'page-new', 0, 'published')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+       VALUES ('page-new', 'group-new', 0, 'ホーム', 'alias-new', 'menu-new')`,
+    ).run();
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({
+      initialMenus: { U0: 'menu-new' },
+      afterVerification() {
+        raw.prepare(
+          `UPDATE rich_menu_groups
+           SET is_default_for_all = CASE WHEN id = 'group-new' THEN 1 ELSE 0 END
+           WHERE account_id = 'acc-1'`,
+        ).run();
+      },
+    });
+
+    await processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+
+    expect(line.verificationCalls).toEqual(['U0']);
+    expect(line.bulkUnlinks).toEqual([]);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'completed', foreignUnlinkedCount: 0, skippedCount: 1, failedCount: 0,
+    });
+  });
+
+  test('an unmanaged bulk unlink exhausts existing retries and is counted failed', async () => {
+    seedFriends(1);
+    seedAccountDefault();
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({
+      initialMenus: { U0: 'menu-legacy' },
+      bulkFailureStatuses: [503, 503, 503],
+    });
+
+    await processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+
+    expect(line.verificationCalls).toEqual(['U0']);
+    expect(line.bulkUnlinks).toHaveLength(3);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'running', processedCount: 1, foreignUnlinkedCount: 0, failedCount: 1,
+    });
+  });
+
+  test('foreign verification respects its invocation budget without failing or advancing the unchecked suffix', async () => {
+    seedFriends(5);
+    seedAccountDefault();
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    const line = bulkLineDouble({
+      initialMenus: { U0: 'old', U1: 'old', U2: 'old', U3: 'old', U4: 'old' },
+    });
+    const run = () => processRichMenuRuleWork(db, {
+      limit: 5,
+      clientFactory: line.factory,
+      bulkOptions: {
+        sleep: async () => undefined,
+        retryAttempts: 1,
+        verificationMaxSubrequests: 2,
+      },
+    } as never);
+
+    expect(await run()).toEqual({ attempted: 2, queueProcessed: 0, jobsCompleted: 0 });
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'running', processedCount: 2, foreignUnlinkedCount: 2, failedCount: 0,
+    });
+    expect(await run()).toEqual({ attempted: 2, queueProcessed: 0, jobsCompleted: 0 });
+    expect(await run()).toEqual({ attempted: 1, queueProcessed: 0, jobsCompleted: 1 });
+    expect(line.bulkUnlinks).toEqual([['U0', 'U1'], ['U2', 'U3'], ['U4']]);
+    expect((await getLatestRichMenuRuleReapplyJob(db, 'acc-1'))?.foreignUnlinkedCount).toBe(5);
+  });
+
+  test('shares the foreign verification budget across every account in one invocation', async () => {
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-2', 'channel-2', 'B', 'account-token-2', 'secret-2')`,
+    ).run();
+    seedFriends(2);
+    seedFriends(2, 'acc-2', 'friend-second', 'V');
+    seedAccountDefault();
+    seedAccountDefault('menu-default-2', 'acc-2', 'second');
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    raw.prepare(
+      "UPDATE rich_menu_rule_reapply_jobs SET created_at = '2000-01-01T00:00:00.000' WHERE account_id = 'acc-1'",
+    ).run();
+    await createRichMenuRuleReapplyJob(db, 'acc-2');
+    const line = bulkLineDouble({
+      initialMenus: { U0: 'old', U1: 'old', V0: 'old', V1: 'old' },
+    });
+    const run = () => processRichMenuRuleWork(db, {
+      limit: 4,
+      clientFactory: line.factory,
+      bulkOptions: {
+        sleep: async () => undefined,
+        retryAttempts: 1,
+        verificationMaxSubrequests: 2,
+      },
+    } as never);
+
+    expect(await run()).toEqual({ attempted: 2, queueProcessed: 0, jobsCompleted: 1 });
+    expect(line.verificationCalls).toEqual(['U0', 'U1']);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-1')).toMatchObject({
+      status: 'completed', processedCount: 2, foreignUnlinkedCount: 2, failedCount: 0,
+    });
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-2')).toMatchObject({
+      status: 'running', processedCount: 0, foreignUnlinkedCount: 0, failedCount: 0,
+    });
+
+    expect(await run()).toEqual({ attempted: 2, queueProcessed: 0, jobsCompleted: 1 });
+    expect(line.verificationCalls).toEqual(['U0', 'U1', 'V0', 'V1']);
+    expect(await getLatestRichMenuRuleReapplyJob(db, 'acc-2')).toMatchObject({
+      status: 'completed', processedCount: 2, foreignUnlinkedCount: 2, failedCount: 0,
+    });
+  });
+
+  test('leaves ready foreign queue work untouched after jobs consume the invocation budget', async () => {
+    raw.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES ('acc-2', 'channel-2', 'B', 'account-token-2', 'secret-2')`,
+    ).run();
+    seedFriends(2);
+    seedFriends(1, 'acc-2', 'friend-second', 'V');
+    seedAccountDefault();
+    seedAccountDefault('menu-default-2', 'acc-2', 'second');
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    raw.prepare(
+      `INSERT INTO rich_menu_rule_evaluation_queue (friend_id)
+       VALUES ('friend-second-000')`,
+    ).run();
+    const initialQueue = raw.prepare(
+      `SELECT attempts, revision, lease_token
+       FROM rich_menu_rule_evaluation_queue WHERE friend_id = 'friend-second-000'`,
+    ).get();
+    const line = bulkLineDouble({ initialMenus: { U0: 'old', U1: 'old', V0: 'old' } });
+    const run = () => processRichMenuRuleWork(db, {
+      limit: 3,
+      clientFactory: line.factory,
+      bulkOptions: {
+        sleep: async () => undefined,
+        retryAttempts: 1,
+        verificationMaxSubrequests: 2,
+      },
+    } as never);
+
+    expect(await run()).toEqual({ attempted: 2, queueProcessed: 0, jobsCompleted: 1 });
+    expect(line.verificationCalls).toEqual(['U0', 'U1']);
+    expect(raw.prepare(
+      `SELECT attempts, revision, lease_token
+       FROM rich_menu_rule_evaluation_queue WHERE friend_id = 'friend-second-000'`,
+    ).get()).toEqual(initialQueue);
+
+    expect(await run()).toEqual({ attempted: 1, queueProcessed: 1, jobsCompleted: 0 });
+    expect(line.verificationCalls).toEqual(['U0', 'U1', 'V0']);
+    expect(line.bulkUnlinks).toEqual([['U0', 'U1'], ['V0']]);
+  });
+
+  test('reapplying after a foreign unlink is idempotent and never writes messages_log', async () => {
+    seedFriends(1);
+    seedAccountDefault();
+    raw.prepare(
+      `INSERT INTO messages_log (id, friend_id, direction, message_type, content, delivery_type, source)
+       VALUES ('message-before', 'friend-000', 'incoming', 'text', 'before', 'reply', 'webhook')`,
+    ).run();
+    const messagesBefore = raw.prepare('SELECT COUNT(*) AS count FROM messages_log').get();
+    const line = bulkLineDouble({ initialMenus: { U0: 'menu-legacy' } });
+
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    await processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+    const first = await getLatestRichMenuRuleReapplyJob(db, 'acc-1');
+    raw.prepare("UPDATE rich_menu_rule_reapply_jobs SET created_at = '2000-01-01T00:00:00.000'").run();
+
+    await createRichMenuRuleReapplyJob(db, 'acc-1');
+    await processRichMenuRuleWork(db, {
+      limit: 1,
+      clientFactory: line.factory,
+      bulkOptions: { sleep: async () => undefined },
+    } as never);
+    const second = await getLatestRichMenuRuleReapplyJob(db, 'acc-1');
+
+    expect(line.bulkUnlinks).toEqual([['U0']]);
+    expect(line.verificationCalls).toEqual(['U0', 'U0']);
+    expect(first).toMatchObject({ status: 'completed', foreignUnlinkedCount: 1, failedCount: 0 });
+    expect(second).toMatchObject({
+      status: 'completed', foreignUnlinkedCount: 0, skippedCount: 1, failedCount: 0,
+    });
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM messages_log').get()).toEqual(messagesBefore);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM rich_menu_friend_assignments').get()).toEqual({ count: 0 });
   });
 
   test('continues a pre-deploy 20-friend cursor and bulk-applies only the remaining friends', async () => {

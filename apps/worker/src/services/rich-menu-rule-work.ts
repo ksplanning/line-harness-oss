@@ -1,6 +1,7 @@
 import { LineApiError, LineClient } from '@line-crm/line-sdk';
 import {
   applyRichMenuRulesForFriend,
+  getAccountDefaultRichMenuId,
   prepareRichMenuRulesForBatch,
   settleRichMenuRuleMutationBatch,
   type RichMenuRuleApplyResult,
@@ -17,6 +18,7 @@ export interface RichMenuRuleReapplyJob {
   totalCount: number;
   processedCount: number;
   appliedCount: number;
+  foreignUnlinkedCount: number;
   skippedCount: number;
   failedCount: number;
   lastFriendId: string | null;
@@ -48,6 +50,10 @@ function serializeJob(row: RichMenuRuleReapplyJobRow): RichMenuRuleReapplyJob {
     totalCount: row.total_count,
     processedCount: row.processed_count,
     appliedCount: row.applied_count,
+    foreignUnlinkedCount: Math.max(
+      0,
+      row.processed_count - row.applied_count - row.skipped_count - row.failed_count,
+    ),
     skippedCount: row.skipped_count,
     failedCount: row.failed_count,
     lastFriendId: row.last_friend_id,
@@ -85,6 +91,9 @@ const LINE_RETRY_ATTEMPTS = 3;
 // lower local ceiling bounds retry/error expansion inside that dedicated budget.
 // https://developers.cloudflare.com/workers/platform/limits/#subrequests
 const LINE_SUBREQUEST_BUDGET = 9;
+// Keep the complete invocation below the Free Worker ceiling: at most 39
+// verification GETs + 9 mutation requests + 1 self-dispatch = 49 requests.
+const LINE_FOREIGN_VERIFY_SUBREQUEST_BUDGET = 39;
 
 interface RichMenuRuleRequestCounter {
   used: number;
@@ -97,7 +106,24 @@ export interface RichMenuRuleBulkOptions {
   retryBaseMs?: number;
   retryAttempts?: number;
   maxSubrequests?: number;
+  verificationMaxSubrequests?: number;
   requestCounter?: RichMenuRuleRequestCounter;
+  verificationRequestCounter?: RichMenuRuleRequestCounter;
+}
+
+function remainingForeignVerificationCapacity(options: RichMenuRuleBulkOptions): number {
+  const retryAttempts = Math.max(
+    1,
+    Math.trunc(options.retryAttempts ?? LINE_RETRY_ATTEMPTS),
+  );
+  const maxSubrequests = Math.max(
+    0,
+    Math.trunc(
+      options.verificationMaxSubrequests ?? LINE_FOREIGN_VERIFY_SUBREQUEST_BUDGET,
+    ),
+  );
+  const used = options.verificationRequestCounter?.used ?? 0;
+  return Math.floor(Math.max(0, maxSubrequests - used) / retryAttempts);
 }
 
 interface RichMenuRuleWorkOptions {
@@ -249,8 +275,11 @@ export async function createRichMenuRuleReapplyJob(
   return (await getLatestRichMenuRuleReapplyJob(db, accountId))!;
 }
 
-function resultBucket(result: RichMenuRuleApplyResult): 'applied' | 'skipped' | 'failed' {
+function resultBucket(
+  result: RichMenuRuleApplyResult,
+): 'applied' | 'foreign_unlinked' | 'skipped' | 'failed' {
   if (result.status === 'applied' || result.status === 'reverted') return 'applied';
+  if (result.status === 'foreign_unlinked') return 'foreign_unlinked';
   if (result.status === 'failed') return 'failed';
   return 'skipped';
 }
@@ -379,6 +408,7 @@ function failedUserIndexes(error: unknown, userCount: number): number[] {
 }
 
 async function executeRichMenuMutations(
+  db: D1Database,
   mutations: RichMenuRulePendingMutation[],
   clientFactory: RichMenuRuleLineClientFactory,
   bulkOptions: RichMenuRuleBulkOptions = {},
@@ -389,9 +419,19 @@ async function executeRichMenuMutations(
   ));
   const requestIntervalMs = bulkOptions.requestIntervalMs ?? LINE_SAFE_REQUEST_INTERVAL_MS;
   const retryBaseMs = bulkOptions.retryBaseMs ?? LINE_RETRY_BASE_MS;
-  const retryAttempts = bulkOptions.retryAttempts ?? LINE_RETRY_ATTEMPTS;
+  const retryAttempts = Math.max(
+    1,
+    Math.trunc(bulkOptions.retryAttempts ?? LINE_RETRY_ATTEMPTS),
+  );
   const maxSubrequests = bulkOptions.maxSubrequests ?? LINE_SUBREQUEST_BUDGET;
+  const verificationMaxSubrequests = Math.max(
+    0,
+    Math.trunc(
+      bulkOptions.verificationMaxSubrequests ?? LINE_FOREIGN_VERIFY_SUBREQUEST_BUDGET,
+    ),
+  );
   const requestCounter = bulkOptions.requestCounter ?? { used: 0 };
+  const verificationRequestCounter = bulkOptions.verificationRequestCounter ?? { used: 0 };
   const paced = async <T>(request: () => Promise<T>): Promise<T> => {
     if (requestCounter.used >= maxSubrequests) {
       throw new RangeError('rich-menu LINE subrequest budget exhausted');
@@ -401,11 +441,23 @@ async function executeRichMenuMutations(
     requestCounter.used++;
     return request();
   };
-  const requestWithRetry = async <T>(request: () => Promise<T>): Promise<T> => {
+  const verificationPaced = async <T>(request: () => Promise<T>): Promise<T> => {
+    if (verificationRequestCounter.used >= verificationMaxSubrequests) {
+      throw new RangeError('rich-menu verification subrequest budget exhausted');
+    }
+    if (verificationRequestCounter.started && requestIntervalMs > 0) await sleep(requestIntervalMs);
+    verificationRequestCounter.started = true;
+    verificationRequestCounter.used++;
+    return request();
+  };
+  const withRetry = async <T>(
+    request: () => Promise<T>,
+    pacedRequest: (request: () => Promise<T>) => Promise<T>,
+  ): Promise<T> => {
     let lastError: unknown;
     for (let attempt = 0; attempt < retryAttempts; attempt++) {
       try {
-        return await paced(request);
+        return await pacedRequest(request);
       } catch (error) {
         lastError = error;
         if (!isRetryableLineError(error) || attempt === retryAttempts - 1) throw error;
@@ -414,6 +466,10 @@ async function executeRichMenuMutations(
     }
     throw lastError;
   };
+  const requestWithRetry = <T>(request: () => Promise<T>): Promise<T> => withRetry(request, paced);
+  const verificationRequestWithRetry = <T>(request: () => Promise<T>): Promise<T> => (
+    withRetry(request, verificationPaced)
+  );
   const clients = new Map<string, ReturnType<RichMenuRuleLineClientFactory>>();
   const getClient = (token: string) => {
     let client = clients.get(token);
@@ -424,6 +480,71 @@ async function executeRichMenuMutations(
     return client;
   };
   const outcomes = new Map<string, RichMenuRuleMutationOutcome>();
+  const readyMutations: RichMenuRulePendingMutation[] = [];
+  const verifiedForeignCurrent = new Map<string, string>();
+  for (const mutation of mutations) {
+    if (!mutation.foreignDefaultRichMenuId) {
+      readyMutations.push(mutation);
+      continue;
+    }
+    const client = getClient(mutation.channelAccessToken);
+    if (!client.getRichMenuIdOfUser) {
+      outcomes.set(mutation.friendId, {
+        mutation,
+        error: new Error('LINE rich menu lookup is unavailable'),
+        terminalFailure: true,
+      });
+      continue;
+    }
+    try {
+      const current = await verificationRequestWithRetry(
+        () => client.getRichMenuIdOfUser!(mutation.lineUserId),
+      );
+      verifiedForeignCurrent.set(mutation.friendId, current.richMenuId);
+      readyMutations.push(mutation);
+    } catch (error) {
+      if (error instanceof LineApiError && error.status === 404) {
+        outcomes.set(mutation.friendId, { mutation, verificationSkipped: true });
+      } else {
+        outcomes.set(mutation.friendId, {
+          mutation,
+          error,
+          terminalFailure: isTerminalLineError(error),
+        });
+      }
+    }
+  }
+  const latestForeignDefaultByAccount = new Map<string, string | null>();
+  const recheckedReadyMutations: RichMenuRulePendingMutation[] = [];
+  for (const mutation of readyMutations) {
+    if (!mutation.foreignDefaultRichMenuId) {
+      recheckedReadyMutations.push(mutation);
+      continue;
+    }
+    try {
+      if (!latestForeignDefaultByAccount.has(mutation.accountId)) {
+        latestForeignDefaultByAccount.set(
+          mutation.accountId,
+          await getAccountDefaultRichMenuId(
+            db,
+            mutation.accountId,
+            { onlyWithoutRules: true },
+          ),
+        );
+      }
+      const latestDefaultRichMenuId = latestForeignDefaultByAccount.get(mutation.accountId);
+      if (
+        !latestDefaultRichMenuId
+        || verifiedForeignCurrent.get(mutation.friendId) === latestDefaultRichMenuId
+      ) {
+        outcomes.set(mutation.friendId, { mutation, verificationSkipped: true });
+      } else {
+        recheckedReadyMutations.push(mutation);
+      }
+    } catch (error) {
+      outcomes.set(mutation.friendId, { mutation, error });
+    }
+  }
   const bulkGroups = new Map<string, {
     client: BulkCapableLineClient;
     action: 'link' | 'unlink';
@@ -431,7 +552,7 @@ async function executeRichMenuMutations(
     mutations: RichMenuRulePendingMutation[];
   }>();
 
-  for (const mutation of mutations) {
+  for (const mutation of recheckedReadyMutations) {
     const client = getClient(mutation.channelAccessToken);
     if (!isBulkCapable(client)) {
       try {
@@ -537,7 +658,12 @@ export async function processRichMenuRuleWork(
   );
   const clientFactory = options.clientFactory ?? ((token: string) => new LineClient(token));
   const requestCounter = options.bulkOptions?.requestCounter ?? { used: 0 };
-  const bulkOptions = { ...options.bulkOptions, requestCounter };
+  const verificationRequestCounter = options.bulkOptions?.verificationRequestCounter ?? { used: 0 };
+  const bulkOptions = {
+    ...options.bulkOptions,
+    requestCounter,
+    verificationRequestCounter,
+  };
   let attempted = 0;
   let jobsCompleted = 0;
 
@@ -574,6 +700,16 @@ export async function processRichMenuRuleWork(
 
   for (const jobRow of runningJobs.results) {
     if (jobRemaining === 0) break;
+    const foreignDefaultRichMenuId = await getAccountDefaultRichMenuId(
+      db,
+      jobRow.account_id,
+      { onlyWithoutRules: true },
+    );
+    const verificationCapacity = foreignDefaultRichMenuId
+      ? remainingForeignVerificationCapacity(bulkOptions)
+      : jobRemaining;
+    if (verificationCapacity === 0) continue;
+    const jobBatchLimit = Math.min(jobRemaining, verificationCapacity);
     const jobLockToken = crypto.randomUUID();
     const claimed = await db
       .prepare(
@@ -595,10 +731,10 @@ export async function processRichMenuRuleWork(
          WHERE line_account_id = ? AND is_following = 1 AND id > ?
          ORDER BY id ASC LIMIT ?`,
       )
-      .bind(jobRow.account_id, jobRow.last_friend_id ?? '', jobRemaining + 1)
+      .bind(jobRow.account_id, jobRow.last_friend_id ?? '', jobBatchLimit + 1)
       .all<{ id: string }>();
-    const hasMoreFromCursor = friendRows.results.length > jobRemaining;
-    const batch = friendRows.results.slice(0, jobRemaining);
+    const hasMoreFromCursor = friendRows.results.length > jobBatchLimit;
+    const batch = friendRows.results.slice(0, jobBatchLimit);
     let applied = 0;
     let skipped = 0;
     let failed = 0;
@@ -616,8 +752,10 @@ export async function processRichMenuRuleWork(
       db,
       jobRow.account_id,
       processedLeases,
+      { foreignDefaultRichMenuId },
     );
     const outcomes = await executeRichMenuMutations(
+      db,
       prepared.mutations,
       clientFactory,
       bulkOptions,
@@ -627,7 +765,7 @@ export async function processRichMenuRuleWork(
       const bucket = resultBucket(result);
       if (bucket === 'applied') applied++;
       else if (bucket === 'failed') failed++;
-      else skipped++;
+      else if (bucket === 'skipped') skipped++;
     }
     attempted += processedBatch.length;
     jobRemaining -= processedBatch.length;
@@ -694,11 +832,37 @@ export async function processRichMenuRuleWork(
       )
       .bind(remaining)
       .all<{ friend_id: string; revision: number; account_id: string | null }>();
+    const foreignDefaultByAccount = new Map<string, string | null>();
+    let verificationCapacity = remainingForeignVerificationCapacity(bulkOptions);
+    const selectedQueueRows: typeof queued.results = [];
+    for (const item of queued.results) {
+      let foreignDefaultRichMenuId: string | null = null;
+      if (item.account_id) {
+        if (!foreignDefaultByAccount.has(item.account_id)) {
+          foreignDefaultByAccount.set(
+            item.account_id,
+            await getAccountDefaultRichMenuId(
+              db,
+              item.account_id,
+              { onlyWithoutRules: true },
+            ),
+          );
+        }
+        foreignDefaultRichMenuId = foreignDefaultByAccount.get(item.account_id) ?? null;
+      }
+      if (foreignDefaultRichMenuId) {
+        if (verificationCapacity === 0) continue;
+        verificationCapacity--;
+      }
+      selectedQueueRows.push(item);
+    }
     const queueLeases = await claimFriendEvaluations(
       db,
-      queued.results.map((item) => item.friend_id),
+      selectedQueueRows.map((item) => item.friend_id),
     );
-    const accountByFriendId = new Map(queued.results.map((item) => [item.friend_id, item.account_id]));
+    const accountByFriendId = new Map(
+      selectedQueueRows.map((item) => [item.friend_id, item.account_id]),
+    );
     const leasesByAccount = new Map<string, RichMenuRuleQueueLease[]>();
     const missingFriendLeases: RichMenuRuleQueueLease[] = [];
     for (const lease of queueLeases) {
@@ -713,10 +877,15 @@ export async function processRichMenuRuleWork(
     }
     const mutations: RichMenuRulePendingMutation[] = [];
     for (const [accountId, accountLeases] of leasesByAccount) {
-      const prepared = await prepareRichMenuRulesForBatch(db, accountId, accountLeases);
+      const prepared = await prepareRichMenuRulesForBatch(
+        db,
+        accountId,
+        accountLeases,
+        { foreignDefaultRichMenuId: foreignDefaultByAccount.get(accountId) ?? null },
+      );
       mutations.push(...prepared.mutations);
     }
-    const outcomes = await executeRichMenuMutations(mutations, clientFactory, bulkOptions);
+    const outcomes = await executeRichMenuMutations(db, mutations, clientFactory, bulkOptions);
     await settleRichMenuRuleMutationBatch(db, outcomes);
     for (const lease of missingFriendLeases) {
       await applyRichMenuRulesForFriend(db, lease.friendId, clientFactory, { queueLease: lease });

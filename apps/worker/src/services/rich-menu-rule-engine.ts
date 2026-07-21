@@ -2,7 +2,7 @@ import {
   listRichMenuDisplayRules,
   type RichMenuDisplayRule,
 } from '@line-crm/db';
-import { LineClient } from '@line-crm/line-sdk';
+import { LineApiError, LineClient } from '@line-crm/line-sdk';
 import {
   evaluateConditionWithResolverStrict,
   type ConditionValueResolver,
@@ -21,6 +21,7 @@ export type RichMenuRuleLineClientFactory = (channelAccessToken: string) => Rich
 
 export type RichMenuRuleApplyResult =
   | { status: 'no_rules'; friendId: string }
+  | { status: 'foreign_unlinked'; friendId: string }
   | { status: 'ignored'; friendId: string; reason: 'missing_friend' | 'not_following' | 'missing_account' | 'inactive_account' }
   | { status: 'applied'; friendId: string; ruleId: string; richMenuId: string }
   | { status: 'reverted'; friendId: string; ruleId: null; richMenuId: null }
@@ -59,6 +60,7 @@ export interface RichMenuRulePendingMutation {
   ruleId: string | null;
   richMenuId: string | null;
   hadRules: boolean;
+  foreignDefaultRichMenuId?: string;
   queueLease: RichMenuRuleQueueLease;
 }
 
@@ -71,6 +73,7 @@ export interface RichMenuRuleMutationOutcome {
   mutation: RichMenuRulePendingMutation;
   error?: unknown;
   terminalFailure?: boolean;
+  verificationSkipped?: boolean;
 }
 
 interface BatchFriendRuleContext extends FriendRuleContext {
@@ -86,6 +89,58 @@ export interface RichMenuRuleApplyOptions {
   queueLease?: { token: string; revision: number };
   preserveQueue?: boolean;
   now?: Date;
+}
+
+export interface RichMenuRuleBatchOptions {
+  now?: Date;
+  foreignDefaultRichMenuId?: string | null;
+}
+
+/** Resolve the published LINE id used by the account-wide default group. */
+export async function getAccountDefaultRichMenuId(
+  db: D1Database,
+  accountId: string,
+  options: { onlyWithoutRules?: boolean } = {},
+): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT p.line_richmenu_id
+       FROM rich_menu_groups g
+       JOIN rich_menu_pages p ON p.id = COALESCE(
+         (
+           SELECT selected.id FROM rich_menu_pages selected
+           WHERE selected.group_id = g.id AND selected.id = g.default_page_id
+           LIMIT 1
+         ),
+         (
+           SELECT fallback.id FROM rich_menu_pages fallback
+           WHERE fallback.group_id = g.id
+           ORDER BY fallback.order_index ASC, fallback.id ASC
+           LIMIT 1
+         )
+       )
+       WHERE g.account_id = ?
+         AND g.is_default_for_all = 1
+         AND g.status = 'published'
+         AND (
+           SELECT COUNT(*) FROM rich_menu_groups candidate
+           WHERE candidate.account_id = g.account_id
+             AND candidate.is_default_for_all = 1
+             AND candidate.status = 'published'
+         ) = 1
+         AND p.line_richmenu_id IS NOT NULL
+         AND (
+           ? = 0 OR NOT EXISTS (
+             SELECT 1 FROM rich_menu_display_rules r
+             WHERE r.account_id = ? AND r.is_active = 1
+           )
+         )
+       ORDER BY g.updated_at DESC, g.id ASC
+       LIMIT 1`,
+    )
+    .bind(accountId, options.onlyWithoutRules ? 1 : 0, accountId)
+    .first<{ line_richmenu_id: string }>();
+  return row?.line_richmenu_id ?? null;
 }
 
 function isRuleInActivePeriod(
@@ -462,16 +517,17 @@ export async function prepareRichMenuRulesForBatch(
   db: D1Database,
   accountId: string,
   leases: RichMenuRuleQueueLease[],
-  now = new Date(),
+  options: RichMenuRuleBatchOptions = {},
 ): Promise<RichMenuRuleBatchPreparation> {
   if (leases.length === 0) return { results: [], mutations: [] };
   const friendIds = leases.map((lease) => lease.friendId).sort();
   const friendIdsJson = JSON.stringify(friendIds);
   const leaseByFriendId = new Map(leases.map((lease) => [lease.friendId, lease]));
   const rules = await listRichMenuDisplayRules(db, accountId, { activeOnly: true });
+  const evaluatedAt = options.now ?? new Date();
   let eligibleRules: RichMenuDisplayRule[];
   try {
-    eligibleRules = rules.filter((rule) => isRuleInActivePeriod(rule, now));
+    eligibleRules = rules.filter((rule) => isRuleInActivePeriod(rule, evaluatedAt));
   } catch (error) {
     const message = safeError(error);
     await queueRetryBatch(db, leases.map((lease) => ({ ...lease, error: message })));
@@ -537,6 +593,11 @@ export async function prepareRichMenuRulesForBatch(
   const deletes: RichMenuRuleQueueLease[] = [];
   const clears: RichMenuRuleQueueLease[] = [];
   const retries: BatchRetryWrite[] = [];
+  const foreignDefaultRichMenuId = rules.length === 0
+    ? options.foreignDefaultRichMenuId === undefined
+      ? await getAccountDefaultRichMenuId(db, accountId)
+      : options.foreignDefaultRichMenuId
+    : null;
 
   for (const lease of leases) {
     const friend = friends.get(lease.friendId);
@@ -569,8 +630,23 @@ export async function prepareRichMenuRulesForBatch(
       }
       : null;
     if (rules.length === 0 && !assignment) {
-      results.push({ status: 'no_rules', friendId: lease.friendId });
-      clears.push(lease);
+      if (!foreignDefaultRichMenuId) {
+        results.push({ status: 'no_rules', friendId: lease.friendId });
+        clears.push(lease);
+        continue;
+      }
+      mutations.push({
+        action: 'unlink',
+        friendId: lease.friendId,
+        lineUserId: friend.line_user_id,
+        accountId: friend.line_account_id,
+        channelAccessToken: friend.channel_access_token,
+        ruleId: null,
+        richMenuId: null,
+        hadRules: false,
+        foreignDefaultRichMenuId,
+        queueLease: lease,
+      });
       continue;
     }
     try {
@@ -662,6 +738,11 @@ export async function settleRichMenuRuleMutationBatch(
       else retries.push({ ...mutation.queueLease, error: message });
       continue;
     }
+    if (outcome.verificationSkipped) {
+      results.push({ status: 'no_rules', friendId: mutation.friendId });
+      clears.push(mutation.queueLease);
+      continue;
+    }
     if (mutation.action === 'link') {
       upserts.push({
         ...mutation.queueLease,
@@ -686,7 +767,11 @@ export async function settleRichMenuRuleMutationBatch(
       } else {
         deletes.push(mutation.queueLease);
       }
-      results.push({ status: 'reverted', friendId: mutation.friendId, ruleId: null, richMenuId: null });
+      if (mutation.foreignDefaultRichMenuId) {
+        results.push({ status: 'foreign_unlinked', friendId: mutation.friendId });
+      } else {
+        results.push({ status: 'reverted', friendId: mutation.friendId, ruleId: null, richMenuId: null });
+      }
     }
     clears.push(mutation.queueLease);
   }
@@ -699,8 +784,9 @@ export async function settleRichMenuRuleMutationBatch(
  *
  * Rules are already returned in the deterministic winner order. A successful
  * assignment row is the local same-value cache, so repeated tag/metadata
- * writes do not even construct a LINE client. With zero rules and no prior
- * engine-owned assignment, the function is a complete external no-op.
+ * writes do not construct a LINE client. With zero rules and no prior
+ * engine-owned assignment, only a safely identified foreign override may be
+ * removed so the account default can take effect.
  */
 export async function applyRichMenuRulesForFriend(
   db: D1Database,
@@ -745,6 +831,32 @@ export async function applyRichMenuRulesForFriend(
     ]);
 
     if (rules.length === 0 && !assignment) {
+      const defaultRichMenuId = await getAccountDefaultRichMenuId(db, friend.line_account_id);
+      if (defaultRichMenuId) {
+        const line = clientFactory(friend.channel_access_token);
+        if (!line.getRichMenuIdOfUser) throw new Error('LINE rich menu lookup is unavailable');
+        let current: { richMenuId: string };
+        try {
+          current = await line.getRichMenuIdOfUser(friend.line_user_id);
+        } catch (error) {
+          if (!(error instanceof LineApiError) || error.status !== 404) throw error;
+          await clearQueue(db, friendId, applyOptions);
+          return { status: 'no_rules', friendId };
+        }
+        const latestDefaultRichMenuId = await getAccountDefaultRichMenuId(
+          db,
+          friend.line_account_id,
+          { onlyWithoutRules: true },
+        );
+        if (
+          latestDefaultRichMenuId
+          && current.richMenuId !== latestDefaultRichMenuId
+        ) {
+          await line.unlinkRichMenuFromUser(friend.line_user_id);
+          await clearQueue(db, friendId, applyOptions);
+          return { status: 'foreign_unlinked', friendId };
+        }
+      }
       await clearQueue(db, friendId, applyOptions);
       return { status: 'no_rules', friendId };
     }

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createRichMenuDisplayRule } from '@line-crm/db';
+import { LineApiError } from '@line-crm/line-sdk';
 import {
   applyRichMenuRulesForFriend,
   type RichMenuRuleLineClient,
@@ -48,8 +49,14 @@ function d1(db: Database.Database): D1Database {
   } as unknown as D1Database;
 }
 
-function lineDouble(options: { failLink?: boolean; failUnlink?: boolean } = {}) {
-  const calls: Array<{ method: 'link' | 'unlink'; userId: string; richMenuId?: string }> = [];
+function lineDouble(options: {
+  failLink?: boolean;
+  failUnlink?: boolean;
+  unlinkFailureStatus?: number;
+  currentMenu?: string | null;
+  afterGet?: () => void;
+} = {}) {
+  const calls: Array<{ method: 'get' | 'link' | 'unlink'; userId: string; richMenuId?: string }> = [];
   const factory = vi.fn((_token: string): RichMenuRuleLineClient => ({
     async linkRichMenuToUser(userId, richMenuId) {
       calls.push({ method: 'link', userId, richMenuId });
@@ -57,10 +64,33 @@ function lineDouble(options: { failLink?: boolean; failUnlink?: boolean } = {}) 
     },
     async unlinkRichMenuFromUser(userId) {
       calls.push({ method: 'unlink', userId });
+      if (options.unlinkFailureStatus !== undefined) {
+        throw new LineApiError(options.unlinkFailureStatus, 'unlink failed', '{}');
+      }
       if (options.failUnlink) throw new Error('LINE 503 temporary');
+    },
+    async getRichMenuIdOfUser(userId) {
+      calls.push({ method: 'get', userId });
+      options.afterGet?.();
+      if (options.currentMenu === null) throw new LineApiError(404, 'Not Found', '{}');
+      if (options.currentMenu === undefined) throw new Error('unexpected rich menu lookup');
+      return { richMenuId: options.currentMenu };
     },
   }));
   return { calls, factory };
+}
+
+function seedAccountDefault(richMenuId = 'menu-default'): void {
+  raw.prepare(
+    `INSERT INTO rich_menu_groups
+     (id, account_id, name, chat_bar_text, size, is_default_for_all, status)
+     VALUES ('group-default', 'acc-1', '既定', 'メニュー', 'large', 1, 'published')`,
+  ).run();
+  raw.prepare(
+    `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+     VALUES ('page-default', 'group-default', 0, 'ホーム', 'alias-default', ?)`,
+  ).run(richMenuId);
+  raw.prepare("UPDATE rich_menu_groups SET default_page_id = 'page-default' WHERE id = 'group-default'").run();
 }
 
 let raw: Database.Database;
@@ -291,6 +321,151 @@ describe('applyRichMenuRulesForFriend', () => {
     expect(line.factory).not.toHaveBeenCalled();
     expect(raw.prepare('SELECT * FROM rich_menu_friend_assignments').all()).toEqual([]);
     expect(raw.prepare('SELECT * FROM rich_menu_rule_evaluation_queue').all()).toEqual([]);
+  });
+
+  test('zero rules unlink an unmanaged per-user menu only when it differs from the account default', async () => {
+    seedAccountDefault();
+    const line = lineDouble({ currentMenu: 'menu-legacy' });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'foreign_unlinked', friendId: 'friend-1' });
+    expect(line.calls).toEqual([
+      { method: 'get', userId: 'U1' },
+      { method: 'unlink', userId: 'U1' },
+    ]);
+    expect(raw.prepare('SELECT * FROM rich_menu_friend_assignments').all()).toEqual([]);
+  });
+
+  test('zero rules leave a per-user menu equal to the account default untouched', async () => {
+    seedAccountDefault();
+    const line = lineDouble({ currentMenu: 'menu-default' });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'no_rules', friendId: 'friend-1' });
+    expect(line.calls).toEqual([{ method: 'get', userId: 'U1' }]);
+  });
+
+  test('rechecks the default after LINE lookup and never unlinks a newly matching menu', async () => {
+    seedAccountDefault();
+    raw.prepare(
+      `INSERT INTO rich_menu_groups
+       (id, account_id, name, chat_bar_text, size, default_page_id, is_default_for_all, status)
+       VALUES ('group-new', 'acc-1', '新既定', 'メニュー', 'large', 'page-new', 0, 'published')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+       VALUES ('page-new', 'group-new', 0, 'ホーム', 'alias-new', 'menu-new')`,
+    ).run();
+    const line = lineDouble({
+      currentMenu: 'menu-new',
+      afterGet() {
+        raw.prepare(
+          `UPDATE rich_menu_groups
+           SET is_default_for_all = CASE WHEN id = 'group-new' THEN 1 ELSE 0 END
+           WHERE account_id = 'acc-1'`,
+        ).run();
+      },
+    });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'no_rules', friendId: 'friend-1' });
+    expect(line.calls).toEqual([{ method: 'get', userId: 'U1' }]);
+  });
+
+  test('does not unlink when an active rule appears during the foreign-link lookup', async () => {
+    seedAccountDefault();
+    const line = lineDouble({
+      currentMenu: 'menu-legacy',
+      afterGet() {
+        raw.prepare(
+          `INSERT INTO rich_menu_display_rules
+           (id, account_id, name, condition_type, condition_value, rich_menu_id, priority, is_active)
+           VALUES ('rule-new', 'acc-1', '追加ルール', 'tag_exists', 'tag-paid', 'menu-rule', 100, 1)`,
+        ).run();
+      },
+    });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'no_rules', friendId: 'friend-1' });
+    expect(line.calls).toEqual([{ method: 'get', userId: 'U1' }]);
+  });
+
+  test('does not mistake another published page for a default page whose LINE id is missing', async () => {
+    seedAccountDefault();
+    raw.prepare("UPDATE rich_menu_pages SET line_richmenu_id = NULL WHERE id = 'page-default'").run();
+    raw.prepare(
+      `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+       VALUES ('page-other', 'group-default', 1, '別ページ', 'alias-other', 'menu-other')`,
+    ).run();
+    const line = lineDouble({ currentMenu: 'menu-legacy' });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'no_rules', friendId: 'friend-1' });
+    expect(line.factory).not.toHaveBeenCalled();
+  });
+
+  test('fails closed when more than one published group is marked as the account default', async () => {
+    seedAccountDefault();
+    raw.prepare(
+      `INSERT INTO rich_menu_groups
+       (id, account_id, name, chat_bar_text, size, default_page_id, is_default_for_all, status)
+       VALUES ('group-second', 'acc-1', '別の既定', 'メニュー', 'large', 'page-second', 1, 'published')`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO rich_menu_pages (id, group_id, order_index, name, alias_id, line_richmenu_id)
+       VALUES ('page-second', 'group-second', 0, 'ホーム', 'alias-second', 'menu-second')`,
+    ).run();
+    const line = lineDouble({ currentMenu: 'menu-legacy' });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'no_rules', friendId: 'friend-1' });
+    expect(line.factory).not.toHaveBeenCalled();
+  });
+
+  test('zero rules treat LINE 404 as no individual rich-menu link and do not unlink', async () => {
+    seedAccountDefault();
+    const line = lineDouble({ currentMenu: null });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toEqual({ status: 'no_rules', friendId: 'friend-1' });
+    expect(line.calls).toEqual([{ method: 'get', userId: 'U1' }]);
+  });
+
+  test('an unmanaged unlink failure is failed and leaves the friend queued for retry', async () => {
+    seedAccountDefault();
+    const line = lineDouble({ currentMenu: 'menu-legacy', failUnlink: true });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toMatchObject({ status: 'failed', friendId: 'friend-1' });
+    expect(line.calls).toEqual([
+      { method: 'get', userId: 'U1' },
+      { method: 'unlink', userId: 'U1' },
+    ]);
+    expect(raw.prepare('SELECT attempts FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?').get('friend-1'))
+      .toEqual({ attempts: 1 });
+  });
+
+  test('does not swallow an unlink 404 as though the preceding lookup had no link', async () => {
+    seedAccountDefault();
+    const line = lineDouble({ currentMenu: 'menu-legacy', unlinkFailureStatus: 404 });
+
+    const result = await applyRichMenuRulesForFriend(db, 'friend-1', line.factory);
+
+    expect(result).toMatchObject({ status: 'failed', friendId: 'friend-1' });
+    expect(line.calls).toEqual([
+      { method: 'get', userId: 'U1' },
+      { method: 'unlink', userId: 'U1' },
+    ]);
+    expect(raw.prepare('SELECT attempts FROM rich_menu_rule_evaluation_queue WHERE friend_id = ?').get('friend-1'))
+      .toEqual({ attempts: 1 });
   });
 
   test('an inactive LINE account never constructs a client or mutates its assignment', async () => {

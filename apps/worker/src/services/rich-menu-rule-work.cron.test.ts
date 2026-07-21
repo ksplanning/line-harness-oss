@@ -57,7 +57,8 @@ function replayAll(db: Database.Database): void {
 let raw: Database.Database;
 let isolatedFetch: ReturnType<typeof vi.fn>;
 const tick = (cron: string, scheduledTime = Date.now()) => ({ cron, scheduledTime, type: 'scheduled' }) as unknown as ScheduledEvent;
-const CTX = {} as ExecutionContext;
+const waitUntil = vi.fn((_promise: Promise<unknown>) => undefined);
+const CTX = { waitUntil } as unknown as ExecutionContext;
 
 function env(): Record<string, unknown> {
   return {
@@ -82,6 +83,7 @@ beforeEach(() => {
   enqueueSpy.mockReset();
   enqueueSpy.mockResolvedValue({ enqueued: 0, scannedFrom: '', scannedThrough: '' });
   workSpy.mockClear();
+  waitUntil.mockClear();
   isolatedFetch = vi.fn(async () => Response.json({ attempted: 0, queueProcessed: 0, jobsCompleted: 0 }));
   vi.stubGlobal('fetch', isolatedFetch);
 });
@@ -170,6 +172,29 @@ describe('scheduled rich menu rule work', () => {
     expect(response.status).toBe(204);
     expect(await response.text()).toBe('');
     expect(workSpy).toHaveBeenCalledTimes(1);
+    expect(waitUntil).not.toHaveBeenCalled();
+  });
+
+  test('the isolated endpoint immediately dispatches the next safe chunk while a job is progressing', async () => {
+    workSpy.mockResolvedValueOnce({ attempted: 2, queueProcessed: 0, jobsCompleted: 0 });
+    const bindings = env();
+    await worker.scheduled(tick('*/5 * * * *'), bindings as never, CTX);
+    const signedHeaders = new Headers(isolatedFetch.mock.calls[0][1]?.headers);
+    isolatedFetch.mockClear();
+
+    const response = await worker.fetch(
+      new Request('https://worker.example.test/internal/rich-menu-rule-work', {
+        method: 'POST',
+        headers: signedHeaders,
+      }),
+      bindings as never,
+      CTX,
+    );
+
+    expect(response.status).toBe(204);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await waitUntil.mock.calls[0][0];
+    expect(isolatedFetch).toHaveBeenCalledTimes(1);
   });
 
   test('the isolated endpoint rejects an expired signed request', async () => {
