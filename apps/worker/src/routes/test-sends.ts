@@ -77,7 +77,11 @@ testSends.get('/api/test-sends/:source/recipients', async (c) => {
     return c.json({ success: false, error: 'Valid source and accountId required' }, 400);
   }
   try {
-    const recipients = await getTestRecipients(c.env.DB, accountId);
+    const recipients = await getTestRecipients(
+      c.env.DB,
+      accountId,
+      c.env.TEST_SEND_ALLOWED_USER_IDS,
+    );
     return c.json({
       success: true,
       data: recipients.map((friend) => ({
@@ -125,6 +129,7 @@ testSends.post('/api/test-sends/:source', async (c) => {
       messages: body.messages,
       idempotencyKey: body.idempotencyKey,
       workerUrl: c.env.WORKER_URL,
+      allowedUserIds: c.env.TEST_SEND_ALLOWED_USER_IDS,
       sender,
     });
     return c.json({ success: true, ...result });

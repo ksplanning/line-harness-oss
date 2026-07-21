@@ -136,6 +136,8 @@ export type Env = {
     LINE_LOGIN_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_SECRET: string;
     WORKER_URL: string;
+    /** Comma/whitespace separated LINE userIds permitted for physical test sends. */
+    TEST_SEND_ALLOWED_USER_IDS?: string;
     // Admin auth topology (see middleware/admin-auth-config.ts):
     ADMIN_ORIGIN?: string;          // Comma-separated admin web origin allowlist for credentialed CORS
     ADMIN_COOKIE_SAMESITE?: string; // Optional override: 'Strict' | 'Lax' | 'None'

@@ -1232,6 +1232,7 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
       messages,
       idempotencyKey,
       workerUrl: c.env.WORKER_URL,
+      allowedUserIds: c.env.TEST_SEND_ALLOWED_USER_IDS,
       sender,
     });
     return c.json({ success: true, ...result });

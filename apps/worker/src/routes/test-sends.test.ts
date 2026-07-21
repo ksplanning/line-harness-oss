@@ -3,11 +3,14 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const pushCalls = vi.hoisted(() => [] as Array<{ token: string; to: string; messages: unknown[] }>);
+const rejectedPushUserIds = vi.hoisted(() => new Set<string>());
+const ALLOWED_TEST_USER_ID = 'U5217ceb4debd9849959446ce8f902a27';
 vi.mock('@line-crm/line-sdk', () => ({
   LineClient: class {
     constructor(private readonly token: string) {}
     async pushMessage(to: string, messages: unknown[]) {
       pushCalls.push({ token: this.token, to, messages });
+      if (rejectedPushUserIds.has(to)) throw new Error('LINE push rejected fixture');
       return {};
     }
   },
@@ -15,7 +18,13 @@ vi.mock('@line-crm/line-sdk', () => ({
 
 const { testSends } = await import('./test-sends.js');
 
-type TestEnv = { Bindings: { DB: D1Database; WORKER_URL: string } };
+type TestEnv = {
+  Bindings: {
+    DB: D1Database;
+    WORKER_URL: string;
+    TEST_SEND_ALLOWED_USER_IDS?: string;
+  };
+};
 
 function asD1(raw: Database.Database): D1Database {
   return {
@@ -36,10 +45,14 @@ function asD1(raw: Database.Database): D1Database {
   } as unknown as D1Database;
 }
 
-function createApp(raw: Database.Database) {
+function createApp(raw: Database.Database, allowedUserIds?: string) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
-    c.env = { DB: asD1(raw), WORKER_URL: 'https://worker.example.test' };
+    c.env = {
+      DB: asD1(raw),
+      WORKER_URL: 'https://worker.example.test',
+      TEST_SEND_ALLOWED_USER_IDS: allowedUserIds,
+    };
     await next();
   });
   app.route('/', testSends);
@@ -73,6 +86,7 @@ let app: ReturnType<typeof createApp>;
 
 beforeEach(() => {
   pushCalls.length = 0;
+  rejectedPushUserIds.clear();
   requestSequence = 0;
   raw = new Database(':memory:');
   raw.exec(`
@@ -136,7 +150,7 @@ beforeEach(() => {
   raw.prepare(`INSERT INTO line_accounts (id, channel_access_token, liff_id, monthly_cap) VALUES (?, ?, ?, ?)`)
     .run('acc-2', 'token-2', 'liff-2', 10);
   raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, is_following, line_account_id, ref_code) VALUES (?, ?, ?, 1, ?, ?)`)
-    .run('test-friend', 'U-test', 'テスター', 'acc-1', '紹介A');
+    .run('test-friend', ALLOWED_TEST_USER_ID, 'テスター', 'acc-1', '紹介A');
   raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, is_following, line_account_id) VALUES (?, ?, ?, 1, ?)`)
     .run('real-recipient', 'U-real', '本番受信者', 'acc-1');
   raw.prepare(`INSERT INTO friends (id, line_user_id, display_name, is_following, line_account_id) VALUES (?, ?, ?, 1, ?)`)
@@ -174,9 +188,15 @@ describe('POST /api/test-sends', () => {
       messages: [{ type: 'text', content: 'こんにちは {{display_name}} / {{liff_id}} / {{ref}} {{#if_ref}}紹介あり{{/if_ref}}' }],
     });
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      sent: 1,
+      failed: 0,
+      sentUserIds: [ALLOWED_TEST_USER_ID],
+    });
     expect(pushCalls).toEqual([{
       token: 'token-1',
-      to: 'U-test',
+      to: ALLOWED_TEST_USER_ID,
       messages: [{ type: 'text', text: '【テスト配信】\nこんにちは テスター / liff-1 / 紹介A 紹介あり' }],
     }]);
     expect(pushCalls.some((call) => call.to === 'U-real')).toBe(false);
@@ -191,6 +211,85 @@ describe('POST /api/test-sends', () => {
       scenario_step_id: null,
       content: '【テスト配信】\nこんにちは テスター / liff-1 / 紹介A 紹介あり',
     })]);
+    const storedResult = raw.prepare(`SELECT response_json FROM test_send_requests`).get() as { response_json: string };
+    expect(JSON.parse(storedResult.response_json)).toEqual({
+      sent: 1,
+      failed: 0,
+      sentUserIds: [ALLOWED_TEST_USER_ID],
+    });
+  });
+
+  test('rejects the whole request when a mistaken setting includes a same-account user outside the server allowlist', async () => {
+    configure(['test-friend', 'real-recipient']);
+    const res = await post(app, {
+      accountId: 'acc-1',
+      source: 'template_pack',
+      messages: [{ type: 'sticker', content: JSON.stringify({ packageId: '1', stickerId: '1' }) }],
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      success: false,
+      error: 'テスト送信先にサーバー許可リスト外のuserIdが含まれています: U-real',
+    });
+    expect(pushCalls).toEqual([]);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM messages_log`).get()).toEqual({ count: 0 });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM test_send_requests`).get()).toEqual({ count: 0 });
+  });
+
+  test('allows multiple configured recipients only when every userId is in the deployment allowlist', async () => {
+    app = createApp(raw, `${ALLOWED_TEST_USER_ID}, U-real`);
+    configure(['test-friend', 'real-recipient']);
+    const res = await post(app, {
+      accountId: 'acc-1',
+      source: 'broadcast',
+      messages: [{ type: 'text', content: '複数の安全な送信先' }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      sent: 2,
+      failed: 0,
+      sentUserIds: [ALLOWED_TEST_USER_ID, 'U-real'],
+    });
+    expect(pushCalls.map((call) => call.to)).toEqual([ALLOWED_TEST_USER_ID, 'U-real']);
+  });
+
+  test('returns only the userIds whose LINE pushes actually succeeded', async () => {
+    app = createApp(raw, `${ALLOWED_TEST_USER_ID}, U-real`);
+    configure(['test-friend', 'real-recipient']);
+    rejectedPushUserIds.add('U-real');
+
+    const res = await post(app, {
+      accountId: 'acc-1',
+      source: 'broadcast',
+      messages: [{ type: 'text', content: '部分失敗の宛先確認' }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      sent: 1,
+      failed: 1,
+      sentUserIds: [ALLOWED_TEST_USER_ID],
+    });
+    expect(raw.prepare(`SELECT friend_id FROM messages_log`).all()).toEqual([{ friend_id: 'test-friend' }]);
+  });
+
+  test('an explicitly empty deployment allowlist fails closed before any LINE push', async () => {
+    app = createApp(raw, '');
+    configure(['test-friend']);
+
+    const res = await post(app, {
+      accountId: 'acc-1',
+      source: 'broadcast',
+      messages: [{ type: 'text', content: '空の許可リストでは送らない' }],
+    });
+
+    expect(res.status).toBe(400);
+    expect(pushCalls).toEqual([]);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM test_send_requests`).get()).toEqual({ count: 0 });
   });
 
   test('filters a cross-account configured friend and sends nothing', async () => {
@@ -288,7 +387,11 @@ describe('POST /api/test-sends', () => {
     const second = await post(app, body, 'same-operation-key');
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(await second.json()).toEqual(expect.objectContaining({ success: true, deduplicated: true }));
+    expect(await second.json()).toEqual(expect.objectContaining({
+      success: true,
+      deduplicated: true,
+      sentUserIds: [ALLOWED_TEST_USER_ID],
+    }));
     expect(pushCalls).toHaveLength(1);
     expect(raw.prepare(`SELECT COUNT(*) AS count FROM messages_log`).get()).toEqual({ count: 1 });
   });

@@ -35,7 +35,13 @@ vi.mock('@line-crm/line-sdk', () => ({
 
 const { broadcasts } = await import('./broadcasts.js');
 
-type TestEnv = { Bindings: { DB: D1Database; WORKER_URL: string } };
+type TestEnv = {
+  Bindings: {
+    DB: D1Database;
+    WORKER_URL: string;
+    TEST_SEND_ALLOWED_USER_IDS: string;
+  };
+};
 
 /** test-send の raw DB クエリ (test_recipients / friends / messages_log insert) に応答する stub。 */
 function makeDbStub(cfg: {
@@ -71,7 +77,11 @@ function makeDbStub(cfg: {
 function setupApp(dbCfg: Parameters<typeof makeDbStub>[0] = {}) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
-    c.env = { DB: makeDbStub(dbCfg), WORKER_URL: 'https://worker.example.com' } as never;
+    c.env = {
+      DB: makeDbStub(dbCfg),
+      WORKER_URL: 'https://worker.example.com',
+      TEST_SEND_ALLOWED_USER_IDS: 'U-self',
+    } as never;
     await next();
   });
   app.route('/', broadcasts);
@@ -161,6 +171,12 @@ describe('T-C5 test-send: resolves sender + sends only to test_recipients (A8 / 
     const app = setupApp({ testRecipients: ['f-self'], friends: [{ id: 'f-self', line_user_id: 'U-self' }] });
     const res = await app.request('/api/broadcasts/b1/test-send', { method: 'POST' });
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      sent: 1,
+      failed: 0,
+      sentUserIds: ['U-self'],
+    });
     // outbound は test_recipient の 1 件のみ (friends 全体には送らない)。
     expect(pushCalls).toHaveLength(1);
     expect(pushCalls[0].to).toBe('U-self');
@@ -170,5 +186,24 @@ describe('T-C5 test-send: resolves sender + sends only to test_recipients (A8 / 
     expect(msg.sender?.name).toBe('キャンペーン担当');
     // sender の解決は account-scoped 引数で呼ばれる (client の生 sender を使わない)。
     expect(dbMocks.resolveSenderForBroadcast).toHaveBeenCalledWith(expect.anything(), 'sp-1', 'acc-1');
+  });
+
+  test('legacy endpoint also rejects an unlisted same-account recipient before push', async () => {
+    dbMocks.getBroadcastById.mockResolvedValue({
+      id: 'b1', title: 'V', message_type: 'video', message_content: validVideo, target_type: 'all',
+      status: 'draft', line_account_id: 'acc-1', sender_preset_id: null, created_at: '2026-07-04T00:00:00.000',
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ id: 'acc-1', channel_access_token: 'tok', is_active: 1 });
+    dbMocks.resolveSenderForBroadcast.mockResolvedValue(undefined);
+
+    const app = setupApp({ testRecipients: ['f-real'], friends: [{ id: 'f-real', line_user_id: 'U-real' }] });
+    const res = await app.request('/api/broadcasts/b1/test-send', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      success: false,
+      error: 'テスト送信先にサーバー許可リスト外のuserIdが含まれています: U-real',
+    });
+    expect(pushCalls).toEqual([]);
   });
 });

@@ -15,6 +15,14 @@ export const TEST_SEND_SOURCES = [
 
 export type TestSendSource = typeof TEST_SEND_SOURCES[number];
 
+/**
+ * Deployment-controlled safety boundary. The account setting chooses a subset
+ * of these LINE userIds; it cannot expand this server-side allowlist.
+ */
+export const DEFAULT_TEST_SEND_ALLOWED_USER_IDS = [
+  'U5217ceb4debd9849959446ce8f902a27',
+] as const;
+
 export interface TestSendMessageInput {
   type: string;
   content: string;
@@ -34,6 +42,13 @@ export interface TestRecipient {
 interface TestSendAccount {
   channel_access_token: string;
   liff_id: string | null;
+}
+
+export interface TestSendResult {
+  sent: number;
+  failed: number;
+  sentUserIds: string[];
+  deduplicated?: boolean;
 }
 
 export class TestSendError extends Error {
@@ -58,7 +73,18 @@ function parseConfiguredFriendIds(value: string | null | undefined): string[] {
   }
 }
 
-export async function getTestRecipients(db: D1Database, accountId: string): Promise<TestRecipient[]> {
+function serverAllowedUserIds(configured: string | undefined): Set<string> {
+  const values = configured === undefined
+    ? [...DEFAULT_TEST_SEND_ALLOWED_USER_IDS]
+    : configured.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
+  return new Set(values);
+}
+
+export async function getTestRecipients(
+  db: D1Database,
+  accountId: string,
+  configuredAllowedUserIds?: string,
+): Promise<TestRecipient[]> {
   const setting = await db.prepare(
     `SELECT value FROM account_settings WHERE line_account_id = ? AND key = 'test_recipients'`,
   ).bind(accountId).first<{ value: string }>();
@@ -75,10 +101,23 @@ export async function getTestRecipients(db: D1Database, accountId: string): Prom
     throw new TestSendError('テスト送信先の設定に、このLINEアカウントでは送信できない友だちが含まれています', 400);
   }
   const byId = new Map(result.results.map((friend) => [friend.id, friend]));
-  return friendIds.flatMap((id) => {
+  const recipients = friendIds.flatMap((id) => {
     const friend = byId.get(id);
     return friend ? [friend] : [];
   });
+  const allowedUserIds = serverAllowedUserIds(configuredAllowedUserIds);
+  const blockedUserIds = [...new Set(
+    recipients
+      .map((friend) => friend.line_user_id)
+      .filter((userId) => !allowedUserIds.has(userId)),
+  )];
+  if (blockedUserIds.length > 0) {
+    throw new TestSendError(
+      `テスト送信先にサーバー許可リスト外のuserIdが含まれています: ${blockedUserIds.join(', ')}`,
+      400,
+    );
+  }
+  return recipients;
 }
 
 async function renderMessagesForFriend(
@@ -129,7 +168,7 @@ async function completedOrInFlightRequest(
   accountId: string,
   source: TestSendSource,
   requestPayload: string,
-): Promise<{ sent: number; failed: number; deduplicated: true } | null> {
+): Promise<TestSendResult | null> {
   const existing = await db.prepare(
     `SELECT line_account_id, source, request_payload, status, response_json
      FROM test_send_requests WHERE idempotency_key = ?`,
@@ -143,8 +182,19 @@ async function completedOrInFlightRequest(
     throw new TestSendError('同じ操作キーを別のテスト送信に再利用できません', 409);
   }
   if (existing.status === 'completed' && existing.response_json) {
-    const cached = JSON.parse(existing.response_json) as { sent: number; failed: number };
-    return { ...cached, deduplicated: true };
+    const cached = JSON.parse(existing.response_json) as {
+      sent: number;
+      failed: number;
+      sentUserIds?: unknown;
+    };
+    return {
+      sent: cached.sent,
+      failed: cached.failed,
+      sentUserIds: Array.isArray(cached.sentUserIds)
+        ? cached.sentUserIds.filter((userId): userId is string => typeof userId === 'string')
+        : [],
+      deduplicated: true,
+    };
   }
   throw new TestSendError('同じテスト送信を処理中です', 409);
 }
@@ -156,9 +206,11 @@ export async function sendTestMessages(input: {
   messages: readonly TestSendMessageInput[];
   idempotencyKey: string;
   workerUrl?: string;
+  /** Comma/whitespace separated deployment binding; undefined uses the safe current default. */
+  allowedUserIds?: string;
   /** Server-resolved only. Public routes never accept a raw LINE sender object. */
   sender?: MessageSender;
-}): Promise<{ sent: number; failed: number; deduplicated?: boolean }> {
+}): Promise<TestSendResult> {
   const requestPayload = JSON.stringify({
     accountId: input.accountId,
     source: input.source,
@@ -182,7 +234,7 @@ export async function sendTestMessages(input: {
   ).bind(input.accountId).first<TestSendAccount>();
   if (!account) throw new TestSendError('LINE account not found or inactive', 404);
 
-  const recipients = await getTestRecipients(input.db, input.accountId);
+  const recipients = await getTestRecipients(input.db, input.accountId, input.allowedUserIds);
   if (recipients.length === 0) {
     throw new TestSendError('テスト送信先を先に設定してください', 400);
   }
@@ -211,9 +263,11 @@ export async function sendTestMessages(input: {
   const lineClient = new LineClient(account.channel_access_token);
   let sent = 0;
   let failed = 0;
+  const sentUserIds: string[] = [];
   for (const friend of recipients) {
+    let messages: Message[];
     try {
-      const messages = await renderMessagesForFriend(
+      messages = await renderMessagesForFriend(
         input.db,
         friend,
         account,
@@ -222,6 +276,15 @@ export async function sendTestMessages(input: {
         input.sender,
       );
       await lineClient.pushMessage(friend.line_user_id, messages);
+      sent++;
+      sentUserIds.push(friend.line_user_id);
+    } catch (error) {
+      console.error(`Test send to ${friend.id} failed:`, error);
+      failed++;
+      continue;
+    }
+
+    try {
       const payload = logPayload(messages);
       const now = new Date(Date.now() + 9 * 60 * 60_000).toISOString().replace('Z', '+09:00');
       await input.db.prepare(
@@ -237,13 +300,13 @@ export async function sendTestMessages(input: {
         input.accountId,
         now,
       ).run();
-      sent++;
     } catch (error) {
-      console.error(`Test send to ${friend.id} failed:`, error);
-      failed++;
+      // LINE already accepted the push. Keep the result physically honest and
+      // surface the logging failure separately instead of claiming send failure.
+      console.error(`Test send log for ${friend.id} failed after LINE push:`, error);
     }
   }
-  const result = { sent, failed };
+  const result = { sent, failed, sentUserIds };
   const completedAt = new Date(Date.now() + 9 * 60 * 60_000).toISOString().replace('Z', '+09:00');
   await input.db.prepare(
     `UPDATE test_send_requests

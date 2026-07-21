@@ -61,8 +61,21 @@ function d1(db: Database.Database): D1Database {
 
 let raw: Database.Database;
 function app() {
-  const a = new Hono<{ Bindings: { DB: D1Database; WORKER_URL: string } }>();
-  a.use('*', async (c, next) => { c.env = { DB: d1(raw), WORKER_URL: 'https://w' } as never; await next(); });
+  const a = new Hono<{
+    Bindings: {
+      DB: D1Database;
+      WORKER_URL: string;
+      TEST_SEND_ALLOWED_USER_IDS: string;
+    };
+  }>();
+  a.use('*', async (c, next) => {
+    c.env = {
+      DB: d1(raw),
+      WORKER_URL: 'https://w',
+      TEST_SEND_ALLOWED_USER_IDS: 'U-friend-self',
+    } as never;
+    await next();
+  });
   a.route('/', broadcasts);
   return a;
 }
@@ -307,6 +320,12 @@ describe('POST /api/broadcasts/:id/test-send combo gate (F2)', () => {
       body: JSON.stringify({ idempotencyKey: 'saved-combo-test-send' }),
     });
     expect(ts.status).toBe(200);
+    expect(await ts.json()).toEqual({
+      success: true,
+      sent: 1,
+      failed: 0,
+      sentUserIds: ['U-friend-self'],
+    });
     expect(pushCalls).toHaveLength(1);
     expect(pushCalls[0].to).toBe('U-friend-self');
     expect(pushCalls[0].messages).toHaveLength(2);
