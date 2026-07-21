@@ -43,6 +43,68 @@ afterEach(() => {
 })
 
 describe('/auto-replies center埋め込み', () => {
+  it('例外ルール一覧の列見出しを日本語で表示する', async () => {
+    render(<AutoRepliesPage />)
+
+    expect(await screen.findByRole('columnheader', { name: 'キーワード' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: '一致方法' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: '返信内容' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'テンプレート' })).toBeTruthy()
+  })
+
+  it('例外ルールの凡例と返信種別を日常語で表示する', async () => {
+    m.list.mockResolvedValue({ success: true, data: [
+      {
+        id: 'rule-text',
+        keyword: '資料',
+        matchType: 'contains',
+        responseType: 'text',
+        responseContent: '資料を送ります',
+        responseMessages: null,
+        templateId: null,
+        lineAccountId: 'acc-1',
+        isActive: true,
+        createdAt: '2026-07-21T00:00:00.000Z',
+        effectiveAccounts: [{ accountId: 'acc-1', accountName: '本店', status: 'reply', via: 'inline' }],
+      },
+      {
+        id: 'rule-flex',
+        keyword: '予約',
+        matchType: 'exact',
+        responseType: 'flex',
+        responseContent: '{}',
+        responseMessages: null,
+        templateId: null,
+        lineAccountId: 'acc-1',
+        isActive: true,
+        createdAt: '2026-07-21T00:00:00.000Z',
+        effectiveAccounts: [{ accountId: 'acc-1', accountName: '本店', status: 'reply', via: 'automation' }],
+      },
+      {
+        id: 'rule-silent',
+        keyword: '休業',
+        matchType: 'exact',
+        responseType: 'silent',
+        responseContent: '',
+        responseMessages: null,
+        templateId: null,
+        lineAccountId: 'acc-1',
+        isActive: true,
+        createdAt: '2026-07-21T00:00:00.000Z',
+        effectiveAccounts: [{ accountId: 'acc-1', accountName: '本店', status: 'silent', via: null }],
+      },
+    ] })
+
+    render(<AutoRepliesPage />)
+
+    expect(await screen.findByText(/テキスト$/)).toBeTruthy()
+    expect(screen.getByText(/カード（Flex）/)).toBeTruthy()
+    expect(screen.getAllByText('返信なし（silent）').length).toBeGreaterThan(0)
+    expect(screen.getByText(/直接設定/)).toBeTruthy()
+    expect(screen.getByText(/自動処理（オートメーション）/)).toBeTruthy()
+    expect(screen.getByText('部分一致')).toBeTruthy()
+  })
+
   it('旧page headerは重ねず「新規ルール」操作は残す', async () => {
     render(
       <AutoReplyCenterEmbed hideHeader>

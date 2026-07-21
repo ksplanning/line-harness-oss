@@ -300,7 +300,7 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
   }
 
   const handleSave = async () => {
-    if (!keyword.trim()) { setError('keyword を入力してください'); return }
+    if (!keyword.trim()) { setError('キーワードを入力してください'); return }
     if (replyMode === 'messages') {
       if (messages.length < 1 || messages.length > MAX_MESSAGES) { setError('吹き出しは1〜5件で指定してください'); return }
       if (messages.some((message) => !message.messageContent.trim())) { setError('空の吹き出しがあります'); return }
@@ -339,26 +339,26 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
         </div>
         <div className="p-5 space-y-5">
           <div>
-            <label className="block text-xs text-gray-600 mb-1">keyword</label>
-            <input type="text" value={keyword} onChange={(event) => setKeyword(event.target.value)} className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" placeholder="例: コスト比較" />
+            <label htmlFor="auto-reply-keyword" className="block text-xs text-gray-600 mb-1">キーワード</label>
+            <input id="auto-reply-keyword" type="text" value={keyword} onChange={(event) => setKeyword(event.target.value)} className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" placeholder="例: コスト比較" />
           </div>
 
           <div>
-            <label className="block text-xs text-gray-600 mb-1">マッチ方法</label>
+            <label className="block text-xs text-gray-600 mb-1">一致方法</label>
             <div className="flex gap-2">
               {(['exact', 'contains'] as const).map((value) => (
                 <button key={value} type="button" aria-pressed={matchType === value} onClick={() => setMatchType(value)} className={`px-3 py-1.5 text-xs rounded-md border ${matchType === value ? 'border-green-600 bg-green-600 text-white' : 'border-gray-200 bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                  {value === 'exact' ? '完全一致' : '包含'}
+                  {value === 'exact' ? '完全一致' : '部分一致'}
                 </button>
               ))}
             </div>
           </div>
 
           <div>
-            <label className="block text-xs text-gray-600 mb-1">応答方法</label>
-            <div className="flex gap-2" role="group" aria-label="応答方法">
+            <label className="block text-xs text-gray-600 mb-1">返信方法</label>
+            <div className="flex gap-2" role="group" aria-label="返信方法">
               <button type="button" aria-pressed={replyMode === 'messages'} onClick={() => { setReplyMode('messages'); if (messages.length === 0) restoreMessages([attachUiKey({ messageType: 'text', messageContent: '' })]) }} className={`px-3 py-2 text-xs rounded-md border ${replyMode === 'messages' ? 'border-green-600 bg-green-50 text-green-800 ring-1 ring-green-500' : 'border-gray-200 text-gray-600'}`}>吹き出しを送る</button>
-              <button type="button" aria-pressed={replyMode === 'silent'} onClick={() => setReplyMode('silent')} className={`px-3 py-2 text-xs rounded-md border ${replyMode === 'silent' ? 'border-green-600 bg-green-50 text-green-800 ring-1 ring-green-500' : 'border-gray-200 text-gray-600'}`}>返信なし (silent)</button>
+              <button type="button" aria-pressed={replyMode === 'silent'} onClick={() => setReplyMode('silent')} className={`px-3 py-2 text-xs rounded-md border ${replyMode === 'silent' ? 'border-green-600 bg-green-50 text-green-800 ring-1 ring-green-500' : 'border-gray-200 text-gray-600'}`}>返信なし（silent）</button>
             </div>
           </div>
 
