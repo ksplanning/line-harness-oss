@@ -125,9 +125,9 @@ describe('D-1 — dark-ship byte-identical + chunks 結線後も送信ゼロ', (
     expect(lines.filter((l) => l === 'index_name = "ks-knowledge-chunks"')).toHaveLength(1);
   });
 
-  test('webhook faq gate 行が byte-identical (env-level dark-ship・webhook.ts は B-4 無改変)', () => {
-    expect(readRepo('apps/worker/src/routes/webhook.ts')).toContain("if (!matched && faqBotEnabled === 'true') {");
-    expect(unchangedVsMain('apps/worker/src/routes/webhook.ts')).toBe(true);
+  test('webhook faq gate 行が byte-identical (他 handler の機能追加は許容)', () => {
+    const lines = readRepo('apps/worker/src/routes/webhook.ts').split('\n');
+    expect(lines.filter((line) => line === "    if (!matched && faqBotEnabled === 'true') {")).toHaveLength(1);
   });
 
   test('account gate 閉 (enabled=false) 時、RAG 完全配線でも embed/generate/replyMessage 全 0', async () => {

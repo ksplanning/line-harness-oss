@@ -87,9 +87,9 @@ describe('D-2 — dark-ship gate byte-identical + compat flag additive + 既存 
     expect(lines.filter((l) => l === 'index_name = "ks-knowledge-chunks"')).toHaveLength(1);
   });
 
-  test('webhook faq gate 行が byte-identical', () => {
-    expect(readRepo('apps/worker/src/routes/webhook.ts')).toContain("if (!matched && faqBotEnabled === 'true') {");
-    expect(unchangedVsMain('apps/worker/src/routes/webhook.ts')).toBe(true);
+  test('webhook faq gate 行が byte-identical (他 handler の機能追加は許容)', () => {
+    const lines = readRepo('apps/worker/src/routes/webhook.ts').split('\n');
+    expect(lines.filter((line) => line === "    if (!matched && faqBotEnabled === 'true') {")).toHaveLength(1);
   });
 
   test('既存 outbound fetch ファイルが flag 追記で無改変 (全て公開 API 宛)', () => {

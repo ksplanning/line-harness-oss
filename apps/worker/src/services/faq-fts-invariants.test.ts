@@ -68,9 +68,9 @@ describe('D-2 — dark-ship gate + 検索スコア下限 + escalate/grounding/LL
     expect(lines.filter((l) => l === 'index_name = "ks-knowledge-chunks"')).toHaveLength(1);
   });
 
-  test('webhook faq gate 行が byte-identical (FTS 差替は faq-reply/faq-fts 内のみ)', () => {
-    expect(readRepo('apps/worker/src/routes/webhook.ts')).toContain("if (!matched && faqBotEnabled === 'true') {");
-    expect(unchangedVsMain('apps/worker/src/routes/webhook.ts')).toBe(true);
+  test('webhook faq gate 行が byte-identical (他 handler の機能追加は許容)', () => {
+    const lines = readRepo('apps/worker/src/routes/webhook.ts').split('\n');
+    expect(lines.filter((line) => line === "    if (!matched && faqBotEnabled === 'true') {")).toHaveLength(1);
   });
 
   test('faq-ai.ts の faq Dice floor (retrievalFloor 尺度) が不変 (B-4 で chunk 結線しても faq 側 floor は緩和しない)', () => {
