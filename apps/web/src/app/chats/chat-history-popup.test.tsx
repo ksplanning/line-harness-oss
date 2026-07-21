@@ -95,12 +95,82 @@ afterEach(() => {
   document.body.style.overflow = ''
 })
 
-async function openExpandedHistory() {
+async function openChatDetail() {
   render(<ChatsPage />)
   fireEvent.click(await screen.findByRole('button', { name: /佐藤さん/ }))
-  fireEvent.click(await screen.findByRole('button', { name: 'チャット履歴を拡大表示' }))
+  await screen.findByRole('button', { name: 'チャット履歴を拡大表示' })
+}
+
+async function openExpandedHistory() {
+  await openChatDetail()
+  fireEvent.click(screen.getByRole('button', { name: 'チャット履歴を拡大表示' }))
   return screen.getByRole('dialog', { name: '佐藤さんのチャット履歴' })
 }
+
+describe('チャット詳細のモバイル配置', () => {
+  it('identity と action を2段に分け、戻る・avatar・長い名前を窮屈にしない', async () => {
+    const longFriendName = 'まつもとクリニック予約窓口のご担当者さま'
+    apiMocks.getChat.mockResolvedValue({
+      success: true,
+      data: {
+        ...chat,
+        friendName: longFriendName,
+        friendPictureUrl: 'https://example.test/friend.jpg',
+        messages: [],
+      },
+    })
+
+    await openChatDetail()
+    const header = screen.getByTestId('chat-detail-header')
+    const identity = within(header).getByTestId('chat-detail-identity')
+    const actions = within(header).getByTestId('chat-detail-actions')
+    const backButton = within(identity).getByRole('button', { name: '戻る' })
+    const avatar = within(identity).getByTestId('chat-detail-avatar')
+    const friendName = within(identity).getByText(longFriendName)
+
+    expect(header.className).toContain('flex-col')
+    expect(header.className).toContain('sm:flex-row')
+    expect(identity.className).toContain('w-full')
+    expect(backButton.className).toContain('h-11')
+    expect(backButton.className).toContain('w-11')
+    expect(avatar).toBeTruthy()
+    expect(friendName.className).toContain('break-words')
+    expect(friendName.className).toContain('sm:truncate')
+    expect(actions.className).toContain('grid')
+    expect(actions.className).toContain('grid-cols-2')
+    expect(actions.className).toContain('sm:flex')
+  })
+
+  it('composer 表示中だけ mobile FAB を右下端の44pxへ退避し、一覧へ戻ると通常位置へ戻す', async () => {
+    render(<ChatsPage />)
+    const ccButton = screen.getByRole('button', { name: 'CCに依頼' })
+
+    expect(ccButton.className).toContain('bottom-6')
+    expect(ccButton.className).toContain('right-6')
+    expect(ccButton.className).not.toContain('h-11')
+
+    fireEvent.click(await screen.findByRole('button', { name: /佐藤さん/ }))
+    const composer = (await screen.findByRole('textbox', { name: 'メッセージを入力' })).closest('[data-chat-composer]')
+
+    await waitFor(() => {
+      expect(composer?.className).toContain('pb-16')
+      expect(composer?.className).toContain('sm:pb-3')
+      expect(ccButton.className).toContain('bottom-2')
+      expect(ccButton.className).toContain('right-2')
+      expect(ccButton.className).toContain('h-11')
+      expect(ccButton.className).toContain('w-11')
+      expect(ccButton.className).toContain('sm:bottom-6')
+      expect(ccButton.className).toContain('sm:right-6')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '戻る' }))
+    await waitFor(() => {
+      expect(ccButton.className).toContain('bottom-6')
+      expect(ccButton.className).toContain('right-6')
+      expect(ccButton.className).not.toContain('h-11')
+    })
+  })
+})
 
 describe('個別チャット履歴の拡大表示', () => {
   it('狭い窓と同じ履歴内容をデスクトップ90%・モバイル全画面のダイアログで開く', async () => {

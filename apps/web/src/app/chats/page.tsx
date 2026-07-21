@@ -505,21 +505,25 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-4 py-4 border-b border-gray-200 flex items-center gap-3">
-        <button onClick={onBack} className="lg:hidden text-gray-400 hover:text-gray-600">
+      <div className="flex items-center gap-2 border-b border-gray-200 px-4 py-3 sm:gap-3 sm:py-4">
+        <button
+          onClick={onBack}
+          className="inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-700 lg:hidden"
+          aria-label="戻る"
+        >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
         </button>
         {friend?.pictureUrl ? (
-          <img src={friend.pictureUrl} alt="" className="w-8 h-8 rounded-full" />
+          <img src={friend.pictureUrl} alt="" className="h-8 w-8 flex-none rounded-full" />
         ) : (
-          <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center">
+          <div className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-gray-200">
             <span className="text-gray-500 text-xs">{(friend?.displayName || '?').charAt(0)}</span>
           </div>
         )}
-        <div>
-          <p className="text-sm font-bold text-gray-900">{friend?.displayName || '不明'}</p>
+        <div className="min-w-0 flex-1">
+          <p className="break-words text-sm font-bold text-gray-900 sm:truncate">{friend?.displayName || '不明'}</p>
           <p className="text-xs text-gray-400">メッセージ履歴</p>
         </div>
       </div>
@@ -545,7 +549,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
           ))
         )}
       </div>
-      <div className="px-4 py-3 border-t border-gray-200">
+      <div data-chat-composer className="border-t border-gray-200 px-4 pb-16 pt-3 sm:pb-3">
         <div className="flex items-end gap-2">
           <PersonalizedTextEditor
             mode="emoji-only"
@@ -1199,6 +1203,11 @@ export default function ChatsPage() {
     }
   }
 
+  const isChatComposerVisible = Boolean(
+    (selectedChatId && chatDetail && !detailLoading)
+      || (selectedFriendId && !selectedChatId),
+  )
+
   return (
     <div>
       <Header title="オペレーターチャット" />
@@ -1350,22 +1359,41 @@ export default function ChatsPage() {
           ) : chatDetail ? (
             <>
               {/* Chat Header */}
-              <div className="px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
+              <div
+                data-testid="chat-detail-header"
+                className="flex flex-col items-stretch gap-3 border-b border-gray-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-2 sm:py-4"
+              >
+                <div
+                  data-testid="chat-detail-identity"
+                  className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:flex-1"
+                >
                   <button
                     onClick={() => setSelectedChatId(null)}
-                    className="lg:hidden flex-shrink-0 p-1 -ml-1 text-gray-500 hover:text-gray-700"
+                    className="inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-700 lg:hidden"
                     aria-label="戻る"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                     </svg>
                   </button>
-                  {chatDetail.friendPictureUrl && (
-                    <img src={chatDetail.friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0" />
+                  {chatDetail.friendPictureUrl ? (
+                    <img
+                      data-testid="chat-detail-avatar"
+                      src={chatDetail.friendPictureUrl}
+                      alt=""
+                      className="h-8 w-8 flex-none rounded-full"
+                    />
+                  ) : (
+                    <div
+                      data-testid="chat-detail-avatar"
+                      aria-hidden="true"
+                      className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-gray-200 text-xs text-gray-500"
+                    >
+                      {chatDetail.friendName.charAt(0)}
+                    </div>
                   )}
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">
+                  <div className="min-w-0 flex-1">
+                    <p className="break-words text-sm font-medium text-gray-900 sm:truncate">
                       {chatDetail.friendName}
                     </p>
                     <span
@@ -1375,7 +1403,10 @@ export default function ChatsPage() {
                     </span>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div
+                  data-testid="chat-detail-actions"
+                  className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center"
+                >
                   <button
                     ref={expandHistoryButtonRef}
                     type="button"
@@ -1468,7 +1499,7 @@ export default function ChatsPage() {
               </div>
 
               {/* Send Message Form */}
-              <div className="px-4 py-3 border-t border-gray-200">
+              <div data-chat-composer className="border-t border-gray-200 px-4 pb-16 pt-3 sm:pb-3">
                 <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-600">
                   <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                     <input
@@ -1675,7 +1706,10 @@ export default function ChatsPage() {
         </>
       )}
 
-      <CcPromptButton prompts={ccPrompts} />
+      <CcPromptButton
+        prompts={ccPrompts}
+        isChatComposerVisible={isChatComposerVisible}
+      />
     </div>
   )
 }
