@@ -887,14 +887,16 @@ describe('Sheets connections DB helper', () => {
       lineAccountId: 'acc-1', formId: 'friends-lock', spreadsheetId: 'sheet-before',
       sheetName: '台帳', syncDirection: 'bidirectional',
     });
+    const acquiredAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
 
     await expect(friendLedgerDb.claimSheetsSyncLock(
       db, 'acc-1', created.id, 'stale-generation',
-      '2026-07-21T10:00:00+09:00', '2026-07-21T10:05:00+09:00', 2,
+      acquiredAt, expiresAt, 2,
     )).resolves.toBe(false);
     await expect(friendLedgerDb.claimSheetsSyncLock(
       db, 'acc-1', created.id, 'current-generation',
-      '2026-07-21T10:00:00+09:00', '2026-07-21T10:05:00+09:00', 1,
+      acquiredAt, expiresAt, 1,
     )).resolves.toBe(true);
     await expect(updateSheetsConnection(db, 'acc-1', created.id, {
       spreadsheetId: 'sheet-after', sheetName: '台帳', syncDirection: 'to_sheets',
