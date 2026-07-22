@@ -1,3 +1,25 @@
+# sheet-sametab-validation-fix — host 実測チェック（2026-07-23）
+
+## オーナー向けの日常語での説明
+
+自前のスプレッドシートに「フォーム回答だけ」または「友だち台帳だけ」をつなぐ場合は、タブが1つしかなくてもそのまま保存できます。両方を同時に使う場合だけ、データが混ざらないように別々のタブを選んでください。
+
+## lane host 実測結果
+
+- [x] タブが1つの状態で「フォーム回答シート」だけをオンにすると、同じタブ名でも警告が出ず「シート連携を保存」を押せる。
+- [x] 同じ1タブのまま「友だち台帳も同期する」もオンにすると、「友だち台帳とフォーム回答は別のタブを選んでください」と表示され、保存できない。
+- [x] その状態から「フォーム回答シート」をオフにすると、警告が消えて「友だち台帳だけ」の設定を保存できる。
+- [x] API実測でも、回答のみ＋同タブは201、台帳のみ＋同タブは200、両方オン＋同タブは400、両方オン＋別タブは200になる。
+- [x] 手動同期は、台帳のみなら `ledger` だけ、回答のみなら `form_results` だけを各1回開始する。
+
+実測環境と証跡:
+
+- lane host の React/jsdom: `pnpm --dir apps/web exec vitest run src/components/forms-advanced/internal-sheets-setup-panel.test.tsx` → 8 tests passed
+- lane host の Hono/SQLite: `pnpm --dir apps/worker exec vitest run src/routes/sheets-connections.test.ts src/routes/sheets-connections.inline-sync.test.ts` → 23 tests passed
+- 実在データ・外部Google Sheets・LINE送信は使わず、テストfixtureとmockのみ。LINE送信0件、migration変更0件。
+
+---
+
 # data-cockpit-readability — deployed host 実表示チェック
 
 ## 目的と安全境界
