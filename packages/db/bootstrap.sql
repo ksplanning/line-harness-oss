@@ -572,7 +572,7 @@ CREATE TABLE formaloo_forms (
                         CHECK (render_backend IN ('formaloo', 'internal')),
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, allow_post_edit INTEGER NOT NULL DEFAULT 0, allow_edit_mail INTEGER NOT NULL DEFAULT 0, edit_mail_field_slug TEXT, edit_link_epoch INTEGER NOT NULL DEFAULT 0, formaloo_webhook_enabled INTEGER NOT NULL DEFAULT 0, formaloo_webhook_id TEXT, formaloo_webhook_secret TEXT, formaloo_webhook_url TEXT, formaloo_webhook_lock_token TEXT, formaloo_webhook_lock_until INTEGER, formaloo_webhook_pull_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_processed_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_lock_token TEXT, formaloo_webhook_pull_lock_until INTEGER, formaloo_webhook_pull_not_before INTEGER NOT NULL DEFAULT 0);
+, allow_post_edit INTEGER NOT NULL DEFAULT 0, allow_edit_mail INTEGER NOT NULL DEFAULT 0, edit_mail_field_slug TEXT, edit_link_epoch INTEGER NOT NULL DEFAULT 0, formaloo_webhook_enabled INTEGER NOT NULL DEFAULT 0, formaloo_webhook_id TEXT, formaloo_webhook_secret TEXT, formaloo_webhook_url TEXT, formaloo_webhook_lock_token TEXT, formaloo_webhook_lock_until INTEGER, formaloo_webhook_pull_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_processed_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_lock_token TEXT, formaloo_webhook_pull_lock_until INTEGER, formaloo_webhook_pull_not_before INTEGER NOT NULL DEFAULT 0, allow_branch_edit INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE formaloo_recurring_submissions (
   id                   TEXT PRIMARY KEY,
