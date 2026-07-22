@@ -22,14 +22,14 @@
 
 ## 実測記入欄
 
-- 実施日時（JST）:
-- 査読済み revision / deploy revision:
-- 確認環境（個人情報を書かない）:
-- PC 1440px サイドバー名称 / ページ見出し:
-- 390px 「停止中」の画面内表示:
-- 友だち一覧 PC 1440px After 再撮:
-- 保存・送信・削除を行っていないこと:
-- 結果（PASS / FAIL / BLOCKED）と理由:
+- 実施日時（JST）: 2026-07-22 08:20〜08:35
+- 査読済み revision / deploy revision: main `460e34a0` / ks admin Pages deploy `51e5681f`（https://line-harness-ks-admin.pages.dev、フッター build `460e34a0fc97` 実測一致）/ piecemaker admin Pages deploy `f994e7a0`（https://line-harness-piecemaker-admin.pages.dev、/login 200・ks値0hit・pm値焼込み確認）
+- 確認環境（個人情報を書かない）: ks 本番 admin（headless Chrome CDP9222・legacy APIキーログイン qa-login-key.txt・PC1440/mobile390 emulation）
+- PC 1440px サイドバー名称 / ページ見出し: PASS — サイドバー「分析」展開で項目名「フォームビルダー」表示（「高機能フォーム」文字列は body 全文検索で0件）。`/forms-advanced` の h1 も「フォームビルダー」。スクショ `sidebar-analysis-expanded-pc1440.png` / `form-builder-name-pc1440.png`
+- 390px 「停止中」の画面内表示: PASS — 友だち一覧最初の位置で「停止中」バッジが `getBoundingClientRect()` 実測 left=33/right=69（vw=390 内に完全収容・見切れなし）。スクショ `friends-list-mobile390-after.png`
+- 友だち一覧 PC 1440px After 再撮: 完了 — 「対応マーク／名前／シナリオ／受信メッセージ／★つきタグ・友だち情報」5列が一列整列。`.ars-state/screenshots/uiux-after/friends-list-pc1440.png` として保存済み（持ち越し分解消）
+- 保存・送信・削除を行っていないこと: 確認済み — ログイン＋画面遷移＋スクリーンショットのみ。保存/送信/削除ボタン不押下
+- 結果（PASS / FAIL / BLOCKED）と理由: **PASS**（A/B/C 全項目を ks 本番admin実機で確認・機能・route・データ変化なし）
 
 ---
 
