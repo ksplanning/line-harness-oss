@@ -103,7 +103,7 @@ describe('internal form persistence', () => {
     expect(await getInternalFormSubmission(DB, 'fa_other', created.id)).toBeNull();
   });
 
-  test('lists only the latest verified submission per friend inside the requested form and tenant', async () => {
+  test('lists anonymous submissions plus the latest verified submission per friend in the requested tenant', async () => {
     raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
       VALUES ('acc-1', 'channel-1', 'A', 'token', 'secret'),
              ('acc-2', 'channel-2', 'B', 'token', 'secret')`).run();
@@ -129,9 +129,13 @@ describe('internal form persistence', () => {
       formId: 'fa_internal', friendId: 'friend-1', answers: { name: '同時刻の後' },
       submittedAt: '2026-07-21T11:00:00+09:00',
     });
-    await createInternalFormSubmission(DB, {
+    const anonymous = await createInternalFormSubmission(DB, {
       formId: 'fa_internal', friendId: null, answers: { name: '匿名' },
       submittedAt: '2026-07-21T12:00:00+09:00',
+    });
+    const anonymousSecond = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal', friendId: null, answers: { name: '匿名2' },
+      submittedAt: '2026-07-21T12:01:00+09:00',
     });
     await createInternalFormSubmission(DB, {
       formId: 'fa_internal', friendId: 'friend-2', answers: { name: '別tenant' },
@@ -142,12 +146,25 @@ describe('internal form persistence', () => {
       submittedAt: '2026-07-21T12:00:00+09:00',
     });
 
-    await expect(listLatestVerifiedInternalFormSubmissions(DB, 'acc-1', 'fa_internal'))
-      .resolves.toEqual([expect.objectContaining({
-        id: latest.id,
-        friend_id: 'friend-1',
-        answers_json: '{"name":"同時刻の後"}',
-      })]);
+    const rows = await listLatestVerifiedInternalFormSubmissions(DB, 'acc-1', 'fa_internal');
+    expect(rows).toHaveLength(3);
+    expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: anonymous.id,
+          friend_id: null,
+          answers_json: '{"name":"匿名"}',
+        }),
+        expect.objectContaining({
+          id: anonymousSecond.id,
+          friend_id: null,
+          answers_json: '{"name":"匿名2"}',
+        }),
+        expect.objectContaining({
+          id: latest.id,
+          friend_id: 'friend-1',
+          answers_json: '{"name":"同時刻の後"}',
+        }),
+      ]));
     await expect(listLatestVerifiedInternalFormSubmissions(DB, 'acc-2', 'fa_internal'))
       .resolves.toEqual([]);
     await expect(listLatestVerifiedInternalFormSubmissions(DB, 'acc-1', 'fa_other'))

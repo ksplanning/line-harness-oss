@@ -103,12 +103,20 @@ describe('target-aware sheets sync jobs', () => {
     expect(targets).toEqual(['form_results']);
   });
 
-  test('a manual results job snapshots the verified submission set', async () => {
+  test('a manual results job snapshots friend-backed and anonymous submissions', async () => {
     insertSubmissions(3);
+    const insertAnonymous = raw.prepare(`INSERT INTO internal_form_submissions
+      (id, form_id, friend_id, answers_json, submitted_at, created_at)
+      VALUES (?, 'form-1', NULL, ?, ?, ?)`);
+    for (let index = 3; index < 6; index += 1) {
+      const suffix = String(index).padStart(4, '0');
+      const timestamp = `2026-07-21T10:00:0${index}+09:00`;
+      insertAnonymous.run(`ifs-${suffix}`, JSON.stringify({ q1: `回答${suffix}` }), timestamp, timestamp);
+    }
     const job = await startSheetsSyncJob({
       db, connection, source: 'manual', actor: 'owner-1', target: 'form_results',
     });
-    expect(job).toMatchObject({ target: 'form_results', status: 'running', totalCount: 3 });
+    expect(job).toMatchObject({ target: 'form_results', status: 'running', totalCount: 6 });
     // A ledger job for the same connection can run at the same time.
     const ledgerJob = await startSheetsSyncJob({ db, connection, source: 'manual', actor: 'owner-1' });
     expect(ledgerJob).toMatchObject({ target: 'ledger', status: 'running' });

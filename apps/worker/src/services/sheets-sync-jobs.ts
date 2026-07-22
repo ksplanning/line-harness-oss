@@ -209,15 +209,16 @@ export async function startSheetsSyncJob(options: {
   }
 
   // The snapshot bound freezes the record set of this job: friends for the
-  // ledger target, verified submissions for the form-results target.
+  // ledger target, tenant-owned or anonymous submissions for the form-results target.
   const snapshot = target === 'form_results'
     ? await options.db.prepare(
       `SELECT submission.id, submission.submitted_at AS created_at,
               COUNT(*) OVER () AS total_count
        FROM internal_form_submissions submission
-       INNER JOIN friends friend
+       LEFT JOIN friends friend
          ON friend.id = submission.friend_id AND friend.line_account_id = ?
-       WHERE submission.form_id = ? AND submission.friend_id IS NOT NULL
+       WHERE submission.form_id = ?
+         AND (submission.friend_id IS NULL OR friend.id IS NOT NULL)
        ORDER BY submission.submitted_at DESC, submission.id DESC LIMIT 1`,
     ).bind(options.connection.lineAccountId, options.connection.formId).first<{
       id: string;

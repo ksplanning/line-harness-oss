@@ -416,9 +416,10 @@ export async function listInternalFormSubmissions(
 }
 
 /**
- * Returns one verified internal answer row per friend. A friend join supplies
- * both identity verification and tenant scope; equal submission timestamps are
- * resolved by SQLite insertion order so repeated reads select the same row.
+ * Returns every anonymous answer plus one verified internal answer per friend.
+ * Friend-backed rows are tenant-verified; anonymous rows are scoped by the
+ * requested form. Equal friend submission timestamps are resolved by SQLite
+ * insertion order so repeated reads select the same row.
  */
 export async function listLatestVerifiedInternalFormSubmissions(
   db: D1Database,
@@ -429,11 +430,12 @@ export async function listLatestVerifiedInternalFormSubmissions(
     `SELECT submission.id, submission.form_id, submission.friend_id,
             submission.answers_json, submission.submitted_at, submission.created_at
      FROM internal_form_submissions submission
-     INNER JOIN friends friend
+     LEFT JOIN friends friend
        ON friend.id = submission.friend_id AND friend.line_account_id = ?
      INNER JOIN formaloo_forms form
        ON form.id = submission.form_id
-     WHERE submission.form_id = ? AND submission.friend_id IS NOT NULL
+     WHERE submission.form_id = ?
+       AND (submission.friend_id IS NULL OR friend.id IS NOT NULL)
        AND form.deleted = 0 AND form.render_backend = 'internal'
        AND (form.line_account_id = ? OR form.line_account_id IS NULL)
        AND NOT EXISTS (
@@ -518,10 +520,11 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
 }
 
 /**
- * Returns every friend-verified internal answer row of a form (1 submission =
- * 1 results-tab row). The friend join supplies identity verification and
- * tenant scope; ordering matches SQLite binary order so a chunk cursor over
- * (submitted_at, id) resumes deterministically.
+ * Returns every tenant-owned or anonymous internal answer row of a form
+ * (1 submission = 1 results-tab row). Friend-backed rows are tenant-verified;
+ * anonymous rows are scoped by the form and connection. Ordering matches
+ * SQLite binary order so a chunk cursor over (submitted_at, id) resumes
+ * deterministically.
  */
 export async function listVerifiedInternalFormSubmissionsForSheets(
   db: D1Database,
@@ -532,11 +535,12 @@ export async function listVerifiedInternalFormSubmissionsForSheets(
     `SELECT submission.id, submission.form_id, submission.friend_id,
             submission.answers_json, submission.submitted_at, submission.created_at
      FROM internal_form_submissions submission
-     INNER JOIN friends friend
+     LEFT JOIN friends friend
        ON friend.id = submission.friend_id AND friend.line_account_id = ?
      INNER JOIN formaloo_forms form
        ON form.id = submission.form_id
-     WHERE submission.form_id = ? AND submission.friend_id IS NOT NULL
+     WHERE submission.form_id = ?
+       AND (submission.friend_id IS NULL OR friend.id IS NOT NULL)
        AND form.deleted = 0 AND form.render_backend = 'internal'
        AND (form.line_account_id = ? OR form.line_account_id IS NULL)
      ORDER BY submission.submitted_at ASC, submission.id ASC`,
@@ -559,11 +563,13 @@ export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId
     `UPDATE internal_form_submissions
      SET answers_json = ?
      WHERE id = ? AND form_id = ? AND answers_json = ?
-       AND friend_id IS NOT NULL
-       AND EXISTS (
-         SELECT 1 FROM friends friend
-         WHERE friend.id = internal_form_submissions.friend_id
-           AND friend.line_account_id = ?
+       AND (
+         friend_id IS NULL
+         OR EXISTS (
+           SELECT 1 FROM friends friend
+           WHERE friend.id = internal_form_submissions.friend_id
+             AND friend.line_account_id = ?
+         )
        )
        AND EXISTS (
          SELECT 1 FROM formaloo_forms form

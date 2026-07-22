@@ -129,7 +129,7 @@ export interface FormResultsSyncResult {
 
 interface SubmissionRowState {
   submission: InternalFormSubmission;
-  friend: FriendState;
+  friend: FriendState | undefined;
   answers: InternalAnswerState;
 }
 
@@ -468,7 +468,7 @@ export async function syncFormResults(
     const rowStates: SubmissionRowState[] = [];
     for (const submission of submissions) {
       const friend = submission.friend_id ? friendById.get(submission.friend_id) : undefined;
-      if (!friend) continue;
+      if (submission.friend_id && !friend) continue;
       rowStates.push({ submission, friend, answers: parseInternalAnswers(submission) });
     }
     const chunkLimit = options.chunk
@@ -501,15 +501,17 @@ export async function syncFormResults(
       : undefined;
 
     const projectionForRow = (state: SubmissionRowState): Record<string, string> => {
-      const metadata = { ...state.friend.metadata };
-      for (const mapping of options.connection.friendFieldMappings) {
-        if (metadata[mapping.header] === undefined && defaults.has(mapping.fieldId)) {
-          metadata[mapping.header] = defaults.get(mapping.fieldId);
+      const metadata = { ...(state.friend?.metadata ?? {}) };
+      if (state.friend) {
+        for (const mapping of options.connection.friendFieldMappings) {
+          if (metadata[mapping.header] === undefined && defaults.has(mapping.fieldId)) {
+            metadata[mapping.header] = defaults.get(mapping.fieldId);
+          }
         }
       }
       return {
-        'identity:displayName': state.friend.displayName ?? '',
-        'identity:lineUserId': state.friend.lineUserId,
+        'identity:displayName': state.friend?.displayName ?? '',
+        'identity:lineUserId': state.friend?.lineUserId ?? '',
         'identity:submittedAt': state.submission.submitted_at,
         'identity:submissionId': state.submission.id,
         ...Object.fromEntries(options.connection.friendFieldMappings.map((mapping) => [
@@ -888,7 +890,7 @@ export async function syncFormResults(
           const signedSnapshot = snapshotForCell(rowNumber, columnIndex);
           if (signedSnapshot && options.webhookEventId) webhookEventId = options.webhookEventId;
 
-          if (column.kind === 'identity') {
+          if (column.kind === 'identity' || (!state.friend && column.kind !== 'answer')) {
             canonical[column.key] = canonicalValue(expected);
             if (observed !== expected) {
               if (!isNotifiedCell(rowNumber, columnIndex)) {
@@ -1211,39 +1213,41 @@ export async function syncFormResults(
     }
     for (const plan of plans) {
       // Personal-block imports reuse the exact ledger metadata CAS.
-      const imported = await saveImportedMetadata(
-        options.db,
-        options.connection,
-        plan.row.friend,
-        plan.imports,
-        () => toJstString(nowFactory()),
-        renewLease,
-      );
-      plan.row.friend = imported.friend;
-      friendById.set(imported.friend.id, imported.friend);
       const rejectedUpdates: SheetsDataUpdate[] = [];
-      for (const [header, latestValue] of Object.entries(imported.rejected)) {
-        const cell = plan.customCells[header];
-        if (!cell) continue;
-        importedFields -= 1;
-        delete plan.imports[header];
-        plan.canonical[cell.columnKey] = canonicalValue(latestValue);
-        plan.details = plan.details.filter((entry) => entry.fieldName !== header);
-        if (latestValue === cell.observed) continue;
-        plan.details.push(detail(
-          actor,
-          header,
-          cell.observed,
-          latestValue,
-          options.source,
-          'conflict',
-        ));
-        rejectedUpdates.push({
-          range: cellRange(resultsSheetName, plan.rowNumber, cell.columnIndex),
-          values: [[latestValue]],
-        });
-        plan.direction = 'to_sheets';
-        plan.conflictResolution = 'harness_wins';
+      if (plan.row.friend) {
+        const imported = await saveImportedMetadata(
+          options.db,
+          options.connection,
+          plan.row.friend,
+          plan.imports,
+          () => toJstString(nowFactory()),
+          renewLease,
+        );
+        plan.row.friend = imported.friend;
+        friendById.set(imported.friend.id, imported.friend);
+        for (const [header, latestValue] of Object.entries(imported.rejected)) {
+          const cell = plan.customCells[header];
+          if (!cell) continue;
+          importedFields -= 1;
+          delete plan.imports[header];
+          plan.canonical[cell.columnKey] = canonicalValue(latestValue);
+          plan.details = plan.details.filter((entry) => entry.fieldName !== header);
+          if (latestValue === cell.observed) continue;
+          plan.details.push(detail(
+            actor,
+            header,
+            cell.observed,
+            latestValue,
+            options.source,
+            'conflict',
+          ));
+          rejectedUpdates.push({
+            range: cellRange(resultsSheetName, plan.rowNumber, cell.columnIndex),
+            values: [[latestValue]],
+          });
+          plan.direction = 'to_sheets';
+          plan.conflictResolution = 'harness_wins';
+        }
       }
 
       const answerImportIds = Object.keys(plan.answerImports);

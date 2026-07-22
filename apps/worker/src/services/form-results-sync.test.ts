@@ -256,12 +256,27 @@ describe('form results sheet — one row per submission', () => {
     expect(resultsClient.writes.length).toBe(writesBefore);
   });
 
-  test('excludes other tenants and friendless submissions', async () => {
+  test('includes three friend-backed and three anonymous submissions while excluding other tenants', async () => {
     insertSubmission('ifs-foreign', { q1: 'x' }, '2026-07-20T09:00:00+09:00', 'friend-other');
-    insertSubmission('ifs-anon', { q1: 'y' }, '2026-07-20T09:30:00+09:00', null);
-    await run();
+    insertSubmission('ifs-friend-003', { q1: '回答C1', q2: '回答C2' }, '2026-07-20T09:15:00+09:00');
+    insertSubmission('ifs-anon-001', { q1: '匿名回答1', q2: '匿名回答2' }, '2026-07-20T09:30:00+09:00', null);
+    insertSubmission('ifs-anon-002', { q1: '匿名回答3', q2: '匿名回答4' }, '2026-07-21T10:00:00+09:00', null);
+    insertSubmission('ifs-anon-003', { q1: '匿名回答5', q2: '匿名回答6' }, '2026-07-22T10:00:00+09:00', null);
+    const result = await run();
+    expect(result.appendedRows).toBe(6);
     const submissionIds = resultsClient.values.slice(1).map((row) => row[4]);
-    expect(submissionIds).toEqual(['ifs-001', 'ifs-002']);
+    expect(submissionIds).toEqual([
+      'ifs-friend-003', 'ifs-anon-001', 'ifs-001', 'ifs-anon-002', 'ifs-002', 'ifs-anon-003',
+    ]);
+    expect(resultsClient.values[2]).toEqual([
+      '', '', '', '2026-07-20T09:30:00+09:00', 'ifs-anon-001', '匿名回答1', '匿名回答2',
+    ]);
+    expect(resultsClient.values[4]).toEqual([
+      '', '', '', '2026-07-21T10:00:00+09:00', 'ifs-anon-002', '匿名回答3', '匿名回答4',
+    ]);
+    expect(resultsClient.values[6]).toEqual([
+      '', '', '', '2026-07-22T10:00:00+09:00', 'ifs-anon-003', '匿名回答5', '匿名回答6',
+    ]);
   });
 
   test('keeps the legacy file marker when adminOrigin is unavailable', async () => {
@@ -374,6 +389,33 @@ describe('answer edits (D-1 回答欄)', () => {
     expect(result.importedFields).toBe(1);
     expect(submissionAnswers('ifs-001')).toEqual({ q1: '修正済み回答', q2: '回答A2' });
     expect(submissionAnswers('ifs-002')).toEqual({ q1: '回答B1', q2: '回答B2' });
+  });
+
+  test('updates an anonymous answer and restores its personal columns to blank', async () => {
+    insertSubmission(
+      'ifs-anon',
+      { q1: '匿名回答1', q2: '匿名回答2' },
+      '2026-07-20T09:30:00+09:00',
+      null,
+    );
+    await run();
+    const row = resultsClient.values.find((value) => value[4] === 'ifs-anon');
+    expect(row).toEqual([
+      '', '', '', '2026-07-20T09:30:00+09:00', 'ifs-anon', '匿名回答1', '匿名回答2',
+    ]);
+    if (!row) throw new Error('anonymous result row was not created');
+
+    row[0] = '偽名';
+    row[1] = 'U_FAKE';
+    row[2] = '済';
+    row[5] = '匿名回答を修正';
+    const metadataBefore = friendMetadata();
+    const result = await run();
+
+    expect(result.importedFields).toBe(1);
+    expect(row.slice(0, 3)).toEqual(['', '', '']);
+    expect(submissionAnswers('ifs-anon')).toEqual({ q1: '匿名回答を修正', q2: '匿名回答2' });
+    expect(friendMetadata()).toEqual(metadataBefore);
   });
 
   test('rejects a webhook edit for an unselected form field', async () => {

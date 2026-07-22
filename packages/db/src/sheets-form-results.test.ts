@@ -456,6 +456,44 @@ describe('submission-keyed answers write-back', () => {
     expect(JSON.parse(newer.answers_json)).toEqual({ q1: '新しい回答' });
   });
 
+  test('updates an anonymous submission by id without a friend record', async () => {
+    insertSubmission('ifs-anon', null, { q1: '匿名回答' }, '2026-07-22T09:30:00+09:00');
+    insertSubmission('ifs-foreign', 'friend-2', { q1: '別テナント回答' }, '2026-07-22T09:31:00+09:00');
+    const guard = await lease();
+    const updated = await updateInternalFormSubmissionAnswersForSheetsBySubmissionId(db, {
+      lineAccountId: 'acc-1',
+      connectionId: connection.id,
+      connectionVersion: connection.configVersion,
+      formId: 'form-1',
+      submissionId: 'ifs-anon',
+      expectedAnswersJson: JSON.stringify({ q1: '匿名回答' }),
+      answers: { q1: 'シートから匿名回答を修正' },
+      lease: guard,
+    });
+    expect(updated).toBe(true);
+    const row = raw.prepare(`SELECT friend_id, answers_json, submitted_at
+      FROM internal_form_submissions WHERE id = ?`).get('ifs-anon') as {
+        friend_id: string | null;
+        answers_json: string;
+        submitted_at: string;
+      };
+    expect(row.friend_id).toBeNull();
+    expect(row.submitted_at).toBe('2026-07-22T09:30:00+09:00');
+    expect(JSON.parse(row.answers_json)).toEqual({ q1: 'シートから匿名回答を修正' });
+
+    const foreignUpdated = await updateInternalFormSubmissionAnswersForSheetsBySubmissionId(db, {
+      lineAccountId: 'acc-1',
+      connectionId: connection.id,
+      connectionVersion: connection.configVersion,
+      formId: 'form-1',
+      submissionId: 'ifs-foreign',
+      expectedAnswersJson: JSON.stringify({ q1: '別テナント回答' }),
+      answers: { q1: '更新してはいけない' },
+      lease: guard,
+    });
+    expect(foreignUpdated).toBe(false);
+  });
+
   test('compare-and-swap rejects a stale expected answers_json', async () => {
     const guard = await lease();
     const updated = await updateInternalFormSubmissionAnswersForSheetsBySubmissionId(db, {
@@ -492,10 +530,10 @@ describe('submission-keyed answers write-back', () => {
     expect(updated).toBe(false);
   });
 
-  test('lists every friend-verified submission in cursor order and excludes other tenants', async () => {
+  test('lists friend-backed and anonymous submissions in cursor order and excludes other tenants', async () => {
     insertSubmission('ifs-foreign', 'friend-2', { q1: 'x' }, '2026-07-20T09:00:00+09:00');
     insertSubmission('ifs-anon', null, { q1: 'y' }, '2026-07-20T09:30:00+09:00');
     const rows = await listVerifiedInternalFormSubmissionsForSheets(db, 'acc-1', 'form-1');
-    expect(rows.map((row) => row.id)).toEqual(['ifs-old', 'ifs-new']);
+    expect(rows.map((row) => row.id)).toEqual(['ifs-anon', 'ifs-old', 'ifs-new']);
   });
 });
