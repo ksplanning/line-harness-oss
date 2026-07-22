@@ -1102,16 +1102,26 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         return submissionConflictResponse(c.env.DB, runtime);
       }
 
+      let notification: Awaited<ReturnType<typeof notifyInternalFormSubmission>>;
       try {
-        const notification = await notifyInternalFormSubmission(c.env, {
+        notification = await notifyInternalFormSubmission(c.env, {
           formId: runtime.form.id,
           submissionId: submission.id,
         });
-        if (notification.status === 'failed') {
-          console.error('internal form respondent notification failed:', notification.reason);
-        }
-      } catch (error) {
-        console.error('internal form respondent notification failed:', error);
+      } catch {
+        notification = {
+          line: { status: 'failed' as const, reason: 'unexpected_error' },
+          email: { status: 'failed' as const, reason: 'unexpected_error' },
+        };
+      }
+      console.log(`[form-autoreply] ${JSON.stringify({
+        formId: runtime.form.id,
+        submissionId: submission.id,
+        line: notification.line,
+        email: notification.email,
+      })}`);
+      if (notification.line.status === 'failed' || notification.email.status === 'failed') {
+        console.error('internal form respondent notification failed:', JSON.stringify(notification));
       }
     } catch (error) {
       await rollbackUploads(c.env.IMAGES, uploadedKeys);

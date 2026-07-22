@@ -156,8 +156,8 @@ function validBody(): URLSearchParams {
 beforeEach(() => {
   vi.clearAllMocks();
   notificationMocks.notifyInternalFormSubmission.mockResolvedValue({
-    status: 'skipped',
-    reason: 'disabled',
+    line: { status: 'skipped', reason: 'disabled' },
+    email: { status: 'skipped', reason: 'disabled' },
   });
   raw = new Database(':memory:');
   replayAll(raw);
@@ -552,6 +552,72 @@ describe('internal public form POST /f/:formId', () => {
       expect.objectContaining({ DB }),
       { formId: 'fa_internal', submissionId: row.id },
     );
+  });
+
+  test('logs exactly one PII-free structured [form-autoreply] line per accepted submission', async () => {
+    seedForm('fa_internal');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    notificationMocks.notifyInternalFormSubmission.mockResolvedValue({
+      line: { status: 'sent' },
+      email: { status: 'skipped', reason: 'no_email_field' },
+    });
+
+    try {
+      expect((await postForm('fa_internal', validBody())).status).toBe(200);
+
+      const entries = logSpy.mock.calls
+        .map((call) => call[0])
+        .filter((line): line is string => (
+          typeof line === 'string' && line.startsWith('[form-autoreply] ')
+        ));
+      expect(entries).toHaveLength(1);
+      const submission = raw.prepare('SELECT id FROM internal_form_submissions').get() as { id: string };
+      expect(JSON.parse(entries[0]!.slice('[form-autoreply] '.length))).toEqual({
+        formId: 'fa_internal',
+        submissionId: submission.id,
+        line: { status: 'sent' },
+        email: { status: 'skipped', reason: 'no_email_field' },
+      });
+      for (const pii of ['佐藤', 'sato@example.com', '090-1234-5678', 'よろしくお願いします', 'U1', '/ife/']) {
+        expect(entries[0]).not.toContain(pii);
+      }
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  test('logs one bounded PII-free result when the notifier throws', async () => {
+    seedForm('fa_internal');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    notificationMocks.notifyInternalFormSubmission.mockRejectedValue(
+      new Error('佐藤 sato@example.com should never reach the log'),
+    );
+
+    try {
+      expect((await postForm('fa_internal', validBody())).status).toBe(200);
+
+      const entries = logSpy.mock.calls
+        .map((call) => call[0])
+        .filter((line): line is string => (
+          typeof line === 'string' && line.startsWith('[form-autoreply] ')
+        ));
+      expect(entries).toHaveLength(1);
+      const submission = raw.prepare('SELECT id FROM internal_form_submissions').get() as { id: string };
+      expect(JSON.parse(entries[0]!.slice('[form-autoreply] '.length))).toEqual({
+        formId: 'fa_internal',
+        submissionId: submission.id,
+        line: { status: 'failed', reason: 'unexpected_error' },
+        email: { status: 'failed', reason: 'unexpected_error' },
+      });
+      expect(entries[0]).not.toContain('佐藤');
+      expect(entries[0]).not.toContain('sato@example.com');
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('佐藤');
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('sato@example.com');
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 
   test('preserves an invalid GET token through validation so it cannot become an email origin', async () => {

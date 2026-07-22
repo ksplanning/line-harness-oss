@@ -88,6 +88,13 @@ function env() {
   };
 }
 
+function bothSkipped(reason: string) {
+  return {
+    line: { status: 'skipped', reason },
+    email: { status: 'skipped', reason },
+  };
+}
+
 function mockLineSubmission(): void {
   dbMocks.getInternalFormSubmission.mockResolvedValue({
     ...baseSubmission,
@@ -99,6 +106,7 @@ function mockLineSubmission(): void {
     line_user_id: 'U_RESPONDENT',
     display_name: '山田花子',
     line_account_id: 'account-1',
+    is_following: 1,
   });
   dbMocks.getLineAccountById.mockResolvedValue({
     id: 'account-1',
@@ -127,7 +135,7 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
     dbMocks.getInternalFormNotificationSettings.mockResolvedValue(null);
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toEqual({ status: 'skipped', reason: 'disabled' });
+      .resolves.toEqual(bothSkipped('disabled'));
     expect(lineMocks.pushMessage).not.toHaveBeenCalled();
     expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
   });
@@ -136,27 +144,59 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
     dbMocks.getInternalFormNotificationSettings.mockResolvedValue({ ...settings, enabled: false });
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toEqual({ status: 'skipped', reason: 'disabled' });
+      .resolves.toEqual(bothSkipped('disabled'));
     expect(lineMocks.pushMessage).not.toHaveBeenCalled();
     expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
   });
 
-  test('signed LINE-origin submission pushes only to its persisted friend and never falls back to email', async () => {
+  test('an unpublished form skips both channels', async () => {
+    dbMocks.getFormalooForm.mockResolvedValue({ ...form, builder_status: 'draft' });
+
+    await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
+      .resolves.toEqual(bothSkipped('ineligible_form'));
+    expect(lineMocks.pushMessage).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+  });
+
+  test('a LINE friend with an email answer receives both channels for one submission', async () => {
     mockLineSubmission();
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toMatchObject({ status: 'sent', channel: 'line' });
+      .resolves.toEqual({ line: { status: 'sent' }, email: { status: 'sent' } });
     expect(LineClient).toHaveBeenCalledWith('account-token');
     expect(lineMocks.pushMessage).toHaveBeenCalledWith('U_RESPONDENT', [
       expect.objectContaining({ type: 'text', text: expect.stringContaining('山田花子') }),
     ]);
-    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).toHaveBeenCalledWith(
+      expect.objectContaining({ FORM_EDIT_MAIL_ENABLED: 'true' }),
+      expect.objectContaining({
+        to: 'hanako@example.test',
+        idempotencyKey: 'internal-form-notification/ifs-1',
+      }),
+    );
+    expect(JSON.stringify(mailMocks.sendEditMail.mock.calls)).not.toContain('third-party@example.test');
 
     const deliveredText = lineMocks.pushMessage.mock.calls[0]?.[1]?.[0]?.text;
     const loggedText = dbStatement.bind.mock.calls[0]?.[2];
     expect(deliveredText).toMatch(/https:\/\/worker\.example\.test\/ife\//);
     expect(loggedText).toContain('[編集リンクを送信済み]');
     expect(loggedText).not.toContain('/ife/');
+  });
+
+  test('a LINE-only form without a recipient email field still pushes LINE', async () => {
+    mockLineSubmission();
+    dbMocks.getInternalFormNotificationSettings.mockResolvedValue({
+      ...settings,
+      recipientEmailFieldId: null,
+    });
+
+    await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
+      .resolves.toEqual({
+        line: { status: 'sent' },
+        email: { status: 'skipped', reason: 'no_email_field' },
+      });
+    expect(lineMocks.pushMessage).toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -170,7 +210,7 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
     });
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toMatchObject({ status: 'sent', channel: 'line' });
+      .resolves.toMatchObject({ line: { status: 'sent' } });
 
     const messages = lineMocks.pushMessage.mock.calls[0]?.[1] as Array<{ type: string; text: string }>;
     expect(messages.map((message) => message.text.length)).toEqual(expectedLengths);
@@ -244,7 +284,7 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
     });
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toMatchObject({ status: 'sent', channel: 'line' });
+      .resolves.toMatchObject({ line: { status: 'sent' } });
 
     const messages = lineMocks.pushMessage.mock.calls[0]?.[1] as Array<{ type: string; text: string }>;
     expect(messages).toHaveLength(5);
@@ -255,7 +295,10 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
 
   test('embedded submission emails only the explicitly configured answer field', async () => {
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toMatchObject({ status: 'sent', channel: 'email' });
+      .resolves.toEqual({
+        line: { status: 'skipped', reason: 'missing_friend' },
+        email: { status: 'sent' },
+      });
 
     expect(mailMocks.sendEditMail).toHaveBeenCalledWith(
       expect.objectContaining({ FORM_EDIT_MAIL_ENABLED: 'true' }),
@@ -270,32 +313,87 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
     expect(lineMocks.pushMessage).not.toHaveBeenCalled();
   });
 
-  test('invalid signed LINE origin never degrades to email', async () => {
+  test('invalid signed LINE origin skips LINE but still emails the configured answer field', async () => {
     dbMocks.getInternalFormSubmission.mockResolvedValue({
       ...baseSubmission,
       origin_channel: 'invalid',
     });
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toEqual({ status: 'skipped', reason: 'invalid_origin' });
+      .resolves.toEqual({
+        line: { status: 'skipped', reason: 'invalid_origin' },
+        email: { status: 'sent' },
+      });
     expect(lineMocks.pushMessage).not.toHaveBeenCalled();
-    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ to: 'hanako@example.test' }),
+    );
   });
 
-  test('LINE account mismatch fails closed before constructing a sender', async () => {
+  test('LINE account mismatch fails the LINE channel closed without blocking email', async () => {
     dbMocks.getInternalFormSubmission.mockResolvedValue({
       ...baseSubmission,
       origin_channel: 'line',
       friend_id: 'friend-1',
     });
     dbMocks.getFriendById.mockResolvedValue({
-      id: 'friend-1', line_user_id: 'U_OTHER', display_name: '別人', line_account_id: 'account-2',
+      id: 'friend-1', line_user_id: 'U_OTHER', display_name: '別人', line_account_id: 'account-2', is_following: 1,
     });
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toEqual({ status: 'skipped', reason: 'account_mismatch' });
+      .resolves.toEqual({
+        line: { status: 'skipped', reason: 'account_mismatch' },
+        email: { status: 'sent' },
+      });
     expect(LineClient).not.toHaveBeenCalled();
-    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ to: 'hanako@example.test' }),
+    );
+  });
+
+  test('a scoped friend never matches a form with a different account scope', async () => {
+    mockLineSubmission();
+    dbMocks.getFormalooForm.mockResolvedValue({ ...form, line_account_id: null });
+
+    await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
+      .resolves.toEqual({
+        line: { status: 'skipped', reason: 'account_mismatch' },
+        email: { status: 'sent' },
+      });
+    expect(LineClient).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).toHaveBeenCalled();
+  });
+
+  test('a friend who is no longer following skips LINE without blocking email', async () => {
+    mockLineSubmission();
+    dbMocks.getFriendById.mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U_RESPONDENT',
+      display_name: '山田花子',
+      line_account_id: 'account-1',
+      is_following: 0,
+    });
+
+    await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
+      .resolves.toEqual({
+        line: { status: 'skipped', reason: 'missing_friend' },
+        email: { status: 'sent' },
+      });
+    expect(LineClient).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).toHaveBeenCalled();
+  });
+
+  test('a LINE push failure is reported per channel while email still delivers', async () => {
+    mockLineSubmission();
+    lineMocks.pushMessage.mockRejectedValue(new Error('line down'));
+
+    await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
+      .resolves.toEqual({
+        line: { status: 'failed', reason: 'line_push_failed' },
+        email: { status: 'sent' },
+      });
   });
 
   test('recipient setting must still point at an email field in the current definition', async () => {
@@ -305,7 +403,10 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
     });
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toEqual({ status: 'skipped', reason: 'invalid_recipient_field' });
+      .resolves.toEqual({
+        line: { status: 'skipped', reason: 'missing_friend' },
+        email: { status: 'skipped', reason: 'invalid_recipient_field' },
+      });
     expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
   });
 
@@ -341,8 +442,28 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
     });
 
     await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
-      .resolves.toEqual({ status: 'skipped', reason: 'invalid_recipient_field' });
+      .resolves.toEqual({
+        line: { status: 'skipped', reason: 'missing_friend' },
+        email: { status: 'skipped', reason: 'invalid_recipient_field' },
+      });
     expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
     expect(lineMocks.pushMessage).not.toHaveBeenCalled();
+  });
+
+  test('an empty email answer skips only the email channel', async () => {
+    mockLineSubmission();
+    dbMocks.getInternalFormSubmission.mockResolvedValue({
+      ...baseSubmission,
+      origin_channel: 'line',
+      friend_id: 'friend-1',
+      answers_json: JSON.stringify({ name: '山田花子', email: '' }),
+    });
+
+    await expect(notifyInternalFormSubmission(env(), { formId: 'form-1', submissionId: 'ifs-1' }))
+      .resolves.toEqual({
+        line: { status: 'sent' },
+        email: { status: 'skipped', reason: 'invalid_recipient' },
+      });
+    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
   });
 });
