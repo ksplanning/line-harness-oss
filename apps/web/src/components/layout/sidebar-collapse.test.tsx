@@ -95,6 +95,31 @@ describe('Sidebar セクション折りたたみ', () => {
     expect(screen.queryByRole('link', { name: '一斉配信' })).toBeNull()
   })
 
+  it('未対応を個別チャット直下に置き、自動化から外して旧URLを維持する', () => {
+    mocks.pathname = '/notifications'
+
+    render(<Sidebar />)
+
+    const navs = screen.getAllByRole('navigation')
+    expect(navs).toHaveLength(2)
+    for (const nav of navs) {
+      const hrefs = [...nav.querySelectorAll('a')].map((link) => link.getAttribute('href'))
+      const chatsIndex = hrefs.indexOf('/chats')
+      expect(chatsIndex).toBeGreaterThanOrEqual(0)
+      expect(hrefs[chatsIndex + 1]).toBe('/notifications')
+    }
+
+    const automationButtons = screen.getAllByRole('button', { name: '自動化' })
+    fireEvent.click(automationButtons[0])
+    for (const button of automationButtons) {
+      expect(button.parentElement?.querySelector('a[href="/notifications"]')).toBeNull()
+    }
+
+    const legacyLinks = screen.getAllByRole('link', { name: '未対応' })
+    expect(legacyLinks).toHaveLength(2)
+    for (const link of legacyLinks) expect(link.getAttribute('href')).toBe('/notifications')
+  })
+
   it('見出しごとに独立して開閉し、既知のセクションid配列を保存する', () => {
     render(<Sidebar />)
 
