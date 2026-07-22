@@ -38,8 +38,7 @@ describe('form-edit-mail-link — メール編集 URL トグル (T-C1)', () => {
 
   it('後編集を許可する (allow_post_edit=1) と有効化される', () => {
     render(<FormBuilder {...base()} />)
-    // 「後編集を許可しない」を外す = allow_post_edit=1
-    fireEvent.click(screen.getByLabelText('後編集を許可しない'))
+    fireEvent.click(screen.getByLabelText('回答後の編集を許可する'))
     const box = screen.getByLabelText('メールで編集URLを送る') as HTMLInputElement
     expect(box.disabled).toBe(false)
   })

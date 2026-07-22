@@ -920,6 +920,7 @@ describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
     ['submit-end', 'publish'],
     ['utm-tracking', 'publish'],
     ['allow-post-edit', 'after-submit'],
+    ['allow-branch-edit', 'after-submit'],
     ['friend-metadata', 'after-submit'],
     ['allow-edit-mail', 'after-submit'],
     ['edit-mail-field', 'after-submit'],
@@ -1061,7 +1062,7 @@ describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: '回答後の動き' }))
     expectReachable([
-      '後編集を許可しない',
+      '回答後の編集を許可する',
       'Formalooの項目ID',
       '個人情報の項目名',
       'メールで編集URLを送る',
@@ -1252,6 +1253,7 @@ describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
     expect(screen.getByTestId('preview-pane').innerHTML).toBe(previewBefore)
     expect(JSON.parse(JSON.stringify(onSave.mock.calls[0][0]))).toMatchInlineSnapshot(`
       {
+        "allowBranchEdit": 0,
         "allowEditMail": 0,
         "allowPostEdit": 0,
         "description": "",

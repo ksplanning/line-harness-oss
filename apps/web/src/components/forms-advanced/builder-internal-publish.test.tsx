@@ -180,13 +180,14 @@ describe('internal publish confirmation', () => {
       .toContain('LINE外のブラウザ')
   })
 
-  it('hides unsupported Formaloo-only controls while keeping internal受付 controls', () => {
+  it('hides unsupported Formaloo-only controls while keeping internal受付 and edit controls', () => {
     render(<FormBuilder {...base({ initialFriendMetadataMappings: [{ formalooFieldKey: 'email', friendMetadataKey: '連絡先' }] })} />)
 
     expect(screen.queryByLabelText(/reCAPTCHA/)).toBeNull()
     expect(screen.queryByLabelText('下書き保存')).toBeNull()
     expect(screen.queryByLabelText(/UTM/)).toBeNull()
-    expect(screen.queryByLabelText('後編集を許可しない')).toBeNull()
+    expect(screen.getByLabelText('回答後の編集を許可する')).toBeTruthy()
+    expect(screen.getByLabelText('編集時に分岐項目の変更を許可する')).toBeTruthy()
     expect(screen.queryByLabelText('メールで編集URLを送る')).toBeNull()
     expect(screen.queryByTestId('friend-metadata-mapping-section')).toBeNull()
     expect(screen.queryByLabelText('送信エラー時の文言')).toBeNull()
@@ -195,7 +196,7 @@ describe('internal publish confirmation', () => {
     expect(screen.getByLabelText('受付終了')).toBeTruthy()
   })
 
-  it('does not let hidden legacy Formaloo edit-mail settings block an internal publish', async () => {
+  it('saves internal edit permissions without letting hidden Formaloo mail settings block publish', async () => {
     const onSave = vi.fn().mockResolvedValue({ ok: true, publishRevision: 'revision-1' })
     const onPublish = vi.fn().mockResolvedValue(true)
     render(<FormBuilder {...base({
@@ -210,8 +211,11 @@ describe('internal publish confirmation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'この内容で公開する' }))
 
     await waitFor(() => expect(onPublish).toHaveBeenCalledTimes(1))
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      allowPostEdit: 1,
+      allowBranchEdit: 0,
+    }))
     expect(onSave).toHaveBeenCalledWith(expect.not.objectContaining({
-      allowPostEdit: expect.anything(),
       allowEditMail: expect.anything(),
       editMailFieldId: expect.anything(),
     }))

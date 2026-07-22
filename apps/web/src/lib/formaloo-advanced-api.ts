@@ -51,8 +51,10 @@ export interface AdvancedForm {
   // route-terminal-phase2 (Track 2 / T-E5): ルート別完了ページ (builder の initialSuccessPages)。未設定は null。
   successPages?: SuccessPageSpec[] | null
   friendMetadataMappings?: FriendMetadataMapping[]
-  // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。既定 0=現状挙動。弾S は inert (実効化は弾M)。
+  // 回答者後編集の許可フラグ (0=不可 / 1=可)。
   allowPostEdit?: number
+  // internal 編集画面で分岐を決める項目の変更を許可するか (0=不可 / 1=可)。
+  allowBranchEdit?: number
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。
   allowEditMail?: number
   // form-edit-mail Phase B: server が remote slug と照合して返す、明示選択済み email field の internal id。
@@ -120,6 +122,8 @@ export interface SaveDefinitionBody {
   friendMetadataMappings?: FriendMetadataMapping[]
   // form-media-limits ③: 回答者後編集の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。
   allowPostEdit?: number
+  // internal 編集画面の分岐項目変更許可 (0|1)。harness 側保存のみ。
+  allowBranchEdit?: number
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。
   allowEditMail?: number
   // form-edit-mail Phase B: builder 内部 id。worker が email 型を検証し remote slug へ解決する。null=明示解除。

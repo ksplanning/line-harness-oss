@@ -191,6 +191,13 @@ describe('詳細画面 scope 照合', () => {
     expect(screen.queryByTestId('scope-blocked')).toBeNull()
   })
 
+  it('allowBranchEdit を builder の初期値へ渡して再読込後も設定を保つ', async () => {
+    getMock.mockResolvedValue({ ...form('acc_A', 'internal'), allowPostEdit: 1, allowBranchEdit: 1 })
+    render(<FormBuilderClient id="fa1" />)
+    await waitFor(() => expect(screen.getByTestId('form-builder')).toBeTruthy())
+    expect(builderProps.current?.initialAllowBranchEdit).toBe(1)
+  })
+
   it('tenant 定義を別取得して builder の候補 props に渡す', async () => {
     getMock.mockResolvedValue(form('acc_A'))
     render(<FormBuilderClient id="fa1" />)

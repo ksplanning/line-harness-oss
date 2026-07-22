@@ -116,17 +116,17 @@ describe('form-media-limits — 正直注記 + 既存 file UI 非退行 (T-B4)',
   })
 })
 
-describe('form-media-limits — フォーム単位「後編集を許可しない」トグル + inert 注記 (T-C5)', () => {
-  it('フォーム設定にトグルが出て既定 ON (allow_post_edit 0 = 編集不可 = 現状挙動)', () => {
+describe('edit-branch-editability — フォーム単位「回答後の編集を許可する」トグル (D-4)', () => {
+  it('肯定表現のトグルが出て既定 OFF (allow_post_edit 0 = 編集不可)', () => {
     render(<FormBuilder {...base()} />)
-    const box = screen.getByLabelText('後編集を許可しない') as HTMLInputElement
-    expect(box.checked).toBe(true)
+    const box = screen.getByLabelText('回答後の編集を許可する') as HTMLInputElement
+    expect(box.checked).toBe(false)
+    expect(box.dataset.settingId).toBe('allow-post-edit')
   })
 
-  it('inert 注記（いまは保存のみ・実効化は「あと編集」機能=次の弾）が表示される', () => {
+  it('回答者が編集リンクから修正できることを日常語で説明する', () => {
     render(<FormBuilder {...base()} />)
-    expect(screen.getByText(/いまは保存のみ/)).toBeTruthy()
-    expect(screen.getByText(/あと編集/)).toBeTruthy()
+    expect(screen.getByText(/編集リンクから回答を修正/)).toBeTruthy()
   })
 
   it('既定 (未操作) の保存では PUT body allowPostEdit=0 が載る', () => {
@@ -137,18 +137,18 @@ describe('form-media-limits — フォーム単位「後編集を許可しない
     expect(saved.allowPostEdit).toBe(0)
   })
 
-  it('トグルを外す (後編集を許可する) と保存で allowPostEdit=1 が載る', () => {
+  it('トグルを入れると保存で allowPostEdit=1 が載る', () => {
     const onSave = vi.fn()
     render(<FormBuilder {...base({ onSave })} />)
-    fireEvent.click(screen.getByLabelText('後編集を許可しない')) // ON→OFF = 編集を許可
+    fireEvent.click(screen.getByLabelText('回答後の編集を許可する'))
     fireEvent.click(screen.getByText('保存'))
     const saved = onSave.mock.calls[0][0] as { allowPostEdit?: number }
     expect(saved.allowPostEdit).toBe(1)
   })
 
-  it('initialAllowPostEdit=1 で初期化するとトグルは OFF (許可済) 表示', () => {
+  it('initialAllowPostEdit=1 で初期化するとトグルは ON (許可済) 表示', () => {
     render(<FormBuilder {...base({ initialAllowPostEdit: 1 })} />)
-    const box = screen.getByLabelText('後編集を許可しない') as HTMLInputElement
-    expect(box.checked).toBe(false)
+    const box = screen.getByLabelText('回答後の編集を許可する') as HTMLInputElement
+    expect(box.checked).toBe(true)
   })
 })

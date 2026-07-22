@@ -115,8 +115,10 @@ export interface BuilderProps {
   initialFriendMetadataMappings?: FriendMetadataMapping[]
   /** Tenant-wide friend field definitions offered as optional mapping candidates. */
   fieldDefinitions?: readonly FriendFieldDefinition[]
-  /** form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。未設定は 0 (=編集不可=現状挙動)。弾S は inert。 */
+  /** 回答者後編集の許可フラグ (0=不可 / 1=可)。未設定は 0。 */
   initialAllowPostEdit?: number
+  /** internal 編集画面で分岐を決める項目の変更を許可するか (0=不可 / 1=可)。未設定は 0。 */
+  initialAllowBranchEdit?: number
   /** form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0=送らない / 1=送る)。allow_post_edit=1 でのみ有効。 */
   initialAllowEditMail?: number
   /** form-edit-mail Phase B: 宛先として明示選択済みの email field internal id。未設定は先頭 fallback せず null。 */
@@ -130,7 +132,7 @@ export interface BuilderProps {
   onRenderBackendChange?: (renderBackend: RenderBackend) => Promise<RenderBackend | void> | RenderBackend | void
   // F3: onSave は確定結果を返す。ok=完全同期(out_of_sync でない) / design=server 確定 design(新 S3 URL 含む)。
   //     warnings=jump+simple backstop 等の非ブロッキング警告 / void 返却 (throw/legacy) は「未確定」。
-  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[]; publishRevision?: string } | void> | void
+  onSave: (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowBranchEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => Promise<{ ok: boolean; design?: FormDesign; warnings?: string[]; publishRevision?: string } | void> | void
   onSubmitForReview?: () => void
   onPublish?: (publishRevision?: string) => Promise<boolean | void> | boolean | void
   onUnpublish?: () => Promise<boolean | void> | boolean | void
@@ -1516,8 +1518,10 @@ export default function FormBuilder(props: BuilderProps) {
   }
   const [saveWarnings, setSaveWarnings] = useState<string[]>([])
   const [incompleteChoiceWarning, setIncompleteChoiceWarning] = useState<string | null>(null)
-  // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。弾S は inert (保存のみ・実効化は弾M)。
+  // 回答者後編集の許可フラグ (0=不可 / 1=可)。
   const [allowPostEdit, setAllowPostEdit] = useState<number>(props.initialAllowPostEdit ?? 0)
+  // internal 公開編集画面の分岐項目変更許可。既定 0 で安全側に倒す。
+  const [allowBranchEdit, setAllowBranchEdit] = useState<number>(props.initialAllowBranchEdit ?? 0)
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。allow_post_edit=1 でのみ有効 (依存を UI で表現)。
   const [allowEditMail, setAllowEditMail] = useState<number>(props.initialAllowEditMail ?? 0)
   const [friendMetadataMappings, setFriendMetadataMappings] = useState<FriendMetadataMapping[]>(props.initialFriendMetadataMappings ?? [])
@@ -1803,8 +1807,9 @@ export default function FormBuilder(props: BuilderProps) {
         ...(successPagesTouched ? { successPages } : {}),
         ...(renderBackend === 'formaloo' && friendMetadataMappingsTouched ? { friendMetadataMappings } : {}),
         ...(operationsSettingsTouched.size > 0 ? { operationsSettings: operationsSettingsPatch(operationsSettings, operationsSettingsTouched) } : {}),
+        allowPostEdit,
+        allowBranchEdit,
         ...(renderBackend === 'formaloo' ? {
-          allowPostEdit,
           allowEditMail,
           editMailFieldId: editMailFieldId || null,
         } : {}),
@@ -2319,8 +2324,7 @@ export default function FormBuilder(props: BuilderProps) {
       </div>
       </section>
 
-      {/* form-media-limits ③: フォーム単位「後編集を許可しない」トグル (弾M あと編集の前提スイッチ)。
-          弾S は inert = 保存のみ (実効化は弾M)。既定 ON=allow_post_edit 0 = 現状の hosted 挙動と一致。 */}
+      {/* 回答後編集と、internal 公開編集画面の分岐項目編集を近接表示する。 */}
       <section
         id="builder-workspace-content-after-submit"
         role="tabpanel"
@@ -2329,23 +2333,34 @@ export default function FormBuilder(props: BuilderProps) {
         data-settings-group="after-submit"
         hidden={workspaceTab !== 'after-submit'}
       >
-      {renderBackend === 'formaloo' && (
       <div className="mb-2 flex flex-wrap items-start gap-x-2 gap-y-1 rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
         <label className="flex items-center gap-2 text-xs text-gray-600">
           <input
             type="checkbox"
             data-setting-id="allow-post-edit"
-            aria-label="後編集を許可しない"
-            checked={allowPostEdit === 0}
-            onChange={(e) => setAllowPostEdit(e.target.checked ? 0 : 1)}
+            aria-label="回答後の編集を許可する"
+            checked={allowPostEdit === 1}
+            onChange={(e) => setAllowPostEdit(e.target.checked ? 1 : 0)}
           />
-          <span>回答者による後からの編集を許可しない（フォーム単位）</span>
+          <span>回答後の編集を許可する</span>
         </label>
+        {renderBackend === 'internal' && (
+          <label className={`basis-full flex items-center gap-2 text-xs ${allowPostEdit === 1 ? 'text-gray-600' : 'text-gray-400'}`}>
+            <input
+              type="checkbox"
+              data-setting-id="allow-branch-edit"
+              aria-label="編集時に分岐項目の変更を許可する"
+              disabled={allowPostEdit === 0}
+              checked={allowBranchEdit === 1}
+              onChange={(e) => setAllowBranchEdit(e.target.checked ? 1 : 0)}
+            />
+            <span>編集時に分岐項目の変更を許可する</span>
+          </label>
+        )}
         <span className="basis-full text-[10px] text-gray-400 leading-snug">
-          ※ この設定はいまは保存のみで、実際に効き始めるのは「あと編集」機能（次の弾）を作ってからです。
+          ※ 許可すると、回答者が編集リンクから回答を修正できます。
         </span>
       </div>
-      )}
 
       {renderBackend === 'formaloo' && (
       <div data-setting-id="friend-metadata" className="mb-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2" data-testid="friend-metadata-mapping-section">

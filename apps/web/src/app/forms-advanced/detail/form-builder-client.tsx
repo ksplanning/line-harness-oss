@@ -206,7 +206,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
     }
   }
 
-  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => {
+  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowBranchEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => {
     const expectedBackend = renderBackend
     invalidateShare()
     try {
@@ -354,6 +354,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
             internalAvailability={form.internalAvailability}
             fieldDefinitions={fieldDefinitions}
             initialAllowPostEdit={form.allowPostEdit}
+            initialAllowBranchEdit={form.allowBranchEdit}
             initialAllowEditMail={form.allowEditMail}
             initialEditMailFieldId={form.editMailFieldId}
             syncStatus={form.syncStatus}
