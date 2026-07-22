@@ -172,6 +172,13 @@ export const sheetsConnectionsApi = {
     )).data.ok
   },
 
+  async webhookSecret(lineAccountId: string, id: string): Promise<string> {
+    return (await fetchApi<Envelope<{ webhookSecret: string }>>(
+      `${BASE_PATH}/${encodeURIComponent(id)}/webhook-secret?lineAccountId=${encodeURIComponent(lineAccountId)}`,
+      { method: 'POST' },
+    )).data.webhookSecret
+  },
+
   async sync(lineAccountId: string, id: string): Promise<SheetsSyncJob> {
     return (await fetchApi<Envelope<SheetsSyncJob>>(
       `${BASE_PATH}/${encodeURIComponent(id)}/sync?lineAccountId=${encodeURIComponent(lineAccountId)}`,
