@@ -81,6 +81,108 @@ async function openDetail() {
 }
 
 describe('T-D2 回答詳細 編集モード', () => {
+  it('internal source も editVersion CAS 付きで編集し、自前配信表示を保つ', async () => {
+    getMock.mockResolvedValue({ id: 'fa1', title: 'F', lineAccountId: null, renderBackend: 'internal' })
+    getRenderBackendMock.mockResolvedValue('internal')
+    const answerRevision = 'a'.repeat(64)
+    const nextRevision = 'b'.repeat(64)
+    const finalRevision = 'c'.repeat(64)
+    const internalFields = [
+      { slug: 'nameSlug', label: '名前', type: 'text', required: true, editable: true, editableWhenVisible: true, visible: true },
+      { slug: 'consent', label: '同意', type: 'yes_no', required: true, editable: true, editableWhenVisible: true, visible: true },
+      {
+        slug: 'tags', label: '希望', type: 'multiple_select', required: false,
+        editable: true, editableWhenVisible: true, visible: true,
+        choices: ['A, Inc.', '和食、洋食', ' 前後空白 ', '未選択'],
+      },
+      { slug: 'company', label: '会社名', type: 'text', required: true, editable: false, editableWhenVisible: true, visible: false },
+      { slug: 'matrix', label: '評価', type: 'matrix', required: false, editable: false, editableWhenVisible: false, visible: true },
+      { slug: 'repeat', label: '参加者', type: 'repeating_section', required: false, editable: false, editableWhenVisible: false, visible: true },
+      { slug: 'docs', label: '添付', type: 'file', required: false, editable: false, editableWhenVisible: false, visible: true },
+    ]
+    const exactSelections = ['A, Inc.', '和食、洋食', ' 前後空白 ']
+    const remainingSelections = ['A, Inc.', ' 前後空白 ']
+    const refreshedInternalFields = internalFields.map((field) => field.slug === 'company'
+      ? { ...field, editable: true, visible: true }
+      : field)
+    const internalAnswers = {
+      nameSlug: '田中', consent: true, tags: exactSelections, matrix: { 接客: '良い' },
+      repeat: [{ 参加者名: '花子', 年齢: 20 }],
+      docs: [{ key: 'forms/fa1/row1/docs/file.pdf', name: '申込書.pdf', size: 1234, type: 'application/pdf' }],
+    }
+    rowMock.mockResolvedValue({
+      ...detailFor(1), source: 'internal', answers: internalAnswers, fields: internalFields,
+      editVersion: 7, answerRevision,
+    })
+    editRowMock
+      .mockResolvedValueOnce({
+        id: 'row1', source: 'internal', submittedAt: '2026-07-17T00:00:00+09:00',
+        answers: {
+          ...internalAnswers, nameSlug: '内部更新', tags: remainingSelections, company: '株式会社テスト',
+        },
+        allowPostEdit: 1, fields: refreshedInternalFields,
+        editVersion: 8, answerRevision: nextRevision, lastEdit: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'row1', source: 'internal', submittedAt: '2026-07-17T00:00:00+09:00',
+        answers: {
+          ...internalAnswers, nameSlug: '内部更新', tags: remainingSelections, company: '株式会社テスト',
+        },
+        allowPostEdit: 1, fields: refreshedInternalFields,
+        editVersion: 9, answerRevision: finalRevision, lastEdit: null,
+      })
+    await openDetail()
+
+    expect(screen.getByTestId('answer-source').textContent).toContain('自前配信')
+    expect(document.body.textContent).toContain('接客: 良い')
+    expect(document.body.textContent).toContain('参加者名: 花子')
+    expect(document.body.textContent).toContain('申込書.pdf')
+    expect(document.body.textContent).not.toContain('[object Object]')
+    fireEvent.click(screen.getByTestId('edit-answer'))
+    expect((screen.getByTestId('edit-input-consent') as HTMLSelectElement).value).toBe('yes')
+    expect(screen.getByTestId('edit-input-tags').textContent).toContain('A, Inc.')
+    expect((screen.getByTestId('edit-input-tags-0') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByTestId('edit-input-tags-1') as HTMLInputElement).checked).toBe(true)
+    fireEvent.click(screen.getByTestId('edit-input-tags-1'))
+    expect(screen.getByTestId('edit-input-company')).toBeTruthy()
+    fireEvent.change(screen.getByTestId('edit-input-nameSlug'), { target: { value: '内部更新' } })
+    fireEvent.change(screen.getByTestId('edit-input-company'), { target: { value: '株式会社テスト' } })
+    fireEvent.click(screen.getByTestId('edit-save'))
+
+    await waitFor(() => expect(editRowMock).toHaveBeenCalledWith(
+      'fa1',
+      'row1',
+      expect.objectContaining({
+        nameSlug: '内部更新', consent: 'yes',
+        tags: remainingSelections, company: '株式会社テスト',
+      }),
+      7,
+      answerRevision,
+    ))
+    expect(screen.getByTestId('answer-source').textContent).toContain('自前配信')
+    expect(document.body.textContent).toContain('参加者名: 花子')
+    expect(document.body.textContent).toContain('申込書.pdf')
+    expect(document.body.textContent).not.toContain('[object Object]')
+
+    fireEvent.click(screen.getByTestId('edit-answer'))
+    expect(screen.getByTestId('edit-input-company').parentElement?.textContent)
+      .not.toContain('条件を変えたときに入力')
+    expect((screen.getByTestId('edit-input-tags-0') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByTestId('edit-input-tags-1') as HTMLInputElement).checked).toBe(false)
+    expect((screen.getByTestId('edit-input-tags-2') as HTMLInputElement).checked).toBe(true)
+    fireEvent.click(screen.getByTestId('edit-save'))
+    await waitFor(() => expect(editRowMock).toHaveBeenCalledTimes(2))
+    expect(editRowMock).toHaveBeenLastCalledWith(
+      'fa1',
+      'row1',
+      expect.objectContaining({
+        consent: 'yes', tags: remainingSelections, company: '株式会社テスト',
+      }),
+      8,
+      nextRevision,
+    )
+  })
+
   it('allow_post_edit=1 → 編集ボタン表示 → 直して保存すると editRow が呼ばれる', async () => {
     rowMock.mockResolvedValue(detailFor(1))
     editRowMock.mockResolvedValue({ id: 'row1', source: 'formaloo', submittedAt: '2026-07-17T00:00:00+09:00', answers: { nameSlug: '山田', noteSlug: '旧メモ', pickSlug: 'A' }, lastEdit: { editorStaffId: 'env-owner', editorName: 'Owner', editedAt: '2026-07-17T03:00:00+09:00' } })

@@ -53,4 +53,24 @@ describe('T-D1 formalooDataApi.editRow', () => {
     nextResponse = { ok: false, status: 400, data: null, error: '必須項目を空にできません' }
     await expect(api.editRow('f1', 'r1', { nameSlug: '' })).rejects.toBeTruthy()
   })
+
+  test('内部回答は editVersion を同じ PATCH body に載せて CAS できる', async () => {
+    const api = await loadApi()
+    nextResponse = {
+      ok: true,
+      status: 200,
+      data: {
+        id: 'r1', answers: { nameSlug: '内部更新' }, submittedAt: '2026-07-17T00:00:00+09:00',
+        source: 'internal', editVersion: 8, answerRevision: 'next-revision', lastEdit: null,
+      },
+    }
+
+    const res = await api.editRow('f1', 'r1', { nameSlug: '内部更新' }, 7, 'shown-revision')
+
+    expect(captured).toHaveLength(1)
+    expect(captured[0].body).toEqual({
+      answers: { nameSlug: '内部更新' }, editVersion: 7, answerRevision: 'shown-revision',
+    })
+    expect(res).toMatchObject({ source: 'internal', editVersion: 8, answerRevision: 'next-revision' })
+  })
 })

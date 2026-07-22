@@ -274,6 +274,10 @@ export interface RowEditResult {
   answers: Record<string, unknown>
   submittedAt: string
   source: string
+  allowPostEdit?: number
+  editVersion?: number
+  answerRevision?: string
+  fields?: RowEditFieldMeta[]
   lastEdit: { editorStaffId: string | null; editorName: string | null; editedAt: string } | null
 }
 /** 弾M: 回答詳細の編集対象 field メタ (編集モードの入力欄生成 + required 検証用)。 */
@@ -282,7 +286,10 @@ export interface RowEditFieldMeta {
   label: string
   type: string
   required: boolean
+  choices?: string[]
   editable: boolean
+  editableWhenVisible?: boolean
+  visible?: boolean
 }
 /** 弾M: 回答詳細 (drill-through) + 編集コンテキスト (allowPostEdit / editable fields / ④lastEdit)。 */
 export interface RowDetail {
@@ -291,6 +298,8 @@ export interface RowDetail {
   submittedAt: string
   source: string
   allowPostEdit?: number
+  editVersion?: number
+  answerRevision?: string
   fields?: RowEditFieldMeta[]
   lastEdit?: { editorStaffId: string | null; editorName: string | null; editedAt: string } | null
 }
@@ -337,8 +346,19 @@ export const formalooDataApi = {
    * 弾M (form-post-edit / T-D1): ①管理者編集の保存。PATCH で編集後 answers を送る。
    * 反映されない編集は worker が正直エラー (非 2xx) を返す → fetchApi が throw = 呼び出し側で保存を止める。
    */
-  async editRow(id: string, rowId: string, answers: Record<string, unknown>): Promise<RowEditResult> {
-    return (await fetchApi<Envelope<RowEditResult>>(`/api/forms-advanced/${id}/rows/${rowId}`, { method: 'PATCH', body: JSON.stringify({ answers }) })).data
+  async editRow(
+    id: string,
+    rowId: string,
+    answers: Record<string, unknown>,
+    editVersion?: number,
+    answerRevision?: string,
+  ): Promise<RowEditResult> {
+    const body = {
+      answers,
+      ...(editVersion === undefined ? {} : { editVersion }),
+      ...(answerRevision === undefined ? {} : { answerRevision }),
+    }
+    return (await fetchApi<Envelope<RowEditResult>>(`/api/forms-advanced/${id}/rows/${rowId}`, { method: 'PATCH', body: JSON.stringify(body) })).data
   },
   async stats(id: string): Promise<FormStats> {
     return (await fetchApi<Envelope<FormStats>>(`/api/forms-advanced/${id}/stats`)).data
