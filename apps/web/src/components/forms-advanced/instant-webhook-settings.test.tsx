@@ -25,7 +25,9 @@ describe('回答の即時反映 toggle', () => {
     setMock.mockResolvedValue({ enabled: true, available: true })
     render(<InstantWebhookSettings formId="fa_1" />)
     await waitFor(() => expect(screen.getByTestId('instant-webhook-status').textContent).toBe('OFF'))
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '有効化' })) })
+    const toggle = screen.getByRole('button', { name: '有効化' }) as HTMLButtonElement
+    await waitFor(() => expect(toggle.disabled).toBe(false))
+    await act(async () => { fireEvent.click(toggle) })
     expect(setMock).toHaveBeenCalledWith('fa_1', true)
     expect(screen.getByTestId('instant-webhook-status').textContent).toBe('ON')
   })
@@ -35,7 +37,9 @@ describe('回答の即時反映 toggle', () => {
     getMock.mockResolvedValue({ enabled: false, available: true })
     render(<InstantWebhookSettings formId="fa_1" />)
     await waitFor(() => expect(screen.getByTestId('instant-webhook-status').textContent).toBe('OFF'))
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '有効化' })) })
+    const toggle = screen.getByRole('button', { name: '有効化' }) as HTMLButtonElement
+    await waitFor(() => expect(toggle.disabled).toBe(false))
+    await act(async () => { fireEvent.click(toggle) })
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Webhook の登録確認に失敗しました'))
     expect(screen.getByTestId('instant-webhook-status').textContent).toBe('OFF')
   })
