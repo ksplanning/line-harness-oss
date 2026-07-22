@@ -665,6 +665,45 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
   });
 
+  test('[account scope] an env-signed webhook without a registered main account stays global and fail-closed', async () => {
+    vi.mocked(getLineAccounts).mockResolvedValue([]);
+
+    const { db, prepare, stmt, incomingStatement, preparedStatements } = await postTextWebhook(
+      {},
+      '#scoped-only',
+      [],
+    );
+    const autoReplySql = prepare.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) => sql.includes('FROM auto_replies'));
+
+    expect(autoReplySql).toMatch(/line_account_id IS NULL ORDER BY/);
+    expect(autoReplySql).not.toMatch(/line_account_id = \?/);
+    expect(stmt.bind).not.toHaveBeenCalled();
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '#scoped-only',
+      'user_unmatched',
+      expect.any(String),
+    );
+    expect(preparedStatements.some(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    )).toBe(false);
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(fireEvent).toHaveBeenCalledWith(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: '#scoped-only', matched: false },
+        replyToken: 'reply-token',
+      },
+      'env-default-token',
+      null,
+    );
+  });
+
   test('flag OFF keeps text webhook path untouched and does not import/call FAQ reply', async () => {
     const { db } = await postTextWebhook({});
 

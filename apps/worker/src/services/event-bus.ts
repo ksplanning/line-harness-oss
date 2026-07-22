@@ -53,6 +53,8 @@ export async function fireEvent(
   eventType: string,
   payload: EventPayload,
   lineAccessToken?: string,
+  // tri-state: string = that account + global, null = explicitly unknown
+  // authenticated account (global only), undefined = legacy unscoped caller (all).
   lineAccountId?: string | null,
 ): Promise<FireEventResult> {
   // Phase 1: fire webhooks, apply scoring rules, and ad conversion postback concurrently.
@@ -152,9 +154,11 @@ async function processAutomations(
   let automationMessageSent = false;
   try {
     const allAutomations = await getActiveAutomationsByEvent(db, eventType);
-    // Filter by account: match this account's automations + unassigned (backward compat)
+    // Keep the webhook's explicit unknown-account (`null`) fail-closed and aligned
+    // with auto_replies, while preserving wildcard behavior for legacy callers
+    // that have no account context and omit this argument (`undefined`).
     const automations = allAutomations.filter(
-      (a) => !a.line_account_id || !lineAccountId || a.line_account_id === lineAccountId,
+      (a) => !a.line_account_id || lineAccountId === undefined || a.line_account_id === lineAccountId,
     );
 
     for (const automation of automations) {

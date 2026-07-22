@@ -179,6 +179,54 @@ describe('fireEvent — send_message action logging', () => {
     );
   });
 
+  it('does not run account-scoped send automations for an explicitly unknown webhook account', async () => {
+    const dbModule = await import('@line-crm/db');
+    const db = fakeDb({
+      friend: { line_user_id: 'U_test' },
+      capturedInserts: captured,
+    });
+
+    const result = await fireEvent(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: 'コスト比較', matched: false },
+        replyToken: 'reply-token-xyz',
+      },
+      'channel-token',
+      null,
+    );
+
+    expect(result).toEqual({ automationMessageSent: false });
+    expect(lineMessageMocks.replyMessage).not.toHaveBeenCalled();
+    expect(lineMessageMocks.pushMessage).not.toHaveBeenCalled();
+    expect(captured).toHaveLength(0);
+    expect(dbModule.createAutomationLog).not.toHaveBeenCalled();
+  });
+
+  it('keeps omitted account context backward-compatible for non-webhook callers', async () => {
+    const db = fakeDb({
+      friend: { line_user_id: 'U_test' },
+      capturedInserts: captured,
+    });
+
+    const result = await fireEvent(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: 'コスト比較', matched: false },
+        replyToken: 'reply-token-xyz',
+      },
+      'channel-token',
+    );
+
+    expect(result).toEqual({ automationMessageSent: true });
+    expect(lineMessageMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(captured).toHaveLength(1);
+  });
+
   it('logs delivery_type=push when no replyToken provided', async () => {
     const db = fakeDb({
       friend: { line_user_id: 'U_test' },
