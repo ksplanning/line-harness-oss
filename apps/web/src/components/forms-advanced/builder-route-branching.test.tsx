@@ -3,7 +3,7 @@
  * form-route-branching (T-D1) — builder の jump アクション + page 飛び先 + choice 値 select + form_type 自動切替。
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import FormBuilder from './builder'
 import type { HarnessField, HarnessLogicRule } from '@line-crm/shared'
 
@@ -162,6 +162,20 @@ describe('T-D1 — choice source の分岐値は選択肢 select', () => {
     fireEvent.change(screen.getByLabelText('分岐の値'), { target: { value: 'Aルート' } })
     fireEvent.click(screen.getByText('保存'))
     expect((onSave.mock.calls[0][0] as { logic: HarnessLogicRule[] }).logic[0].value).toBe('Aルート')
+  })
+
+  it('次の保存が結果なしで終わっても前回のサーバー警告を消さない', async () => {
+    const onSave = vi.fn()
+      .mockResolvedValueOnce({ ok: true, warnings: ['前回のサーバー警告'] })
+      .mockResolvedValueOnce(undefined)
+    render(<FormBuilder {...base({ onSave, initialFields: [choiceSrc, textTgt] })} />)
+
+    fireEvent.click(screen.getByText('保存'))
+    expect(await screen.findByText(/前回のサーバー警告/)).toBeTruthy()
+
+    fireEvent.click(screen.getByText('保存'))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    expect(screen.getByText(/前回のサーバー警告/)).toBeTruthy()
   })
 
   it('choice source は分岐の値を select で選ぶ (title 表示)', () => {

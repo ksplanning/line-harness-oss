@@ -1515,6 +1515,7 @@ export default function FormBuilder(props: BuilderProps) {
     setLogic((cur) => cur.map((r) => (r.action === 'submit' && r.targetFieldId === id ? { ...r, targetFieldId: '' } : r)))
   }
   const [saveWarnings, setSaveWarnings] = useState<string[]>([])
+  const [incompleteChoiceWarning, setIncompleteChoiceWarning] = useState<string | null>(null)
   // form-media-limits ③: 回答者後編集の許可フラグ (0=不可 / 1=可)。弾S は inert (保存のみ・実効化は弾M)。
   const [allowPostEdit, setAllowPostEdit] = useState<number>(props.initialAllowPostEdit ?? 0)
   // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。allow_post_edit=1 でのみ有効 (依存を UI で表現)。
@@ -1771,10 +1772,10 @@ export default function FormBuilder(props: BuilderProps) {
     })
     if (incompleteChoiceRule) {
       const source = fieldsRef.current.find((field) => field.id === incompleteChoiceRule.sourceFieldId)
-      setSaveWarnings([`「${source?.label ?? '選択項目'}」の条件分岐の値を選択してください。`])
+      setIncompleteChoiceWarning(`「${source?.label ?? '選択項目'}」の条件分岐の値を選択してください。`)
       return null
     }
-    setSaveWarnings([])
+    setIncompleteChoiceWarning(null)
     // route-terminal-phase2 (T-C1): 危険/不正な redirect URL は保存を阻む (inline error を先に直させる)。
     if (redirectUrlError) return null
     if (renderBackend === 'formaloo' && allowEditMail === 1 && !editMailFieldId) {
@@ -2645,8 +2646,9 @@ export default function FormBuilder(props: BuilderProps) {
           <button type="button" aria-label="通知を閉じる" onClick={() => setFormTypeNotice(null)} className="ml-auto text-blue-400 hover:text-blue-700">✕</button>
         </div>
       )}
-      {saveWarnings.length > 0 && (
+      {(incompleteChoiceWarning || saveWarnings.length > 0) && (
         <div data-testid="save-warnings" role="alert" className="mb-2 rounded-md bg-amber-50 border border-amber-300 px-3 py-2 text-xs text-amber-800 space-y-1">
+          {incompleteChoiceWarning ? <div>⚠️ {incompleteChoiceWarning}</div> : null}
           {saveWarnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
         </div>
       )}
