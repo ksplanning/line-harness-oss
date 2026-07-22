@@ -10,19 +10,26 @@
  *  - 正常入力で api.broadcasts.create が messageType=video + senderPresetId 付きで呼ばれ、send は呼ばない
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 
-const { createMock, listPresetsMock } = vi.hoisted(() => ({
+const { createMock, listPresetsMock, getQuotaMock } = vi.hoisted(() => ({
   createMock: vi.fn(),
   listPresetsMock: vi.fn(),
+  getQuotaMock: vi.fn(),
 }))
 
-vi.mock('@/contexts/account-context', () => ({ useAccount: () => ({ selectedAccountId: 'acc-1' }) }))
+vi.mock('@/contexts/account-context', () => ({
+  useAccount: () => ({
+    selectedAccountId: 'acc-1',
+    selectedAccount: { id: 'acc-1', stats: { friendCount: 10 } },
+  }),
+}))
 vi.mock('@/lib/api', () => ({
   api: {
     broadcasts: { create: (...a: unknown[]) => createMock(...a) },
     senderPresets: { list: (...a: unknown[]) => listPresetsMock(...a) },
     abTests: { list: vi.fn(async () => ({ success: true, data: [] })) },
+    lineAccounts: { getQuota: (...a: unknown[]) => getQuotaMock(...a) },
   },
   eventsApi: { listEvents: vi.fn(async () => ({ items: [] })) },
 }))
@@ -40,12 +47,27 @@ beforeEach(() => {
   listPresetsMock.mockReset()
   listPresetsMock.mockResolvedValue({ success: true, data: [{ id: 'sp-1', accountId: 'acc-1', name: '担当A', iconUrl: null, createdAt: '2026-07-04T00:00:00.000' }] })
   createMock.mockResolvedValue({ success: true, data: { id: 'b1' } })
+  getQuotaMock.mockResolvedValue({
+    success: true,
+    data: { plan_label: 'コミュニケーションプラン相当（推定）', limit: 200, used: 197, remaining: 3, type: 'limited' },
+  })
 })
 afterEach(() => cleanup())
 
 function renderForm() {
   return render(<BroadcastForm tags={[]} onSuccess={vi.fn()} onCancel={vi.fn()} />)
 }
+
+describe('LINE公式の残り送信数', () => {
+  it('対象人数と残りを表示し、超過時も作成をブロックせず警告だけ出す', async () => {
+    renderForm()
+
+    const status = await screen.findByRole('status', { name: 'LINE公式の残り送信数' })
+    expect(within(status).getByText('残り送信数 3通 (対象 10人)')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toContain('残り送信数が対象人数より少ないです')
+    expect((screen.getByRole('button', { name: '作成' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+})
 
 describe('T-C8 broadcast-form: 種別選択 + 送信者 dropdown', () => {
   it('全 8 種別ラベルが選べる (新 type 含む)', () => {

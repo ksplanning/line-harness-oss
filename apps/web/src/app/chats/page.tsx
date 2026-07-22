@@ -12,6 +12,7 @@ import ImageUploader, { type ImageUploaderValue } from '@/components/shared/imag
 import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 import CannedResponsePicker from '@/components/chats/canned-response-picker'
 import { applyCannedSelection } from '@/lib/canned-responses/insert-canned-text'
+import { LineQuotaBadge } from '@/components/shared/line-quota-display'
 import {
   notifyFaqDraftReviewChanged,
   subscribeFaqDraftReviewChanges,
@@ -424,9 +425,10 @@ interface MessageLog {
   createdAt: string
 }
 
-function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
+function DirectMessagePanel({ friendId, friend, accountId, onBack, onSent }: {
   friendId: string
   friend: FriendItem | null
+  accountId: string | null
   onBack: () => void
   onSent: () => void
 }) {
@@ -550,6 +552,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
         )}
       </div>
       <div data-chat-composer className="border-t border-gray-200 px-4 pb-16 pt-3 sm:pb-3">
+        <div className="mb-2"><LineQuotaBadge accountId={accountId} /></div>
         <div className="flex items-end gap-2">
           <PersonalizedTextEditor
             mode="emoji-only"
@@ -1345,6 +1348,7 @@ export default function ChatsPage() {
             <DirectMessagePanel
               friendId={selectedFriendId}
               friend={allFriends.find((f) => f.id === selectedFriendId) || null}
+              accountId={selectedAccountId}
               onBack={() => setSelectedFriendId(null)}
               onSent={() => { setSelectedFriendId(null); loadChats(); }}
             />
@@ -1500,6 +1504,7 @@ export default function ChatsPage() {
 
               {/* Send Message Form */}
               <div data-chat-composer className="border-t border-gray-200 px-4 pb-16 pt-3 sm:pb-3">
+                <div className="mb-2"><LineQuotaBadge accountId={selectedAccountId} /></div>
                 <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-600">
                   <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                     <input

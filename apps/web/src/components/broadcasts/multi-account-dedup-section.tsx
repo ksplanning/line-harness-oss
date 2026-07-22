@@ -45,6 +45,7 @@ interface Props {
   onAccountIdsChange: (ids: string[]) => void
   onDedupPriorityChange: (ids: string[]) => void
   onTargetTagIdChange: (id: string | null) => void
+  onRecipientCountChange?: (count: number | null) => void
 }
 
 function PriorityRow({ id, label, flag, ordinal }: { id: string; label: string; flag: string; ordinal: number }) {
@@ -78,6 +79,7 @@ export default function MultiAccountDedupSection({
   onAccountIdsChange,
   onDedupPriorityChange,
   onTargetTagIdChange,
+  onRecipientCountChange,
 }: Props) {
   const { accounts } = useAccount()
   const [preview, setPreview] = useState<PreviewData | null>(null)
@@ -112,6 +114,7 @@ export default function MultiAccountDedupSection({
     if (debounceRef.current) clearTimeout(debounceRef.current)
     if (accountIds.length === 0) {
       setPreview(null)
+      onRecipientCountChange?.(null)
       return
     }
     debounceRef.current = setTimeout(async () => {
@@ -125,6 +128,7 @@ export default function MultiAccountDedupSection({
         })
         if (res.success && res.data) {
           setPreview(res.data)
+          onRecipientCountChange?.(res.data.uniqueRecipients)
         } else {
           setPreviewError(res.error || 'プレビュー取得失敗')
         }
@@ -137,7 +141,7 @@ export default function MultiAccountDedupSection({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [accountIds.join(','), dedupPriority.join(','), targetTagId])
+  }, [accountIds.join(','), dedupPriority.join(','), targetTagId, onRecipientCountChange])
 
   const sensors = useSensors(
     useSensor(PointerSensor),

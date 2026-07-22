@@ -13,6 +13,7 @@ import { validateMediaClient, type MediaMessageType } from '@/lib/broadcast-medi
 import { validateFlex } from '@/lib/flex-builder/validate'
 import type { FlexContents } from '@/lib/flex-builder/types'
 import type { FormBubblePatch } from '@/lib/template-packs/pack-insert'
+import { LineQuotaAudienceStatus } from '@/components/shared/line-quota-display'
 
 interface BroadcastFormProps {
   tags: Tag[]
@@ -46,7 +47,7 @@ interface EditorBlock {
 }
 
 export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFormProps) {
-  const { selectedAccountId } = useAccount()
+  const { selectedAccountId, selectedAccount } = useAccount()
   // 「リンクするイベント」セレクタ用: 公開中の events を取得して
   // 選択された event の LIFF URL (テンプレ) を message に挿入する。
   const [linkableEvents, setLinkableEvents] = useState<EventListItem[]>([])
@@ -70,6 +71,34 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     abTestId: null,
     abVariant: null,
   })
+  const [tagTargetCount, setTagTargetCount] = useState<number | null>(null)
+  const [dedupTargetCount, setDedupTargetCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (form.targetType !== 'tag' || !form.targetTagId || !selectedAccountId) {
+      setTagTargetCount(null)
+      return () => { cancelled = true }
+    }
+    void api.segments.count({
+      operator: 'AND',
+      rules: [
+        { type: 'is_following', value: true },
+        { type: 'tag_exists', value: form.targetTagId },
+      ],
+    }, selectedAccountId).then((res) => {
+      if (!cancelled && res.success) setTagTargetCount(res.count ?? 0)
+    }).catch(() => {
+      if (!cancelled) setTagTargetCount(null)
+    })
+    return () => { cancelled = true }
+  }, [form.targetTagId, form.targetType, selectedAccountId])
+
+  const targetCount = form.targetType === 'multi-account-dedup'
+    ? dedupTargetCount ?? 0
+    : form.targetType === 'tag'
+      ? tagTargetCount ?? 0
+      : selectedAccount?.stats?.friendCount ?? 0
 
   // メッセージ・ブロック列 (combo messages Batch 2)。既定は 1 ブロック=従来の単発配信と同じ見た目。
   const keyCounter = useRef(0)
@@ -371,9 +400,12 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
               onAccountIdsChange={(ids) => setForm({ ...form, accountIds: ids })}
               onDedupPriorityChange={(ids) => setForm({ ...form, dedupPriority: ids })}
               onTargetTagIdChange={(id) => setForm({ ...form, targetTagId: id ?? '' })}
+              onRecipientCountChange={setDedupTargetCount}
             />
           )}
         </div>
+
+        <LineQuotaAudienceStatus accountId={selectedAccountId} targetCount={targetCount} />
 
         {/* Schedule */}
         <div>

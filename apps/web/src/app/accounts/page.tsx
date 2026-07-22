@@ -16,6 +16,7 @@ import {
 import AccountSetupUrls from '@/components/accounts/account-setup-urls'
 import AccountEditModal from '@/components/accounts/account-edit-modal'
 import ResponseScheduleModal from '@/components/accounts/response-schedule-modal'
+import { LineQuotaSummary } from '@/components/shared/line-quota-display'
 
 interface LineAccountListItem {
   id: string
@@ -283,6 +284,8 @@ export default function AccountsPage() {
                   <p className="text-xs text-gray-400">今月送信</p>
                 </div>
               </div>
+
+              <LineQuotaSummary accountId={account.id} />
 
               {/* Login/LIFF status badges — at-a-glance signal that an account
                   is fully wired. Important because SQL-only setup historically

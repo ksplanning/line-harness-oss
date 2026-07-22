@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   updateDraft: vi.fn(),
   approveDraft: vi.fn(),
   discardDraft: vi.fn(),
+  getQuota: vi.fn(),
 }))
 
 const reviewSyncMocks = vi.hoisted(() => ({
@@ -33,6 +34,7 @@ vi.mock('@/lib/api', () => ({
       },
     },
     friends: { list: apiMocks.listFriends },
+    lineAccounts: { getQuota: apiMocks.getQuota },
   },
   fetchApi: vi.fn(),
 }))
@@ -205,6 +207,10 @@ beforeEach(() => {
     },
   })
   apiMocks.discardDraft.mockResolvedValue({ success: true, data: { id: 'draft-1', status: 'discarded' } })
+  apiMocks.getQuota.mockResolvedValue({
+    success: true,
+    data: { plan_label: 'ライトプラン相当（推定）', limit: 5000, used: 4958, remaining: 42, type: 'limited' },
+  })
   reviewSyncMocks.subscribe.mockReturnValue(vi.fn())
 })
 
@@ -379,6 +385,14 @@ describe('個別チャットのインラインAI下書き', () => {
 })
 
 describe('返信コンポーザの余白', () => {
+  it('送信欄の近くに控えめな残り送信数バッジを表示する', async () => {
+    await openChat()
+
+    const badge = await screen.findByRole('status', { name: 'LINE公式の残り送信数' })
+    expect(badge.textContent).toBe('残り 42通')
+    expect(badge.className).toContain('text-xs')
+  })
+
   it('添付・定型文・絵文字を下段1行へまとめ、本文を従来より2行以上広げる', async () => {
     await openChat()
 

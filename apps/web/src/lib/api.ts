@@ -52,6 +52,16 @@ export interface MessageBlock {
   altText?: string | null;
 }
 
+export interface LineQuotaData {
+  plan_label: string
+  limit: number | null
+  used: number
+  remaining: number | null
+  type: 'none' | 'limited'
+  stale?: true
+  message?: string
+}
+
 /** 共通送信レンダラが扱える、テンプレパック／自動返信のメッセージ種別。 */
 export type TemplatePackMessageType = BroadcastMessageType
 
@@ -953,6 +963,8 @@ export const api = {
       fetchApi<ApiResponse<LineAccount[]>>('/api/line-accounts'),
     get: (id: string) =>
       fetchApi<ApiResponse<LineAccount>>(`/api/line-accounts/${id}`),
+    getQuota: (id: string) =>
+      fetchApi<ApiResponse<LineQuotaData>>(`/api/line-accounts/${id}/quota`),
     // G2 配信通数の月次上限。表示 (messagesThisMonth) と gate は同一計測。cap=null=無制限。
     getMonthlyCap: (id: string) =>
       fetchApi<ApiResponse<{ monthlyCap: number | null; messagesThisMonth: number; remaining: number | null }>>(`/api/line-accounts/${id}/monthly-cap`),
