@@ -99,6 +99,7 @@ export interface SyncFormResultsOptions {
   connection: SheetsConnection;
   client?: FriendLedgerSheetsClient;
   credentialsJson?: string;
+  adminOrigin?: string | null;
   source: SheetsSyncAuditSource;
   actor: string;
   now?: () => Date;
@@ -519,6 +520,7 @@ export async function syncFormResults(
           options.connection.formId,
           activeAnswerFields,
           state.answers.valid ? state.answers.answers : {},
+          { adminOrigin: options.adminOrigin, submissionId: state.submission.id },
         ),
         ...Object.fromEntries(removedAnswerFields.map((field) => [
           `answer:${options.connection.formId}:${field.fieldId}`,

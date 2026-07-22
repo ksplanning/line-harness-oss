@@ -143,7 +143,13 @@ describe('target-aware sheets sync jobs', () => {
       });
     const ledgerSync = vi.fn();
 
-    const first = await processNextSheetsSyncJob({ db, sync: ledgerSync, syncResults, chunkSize: 200 });
+    const first = await processNextSheetsSyncJob({
+      db,
+      sync: ledgerSync,
+      syncResults,
+      adminOrigin: 'https://admin.example.test',
+      chunkSize: 200,
+    });
     expect(first.job).toMatchObject({ target: 'form_results', status: 'running', processedCount: 200, totalCount: 450 });
     const second = await processNextSheetsSyncJob({ db, sync: ledgerSync, syncResults, chunkSize: 200 });
     expect(second.job).toMatchObject({ status: 'running', processedCount: 400 });
@@ -152,6 +158,9 @@ describe('target-aware sheets sync jobs', () => {
     expect(ledgerSync).not.toHaveBeenCalled();
     expect(syncResults).toHaveBeenNthCalledWith(2, expect.objectContaining({
       chunk: expect.objectContaining({ after: cursors[0], limit: 200 }),
+    }));
+    expect(syncResults).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      adminOrigin: 'https://admin.example.test',
     }));
     const latest = await getLatestSheetsSyncJob(db, 'acc-1', connection.id, 'form_results');
     expect(latest).toMatchObject({

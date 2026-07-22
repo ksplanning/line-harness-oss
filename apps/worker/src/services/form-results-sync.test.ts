@@ -125,6 +125,22 @@ function enableForm(fields: Array<{ id: string; label: string; type?: string; po
     VALUES ('form-1', '回答フォーム', ?, 'internal', 'acc-1')`).run(JSON.stringify(definition));
 }
 
+function updateForm(fields: Array<{ id: string; label: string; type?: string; position: number }>): void {
+  const definition = {
+    fields: fields.map((field) => ({
+      id: field.id,
+      label: field.label,
+      type: field.type ?? 'text',
+      required: false,
+      position: field.position,
+      config: {},
+    })),
+    logic: [],
+  };
+  raw.prepare(`UPDATE formaloo_forms SET definition_json = ? WHERE id = 'form-1'`)
+    .run(JSON.stringify(definition));
+}
+
 function insertSubmission(
   id: string,
   answers: Record<string, unknown>,
@@ -246,6 +262,57 @@ describe('form results sheet — one row per submission', () => {
     await run();
     const submissionIds = resultsClient.values.slice(1).map((row) => row[4]);
     expect(submissionIds).toEqual(['ifs-001', 'ifs-002']);
+  });
+
+  test('keeps the legacy file marker when adminOrigin is unavailable', async () => {
+    updateForm([
+      { id: 'q1', label: '質問1', position: 1 },
+      { id: 'q2', label: '質問2', position: 2 },
+      { id: 'attachment', label: '添付', type: 'file', position: 3 },
+    ]);
+    raw.prepare(`UPDATE internal_form_submissions SET answers_json = ? WHERE id = 'ifs-001'`)
+      .run(JSON.stringify({
+        q1: '回答A1',
+        q2: '回答A2',
+        attachment: [
+          { key: 'private/estimate', name: '見積書.pdf' },
+          { key: 'private/photo', name: '写真.png' },
+        ],
+      }));
+
+    await run();
+
+    expect(resultsClient.values[1][7]).toBe('[添付ファイル 2件]');
+  });
+
+  test('adds an admin deep link to file cells and keeps them read-only', async () => {
+    updateForm([
+      { id: 'q1', label: '質問1', position: 1 },
+      { id: 'q2', label: '質問2', position: 2 },
+      { id: 'attachment', label: '添付', type: 'file', position: 3 },
+    ]);
+    const answers = {
+      q1: '回答A1',
+      q2: '回答A2',
+      attachment: [
+        { key: 'private/estimate', name: '見積書.pdf' },
+        { key: 'private/photo', name: '写真.png' },
+      ],
+    };
+    raw.prepare(`UPDATE internal_form_submissions SET answers_json = ? WHERE id = 'ifs-001'`)
+      .run(JSON.stringify(answers));
+    const linkedCell = '見積書.pdf, 写真.png (2件) 回答を開く: '
+      + 'https://admin.example.test/forms-advanced/data?id=form-1&rowId=ifs-001';
+
+    await run('manual', { adminOrigin: 'https://admin.example.test/' });
+    expect(resultsClient.values[1][7]).toBe(linkedCell);
+
+    resultsClient.values[1][7] = '改ざんされた値';
+    const result = await run('manual', { adminOrigin: 'https://admin.example.test/' });
+
+    expect(result.warnings).toContain('回答列「添付」はシートから変更できないため元に戻しました');
+    expect(resultsClient.values[1][7]).toBe(linkedCell);
+    expect(submissionAnswers('ifs-001')).toEqual(answers);
   });
 });
 
