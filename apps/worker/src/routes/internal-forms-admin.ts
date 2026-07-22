@@ -860,6 +860,82 @@ internalFormsAdmin.get('/api/forms-advanced/:id/rows/:rowId', async (c, next) =>
   }
 });
 
+/** ファイル名に使えない文字を全角/削除で無害化 (Content-Disposition 事故防止 / exports.ts と同型)。 */
+function sanitizeFilename(name: string): string {
+  const sanitized = name.replace(/[\\/:*?"<>|\r\n]/g, '_');
+  const truncated: string[] = [];
+  for (const character of sanitized) {
+    if (truncated.length >= 80) break;
+    const codePoint = character.codePointAt(0);
+    // Lone surrogate は encodeURIComponent が例外にするため、保存値に含まれても安全に置換する。
+    truncated.push(codePoint !== undefined && codePoint >= 0xd800 && codePoint <= 0xdfff ? '_' : character);
+  }
+  return truncated.join('');
+}
+
+/** RFC 5987 attr-char に含まれない encodeURIComponent の未変換文字も percent encode する。 */
+function encodeRfc5987Filename(name: string): string {
+  return encodeURIComponent(sanitizeFilename(name)).replace(/['()*]/g, (character) => (
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  ));
+}
+
+/**
+ * 保存 entry.type は利用者入力由来 (アップロード時のクライアント申告 MIME)。
+ * 厳格な `type/subtype` 形式のみヘッダーへ通し、それ以外 (制御文字入り等) は
+ * application/octet-stream へ落とす。
+ */
+const MIME_TYPE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9!#$&^_.+-]{0,126}\/[a-zA-Z0-9][a-zA-Z0-9!#$&^_.+-]{0,126}$/;
+
+// 認証付き添付ファイルダウンロード。公開 (無認証) 配信は作らない。
+// auth/permission は /api/* の共通 middleware を継承する。
+internalFormsAdmin.get('/api/forms-advanced/:id/rows/:rowId/files/:fieldId/:index', async (c, next) => {
+  try {
+    const id = c.req.param('id');
+    const form = await getInternalForm(c.env.DB, id);
+    if (!form) return next();
+
+    // getInternalFormSubmission は SQL で form_id を強制する (他フォームの rowId 横断不可)。
+    const row = await getInternalFormSubmission(c.env.DB, id, c.req.param('rowId'));
+    if (!row) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+
+    const answers = parseAnswers(row.answers_json);
+    const value = answers !== null && typeof answers === 'object' && !Array.isArray(answers)
+      ? (answers as Record<string, unknown>)[c.req.param('fieldId')]
+      : undefined;
+    if (!Array.isArray(value)) return c.json({ success: false, error: 'ファイルが見つかりません' }, 404);
+
+    const rawIndex = c.req.param('index');
+    const index = /^\d+$/.test(rawIndex) ? Number.parseInt(rawIndex, 10) : -1;
+    if (index < 0 || index >= value.length) {
+      return c.json({ success: false, error: 'ファイルが見つかりません' }, 404);
+    }
+
+    const entry = value[index] as { key?: unknown; name?: unknown; type?: unknown } | null;
+    const key = typeof entry?.key === 'string' ? entry.key : '';
+    // Defense in depth: 提供する R2 キーは必ず本フォーム配下に限定する。
+    if (!key.startsWith(`internal-form-submissions/${id}/`)) {
+      return c.json({ success: false, error: 'ファイルが見つかりません' }, 404);
+    }
+
+    const object = await c.env.IMAGES.get(key);
+    if (!object) return c.json({ success: false, error: 'ファイルが見つかりません' }, 404);
+
+    const name = typeof entry?.name === 'string' && entry.name !== '' ? entry.name : 'attachment';
+    const contentType = typeof entry?.type === 'string' && MIME_TYPE_PATTERN.test(entry.type)
+      ? entry.type
+      : 'application/octet-stream';
+    return c.body(object.body, 200, {
+      'Content-Type': contentType,
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeRfc5987Filename(name)}`,
+    });
+  } catch (error) {
+    console.error('GET internal /api/forms-advanced/:id/rows/:rowId/files error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 internalFormsAdmin.get('/api/forms-advanced/:id/stats', async (c, next) => {
   try {
     const id = c.req.param('id');

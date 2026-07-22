@@ -1078,6 +1078,140 @@ describe('internal answer admin read path', () => {
   });
 });
 
+describe('internal attachment download route', () => {
+  const FILE_DEFINITION = {
+    fields: [
+      { id: 'name', type: 'text', label: 'お名前', required: true, position: 0, config: {} },
+      { id: 'docs', type: 'file', label: '添付資料', required: false, position: 1, config: { allowMultipleFiles: true } },
+    ],
+    logic: [],
+  };
+  const FILE_ANSWERS = {
+    name: '一郎',
+    docs: [
+      { key: 'internal-form-submissions/internal-form/docs/uuid-1.pdf', name: '見積/書.pdf', size: 1234, type: 'application/pdf' },
+      { key: 'internal-form-submissions/other-internal-form/docs/uuid-2.png', name: '他フォーム.png', size: 10, type: 'image/png' },
+      { key: 'internal-form-submissions/internal-form/docs/uuid-3.bin', name: 'evil.bin', size: 5, type: 'text/html\r\nX-Evil: 1' },
+      { key: 'internal-form-submissions/internal-form/docs/uuid-4.pdf', name: "O'Reilly (final)\r\n.pdf", size: 6, type: 'application/pdf' },
+      { key: 'internal-form-submissions/internal-form/docs/uuid-5.pdf', name: `${'a'.repeat(79)}😀.pdf`, size: 7, type: 'application/pdf' },
+    ],
+  };
+
+  function stubImagesGet(body: string | null = 'file-bytes') {
+    const get = vi.fn(async () => (body === null ? null : { body } as unknown as R2ObjectBody));
+    bindingOverrides = { IMAGES: { get } as unknown as R2Bucket };
+    return get;
+  }
+
+  beforeEach(() => {
+    seedForm('internal-form', 'internal', { definition: FILE_DEFINITION });
+    seedForm('other-internal-form', 'internal', { definition: FILE_DEFINITION });
+    seedInternalSubmission('sub-1', 'internal-form', FILE_ANSWERS, '2026-07-22T09:00:00+09:00');
+  });
+
+  test('rejects unauthenticated requests before touching R2', async () => {
+    const get = stubImagesGet();
+    const response = await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/0', undefined, { auth: '' });
+    expect(response.status).toBe(401);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  test('rejects authenticated staff without forms_advanced permission before touching R2', async () => {
+    const get = stubImagesGet();
+    const roleId = (await createRole(DB, { name: '添付閲覧不可' })).id;
+    await setRolePermissions(DB, roleId, [
+      { feature_key: 'forms_advanced', allowed: false },
+    ]);
+    seedStaff('attachment-denied', 'attachment-denied-key', roleId);
+
+    const response = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows/sub-1/files/docs/0',
+      undefined,
+      { auth: 'Bearer attachment-denied-key' },
+    );
+
+    expect(response.status).toBe(403);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  test('streams the stored object with sanitized attachment headers', async () => {
+    const get = stubImagesGet();
+    const response = await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/0');
+    expect(response.status).toBe(200);
+    expect(get).toHaveBeenCalledWith('internal-form-submissions/internal-form/docs/uuid-1.pdf');
+    expect(response.headers.get('Content-Type')).toBe('application/pdf');
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(response.headers.get('Content-Disposition'))
+      .toBe(`attachment; filename*=UTF-8''${encodeURIComponent('見積_書.pdf')}`);
+    expect(await response.text()).toBe('file-bytes');
+  });
+
+  test('rejects a rowId that belongs to another form', async () => {
+    const get = stubImagesGet();
+    const response = await call('GET', '/api/forms-advanced/other-internal-form/rows/sub-1/files/docs/0');
+    expect(response.status).toBe(404);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  test('rejects out-of-range, malformed index, and non-file fields', async () => {
+    const get = stubImagesGet();
+    expect((await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/9')).status).toBe(404);
+    expect((await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/abc')).status).toBe(404);
+    expect((await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/-1')).status).toBe(404);
+    expect((await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/name/0')).status).toBe(404);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  test('rejects stored keys outside the form own prefix (defense in depth)', async () => {
+    const get = stubImagesGet();
+    const response = await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/1');
+    expect(response.status).toBe(404);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  test('returns 404 when the R2 object is gone', async () => {
+    stubImagesGet(null);
+    const response = await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/0');
+    expect(response.status).toBe(404);
+  });
+
+  // reviewer fix: 保存 entry.type は利用者入力由来 — 不正 MIME は octet-stream へ落とす (header injection 防御)。
+  test('falls back to octet-stream for malformed stored MIME types (header injection defense)', async () => {
+    stubImagesGet();
+    const response = await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/2');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('application/octet-stream');
+    expect(response.headers.get('X-Evil')).toBeNull();
+  });
+
+  test('uses RFC 5987 encoding and strips control characters from the original filename', async () => {
+    stubImagesGet();
+    const response = await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/3');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Disposition'))
+      .toBe("attachment; filename*=UTF-8''O%27Reilly%20%28final%29__.pdf");
+    expect(response.headers.get('X-Evil')).toBeNull();
+  });
+
+  test('truncates filenames without splitting a Unicode code point', async () => {
+    stubImagesGet();
+    const response = await call('GET', '/api/forms-advanced/internal-form/rows/sub-1/files/docs/4');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Disposition'))
+      .toBe(`attachment; filename*=UTF-8''${'a'.repeat(79)}%F0%9F%98%80`);
+  });
+
+  test('falls through to the Formaloo router for formaloo forms', async () => {
+    const get = stubImagesGet();
+    seedForm('formaloo-form', 'formaloo');
+    seedFormalooSubmission('formaloo-sub', 'formaloo-form');
+    const response = await call('GET', '/api/forms-advanced/formaloo-form/rows/formaloo-sub/files/docs/0');
+    expect(response.status).toBe(404);
+    expect(get).not.toHaveBeenCalled();
+  });
+});
+
 describe('internal hosting provider boundary', () => {
   test('admin preview copy keeps a legacy submit message when definition copy is absent', async () => {
     seedForm('legacy-copy-form', 'internal');
