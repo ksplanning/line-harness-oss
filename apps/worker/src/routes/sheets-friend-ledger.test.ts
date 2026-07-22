@@ -21,7 +21,7 @@ const jobs = vi.hoisted(() => ({
   startSheetsSyncJob: vi.fn(),
   getLatestSheetsSyncJob: vi.fn(),
   recordSheetsSyncDispatchError: vi.fn(),
-  dispatchSheetsSyncWork: vi.fn(),
+  processSheetsSyncJobBatch: vi.fn(),
 }));
 
 vi.mock('../services/friend-ledger-sync.js', async (importOriginal) => ({
@@ -36,9 +36,7 @@ vi.mock('../services/sheets-sync-jobs.js', async (importOriginal) => ({
   startSheetsSyncJob: jobs.startSheetsSyncJob,
   getLatestSheetsSyncJob: jobs.getLatestSheetsSyncJob,
   recordSheetsSyncDispatchError: jobs.recordSheetsSyncDispatchError,
-}));
-vi.mock('../services/sheets-sync-dispatch.js', () => ({
-  dispatchSheetsSyncWork: jobs.dispatchSheetsSyncWork,
+  processSheetsSyncJobBatch: jobs.processSheetsSyncJobBatch,
 }));
 
 import { parseWebhookPayload, sheetsConnections } from './sheets-connections.js';
@@ -194,7 +192,15 @@ beforeEach(() => {
   });
   jobs.getLatestSheetsSyncJob.mockReset().mockResolvedValue(null);
   jobs.recordSheetsSyncDispatchError.mockReset().mockResolvedValue(undefined);
-  jobs.dispatchSheetsSyncWork.mockReset().mockResolvedValue(undefined);
+  jobs.processSheetsSyncJobBatch.mockReset().mockResolvedValue({
+    attempted: 1,
+    chunks: 1,
+    hasMore: false,
+    continuationJobId: null,
+    job: {
+      id: 'job-1', status: 'success', processedCount: 1450, totalCount: 1450,
+    },
+  });
   waitUntil.mockClear();
 });
 
@@ -252,7 +258,13 @@ describe('friend ledger owner routes', () => {
     }));
     expect(waitUntil).toHaveBeenCalledTimes(1);
     await waitUntil.mock.calls[0][0];
-    expect(jobs.dispatchSheetsSyncWork).toHaveBeenCalled();
+    expect(jobs.processSheetsSyncJobBatch).toHaveBeenCalledWith(expect.objectContaining({
+      db: expect.anything(),
+      credentialsJson: '{"test":true}',
+      chunkSize: 200,
+      maxChunks: 8,
+      trigger: 'manual',
+    }));
   });
 
   test('manual sync starts only the enabled results target', async () => {
@@ -276,7 +288,7 @@ describe('friend ledger owner routes', () => {
     expect(jobs.startSheetsSyncJob).toHaveBeenCalledWith(expect.objectContaining({ target: 'form_results' }));
   });
 
-  test('manual sync starts both enabled targets and records dispatch failure for every job', async () => {
+  test('manual sync starts both targets and leaves them durable when the inline runner rejects', async () => {
     raw.prepare(`UPDATE sheets_connections
       SET form_results_enabled = 1, form_results_sheet_name = 'フォーム回答'
       WHERE id = 'conn-a'`).run();
@@ -291,7 +303,8 @@ describe('friend ledger owner routes', () => {
         source: 'manual', actor: 'env-owner', target: 'form_results', status: 'running',
         totalCount: 20, processedCount: 0, errorMessage: null, warning: null,
       });
-    jobs.dispatchSheetsSyncWork.mockRejectedValueOnce(new Error('dispatch failed'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    jobs.processSheetsSyncJobBatch.mockRejectedValueOnce(new Error('inline failed'));
 
     const response = await call(
       'POST',
@@ -303,9 +316,9 @@ describe('friend ledger owner routes', () => {
     expect(jobs.startSheetsSyncJob.mock.calls.map(([options]) => options.target))
       .toEqual(['ledger', 'form_results']);
     await waitUntil.mock.calls.at(-1)?.[0];
-    expect(jobs.recordSheetsSyncDispatchError).toHaveBeenCalledTimes(2);
-    expect(jobs.recordSheetsSyncDispatchError).toHaveBeenCalledWith(expect.anything(), 'job-ledger');
-    expect(jobs.recordSheetsSyncDispatchError).toHaveBeenCalledWith(expect.anything(), 'job-results');
+    expect(jobs.processSheetsSyncJobBatch).toHaveBeenCalledTimes(1);
+    expect(jobs.recordSheetsSyncDispatchError).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith('Manual Google Sheets sync inline runner failed');
   });
 
   test('returns latest durable progress only inside the selected account', async () => {

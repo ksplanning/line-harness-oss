@@ -30,25 +30,26 @@ describe('friend ledger durable job cron wiring', () => {
     }
   });
 
-  test('enqueues bounded durable jobs and self-dispatches work from the existing five-minute branch', () => {
+  test('enqueues bounded durable jobs and processes an inline batch from the five-minute branch', () => {
     const source = readFileSync(INDEX_PATH, 'utf8');
 
     expect(source).toMatch(
       /import\s*\{[^}]*enqueueSheetsSyncPollingJobs[^}]*\}\s*from\s*['"]\.\/services\/sheets-sync-jobs\.js['"]/s,
     );
     expect(source).toMatch(
-      /import\s*\{[^}]*dispatchSheetsSyncWork[^}]*\}\s*from\s*['"]\.\/services\/sheets-sync-dispatch\.js['"]/s,
+      /import\s*\{[^}]*processSheetsSyncJobBatch[^}]*SHEETS_SYNC_MAX_INLINE_CHUNKS[^}]*\}\s*from\s*['"]\.\/services\/sheets-sync-jobs\.js['"]/s,
     );
     expect(source).toMatch(
       /import\s*\{[^}]*maintainFriendLedgerWebhookEvents[^}]*\}\s*from\s*['"]\.\/services\/friend-ledger-sync\.js['"]/s,
     );
     expect(source).toMatch(
-      /event\.cron\s*===\s*['"]\*\/5 \* \* \* \*['"][\s\S]{0,5000}enqueueSheetsSyncPollingJobs\s*\(\s*env\.DB\s*,\s*10\s*\)[\s\S]{0,500}jobs\.runnable\s*>\s*0[\s\S]{0,200}dispatchSheetsSyncWork\s*\(\s*env\s*\)/,
+      /event\.cron\s*===\s*['"]\*\/5 \* \* \* \*['"][\s\S]{0,5000}enqueueSheetsSyncPollingJobs\s*\(\s*env\.DB\s*,\s*10\s*\)[\s\S]{0,500}jobs\.runnable\s*>\s*0[\s\S]{0,500}processSheetsSyncJobBatch\s*\(\s*\{[\s\S]{0,500}trigger:\s*['"]cron['"]/,
     );
     expect(source).toMatch(
       /event\.cron\s*===\s*['"]\*\/5 \* \* \* \*['"][\s\S]{0,5000}maintainFriendLedgerWebhookEvents\s*\(\s*env\.DB\s*\)/,
     );
     expect(source).not.toMatch(/runFriendLedgerPolling\s*\(/);
+    expect(source).not.toMatch(/dispatchSheetsSyncWork/);
   });
 
   test('does not log webhook/service-account secrets or friend PII from the cron entrypoint', () => {
