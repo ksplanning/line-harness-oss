@@ -109,6 +109,11 @@ describe('form-media-limits — 正直注記 + 既存 file UI 非退行 (T-B4)',
     expect(screen.getByLabelText('複数ファイル許可')).toBeTruthy()
     expect(screen.getByLabelText('許可拡張子')).toBeTruthy()
   })
+
+  it('「複数ファイルを許可」に共有上限の最大10件が明記される', () => {
+    render(<FormBuilder {...base({ initialFields: [fileField()] })} />)
+    expect(screen.getByText('（最大10件）')).toBeTruthy()
+  })
 })
 
 describe('form-media-limits — フォーム単位「後編集を許可しない」トグル + inert 注記 (T-C5)', () => {

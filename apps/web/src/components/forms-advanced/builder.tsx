@@ -25,7 +25,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { ChoiceFetchItem, FriendFieldDefinition, HarnessField, HarnessFieldType, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, RatingSubType, VariableSubType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
-import { computeRouteTerminalWarnings, INTERNAL_FORM_CHANNEL_SOURCE_ID, MAX_FRIEND_METADATA_MAPPINGS, validateRedirectUrl } from '@line-crm/shared'
+import { computeRouteTerminalWarnings, INTERNAL_FORM_CHANNEL_SOURCE_ID, MAX_FILES_PER_FORM_FIELD, MAX_FRIEND_METADATA_MAPPINGS, validateRedirectUrl } from '@line-crm/shared'
 import {
   FIELD_TYPE_META,
   FIELD_CATEGORIES,
@@ -1133,6 +1133,7 @@ function SettingsPanel({
           <label className="flex items-center gap-2">
             <input type="checkbox" aria-label="複数ファイル許可" checked={cfg.allowMultipleFiles ?? false} onChange={(e) => setCfg({ allowMultipleFiles: e.target.checked })} />
             <span>複数ファイルを許可</span>
+            <span className="text-xs text-gray-400">（最大{MAX_FILES_PER_FORM_FIELD}件）</span>
           </label>
           <div>
             <label className="block text-xs text-gray-500 mb-1">最大サイズ</label>

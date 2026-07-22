@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { MAX_FILES_PER_FORM_FIELD } from '@line-crm/shared';
 import type { HarnessField, HarnessFieldType } from '@line-crm/shared';
 import {
   JAPAN_PREFECTURES,
@@ -441,6 +442,19 @@ describe('file validation and pending upload hand-off', () => {
       .toMatchObject({ ok: false, error: expect.stringMatching(/拡張子/) });
     expect(validateInternalFormAnswers([required], { a_0: new File([new Uint8Array(256 * 1024 + 1)], 'x.pdf') }))
       .toMatchObject({ ok: false, error: expect.stringMatching(/サイズ/) });
+  });
+
+  test('caps multi-file uploads at the shared MAX_FILES_PER_FORM_FIELD', () => {
+    const multi = field('attachment', 'file', { allowMultipleFiles: true }) as InternalFormField;
+    const files = (count: number) => Array.from({ length: count }, (_, index) => new File(['x'], `f${index}.pdf`));
+
+    expect(MAX_FILES_PER_FORM_FIELD).toBe(10);
+    expect(validateInternalFormAnswers([multi], { a_0: files(11) }))
+      .toMatchObject({ ok: false, error: expect.stringMatching(/最大10件/) });
+
+    const result = validateInternalFormAnswers([multi], { a_0: files(10) });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.pendingUploads[0]?.files).toHaveLength(10);
   });
 });
 

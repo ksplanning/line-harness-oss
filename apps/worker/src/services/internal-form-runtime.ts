@@ -3,6 +3,7 @@ import {
   FORMALOO_FIELD_TYPES,
   INTERNAL_ONLY_FIELD_TYPES,
   INTERNAL_FORM_CHANNEL_SOURCE_ID,
+  MAX_FILES_PER_FORM_FIELD,
   isDecorationType,
   normalizeFormDesign,
   normalizeFormOperationsSettings,
@@ -869,6 +870,9 @@ function validateFileField(
   if (files.length === 0) return { ok: true, pending: null };
   if (field.config.allowMultipleFiles !== true && files.length > 1) {
     return { ok: false, error: `${field.label} は1つのファイルだけ添付できます` };
+  }
+  if (files.length > MAX_FILES_PER_FORM_FIELD) {
+    return { ok: false, error: `${field.label} の添付は最大${MAX_FILES_PER_FORM_FIELD}件です` };
   }
   const allowed = new Set((field.config.allowedExtensions ?? []).map((value) => value.replace(/^\./, '').toLowerCase()));
   const maxBytes = (field.config.maxSizeKb ?? 2048) * 1024;

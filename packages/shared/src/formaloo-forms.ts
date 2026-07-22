@@ -106,6 +106,9 @@ export type HarnessDecorationType = (typeof DECORATION_FIELD_TYPES)[number];
  */
 export const DEFAULT_VIDEO_HEIGHT = '250px';
 
+/** file 項目1つあたりの添付件数上限。worker validation と web 表示が共用する単一正本。 */
+export const MAX_FILES_PER_FORM_FIELD = 10;
+
 /** videoHeight の受理形式 (CSS 注入防止で自由文字列を通さない / 2〜4 桁 px|vw のみ)。 */
 const VIDEO_HEIGHT_PATTERN = /^\d{2,4}(px|vw)$/;
 
