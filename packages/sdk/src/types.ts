@@ -474,6 +474,7 @@ export interface AutoReply {
   responseContent: string
   responseMessages: AutoReplyResponseMessage[]
   lineAccountId: string | null
+  keepInUnresponded: boolean
   isActive: boolean
   createdAt: string
 }
@@ -485,6 +486,7 @@ export interface CreateAutoReplyInput {
   responseContent?: string
   responseMessages?: AutoReplyResponseMessage[] | null
   lineAccountId?: string | null
+  keepInUnresponded?: boolean
 }
 
 export interface UpdateAutoReplyInput {
@@ -494,6 +496,7 @@ export interface UpdateAutoReplyInput {
   responseContent?: string
   responseMessages?: AutoReplyResponseMessage[] | null
   lineAccountId?: string | null
+  keepInUnresponded?: boolean
   isActive?: boolean
 }
 
