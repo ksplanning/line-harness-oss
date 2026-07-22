@@ -87,11 +87,18 @@ describe('internal submission notification custom template', () => {
 });
 
 describe('internal submission notification default template', () => {
-  test('blank templates list every answer field in definition order and omit decorations', () => {
+  test('blank templates omit unanswered fields while preserving valid falsy answers and the edit link', () => {
     const fields = [
       field('second', '2番目'),
+      field('blank', '空文字'),
       field('section', '見出し', 'section', { text: '説明' }),
       field('first', '1番目'),
+      field('zero', 'ゼロ', 'number'),
+      field('nil', 'null'),
+      field('declined', '不参加', 'yes_no'),
+      field('empty_array', '空配列', 'multiple_select'),
+      field('missing', '未定義'),
+      field('status', '状態'),
       field('page', '改ページ', 'page_break'),
       field('video', '動画', 'video', { videoUrl: 'https://example.test/video' }),
       field('image', '画像', 'image', { imageUrl: 'https://example.test/image.png' }),
@@ -101,7 +108,16 @@ describe('internal submission notification default template', () => {
       template: '  \n ',
       formTitle: 'イベント申込',
       fields,
-      answers: { first: '先', second: '後' },
+      answers: {
+        first: '先',
+        second: '後',
+        blank: '',
+        zero: 0,
+        nil: null,
+        declined: false,
+        empty_array: [],
+        status: '未',
+      },
       displayName: '田中',
       editUrl: 'https://example.test/edit/default',
     })).toEqual({
@@ -112,6 +128,9 @@ describe('internal submission notification default template', () => {
         '回答内容',
         '2番目: 後',
         '1番目: 先',
+        'ゼロ: 0',
+        '不参加: いいえ',
+        '状態: 未',
         '',
         '編集リンク',
         'https://example.test/edit/default',
@@ -119,18 +138,33 @@ describe('internal submission notification default template', () => {
     });
   });
 
-  test.each([null, undefined])('uses the default template for %s', (template) => {
+  test.each([null, undefined])('uses the default template for %s and shows a fallback when every field is unanswered', (template) => {
     const result = renderInternalSubmissionNotification({
       template,
       formTitle: '申込フォーム',
-      fields: [field('name', '氏名')],
-      answers: {},
+      fields: [
+        field('blank', '空文字'),
+        field('nil', 'null'),
+        field('empty_array', '空配列', 'multiple_select'),
+        field('missing', '未定義'),
+      ],
+      answers: { blank: '', nil: null, empty_array: [] },
       displayName: null,
       editUrl: 'https://example.test/edit/default',
     });
 
-    expect(result).toMatchObject({ ok: true });
-    if (result.ok) expect(result.text).toContain('氏名: （未回答）');
+    expect(result).toEqual({
+      ok: true,
+      text: [
+        '「申込フォーム」へのご回答ありがとうございます。',
+        '',
+        '回答内容',
+        '（回答なし）',
+        '',
+        '編集リンク',
+        'https://example.test/edit/default',
+      ].join('\n'),
+    });
   });
 });
 

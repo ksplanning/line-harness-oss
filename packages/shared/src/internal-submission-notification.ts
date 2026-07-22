@@ -251,16 +251,21 @@ function defaultNotificationText(input: RenderInternalSubmissionNotificationInpu
   const formTitle = input.formTitle.trim();
   const salutation = displayName ? `${displayName}さん、` : '';
   const form = formTitle ? `「${formTitle}」への` : '';
-  const lines = getInternalSubmissionNotificationAnswerFields(input.fields).map((field) => {
+  const answerFields = getInternalSubmissionNotificationAnswerFields(input.fields);
+  const lines = answerFields.flatMap((field) => {
     const value = hasOwn(input.answers, field.id) ? input.answers[field.id] : undefined;
-    return `${field.label.trim() || field.id}: ${formatAnswer(value, field)}`;
+    const unanswered = value === null
+      || value === undefined
+      || (typeof value === 'string' && !value.trim())
+      || (Array.isArray(value) && value.length === 0);
+    return unanswered ? [] : [`${field.label.trim() || field.id}: ${formatAnswer(value, field)}`];
   });
 
   return [
     `${salutation}${form}ご回答ありがとうございます。`,
     '',
     '回答内容',
-    ...(lines.length ? lines : ['（回答項目なし）']),
+    ...(lines.length ? lines : [answerFields.length ? '（回答なし）' : '（回答項目なし）']),
     '',
     '編集リンク',
     input.editUrl,
