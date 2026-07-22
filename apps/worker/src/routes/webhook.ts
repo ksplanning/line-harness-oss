@@ -399,7 +399,8 @@ async function handleEvent(
 
     const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
 
-    // Match postback data against auto_replies (exact match on keyword)
+    // Match postback data against auto_replies (exact match on keyword)。postback は会話本文ではなく
+    // telemetry として未読/未対応から常時除外する既存契約で、per-rule flag は text 着信だけに適用する。
     const autoReplyQuery = lineAccountId
       ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
       : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
@@ -608,11 +609,16 @@ async function handleEvent(
     const matchedKeywordSource = matchedRule?.keep_in_unresponded
       ? AUTO_REPLY_KEEP_UNRESPONDED_SOURCE
       : AUTO_REPLY_KEYWORD_SOURCE;
-    const incomingSource = matchedRule
+    const awaitingAutomation = !!(
+      matchedRule
       && !skipAutoReply
       && matchedRule.response_type === 'silent'
-      ? matchedKeywordSource
-      : UNMATCHED_USER_SOURCE;
+    );
+    const completedActionSource = matchedRule?.keep_in_unresponded
+      ? AUTO_REPLY_KEEP_UNRESPONDED_SOURCE
+      : AUTO_REPLY_HANDLED_SOURCE;
+    // direct reply と automation は外部送信が完了するまで fail-closed marker のままにする。
+    const incomingSource = UNMATCHED_USER_SOURCE;
 
     // 判定結果を incoming 自身へ保存する。集計画面は今後この marker を読み、
     // ルール編集後に過去の未読判定を遡及変更しない。
@@ -685,7 +691,7 @@ async function handleEvent(
             try {
               await db
                 .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
-                .bind(AUTO_REPLY_HANDLED_SOURCE, logId)
+                .bind(completedActionSource, logId)
                 .run();
             } catch (err) {
               // The external send already succeeded, so do not retry another send path.
@@ -705,13 +711,9 @@ async function handleEvent(
       }
     }
 
-    // silent は「返信しない」こと自体がルールの処理結果。それ以外は実際の返信処理が
-    // 完了した後にだけ matched=true とし、送信失敗を未読から消さない。
-    let matched = !!(
-      matchedRule
-      && !skipAutoReply
-      && matchedRule.response_type === 'silent'
-    );
+    // silent rule は event-bus automation の実送信結果を待つ。downstream の既存契約では
+    // rule match 自体を matched=true として渡し、未読/marker の確定だけを送信後へ遅らせる。
+    let matched = awaitingAutomation;
     let replyTokenConsumed = false;
 
     // 応答時間帯ゲート (G28) — is_enabled の時だけ介入。既定 OFF / schedule 無しは
@@ -744,7 +746,7 @@ async function handleEvent(
             if (incomingSource === UNMATCHED_USER_SOURCE) {
               await db
                 .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
-                .bind(AUTO_REPLY_HANDLED_SOURCE, logId)
+                .bind(completedActionSource, logId)
                 .run();
             }
             matched = true;
@@ -829,13 +831,36 @@ async function handleEvent(
     // Pass replyToken only when auto_reply didn't actually consume it.
     // businessHoursSuppressed は営業時間内にオペレーターへ回した合図 → event-bus 側で
     // message_received automation の send_message を抑止する (HIGH-1)。
-    await fireEvent(db, 'message_received', {
-      friendId: friend.id,
-      eventData: businessHoursSuppressed
-        ? { text: incomingText, matched, businessHoursSuppressed: true }
-        : { text: incomingText, matched },
-      replyToken: replyTokenConsumed ? undefined : event.replyToken,
-    }, lineAccessToken, lineAccountId);
+    let eventResult: Awaited<ReturnType<typeof fireEvent>> | undefined;
+    try {
+      eventResult = await fireEvent(db, 'message_received', {
+        friendId: friend.id,
+        eventData: businessHoursSuppressed
+          ? { text: incomingText, matched, businessHoursSuppressed: true }
+          : { text: incomingText, matched },
+        replyToken: replyTokenConsumed ? undefined : event.replyToken,
+      }, lineAccessToken, lineAccountId);
+    } catch (err) {
+      if (!awaitingAutomation) throw err;
+      console.error('Failed to complete silent-rule automation', err);
+    }
+
+    if (awaitingAutomation) {
+      if (eventResult?.automationMessageSent) {
+        try {
+          await db
+            .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
+            .bind(matchedKeywordSource, logId)
+            .run();
+        } catch (err) {
+          // LINE への再送はせず、provisional marker のままスタッフへ見せる。
+          console.error('Failed to persist silent-rule automation marker', err);
+          await upsertChatOnMessage(db, friend.id);
+        }
+      } else {
+        await upsertChatOnMessage(db, friend.id);
+      }
+    }
 
     return;
   }

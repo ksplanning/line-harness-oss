@@ -123,7 +123,7 @@ describe('fireEvent — send_message action logging', () => {
       friend: { line_user_id: 'U_test' },
       capturedInserts: captured,
     });
-    await fireEvent(
+    const result = await fireEvent(
       db,
       'message_received',
       {
@@ -144,6 +144,39 @@ describe('fireEvent — send_message action logging', () => {
     expect(insert.binds[4]).toBe('reply');
     expect(insert.binds[5]).toBe('automation');
     expect(insert.binds[6]).toBe('acc-1');
+    expect(result).toEqual({
+      automationMessageSent: true,
+    });
+  });
+
+  it('reports a matched send_message dead-letter without claiming delivery', async () => {
+    lineMessageMocks.replyMessage.mockRejectedValueOnce(new Error('LINE unavailable'));
+    const dbModule = await import('@line-crm/db');
+    const db = fakeDb({
+      friend: { line_user_id: 'U_test' },
+      capturedInserts: captured,
+    });
+
+    const result = await fireEvent(
+      db,
+      'message_received',
+      {
+        friendId: 'friend-1',
+        eventData: { text: 'コスト比較', matched: true },
+        replyToken: 'reply-token-xyz',
+      },
+      'channel-token',
+      'acc-1',
+    );
+
+    expect(result).toEqual({
+      automationMessageSent: false,
+    });
+    expect(captured).toHaveLength(0);
+    expect(dbModule.createAutomationLog).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ status: 'failed' }),
+    );
   });
 
   it('logs delivery_type=push when no replyToken provided', async () => {

@@ -34,6 +34,11 @@ export interface EventPayload {
   replyToken?: string;
 }
 
+export interface FireEventResult {
+  /** LINE の reply/push Promise が少なくとも1件 resolve したときだけ true。 */
+  automationMessageSent: boolean;
+}
+
 /**
  * Fire an event and run all registered handlers.
  *
@@ -49,7 +54,7 @@ export async function fireEvent(
   payload: EventPayload,
   lineAccessToken?: string,
   lineAccountId?: string | null,
-): Promise<void> {
+): Promise<FireEventResult> {
   // Phase 1: fire webhooks, apply scoring rules, and ad conversion postback concurrently.
   const phase1: Promise<unknown>[] = [
     fireOutgoingWebhooks(db, eventType, payload),
@@ -74,7 +79,7 @@ export async function fireEvent(
     : payload;
 
   // Phase 2: evaluate automations.
-  await processAutomations(db, eventType, enrichedPayload, lineAccessToken, lineAccountId);
+  return processAutomations(db, eventType, enrichedPayload, lineAccessToken, lineAccountId);
 }
 
 /** 送信Webhookへの通知 */
@@ -143,7 +148,8 @@ async function processAutomations(
   payload: EventPayload,
   lineAccessToken?: string,
   lineAccountId?: string | null,
-): Promise<void> {
+): Promise<FireEventResult> {
+  let automationMessageSent = false;
   try {
     const allAutomations = await getActiveAutomationsByEvent(db, eventType);
     // Filter by account: match this account's automations + unassigned (backward compat)
@@ -162,7 +168,8 @@ async function processAutomations(
 
       for (const action of actions) {
         try {
-          await executeAction(db, action, payload, lineAccessToken, lineAccountId);
+          const messageSent = await executeAction(db, action, payload, lineAccessToken, lineAccountId);
+          automationMessageSent ||= messageSent;
           results.push({ action: action.type, success: true });
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
@@ -184,6 +191,7 @@ async function processAutomations(
   } catch (err) {
     console.error('processAutomations error:', err);
   }
+  return { automationMessageSent };
 }
 
 /** 条件マッチング */
@@ -231,7 +239,7 @@ async function executeAction(
   payload: EventPayload,
   lineAccessToken?: string,
   lineAccountId?: string | null,
-): Promise<void> {
+): Promise<boolean> {
   const friendId = payload.friendId;
   if (!friendId && action.type !== 'send_webhook') {
     throw new Error('friendId is required for this action');
@@ -255,8 +263,8 @@ async function executeAction(
       // message_received は、automation の send_message も同様に抑止し、
       // 「正面玄関を閉めても automation の裏口から自動返信が出る」穴を塞ぐ。タグ付与など
       // 非送信 action は通す (この case のみ skip)。
-      if (payload.eventData?.businessHoursSuppressed === true) break;
-      if (!lineAccessToken || !friendId) break;
+      if (payload.eventData?.businessHoursSuppressed === true) return false;
+      if (!lineAccessToken || !friendId) return false;
       const friend = await db
         .prepare('SELECT line_user_id, display_name, user_id, metadata FROM friends WHERE id = ?')
         .bind(friendId)
@@ -266,7 +274,7 @@ async function executeAction(
           user_id: string | null;
           metadata: string | null;
         }>();
-      if (!friend) break;
+      if (!friend) return false;
       const lineClient = new LineClient(lineAccessToken);
 
       // template_id が set なら templates から content/type を resolve、
@@ -340,7 +348,7 @@ async function executeAction(
         source: 'automation',
         lineAccountId,
       });
-      break;
+      return true;
     }
 
     case 'send_webhook': {
@@ -413,6 +421,8 @@ async function executeAction(
     default:
       console.warn(`未知のアクションタイプ: ${action.type}`);
   }
+
+  return false;
 }
 
 /** 送信メッセージを messages_log に記録（失敗しても例外を上げない） */

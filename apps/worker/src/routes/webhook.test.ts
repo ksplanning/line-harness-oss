@@ -45,7 +45,9 @@ vi.mock('@line-crm/line-sdk', async () => {
 });
 
 vi.mock('../services/event-bus.js', () => ({
-  fireEvent: vi.fn().mockResolvedValue(undefined),
+  fireEvent: vi.fn().mockResolvedValue({
+    automationMessageSent: true,
+  }),
 }));
 
 vi.mock('../services/faq-reply.js', () => ({
@@ -541,7 +543,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
   }
 
   test('[a] full-width hash and edge whitespace/newlines still classify an exact registered keyword', async () => {
-    const { incomingStatement, prepare } = await postTextWebhook({}, ' \n#予約\r\n', [{
+    const { incomingStatement, prepare, preparedStatements } = await postTextWebhook({}, ' \n#予約\r\n', [{
       id: 'auto-normalized',
       keyword: '＃予約',
       match_type: 'exact',
@@ -558,10 +560,17 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       expect.any(String),
       'friend-1',
       ' \n#予約\r\n',
-      'auto_reply_keyword',
+      'user_unmatched',
       expect.any(String),
     );
     expect(incomingStatement?.run).toHaveBeenCalledTimes(1);
+    const handledUpdate = preparedStatements.find(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    );
+    expect(handledUpdate?.statement.bind).toHaveBeenCalledWith(
+      'auto_reply_keyword',
+      expect.any(String),
+    );
     const preparedSql = prepare.mock.calls.map(([sql]) => String(sql));
     const ruleLookupIndex = preparedSql.findIndex((sql) => sql.includes('FROM auto_replies'));
     const incomingInsertIndex = preparedSql.findIndex((sql) =>
@@ -764,6 +773,72 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       expect.any(String),
     );
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('silent rule finalizes its handled marker only after a matching automation message is delivered', async () => {
+    vi.mocked(fireEvent).mockResolvedValueOnce({
+      automationMessageSent: true,
+    });
+
+    const { incomingStatement, preparedStatements } = await postTextWebhook({}, '#自動処理', [{
+      id: 'auto-automation-success',
+      keyword: '#自動処理',
+      match_type: 'exact',
+      response_type: 'silent',
+      response_content: '',
+      response_messages: null,
+      template_id: null,
+      keep_in_unresponded: 0,
+      is_active: 1,
+      created_at: '2026-07-22T00:00:00+09:00',
+    }]);
+
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '#自動処理',
+      'user_unmatched',
+      expect.any(String),
+    );
+    const sourceUpdate = preparedStatements.find(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    );
+    expect(sourceUpdate?.statement.bind).toHaveBeenCalledWith(
+      'auto_reply_keyword',
+      expect.any(String),
+    );
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('silent rule automation dead-letter stays unread with its provisional unmatched marker', async () => {
+    vi.mocked(fireEvent).mockResolvedValueOnce({
+      automationMessageSent: false,
+    });
+
+    const { db, incomingStatement, preparedStatements } = await postTextWebhook({}, '#自動処理', [{
+      id: 'auto-automation-dead-letter',
+      keyword: '#自動処理',
+      match_type: 'exact',
+      response_type: 'silent',
+      response_content: '',
+      response_messages: null,
+      template_id: null,
+      keep_in_unresponded: 1,
+      is_active: 1,
+      created_at: '2026-07-22T00:00:00+09:00',
+    }]);
+
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '#自動処理',
+      'user_unmatched',
+      expect.any(String),
+    );
+    expect(preparedStatements.some(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    )).toBe(false);
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
   });
 
   test('[fail-closed] a sent reply with an unpersisted handled marker remains unread', async () => {
@@ -980,6 +1055,29 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       'env-default-token',
       null,
     );
+  });
+
+  test('away_message success preserves a matching rule opt-in while suppressing unread', async () => {
+    vi.mocked(getEffectiveResponseSchedule).mockResolvedValue(
+      schedule({ outsideHoursMode: 'away_message', awayMessage: 'ただいま営業時間外です' }) as never,
+    );
+    vi.mocked(isWithinBusinessHours).mockReturnValue(false);
+
+    const { preparedStatements } = await postTextWebhook({}, '営業時間', [{
+      ...SILENT_RULE[0],
+      response_type: 'text',
+      response_content: '10時からです',
+      keep_in_unresponded: 1,
+    }] as never);
+
+    const handledUpdate = preparedStatements.find(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    );
+    expect(handledUpdate?.statement.bind).toHaveBeenCalledWith(
+      'auto_reply_keep_unresponded',
+      expect.any(String),
+    );
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
   test('gate ON + outside hours + auto_reply → the legacy auto-reply loop still fires (matched)', async () => {
@@ -1234,7 +1332,7 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
     expect(fireEvent).not.toHaveBeenCalled();
   });
 
-  test('an already matched registered keyword never becomes unread when the built-in trigger succeeds', async () => {
+  test('a matched registered keyword stays unread if the built-in success marker cannot be persisted', async () => {
     const { executed } = await postExperience(
       { ...enabled, isEnabled: false },
       false,
@@ -1255,7 +1353,35 @@ describe('POST /webhook — G28 gate on the cross-account 体験 trigger (review
       },
     );
 
-    expect(executed.some(({ sql }) => sql.includes('UPDATE messages_log SET source'))).toBe(false);
+    expect(executed.some(({ sql }) => sql.includes('UPDATE messages_log SET source'))).toBe(true);
+    expect(upsertChatOnMessage).toHaveBeenCalled();
+  });
+
+  test('a successful built-in keyword action preserves the matching rule opt-in', async () => {
+    const { executed } = await postExperience(
+      { ...enabled, isEnabled: false },
+      false,
+      {
+        autoReplies: [{
+          id: 'trigger-rule',
+          keyword: '体験を完了する',
+          match_type: 'exact',
+          response_type: 'silent',
+          response_content: '',
+          response_messages: null,
+          template_id: null,
+          line_account_id: 'acc-1',
+          keep_in_unresponded: 1,
+          is_active: 1,
+          created_at: '2026-07-21T00:00:00+09:00',
+        }],
+      },
+    );
+
+    expect(executed.some(({ sql, binds }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?')
+      && binds[0] === 'auto_reply_keep_unresponded',
+    )).toBe(true);
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 });
