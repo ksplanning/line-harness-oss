@@ -17,7 +17,7 @@ import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import { csvDateStamp, safeFilenamePart } from '@/lib/download'
 import { formatJstMinute } from '@/lib/datetime'
-import { fileSizeLabel, isFileAnswer } from '@/lib/file-answer'
+import { fileAnswerSummary, fileSizeLabel, isFileAnswer } from '@/lib/file-answer'
 
 const DEFAULT_QUERY: RowsQuery = { sort: 'desc', page: 1, pageSize: 25 }
 type RenderBackendState = 'unknown' | 'formaloo' | 'internal'
@@ -25,6 +25,12 @@ type RenderBackendState = 'unknown' | 'formaloo' | 'internal'
 /** slug → field ラベル (無ければ slug 自身)。回答詳細の read-only 表示を分かりやすくする。 */
 function labelForSlug(detail: RowDetail, slug: string): string {
   return (detail.fields ?? []).find((f) => f.slug === slug)?.label ?? slug
+}
+
+function readonlyAnswerText(value: unknown): string {
+  if (isFileAnswer(value)) return fileAnswerSummary(value)
+  if (Array.isArray(value)) return value.join('、')
+  return String(value ?? '—')
 }
 
 // F-4 データコックピット本体。id は data/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
@@ -313,7 +319,9 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
                         />
                       )
                     ) : (
-                      <div className="mt-0.5 text-sm text-gray-500">{String(detail.answers[f.slug] ?? '—')}</div>
+                      <div className="mt-0.5 text-sm text-gray-500">
+                        {readonlyAnswerText(detail.answers[f.slug])}
+                      </div>
                     )}
                   </div>
                 ))}

@@ -112,6 +112,15 @@ describe('回答詳細 drawer の file 回答', () => {
     await openDetail()
     expect(screen.getByText('A、B')).toBeTruthy()
   })
+
+  it('編集モードでも編集不可の file 回答をファイル名で表示する', async () => {
+    rowMock.mockResolvedValue({ ...FILE_DETAIL, allowPostEdit: 1 })
+    await openDetail()
+    fireEvent.click(screen.getByTestId('edit-answer'))
+
+    expect(document.body.textContent).not.toContain('[object Object]')
+    expect(screen.getByText('見積書.pdf, 写真.png')).toBeTruthy()
+  })
 })
 
 describe('?rowId= deep-link', () => {
