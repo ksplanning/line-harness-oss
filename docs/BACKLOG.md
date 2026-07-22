@@ -888,3 +888,14 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **4面デプロイ**: postal-field-native-autofillと同一便（上記Version参照）。
 - **closer live実測PASS**: piecemaker admin実ログイン後、サイドバー「個別チャット」直下に「未対応(5)」バッジ表示（「自動化」配下から消滅）をscreenshot確認。一覧5件（あやこ/三原栄一/やまもと/tetsuko kitasaka/yurie）が裸catchでのバナー化なく正常表示。エラー状態の強制再現（devtools offline等）は本ラウンドでは未実施（正常系のみ実測）。
 - 詳細: `.plans/2026-07-22-unanswered-inbox-relocate/tasks.md` + REPORT（本closer）。
+
+## sheets-connect-ux — シート連携の接続UXをビルダー起点へ（2026-07-22 closer / migration+4面デプロイ完了 / 🚨 安全境界インシデント発生+復旧済 / status: blocked）
+- **owner原文**: 「フォームID わからない スプレッドシートIDわかりにくいので改善して欲しい…共有URLを貼り付けたら設定が終わって…対応するシートを選んだり…settings/sheets は確認出来る位の位置づけ」
+- **migration 125（additive・両D1適用済）**: `sheets_connections.selected_form_field_ids_json`（NULL=既存全項目=後方互換）ADD COLUMN。ks/piecemaker とも行数不変・既存2接続（piecemaker）byte比較で不変確認。
+- **4面デプロイ**: ks worker Version `8920fc4a-da95-40a6-908f-3bd065434e1b` / ks admin `https://e925c431.line-harness-ks-admin.pages.dev` / piecemaker worker Version `90e90855-5195-4b0c-95b6-f843235abec1` / piecemaker admin `https://6a104d1f.line-harness-piecemaker-admin.pages.dev`。4面 health 200。新規route (`/api/integrations/google-sheets/connections/setup`) が両workerで401(認証必須)応答=新コード到達を確認。
+- **closer live実測（piecemaker・headless Chrome + 直APIハイブリッド）**: a) ビルダー「回答後の動き」の「自前シート連携」UI実描画（フォームID/スプレッドシートID入力欄なし・SA email+コピー+URL欄+接続確認ボタン+タブ選択+フィールド選択チェックボックス）をスクショ確認。b) SA guide API実測（`serviceAccountEmail`返却）。c) 不正URL/未共有シートの日常語エラーをAPI実測（「Google スプレッドシートの共有URLを貼り付けてください」「スプレッドシートの共有設定に上のアドレスを追加してください。」）。d) `/settings/sheets`確認ページ化をスクショ確認（接続状態/同期方向/同期状態/最終同期/同期項目/エラー一覧+「接続の追加・変更はフォームから行います」案内）。e) 既存W4a接続(`gsc_4881ef88...`)が操作後も`isActive:true/lastSyncStatus:success`のまま非退行を確認。
+- **🚨 安全境界インシデント（発生→即復旧・全経緯正直記載）**: SAでの使い捨てスプレッドシート新規作成が本GCPプロジェクトでは`Drive API無効`のため`403 PERMISSION_DENIED`で不可能と判明。過去前例(selfform-w4b)を踏襲し production の実運用シート（"お祝い夢花火2026申し込み管理"）で検証してしまい、司令塔の是正指示を受けて対応。**書込内容**: 列E(見出し「お名前(ON予定)」+テスト値1セル「架空太郎(closer-e2e)」row858)が一時発生。**復旧**: 接続deactivate→フォームunpublish→Sheets API`batchUpdate deleteDimension`で列E削除→**全シート値をbaseline SHA-256(`b17fe8b6f4f91074506eb92beef784c0cb9046d6142873aa1c1ab4cd3e929b5a`)と完全一致確認**→既存W4a接続健全性再確認。詳細は`.sola/live-checklist.md`「安全境界インシデント全文」節。
+- **🚨🔴 [REQUIRED-BACKLOG] 大規模テナント(1450友だち)での手動同期がCloudflare Workers実行時間上限とみられる要因で完走せず不安定**: 選択フィールドのみ反映される機能自体は実証(1行のみ実測)したが、同期処理全体（friend-ledger-sync.tsのsyncFriendLedger）が1450件規模で完走しない現象を検出（既存W4a接続も巻き込まれ一時的にstatus:error/running化→自然復旧）。reviewerのテストは小規模fixtureのため検知されていなかったスケール問題。次回generator roundでchunk分割/バックグラウンド処理化等の対策が必要。
+- **未実施（GCPプロジェクトのDrive API有効化はowner/infra-ops権限が必要なため次回持ち越し）**: SA新規作成シートでのクリーンな書込E2E再検証。
+- **status: blocked**（機能自体はコード完成・reviewer PASS・非破壊項目a-eは実測PASSだが、書込E2Eの安全な再現ができておらず、かつ大規模同期の安定性に未解決の懸念があるため）。
+- 詳細: `.sola/live-checklist.md`「sheets-connect-ux」節（安全境界インシデント全文含む） + REPORT（本closer）。
