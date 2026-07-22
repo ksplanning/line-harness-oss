@@ -272,6 +272,9 @@ function renderEditPage(
   const submitAttribute = allowBranchEdit ? ' data-submit' : '';
   const fixedAnswers = Object.fromEntries(value.definition.fields
     .filter((field) => branchSources.has(field.id) && !isEditableField(field, templates))
+    // 初期状態で非表示の保存値は edit HTML へ出さない。表示中の readonly source だけを
+    // client 再評価へ渡し、認可済み画面でも不要な回答値の露出を避ける。
+    .filter((field) => visible.has(field.id))
     .filter((field) => Object.prototype.hasOwnProperty.call(currentAnswers, field.id))
     .map((field) => [field.id, currentAnswers[field.id]]));
   const client = allowBranchEdit

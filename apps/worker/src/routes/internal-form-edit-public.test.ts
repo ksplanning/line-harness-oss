@@ -342,6 +342,31 @@ describe('GET /ife/:token', () => {
     expect(parsed.querySelector('[data-internal-form-logic-config]')?.textContent).toContain('fixedAnswers');
   });
 
+  test('初期状態で非表示の readonly source は保存値を client 設定へ埋め込まない', async () => {
+    const hiddenReadonlySourceDefinition = {
+      fields: [
+        { id: 'gate', type: 'choice', label: '表示条件', required: false, position: 0, config: { choices: ['表示する', '隠す'] } },
+        { id: 'approval', type: 'signature', label: '承認署名', required: false, position: 1, config: {} },
+        { id: 'approved_note', type: 'text', label: '承認後の連絡', required: false, position: 2, config: {} },
+      ],
+      logic: [
+        { id: 'show-approval', sourceFieldId: 'gate', operator: 'equals', value: '表示する', action: 'show', targetFieldId: 'approval' },
+        { id: 'approved', sourceFieldId: 'approval', operator: 'equals', value: '承認済み', action: 'show', targetFieldId: 'approved_note' },
+      ],
+    };
+    seedForm({ definition: hiddenReadonlySourceDefinition, allowBranchEdit: 1 });
+    seedSubmission('form-1', { gate: '隠す', approval: '初期非表示の署名秘密値' });
+
+    const response = await app().request(`/ife/${await token()}`, {}, bindings());
+    const html = await response.text();
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const config = parsed.querySelector('[data-internal-form-logic-config]');
+
+    expect(response.status).toBe(200);
+    expect(config).not.toBeNull();
+    expect(config?.textContent).not.toContain('初期非表示の署名秘密値');
+  });
+
   test('compound conditions の各 source も分岐元として readonly にする', async () => {
     const compound = {
       fields: [
