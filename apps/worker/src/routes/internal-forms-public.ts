@@ -23,6 +23,8 @@ import {
 } from '@line-crm/shared';
 import { signFriendToken, verifyFriendToken } from '../services/formaloo-friend-token.js';
 import { notifyInternalFormSubmission } from '../services/internal-submission-notifier.js';
+import { syncSheetsAfterFormMutation } from '../services/sheets-sync-jobs.js';
+import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
 import {
   evaluateInternalFormAvailability,
   JAPAN_PREFECTURES,
@@ -36,6 +38,30 @@ import {
 import type { Env } from '../index.js';
 
 export const internalFormsPublic = new Hono<Env>();
+
+function queueSheetsSyncAfterSubmission(
+  c: Context<Env>,
+  form: FormalooForm,
+  submissionId: string,
+): void {
+  if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON || !form.line_account_id) return;
+  try {
+    const work = syncSheetsAfterFormMutation({
+      db: c.env.DB,
+      lineAccountId: form.line_account_id,
+      formId: form.id,
+      submissionId,
+      actor: 'system_internal_form_submission',
+      credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+      adminOrigin: parseAllowedOrigins(c.env)[0] ?? null,
+    }).catch(() => {
+      console.error('Immediate Google Sheets sync after form submission failed');
+    });
+    c.executionCtx.waitUntil(work);
+  } catch {
+    console.error('Immediate Google Sheets sync after form submission failed');
+  }
+}
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '')
@@ -1101,6 +1127,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         await rollbackUploads(c.env.IMAGES, uploadedKeys);
         return submissionConflictResponse(c.env.DB, runtime);
       }
+      queueSheetsSyncAfterSubmission(c, runtime.form, submission.id);
 
       let notification: Awaited<ReturnType<typeof notifyInternalFormSubmission>>;
       try {

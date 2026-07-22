@@ -32,6 +32,8 @@ import {
   type HarnessField,
 } from '@line-crm/shared';
 import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/form-image-upload.js';
+import { syncSheetsAfterFormMutation } from '../services/sheets-sync-jobs.js';
+import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
 import {
   evaluateInternalFormAvailability,
   parseInternalFormDefinition,
@@ -45,6 +47,30 @@ import { isEditableField, repeatingTemplateIds } from './internal-form-edit-publ
 import type { Env } from '../index.js';
 
 export const internalFormsAdmin = new Hono<Env>();
+
+function queueSheetsSyncAfterAdminEdit(
+  c: Context<Env>,
+  form: FormalooForm,
+  submissionId: string,
+): void {
+  if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON || !form.line_account_id) return;
+  try {
+    const work = syncSheetsAfterFormMutation({
+      db: c.env.DB,
+      lineAccountId: form.line_account_id,
+      formId: form.id,
+      submissionId,
+      actor: c.get('staff').id,
+      credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+      adminOrigin: parseAllowedOrigins(c.env)[0] ?? null,
+    }).catch(() => {
+      console.error('Immediate Google Sheets sync after admin answer edit failed');
+    });
+    c.executionCtx.waitUntil(work);
+  } catch {
+    console.error('Immediate Google Sheets sync after admin answer edit failed');
+  }
+}
 
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 25;
@@ -978,6 +1004,7 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) 
         error: '回答が先に更新されています。再読み込みしてから保存してください',
       }, 409);
     }
+    queueSheetsSyncAfterAdminEdit(c, form, updated.submission.id);
     const metadata = internalEditMetadata(form, parsed.definition, updated.submission);
     return c.json({
       success: true,

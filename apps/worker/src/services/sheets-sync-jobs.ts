@@ -1,6 +1,7 @@
 import {
   getSheetsConnection,
   listActiveSheetsConnectionsForSync,
+  listSheetsConnections,
   toJstString,
   updateSheetsSyncStatus,
   type SheetsConnection,
@@ -25,9 +26,13 @@ import {
 export const SHEETS_SYNC_CHUNK_SIZE = 200;
 export const SHEETS_SYNC_MAX_INLINE_CHUNKS = 8;
 const JOB_LOCK_MS = 5 * 60_000;
+const FORM_MUTATION_LOCK_RETRY_ATTEMPTS = 100;
+const FORM_MUTATION_LOCK_RETRY_MS = 250;
 const SAFE_ERROR_MESSAGE = '同期が途中で止まりました。接続設定を確認して、続きから再開してください。';
 const DISPATCH_ERROR_MESSAGE = '次の同期処理を開始できませんでした。続きから再開してください。';
 const RECOVERY_WARNING = '前回の同期が途中で止まりました。保存済みの続きから再開しました。';
+const FORM_MUTATION_REFRESH_REQUESTED = 'sheets_sync_refresh_requested';
+const FORM_MUTATION_TARGET_REFRESH_REQUESTED = 'sheets_sync_target_refresh_requested';
 
 type StoredSheetsSyncJobStatus = 'running' | 'completed' | 'warning' | 'failed';
 export type SheetsSyncJobStatus = 'running' | 'success' | 'warning' | 'error';
@@ -137,10 +142,96 @@ function mergeWarning(previous: string | null, current: string | null): string |
   return truncateDiagnostic(`${previous} / ${current}`);
 }
 
+function isFormMutationRefreshRequest(errorCode: string | null): boolean {
+  return errorCode === FORM_MUTATION_REFRESH_REQUESTED
+    || errorCode === FORM_MUTATION_TARGET_REFRESH_REQUESTED;
+}
+
 async function jobById(db: D1Database, id: string): Promise<SheetsSyncJobRow | null> {
   return db.prepare('SELECT * FROM sheets_sync_jobs WHERE id = ?')
     .bind(id)
     .first<SheetsSyncJobRow>();
+}
+
+async function snapshotForTarget(
+  db: D1Database,
+  connection: SheetsConnection,
+  target: SheetsSyncTarget,
+  formResultsSubmissionId?: string,
+): Promise<{
+  id: string;
+  created_at: string;
+  total_count: number;
+  after_id: string | null;
+  after_created_at: string | null;
+} | null> {
+  if (target === 'form_results' && formResultsSubmissionId) {
+    const mutation = await db.prepare(
+      `SELECT submission.id, submission.submitted_at AS created_at
+       FROM internal_form_submissions submission
+       LEFT JOIN friends friend
+         ON friend.id = submission.friend_id AND friend.line_account_id = ?
+       WHERE submission.form_id = ? AND submission.id = ?
+         AND (submission.friend_id IS NULL OR friend.id IS NOT NULL)
+       LIMIT 1`,
+    ).bind(
+      connection.lineAccountId,
+      connection.formId,
+      formResultsSubmissionId,
+    ).first<{ id: string; created_at: string }>();
+    if (!mutation) return null;
+    const previous = await db.prepare(
+      `SELECT submission.id, submission.submitted_at AS created_at
+       FROM internal_form_submissions submission
+       LEFT JOIN friends friend
+         ON friend.id = submission.friend_id AND friend.line_account_id = ?
+       WHERE submission.form_id = ?
+         AND (submission.friend_id IS NULL OR friend.id IS NOT NULL)
+         AND (submission.submitted_at < ? OR (submission.submitted_at = ? AND submission.id < ?))
+       ORDER BY submission.submitted_at DESC, submission.id DESC LIMIT 1`,
+    ).bind(
+      connection.lineAccountId,
+      connection.formId,
+      mutation.created_at,
+      mutation.created_at,
+      mutation.id,
+    ).first<{ id: string; created_at: string }>();
+    return {
+      ...mutation,
+      total_count: 1,
+      after_id: previous?.id ?? null,
+      after_created_at: previous?.created_at ?? null,
+    };
+  }
+  const snapshot = target === 'form_results'
+    ? await db.prepare(
+      `SELECT submission.id, submission.submitted_at AS created_at,
+              COUNT(*) OVER () AS total_count
+       FROM internal_form_submissions submission
+       LEFT JOIN friends friend
+         ON friend.id = submission.friend_id AND friend.line_account_id = ?
+       WHERE submission.form_id = ?
+         AND (submission.friend_id IS NULL OR friend.id IS NOT NULL)
+       ORDER BY submission.submitted_at DESC, submission.id DESC LIMIT 1`,
+    ).bind(connection.lineAccountId, connection.formId).first<{
+      id: string;
+      created_at: string;
+      total_count: number;
+    }>()
+    : await db.prepare(
+      `SELECT id, created_at, COUNT(*) OVER () AS total_count FROM friends
+       WHERE line_account_id = ?
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).bind(connection.lineAccountId).first<{
+      id: string;
+      created_at: string;
+      total_count: number;
+    }>();
+  return snapshot ? {
+    ...snapshot,
+    after_id: null,
+    after_created_at: null,
+  } : null;
 }
 
 export async function getLatestSheetsSyncJob(
@@ -164,6 +255,8 @@ export async function startSheetsSyncJob(options: {
   source: SheetsSyncJobSource;
   actor: string;
   target?: SheetsSyncTarget;
+  refreshOnExisting?: boolean;
+  formResultsSubmissionId?: string;
 }): Promise<SheetsSyncJob> {
   const actor = cleanActor(options.actor, options.source);
   const target: SheetsSyncTarget = options.target ?? 'ledger';
@@ -172,7 +265,74 @@ export async function startSheetsSyncJob(options: {
      WHERE connection_id = ? AND target = ? AND status = 'running'
      ORDER BY created_at DESC, id DESC LIMIT 1`,
   ).bind(options.connection.id, target).first<SheetsSyncJobRow>();
-  if (running?.config_version === options.connection.configVersion) return serializeJob(running);
+  if (running?.config_version === options.connection.configVersion) {
+    if (!options.refreshOnExisting) return serializeJob(running);
+    const snapshot = await snapshotForTarget(
+      options.db,
+      options.connection,
+      target,
+      options.formResultsSubmissionId,
+    );
+    const refreshed = await options.db.prepare(
+      `UPDATE sheets_sync_jobs SET source = ?, actor = ?, total_count = ?, processed_count = 0,
+         last_friend_created_at = ?, last_record_key = ?,
+         snapshot_friend_created_at = ?, snapshot_record_key = ?,
+         appended_rows = 0, updated_rows = 0, imported_fields = 0,
+         ignored_identity_edits = 0, warning_message = NULL,
+         error_code = NULL, error_message = NULL, completed_at = NULL,
+         lock_token = NULL, locked_until = NULL,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+       WHERE id = ? AND status = 'running' AND config_version = ? AND lock_token IS NULL
+       RETURNING *`,
+    ).bind(
+      options.source,
+      actor,
+      snapshot?.total_count ?? 0,
+      snapshot?.after_created_at ?? null,
+      snapshot?.after_id ?? null,
+      snapshot?.created_at ?? null,
+      snapshot?.id ?? null,
+      running.id,
+      options.connection.configVersion,
+    ).first<SheetsSyncJobRow>();
+    if (refreshed) return serializeJob(refreshed);
+
+    const targetedRefresh = target === 'form_results' && Boolean(options.formResultsSubmissionId);
+    const marked = await options.db.prepare(
+      `UPDATE sheets_sync_jobs SET source = ?, actor = ?,
+         snapshot_friend_created_at = ?, snapshot_record_key = ?,
+         error_code = CASE
+           WHEN ? = 1 AND (
+             error_code IS NULL OR error_code NOT IN (?, ?)
+             OR (error_code = ? AND snapshot_record_key IS ?)
+           ) THEN ?
+           ELSE ?
+         END,
+         error_message = NULL,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+       WHERE id = ? AND status = 'running' AND config_version = ?
+       RETURNING *`,
+    ).bind(
+      options.source,
+      actor,
+      snapshot?.created_at ?? null,
+      snapshot?.id ?? null,
+      targetedRefresh ? 1 : 0,
+      FORM_MUTATION_REFRESH_REQUESTED,
+      FORM_MUTATION_TARGET_REFRESH_REQUESTED,
+      FORM_MUTATION_TARGET_REFRESH_REQUESTED,
+      options.formResultsSubmissionId ?? null,
+      FORM_MUTATION_TARGET_REFRESH_REQUESTED,
+      FORM_MUTATION_REFRESH_REQUESTED,
+      running.id,
+      options.connection.configVersion,
+    ).first<SheetsSyncJobRow>();
+    if (marked) return serializeJob(marked);
+
+    // The selected job finished while this mutation was taking its snapshot.
+    // Retry so the mutation still owns a fresh runnable job.
+    return startSheetsSyncJob(options);
+  }
   if (running) {
     await options.db.prepare(
       `UPDATE sheets_sync_jobs SET status = 'failed',
@@ -185,7 +345,7 @@ export async function startSheetsSyncJob(options: {
     ).bind(running.id).run();
   }
 
-  const failed = await options.db.prepare(
+  const failed = options.refreshOnExisting ? null : await options.db.prepare(
     `SELECT * FROM sheets_sync_jobs
      WHERE connection_id = ? AND line_account_id = ? AND config_version = ?
        AND target = ? AND status = 'failed'
@@ -210,37 +370,20 @@ export async function startSheetsSyncJob(options: {
 
   // The snapshot bound freezes the record set of this job: friends for the
   // ledger target, tenant-owned or anonymous submissions for the form-results target.
-  const snapshot = target === 'form_results'
-    ? await options.db.prepare(
-      `SELECT submission.id, submission.submitted_at AS created_at,
-              COUNT(*) OVER () AS total_count
-       FROM internal_form_submissions submission
-       LEFT JOIN friends friend
-         ON friend.id = submission.friend_id AND friend.line_account_id = ?
-       WHERE submission.form_id = ?
-         AND (submission.friend_id IS NULL OR friend.id IS NOT NULL)
-       ORDER BY submission.submitted_at DESC, submission.id DESC LIMIT 1`,
-    ).bind(options.connection.lineAccountId, options.connection.formId).first<{
-      id: string;
-      created_at: string;
-      total_count: number;
-    }>()
-    : await options.db.prepare(
-      `SELECT id, created_at, COUNT(*) OVER () AS total_count FROM friends
-       WHERE line_account_id = ?
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-    ).bind(options.connection.lineAccountId).first<{
-      id: string;
-      created_at: string;
-      total_count: number;
-    }>();
+  const snapshot = await snapshotForTarget(
+    options.db,
+    options.connection,
+    target,
+    options.formResultsSubmissionId,
+  );
   const id = `gsj_${crypto.randomUUID()}`;
   try {
     const created = await options.db.prepare(
       `INSERT INTO sheets_sync_jobs
        (id, connection_id, line_account_id, config_version, source, actor, target,
-        total_count, snapshot_friend_created_at, snapshot_record_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        total_count, last_friend_created_at, last_record_key,
+        snapshot_friend_created_at, snapshot_record_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING *`,
     ).bind(
       id,
@@ -251,6 +394,8 @@ export async function startSheetsSyncJob(options: {
       actor,
       target,
       snapshot?.total_count ?? 0,
+      snapshot?.after_created_at ?? null,
+      snapshot?.after_id ?? null,
       snapshot?.created_at ?? null,
       snapshot?.id ?? null,
     ).first<SheetsSyncJobRow>();
@@ -262,8 +407,113 @@ export async function startSheetsSyncJob(options: {
        WHERE connection_id = ? AND target = ? AND status = 'running'
        ORDER BY created_at DESC, id DESC LIMIT 1`,
     ).bind(options.connection.id, target).first<SheetsSyncJobRow>();
-    if (concurrent) return serializeJob(concurrent);
+    if (concurrent) {
+      return options.refreshOnExisting
+        ? startSheetsSyncJob(options)
+        : serializeJob(concurrent);
+    }
     throw error;
+  }
+}
+
+export async function startSheetsSyncJobsForFormMutation(options: {
+  db: D1Database;
+  lineAccountId: string;
+  formId: string;
+  submissionId?: string;
+  actor: string;
+}): Promise<SheetsSyncJob[]> {
+  const connections = await listSheetsConnections(
+    options.db,
+    options.lineAccountId,
+    options.formId,
+  );
+  const starts = connections.flatMap((connection) => {
+    if (!connection.isActive) return [];
+    const targets: SheetsSyncTarget[] = [
+      ...(connection.friendLedgerEnabled ? ['ledger' as const] : []),
+      ...(connection.formResultsEnabled && connection.formResultsSheetName
+        ? ['form_results' as const]
+        : []),
+    ];
+    return targets.map((target) => startSheetsSyncJob({
+      db: options.db,
+      connection,
+      source: 'manual',
+      actor: options.actor,
+      target,
+      refreshOnExisting: target === 'form_results',
+      formResultsSubmissionId: target === 'form_results' ? options.submissionId : undefined,
+    }));
+  });
+  return Promise.all(starts);
+}
+
+export async function syncSheetsAfterFormMutation(options: {
+  db: D1Database;
+  lineAccountId: string;
+  formId: string;
+  submissionId?: string;
+  actor: string;
+  credentialsJson?: string;
+  adminOrigin?: string | null;
+  client?: SyncFriendLedgerOptions['client'];
+  sync?: SyncImplementation;
+  syncResults?: ResultsSyncImplementation;
+  retryDelay?: (milliseconds: number) => Promise<void>;
+}): Promise<void> {
+  if (!options.credentialsJson) return;
+  const jobs = await startSheetsSyncJobsForFormMutation(options);
+  if (jobs.length === 0) return;
+  const prioritized = [...jobs].sort((left, right) => (
+    left.target === right.target ? 0 : left.target === 'form_results' ? -1 : 1
+  ));
+  let remainingChunks = SHEETS_SYNC_MAX_INLINE_CHUNKS;
+  for (const job of prioritized) {
+    if (remainingChunks === 0) break;
+    let currentJob = job;
+    let contentionRetries = 0;
+    while (remainingChunks > 0) {
+      const result = await processSheetsSyncJobBatch({
+        db: options.db,
+        jobId: currentJob.id,
+        expectedSnapshotRecordKey: currentJob.target === 'form_results'
+          ? options.submissionId
+          : undefined,
+        credentialsJson: options.credentialsJson,
+        client: options.client,
+        adminOrigin: options.adminOrigin,
+        chunkSize: SHEETS_SYNC_CHUNK_SIZE,
+        maxChunks: remainingChunks,
+        trigger: 'manual',
+        sync: options.sync,
+        syncResults: options.syncResults,
+      });
+      remainingChunks -= result.chunks;
+      if (result.chunks > 0 || currentJob.target !== 'form_results') break;
+      if (contentionRetries >= FORM_MUTATION_LOCK_RETRY_ATTEMPTS) break;
+      contentionRetries += 1;
+      await (options.retryDelay ?? ((milliseconds) => new Promise<void>((resolve) => {
+        setTimeout(resolve, milliseconds);
+      })))(FORM_MUTATION_LOCK_RETRY_MS);
+      const latest = await jobById(options.db, currentJob.id);
+      if (latest?.status === 'running' && latest.lock_token) continue;
+      const connection = await getSheetsConnection(
+        options.db,
+        currentJob.lineAccountId,
+        currentJob.connectionId,
+      );
+      if (!connection?.isActive || !connection.formResultsEnabled || !connection.formResultsSheetName) break;
+      currentJob = await startSheetsSyncJob({
+        db: options.db,
+        connection,
+        source: 'manual',
+        actor: options.actor,
+        target: currentJob.target,
+        refreshOnExisting: true,
+        formResultsSubmissionId: options.submissionId,
+      });
+    }
   }
 }
 
@@ -300,6 +550,8 @@ type ResultsSyncImplementation = (options: SyncFormResultsOptions) => Promise<Fo
 
 export interface ProcessNextSheetsSyncJobOptions {
   db: D1Database;
+  jobId?: string;
+  expectedSnapshotRecordKey?: string;
   credentialsJson?: string;
   client?: SyncFriendLedgerOptions['client'];
   adminOrigin?: string | null;
@@ -329,14 +581,16 @@ async function nextRunnableJobId(
   db: D1Database,
   now: string,
   excludeJobId: string | null = null,
+  onlyJobId: string | null = null,
 ): Promise<string | null> {
   const row = await db.prepare(
     `SELECT id FROM sheets_sync_jobs
      WHERE status = 'running'
        AND (locked_until IS NULL OR julianday(locked_until) <= julianday(?))
        AND (? IS NULL OR id <> ?)
+       AND (? IS NULL OR id = ?)
      ORDER BY created_at ASC, id ASC LIMIT 1`,
-  ).bind(now, excludeJobId, excludeJobId).first<{ id: string }>();
+  ).bind(now, excludeJobId, excludeJobId, onlyJobId, onlyJobId).first<{ id: string }>();
   return row?.id ?? null;
 }
 
@@ -372,8 +626,16 @@ export async function processNextSheetsSyncJob(
     `SELECT * FROM sheets_sync_jobs
      WHERE status = 'running'
        AND (locked_until IS NULL OR julianday(locked_until) <= julianday(?))
+       AND (? IS NULL OR id = ?)
+       AND (? IS NULL OR snapshot_record_key = ?)
      ORDER BY created_at ASC, id ASC LIMIT 1`,
-  ).bind(now).first<SheetsSyncJobRow>();
+  ).bind(
+    now,
+    options.jobId ?? null,
+    options.jobId ?? null,
+    options.expectedSnapshotRecordKey ?? null,
+    options.expectedSnapshotRecordKey ?? null,
+  ).first<SheetsSyncJobRow>();
   if (!row) return { attempted: 0, hasMore: false, continuationJobId: null, job: null };
 
   const lockToken = `gsjl_${crypto.randomUUID()}`;
@@ -381,33 +643,54 @@ export async function processNextSheetsSyncJob(
   const claimed = await options.db.prepare(
     `UPDATE sheets_sync_jobs SET lock_token = ?, locked_until = ?, updated_at = ?,
        warning_message = CASE
+         WHEN error_code IN (?, ?) THEN warning_message
          WHEN lock_token IS NULL THEN warning_message
          WHEN warning_message IS NULL THEN ?
          WHEN instr(warning_message, ?) > 0 THEN warning_message
          ELSE substr(warning_message || ' / ' || ?, 1, 500)
        END,
-       error_code = CASE WHEN lock_token IS NULL THEN error_code ELSE 'sheets_sync_interrupted' END,
-       error_message = CASE WHEN lock_token IS NULL THEN error_message
+       error_code = CASE
+         WHEN error_code IN (?, ?) THEN error_code
+         WHEN lock_token IS NULL THEN error_code
+         ELSE 'sheets_sync_interrupted'
+       END,
+       error_message = CASE
+         WHEN error_code IN (?, ?) THEN error_message
+         WHEN lock_token IS NULL THEN error_message
          ELSE '前回の同期が途中で止まりました。保存済みの続きから再開しています。' END
      WHERE id = ? AND status = 'running' AND processed_count = ?
        AND last_record_key IS ? AND last_friend_created_at IS ?
+       AND (? IS NULL OR snapshot_record_key = ?)
        AND (locked_until IS NULL OR julianday(locked_until) <= julianday(?))
      RETURNING *`,
   ).bind(
     lockToken,
     lockedUntil,
     now,
+    FORM_MUTATION_REFRESH_REQUESTED,
+    FORM_MUTATION_TARGET_REFRESH_REQUESTED,
     RECOVERY_WARNING,
     RECOVERY_WARNING,
     RECOVERY_WARNING,
+    FORM_MUTATION_REFRESH_REQUESTED,
+    FORM_MUTATION_TARGET_REFRESH_REQUESTED,
+    FORM_MUTATION_REFRESH_REQUESTED,
+    FORM_MUTATION_TARGET_REFRESH_REQUESTED,
     row.id,
     row.processed_count,
     row.last_record_key,
     row.last_friend_created_at,
+    options.expectedSnapshotRecordKey ?? null,
+    options.expectedSnapshotRecordKey ?? null,
     now,
   ).first<SheetsSyncJobRow>();
   if (!claimed) {
-    const continuationJobId = await nextRunnableJobId(options.db, now, row.id);
+    const continuationJobId = await nextRunnableJobId(
+      options.db,
+      now,
+      row.id,
+      options.jobId ?? null,
+    );
     return {
       attempted: 0,
       hasMore: continuationJobId !== null,
@@ -429,7 +712,12 @@ export async function processNextSheetsSyncJob(
       'sheets_connection_changed',
       '同期設定が変更されたため、この処理を終了しました。もう一度同期してください。',
     );
-    const continuationJobId = await nextRunnableJobId(options.db, toJstString(nowFactory()));
+    const continuationJobId = await nextRunnableJobId(
+      options.db,
+      toJstString(nowFactory()),
+      null,
+      options.jobId ?? null,
+    );
     return { attempted: 1, hasMore: continuationJobId !== null, continuationJobId, job };
   }
 
@@ -510,6 +798,7 @@ export async function processNextSheetsSyncJob(
         options.db,
         toJstString(nowFactory()),
         claimed.id,
+        options.jobId ?? null,
       );
       return {
         attempted: 0,
@@ -544,7 +833,9 @@ export async function processNextSheetsSyncJob(
          appended_rows = appended_rows + ?, updated_rows = updated_rows + ?,
          imported_fields = imported_fields + ?,
          ignored_identity_edits = ignored_identity_edits + ?,
-         warning_message = ?, error_code = NULL, error_message = NULL,
+         warning_message = ?,
+         error_code = CASE WHEN error_code IN (?, ?) THEN error_code ELSE NULL END,
+         error_message = CASE WHEN error_code IN (?, ?) THEN error_message ELSE NULL END,
          lock_token = NULL, locked_until = NULL, completed_at = ?,
          updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
        WHERE id = ? AND lock_token = ? AND processed_count = ?
@@ -560,6 +851,10 @@ export async function processNextSheetsSyncJob(
       result.importedFields,
       result.ignoredIdentityEdits,
       warning,
+      FORM_MUTATION_REFRESH_REQUESTED,
+      FORM_MUTATION_TARGET_REFRESH_REQUESTED,
+      FORM_MUTATION_REFRESH_REQUESTED,
+      FORM_MUTATION_TARGET_REFRESH_REQUESTED,
       completedAt,
       claimed.id,
       lockToken,
@@ -576,7 +871,40 @@ export async function processNextSheetsSyncJob(
         job: latest ? serializeJob(latest) : null,
       };
     }
-    const continuationJobId = await nextRunnableJobId(options.db, toJstString(nowFactory()));
+    if (isFormMutationRefreshRequest(updated.error_code)) {
+      const targetedSubmissionId = updated.error_code === FORM_MUTATION_TARGET_REFRESH_REQUESTED
+        ? updated.snapshot_record_key ?? undefined
+        : undefined;
+      const followUp = await startSheetsSyncJob({
+        db: options.db,
+        connection,
+        source: updated.source,
+        actor: updated.actor,
+        target: claimed.target,
+        refreshOnExisting: true,
+        formResultsSubmissionId: targetedSubmissionId,
+      });
+      if (followUp.id !== updated.id) {
+        await options.db.prepare(
+          `UPDATE sheets_sync_jobs SET error_code = NULL, error_message = NULL,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+           WHERE id = ? AND error_code = ? AND snapshot_record_key IS ?`,
+        ).bind(updated.id, updated.error_code, updated.snapshot_record_key).run();
+      }
+      const finalized = await jobById(options.db, updated.id);
+      return {
+        attempted: 1,
+        hasMore: true,
+        continuationJobId: followUp.id,
+        job: serializeJob(finalized ?? updated),
+      };
+    }
+    const continuationJobId = await nextRunnableJobId(
+      options.db,
+      toJstString(nowFactory()),
+      null,
+      options.jobId ?? null,
+    );
     return {
       attempted: 1,
       hasMore: continuationJobId !== null,
@@ -585,7 +913,12 @@ export async function processNextSheetsSyncJob(
     };
   } catch {
     const job = await failClaimedJob(options, claimed, lockToken);
-    const continuationJobId = await nextRunnableJobId(options.db, toJstString(nowFactory()));
+    const continuationJobId = await nextRunnableJobId(
+      options.db,
+      toJstString(nowFactory()),
+      null,
+      options.jobId ?? null,
+    );
     return { attempted: 1, hasMore: continuationJobId !== null, continuationJobId, job };
   }
 }
@@ -604,8 +937,14 @@ export async function processSheetsSyncJobBatch(
     continuationJobId: null,
     job: null,
   };
+  let scopedJobId = options.jobId;
+  let expectedSnapshotRecordKey = options.expectedSnapshotRecordKey;
   while (chunks < maxChunks) {
-    result = await processNextSheetsSyncJob(options);
+    result = await processNextSheetsSyncJob({
+      ...options,
+      jobId: scopedJobId,
+      expectedSnapshotRecordKey,
+    });
     if (result.attempted === 0) break;
     chunks += 1;
     if (result.job) {
@@ -614,6 +953,13 @@ export async function processSheetsSyncJobBatch(
       );
     }
     if (!result.hasMore) break;
+    if (result.continuationJobId) {
+      scopedJobId = result.continuationJobId;
+      // The key guard protects only the caller's initially selected job. A
+      // continuation returned after a successful claim is trusted even when
+      // coalescing deliberately widened it to a full-form refresh.
+      expectedSnapshotRecordKey = undefined;
+    }
   }
   return { ...result, chunks };
 }

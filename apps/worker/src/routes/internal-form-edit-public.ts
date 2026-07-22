@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   getFormalooForm,
   getInternalFormNotificationSettings,
@@ -15,6 +15,8 @@ import {
   type InternalFormLogicAnswers,
 } from '@line-crm/shared';
 import { verifyEditToken, type EditTokenPayload } from '../services/formaloo-edit-token.js';
+import { syncSheetsAfterFormMutation } from '../services/sheets-sync-jobs.js';
+import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
 import {
   JAPAN_PREFECTURES,
   parseInternalFormDefinition,
@@ -26,6 +28,30 @@ import {
 import type { Env } from '../index.js';
 
 export const internalFormEditPublic = new Hono<Env>();
+
+function queueSheetsSyncAfterRespondentEdit(
+  c: Context<Env>,
+  form: FormalooForm,
+  submissionId: string,
+): void {
+  if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON || !form.line_account_id) return;
+  try {
+    const work = syncSheetsAfterFormMutation({
+      db: c.env.DB,
+      lineAccountId: form.line_account_id,
+      formId: form.id,
+      submissionId,
+      actor: 'system_internal_form_edit',
+      credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+      adminOrigin: parseAllowedOrigins(c.env)[0] ?? null,
+    }).catch(() => {
+      console.error('Immediate Google Sheets sync after respondent edit failed');
+    });
+    c.executionCtx.waitUntil(work);
+  } catch {
+    console.error('Immediate Google Sheets sync after respondent edit failed');
+  }
+}
 
 const PRIVATE_HEADERS = {
   'Cache-Control': 'private, no-store, max-age=0',
@@ -468,6 +494,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
     ) {
       throw new Error('internal form edit read-back mismatch');
     }
+    queueSheetsSyncAfterRespondentEdit(c, resolved.value.form, readback.id);
     return c.html(renderSuccessPage(), 200, PRIVATE_HEADERS);
   } catch (error) {
     // Capability token は bearer credential。path/token 自体を log に含めない。

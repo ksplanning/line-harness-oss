@@ -7,6 +7,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 import { editTokenExp, signEditToken } from '../services/formaloo-edit-token.js';
 import { initInternalFormLogic } from '../client/internal-form-logic.js';
+const sheetsSyncMocks = vi.hoisted(() => ({
+  syncSheetsAfterFormMutation: vi.fn(),
+}));
+vi.mock('../services/sheets-sync-jobs.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/sheets-sync-jobs.js')>(),
+  syncSheetsAfterFormMutation: sheetsSyncMocks.syncSheetsAfterFormMutation,
+}));
 import { internalFormEditPublic } from './internal-form-edit-public.js';
 import type { Env } from '../index.js';
 
@@ -100,7 +107,10 @@ const conditionalDefinition = {
 let raw: Database.Database;
 let DB: D1Database;
 
-function bindings(db = DB): Env['Bindings'] {
+function bindings(
+  db = DB,
+  overrides: Partial<Env['Bindings']> = {},
+): Env['Bindings'] {
   return {
     DB: db,
     IMAGES: {} as R2Bucket,
@@ -114,6 +124,7 @@ function bindings(db = DB): Env['Bindings'] {
     LINE_LOGIN_CHANNEL_SECRET: 'ls',
     WORKER_URL: 'https://worker.example.test',
     FORMALOO_EDIT_TOKEN_SECRET: EDIT_SECRET,
+    ...overrides,
   } as Env['Bindings'];
 }
 
@@ -194,6 +205,7 @@ async function token(formId = 'form-1', submissionId = 'ifs-1', options: {
 }
 
 beforeEach(() => {
+  sheetsSyncMocks.syncSheetsAfterFormMutation.mockReset().mockResolvedValue(undefined);
   raw = new Database(':memory:');
   replayAll(raw);
   DB = d1(raw);
@@ -393,6 +405,60 @@ describe('GET /ife/:token', () => {
 });
 
 describe('POST /ife/:token', () => {
+  test('queues an immediate Sheets sync after a respondent edit is read back', async () => {
+    seedForm();
+    seedSubmission();
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-1' WHERE id = 'form-1'").run();
+    const signed = await token();
+    const pending: Promise<unknown>[] = [];
+    const waitUntil = vi.fn((promise: Promise<unknown>) => { pending.push(promise); });
+    const executionCtx = { waitUntil } as unknown as ExecutionContext;
+
+    const response = await app().fetch(new Request(`https://worker.example.test/ife/${signed}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        editVersion: '3',
+        a_0: '鈴木',
+        a_1: 'new@example.test',
+      }),
+    }), bindings(DB, { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), executionCtx);
+
+    expect(response.status).toBe(200);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await Promise.all(pending);
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).toHaveBeenCalledWith(expect.objectContaining({
+      db: DB,
+      lineAccountId: 'acc-1',
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      actor: 'system_internal_form_edit',
+      credentialsJson: '{}',
+    }));
+  });
+
+  test('keeps a respondent edit successful when the background Sheets sync fails', async () => {
+    seedForm();
+    seedSubmission();
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-1' WHERE id = 'form-1'").run();
+    sheetsSyncMocks.syncSheetsAfterFormMutation.mockRejectedValueOnce(new Error('sync failed'));
+    const pending: Promise<unknown>[] = [];
+    const waitUntil = vi.fn((promise: Promise<unknown>) => { pending.push(promise); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const response = await app().fetch(new Request(`https://worker.example.test/ife/${await token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ editVersion: '3', a_0: '鈴木', a_1: 'new@example.test' }),
+    }), bindings(DB, { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), { waitUntil } as unknown as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    await expect(Promise.all(pending)).resolves.toEqual([undefined]);
+    expect(raw.prepare('SELECT edit_version FROM internal_form_submissions WHERE id = ?').get('ifs-1'))
+      .toEqual({ edit_version: 4 });
+    expect(error).toHaveBeenCalledWith('Immediate Google Sheets sync after respondent edit failed');
+  });
+
   test('edits only the active W3 logic branch and retains the answer from the branch that became hidden', async () => {
     seedForm({ definition: conditionalDefinition, allowBranchEdit: 1 });
     seedSubmission('form-1', { kind: '個人', personal: '佐藤', company: '旧会社名' }, 3);
@@ -502,11 +568,13 @@ describe('POST /ife/:token', () => {
   ])('returns 400 for invalid %s input and leaves the row unchanged', async (_label, values) => {
     seedForm();
     seedSubmission();
-    const response = await app().request(`/ife/${await token()}`, {
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-1' WHERE id = 'form-1'").run();
+    const waitUntil = vi.fn();
+    const response = await app().fetch(new Request(`https://worker.example.test/ife/${await token()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ editVersion: '3', ...values }),
-    }, bindings());
+    }), bindings(DB, { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), { waitUntil } as unknown as ExecutionContext);
 
     expect(response.status).toBe(400);
     const stored = raw.prepare(
@@ -514,16 +582,20 @@ describe('POST /ife/:token', () => {
     ).get('ifs-1') as { answers_json: string; edit_version: number };
     expect(stored.edit_version).toBe(3);
     expect(JSON.parse(stored.answers_json)).toEqual(originalAnswers);
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).not.toHaveBeenCalled();
   });
 
   test('returns 409 for a stale hidden editVersion and does not overwrite newer answers', async () => {
     seedForm();
     seedSubmission('form-1', { ...originalAnswers, name: '先に更新済み' }, 4);
-    const response = await app().request(`/ife/${await token()}`, {
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-1' WHERE id = 'form-1'").run();
+    const waitUntil = vi.fn();
+    const response = await app().fetch(new Request(`https://worker.example.test/ife/${await token()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ editVersion: '3', a_0: '古い画面から更新', a_1: 'new@example.test' }),
-    }, bindings());
+    }), bindings(DB, { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), { waitUntil } as unknown as ExecutionContext);
 
     expect(response.status).toBe(409);
     expect(response.headers.get('Cache-Control')).toMatch(/no-store/);
@@ -532,6 +604,8 @@ describe('POST /ife/:token', () => {
     ).get('ifs-1') as { answers_json: string; edit_version: number };
     expect(stored.edit_version).toBe(4);
     expect(JSON.parse(stored.answers_json)).toMatchObject({ name: '先に更新済み' });
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).not.toHaveBeenCalled();
   });
 
   test('returns 403 without mutation when the edit link is revoked immediately before UPDATE', async () => {

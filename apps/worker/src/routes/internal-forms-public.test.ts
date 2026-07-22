@@ -4,13 +4,21 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
+import { createSheetsConnection } from '@line-crm/db';
 import { signFriendToken, verifyFriendToken } from '../services/formaloo-friend-token.js';
 
 const notificationMocks = vi.hoisted(() => ({
   notifyInternalFormSubmission: vi.fn(),
 }));
+const sheetsSyncMocks = vi.hoisted(() => ({
+  syncSheetsAfterFormMutation: vi.fn(),
+}));
 
 vi.mock('../services/internal-submission-notifier.js', () => notificationMocks);
+vi.mock('../services/sheets-sync-jobs.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/sheets-sync-jobs.js')>(),
+  syncSheetsAfterFormMutation: sheetsSyncMocks.syncSheetsAfterFormMutation,
+}));
 import { internalFormsPublic } from './internal-forms-public.js';
 import type { Env } from '../index.js';
 
@@ -86,7 +94,7 @@ function replayAll(db: Database.Database): void {
 let raw: Database.Database;
 let DB: D1Database;
 
-function env(): Env['Bindings'] {
+function env(overrides: Partial<Env['Bindings']> = {}): Env['Bindings'] {
   return {
     DB,
     IMAGES: {} as R2Bucket,
@@ -100,6 +108,7 @@ function env(): Env['Bindings'] {
     LINE_LOGIN_CHANNEL_SECRET: 'ls',
     WORKER_URL: 'https://worker.example.test',
     FORMALOO_FRIEND_TOKEN_SECRET: FRIEND_SECRET,
+    ...overrides,
   } as Env['Bindings'];
 }
 
@@ -159,6 +168,7 @@ beforeEach(() => {
     line: { status: 'skipped', reason: 'disabled' },
     email: { status: 'skipped', reason: 'disabled' },
   });
+  sheetsSyncMocks.syncSheetsAfterFormMutation.mockReset().mockResolvedValue(undefined);
   raw = new Database(':memory:');
   replayAll(raw);
   DB = d1(raw);
@@ -168,6 +178,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   raw.close();
 });
@@ -409,6 +420,99 @@ function logicDefinition() {
 }
 
 describe('internal public form POST /f/:formId', () => {
+  test('queues an immediate Sheets sync in waitUntil after an accepted answer', async () => {
+    seedForm('fa_internal');
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-1' WHERE id = 'fa_internal'").run();
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-1', 'channel-1', 'A', 'token', 'secret')`).run();
+    await createSheetsConnection(DB, {
+      lineAccountId: 'acc-1',
+      formId: 'fa_internal',
+      spreadsheetId: 'sheet-1',
+      sheetName: 'unused-ledger',
+      syncDirection: 'bidirectional',
+      friendLedgerEnabled: false,
+      formResultsEnabled: true,
+      formResultsSheetName: 'answers',
+    });
+    const actual = await vi.importActual<typeof import('../services/sheets-sync-jobs.js')>(
+      '../services/sheets-sync-jobs.js',
+    );
+    sheetsSyncMocks.syncSheetsAfterFormMutation.mockImplementation(
+      actual.syncSheetsAfterFormMutation,
+    );
+    const pending: Promise<unknown>[] = [];
+    const waitUntil = vi.fn((promise: Promise<unknown>) => { pending.push(promise); });
+    const executionCtx = { waitUntil } as unknown as ExecutionContext;
+
+    const response = await app().fetch(new Request('https://worker.example.test/f/fa_internal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: validBody().toString(),
+    }), env({ GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), executionCtx);
+
+    expect(response.status).toBe(200);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await Promise.all(pending);
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).toHaveBeenCalledWith(expect.objectContaining({
+      db: DB,
+      lineAccountId: 'acc-1',
+      formId: 'fa_internal',
+      submissionId: expect.stringMatching(/^ifs_/),
+      actor: 'system_internal_form_submission',
+      credentialsJson: '{}',
+    }));
+    expect(raw.prepare('SELECT target FROM sheets_sync_jobs').get()).toEqual({ target: 'form_results' });
+  });
+
+  test('keeps an accepted answer successful without a Sheets connection and starts no job', async () => {
+    seedForm('fa_internal');
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-1' WHERE id = 'fa_internal'").run();
+    const actual = await vi.importActual<typeof import('../services/sheets-sync-jobs.js')>(
+      '../services/sheets-sync-jobs.js',
+    );
+    sheetsSyncMocks.syncSheetsAfterFormMutation.mockImplementation(
+      actual.syncSheetsAfterFormMutation,
+    );
+    const pending: Promise<unknown>[] = [];
+    const executionCtx = {
+      waitUntil(promise: Promise<unknown>) { pending.push(promise); },
+    } as unknown as ExecutionContext;
+
+    const response = await app().fetch(new Request('https://worker.example.test/f/fa_internal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: validBody().toString(),
+    }), env({ GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), executionCtx);
+
+    expect(response.status).toBe(200);
+    await Promise.all(pending);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM internal_form_submissions').get()).toEqual({ count: 1 });
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_jobs').get()).toEqual({ count: 0 });
+  });
+
+  test('keeps an accepted answer successful when the background Sheets sync fails', async () => {
+    seedForm('fa_internal');
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-1' WHERE id = 'fa_internal'").run();
+    sheetsSyncMocks.syncSheetsAfterFormMutation.mockRejectedValueOnce(new Error('sync failed'));
+    const pending: Promise<unknown>[] = [];
+    const executionCtx = {
+      waitUntil(promise: Promise<unknown>) { pending.push(promise); },
+    } as unknown as ExecutionContext;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const response = await app().fetch(new Request('https://worker.example.test/f/fa_internal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: validBody().toString(),
+    }), env({ GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), executionCtx);
+
+    expect(response.status).toBe(200);
+    await expect(Promise.all(pending)).resolves.toEqual([undefined]);
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM internal_form_submissions').get()).toEqual({ count: 1 });
+    expect(error).toHaveBeenCalledWith('Immediate Google Sheets sync after form submission failed');
+  });
+
   test.each([
     ['required', (body: URLSearchParams) => body.delete('a_0'), 'お名前 は必須項目です'],
     ['maxLength', (body: URLSearchParams) => body.set('a_0', '123456'), 'お名前 は5文字以内で入力してください'],
@@ -421,18 +525,24 @@ describe('internal public form POST /f/:formId', () => {
     ['multiple', (body: URLSearchParams) => body.append('a_8', '不正'), '興味 の選択肢が正しくありません'],
   ])('rejects %s server-side before persistence', async (_name, mutate, expected) => {
     seedForm('fa_internal');
+    raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-1' WHERE id = 'fa_internal'").run();
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-1', 'channel-1', 'A', 'token', 'secret')`).run();
     const body = validBody();
     mutate(body);
+    const waitUntil = vi.fn();
 
-    const response = await app().request('/f/fa_internal', {
+    const response = await app().fetch(new Request('https://worker.example.test/f/fa_internal', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
-    }, env());
+    }), env({ GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), { waitUntil } as unknown as ExecutionContext);
 
     expect(response.status).toBe(400);
     expect(await response.text()).toContain(expected);
     expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 0 });
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).not.toHaveBeenCalled();
   });
 
   test('400 再描画は入力値を escape して復元し、選択済み分岐の表示を保つ', async () => {

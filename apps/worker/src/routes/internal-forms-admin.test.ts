@@ -11,6 +11,13 @@ import { authMiddleware } from '../middleware/auth.js';
 import { permissionMiddleware } from '../middleware/permission-middleware.js';
 import { formalooInstantWebhook } from './formaloo-instant-webhook.js';
 import { formsAdvanced } from './forms-advanced.js';
+const sheetsSyncMocks = vi.hoisted(() => ({
+  syncSheetsAfterFormMutation: vi.fn(),
+}));
+vi.mock('../services/sheets-sync-jobs.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/sheets-sync-jobs.js')>(),
+  syncSheetsAfterFormMutation: sheetsSyncMocks.syncSheetsAfterFormMutation,
+}));
 import { internalFormsAdmin } from './internal-forms-admin.js';
 import type { Env } from '../index.js';
 
@@ -404,6 +411,7 @@ function seedStaff(id: string, apiKey: string, roleId: string) {
 }
 
 beforeEach(() => {
+  sheetsSyncMocks.syncSheetsAfterFormMutation.mockReset().mockResolvedValue(undefined);
   raw = new Database(':memory:');
   replayAll(raw);
   DB = d1(raw);
@@ -1262,28 +1270,103 @@ describe('internal answer admin read path', () => {
       .get('sub-2') as { answers_json: string }).answers_json)).toMatchObject({ name: '更新後' });
   });
 
+  test('PATCH queues an immediate Sheets sync after an internal admin answer edit', async () => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ?, line_account_id = ? WHERE id = ?')
+      .run(JSON.stringify(EDITABLE_DEFINITION), 'acc-1', 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ name: '二郎', contact: 'two@example.test', kind: '個人' }), 'sub-2');
+    const context = await internalEditContext('internal-form', 'sub-2');
+    bindingOverrides = { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' };
+    const pending: Promise<unknown>[] = [];
+    const waitUntil = vi.fn((promise: Promise<unknown>) => { pending.push(promise); });
+    const executionCtx = { waitUntil } as unknown as ExecutionContext;
+
+    const response = await app().fetch(new Request(
+      'https://worker.example.test/api/forms-advanced/internal-form/rows/sub-2',
+      {
+        method: 'PATCH',
+        headers: { Authorization: OWNER, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...context,
+          answers: { name: '管理画面更新', contact: 'admin@example.test', kind: '個人' },
+        }),
+      },
+    ), env(), executionCtx);
+
+    expect(response.status).toBe(200);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await Promise.all(pending);
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).toHaveBeenCalledWith(expect.objectContaining({
+      db: DB,
+      lineAccountId: 'acc-1',
+      formId: 'internal-form',
+      submissionId: 'sub-2',
+      actor: expect.any(String),
+      credentialsJson: '{}',
+    }));
+  });
+
+  test('PATCH keeps an admin answer edit successful when the background Sheets sync fails', async () => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ?, line_account_id = ? WHERE id = ?')
+      .run(JSON.stringify(EDITABLE_DEFINITION), 'acc-1', 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ name: '二郎', contact: 'two@example.test', kind: '個人' }), 'sub-2');
+    const context = await internalEditContext('internal-form', 'sub-2');
+    bindingOverrides = { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' };
+    sheetsSyncMocks.syncSheetsAfterFormMutation.mockRejectedValueOnce(new Error('sync failed'));
+    const pending: Promise<unknown>[] = [];
+    const waitUntil = vi.fn((promise: Promise<unknown>) => { pending.push(promise); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const response = await app().fetch(new Request(
+      'https://worker.example.test/api/forms-advanced/internal-form/rows/sub-2',
+      {
+        method: 'PATCH',
+        headers: { Authorization: OWNER, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...context,
+          answers: { name: '管理画面更新', contact: 'admin@example.test', kind: '個人' },
+        }),
+      },
+    ), env(), { waitUntil } as unknown as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    await expect(Promise.all(pending)).resolves.toEqual([undefined]);
+    expect(raw.prepare('SELECT edit_version FROM internal_form_submissions WHERE id = ?').get('sub-2'))
+      .toEqual({ edit_version: 1 });
+    expect(error).toHaveBeenCalledWith('Immediate Google Sheets sync after admin answer edit failed');
+  });
+
   test.each([
     ['read-only field', { name: '更新', attachment: [] }],
     ['unknown identity field', { name: '更新', friendId: 'attacker' }],
     ['required empty', { name: '' }],
     ['invalid email type', { name: '更新', contact: 'not-an-email' }],
   ] as const)('PATCH rejects %s without mutating the row', async (_label, answers) => {
-    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
-      .run(JSON.stringify(EDITABLE_DEFINITION), 'internal-form');
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ?, line_account_id = ? WHERE id = ?')
+      .run(JSON.stringify(EDITABLE_DEFINITION), 'acc-1', 'internal-form');
     raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
       .run(JSON.stringify({ name: '二郎', contact: 'two@example.test', kind: '個人', attachment: [] }), 'sub-2');
     const before = raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
       .get('sub-2');
     const context = await internalEditContext('internal-form', 'sub-2');
+    bindingOverrides = { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' };
+    const waitUntil = vi.fn();
 
-    const response = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
-      ...context,
-      answers,
-    });
+    const response = await app().fetch(new Request(
+      'https://worker.example.test/api/forms-advanced/internal-form/rows/sub-2',
+      {
+        method: 'PATCH',
+        headers: { Authorization: OWNER, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...context, answers }),
+      },
+    ), env(), { waitUntil } as unknown as ExecutionContext);
 
     expect(response.status).toBe(400);
     expect(raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
       .get('sub-2')).toEqual(before);
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).not.toHaveBeenCalled();
   });
 
   test('PATCH enforces allow_post_edit, form scope, and existing admin authentication', async () => {
