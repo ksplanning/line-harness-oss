@@ -958,6 +958,7 @@ internalFormsAdmin.delete('/api/forms-advanced/:id/rows/:rowId', async (c, next)
       c.req.param('rowId'),
     );
     if (!deleted) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    queueSheetsSyncAfterAdminEdit(c, form, c.req.param('rowId'));
     return c.json({ success: true, data: null });
   } catch (error) {
     console.error('DELETE internal /api/forms-advanced/:id/rows/:rowId error:', error);

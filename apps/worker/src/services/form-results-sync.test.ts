@@ -17,6 +17,7 @@ import {
   syncFormResults,
   type FormResultsChunkCursor,
 } from './form-results-sync.js';
+import { syncSheetsAfterFormMutation } from './sheets-sync-jobs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
@@ -324,6 +325,48 @@ describe('form results sheet — one row per submission', () => {
     expect(raw.prepare(
       'SELECT form_results_row_shifted_at FROM sheets_connections WHERE id = ?',
     ).get(connection.id)).toEqual({ form_results_row_shifted_at: expect.any(String) });
+  });
+
+  test('runs a soft-deleted submission through the narrow mutation job and row-shift fence', async () => {
+    await run();
+    const writesBefore = resultsClient.writes.length;
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+
+    await syncSheetsAfterFormMutation({
+      db,
+      lineAccountId: 'acc-1',
+      formId: 'form-1',
+      submissionId: 'ifs-001',
+      actor: 'system_internal_form_edit',
+      credentialsJson: '{}',
+      client: resultsClient,
+    });
+
+    expect(resultsClient.writes.slice(writesBefore).filter((write) => write.kind === 'delete'))
+      .toEqual([{
+        kind: 'delete',
+        rowCount: 1,
+        sheetName: '回答',
+        rowNumbers: [2],
+      }]);
+    expect(resultsClient.values.map((row) => row[4])).toEqual(['送信ID', 'ifs-002']);
+    expect(raw.prepare(
+      `SELECT target, total_count, snapshot_record_key, updated_rows
+       FROM sheets_sync_jobs ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get()).toEqual({
+      target: 'form_results',
+      total_count: 1,
+      snapshot_record_key: 'ifs-001',
+      updated_rows: 1,
+    });
+    expect(raw.prepare(
+      `SELECT form_results_row_shifted_at, form_results_row_shift_pending_until
+       FROM sheets_connections WHERE id = ?`,
+    ).get(connection.id)).toEqual({
+      form_results_row_shifted_at: expect.any(String),
+      form_results_row_shift_pending_until: null,
+    });
   });
 
   test('fails closed when a row moves after the deletion sync reads the sheet', async () => {

@@ -126,6 +126,21 @@ describe('target-aware sheets sync jobs', () => {
       credentialsJson: undefined,
     })).resolves.toBeUndefined();
 
+    const sync = vi.fn();
+    const syncResults = vi.fn();
+    await expect(syncSheetsAfterFormMutation({
+      db,
+      lineAccountId: 'acc-1',
+      formId: 'form-without-connection',
+      actor: 'system_internal_form_submission',
+      credentialsJson: '{}',
+      sync,
+      syncResults,
+    })).resolves.toBeUndefined();
+    expect(sync).not.toHaveBeenCalled();
+    expect(syncResults).not.toHaveBeenCalled();
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_jobs').get()).toEqual({ count: 0 });
+
     raw.prepare('UPDATE sheets_connections SET is_active = 0 WHERE id = ?').run(connection.id);
     const jobs = await startSheetsSyncJobsForFormMutation({
       db,

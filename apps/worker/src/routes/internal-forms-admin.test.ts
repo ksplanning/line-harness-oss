@@ -1103,6 +1103,7 @@ describe('internal answer admin read path', () => {
   test('DELETE soft-deletes only the requested form-scoped answer and hides it from admin reads', async () => {
     const crossed = await call('DELETE', '/api/forms-advanced/internal-form/rows/not-in-this-form');
     expect(crossed.status).toBe(404);
+    expect(await crossed.json()).toEqual({ success: false, error: '回答が見つかりません' });
 
     seedInternalSubmission(
       'not-in-this-form',
@@ -1135,6 +1136,53 @@ describe('internal answer admin read path', () => {
     expect(raw.prepare(
       'SELECT deleted_at FROM internal_form_submissions WHERE id = ?',
     ).get('not-in-this-form')).toEqual({ deleted_at: null });
+  });
+
+  test('DELETE queues an immediate Sheets sync after the internal answer is soft-deleted', async () => {
+    raw.prepare('UPDATE formaloo_forms SET line_account_id = ? WHERE id = ?')
+      .run('acc-1', 'internal-form');
+    bindingOverrides = { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' };
+    sheetsSyncMocks.syncSheetsAfterFormMutation.mockImplementationOnce(async () => {
+      expect(raw.prepare(
+        'SELECT deleted_at FROM internal_form_submissions WHERE id = ?',
+      ).get('sub-2')).toEqual({ deleted_at: expect.any(String) });
+    });
+    const pending: Promise<unknown>[] = [];
+    const waitUntil = vi.fn((promise: Promise<unknown>) => { pending.push(promise); });
+
+    const response = await app().fetch(new Request(
+      'https://worker.example.test/api/forms-advanced/internal-form/rows/sub-2',
+      { method: 'DELETE', headers: { Authorization: OWNER } },
+    ), env(), { waitUntil } as unknown as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true, data: null });
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await Promise.all(pending);
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).toHaveBeenCalledWith(expect.objectContaining({
+      db: DB,
+      lineAccountId: 'acc-1',
+      formId: 'internal-form',
+      submissionId: 'sub-2',
+      actor: expect.any(String),
+      credentialsJson: '{}',
+    }));
+  });
+
+  test('DELETE keeps Sheets side effects disabled without service-account credentials', async () => {
+    raw.prepare('UPDATE formaloo_forms SET line_account_id = ? WHERE id = ?')
+      .run('acc-1', 'internal-form');
+    const waitUntil = vi.fn();
+
+    const response = await app().fetch(new Request(
+      'https://worker.example.test/api/forms-advanced/internal-form/rows/sub-2',
+      { method: 'DELETE', headers: { Authorization: OWNER } },
+    ), env(), { waitUntil } as unknown as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true, data: null });
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).not.toHaveBeenCalled();
   });
 
   test('DELETE keeps the existing authentication and forms_advanced permission boundary', async () => {
