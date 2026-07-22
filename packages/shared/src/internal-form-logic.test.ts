@@ -181,6 +181,30 @@ describe('evaluateInternalFormLogic', () => {
     ).visibleFieldIds).toEqual(['gate']);
   });
 
+  test('親を再表示すると保持された下位回答で子孫の表示条件を再評価する', () => {
+    const nestedFields: HarnessField[] = [
+      { id: 'gate', type: 'choice', label: '追加質問', required: true, position: 0, config: { choices: ['はい', 'いいえ'] } },
+      { id: 'nested', type: 'choice', label: '下位の選択', required: false, position: 1, config: { choices: ['開く', '閉じる'] } },
+      { id: 'detail', type: 'text', label: '下位の詳細', required: false, position: 2, config: {} },
+    ];
+    const nestedLogic: HarnessLogicRule[] = [
+      { id: 'show-nested', sourceFieldId: 'gate', operator: 'equals', value: 'はい', action: 'show', targetFieldId: 'nested' },
+      { id: 'show-detail', sourceFieldId: 'nested', operator: 'equals', value: '開く', action: 'show', targetFieldId: 'detail' },
+    ];
+    const retainedAnswers = { gate: 'はい', nested: '開く' };
+
+    expect(evaluateInternalFormLogic(nestedFields, nestedLogic, retainedAnswers, 'web').visibleFieldIds)
+      .toEqual(['gate', 'nested', 'detail']);
+    expect(evaluateInternalFormLogic(
+      nestedFields,
+      nestedLogic,
+      { ...retainedAnswers, gate: 'いいえ' },
+      'web',
+    ).visibleFieldIds).toEqual(['gate']);
+    expect(evaluateInternalFormLogic(nestedFields, nestedLogic, retainedAnswers, 'web').visibleFieldIds)
+      .toEqual(['gate', 'nested', 'detail']);
+  });
+
   test('非表示になった分岐元の改ざん回答で別の必須項目を隠せない', () => {
     const guardedFields: HarnessField[] = [
       { id: 'gate', type: 'choice', label: '追加質問', required: true, position: 0, config: { choices: ['はい', 'いいえ'] } },

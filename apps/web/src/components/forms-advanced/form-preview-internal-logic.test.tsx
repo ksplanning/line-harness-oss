@@ -52,6 +52,37 @@ describe('FormPreview — internal renderer と共有する条件分岐', () => 
     expect(screen.queryByText('連絡方法')).toBeNull()
   })
 
+  it('親が隠れると下位も隠れ、親の再表示時に保持回答で下位条件を再評価する', () => {
+    const fields = [
+      field('gate', '追加質問を表示しますか', 0, 'choice', ['はい', 'いいえ']),
+      field('nested', '下位の選択', 1, 'choice', ['開く', '閉じる']),
+      field('detail', '下位の詳細', 2),
+    ]
+    const logic: HarnessLogicRule[] = [
+      { id: 'show-nested', sourceFieldId: 'gate', operator: 'equals', value: 'はい', action: 'show', targetFieldId: 'nested' },
+      { id: 'show-detail', sourceFieldId: 'nested', operator: 'equals', value: '開く', action: 'show', targetFieldId: 'detail' },
+    ]
+
+    render(<FormPreview title="入れ子" fields={fields} logic={logic} internalLogicPreview />)
+    expect(screen.queryByText('下位の選択')).toBeNull()
+    expect(screen.queryByText('下位の詳細')).toBeNull()
+
+    fireEvent.click(screen.getByLabelText('プレビュー はい'))
+    expect(screen.getByText('下位の選択')).toBeTruthy()
+    expect(screen.queryByText('下位の詳細')).toBeNull()
+
+    fireEvent.click(screen.getByLabelText('プレビュー 開く'))
+    expect(screen.getByText('下位の詳細')).toBeTruthy()
+
+    fireEvent.click(screen.getByLabelText('プレビュー いいえ'))
+    expect(screen.queryByText('下位の選択')).toBeNull()
+    expect(screen.queryByText('下位の詳細')).toBeNull()
+
+    fireEvent.click(screen.getByLabelText('プレビュー はい'))
+    expect(screen.getByText('下位の選択')).toBeTruthy()
+    expect(screen.getByText('下位の詳細')).toBeTruthy()
+  })
+
   it('選択肢の編集後は削除済みの回答で分岐し続けない', () => {
     const detail = field('detail', 'Bルートの質問', 1)
     const logic: HarnessLogicRule[] = [{

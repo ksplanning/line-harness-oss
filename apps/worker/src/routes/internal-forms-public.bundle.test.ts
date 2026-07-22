@@ -41,9 +41,16 @@ const definition = {
       id: 'zip-combined', type: 'postal_code', label: '一括用郵便番号', required: true, position: 11,
       config: { postalAutofill: { mode: 'combined', zipField: 'zip-combined', addressField: 'address' } },
     },
+    { id: 'first-choice-detail', type: 'text', label: '個人向け詳細', required: false, position: 12, config: {} },
+    { id: 'gate', type: 'choice', label: '追加質問', required: false, position: 13, config: { choices: ['はい', 'いいえ'] } },
+    { id: 'nested', type: 'choice', label: '下位の選択', required: false, position: 14, config: { choices: ['開く', '閉じる'] } },
+    { id: 'nested-detail', type: 'text', label: '下位の詳細', required: false, position: 15, config: {} },
   ],
   logic: [
     { id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'company' },
+    { id: 'show-first-choice', sourceFieldId: 'kind', operator: 'equals', value: '個人', action: 'show', targetFieldId: 'first-choice-detail' },
+    { id: 'show-nested', sourceFieldId: 'gate', operator: 'equals', value: 'はい', action: 'show', targetFieldId: 'nested' },
+    { id: 'show-nested-detail', sourceFieldId: 'nested', operator: 'equals', value: '開く', action: 'show', targetFieldId: 'nested-detail' },
   ],
   formType: 'simple',
 };
@@ -117,7 +124,7 @@ afterAll(() => {
 });
 
 describe('deployed internal form logic bundle', () => {
-  test('executes the delivered client and applies choice show/hide after a real change event', async () => {
+  test('executes first-choice and nested cascades through the delivered client', async () => {
     const parsed = new DOMParser().parseFromString(publishedHtml, 'text/html');
     document.body.innerHTML = parsed.body.innerHTML;
 
@@ -134,14 +141,51 @@ describe('deployed internal form logic bundle', () => {
 
     expect(externalClient?.getAttribute('src')).toBe('/assets/internal-form-logic.js');
     const company = document.querySelector<HTMLElement>('[data-field-id="company"]')!;
+    const firstChoiceDetail = document.querySelector<HTMLElement>('[data-field-id="first-choice-detail"]')!;
+    const individual = document.querySelector<HTMLInputElement>('input[value="個人"]')!;
     const corporate = document.querySelector<HTMLInputElement>('input[value="法人"]')!;
     expect(company.hidden).toBe(true);
+    expect(firstChoiceDetail.hidden).toBe(true);
+
+    individual.checked = true;
+    individual.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(firstChoiceDetail.hidden).toBe(false);
 
     corporate.checked = true;
     corporate.dispatchEvent(new Event('change', { bubbles: true }));
 
     expect(company.hidden).toBe(false);
+    expect(firstChoiceDetail.hidden).toBe(true);
     expect(company.querySelector<HTMLInputElement>('input')!.disabled).toBe(false);
+
+    const nested = document.querySelector<HTMLElement>('[data-field-id="nested"]')!;
+    const nestedDetail = document.querySelector<HTMLElement>('[data-field-id="nested-detail"]')!;
+    const gateYes = document.querySelector<HTMLInputElement>('input[value="はい"]')!;
+    const gateNo = document.querySelector<HTMLInputElement>('input[value="いいえ"]')!;
+    const nestedOpen = document.querySelector<HTMLInputElement>('input[value="開く"]')!;
+    expect(nested.hidden).toBe(true);
+    expect(nestedDetail.hidden).toBe(true);
+
+    gateYes.checked = true;
+    gateYes.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(nested.hidden).toBe(false);
+    expect(nestedDetail.hidden).toBe(true);
+
+    nestedOpen.checked = true;
+    nestedOpen.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(nestedDetail.hidden).toBe(false);
+
+    gateNo.checked = true;
+    gateNo.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(nested.hidden).toBe(true);
+    expect(nestedDetail.hidden).toBe(true);
+    expect(nestedOpen.disabled).toBe(true);
+
+    gateYes.checked = true;
+    gateYes.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(nested.hidden).toBe(false);
+    expect(nestedDetail.hidden).toBe(false);
+    expect(nestedOpen.disabled).toBe(false);
 
     expect(Array.from(parsed.querySelectorAll('script'))
       .some((script) => script.textContent?.includes('postal lookup failed'))).toBe(false);
