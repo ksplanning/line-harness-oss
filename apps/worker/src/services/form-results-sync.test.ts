@@ -880,6 +880,7 @@ describe('target isolation (D-2 独立スイッチ)', () => {
       q1: 'フラグ変更後の回答',
       q2: '回答A2',
     });
+    expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_jobs').get()).toEqual({ count: 0 });
   });
 
   test('does not retarget a queued pre-deletion webhook after a results row shifts', async () => {
