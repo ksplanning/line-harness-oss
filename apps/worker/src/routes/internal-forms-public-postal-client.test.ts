@@ -97,6 +97,34 @@ async function mountPostalPage(initialValues: Partial<Record<'zip' | 'pref' | 'c
   };
 }
 
+async function mountCombinedPostalPage() {
+  form.definition_json = JSON.stringify({
+    fields: [
+      {
+        id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+        config: { postalAutofill: { mode: 'combined', zipField: 'zip', addressField: 'address' } },
+      },
+      { id: 'address', type: 'address', label: '住所', required: true, position: 1, config: {} },
+    ],
+    logic: [],
+  });
+  const app = new Hono<Env>();
+  app.route('/', internalFormsPublic);
+  const response = await app.request('/f/postal-form', {}, env());
+  expect(response.status).toBe(200);
+
+  const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
+  document.body.innerHTML = parsed.body.innerHTML;
+  initInternalFormLogic();
+
+  return {
+    button: document.querySelector('.postal-lookup') as HTMLButtonElement,
+    status: document.querySelector('.postal-status') as HTMLParagraphElement,
+    zip: document.querySelector('[data-answer-field="zip"]') as HTMLInputElement,
+    address: document.querySelector('[data-answer-field="address"]') as HTMLTextAreaElement,
+  };
+}
+
 afterEach(() => {
   form.definition_json = originalDefinitionJson;
   document.body.innerHTML = '';
@@ -206,6 +234,33 @@ describe('internal form postal autofill client', () => {
     expect(controls.pref.value).toBe('東京都');
     expect(controls.city.value).toBe('利用者が手修正');
     expect(controls.town.value).toBe('');
+  });
+
+  test('一括は連結住所を住所欄へ入れ、追記した手入力を再検索でも保持する', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, { pref: '大阪府', city: '高槻市', town: '町域A' }))
+      .mockResolvedValueOnce(jsonResponse(200, { pref: '東京都', city: '新宿区', town: '新宿' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controls = await mountCombinedPostalPage();
+
+    expect(controls.address).toBeInstanceOf(HTMLTextAreaElement);
+    controls.zip.value = '5690000';
+    controls.button.click();
+
+    await vi.waitFor(() => expect(controls.status.textContent).toBe('住所を入力しました'));
+    expect(controls.address.value).toBe('大阪府高槻市町域A');
+
+    controls.address.value += '1-2-3 テストビル';
+    controls.address.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(controls.address.value).toBe('大阪府高槻市町域A1-2-3 テストビル');
+
+    controls.zip.value = '1600022';
+    controls.zip.dispatchEvent(new Event('input', { bubbles: true }));
+    controls.button.click();
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(controls.status.textContent).toBe('住所を入力しました'));
+    expect(controls.address.value).toBe('大阪府高槻市町域A1-2-3 テストビル');
   });
 
   test('400 再表示で復元された住所も、郵便番号を訂正して検索すれば更新できる', async () => {

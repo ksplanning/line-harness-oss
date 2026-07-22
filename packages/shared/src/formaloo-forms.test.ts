@@ -113,6 +113,38 @@ describe('formaloo-forms — validateHarnessField (M-21 明示 reject)', () => {
     if (result.ok) expect(result.field.config.postalAutofill).toEqual(postalAutofill);
   });
 
+  test('一括 postalAutofill は住所1項目だけを exact whitelist で保持する', () => {
+    const result = validateHarnessField({
+      id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+      config: {
+        postalAutofill: {
+          mode: 'combined', zipField: 'zip', addressField: 'address', ignored: 'drop',
+        },
+      },
+    }, { allowInternalOnly: true });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.field.config.postalAutofill).toEqual({
+      mode: 'combined', zipField: 'zip', addressField: 'address',
+    });
+  });
+
+  test('明示された split も既存4キー形状へ戻し、modeを保存しない', () => {
+    const result = validateHarnessField({
+      id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+      config: {
+        postalAutofill: {
+          mode: 'split', zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town',
+        },
+      },
+    }, { allowInternalOnly: true });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.field.config.postalAutofill).toEqual({
+      zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town',
+    });
+  });
+
   test('section は config.text を保持し、page_break も受理する (T-B1)', () => {
     const section = validateHarnessField({
       id: 'decoration-section',

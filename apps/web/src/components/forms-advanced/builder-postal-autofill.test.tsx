@@ -35,6 +35,27 @@ const nativeAddressFields: HarnessField[] = [
   { id: 'email', type: 'email', label: 'メール', required: false, position: 7, config: {} },
 ]
 
+const modeCapableFields: HarnessField[] = [
+  { id: 'zip-native', type: 'postal_code', label: '郵便番号', required: true, position: 0, config: {} },
+  { id: 'pref-native', type: 'prefecture', label: '都道府県', required: false, position: 1, config: {} },
+  { id: 'city-native', type: 'address_city', label: '市区町村', required: false, position: 2, config: {} },
+  { id: 'town-native', type: 'address_street', label: '町名・番地', required: false, position: 3, config: {} },
+  { id: 'address-primary', type: 'address' as HarnessField['type'], label: '住所', required: false, position: 4, config: {} },
+  { id: 'address-secondary', type: 'address' as HarnessField['type'], label: '別の住所', required: false, position: 5, config: {} },
+  { id: 'notes', type: 'text', label: '備考', required: false, position: 6, config: {} },
+  { id: 'email', type: 'email', label: 'メール', required: false, position: 7, config: {} },
+]
+
+function combinedConfig(zipField: string, addressField: string): HarnessField['config'] {
+  return {
+    postalAutofill: {
+      mode: 'combined',
+      zipField,
+      addressField,
+    } as unknown as NonNullable<HarnessField['config']['postalAutofill']>,
+  }
+}
+
 const legacyMappingWithNativeDestinations: HarnessField[] = [
   {
     id: 'zip', type: 'text', label: '郵便番号（旧項目）', required: true, position: 0,
@@ -104,9 +125,17 @@ describe('internal postal autofill mapping', () => {
 
   it('does not replace a grandfathered text mapping when native destinations are added', () => {
     const onSave = vi.fn()
-    render(<FormBuilder {...base({ initialFields: legacyMappingWithNativeDestinations, onSave })} />)
+    render(<FormBuilder {...base({
+      initialFields: [
+        ...legacyMappingWithNativeDestinations,
+        { id: 'address', type: 'address' as HarnessField['type'], label: '住所', required: false, position: 7, config: {} },
+      ],
+      onSave,
+    })} />)
 
     expect((screen.getByLabelText('郵便番号から住所を自動入力') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('radio', { name: '分割' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('radio', { name: '一括' }) as HTMLInputElement).checked).toBe(false)
     expect((screen.getByLabelText('都道府県の入力先') as HTMLSelectElement).value).toBe('pref-text')
     expect((screen.getByLabelText('市区町村の入力先') as HTMLSelectElement).value).toBe('city-text')
     expect((screen.getByLabelText('町名・番地の入力先') as HTMLSelectElement).value).toBe('town-text')
@@ -114,6 +143,89 @@ describe('internal postal autofill mapping', () => {
 
     const savedFields = onSave.mock.calls[0][0].fields as HarnessField[]
     expect(savedFields.find((field) => field.id === 'zip')).toEqual(legacyMappingWithNativeDestinations[0])
+    expect(savedFields.find((field) => field.id === 'zip')?.config.postalAutofill).toEqual({
+      zipField: 'zip',
+      prefField: 'pref-text',
+      cityField: 'city-text',
+      townField: 'town-text',
+    })
+    expect(savedFields.find((field) => field.id === 'zip')?.config.postalAutofill).not.toHaveProperty('mode')
+  })
+
+  it('defaults to 分割 when both modes are available and keeps the legacy four-key save shape', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ initialFields: modeCapableFields, onSave })} />)
+
+    fireEvent.click(screen.getByLabelText('郵便番号から住所を自動入力'))
+
+    expect((screen.getByRole('radio', { name: '分割' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('radio', { name: '一括' }) as HTMLInputElement).checked).toBe(false)
+    expect(screen.getByLabelText('都道府県の入力先')).toBeTruthy()
+    expect(screen.getByLabelText('市区町村の入力先')).toBeTruthy()
+    expect(screen.getByLabelText('町名・番地の入力先')).toBeTruthy()
+    expect(screen.queryByLabelText('住所の入力先')).toBeNull()
+
+    fireEvent.click(screen.getByText('保存'))
+    const savedFields = onSave.mock.calls[0][0].fields as HarnessField[]
+    expect(savedFields.find((field) => field.id === 'zip-native')?.config.postalAutofill).toEqual({
+      zipField: 'zip-native',
+      prefField: 'pref-native',
+      cityField: 'city-native',
+      townField: 'town-native',
+    })
+  })
+
+  it('switches to 一括, shows only address destinations, and saves the exact combined shape', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ initialFields: modeCapableFields, onSave })} />)
+
+    fireEvent.click(screen.getByLabelText('郵便番号から住所を自動入力'))
+    fireEvent.click(screen.getByRole('radio', { name: '一括' }))
+
+    expect(screen.queryByLabelText('都道府県の入力先')).toBeNull()
+    expect(screen.queryByLabelText('市区町村の入力先')).toBeNull()
+    expect(screen.queryByLabelText('町名・番地の入力先')).toBeNull()
+    const addressDestination = screen.getByLabelText('住所の入力先') as HTMLSelectElement
+    expect(Array.from(addressDestination.options).map((option) => option.value)).toEqual([
+      'address-primary',
+      'address-secondary',
+    ])
+    expect(Array.from(addressDestination.options).map((option) => option.value)).not.toContain('notes')
+    expect(Array.from(addressDestination.options).map((option) => option.value)).not.toContain('email')
+
+    fireEvent.change(addressDestination, { target: { value: 'address-secondary' } })
+    fireEvent.click(screen.getByText('保存'))
+
+    const savedFields = onSave.mock.calls[0][0].fields as HarnessField[]
+    expect(savedFields.find((field) => field.id === 'zip-native')?.config.postalAutofill).toEqual({
+      mode: 'combined',
+      zipField: 'zip-native',
+      addressField: 'address-secondary',
+    })
+  })
+
+  it('can enable 一括 with only a postal-code field and one address field', () => {
+    const onSave = vi.fn()
+    const addressOnlyFields: HarnessField[] = [
+      { id: 'zip-native', type: 'postal_code', label: '郵便番号', required: true, position: 0, config: {} },
+      { id: 'address', type: 'address' as HarnessField['type'], label: '住所', required: false, position: 1, config: {} },
+    ]
+    render(<FormBuilder {...base({ initialFields: addressOnlyFields, onSave })} />)
+
+    const enabled = screen.getByLabelText('郵便番号から住所を自動入力') as HTMLInputElement
+    expect(enabled.disabled).toBe(false)
+    fireEvent.click(enabled)
+
+    expect((screen.getByRole('radio', { name: '一括' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByLabelText('住所の入力先') as HTMLSelectElement).value).toBe('address')
+    fireEvent.click(screen.getByText('保存'))
+
+    const savedFields = onSave.mock.calls[0][0].fields as HarnessField[]
+    expect(savedFields.find((field) => field.id === 'zip-native')?.config.postalAutofill).toEqual({
+      mode: 'combined',
+      zipField: 'zip-native',
+      addressField: 'address',
+    })
   })
 
   it('chooses three distinct text fallbacks when a native zip has no dedicated destinations', () => {
@@ -204,6 +316,51 @@ describe('internal postal autofill mapping', () => {
     const savedFields = onSave.mock.calls[0][0].fields as HarnessField[]
     expect(savedFields.some((field) => field.id === 'city')).toBe(false)
     expect(savedFields.find((field) => field.id === 'zip')?.config).not.toHaveProperty('postalAutofill')
+  })
+
+  it('keeps a combined mapping when deleting an unrelated field whose id equals the mode value', () => {
+    const onSave = vi.fn()
+    const withCombinedMapping: HarnessField[] = [
+      {
+        id: 'zip-native', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+        config: combinedConfig('zip-native', 'address'),
+      },
+      { id: 'address', type: 'address' as HarnessField['type'], label: '住所', required: false, position: 1, config: {} },
+      { id: 'combined', type: 'text', label: '備考', required: false, position: 2, config: {} },
+    ]
+    render(<FormBuilder {...base({ initialFields: withCombinedMapping, onSave })} />)
+
+    fireEvent.click(screen.getAllByLabelText('削除')[2])
+    fireEvent.click(screen.getByText('はい'))
+    fireEvent.click(screen.getByText('保存'))
+
+    const savedFields = onSave.mock.calls[0][0].fields as HarnessField[]
+    expect(savedFields.some((field) => field.id === 'combined')).toBe(false)
+    expect(savedFields.find((field) => field.id === 'zip-native')?.config.postalAutofill).toEqual({
+      mode: 'combined',
+      zipField: 'zip-native',
+      addressField: 'address',
+    })
+  })
+
+  it('removes a combined mapping when its address destination is deleted', () => {
+    const onSave = vi.fn()
+    const withCombinedMapping: HarnessField[] = [
+      {
+        id: 'zip-native', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+        config: combinedConfig('zip-native', 'address'),
+      },
+      { id: 'address', type: 'address' as HarnessField['type'], label: '住所', required: false, position: 1, config: {} },
+    ]
+    render(<FormBuilder {...base({ initialFields: withCombinedMapping, onSave })} />)
+
+    fireEvent.click(screen.getAllByLabelText('削除')[1])
+    fireEvent.click(screen.getByText('はい'))
+    fireEvent.click(screen.getByText('保存'))
+
+    const savedFields = onSave.mock.calls[0][0].fields as HarnessField[]
+    expect(savedFields.some((field) => field.id === 'address')).toBe(false)
+    expect(savedFields.find((field) => field.id === 'zip-native')?.config).not.toHaveProperty('postalAutofill')
   })
 
   it('does not expose internal postal settings for Formaloo forms', () => {

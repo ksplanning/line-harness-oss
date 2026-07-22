@@ -1188,6 +1188,42 @@ describe('internal hosting provider boundary', () => {
     expect(stored.fields.find((field) => field.id === 'zip')).toEqual(source);
   });
 
+  test('normal PUT and GET preserve the exact three-key combined postal shape', async () => {
+    const fields = [
+      {
+        id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+        config: { postalAutofill: { mode: 'combined', zipField: 'zip', addressField: 'address' } },
+      },
+      { id: 'address', type: 'address', label: '住所', required: true, position: 1, config: {} },
+    ];
+    seedForm('combined-postal-save', 'internal', { definition: { fields, logic: [] } });
+
+    const saved = await call('PUT', '/api/forms-advanced/combined-postal-save', { fields, logic: [] });
+    expect(saved.status).toBe(200);
+
+    const loaded = await call('GET', '/api/forms-advanced/combined-postal-save');
+    expect(loaded.status).toBe(200);
+    const loadedBody = await loaded.json() as {
+      data: { fields: Array<{ id: string; type: string; config: Record<string, unknown> }> };
+    };
+    const source = loadedBody.data.fields.find((field) => field.id === 'zip');
+    expect(source?.config.postalAutofill).toEqual({
+      mode: 'combined', zipField: 'zip', addressField: 'address',
+    });
+    expect(Object.keys(source?.config.postalAutofill as object)).toEqual([
+      'mode', 'zipField', 'addressField',
+    ]);
+
+    const stored = JSON.parse((raw.prepare(
+      'SELECT definition_json FROM formaloo_forms WHERE id = ?',
+    ).get('combined-postal-save') as { definition_json: string }).definition_json) as {
+      fields: Array<{ id: string; config: Record<string, unknown> }>;
+    };
+    expect(stored.fields.find((field) => field.id === 'zip')?.config.postalAutofill).toEqual(
+      source?.config.postalAutofill,
+    );
+  });
+
   test('internal save preserves every existing Formaloo field mapping byte-for-byte', async () => {
     seedForm('internal-form', 'internal');
     const now = jstNow();

@@ -39,6 +39,20 @@ const nativePostalFields: HarnessField[] = [
   { id: 'town', type: 'address_street', label: '町域', required: false, position: 3, config: {} },
 ]
 
+const combinedPostalFields: HarnessField[] = [
+  {
+    id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+    config: {
+      postalAutofill: {
+        mode: 'combined',
+        zipField: 'zip',
+        addressField: 'address',
+      } as unknown as NonNullable<HarnessField['config']['postalAutofill']>,
+    },
+  },
+  { id: 'address', type: 'address' as HarnessField['type'], label: '住所', required: false, position: 1, config: {} },
+]
+
 describe('internal preview input freedoms', () => {
   test.each([
     ['text', '1行'],
@@ -155,6 +169,28 @@ describe('internal preview input freedoms', () => {
     expect((screen.getByLabelText('都道府県') as HTMLInputElement).value).toBe('東京都')
     expect((screen.getByLabelText('市区町村') as HTMLInputElement).value).toBe('千代田区')
     expect((screen.getByLabelText('町域') as HTMLInputElement).value).toBe('千代田')
+  })
+
+  test('一括検索は都道府県・市区町村・町域を連結して住所欄へ入れ、後から足した番地を保つ', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ pref: '東京都', city: '千代田区', town: '千代田' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<FormPreview title="住所" fields={combinedPostalFields} internalLogicPreview />)
+    const zip = screen.getByLabelText('郵便番号') as HTMLInputElement
+    const address = screen.getByLabelText('住所') as HTMLTextAreaElement
+
+    fireEvent.change(zip, { target: { value: '１００－０００１' } })
+    fireEvent.click(screen.getByRole('button', { name: '郵便番号から住所を入力' }))
+
+    await waitFor(() => expect(address.value).toBe('東京都千代田区千代田'))
+    fireEvent.change(address, { target: { value: '東京都千代田区千代田1-1 皇居前ビル101' } })
+    fireEvent.click(screen.getByRole('button', { name: '郵便番号から住所を入力' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(address.value).toBe('東京都千代田区千代田1-1 皇居前ビル101')
   })
 
   test('変換後も7桁数字でないプレビュー入力は従来エラーを示し、APIを呼ばない', () => {

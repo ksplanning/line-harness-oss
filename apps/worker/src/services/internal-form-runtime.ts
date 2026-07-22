@@ -19,6 +19,7 @@ import {
   type HarnessFieldConfig,
   type HarnessFieldType,
   type HarnessLogicRule,
+  type PostalAutofillConfig,
   type SuccessPageSpec,
 } from '@line-crm/shared';
 
@@ -53,13 +54,6 @@ export const JAPAN_PREFECTURES = [
 
 const JAPAN_PREFECTURE_SET = new Set<string>(JAPAN_PREFECTURES);
 
-export interface PostalAutofillConfig {
-  zipField: string;
-  prefField: string;
-  cityField: string;
-  townField: string;
-}
-
 export type InternalFormField = Omit<HarnessField, 'type' | 'config'> & {
   type: SupportedInternalFieldType;
   config: HarnessFieldConfig & { postalAutofill?: PostalAutofillConfig };
@@ -68,6 +62,16 @@ export type InternalFormField = Omit<HarnessField, 'type' | 'config'> & {
 function parsePostalAutofill(raw: unknown): PostalAutofillConfig | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
+  if (value.mode === 'combined') {
+    const keys = ['zipField', 'addressField'] as const;
+    if (keys.some((key) => typeof value[key] !== 'string' || !(value[key] as string).trim())) return null;
+    return {
+      mode: 'combined',
+      zipField: (value.zipField as string).trim(),
+      addressField: (value.addressField as string).trim(),
+    };
+  }
+  if (value.mode !== undefined && value.mode !== 'split') return null;
   const keys = ['zipField', 'prefField', 'cityField', 'townField'] as const;
   if (keys.some((key) => typeof value[key] !== 'string' || !(value[key] as string).trim())) return null;
   return {
@@ -492,15 +496,16 @@ export function parseInternalFormDefinition(
   for (const field of fields) {
     const postal = field.config.postalAutofill;
     if (!postal) continue;
-    const referencedIds = [postal.zipField, postal.prefField, postal.cityField, postal.townField];
-    if (
-      postal.zipField !== field.id
-      || new Set(referencedIds).size !== referencedIds.length
-      || !['text', 'postal_code'].includes(fieldForPostal.get(postal.zipField)?.type ?? '')
-      || !['text', 'prefecture'].includes(fieldForPostal.get(postal.prefField)?.type ?? '')
-      || !['text', 'address_city'].includes(fieldForPostal.get(postal.cityField)?.type ?? '')
-      || !['text', 'address_street'].includes(fieldForPostal.get(postal.townField)?.type ?? '')
-    ) {
+    const validZip = postal.zipField === field.id
+      && ['text', 'postal_code'].includes(fieldForPostal.get(postal.zipField)?.type ?? '');
+    const validDestinations = postal.mode === 'combined'
+      ? postal.addressField !== postal.zipField
+        && fieldForPostal.get(postal.addressField)?.type === 'address'
+      : new Set([postal.zipField, postal.prefField, postal.cityField, postal.townField]).size === 4
+        && ['text', 'prefecture'].includes(fieldForPostal.get(postal.prefField)?.type ?? '')
+        && ['text', 'address_city'].includes(fieldForPostal.get(postal.cityField)?.type ?? '')
+        && ['text', 'address_street'].includes(fieldForPostal.get(postal.townField)?.type ?? '');
+    if (!validZip || !validDestinations) {
       return { ok: false, error: '郵便番号自動入力の項目設定が正しくありません' };
     }
   }

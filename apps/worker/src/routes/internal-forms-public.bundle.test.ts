@@ -37,6 +37,10 @@ const definition = {
     { id: 'city-native', type: 'address_city', label: '専用市区町村', required: true, position: 8, config: {} },
     { id: 'town-native', type: 'address_street', label: '専用町名・番地', required: false, position: 9, config: {} },
     { id: 'address', type: 'address', label: '住所', required: false, position: 10, config: {} },
+    {
+      id: 'zip-combined', type: 'postal_code', label: '一括用郵便番号', required: true, position: 11,
+      config: { postalAutofill: { mode: 'combined', zipField: 'zip-combined', addressField: 'address' } },
+    },
   ],
   logic: [
     { id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'company' },
@@ -172,6 +176,16 @@ describe('deployed internal form logic bundle', () => {
     expect(document.querySelector<HTMLInputElement>('[data-answer-field="town-native"]')!.value).toBe('千代田');
 
     const address = document.querySelector<HTMLTextAreaElement>('[data-answer-field="address"]')!;
+    const combinedZip = document.querySelector<HTMLInputElement>('[data-answer-field="zip-combined"]')!;
+    combinedZip.value = '１０００００１';
+    document.querySelector<HTMLButtonElement>('[data-zip-field="zip-combined"]')!.click();
+    await vi.waitFor(() => expect(address.value).toBe('東京都千代田区千代田'));
+    address.value += '1-1';
+    address.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector<HTMLButtonElement>('[data-zip-field="zip-combined"]')!.click();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(address.value).toBe('東京都千代田区千代田1-1');
+
     expect(address.rows).toBeGreaterThanOrEqual(2);
     const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
     expect(address.dispatchEvent(enter)).toBe(false);

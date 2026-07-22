@@ -819,7 +819,10 @@ function SettingsPanel({
       ...textPostalDestinations,
     ],
   }
-  const defaultPostalAutofill = (() => {
+  const addressPostalDestinations = allFields.filter(
+    (candidate) => candidate.type === 'address' && candidate.id !== field.id,
+  )
+  const defaultSplitPostalAutofill = (() => {
     const selected = new Set<string>()
     const selectFirstUnused = (key: 'prefField' | 'cityField' | 'townField') => {
       const destination = postalDestinationFields[key].find((candidate) => !selected.has(candidate.id))
@@ -838,6 +841,15 @@ function SettingsPanel({
         }
       : undefined
   })()
+  const defaultCombinedPostalAutofill = addressPostalDestinations[0]
+    ? {
+        mode: 'combined' as const,
+        zipField: field.id,
+        addressField: addressPostalDestinations[0].id,
+      }
+    : undefined
+  // 両方を設定できるときは、既存動作と同じ「分割」を既定にする。
+  const defaultPostalAutofill = defaultSplitPostalAutofill ?? defaultCombinedPostalAutofill
   const togglePostalAutofill = (enabled: boolean) => {
     if (!enabled) {
       const nextConfig = { ...cfg }
@@ -848,8 +860,12 @@ function SettingsPanel({
     if (!defaultPostalAutofill) return
     setCfg({ postalAutofill: defaultPostalAutofill })
   }
+  const updatePostalMode = (mode: 'split' | 'combined') => {
+    const next = mode === 'combined' ? defaultCombinedPostalAutofill : defaultSplitPostalAutofill
+    if (next) setCfg({ postalAutofill: next })
+  }
   const updatePostalDestination = (key: 'prefField' | 'cityField' | 'townField', value: string) => {
-    if (!postalAutofill) return
+    if (!postalAutofill || postalAutofill.mode === 'combined') return
     const otherDestinations = [postalAutofill.prefField, postalAutofill.cityField, postalAutofill.townField]
       .filter((_, index) => index !== ({ prefField: 0, cityField: 1, townField: 2 } as const)[key])
     if (otherDestinations.includes(value)) return
@@ -859,7 +875,7 @@ function SettingsPanel({
     key: 'prefField' | 'cityField' | 'townField',
     label: string,
   ) => {
-    if (!postalAutofill) return null
+    if (!postalAutofill || postalAutofill.mode === 'combined') return null
     const otherDestinations = [postalAutofill.prefField, postalAutofill.cityField, postalAutofill.townField]
       .filter((_, index) => index !== ({ prefField: 0, cityField: 1, townField: 2 } as const)[key])
     return (
@@ -930,17 +946,63 @@ function SettingsPanel({
           </label>
           {!defaultPostalAutofill && !postalAutofill ? (
             <p className="text-[10px] leading-snug text-amber-600">
-              都道府県・市区町村・町名・番地の入力先として、専用項目または一行テキスト項目を3つ用意してください。
+              一括用の住所項目を1つ、または分割用の都道府県・市区町村・町名・番地の入力先を3つ用意してください。
             </p>
           ) : null}
           {postalAutofill ? (
             <div className="grid gap-2">
-              {postalDestinationSelect('prefField', '都道府県の入力先')}
-              {postalDestinationSelect('cityField', '市区町村の入力先')}
-              {postalDestinationSelect('townField', '町名・番地の入力先')}
-              <p className="text-[10px] leading-snug text-gray-400">
-                専用項目を先に表示しています。互換のため一行テキスト項目も選べます。3つの入力先には別々の項目を選んでください。
-              </p>
+              <fieldset className="grid grid-cols-2 gap-2" aria-label="住所の入力方法">
+                <label className="flex items-center gap-1 text-xs text-gray-600">
+                  <input
+                    type="radio"
+                    name={`postal-mode-${field.id}`}
+                    checked={postalAutofill.mode !== 'combined'}
+                    disabled={!defaultSplitPostalAutofill}
+                    onChange={() => updatePostalMode('split')}
+                  />
+                  <span>分割</span>
+                </label>
+                <label className="flex items-center gap-1 text-xs text-gray-600">
+                  <input
+                    type="radio"
+                    name={`postal-mode-${field.id}`}
+                    checked={postalAutofill.mode === 'combined'}
+                    disabled={!defaultCombinedPostalAutofill}
+                    onChange={() => updatePostalMode('combined')}
+                  />
+                  <span>一括</span>
+                </label>
+              </fieldset>
+              {postalAutofill.mode === 'combined' ? (
+                <label className="block text-xs text-gray-500">
+                  住所の入力先
+                  <select
+                    aria-label="住所の入力先"
+                    value={postalAutofill.addressField}
+                    onChange={(event) => setCfg({
+                      postalAutofill: {
+                        mode: 'combined',
+                        zipField: field.id,
+                        addressField: event.target.value,
+                      },
+                    })}
+                    className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1"
+                  >
+                    {addressPostalDestinations.map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <>
+                  {postalDestinationSelect('prefField', '都道府県の入力先')}
+                  {postalDestinationSelect('cityField', '市区町村の入力先')}
+                  {postalDestinationSelect('townField', '町名・番地の入力先')}
+                  <p className="text-[10px] leading-snug text-gray-400">
+                    専用項目を先に表示しています。互換のため一行テキスト項目も選べます。3つの入力先には別々の項目を選んでください。
+                  </p>
+                </>
+              )}
             </div>
           ) : null}
         </div>
@@ -1677,7 +1739,12 @@ export default function FormBuilder(props: BuilderProps) {
       .filter((field) => field.id !== id)
       .map((field) => {
         const postalAutofill = field.config.postalAutofill
-        if (!postalAutofill || !Object.values(postalAutofill).includes(id)) return field
+        const referencedIds = postalAutofill?.mode === 'combined'
+          ? [postalAutofill.zipField, postalAutofill.addressField]
+          : postalAutofill
+            ? [postalAutofill.zipField, postalAutofill.prefField, postalAutofill.cityField, postalAutofill.townField]
+            : []
+        if (!referencedIds.includes(id)) return field
         const config = { ...field.config }
         delete config.postalAutofill
         return { ...field, config }

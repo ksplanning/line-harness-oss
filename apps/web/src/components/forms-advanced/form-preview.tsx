@@ -730,11 +730,16 @@ export default function FormPreview({
       if (!response.ok) throw Object.assign(new Error('postal lookup failed'), { status: response.status })
       const address = await response.json() as Record<string, unknown>
       if (postalLookupGeneration.current[field.id] !== generation) return
-      const values: Array<[string, unknown]> = [
-        [config.prefField, address.pref],
-        [config.cityField, address.city],
-        [config.townField, address.town],
-      ]
+      const combinedAddress = [address.pref, address.city, address.town]
+        .filter((value): value is string => typeof value === 'string')
+        .join('')
+      const values: Array<[string, unknown]> = config.mode === 'combined'
+        ? [[config.addressField, combinedAddress]]
+        : [
+            [config.prefField, address.pref],
+            [config.cityField, address.city],
+            [config.townField, address.town],
+          ]
       const autofilled = postalAutofilledValues.current[field.id] ?? {}
       postalAutofilledValues.current[field.id] = autofilled
       const manuallyEdited = postalManuallyEdited.current[field.id] ?? new Set<string>()
@@ -960,7 +965,10 @@ export default function FormPreview({
                   for (const sourceField of orderedFields) {
                     const config = sourceField.config.postalAutofill
                     if (!config) continue
-                    if ([config.prefField, config.cityField, config.townField].includes(field.id)) {
+                    const targetIds = config.mode === 'combined'
+                      ? [config.addressField]
+                      : [config.prefField, config.cityField, config.townField]
+                    if (targetIds.includes(field.id)) {
                       const manuallyEdited = postalManuallyEdited.current[sourceField.id] ?? new Set<string>()
                       manuallyEdited.add(field.id)
                       postalManuallyEdited.current[sourceField.id] = manuallyEdited

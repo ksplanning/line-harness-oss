@@ -614,6 +614,52 @@ describe('internal form definition and availability', () => {
     if (result.ok) expect(result.definition.fields[0].config.postalAutofill).toEqual({
       zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town',
     });
+    if (result.ok) expect(Object.keys(result.definition.fields[0].config.postalAutofill ?? {})).toEqual([
+      'zipField', 'prefField', 'cityField', 'townField',
+    ]);
+  });
+
+  test('keeps an exact combined postal mapping to one address field', () => {
+    const result = parseInternalFormDefinition(JSON.stringify({
+      fields: [
+        {
+          id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+          config: { postalAutofill: { mode: 'combined', zipField: 'zip', addressField: 'address' } },
+        },
+        { id: 'address', type: 'address', label: '住所', required: true, position: 1, config: {} },
+      ],
+      logic: [],
+    }));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.definition.fields[0].config.postalAutofill).toEqual({
+      mode: 'combined', zipField: 'zip', addressField: 'address',
+    });
+    if (result.ok) expect(Object.keys(result.definition.fields[0].config.postalAutofill ?? {})).toEqual([
+      'mode', 'zipField', 'addressField',
+    ]);
+  });
+
+  test.each([
+    ['missing target', { mode: 'combined', zipField: 'zip', addressField: 'missing' }],
+    ['wrong source', { mode: 'combined', zipField: 'other-zip', addressField: 'address' }],
+    ['non-address target', { mode: 'combined', zipField: 'zip', addressField: 'note' }],
+    ['duplicate target', { mode: 'combined', zipField: 'zip', addressField: 'zip' }],
+  ])('rejects an invalid combined postal mapping: %s', (_name, postalAutofill) => {
+    const result = parseInternalFormDefinition(JSON.stringify({
+      fields: [
+        {
+          id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+          config: { postalAutofill },
+        },
+        { id: 'other-zip', type: 'postal_code', label: '別の郵便番号', required: false, position: 1, config: {} },
+        { id: 'address', type: 'address', label: '住所', required: true, position: 2, config: {} },
+        { id: 'note', type: 'text', label: '備考', required: false, position: 3, config: {} },
+      ],
+      logic: [],
+    }));
+
+    expect(result).toEqual({ ok: false, error: '郵便番号自動入力の項目設定が正しくありません' });
   });
 
   test('keeps a valid postal-code mapping to dedicated address fields', () => {

@@ -19,6 +19,7 @@ import {
   type FormDesign,
   type InternalFormChannel,
   type InternalFormLogicAnswers,
+  type PostalAutofillConfig,
 } from '@line-crm/shared';
 import { signFriendToken, verifyFriendToken } from '../services/formaloo-friend-token.js';
 import { notifyInternalFormSubmission } from '../services/internal-submission-notifier.js';
@@ -31,7 +32,6 @@ import {
   type InternalFormAvailability,
   type InternalFormDefinition,
   type InternalFormField,
-  type PostalAutofillConfig,
 } from '../services/internal-form-runtime.js';
 import type { Env } from '../index.js';
 
@@ -439,11 +439,14 @@ function renderField(
 
 function postalControls(config: PostalAutofillConfig | undefined): string {
   if (!config) return '';
+  const destinationAttributes = config.mode === 'combined'
+    ? `data-address-field="${escapeHtml(config.addressField)}"`
+    : `data-pref-field="${escapeHtml(config.prefField)}"
+    data-city-field="${escapeHtml(config.cityField)}"
+    data-town-field="${escapeHtml(config.townField)}"`;
   return `<button type="button" class="postal-lookup"
     data-zip-field="${escapeHtml(config.zipField)}"
-    data-pref-field="${escapeHtml(config.prefField)}"
-    data-city-field="${escapeHtml(config.cityField)}"
-    data-town-field="${escapeHtml(config.townField)}">郵便番号から住所を入力</button>
+    ${destinationAttributes}>郵便番号から住所を入力</button>
     <p class="postal-status" aria-live="polite"></p>`;
 }
 

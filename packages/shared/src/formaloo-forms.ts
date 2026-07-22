@@ -230,12 +230,23 @@ export const FORMALOO_TO_HARNESS_TYPE: Record<string, HarnessFieldType> = Object
 ) as Record<string, HarnessFieldType>;
 
 /** 自前フォームの郵便番号検索で使う、郵便番号欄と住所 3 欄の対応。 */
-export interface PostalAutofillConfig {
+export interface SplitPostalAutofillConfig {
+  /** 既存保存形式との byte 互換を守るため、分割モードでは未設定を正規形とする。 */
+  mode?: 'split';
   zipField: string;
   prefField: string;
   cityField: string;
   townField: string;
 }
+
+/** 自前フォームの郵便番号検索で使う、郵便番号欄と連結住所欄の対応。 */
+export interface CombinedPostalAutofillConfig {
+  mode: 'combined';
+  zipField: string;
+  addressField: string;
+}
+
+export type PostalAutofillConfig = SplitPostalAutofillConfig | CombinedPostalAutofillConfig;
 
 export interface HarnessFieldConfig {
   /** text/textarea の文字数上限 (R2 / Formaloo max_length。実機で short_text=255 を確認済)。 */
@@ -697,16 +708,32 @@ export function validateHarnessField(
         return { ok: false, error: 'config.postalAutofill must be an object' };
       }
       const postal = rawCfg.postalAutofill as Record<string, unknown>;
-      const keys = ['zipField', 'prefField', 'cityField', 'townField'] as const;
-      if (!keys.every((key) => typeof postal[key] === 'string' && (postal[key] as string).trim())) {
-        return { ok: false, error: 'config.postalAutofill fields must be non-empty strings' };
+      if (postal.mode === 'combined') {
+        const keys = ['zipField', 'addressField'] as const;
+        if (!keys.every((key) => typeof postal[key] === 'string' && (postal[key] as string).trim())) {
+          return { ok: false, error: 'config.postalAutofill fields must be non-empty strings' };
+        }
+        config.postalAutofill = {
+          mode: 'combined',
+          zipField: postal.zipField as string,
+          addressField: postal.addressField as string,
+        };
+      } else {
+        if (postal.mode !== undefined && postal.mode !== 'split') {
+          return { ok: false, error: 'config.postalAutofill mode must be split or combined' };
+        }
+        const keys = ['zipField', 'prefField', 'cityField', 'townField'] as const;
+        if (!keys.every((key) => typeof postal[key] === 'string' && (postal[key] as string).trim())) {
+          return { ok: false, error: 'config.postalAutofill fields must be non-empty strings' };
+        }
+        // 既存フォームと同じ4キーだけを保存し、明示された split も legacy 正規形へ戻す。
+        config.postalAutofill = {
+          zipField: postal.zipField as string,
+          prefField: postal.prefField as string,
+          cityField: postal.cityField as string,
+          townField: postal.townField as string,
+        };
       }
-      config.postalAutofill = {
-        zipField: postal.zipField as string,
-        prefField: postal.prefField as string,
-        cityField: postal.cityField as string,
-        townField: postal.townField as string,
-      };
     }
   }
   // treasure-b1-palette: rating の sub_type は 5 enum whitelist で正規化 (M-21 未知素通し禁止)。

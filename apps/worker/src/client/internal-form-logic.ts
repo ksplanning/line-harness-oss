@@ -65,7 +65,11 @@ function initInternalFormPostalLookup(root: ParentNode): void {
     const autofilledValues = new Map<string, string>();
     const restoredValues = new Map<string, string>();
     const manuallyEdited = new Set<string>();
-    for (const targetId of [button.dataset.prefField, button.dataset.cityField, button.dataset.townField]) {
+    const combinedAddressField = button.dataset.addressField;
+    const targetIds = combinedAddressField
+      ? [combinedAddressField]
+      : [button.dataset.prefField, button.dataset.cityField, button.dataset.townField];
+    for (const targetId of targetIds) {
       if (!targetId) continue;
       const target = field(targetId);
       if (target?.value) restoredValues.set(targetId, target.value);
@@ -112,11 +116,16 @@ function initInternalFormPostalLookup(root: ParentNode): void {
         if (!response.ok) throw Object.assign(new Error('postal lookup failed'), { status: response.status });
         const address = await response.json() as Record<string, unknown>;
         if (!isCurrent()) return;
-        const values: Array<[string | undefined, unknown]> = [
-          [button.dataset.prefField, address.pref],
-          [button.dataset.cityField, address.city],
-          [button.dataset.townField, address.town],
-        ];
+        const combinedAddress = [address.pref, address.city, address.town]
+          .filter((value): value is string => typeof value === 'string')
+          .join('');
+        const values: Array<[string | undefined, unknown]> = combinedAddressField
+          ? [[combinedAddressField, combinedAddress]]
+          : [
+              [button.dataset.prefField, address.pref],
+              [button.dataset.cityField, address.city],
+              [button.dataset.townField, address.town],
+            ];
         for (const [targetId, value] of values) {
           if (!targetId) continue;
           const target = field(targetId);
