@@ -109,6 +109,7 @@
     "123_faq_draft_answerable.sql",
     "124_internal_submission_notifications.sql",
     "124_template_pack_message_types.sql",
+    "125_auto_reply_keep_in_unresponded.sql",
     "125_sheets_connection_field_selection.sql",
     "126_sheets_sync_jobs.sql",
     "127_form_results_sync.sql",
@@ -117,5 +118,5 @@
     "130_internal_form_submission_soft_delete.sql",
     "131_sheets_form_results_row_shift_fence.sql"
   ],
-  "migrationCount": 116
+  "migrationCount": 117
 }
