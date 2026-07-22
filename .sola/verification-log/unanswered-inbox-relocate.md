@@ -1,0 +1,5 @@
+case-scope-echo: caseId=unanswered-inbox-relocate target_paths=["/root/.openclaw/line-harness-ks/.plans/2026-07-22-unanswered-inbox-relocate/tasks.md"]
+- D-1: PASS — `pnpm --filter web test -- src/app/notifications/page.test.tsx` → 実装前 Red を観測後、401・503/network・rows保持・成功復帰・1回リトライの4 tests passed (exit 0)
+- D-2: PASS — `pnpm --filter web test -- src/components/layout/sidebar-collapse.test.tsx src/components/layout/sidebar-owner-only.test.tsx src/lib/nav-permissions.test.ts` → 個別チャット直下・自動化から削除・旧URL維持を含む3 files・24 tests passed (exit 0)
+- D-3: PASS — `pnpm --filter web test -- --maxWorkers=1 --no-file-parallelism` / `NEXT_PUBLIC_API_URL=https://worker.example.test pnpm --filter web build` / `git diff --exit-code 2658f810e661121e603e079ee6a29e6013b3eb2c..HEAD -- apps/worker packages/db apps/web/src/lib/api.ts` → 213 files・1616 tests passed / production build成功・/notifications生成 / worker・DB・APIクライアント差分0 (all exit 0)
+- D-4: PASS — `rg -n -e '^# unanswered-inbox-relocate' -e '個別チャット' -e '自動化' -e '/notifications' -e 'Offline' -e '401' -e '30秒' -e 'PASS / FAIL / BLOCKED' .sola/live-checklist.md` → host実測手順・安全境界・owner向け日常語・結果欄を検出 (exit 0)
