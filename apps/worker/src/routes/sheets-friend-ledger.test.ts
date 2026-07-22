@@ -14,10 +14,25 @@ const service = vi.hoisted(() => ({
   drainFriendLedgerWebhookEvents: vi.fn(),
   listFriendLedgerAudit: vi.fn(),
 }));
+const jobs = vi.hoisted(() => ({
+  startSheetsSyncJob: vi.fn(),
+  getLatestSheetsSyncJob: vi.fn(),
+  recordSheetsSyncDispatchError: vi.fn(),
+  dispatchSheetsSyncWork: vi.fn(),
+}));
 
 vi.mock('../services/friend-ledger-sync.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/friend-ledger-sync.js')>()),
   ...service,
+}));
+vi.mock('../services/sheets-sync-jobs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/sheets-sync-jobs.js')>()),
+  startSheetsSyncJob: jobs.startSheetsSyncJob,
+  getLatestSheetsSyncJob: jobs.getLatestSheetsSyncJob,
+  recordSheetsSyncDispatchError: jobs.recordSheetsSyncDispatchError,
+}));
+vi.mock('../services/sheets-sync-dispatch.js', () => ({
+  dispatchSheetsSyncWork: jobs.dispatchSheetsSyncWork,
 }));
 
 import { parseWebhookPayload, sheetsConnections } from './sheets-connections.js';
@@ -30,6 +45,8 @@ const WEBHOOK_TIMESTAMP = '2026-07-21T03:00:00.000Z';
 
 let raw: Database.Database;
 let DB: D1Database;
+const waitUntil = vi.fn((promise: Promise<unknown>) => promise);
+const executionCtx = { waitUntil } as unknown as ExecutionContext;
 
 function d1(db: Database.Database): D1Database {
   interface MockStatement {
@@ -99,7 +116,7 @@ function call(
     ...(options.auth === undefined ? {} : { Authorization: options.auth }),
     ...options.headers,
   };
-  return app().request(path, { method, headers, body: options.body }, env(options.env));
+  return app().request(path, { method, headers, body: options.body }, env(options.env), executionCtx);
 }
 
 function seedStaff(id: string, role: 'owner' | 'admin' | 'staff', apiKey: string): void {
@@ -161,6 +178,15 @@ beforeEach(() => {
     attempted: 1, applied: 1, deferred: 0, dead: 0,
   });
   service.listFriendLedgerAudit.mockReset().mockResolvedValue([]);
+  jobs.startSheetsSyncJob.mockReset().mockResolvedValue({
+    id: 'job-1', connectionId: 'conn-a', lineAccountId: 'acc-1', configVersion: 1,
+    source: 'manual', actor: 'env-owner', status: 'running', totalCount: 1450,
+    processedCount: 400, errorMessage: null, warning: null,
+  });
+  jobs.getLatestSheetsSyncJob.mockReset().mockResolvedValue(null);
+  jobs.recordSheetsSyncDispatchError.mockReset().mockResolvedValue(undefined);
+  jobs.dispatchSheetsSyncWork.mockReset().mockResolvedValue(undefined);
+  waitUntil.mockClear();
 });
 
 afterEach(() => {
@@ -185,7 +211,7 @@ describe('friend ledger owner routes', () => {
 
     expect(sync.status).toBe(403);
     expect(audit.status).toBe(403);
-    expect(service.syncFriendLedger).not.toHaveBeenCalled();
+    expect(jobs.startSheetsSyncJob).not.toHaveBeenCalled();
     expect(service.listFriendLedgerAudit).not.toHaveBeenCalled();
   });
 
@@ -196,23 +222,52 @@ describe('friend ledger owner routes', () => {
       { auth: OWNER },
     );
     expect(crossed.status).toBe(404);
-    expect(service.syncFriendLedger).not.toHaveBeenCalled();
+    expect(jobs.startSheetsSyncJob).not.toHaveBeenCalled();
 
     const response = await call(
       'POST',
       '/api/integrations/google-sheets/connections/conn-a/sync?lineAccountId=acc-1',
       { auth: OWNER },
     );
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(await response.json()).toMatchObject({
       success: true,
-      data: { status: 'success', warning: null },
+      data: { status: 'running', processedCount: 400, totalCount: 1450 },
     });
-    expect(service.syncFriendLedger).toHaveBeenCalledWith(expect.objectContaining({
+    expect(jobs.startSheetsSyncJob).toHaveBeenCalledWith(expect.objectContaining({
+      db: expect.anything(),
       connection: expect.objectContaining({ id: 'conn-a', lineAccountId: 'acc-1' }),
       source: 'manual',
       actor: 'env-owner',
     }));
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await waitUntil.mock.calls[0][0];
+    expect(jobs.dispatchSheetsSyncWork).toHaveBeenCalled();
+  });
+
+  test('returns latest durable progress only inside the selected account', async () => {
+    jobs.getLatestSheetsSyncJob.mockResolvedValueOnce({
+      id: 'job-1', status: 'error', processedCount: 600, totalCount: 1450,
+      errorMessage: '同期が途中で止まりました。続きから再開してください。', warning: null,
+    });
+    const crossed = await call(
+      'GET',
+      '/api/integrations/google-sheets/connections/conn-a/sync/latest?lineAccountId=acc-2',
+      { auth: OWNER },
+    );
+    expect(crossed.status).toBe(404);
+    expect(jobs.getLatestSheetsSyncJob).not.toHaveBeenCalled();
+
+    const response = await call(
+      'GET',
+      '/api/integrations/google-sheets/connections/conn-a/sync/latest?lineAccountId=acc-1',
+      { auth: OWNER },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      data: { status: 'error', processedCount: 600, totalCount: 1450 },
+    });
+    expect(jobs.getLatestSheetsSyncJob).toHaveBeenCalledWith(expect.anything(), 'acc-1', 'conn-a');
   });
 
   test('audit listing cannot cross the selected LINE account boundary', async () => {

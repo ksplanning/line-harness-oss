@@ -22,7 +22,7 @@ import { processDueReminders } from './services/booking-reminders.js';
 import { resolveFormalooClient } from './services/formaloo-client.js';
 import { runFormalooDriftCheck } from './services/formaloo-drift.js';
 import { runFormalooEditMailOutbox } from './services/formaloo-edit-mail.js';
-import { runFriendLedgerPolling } from './services/friend-ledger-sync.js';
+import { maintainFriendLedgerWebhookEvents } from './services/friend-ledger-sync.js';
 import { processDueFollowerImports } from './services/follower-import.js';
 import { runExpirer } from './services/booking-expirer.js';
 import { processDueEventReminders } from './services/event-booking-reminders.js';
@@ -35,6 +35,18 @@ import {
   enqueueRichMenuRuleScheduleTransitions,
   processRichMenuRuleWork,
 } from './services/rich-menu-rule-work.js';
+import { dispatchInternalWork, verifyInternalWork } from './services/internal-work-dispatch.js';
+import {
+  enqueueSheetsSyncPollingJobs,
+  processNextSheetsSyncJob,
+  recordSheetsSyncDispatchError,
+  SHEETS_SYNC_CHUNK_SIZE,
+} from './services/sheets-sync-jobs.js';
+import {
+  dispatchSheetsSyncWork,
+  SHEETS_SYNC_WORK_PATH,
+  verifySheetsSyncWork,
+} from './services/sheets-sync-dispatch.js';
 import { authMiddleware } from './middleware/auth.js';
 import { permissionMiddleware } from './middleware/permission-middleware.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -276,109 +288,26 @@ export type Env = {
 export const app = new Hono<Env>();
 
 const RICH_MENU_RULE_WORK_PATH = '/internal/rich-menu-rule-work';
-const RICH_MENU_RULE_SIGNATURE_MAX_AGE_MS = 60_000;
 const RICH_MENU_RULE_SIGNATURE_PREFIX = 'line-harness:rich-menu-rule-work:v1';
-
-function richMenuRuleSignaturePayload(
-  origin: string,
-  timestamp: string,
-  nonce: string,
-): Uint8Array {
-  return new TextEncoder().encode([
-    RICH_MENU_RULE_SIGNATURE_PREFIX,
-    'POST',
-    RICH_MENU_RULE_WORK_PATH,
-    origin,
-    timestamp,
-    nonce,
-  ].join('\n'));
-}
-
-function bytesToHex(bytes: ArrayBuffer): string {
-  return [...new Uint8Array(bytes)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-function hexToBytes(hex: string): Uint8Array | null {
-  if (!/^[0-9a-f]{64}$/i.test(hex)) return null;
-  return new Uint8Array(hex.match(/.{2}/g)!.map((pair) => Number.parseInt(pair, 16)));
-}
-
-async function richMenuRuleSignature(
-  secret: string,
-  origin: string,
-  timestamp: string,
-  nonce: string,
-): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  return bytesToHex(await crypto.subtle.sign(
-    'HMAC',
-    key,
-    richMenuRuleSignaturePayload(origin, timestamp, nonce),
-  ));
-}
+const RICH_MENU_RULE_HEADER_PREFIX = 'x-rich-menu';
+const RICH_MENU_RULE_PROTOCOL = {
+  path: RICH_MENU_RULE_WORK_PATH,
+  signaturePrefix: RICH_MENU_RULE_SIGNATURE_PREFIX,
+  headerPrefix: RICH_MENU_RULE_HEADER_PREFIX,
+  label: 'rich menu',
+};
 
 async function verifyRichMenuRuleSignature(request: Request, secret: string): Promise<boolean> {
-  if (!secret) return false;
-  const url = new URL(request.url);
-  if (url.protocol !== 'https:' || url.pathname !== RICH_MENU_RULE_WORK_PATH) return false;
-  const timestamp = request.headers.get('x-rich-menu-timestamp') ?? '';
-  const nonce = request.headers.get('x-rich-menu-nonce') ?? '';
-  const signature = hexToBytes(request.headers.get('x-rich-menu-signature') ?? '');
-  const timestampMs = Number(timestamp);
-  if (
-    !Number.isInteger(timestampMs)
-    || Math.abs(Date.now() - timestampMs) > RICH_MENU_RULE_SIGNATURE_MAX_AGE_MS
-    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(nonce)
-    || !signature
-  ) return false;
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify'],
-  );
-  return crypto.subtle.verify(
-    'HMAC',
-    key,
-    signature,
-    richMenuRuleSignaturePayload(url.origin, timestamp, nonce),
-  );
+  return verifyInternalWork(request, secret, RICH_MENU_RULE_PROTOCOL);
 }
 
 async function dispatchRichMenuRuleWork(env: Env['Bindings']): Promise<void> {
-  if (!env.WORKER_PUBLIC_URL) throw new Error('rich menu worker public URL is not configured');
-  if (!env.LINE_CHANNEL_SECRET) throw new Error('rich menu worker signature key is not configured');
-  const publicUrl = new URL(env.WORKER_PUBLIC_URL);
-  if (publicUrl.protocol !== 'https:') throw new Error('rich menu worker public URL must use HTTPS');
-  const target = new URL(RICH_MENU_RULE_WORK_PATH, publicUrl.origin);
-  const timestamp = String(Date.now());
-  const nonce = crypto.randomUUID();
-  const signature = await richMenuRuleSignature(
-    env.LINE_CHANNEL_SECRET,
-    target.origin,
-    timestamp,
-    nonce,
-  );
-  const response = await fetch(target.toString(), {
-    method: 'POST',
-    headers: {
-      'User-Agent': `line-harness-worker/${BUNDLE_VERSION}`,
-      'x-rich-menu-timestamp': timestamp,
-      'x-rich-menu-nonce': nonce,
-      'x-rich-menu-signature': signature,
-    },
-    redirect: 'error',
+  return dispatchInternalWork({
+    ...RICH_MENU_RULE_PROTOCOL,
+    publicUrl: env.WORKER_PUBLIC_URL,
+    secret: env.LINE_CHANNEL_SECRET,
+    userAgent: `line-harness-worker/${BUNDLE_VERSION}`,
   });
-  if (!response.ok) throw new Error(`isolated rich menu worker returned ${response.status}`);
 }
 
 // CORS — credentialed cookie auth cannot use a wildcard origin. Reflect only
@@ -548,6 +477,35 @@ app.post(RICH_MENU_RULE_WORK_PATH, async (c) => {
     console.error('[rich-menu-rules] isolated worker error');
     return c.text('worker error', 500);
   }
+});
+
+// Friend-ledger work uses a separate invocation budget from the shared cron.
+// Each request advances at most one durable 200-row job chunk, then signs and
+// dispatches the continuation without exposing the server-side credential.
+app.post(SHEETS_SYNC_WORK_PATH, async (c) => {
+  if (!await verifySheetsSyncWork(c.req.raw, c.env.LINE_CHANNEL_SECRET)) {
+    return c.text('unauthorized', 401);
+  }
+  const result = await processNextSheetsSyncJob({
+    db: c.env.DB,
+    credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+    chunkSize: SHEETS_SYNC_CHUNK_SIZE,
+  });
+  if (result.attempted > 0 && result.job) {
+    console.log(
+      `[friend-ledger-sync] processed=${result.job.processedCount}/${result.job.totalCount} status=${result.job.status}`,
+    );
+  }
+  if (result.hasMore && result.continuationJobId) {
+    const jobId = result.continuationJobId;
+    c.executionCtx.waitUntil(
+      dispatchSheetsSyncWork(c.env).catch(async () => {
+        await recordSheetsSyncDispatchError(c.env.DB, jobId).catch(() => undefined);
+        console.error('[friend-ledger-sync] continuation dispatch error');
+      }),
+    );
+  }
+  return c.body(null, 204);
 });
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
@@ -934,6 +892,26 @@ async function scheduled(
     } catch (error) {
       console.error('[rich-menu-rules] isolated dispatch error', error);
     }
+    try {
+      await maintainFriendLedgerWebhookEvents(env.DB);
+    } catch {
+      console.error('[friend-ledger-sync] webhook retention error');
+    }
+    if (env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+      try {
+        const jobs = await enqueueSheetsSyncPollingJobs(env.DB, 10);
+        if (jobs.runnable > 0) {
+          try {
+            await dispatchSheetsSyncWork(env);
+          } catch {
+            await recordSheetsSyncDispatchError(env.DB).catch(() => undefined);
+            console.error('[friend-ledger-sync] isolated dispatch error');
+          }
+        }
+      } catch {
+        console.error('[friend-ledger-sync] job enqueue error');
+      }
+    }
   }
 
   // Get all active accounts from DB
@@ -985,20 +963,6 @@ async function scheduled(
       }
     } catch {
       console.error('[follower-imports] worker error');
-    }
-    try {
-      const result = await runFriendLedgerPolling({
-        db: env.DB,
-        credentialsJson: env.GOOGLE_SERVICE_ACCOUNT_JSON,
-        maxConnections: 10,
-      });
-      if (result.attempted > 0) {
-        console.log(
-          `[friend-ledger-sync] attempted=${result.attempted} succeeded=${result.succeeded} warnings=${result.warnings} failed=${result.failed}`,
-        );
-      }
-    } catch {
-      console.error('[friend-ledger-sync] polling error');
     }
   }
 

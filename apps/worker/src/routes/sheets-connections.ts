@@ -23,9 +23,14 @@ import {
   drainFriendLedgerWebhookEvents,
   listFriendLedgerAudit,
   parseFriendLedgerWebhookEventPayload,
-  syncFriendLedger,
   type FriendLedgerWebhookEventPayload,
 } from '../services/friend-ledger-sync.js';
+import {
+  getLatestSheetsSyncJob,
+  recordSheetsSyncDispatchError,
+  startSheetsSyncJob,
+} from '../services/sheets-sync-jobs.js';
+import { dispatchSheetsSyncWork } from '../services/sheets-sync-dispatch.js';
 import {
   deriveSheetsWebhookSecret,
   verifySheetsWebhookSignature,
@@ -396,10 +401,14 @@ sheetsConnections.get(BASE_PATH, async (c) => {
   try {
     const connections = await listSheetsConnections(c.env.DB, lineAccountId, formId);
     const data = await Promise.all(connections.map(async (connection) => {
-      const form = await getScopedInternalForm(c.env.DB, connection.formId, lineAccountId);
+      const [form, latestSyncJob] = await Promise.all([
+        getScopedInternalForm(c.env.DB, connection.formId, lineAccountId),
+        getLatestSheetsSyncJob(c.env.DB, lineAccountId, connection.id),
+      ]);
       return {
         ...connection,
         formName: cleanString(form?.title) || 'フォーム名を確認できません',
+        latestSyncJob,
       };
     }));
     return c.json({ success: true, data });
@@ -611,17 +620,39 @@ sheetsConnections.post(`${BASE_PATH}/:id/sync`, async (c) => {
     if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
       return c.json({ success: false, error: SETUP_MESSAGE }, 503);
     }
-    const result = await syncFriendLedger({
+    const job = await startSheetsSyncJob({
       db: c.env.DB,
       connection,
-      credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
       source: 'manual',
       actor: c.get('staff').id,
     });
-    return c.json({ success: true, data: result });
+    c.executionCtx.waitUntil(
+      dispatchSheetsSyncWork(c.env).catch(async () => {
+        await recordSheetsSyncDispatchError(c.env.DB, job.id).catch(() => undefined);
+        console.error('Manual friend ledger sync dispatch failed');
+      }),
+    );
+    return c.json({ success: true, data: job }, 202);
   } catch {
     console.error('Manual friend ledger sync failed');
     return c.json({ success: false, error: '手動同期に失敗しました' }, 500);
+  }
+});
+
+// GET /api/integrations/google-sheets/connections/:id/sync/latest
+sheetsConnections.get(`${BASE_PATH}/:id/sync/latest`, async (c) => {
+  const denied = ownerGate(c, OWNER_MESSAGE);
+  if (denied) return denied;
+  const lineAccountId = validateLineAccountId(c.req.query('lineAccountId'));
+  if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+  try {
+    const connection = await getSheetsConnection(c.env.DB, lineAccountId.value, c.req.param('id'));
+    if (!connection) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    const job = await getLatestSheetsSyncJob(c.env.DB, lineAccountId.value, connection.id);
+    return c.json({ success: true, data: job });
+  } catch {
+    console.error('GET latest friend ledger sync job failed');
+    return c.json({ success: false, error: '同期状況を確認できませんでした' }, 500);
   }
 });
 

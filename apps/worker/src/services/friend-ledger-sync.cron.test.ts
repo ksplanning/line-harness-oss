@@ -19,7 +19,7 @@ function cronLists(source: string): string[][] {
   );
 }
 
-describe('friend ledger polling cron wiring', () => {
+describe('friend ledger durable job cron wiring', () => {
   test('keeps every deployed config on the existing five-minute and six-hour triggers only', () => {
     for (const configPath of CONFIG_PATHS) {
       const source = readFileSync(configPath, 'utf8');
@@ -30,17 +30,25 @@ describe('friend ledger polling cron wiring', () => {
     }
   });
 
-  test('dispatches a bounded friend-ledger poll from the existing five-minute branch', () => {
+  test('enqueues bounded durable jobs and self-dispatches work from the existing five-minute branch', () => {
     const source = readFileSync(INDEX_PATH, 'utf8');
 
     expect(source).toMatch(
-      /import\s*\{[^}]*runFriendLedgerPolling[^}]*\}\s*from\s*['"]\.\/services\/friend-ledger-sync\.js['"]/s,
+      /import\s*\{[^}]*enqueueSheetsSyncPollingJobs[^}]*\}\s*from\s*['"]\.\/services\/sheets-sync-jobs\.js['"]/s,
     );
     expect(source).toMatch(
-      /event\.cron\s*===\s*['"]\*\/5 \* \* \* \*['"][\s\S]{0,5000}runFriendLedgerPolling\s*\(/,
+      /import\s*\{[^}]*dispatchSheetsSyncWork[^}]*\}\s*from\s*['"]\.\/services\/sheets-sync-dispatch\.js['"]/s,
     );
-    const call = source.match(/runFriendLedgerPolling\s*\(\s*\{([\s\S]{0,1200}?)\}\s*\)/);
-    expect(call?.[1]).toMatch(/(?:limit|maxConnections|batchSize)\s*:/);
+    expect(source).toMatch(
+      /import\s*\{[^}]*maintainFriendLedgerWebhookEvents[^}]*\}\s*from\s*['"]\.\/services\/friend-ledger-sync\.js['"]/s,
+    );
+    expect(source).toMatch(
+      /event\.cron\s*===\s*['"]\*\/5 \* \* \* \*['"][\s\S]{0,5000}enqueueSheetsSyncPollingJobs\s*\(\s*env\.DB\s*,\s*10\s*\)[\s\S]{0,500}jobs\.runnable\s*>\s*0[\s\S]{0,200}dispatchSheetsSyncWork\s*\(\s*env\s*\)/,
+    );
+    expect(source).toMatch(
+      /event\.cron\s*===\s*['"]\*\/5 \* \* \* \*['"][\s\S]{0,5000}maintainFriendLedgerWebhookEvents\s*\(\s*env\.DB\s*\)/,
+    );
+    expect(source).not.toMatch(/runFriendLedgerPolling\s*\(/);
   });
 
   test('does not log webhook/service-account secrets or friend PII from the cron entrypoint', () => {
