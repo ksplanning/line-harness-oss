@@ -86,6 +86,11 @@ function postEditRow(id: string): number | undefined {
   return r?.v;
 }
 
+function branchEditRow(id: string): number | undefined {
+  const r = raw.prepare('SELECT allow_branch_edit AS v FROM formaloo_forms WHERE id=?').get(id) as { v: number } | undefined;
+  return r?.v;
+}
+
 interface ApiCall { method: string; url: string; body: unknown }
 
 function stubFormaloo(): ApiCall[] {
@@ -170,5 +175,35 @@ describe('PUT /api/forms-advanced/:id — allow_post_edit は Formaloo push に�
     }
     // allow_post_edit は D1 には保存されている (harness 側のみ = soft-200 theater を送らない証跡)
     expect(postEditRow('pe4')).toBe(1);
+  });
+});
+
+describe('PUT/GET /api/forms-advanced/:id — allowBranchEdit 配線 (D-1)', () => {
+  test('既定 0 を返し、PUT は 0|1 に正規化して保存する', async () => {
+    seedForm('be1', 'BE_FORM1');
+    stubFormaloo();
+
+    const initial = await call('GET', '/api/forms-advanced/be1');
+    expect(((await initial.json()) as { data: { allowBranchEdit?: number } }).data.allowBranchEdit).toBe(0);
+
+    const put = await call('PUT', '/api/forms-advanced/be1', { fields: [], logic: [], allowBranchEdit: true });
+    expect(put.status).toBe(200);
+    expect(branchEditRow('be1')).toBe(1);
+    const get = await call('GET', '/api/forms-advanced/be1');
+    expect(((await get.json()) as { data: { allowBranchEdit?: number } }).data.allowBranchEdit).toBe(1);
+
+    await call('PUT', '/api/forms-advanced/be1', { fields: [], logic: [], allowBranchEdit: 0 });
+    expect(branchEditRow('be1')).toBe(0);
+  });
+
+  test('allowBranchEdit 未指定 PUT は値を保持し、Formaloo payload へ混ぜない', async () => {
+    seedForm('be2', 'BE_FORM2');
+    const calls = stubFormaloo();
+    await call('PUT', '/api/forms-advanced/be2', { fields: [], logic: [], allowBranchEdit: 1 });
+    await call('PUT', '/api/forms-advanced/be2', { fields: [], logic: [], title: '改題' });
+    expect(branchEditRow('be2')).toBe(1);
+    for (const entry of calls) {
+      expect(JSON.stringify(entry.body ?? {})).not.toMatch(/allow_branch_edit|allowBranchEdit/);
+    }
   });
 });

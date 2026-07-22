@@ -31,6 +31,9 @@ export interface FormalooForm {
   // migration 099 (form-media-limits ③): 回答者による後編集を許可するか (0=不可 / 1=可)。既定 0=現状挙動。
   //   Formaloo 対応プロパティ不在 (soft-200 実証) ゆえ harness 側保存のみ・push しない。実効化は弾M。
   allow_post_edit: number;
+  // migration 129: 回答者の編集時に分岐条件の入力を変更できるか (0=不可 / 1=可)。
+  //   harness 側だけの設定で、Formaloo provider payload には送らない。
+  allow_branch_edit: number;
   // migration 101 (form-edit-mail-link 弾L): 編集 URL メール送付をこのフォームで有効化するか (0=送らない / 1=送る)。
   //   既定 0=byte 同等 (機能 OFF)。allow_post_edit=1 と AND gate で発火 (メール発火は Phase B)。
   allow_edit_mail: number;
@@ -660,6 +663,8 @@ export async function saveFormalooDefinition(
     description?: string | null;
     // form-media-limits ③: 回答者による後編集を許可するか (0|1)。present-key 更新 (未指定は変えない)。
     allowPostEdit?: number;
+    // edit-branch-editability: 編集時の分岐条件変更を許可するか (0|1)。present-key 更新。
+    allowBranchEdit?: number;
     // form-edit-mail-link (弾L): 編集 URL メール送付の許可 (0|1)。present-key 更新 (未指定は変えない・allow_post_edit 同型)。
     allowEditMail?: number;
     // form-edit-mail-link (弾L / OD-3): 送付先 email 欄の明示指定 slug。present-key 更新 (未指定は変えない)。
@@ -700,6 +705,11 @@ export async function saveFormalooDefinition(
   if (params.allowPostEdit !== undefined) {
     sets.push('allow_post_edit = ?');
     vals.push(params.allowPostEdit);
+  }
+  // edit-branch-editability: provider とは分離した D1 のみの present-key 更新。
+  if (params.allowBranchEdit !== undefined) {
+    sets.push('allow_branch_edit = ?');
+    vals.push(params.allowBranchEdit);
   }
   // form-edit-mail-link (弾L): allow_edit_mail / edit_mail_field_slug を present-key 更新 (未指定は変えない)。
   if (params.allowEditMail !== undefined) {

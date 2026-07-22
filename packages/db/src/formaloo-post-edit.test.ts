@@ -86,3 +86,36 @@ describe('form-media-limits — saveFormalooDefinition.allowPostEdit round-trip 
     expect(saved?.title).toBe('改題');
   });
 });
+
+describe('edit-branch-editability — allow_branch_edit additive migration (D-1)', () => {
+  test('formaloo_forms に NOT NULL DEFAULT 0 の allow_branch_edit 列が存在する', () => {
+    const cols = raw.prepare("PRAGMA table_info(formaloo_forms)").all() as Array<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    expect(cols.find((column) => column.name === 'allow_branch_edit')).toMatchObject({
+      notnull: 1,
+      dflt_value: '0',
+    });
+  });
+
+  test('allowBranchEdit=1 を保存すると往復し、未指定 save は値を保持する', async () => {
+    const form = await createFormalooForm(DB, { title: '分岐編集フォーム' });
+    expect((await getFormalooForm(DB, form.id))?.allow_branch_edit).toBe(0);
+
+    await saveFormalooDefinition(DB, form.id, {
+      definitionJson: '{"fields":[],"logic":[]}',
+      fields: [],
+      allowBranchEdit: 1,
+    });
+    expect((await getFormalooForm(DB, form.id))?.allow_branch_edit).toBe(1);
+
+    await saveFormalooDefinition(DB, form.id, {
+      definitionJson: '{"fields":[],"logic":[]}',
+      fields: [],
+      title: '改題',
+    });
+    expect((await getFormalooForm(DB, form.id))?.allow_branch_edit).toBe(1);
+  });
+});

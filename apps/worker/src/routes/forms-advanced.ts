@@ -289,6 +289,8 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     submitMessage: form.submit_message,
     // form-media-limits ③: 回答者後編集の許可フラグ (0|1)。builder 読込用。弾S では inert (実効化は弾M)。
     allowPostEdit: form.allow_post_edit,
+    // edit-branch-editability: respondent edit page の分岐条件変更許可 (0|1)。
+    allowBranchEdit: form.allow_branch_edit,
     // form-edit-mail-link (弾L): 編集 URL メール送付の許可フラグ (0|1)。builder 読込用 (allow_post_edit=1 でのみ有効)。
     allowEditMail: form.allow_edit_mail,
     // Phase B: server 権威で remote slug から逆引きした明示宛先。未設定時は null (自動採用なし)。
@@ -523,8 +525,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowBranchEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowBranchEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -538,6 +540,10 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const allowPostEdit = body.allowPostEdit === undefined
       ? undefined
       : (body.allowPostEdit === 1 || body.allowPostEdit === true || body.allowPostEdit === '1' ? 1 : 0);
+    // edit-branch-editability: D1 だけの 0|1 設定。key 不在は既存値を保持し、provider には送らない。
+    const allowBranchEdit = body.allowBranchEdit === undefined
+      ? undefined
+      : (body.allowBranchEdit === 1 || body.allowBranchEdit === true || body.allowBranchEdit === '1' ? 1 : 0);
     // form-edit-mail-link (弾L): allowEditMail を 0|1 正規化 (present-key: 未指定は undefined = D1 値を変えない)。
     //   Formaloo push には渡さない (harness 側 D1 保存のみ)。実効化は公開編集 route + Phase B のメール発火。
     const allowEditMail = body.allowEditMail === undefined
@@ -842,6 +848,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       description: newDescription,
       // form-media-limits ③: harness 側 D1 保存のみ (push しない)。present-key = 未指定は不変。
       allowPostEdit,
+      // edit-branch-editability: harness 側 D1 保存のみ。Formaloo provider payload には混ぜない。
+      allowBranchEdit,
       // form-edit-mail-link (弾L): 同上 harness 側 D1 保存のみ (Formaloo push しない)。present-key = 未指定は不変。
       allowEditMail,
       friendMetadataMappingsJson: friendMetadataMappingsProvided
