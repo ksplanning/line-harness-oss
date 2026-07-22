@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
 import Header from '@/components/layout/header'
 import InboxFilters from '@/components/inbox/inbox-filters'
 import InboxList from '@/components/inbox/inbox-list'
@@ -20,6 +21,8 @@ interface AccountOption {
   name: string
 }
 
+type InboxLoadError = 'auth' | 'temporary' | null
+
 export default function InboxPage() {
   const [allRows, setAllRows] = useState<InboxRowData[]>([])
   // サーバが返す真の総件数 (2000件超のとき allRows は capped されるので別途保持)。
@@ -31,7 +34,7 @@ export default function InboxPage() {
   const [account, setAccount] = useState('')
   const [overdueOnly, setOverdueOnly] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<InboxLoadError>(null)
   const [accountOptions, setAccountOptions] = useState<AccountOption[]>([])
 
   // 重複 polling で古いレスポンスが新しいデータを上書きしないように世代管理
@@ -60,26 +63,38 @@ export default function InboxPage() {
   const loadAll = useCallback(async () => {
     const seq = ++requestSeqRef.current
     setLoading(true)
-    setError('')
     try {
-      const res = await api.inbox.unanswered.list({
-        page: 1,
-        pageSize: FETCH_PAGE_SIZE,
-      })
-      // 古いリクエストが新しいリクエストの後に到着したら破棄
-      if (seq !== requestSeqRef.current) return
-      if (res.success) {
-        setAllRows(res.data.rows)
-        setServerTotal(res.data.total)
-        // rows.length < total なら上限ヒット (capped)。バナーで明示。
-        setTruncated(res.data.total > res.data.rows.length)
-      } else {
-        setError('取得に失敗しました')
-        // allRows は前回値を保持して stale-while-error
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const res = await api.inbox.unanswered.list({
+            page: 1,
+            pageSize: FETCH_PAGE_SIZE,
+          })
+          // 古いリクエストが新しいリクエストの後に到着したら破棄
+          if (seq !== requestSeqRef.current) return
+          if (!res.success) {
+            throw Object.assign(new Error(res.error), { body: res })
+          }
+          setAllRows(res.data.rows)
+          setServerTotal(res.data.total)
+          // rows.length < total なら上限ヒット (capped)。バナーで明示。
+          setTruncated(res.data.total > res.data.rows.length)
+          setError(null)
+          return
+        } catch (err) {
+          if (seq !== requestSeqRef.current) return
+          const details = err && typeof err === 'object'
+            ? err as { status?: unknown; body?: unknown }
+            : {}
+          const status = typeof details.status === 'number' ? details.status : undefined
+          const body = details.body
+          console.error('未対応インボックス取得エラー', { attempt, status, body })
+          if (attempt === 2) {
+            setError(status === 401 ? 'auth' : 'temporary')
+            // allRows は前回値を保持して stale-while-error
+          }
+        }
       }
-    } catch {
-      if (seq !== requestSeqRef.current) return
-      setError('取得に失敗しました')
     } finally {
       if (seq === requestSeqRef.current) setLoading(false)
     }
@@ -160,7 +175,16 @@ export default function InboxPage() {
 
       {error && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          {error}
+          {error === 'auth' ? (
+            <>
+              <span>ログインの有効期限が切れました。</span>{' '}
+              <Link href="/login" className="font-medium underline">
+                再ログインしてください
+              </Link>
+            </>
+          ) : (
+            '一時的に取得できませんでした。自動で再取得します'
+          )}
         </div>
       )}
 
