@@ -62,6 +62,69 @@ describe('DataCockpit — 表示 (T-D1)', () => {
     fireEvent.click(screen.getByLabelText('s1 の詳細'))
     expect(p.onOpenRow).toHaveBeenCalledWith('s1')
   })
+
+  it('31項目でも一覧は先頭3項目に絞り、残りは詳細で確認できると案内する', () => {
+    const fieldLabels = Array.from({ length: 31 }, (_, index) => ({
+      slug: `field-${index + 1}`,
+      label: `質問 ${index + 1}`,
+    }))
+    const answers = Object.fromEntries(fieldLabels.map((field, index) => [field.slug, `回答 ${index + 1}`]))
+    const rows: SubmissionRow[] = [{
+      id: 'many-fields',
+      friendId: 'friend-many',
+      answers,
+      submittedAt: '2026-07-23T10:00:00+09:00',
+      verified: false,
+    }]
+
+    render(<DataCockpit {...base({ rows, total: 1, isOwner: false, fieldLabels })} />)
+
+    const headers = screen.getAllByRole('columnheader').map((header) => header.textContent)
+    expect(headers).toContain('質問 1')
+    expect(headers).toContain('質問 2')
+    expect(headers).toContain('質問 3')
+    expect(headers).not.toContain('質問 4')
+    expect(headers).not.toContain('質問 31')
+    expect(headers).toContain('確認状況')
+    expect(screen.getByText(/残り28項目は.*詳細.*で確認/)).toBeTruthy()
+  })
+
+  it('未回答キーが一覧APIで省略されても、フォーム定義31項目を基準に残数を案内する', () => {
+    const fieldLabels = Array.from({ length: 31 }, (_, index) => ({
+      slug: `sparse-${index + 1}`,
+      label: `疎な質問 ${index + 1}`,
+    }))
+    const rows: SubmissionRow[] = [{
+      id: 'sparse-fields',
+      friendId: null,
+      answers: { 'sparse-1': '回答あり' },
+      submittedAt: '2026-07-23T10:00:00+09:00',
+      verified: false,
+    }]
+
+    render(<DataCockpit {...base({ rows, total: 1, isOwner: false, fieldLabels })} />)
+
+    expect(screen.getByText(/残り30項目は.*詳細.*で確認/)).toBeTruthy()
+  })
+
+  it('詳細ボタンを表の左端に置き、44px以上のタップ領域にする', () => {
+    const p = base()
+    render(<DataCockpit {...p} />)
+
+    const headers = screen.getAllByRole('columnheader')
+    expect(headers[0]?.textContent).toBe('詳細')
+
+    const row = screen.getByLabelText('s1 の詳細').closest('tr')
+    expect(row).toBeTruthy()
+    const cells = within(row as HTMLTableRowElement).getAllByRole('cell')
+    const detailButton = screen.getByLabelText('s1 の詳細')
+    expect(cells[0]?.contains(detailButton)).toBe(true)
+    expect(detailButton.className).toContain('min-h-[44px]')
+    expect(detailButton.className).toContain('min-w-[72px]')
+
+    fireEvent.click(detailButton)
+    expect(p.onOpenRow).toHaveBeenCalledWith('s1')
+  })
 })
 
 describe('DataCockpit — 列ヘッダー label 化 (T-A2 / form-response-display-fix)', () => {
@@ -95,7 +158,7 @@ describe('DataCockpit — 列ヘッダー label 化 (T-A2 / form-response-displa
   it('列順は定義 (fieldLabels) 順優先 + 定義外 answer-slug を末尾に', () => {
     render(<DataCockpit {...base({ rows: SLUG_ROWS, total: 1, fieldLabels: FIELD_LABELS })} />)
     // 回答項目ヘッダーのみ (先頭の選択チェック列・末尾の送信日時/操作列を除く)
-    const labels = screen.getAllByRole('columnheader').map((th) => th.textContent).filter((t) => t && !['送信日時', ''].includes(t))
+    const labels = screen.getAllByRole('columnheader').map((th) => th.textContent).filter((t) => t && !['詳細', '確認状況', '送信日時', ''].includes(t))
     // 定義順 (お名前 → メールアドレス) が先、定義外 (unknownSlug) が末尾。iAGKWaBX は answers 不在で列化しない
     expect(labels).toEqual(['お名前', 'メールアドレス', 'unknownSlug'])
   })

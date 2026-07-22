@@ -14,6 +14,7 @@ import { fileAnswerSummary, isFileAnswer } from '@/lib/file-answer'
 // =============================================================================
 
 const LINE_GREEN = '#06C755'
+const LIST_PREVIEW_LIMIT = 3
 
 export interface DataCockpitProps {
   formTitle: string
@@ -67,7 +68,7 @@ export default function DataCockpit(props: DataCockpitProps) {
 
   // 回答項目 (列) = 現在ページ全行の answer キーの union。
   //   列順は定義 (fieldLabels) 順を優先し、定義外の answer-slug を元の出現順で末尾に付す (T-A2)。
-  const columns = useMemo(() => {
+  const allColumns = useMemo(() => {
     const present = new Set<string>()
     for (const r of rows) for (const k of Object.keys(r.answers)) present.add(k)
     const ordered: string[] = []
@@ -80,6 +81,12 @@ export default function DataCockpit(props: DataCockpitProps) {
     }
     return ordered
   }, [rows, fieldLabels])
+  const columns = allColumns.slice(0, LIST_PREVIEW_LIMIT)
+  const totalFieldCount = new Set([
+    ...(fieldLabels ?? []).map((field) => field.slug),
+    ...allColumns,
+  ]).size
+  const hiddenColumnCount = Math.max(0, totalFieldCount - columns.length)
 
   const currentFilter = (): RowsQuery => ({ q: q || undefined, from: from || undefined, to: to || undefined, sort, page: 1, pageSize })
   const runSearch = () => { setSelected(new Set()); props.onQuery(currentFilter()) }
@@ -203,32 +210,62 @@ export default function DataCockpit(props: DataCockpitProps) {
         </div>
       )}
 
-      {/* 回答テーブル */}
-      <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-50 text-left text-xs text-gray-500">
+      {/* 回答テーブル: 多項目フォームでも一覧は先頭3項目に絞り、全回答は詳細で確認する。 */}
+      {hiddenColumnCount > 0 && (
+        <div data-testid="column-summary" className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm text-gray-700">
+          一覧では先頭{columns.length}項目を表示しています。残り{hiddenColumnCount}項目は「詳細」で確認できます。
+        </div>
+      )}
+      <div className="overflow-hidden rounded-lg border border-gray-200 bg-white sm:overflow-x-auto">
+        <table className="block w-full text-sm sm:table sm:min-w-full">
+          <thead className="hidden bg-gray-50 text-left text-xs text-gray-500 sm:table-header-group">
             <tr>
+              <th className="sticky left-0 z-20 w-[88px] bg-gray-50 px-3 py-2 font-medium">詳細</th>
               {isOwner && <th className="w-10 px-3 py-2" />}
               {columns.map((col) => <th key={col} className="px-3 py-2 font-medium">{labelFor(col)}</th>)}
+              <th className="px-3 py-2 font-medium">確認状況</th>
               <th className="px-3 py-2 font-medium">送信日時</th>
-              <th className="px-3 py-2" />
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block sm:table-row-group">
             {rows.length === 0 && (
-              <tr><td colSpan={columns.length + (isOwner ? 3 : 2)} className="px-3 py-8 text-center text-gray-400">回答がありません</td></tr>
+              <tr><td colSpan={columns.length + (isOwner ? 4 : 3)} className="block px-3 py-8 text-center text-gray-400 sm:table-cell">回答がありません</td></tr>
             )}
             {rows.map((r) => (
-              <tr key={r.id} className="border-t border-gray-100">
+              <tr key={r.id} className="block space-y-2 border-t border-gray-100 p-3 sm:table-row sm:space-y-0 sm:p-0">
+                <td className="sticky left-0 z-10 flex bg-white py-1 sm:table-cell sm:w-[88px] sm:px-3 sm:py-2">
+                  <button
+                    type="button"
+                    aria-label={`${r.id} の詳細`}
+                    onClick={() => props.onOpenRow(r.id)}
+                    className="min-h-[44px] min-w-[72px] rounded-lg border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    詳細
+                  </button>
+                </td>
                 {isOwner && (
-                  <td className="px-3 py-2">
+                  <td className="flex min-h-[32px] items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">
+                    <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">選択:</span>
                     <input type="checkbox" aria-label={`${r.id} を選択`} checked={selected.has(r.id)} onChange={() => toggle(r.id)} className="h-4 w-4" />
                   </td>
                 )}
-                {columns.map((col) => <td key={col} className="px-3 py-2 text-gray-800">{cellText(r.answers[col])}</td>)}
-                <td className="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{formatJstMinute(r.submittedAt)}</td>
-                <td className="px-3 py-2">
-                  <button type="button" aria-label={`${r.id} の詳細`} onClick={() => props.onOpenRow(r.id)} className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50">詳細</button>
+                {columns.map((col) => (
+                  <td key={col} className="flex min-w-0 gap-2 py-1 text-gray-800 sm:table-cell sm:max-w-[18rem] sm:px-3 sm:py-2">
+                    <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">{labelFor(col)}:</span>
+                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{cellText(r.answers[col])}</span>
+                  </td>
+                ))}
+                <td className="flex items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">
+                  <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">確認状況:</span>
+                  <span className={r.verified
+                    ? 'inline-flex rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700'
+                    : 'inline-flex rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600'}>
+                    {r.verified ? '確認済み' : '未確認'}
+                  </span>
+                </td>
+                <td className="flex items-center gap-2 whitespace-nowrap py-1 text-xs text-gray-500 sm:table-cell sm:px-3 sm:py-2">
+                  <span className="w-24 shrink-0 sm:hidden">送信日時:</span>
+                  <span>{formatJstMinute(r.submittedAt)}</span>
                 </td>
               </tr>
             ))}
