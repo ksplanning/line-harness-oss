@@ -56,6 +56,23 @@ beforeEach(() => {
 });
 
 describe('auto-replies response_messages additive persistence', () => {
+  test('create defaults keep_in_unresponded to 0 and update round-trips an explicit opt-in', async () => {
+    const created = await createAutoReply(db, {
+      keyword: '問い合わせ',
+      responseType: 'text',
+      responseContent: '確認します',
+    });
+    expect((created as unknown as { keep_in_unresponded: number }).keep_in_unresponded).toBe(0);
+
+    await updateAutoReply(db, created.id, { keepInUnresponded: true } as UpdateAutoReplyInput);
+    const optedIn = await getAutoReplyById(db, created.id);
+    expect((optedIn as unknown as { keep_in_unresponded: number }).keep_in_unresponded).toBe(1);
+
+    await updateAutoReply(db, created.id, { keyword: '問い合わせ（更新）' });
+    const unchanged = await getAutoReplyById(db, created.id);
+    expect((unchanged as unknown as { keep_in_unresponded: number }).keep_in_unresponded).toBe(1);
+  });
+
   test('create and read preserve an ordered three-bubble fixture', async () => {
     const responseMessages: ResponseMessage[] = [
       { messageType: 'text', messageContent: '最初のご案内' },

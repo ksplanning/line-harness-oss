@@ -136,6 +136,7 @@ CREATE TABLE auto_replies (
   response_messages TEXT,
   template_id      TEXT REFERENCES templates(id) ON DELETE SET NULL,
   line_account_id  TEXT DEFAULT NULL,
+  keep_in_unresponded INTEGER NOT NULL DEFAULT 0,
   is_active        INTEGER NOT NULL DEFAULT 1,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );

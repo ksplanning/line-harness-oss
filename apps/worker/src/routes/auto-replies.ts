@@ -30,6 +30,7 @@ interface SerializedAutoReply {
   responseMessages: AutoReplyResponseMessage[];
   templateId: string | null;
   lineAccountId: string | null;
+  keepInUnresponded: boolean;
   isActive: boolean;
   createdAt: string;
   effectiveAccounts?: EffectiveAccount[];
@@ -117,6 +118,7 @@ function serializeAutoReply(row: DbAutoReply): SerializedAutoReply {
     responseMessages: responseMessagesFor(row),
     templateId: row.template_id,
     lineAccountId: row.line_account_id,
+    keepInUnresponded: Boolean(row.keep_in_unresponded),
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
   };
@@ -235,6 +237,7 @@ autoReplies.post('/api/auto-replies', async (c) => {
       responseMessages?: unknown;
       templateId?: string | null;
       lineAccountId?: string | null;
+      keepInUnresponded?: boolean;
     }>();
 
     if (!body.keyword) {
@@ -288,6 +291,7 @@ autoReplies.post('/api/auto-replies', async (c) => {
       responseMessages,
       templateId: body.templateId ?? null,
       lineAccountId: body.lineAccountId ?? null,
+      keepInUnresponded: body.keepInUnresponded ?? false,
     });
 
     return c.json({ success: true, data: serializeAutoReply(item) }, 201);
@@ -309,6 +313,7 @@ autoReplies.put('/api/auto-replies/:id', async (c) => {
       responseMessages?: unknown;
       templateId?: string | null;
       lineAccountId?: string | null;
+      keepInUnresponded?: boolean;
       isActive?: boolean;
     }>();
 
@@ -326,6 +331,7 @@ autoReplies.put('/api/auto-replies/:id', async (c) => {
     }
     if ('templateId' in body) input.templateId = body.templateId;
     if ('lineAccountId' in body) input.lineAccountId = body.lineAccountId;
+    if (body.keepInUnresponded !== undefined) input.keepInUnresponded = body.keepInUnresponded;
     if (body.isActive !== undefined) input.isActive = body.isActive;
 
     // templateId が新たに set されて responseContent が来てない場合は template の

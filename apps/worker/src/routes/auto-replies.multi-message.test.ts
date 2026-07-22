@@ -21,6 +21,7 @@ vi.mock('@line-crm/db', () => ({
       response_messages: input.responseMessages ? JSON.stringify(input.responseMessages) : null,
       template_id: input.templateId ?? null,
       line_account_id: input.lineAccountId ?? null,
+      keep_in_unresponded: input.keepInUnresponded ? 1 : 0,
       is_active: 1,
       created_at: '2026-07-21T00:00:00+09:00',
     };
@@ -94,6 +95,40 @@ beforeEach(() => {
 });
 
 describe('auto-replies API responseMessages contract', () => {
+  test('POST forwards and serializes keepInUnresponded opt-in', async () => {
+    const result = await request('/api/auto-replies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keyword: '問い合わせ',
+        responseType: 'text',
+        responseContent: '確認します',
+        keepInUnresponded: true,
+      }),
+    });
+    const body = await result.json<{ data: { keepInUnresponded: boolean } }>();
+
+    expect(result.status).toBe(201);
+    expect(state.createInput?.keepInUnresponded).toBe(true);
+    expect(body.data.keepInUnresponded).toBe(true);
+  });
+
+  test('PUT forwards an explicit keepInUnresponded change', async () => {
+    state.row = {
+      id: 'rule-1', keyword: '問い合わせ', match_type: 'exact', response_type: 'text', response_content: '確認します',
+      response_messages: null, template_id: null, line_account_id: null, keep_in_unresponded: 0, is_active: 1, created_at: 'now',
+    };
+
+    const result = await request('/api/auto-replies/rule-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keepInUnresponded: true }),
+    });
+
+    expect(result.status).toBe(200);
+    expect(state.updateInput?.keepInUnresponded).toBe(true);
+  });
+
   test('POST saves and returns an ordered multi-bubble response', async () => {
     const result = await request('/api/auto-replies', {
       method: 'POST',

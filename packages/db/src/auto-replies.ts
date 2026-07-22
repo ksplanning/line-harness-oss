@@ -12,6 +12,7 @@ export interface AutoReply {
   response_messages: string | null;
   template_id: string | null;
   line_account_id: string | null;
+  keep_in_unresponded: number;
   is_active: number;
   created_at: string;
 }
@@ -58,6 +59,7 @@ export interface CreateAutoReplyInput {
   responseMessages?: AutoReplyResponseMessage[] | null;
   templateId?: string | null;
   lineAccountId?: string | null;
+  keepInUnresponded?: boolean;
 }
 
 export async function createAutoReply(
@@ -72,8 +74,8 @@ export async function createAutoReply(
     .prepare(
       `INSERT INTO auto_replies
          (id, keyword, match_type, response_type, response_content, response_messages,
-          template_id, line_account_id, is_active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+          template_id, line_account_id, keep_in_unresponded, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     )
     .bind(
       id,
@@ -86,6 +88,7 @@ export async function createAutoReply(
         : JSON.stringify(input.responseMessages),
       firstMessage ? null : (input.templateId ?? null),
       input.lineAccountId ?? null,
+      input.keepInUnresponded ? 1 : 0,
       now,
     )
     .run();
@@ -101,6 +104,7 @@ export interface UpdateAutoReplyInput {
   responseMessages?: AutoReplyResponseMessage[] | null;
   templateId?: string | null;
   lineAccountId?: string | null;
+  keepInUnresponded?: boolean;
   isActive?: boolean;
 }
 
@@ -128,6 +132,7 @@ export async function updateAutoReply(
            response_messages = ?,
            template_id = ?,
            line_account_id = ?,
+           keep_in_unresponded = ?,
            is_active = ?,
            created_at = ?
        WHERE id = ?`,
@@ -140,6 +145,9 @@ export async function updateAutoReply(
       responseMessages,
       firstMessage ? null : ('templateId' in input ? (input.templateId ?? null) : existing.template_id),
       'lineAccountId' in input ? (input.lineAccountId ?? null) : existing.line_account_id,
+      'keepInUnresponded' in input
+        ? (input.keepInUnresponded ? 1 : 0)
+        : (existing.keep_in_unresponded ?? 0),
       'isActive' in input ? (input.isActive ? 1 : 0) : existing.is_active,
       existing.created_at,
       id,
