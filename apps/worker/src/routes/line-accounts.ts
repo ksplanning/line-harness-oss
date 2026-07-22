@@ -12,6 +12,7 @@ import {
 import type { LineAccount as DbLineAccount } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
 import { getMessagesThisMonth, getMonthlyCap } from '../services/monthly-cap.js';
+import { getLineQuota } from '../services/line-quota.js';
 import type { Env } from '../index.js';
 
 const lineAccounts = new Hono<Env>();
@@ -162,6 +163,25 @@ lineAccounts.patch('/api/line-accounts/:id/monthly-cap', requireRole('owner', 'a
   } catch (err) {
     console.error('PATCH /api/line-accounts/:id/monthly-cap error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/line-accounts/:id/quota — LINE公式の月間上限・使用数・残り。
+// channel access token は worker 内だけで使用し、レスポンスへ含めない。
+lineAccounts.get('/api/line-accounts/:id/quota', async (c) => {
+  const id = c.req.param('id');
+  try {
+    const account = await getLineAccountById(c.env.DB, id);
+    if (!account) return c.json({ success: false, error: 'LINE account not found' }, 404);
+
+    const data = await getLineQuota(id, account.channel_access_token);
+    return c.json({ success: true, data });
+  } catch (err) {
+    console.error(`GET /api/line-accounts/${id}/quota error:`, err instanceof Error ? err.message : 'unknown');
+    return c.json({
+      success: false,
+      error: 'LINEの送信数を取得できませんでした。時間をおいてもう一度お試しください。',
+    }, 502);
   }
 });
 
