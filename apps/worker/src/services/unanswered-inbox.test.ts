@@ -369,6 +369,51 @@ describe('auto_reply マッチ除外', () => {
     );
   });
 
+  test('[future opt-in] sent keyword stays unanswered without becoming a legacy/evidence false negative', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming_content: '#問い合わせ' })],
+      recentIncomings: [{
+        friend_id: 'f1',
+        message_type: 'text',
+        content: '#問い合わせ',
+        created_at: '2026-05-08T10:00:00+09:00',
+        source: 'auto_reply_keep_unresponded',
+      }],
+      autoReplies: [{ keyword: '#問い合わせ', match_type: 'exact', line_account_id: null }],
+      autoReplyOutgoings: [{
+        friend_id: 'f1',
+        created_at: '2026-05-08T10:00:01+09:00',
+        source: 'auto_reply',
+      }],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].lastIncomingContent).toBe('#問い合わせ');
+  });
+
+  test.each([
+    ['failed registered keyword', '#予約'],
+    ['ordinary message', '通常の相談です'],
+  ])('[future fail-safe] %s remains unanswered', async (_label, content) => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming_content: content })],
+      recentIncomings: [{
+        friend_id: 'f1',
+        message_type: 'text',
+        content,
+        created_at: '2026-05-08T10:00:00+09:00',
+        source: 'user_unmatched',
+      }],
+      autoReplies: content === '#予約'
+        ? [{ keyword: '#予約', match_type: 'exact', line_account_id: null }]
+        : [],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+  });
+
   test('[d future] a successfully handled structured action marker is also excluded', async () => {
     const db = stubDB({
       rows: [baseRow({ friend_id: 'f1', last_incoming_content: '体験を完了する' })],

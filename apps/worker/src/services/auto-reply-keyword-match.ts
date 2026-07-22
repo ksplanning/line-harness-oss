@@ -14,6 +14,7 @@ export interface AutoReplyKeywordMatchOptions {
 
 export const AUTO_REPLY_KEYWORD_SOURCE = 'auto_reply_keyword';
 export const AUTO_REPLY_HANDLED_SOURCE = 'auto_reply_handled';
+export const AUTO_REPLY_KEEP_UNRESPONDED_SOURCE = 'auto_reply_keep_unresponded';
 export const UNMATCHED_USER_SOURCE = 'user_unmatched';
 
 /**

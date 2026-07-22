@@ -23,7 +23,7 @@ describe('GET /api/conversations — registered keyword alignment', () => {
 
     expect(response.status).toBe(200);
     expect(sqls).toHaveLength(2);
-    const handledSources = /source NOT IN \('postback', 'auto_reply_keyword', 'auto_reply_handled'\)/g;
+    const handledSources = /source NOT IN \('postback', 'auto_reply_keyword', 'auto_reply_handled', 'auto_reply_keep_unresponded'\)/g;
     expect(sqls[0].match(handledSources)).toHaveLength(3);
     expect(sqls[1].match(handledSources)).toHaveLength(1);
     expect(sqls.join('\n')).not.toContain("source != 'postback'");

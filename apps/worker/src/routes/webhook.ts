@@ -25,6 +25,7 @@ import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import {
   AUTO_REPLY_HANDLED_SOURCE,
+  AUTO_REPLY_KEEP_UNRESPONDED_SOURCE,
   AUTO_REPLY_KEYWORD_SOURCE,
   UNMATCHED_USER_SOURCE,
   matchesAutoReplyKeyword,
@@ -564,6 +565,7 @@ async function handleEvent(
       response_messages: string | null;
       template_id: string | null;
       line_account_id: string | null;
+      keep_in_unresponded: number;
       is_active: number;
       created_at: string;
     };
@@ -603,10 +605,13 @@ async function handleEvent(
         )
       )
     );
+    const matchedKeywordSource = matchedRule?.keep_in_unresponded
+      ? AUTO_REPLY_KEEP_UNRESPONDED_SOURCE
+      : AUTO_REPLY_KEYWORD_SOURCE;
     const incomingSource = matchedRule
       && !skipAutoReply
       && matchedRule.response_type === 'silent'
-      ? AUTO_REPLY_KEYWORD_SOURCE
+      ? matchedKeywordSource
       : UNMATCHED_USER_SOURCE;
 
     // 判定結果を incoming 自身へ保存する。集計画面は今後この marker を読み、
@@ -788,7 +793,7 @@ async function handleEvent(
           .run();
         await db
           .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
-          .bind(AUTO_REPLY_KEYWORD_SOURCE, logId)
+          .bind(matchedKeywordSource, logId)
           .run();
         matched = true;
       } catch (err) {

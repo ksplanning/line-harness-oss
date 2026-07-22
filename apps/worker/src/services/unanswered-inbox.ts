@@ -1,5 +1,6 @@
 import {
   AUTO_REPLY_HANDLED_SOURCE,
+  AUTO_REPLY_KEEP_UNRESPONDED_SOURCE,
   AUTO_REPLY_KEYWORD_SOURCE,
   UNMATCHED_USER_SOURCE,
   matchesAutoReplyKeyword,
@@ -18,8 +19,9 @@ const MAX_PAGE_SIZE = 2000;
 //
 // (B) 今後の incoming:
 //     webhook が受信時点の判定を source に永続化する。auto_reply_keyword と
-//     auto_reply_handled は除外する。user_unmatched は現在のルールで再判定せず、
-//     FAQ の返信証拠だけを確認して、それ以外は未対応として残す。
+//     auto_reply_handled は除外する。auto_reply_keep_unresponded は未読からだけ除外し、
+//     この一覧には明示的に残す。user_unmatched は現在のルールで再判定せず、FAQ の
+//     返信証拠だけを確認して、それ以外は未対応として残す。
 //
 // (C) marker 導入前の incoming:
 //     過去表示を遡及変更しないため、従来どおり raw 文字列・全 account の現在 active
@@ -310,6 +312,12 @@ async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
 
     let nonMatching: RawIncomingRow | undefined;
     for (const i of incomings) {
+      if (i.source === AUTO_REPLY_KEEP_UNRESPONDED_SOURCE) {
+        // 受信時点の per-rule opt-in。outgoing 証拠や後日のルール編集で
+        // 過去の「スタッフ対応が必要」という判断を上書きしない。
+        nonMatching = i;
+        break;
+      }
       if (
         i.source === AUTO_REPLY_KEYWORD_SOURCE
         || i.source === AUTO_REPLY_HANDLED_SOURCE

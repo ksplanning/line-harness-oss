@@ -451,6 +451,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     response_content: string;
     response_messages: string | null;
     template_id: string | null;
+    keep_in_unresponded?: number;
     is_active: number;
     created_at: string;
   }> = [], autoReplyLoadError = false) {
@@ -732,6 +733,34 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     );
     expect(sourceUpdate?.statement.bind).toHaveBeenCalledWith(
       'auto_reply_keyword',
+      expect.any(String),
+    );
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('keepInUnresponded rule still suppresses unread but persists a dedicated unanswered marker after send success', async () => {
+    vi.mocked(expandVariables).mockImplementation((content) => content);
+    vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
+
+    const { preparedStatements } = await postTextWebhook({}, '#問い合わせ', [{
+      id: 'auto-human-handoff',
+      keyword: '#問い合わせ',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: '担当者が確認します',
+      response_messages: null,
+      template_id: null,
+      keep_in_unresponded: 1,
+      is_active: 1,
+      created_at: '2026-07-22T00:00:00+09:00',
+    }]);
+
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    const sourceUpdate = preparedStatements.find(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    );
+    expect(sourceUpdate?.statement.bind).toHaveBeenCalledWith(
+      'auto_reply_keep_unresponded',
       expect.any(String),
     );
     expect(upsertChatOnMessage).not.toHaveBeenCalled();

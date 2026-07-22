@@ -2,13 +2,14 @@ import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import {
   AUTO_REPLY_HANDLED_SOURCE,
+  AUTO_REPLY_KEEP_UNRESPONDED_SOURCE,
   AUTO_REPLY_KEYWORD_SOURCE,
 } from '../services/auto-reply-keyword-match.js';
 
 const conversations = new Hono<Env>();
 
 function operatorUnreadSourcePredicate(column = 'source'): string {
-  return `(${column} IS NULL OR ${column} NOT IN ('postback', '${AUTO_REPLY_KEYWORD_SOURCE}', '${AUTO_REPLY_HANDLED_SOURCE}'))`;
+  return `(${column} IS NULL OR ${column} NOT IN ('postback', '${AUTO_REPLY_KEYWORD_SOURCE}', '${AUTO_REPLY_HANDLED_SOURCE}', '${AUTO_REPLY_KEEP_UNRESPONDED_SOURCE}'))`;
 }
 
 // GET /api/conversations?lineAccountId=&minHoursSince=&maxHoursSince=&limit=&offset=
