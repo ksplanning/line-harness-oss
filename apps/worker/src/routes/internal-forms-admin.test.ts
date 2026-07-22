@@ -82,6 +82,46 @@ const DEFINITION = {
   logic: [],
 };
 
+const EDITABLE_DEFINITION = {
+  fields: [
+    { id: 'name', type: 'text', label: 'お名前', required: true, position: 0, config: {} },
+    { id: 'contact', type: 'email', label: 'メール', required: false, position: 1, config: {} },
+    { id: 'attachment', type: 'file', label: '添付', required: false, position: 2, config: {} },
+    { id: 'signature', type: 'signature', label: '署名', required: false, position: 3, config: {} },
+    {
+      id: 'matrix', type: 'matrix', label: '評価', required: false, position: 4,
+      config: {
+        matrixChoiceItems: { good: { title: '良い' } },
+        matrixChoiceGroups: [{ title: '接客' }],
+      },
+    },
+    { id: 'repeat_name', type: 'text', label: '参加者名', required: false, position: 5, config: {} },
+    {
+      id: 'repeat', type: 'repeating_section', label: '参加者', required: false, position: 6,
+      config: {
+        repeatingColumns: [{ columnField: 'repeat_name', title: '氏名' }],
+        minRows: 0,
+        maxRows: 3,
+      },
+    },
+    {
+      id: 'total', type: 'variable', label: '計算値', required: false, position: 7,
+      config: { variableSubType: 'formula', formula: '1+1' },
+    },
+    {
+      id: 'kind', type: 'choice', label: '区分', required: true, position: 8,
+      config: { choices: ['個人', '法人'] },
+    },
+    { id: 'company', type: 'text', label: '会社名', required: true, position: 9, config: {} },
+  ],
+  logic: [
+    {
+      id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人',
+      action: 'show', targetFieldId: 'company',
+    },
+  ],
+};
+
 const D1_BINDING_LIMIT_BYTES = 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from('\u0089PNG\r\n\u001a\n', 'latin1');
 const TWO_MIB_PNG_DATA_URL = `data:image/png;base64,${Buffer.concat([
@@ -185,6 +225,17 @@ function call(
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   }, env());
+}
+
+async function internalEditContext(formId: string, rowId: string): Promise<{
+  editVersion: number;
+  answerRevision: string;
+}> {
+  const response = await call('GET', `/api/forms-advanced/${formId}/rows/${rowId}`);
+  expect(response.status).toBe(200);
+  return (await response.json() as {
+    data: { editVersion: number; answerRevision: string };
+  }).data;
 }
 
 async function currentPublishRevision(id: string): Promise<string> {
@@ -1041,7 +1092,21 @@ describe('internal answer admin read path', () => {
     expect(rangeData.rows.map((row) => row.id)).toEqual(['sub-2', 'sub-3']);
   });
 
-  test('detail is local-only, non-editable, and scoped to the selected form', async () => {
+  test('detail exposes allow_post_edit, real field editability, editVersion, and form scope', async () => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(EDITABLE_DEFINITION), 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({
+        name: '二郎',
+        contact: 'two@example.test',
+        attachment: [{ key: 'private/file.pdf', name: '申込書.pdf' }],
+        signature: 'data:image/png;base64,c2ln',
+        matrix: { 接客: '良い' },
+        repeat: [{ repeat_name: '参加者' }],
+        total: 2,
+        kind: '個人',
+      }), 'sub-2');
+
     const response = await call('GET', '/api/forms-advanced/internal-form/rows/sub-2');
     expect(response.status).toBe(200);
     const data = (await response.json() as { data: Record<string, unknown> }).data;
@@ -1050,14 +1115,261 @@ describe('internal answer admin read path', () => {
       friendId: 'friend-1',
       verified: true,
       source: 'internal',
-      allowPostEdit: 0,
+      allowPostEdit: 1,
+      editVersion: 0,
+      answerRevision: expect.stringMatching(/^[a-f0-9]{64}$/),
       lastEdit: null,
     });
     expect(data.fields).toEqual([
-      { slug: 'name', label: 'お名前', type: 'text', required: true, editable: false },
-      { slug: 'contact', label: 'メール', type: 'email', required: false, editable: false },
+      { slug: 'name', label: 'お名前', type: 'text', required: true, editable: true, editableWhenVisible: true, visible: true },
+      { slug: 'contact', label: 'メール', type: 'email', required: false, editable: true, editableWhenVisible: true, visible: true },
+      { slug: 'attachment', label: '添付', type: 'file', required: false, editable: false, editableWhenVisible: false, visible: true },
+      { slug: 'signature', label: '署名', type: 'signature', required: false, editable: false, editableWhenVisible: false, visible: true },
+      { slug: 'matrix', label: '評価', type: 'matrix', required: false, editable: false, editableWhenVisible: false, visible: true },
+      { slug: 'repeat_name', label: '参加者名', type: 'text', required: false, editable: false, editableWhenVisible: false, visible: true },
+      { slug: 'repeat', label: '参加者', type: 'repeating_section', required: false, editable: false, editableWhenVisible: false, visible: true },
+      { slug: 'total', label: '計算値', type: 'variable', required: false, editable: false, editableWhenVisible: false, visible: true },
+      { slug: 'kind', label: '区分', type: 'choice', required: true, editable: true, editableWhenVisible: true, visible: true },
+      { slug: 'company', label: '会社名', type: 'text', required: true, editable: false, editableWhenVisible: true, visible: false },
     ]);
     expect((await call('GET', '/api/forms-advanced/other-internal-form/rows/sub-2')).status).toBe(404);
+
+    raw.prepare("UPDATE formaloo_forms SET allow_post_edit = 0 WHERE id = 'internal-form'").run();
+    const disabled = await call('GET', '/api/forms-advanced/internal-form/rows/sub-2');
+    const disabledData = (await disabled.json() as {
+      data: { allowPostEdit: number; fields: Array<{ editable: boolean }> };
+    }).data;
+    expect(disabledData.allowPostEdit).toBe(0);
+    expect(disabledData.fields.every((field) => !field.editable)).toBe(true);
+  });
+
+  test('PATCH validates, preserves read-only answers, and detects stale admin screens', async () => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(EDITABLE_DEFINITION), 'internal-form');
+    const original = {
+      name: '二郎',
+      contact: 'two@example.test',
+      attachment: [{ key: 'private/file.pdf', name: '申込書.pdf' }],
+      signature: 'data:image/png;base64,c2ln',
+      matrix: { 接客: '良い' },
+      repeat: [{ repeat_name: '参加者' }],
+      total: 2,
+      kind: '個人',
+    };
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify(original), 'sub-2');
+    const context = await internalEditContext('internal-form', 'sub-2');
+
+    const saved = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers: { name: '更新後', contact: 'new@example.test', kind: '個人' },
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({
+      success: true,
+      data: {
+        id: 'sub-2', source: 'internal', editVersion: 1,
+        answerRevision: expect.stringMatching(/^[a-f0-9]{64}$/), lastEdit: null,
+        answers: {
+          name: '更新後',
+          contact: 'new@example.test',
+          attachment: original.attachment,
+          signature: original.signature,
+          matrix: original.matrix,
+          repeat: original.repeat,
+          total: 2,
+          kind: '個人',
+        },
+      },
+    });
+    expect(raw.prepare('SELECT friend_id, submitted_at, edit_version FROM internal_form_submissions WHERE id = ?')
+      .get('sub-2')).toEqual({
+        friend_id: 'friend-1',
+        submitted_at: '2026-07-01T10:00:00+09:00',
+        edit_version: 1,
+      });
+
+    const stale = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers: { name: '古い画面の値', contact: 'old-screen@example.test', kind: '個人' },
+    });
+    expect(stale.status).toBe(409);
+    expect(JSON.parse((raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+      .get('sub-2') as { answers_json: string }).answers_json)).toMatchObject({ name: '更新後' });
+  });
+
+  test.each([
+    ['read-only field', { name: '更新', attachment: [] }],
+    ['unknown identity field', { name: '更新', friendId: 'attacker' }],
+    ['required empty', { name: '' }],
+    ['invalid email type', { name: '更新', contact: 'not-an-email' }],
+  ] as const)('PATCH rejects %s without mutating the row', async (_label, answers) => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(EDITABLE_DEFINITION), 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ name: '二郎', contact: 'two@example.test', kind: '個人', attachment: [] }), 'sub-2');
+    const before = raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
+      .get('sub-2');
+    const context = await internalEditContext('internal-form', 'sub-2');
+
+    const response = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers,
+    });
+
+    expect(response.status).toBe(400);
+    expect(raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
+      .get('sub-2')).toEqual(before);
+  });
+
+  test('PATCH enforces allow_post_edit, form scope, and existing admin authentication', async () => {
+    const disabled = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      editVersion: 0,
+      answers: { name: '更新' },
+    });
+    expect(disabled.status).toBe(403);
+
+    raw.prepare("UPDATE formaloo_forms SET allow_post_edit = 1 WHERE id = 'internal-form'").run();
+    const context = await internalEditContext('internal-form', 'sub-2');
+    seedInternalSubmission('other-sub', 'other-internal-form', { name: '別フォーム' }, '2026-07-03T09:00:00+09:00');
+    const crossed = await call('PATCH', '/api/forms-advanced/internal-form/rows/other-sub', {
+      ...context,
+      answers: { name: '越境更新' },
+    });
+    expect(crossed.status).toBe(404);
+    expect((raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+      .get('other-sub') as { answers_json: string }).answers_json).toBe('{"name":"別フォーム"}');
+
+    expect((await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers: { name: '無認証更新' },
+    }, { auth: '' })).status).toBe(401);
+
+    const roleId = (await createRole(DB, { name: '回答編集不可' })).id;
+    await setRolePermissions(DB, roleId, [{ feature_key: 'forms_advanced', allowed: false }]);
+    seedStaff('edit-denied', 'edit-denied-key', roleId);
+    expect((await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers: { name: '権限なし更新' },
+    }, { auth: 'Bearer edit-denied-key' })).status).toBe(403);
+  });
+
+  test('PATCH switches to a newly visible required logic branch in one save', async () => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(EDITABLE_DEFINITION), 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ name: '二郎', contact: 'two@example.test', kind: '個人' }), 'sub-2');
+    const context = await internalEditContext('internal-form', 'sub-2');
+
+    const response = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers: {
+        name: '二郎', contact: 'two@example.test', kind: '法人', company: '株式会社テスト',
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.clone().json()).toMatchObject({
+      success: true,
+      data: {
+        allowPostEdit: 1,
+        fields: expect.arrayContaining([
+          expect.objectContaining({
+            slug: 'company', editable: true, editableWhenVisible: true, visible: true,
+          }),
+        ]),
+      },
+    });
+    const stored = JSON.parse((raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+      .get('sub-2') as { answers_json: string }).answers_json) as Record<string, unknown>;
+    expect(stored).toMatchObject({ kind: '法人', company: '株式会社テスト' });
+  });
+
+  test('PATCH rejects a field that stays hidden before and after the edit', async () => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(EDITABLE_DEFINITION), 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ name: '二郎', contact: 'two@example.test', kind: '個人' }), 'sub-2');
+    const before = raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
+      .get('sub-2');
+    const context = await internalEditContext('internal-form', 'sub-2');
+
+    const response = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers: {
+        name: '二郎', contact: 'two@example.test', kind: '個人', company: 'forged',
+      },
+    });
+
+    expect(response.status).toBe(400);
+    expect(raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
+      .get('sub-2')).toEqual(before);
+  });
+
+  test('PATCH keeps yes/no and delimiter-containing multiple selections across consecutive saves', async () => {
+    const typedDefinition = {
+      fields: [
+        { id: 'name', type: 'text', label: 'お名前', required: true, position: 0, config: {} },
+        { id: 'consent', type: 'yes_no', label: '同意', required: true, position: 1, config: {} },
+        {
+          id: 'tags', type: 'multiple_select', label: '希望', required: false, position: 2,
+          config: { choices: ['A, Inc.', '和食、洋食', ' 前後空白 '] },
+        },
+      ],
+      logic: [],
+    };
+    const exactSelections = ['A, Inc.', '和食、洋食', ' 前後空白 '];
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(typedDefinition), 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ name: '二郎', consent: 'yes', tags: exactSelections }), 'sub-2');
+    const firstContext = await internalEditContext('internal-form', 'sub-2');
+
+    const first = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...firstContext,
+      answers: { name: '二郎', consent: 'yes', tags: exactSelections },
+    });
+    expect(first.status).toBe(200);
+    const firstData = (await first.json() as {
+      data: {
+        editVersion: number;
+        answerRevision: string;
+        answers: Record<string, unknown>;
+        fields: Array<{ slug: string; choices?: string[] }>;
+      };
+    }).data;
+    expect(firstData.answers).toMatchObject({ consent: true, tags: exactSelections });
+    expect(firstData.fields).toContainEqual(expect.objectContaining({
+      slug: 'tags', choices: exactSelections,
+    }));
+
+    const second = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      editVersion: firstData.editVersion,
+      answerRevision: firstData.answerRevision,
+      answers: { name: '二郎', consent: 'no', tags: exactSelections },
+    });
+    expect(second.status).toBe(200);
+    expect((await second.json() as { data: { answers: Record<string, unknown> } }).data.answers)
+      .toMatchObject({ consent: false, tags: exactSelections });
+  });
+
+  test('PATCH rejects a screen snapshot made stale by a Sheets answer update', async () => {
+    raw.prepare("UPDATE formaloo_forms SET allow_post_edit = 1 WHERE id = 'internal-form'").run();
+    const context = await internalEditContext('internal-form', 'sub-2');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run('{"name":"シート側更新","contact":"sheet@example.test"}', 'sub-2');
+
+    const response = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers: { name: '古い画面の更新', contact: 'old-screen@example.test' },
+    });
+
+    expect(response.status).toBe(409);
+    expect((raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
+      .get('sub-2'))).toEqual({
+        answers_json: '{"name":"シート側更新","contact":"sheet@example.test"}',
+        edit_version: 0,
+      });
   });
 
   test('stats are computed only from internal rows and expose formaloo:null', async () => {
@@ -1868,7 +2180,6 @@ describe('internal hosting provider boundary', () => {
     ['GET', '/api/forms-advanced/internal-form/embed', undefined],
     ['GET', '/api/forms-advanced/internal-form/export.csv', undefined],
     ['POST', '/api/forms-advanced/internal-form/reapply-hosted', undefined],
-    ['PATCH', '/api/forms-advanced/internal-form/rows/formaloo-sub', { answers: { name: '変更' } }],
     ['POST', '/api/forms-advanced/internal-form/import', { csv: 'name\n一郎' }],
     ['POST', '/api/forms-advanced/internal-form/rows/bulk-delete', { ids: ['formaloo-sub'] }],
     ['POST', '/api/forms-advanced/internal-form/gsheet/connect', undefined],

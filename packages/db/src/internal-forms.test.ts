@@ -11,6 +11,7 @@ import {
   getInternalFormSubmission,
   listLatestVerifiedInternalFormSubmissions,
   listInternalFormSubmissions,
+  listVerifiedInternalFormSubmissionsForSheets,
   publishInternalFormDefinition,
   saveInternalFormDefinition,
   setFormRenderBackend,
@@ -678,6 +679,76 @@ describe('internal form persistence', () => {
         answers_json: '{"name":"変更後"}',
         edit_version: 1,
       },
+    });
+  });
+
+  test('admin CAS works without edit-link settings and feeds the existing Sheets readers', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-admin', 'channel-admin', 'Admin', 'token', 'secret')`).run();
+    raw.prepare(`UPDATE formaloo_forms
+      SET render_backend = 'internal', line_account_id = 'acc-admin', allow_post_edit = 1
+      WHERE id = 'fa_internal'`).run();
+    raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES ('friend-admin', 'UADMIN', '管理対象', 'acc-admin', '{}',
+              '2026-07-22T09:00:00+09:00', '2026-07-22T09:00:00+09:00')`).run();
+    raw.prepare('DELETE FROM internal_form_notification_settings WHERE form_id = ?').run('fa_internal');
+    const created = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      friendId: 'friend-admin',
+      answers: { name: '変更前', keep: '保持' },
+    });
+
+    const updated = await updateInternalFormSubmissionAnswers(DB, {
+      authorization: 'admin',
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 0,
+      expectedAnswersJson: created.answers_json,
+      expectedDefinitionJson: '{"fields":[],"logic":[]}',
+      answers: { name: '管理画面で変更', keep: '保持' },
+    });
+
+    expect(updated).toMatchObject({
+      status: 'updated',
+      submission: { answers_json: '{"name":"管理画面で変更","keep":"保持"}', edit_version: 1 },
+    });
+    await expect(listLatestVerifiedInternalFormSubmissions(DB, 'acc-admin', 'fa_internal'))
+      .resolves.toEqual([expect.objectContaining({ answers_json: '{"name":"管理画面で変更","keep":"保持"}' })]);
+    await expect(listVerifiedInternalFormSubmissionsForSheets(DB, 'acc-admin', 'fa_internal'))
+      .resolves.toEqual([expect.objectContaining({ answers_json: '{"name":"管理画面で変更","keep":"保持"}' })]);
+
+    // Sheets write-back does not increment edit_version. answers_json CAS must still
+    // prevent a stale admin screen from overwriting that newer value.
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run('{"name":"シート側の新しい値","keep":"保持"}', created.id);
+    const conflict = await updateInternalFormSubmissionAnswers(DB, {
+      authorization: 'admin',
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 1,
+      expectedAnswersJson: '{"name":"管理画面で変更","keep":"保持"}',
+      expectedDefinitionJson: '{"fields":[],"logic":[]}',
+      answers: { name: '古い管理画面の値', keep: '保持' },
+    });
+    expect(conflict).toMatchObject({
+      status: 'conflict',
+      submission: { answers_json: '{"name":"シート側の新しい値","keep":"保持"}', edit_version: 1 },
+    });
+
+    raw.prepare("UPDATE formaloo_forms SET allow_post_edit = 0 WHERE id = 'fa_internal'").run();
+    const policyConflict = await updateInternalFormSubmissionAnswers(DB, {
+      authorization: 'admin',
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 1,
+      expectedAnswersJson: '{"name":"シート側の新しい値","keep":"保持"}',
+      expectedDefinitionJson: '{"fields":[],"logic":[]}',
+      answers: { name: '禁止後の管理更新', keep: '保持' },
+    });
+    expect(policyConflict).toMatchObject({
+      status: 'conflict',
+      submission: { answers_json: '{"name":"シート側の新しい値","keep":"保持"}', edit_version: 1 },
     });
   });
 

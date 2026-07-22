@@ -67,13 +67,13 @@ function parseAnswers(json: string): Record<string, unknown> {
   }
 }
 
-function repeatingTemplateIds(fields: InternalFormField[]): Set<string> {
+export function repeatingTemplateIds(fields: InternalFormField[]): Set<string> {
   return new Set(fields
     .filter((field) => field.type === 'repeating_section')
     .flatMap((field) => (field.config.repeatingColumns ?? []).map((column) => column.columnField)));
 }
 
-function isEditableField(field: InternalFormField, repeatingTemplates: ReadonlySet<string>): boolean {
+export function isEditableField(field: InternalFormField, repeatingTemplates: ReadonlySet<string>): boolean {
   return !isDecorationType(field.type)
     && field.type !== 'variable'
     && !READ_ONLY_TYPES.has(field.type)

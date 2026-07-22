@@ -43,6 +43,26 @@ export type UpdateInternalFormSubmissionAnswersResult =
   | { status: 'conflict'; submission: InternalFormSubmission | null }
   | { status: 'revoked'; submission: InternalFormSubmission };
 
+type UpdateInternalFormSubmissionAnswersInput = {
+  formId: string;
+  submissionId: string;
+  expectedEditVersion: number;
+  answers: Record<string, unknown>;
+} & (
+  | {
+      // The calling route must enforce admin authentication/permission. The
+      // stored JSON snapshot joins edit_version in the CAS because Sheets
+      // write-back intentionally does not increment edit_version.
+      authorization: 'admin';
+      expectedAnswersJson: string;
+      expectedDefinitionJson: string;
+    }
+  | {
+      authorization?: 'edit-link';
+      expectedEditLinkEpoch: number;
+    }
+);
+
 export async function setFormRenderBackend(
   db: D1Database,
   formId: string,
@@ -616,39 +636,60 @@ export async function getInternalFormSubmission(
 
 export async function updateInternalFormSubmissionAnswers(
   db: D1Database,
-  input: {
-    formId: string;
-    submissionId: string;
-    expectedEditVersion: number;
-    expectedEditLinkEpoch: number;
-    answers: Record<string, unknown>;
-  },
+  input: UpdateInternalFormSubmissionAnswersInput,
 ): Promise<UpdateInternalFormSubmissionAnswersResult> {
-  const updated = await db
-    .prepare(
-      `UPDATE internal_form_submissions
-       SET answers_json = ?, edit_version = edit_version + 1
-       WHERE id = ? AND form_id = ? AND edit_version = ?
-         AND EXISTS (
-           SELECT 1
-           FROM internal_form_notification_settings AS notification_settings
-           WHERE notification_settings.form_id = internal_form_submissions.form_id
-             AND notification_settings.edit_link_epoch = ?
-         )
-       RETURNING *`,
-    )
-    .bind(
-      JSON.stringify(input.answers),
-      input.submissionId,
-      input.formId,
-      input.expectedEditVersion,
-      input.expectedEditLinkEpoch,
-    )
-    .first<InternalFormSubmission>();
+  const updated = input.authorization === 'admin'
+    ? await db
+        .prepare(
+          `UPDATE internal_form_submissions
+           SET answers_json = ?, edit_version = edit_version + 1
+           WHERE id = ? AND form_id = ? AND edit_version = ? AND answers_json = ?
+             AND EXISTS (
+               SELECT 1
+               FROM formaloo_forms AS form
+               WHERE form.id = internal_form_submissions.form_id
+                 AND form.deleted = 0
+                 AND form.render_backend = 'internal'
+                 AND form.allow_post_edit = 1
+                 AND form.definition_json = ?
+             )
+           RETURNING *`,
+        )
+        .bind(
+          JSON.stringify(input.answers),
+          input.submissionId,
+          input.formId,
+          input.expectedEditVersion,
+          input.expectedAnswersJson,
+          input.expectedDefinitionJson,
+        )
+        .first<InternalFormSubmission>()
+    : await db
+        .prepare(
+          `UPDATE internal_form_submissions
+           SET answers_json = ?, edit_version = edit_version + 1
+           WHERE id = ? AND form_id = ? AND edit_version = ?
+             AND EXISTS (
+               SELECT 1
+               FROM internal_form_notification_settings AS notification_settings
+               WHERE notification_settings.form_id = internal_form_submissions.form_id
+                 AND notification_settings.edit_link_epoch = ?
+             )
+           RETURNING *`,
+        )
+        .bind(
+          JSON.stringify(input.answers),
+          input.submissionId,
+          input.formId,
+          input.expectedEditVersion,
+          input.expectedEditLinkEpoch,
+        )
+        .first<InternalFormSubmission>();
   if (updated) return { status: 'updated', submission: updated };
 
   const submission = await getInternalFormSubmission(db, input.formId, input.submissionId);
   if (!submission) return { status: 'conflict', submission: null };
+  if (input.authorization === 'admin') return { status: 'conflict', submission };
   const currentEpoch = await db
     .prepare('SELECT edit_link_epoch FROM internal_form_notification_settings WHERE form_id = ?')
     .bind(input.formId)

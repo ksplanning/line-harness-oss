@@ -12,10 +12,12 @@ import {
   saveInternalFormDefinition,
   switchFormRenderBackendToDraft,
   unpublishInternalFormDefinition,
+  updateInternalFormSubmissionAnswers,
   type FormalooForm,
   type InternalFormSubmission,
 } from '@line-crm/db';
 import {
+  evaluateInternalFormLogic,
   isInternalOnlyFieldType,
   mergeFormOperationsSettings,
   normalizeFormCopy,
@@ -32,8 +34,13 @@ import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/f
 import {
   evaluateInternalFormAvailability,
   parseInternalFormDefinition,
+  validateInternalFormAnswers,
+  type InternalAnswerInput,
+  type InternalFormDefinition,
+  type InternalFormField,
 } from '../services/internal-form-runtime.js';
 import { validateFormRedirectInput } from '../services/formaloo-redirect.js';
+import { isEditableField, repeatingTemplateIds } from './internal-form-edit-public.js';
 import type { Env } from '../index.js';
 
 export const internalFormsAdmin = new Hono<Env>();
@@ -125,6 +132,124 @@ function parseAnswers(answersJson: string): unknown {
   } catch {
     return {};
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function answerRecord(answersJson: string): Record<string, unknown> {
+  const parsed = parseAnswers(answersJson);
+  return isRecord(parsed)
+    ? Object.assign(Object.create(null) as Record<string, unknown>, parsed)
+    : Object.create(null) as Record<string, unknown>;
+}
+
+function visibleInternalFieldIds(
+  definition: InternalFormDefinition,
+  row: InternalFormSubmission,
+  answers: Record<string, unknown>,
+): Set<string> {
+  return new Set(evaluateInternalFormLogic(
+    definition.fields,
+    definition.logic,
+    answers,
+    row.origin_channel === 'line' ? 'line' : 'web',
+  ).visibleFieldIds);
+}
+
+function normalizeAdminAnswerValue(
+  field: InternalFormField,
+  value: unknown,
+): { ok: true; value?: InternalAnswerInput[string] } | { ok: false } {
+  if (value === undefined) return { ok: true };
+  if (value === null) return { ok: true, value: '' };
+  if (typeof value === 'string') return { ok: true, value };
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return { ok: true, value: String(value) };
+  }
+  if (typeof value === 'boolean') {
+    return { ok: true, value: field.type === 'yes_no' ? (value ? 'yes' : 'no') : String(value) };
+  }
+  if (Array.isArray(value) && value.every((item) => (
+    typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean'
+  ))) {
+    return { ok: true, value: value.map(String) };
+  }
+  return { ok: false };
+}
+
+function buildAdminValidationInput(
+  definition: InternalFormDefinition,
+  candidateAnswers: Record<string, unknown>,
+  visibleFieldIds: ReadonlySet<string>,
+):
+  | { ok: true; fields: InternalFormField[]; input: InternalAnswerInput; editableIds: string[] }
+  | { ok: false; error: string } {
+  const templates = repeatingTemplateIds(definition.fields);
+  const fields: InternalFormField[] = [];
+  const input = Object.create(null) as InternalAnswerInput;
+  const editableIds: string[] = [];
+
+  for (const field of definition.fields) {
+    const editable = isEditableField(field, templates);
+    if (editable) editableIds.push(field.id);
+    if (!visibleFieldIds.has(field.id)) continue;
+    const formula = field.type === 'variable' && field.config.variableSubType === 'formula';
+    if (!editable && !formula) continue;
+    const validationIndex = fields.length;
+    fields.push(field);
+    if (!editable) continue;
+    const normalized = normalizeAdminAnswerValue(field, candidateAnswers[field.id]);
+    if (!normalized.ok) return { ok: false, error: `${field.label}の値が不正です` };
+    if (normalized.value !== undefined) input[`a_${validationIndex}`] = normalized.value;
+  }
+  return { ok: true, fields, input, editableIds };
+}
+
+function parseAdminEditVersion(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function parseAnswerRevision(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : null;
+}
+
+async function internalAnswerRevision(answersJson: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(answersJson),
+  ));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function internalEditMetadata(
+  form: FormalooForm,
+  definition: InternalFormDefinition,
+  row: InternalFormSubmission,
+) {
+  const visibleFieldIds = visibleInternalFieldIds(definition, row, answerRecord(row.answers_json));
+  const templates = repeatingTemplateIds(definition.fields);
+  const allowPostEdit = form.allow_post_edit === 1 ? 1 : 0;
+  return {
+    allowPostEdit,
+    fields: definition.fields.map((field) => {
+      const visible = visibleFieldIds.has(field.id);
+      const editableWhenVisible = allowPostEdit === 1 && isEditableField(field, templates);
+      return {
+        slug: field.id,
+        label: field.label,
+        type: field.type,
+        required: field.required,
+        ...(field.type === 'multiple_select'
+          ? { choices: [...(field.config.choices ?? [])] }
+          : {}),
+        editable: editableWhenVisible && visible,
+        editableWhenVisible,
+        visible,
+      };
+    }),
+  };
 }
 
 function serializeRow(row: InternalFormSubmission) {
@@ -753,7 +878,105 @@ internalFormsAdmin.delete('/api/forms-advanced/:id', rejectInternalFormalooMutat
 internalFormsAdmin.get('/api/forms-advanced/:id/pull', rejectInternalFormalooMutation);
 internalFormsAdmin.get('/api/forms-advanced/:id/embed', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/reapply-hosted', rejectInternalFormalooMutation);
-internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', rejectInternalFormalooMutation);
+internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) => {
+  try {
+    const id = c.req.param('id');
+    const form = await getInternalForm(c.env.DB, id);
+    if (!form) return next();
+    if (form.allow_post_edit !== 1) {
+      return c.json({ success: false, error: 'このフォームは回答編集を許可していません' }, 403);
+    }
+
+    const body = await c.req.json<unknown>().catch(() => null);
+    if (!isRecord(body) || !isRecord(body.answers)) {
+      return c.json({ success: false, error: '編集内容が不正です' }, 400);
+    }
+    const expectedEditVersion = parseAdminEditVersion(body.editVersion);
+    const expectedAnswerRevision = parseAnswerRevision(body.answerRevision);
+    if (expectedEditVersion === null || expectedAnswerRevision === null) {
+      return c.json({ success: false, error: '回答を再読み込みしてから保存してください' }, 400);
+    }
+
+    const row = await getInternalFormSubmission(c.env.DB, id, c.req.param('rowId'));
+    if (!row) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    if (await internalAnswerRevision(row.answers_json) !== expectedAnswerRevision) {
+      return c.json({
+        success: false,
+        error: '回答が先に更新されています。再読み込みしてから保存してください',
+      }, 409);
+    }
+    const parsed = parseInternalFormDefinition(form.definition_json);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 409);
+
+    const storedAnswers = answerRecord(row.answers_json);
+    const templates = repeatingTemplateIds(parsed.definition.fields);
+    const editableFieldIds = new Set(parsed.definition.fields
+      .filter((field) => isEditableField(field, templates))
+      .map((field) => field.id));
+    const rejectedField = Object.keys(body.answers).find((fieldId) => !editableFieldIds.has(fieldId));
+    if (rejectedField) {
+      return c.json({ success: false, error: '編集できない項目が含まれています' }, 400);
+    }
+
+    const candidateAnswers = Object.assign(
+      Object.create(null) as Record<string, unknown>,
+      storedAnswers,
+      body.answers,
+    );
+    const originalVisibleFieldIds = visibleInternalFieldIds(parsed.definition, row, storedAnswers);
+    const visibleFieldIds = visibleInternalFieldIds(parsed.definition, row, candidateAnswers);
+    const alwaysHiddenField = Object.keys(body.answers).find((fieldId) => (
+      !originalVisibleFieldIds.has(fieldId) && !visibleFieldIds.has(fieldId)
+    ));
+    if (alwaysHiddenField) {
+      return c.json({ success: false, error: '編集できない項目が含まれています' }, 400);
+    }
+    const validationInput = buildAdminValidationInput(
+      parsed.definition,
+      candidateAnswers,
+      visibleFieldIds,
+    );
+    if (!validationInput.ok) {
+      return c.json({ success: false, error: validationInput.error }, 400);
+    }
+    const validation = validateInternalFormAnswers(validationInput.fields, validationInput.input);
+    if (!validation.ok) return c.json({ success: false, error: validation.error }, 400);
+
+    const merged = Object.assign(Object.create(null) as Record<string, unknown>, storedAnswers);
+    for (const fieldId of validationInput.editableIds) delete merged[fieldId];
+    Object.assign(merged, validation.answers);
+    const updated = await updateInternalFormSubmissionAnswers(c.env.DB, {
+      authorization: 'admin',
+      formId: id,
+      submissionId: row.id,
+      expectedEditVersion,
+      expectedAnswersJson: row.answers_json,
+      expectedDefinitionJson: form.definition_json,
+      answers: merged,
+    });
+    if (updated.status !== 'updated') {
+      return c.json({
+        success: false,
+        error: '回答が先に更新されています。再読み込みしてから保存してください',
+      }, 409);
+    }
+    const metadata = internalEditMetadata(form, parsed.definition, updated.submission);
+    return c.json({
+      success: true,
+      data: {
+        ...serializeRow(updated.submission),
+        source: 'internal',
+        ...metadata,
+        editVersion: updated.submission.edit_version,
+        answerRevision: await internalAnswerRevision(updated.submission.answers_json),
+        lastEdit: null,
+      },
+    });
+  } catch (error) {
+    console.error('PATCH internal /api/forms-advanced/:id/rows/:rowId error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
 internalFormsAdmin.post('/api/forms-advanced/:id/import', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/rows/bulk-delete', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/gsheet/connect', rejectInternalFormalooMutation);
@@ -836,21 +1059,18 @@ internalFormsAdmin.get('/api/forms-advanced/:id/rows/:rowId', async (c, next) =>
 
     const row = await getInternalFormSubmission(c.env.DB, id, c.req.param('rowId'));
     if (!row) return c.json({ success: false, error: '回答が見つかりません' }, 404);
-    const fields = definitionFields(form.definition_json).map((field) => ({
-      slug: field.id,
-      label: field.label,
-      type: field.type,
-      required: field.required,
-      editable: false,
-    }));
+    const parsed = parseInternalFormDefinition(form.definition_json);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 409);
+    const metadata = internalEditMetadata(form, parsed.definition, row);
 
     return c.json({
       success: true,
       data: {
         ...serializeRow(row),
         source: 'internal',
-        allowPostEdit: 0,
-        fields,
+        ...metadata,
+        editVersion: row.edit_version,
+        answerRevision: await internalAnswerRevision(row.answers_json),
         lastEdit: null,
       },
     });
