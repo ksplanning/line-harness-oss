@@ -36,6 +36,7 @@ const definition = {
     { id: 'pref-native', type: 'prefecture', label: '専用都道府県', required: true, position: 7, config: {} },
     { id: 'city-native', type: 'address_city', label: '専用市区町村', required: true, position: 8, config: {} },
     { id: 'town-native', type: 'address_street', label: '専用町名・番地', required: false, position: 9, config: {} },
+    { id: 'address', type: 'address', label: '住所', required: false, position: 10, config: {} },
   ],
   logic: [
     { id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'company' },
@@ -169,5 +170,19 @@ describe('deployed internal form logic bundle', () => {
     expect(document.querySelector<HTMLSelectElement>('[data-answer-field="pref-native"]')!.value).toBe('東京都');
     expect(document.querySelector<HTMLInputElement>('[data-answer-field="city-native"]')!.value).toBe('千代田区');
     expect(document.querySelector<HTMLInputElement>('[data-answer-field="town-native"]')!.value).toBe('千代田');
+
+    const address = document.querySelector<HTMLTextAreaElement>('[data-answer-field="address"]')!;
+    expect(address.rows).toBeGreaterThanOrEqual(2);
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    expect(address.dispatchEvent(enter)).toBe(false);
+    address.value = '東京都';
+    address.setSelectionRange(address.value.length, address.value.length);
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', {
+      value: { getData: () => '\r\n千代田区\n千代田1-1' },
+    });
+    expect(address.dispatchEvent(paste)).toBe(false);
+    expect(address.value).toBe('東京都 千代田区 千代田1-1');
+    expect(address.value).not.toMatch(/[\r\n]/);
   });
 });

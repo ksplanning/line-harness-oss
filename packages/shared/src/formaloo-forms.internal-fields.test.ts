@@ -18,6 +18,7 @@ const EXPECTED_INTERNAL_TYPES = [
   'address_city',
   'address_street',
   'address_building',
+  'address',
 ] as const;
 
 // Compile-time guard: every internal-only discriminator must remain part of the

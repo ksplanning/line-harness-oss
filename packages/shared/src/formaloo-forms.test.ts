@@ -8,6 +8,7 @@ import { describe, test, expect } from 'vitest';
 import {
   DECORATION_FIELD_TYPES,
   FORMALOO_FIELD_TYPES,
+  INTERNAL_ONLY_FIELD_TYPES,
   HARNESS_TO_FORMALOO_TYPE,
   FORMALOO_TO_HARNESS_TYPE,
   isDecorationType,
@@ -73,6 +74,17 @@ describe('formaloo-forms — validateHarnessField (M-21 明示 reject)', () => {
   test('maxLength 非数値は弾く', () => {
     const r = validateHarnessField({ id: 'f1', type: 'text', label: 'x', required: false, position: 0, config: { maxLength: 'abc' } } as unknown);
     expect(r.ok).toBe(false);
+  });
+
+  test('住所は自前配信専用型としてのみ保存できる', () => {
+    expect(INTERNAL_ONLY_FIELD_TYPES).toContain('address');
+    const raw = { id: 'address', type: 'address', label: '住所', required: false, position: 0, config: {} };
+
+    expect(validateHarnessField(raw).ok).toBe(false);
+    expect(validateHarnessField(raw, { allowInternalOnly: true })).toMatchObject({
+      ok: true,
+      field: { id: 'address', type: 'address', label: '住所', config: {} },
+    });
   });
 
   test('postalAutofill mapping を whitelist 検証して保存往復でも保持する', () => {

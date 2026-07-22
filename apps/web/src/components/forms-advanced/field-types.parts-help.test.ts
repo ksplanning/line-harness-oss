@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { FIELD_TYPE_META } from './field-types'
+import { FIELD_TYPE_META, isRepeatingColumnType } from './field-types'
 
 const VISIBLE_FIELD_TYPES = [
   'text',
+  'address',
   'textarea',
   'number',
   'email',
@@ -39,8 +40,17 @@ type PartsHelpMeta = (typeof FIELD_TYPE_META)[number] & {
 const meta = FIELD_TYPE_META as PartsHelpMeta[]
 
 describe('builder parts help — 説明データ', () => {
-  it('city を除く表示対象23種をパレット対象として明示する', () => {
+  it('city を除く表示対象24種をパレット対象として明示する', () => {
     expect(meta.filter((item) => item.paletteVisible !== false).map((item) => item.type)).toEqual(VISIBLE_FIELD_TYPES)
+  })
+
+  it('住所パーツを折り返し表示・1行データとして日常語で説明する', () => {
+    const address = meta.find((item) => item.type === 'address')
+
+    expect(address).toMatchObject({ label: '住所', icon: '🏠', internalOnly: true })
+    expect(address?.help?.summary).toMatch(/折り返し/)
+    expect(address?.help?.howTo).toMatch(/改行.*1行|1行.*改行/)
+    expect(isRepeatingColumnType('address' as never)).toBe(false)
   })
 
   it('表示対象の全パーツが機能・使い方・使用例を空文字なしで持つ', () => {

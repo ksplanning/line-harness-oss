@@ -58,6 +58,25 @@ describe('internal preview input freedoms', () => {
     expect(screen.getByTestId('preview-char-counter').textContent).toContain('残り 3 文字')
   })
 
+  test('住所は2行以上の折り返し欄で、Enterを無効化し貼り付け改行を半角スペースにする', () => {
+    render(<FormPreview
+      title="確認"
+      renderBackend="internal"
+      fields={[field('address' as HarnessField['type'], '住所')]}
+    />)
+
+    const address = screen.getByLabelText('住所') as HTMLTextAreaElement
+    expect(address.tagName).toBe('TEXTAREA')
+    expect(address.rows).toBeGreaterThanOrEqual(2)
+    expect(address.wrap).toBe('soft')
+
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    expect(address.dispatchEvent(enter)).toBe(false)
+    fireEvent.input(address, { target: { value: '東京都\r\n千代田区\n千代田1-1' } })
+    expect(address.value).toBe('東京都 千代田区 千代田1-1')
+    expect(address.value).not.toMatch(/[\r\n]/)
+  })
+
   test('renders configured defaults for single, dropdown, and multiple selections', () => {
     render(<FormPreview
       title="確認"

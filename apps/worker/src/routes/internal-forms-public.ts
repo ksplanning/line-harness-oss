@@ -15,6 +15,7 @@ import {
 import {
   buildRedirectTargetUrl,
   evaluateInternalFormLogic,
+  normalizeSingleLineAddress,
   type FormDesign,
   type InternalFormChannel,
   type InternalFormLogicAnswers,
@@ -419,6 +420,12 @@ function renderField(
     const options = JAPAN_PREFECTURES.map((prefecture) => `<option value="${escapeHtml(prefecture)}"${selected(selectedAnswers.has(prefecture))}>${escapeHtml(prefecture)}</option>`).join('');
     return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}<select id="${id}" name="${name}"${required} data-answer-field="${escapeHtml(field.id)}"><option value="">${escapeHtml(field.config.placeholder ?? '都道府県を選択')}</option>${options}</select></div>`;
   }
+  if (field.type === 'address') {
+    const addressValue = hasCurrentAnswer && !Array.isArray(currentAnswer)
+      ? normalizeSingleLineAddress(scalarAnswer)
+      : '';
+    return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}<textarea id="${id}" name="${name}" rows="2" wrap="soft"${required}${placeholderAttribute(field)} data-single-line-address data-answer-field="${escapeHtml(field.id)}">${escapeHtml(addressValue)}</textarea></div>`;
+  }
   const length = field.type === 'text' ? textLengthAttributes(field) : '';
   const counter = field.type === 'text' ? renderCounter(field, id) : '';
   const visiblePlaceholder = field.type === 'date' || field.type === 'time' || field.type === 'datetime'
@@ -769,6 +776,7 @@ function renderFormPage(
     ? `<img class="form-logo" src="${escapeHtml(definition.design.logoUrl)}" alt="">`
     : '';
   const hasPostal = definition.fields.some((field) => field.config.postalAutofill);
+  const hasAddress = definition.fields.some((field) => field.type === 'address');
   const enctype = definition.fields.some((field) => field.type === 'file')
     ? ' enctype="multipart/form-data"'
     : '';
@@ -782,7 +790,7 @@ function renderFormPage(
       </form>
     </div>
     ${runtimeScript()}
-    ${usesLogicRuntime || hasPostal ? logicClientMarkup(definition) : ''}`, definition.design);
+    ${usesLogicRuntime || hasPostal || hasAddress ? logicClientMarkup(definition) : ''}`, definition.design);
 }
 
 function renderCompletion(
@@ -867,7 +875,9 @@ function logicAnswers(fields: InternalFormField[], input: InternalAnswerInput): 
   const answers: InternalFormLogicAnswers = Object.create(null) as InternalFormLogicAnswers;
   fields.forEach((field, index) => {
     const value = input[`a_${index}`];
-    if (typeof value === 'string') answers[field.id] = value;
+    if (typeof value === 'string') {
+      answers[field.id] = field.type === 'address' ? normalizeSingleLineAddress(value).trim() : value;
+    }
     else if (Array.isArray(value)) {
       answers[field.id] = value.filter((item): item is string => typeof item === 'string');
     }

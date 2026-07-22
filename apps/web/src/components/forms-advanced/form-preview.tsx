@@ -12,6 +12,7 @@ import {
   evaluateInternalFormLogic,
   nextInternalFormFieldId,
   normalizePostalLookupCode,
+  normalizeSingleLineAddress,
 } from '@line-crm/shared/internal-form-logic'
 import type {
   HarnessField,
@@ -195,6 +196,25 @@ function PreviewControl({
         </div>
       )
     }
+    case 'address':
+      return (
+        <textarea
+          id={controlId}
+          aria-label={field.label}
+          rows={2}
+          wrap="soft"
+          required={nativeRequired}
+          value={stringValue}
+          placeholder={placeholder}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.preventDefault()
+          }}
+          onChange={(event) => setValue(normalizeSingleLineAddress(event.target.value))}
+          data-single-line-address=""
+          className={`${inputClassName} min-h-[4.5rem] resize-y`}
+          style={controlStyle}
+        />
+      )
     case 'textarea': {
       const max = internalRenderer && typeof field.config.maxLength === 'number' ? field.config.maxLength : undefined
       const count = Array.from(stringValue).length

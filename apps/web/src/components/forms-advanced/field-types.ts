@@ -39,6 +39,14 @@ export const FIELD_TYPE_META: FieldTypeMeta[] = [
     },
   },
   {
+    type: 'address', label: '住所', icon: '🏠', category: '入力', internalOnly: true,
+    help: {
+      summary: '長い住所を広い欄で折り返して入力してもらえます。',
+      howTo: '配送先など、住所をまとめて聞くときに使います。見た目は折り返しますが、改行は半角スペースへ変わり、保存される内容は1行になります。',
+      example: '例：東京都千代田区千代田1-1を入力してもらう',
+    },
+  },
+  {
     type: 'textarea', label: '複数行テキスト', icon: '📝', category: '入力',
     help: {
       summary: '長めの文章を複数行で入力してもらえます。',
@@ -351,7 +359,7 @@ export function isScalarReferenceType(type: HarnessFieldType): boolean {
 
 /** repeating_section の列として選べる通常入力 field（計算 variable は列コンテナへ入れない）。 */
 export function isRepeatingColumnType(type: HarnessFieldType): boolean {
-  return isScalarReferenceType(type) && type !== 'variable'
+  return isScalarReferenceType(type) && type !== 'variable' && type !== 'address'
 }
 
 export function fieldTypeLabel(type: HarnessFieldType): string {

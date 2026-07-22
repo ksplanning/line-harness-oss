@@ -68,6 +68,7 @@ describe('parseInternalFormDefinition W2 field contract', () => {
       field('address_city', 'address_city'),
       field('address_street', 'address_street'),
       field('address_building', 'address_building'),
+      field('address', 'address' as HarnessFieldType),
       field('section', 'section', { text: '説明' }),
       field('page_break', 'page_break'),
       field('video', 'video', { videoUrl: 'https://www.youtube.com/watch?v=abc' }),
@@ -225,6 +226,19 @@ describe('validateInternalFormAnswers number and length grammar', () => {
 });
 
 describe('validateInternalFormAnswers W2 scalar normalization', () => {
+  test('住所の改行を保存前に半角スペースへ変換して後工程へ1行で渡す', () => {
+    const result = validateInternalFormAnswers(
+      [field('address', 'address' as HarnessFieldType) as InternalFormField],
+      { a_0: ' 東京都\r\n千代田区\n千代田1-1\r本館 ' },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      answers: { address: '東京都 千代田区 千代田1-1 本館' },
+    });
+    if (result.ok) expect(JSON.stringify(result.answers)).not.toMatch(/\\[nr]/);
+  });
+
   test('uses the shared postal lookup normalization when a native postal value is submitted', () => {
     const result = validateInternalFormAnswers(
       [field('postal', 'postal_code') as InternalFormField],

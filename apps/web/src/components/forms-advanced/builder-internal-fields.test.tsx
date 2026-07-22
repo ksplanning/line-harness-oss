@@ -27,11 +27,11 @@ function base(overrides: Record<string, unknown> = {}) {
 }
 
 describe('internal builder palette', () => {
-  test('shows datetime, country, and the five Japanese-address parts only for internal delivery', () => {
+  test('shows datetime, country, address, and the five Japanese-address parts only for internal delivery', () => {
     const internal = render(<FormBuilder {...base()} />)
     const palette = screen.getByTestId('palette')
 
-    for (const label of ['日時', '国', '郵便番号', '都道府県', '市区町村（日本）', '町名・番地', '建物名・部屋番号']) {
+    for (const label of ['日時', '国', '住所', '郵便番号', '都道府県', '市区町村（日本）', '町名・番地', '建物名・部屋番号']) {
       expect(within(palette).getByLabelText(`${label}を追加`)).toBeTruthy()
     }
     expect(within(palette).queryByLabelText('動的選択肢を追加')).toBeNull()
@@ -40,7 +40,7 @@ describe('internal builder palette', () => {
     render(<FormBuilder {...base({ initialRenderBackend: 'formaloo' })} />)
     const formalooPalette = screen.getByTestId('palette')
     expect(within(formalooPalette).getByLabelText('動的選択肢を追加')).toBeTruthy()
-    for (const label of ['日時', '国', '郵便番号', '都道府県', '市区町村（日本）', '町名・番地', '建物名・部屋番号']) {
+    for (const label of ['日時', '国', '住所', '郵便番号', '都道府県', '市区町村（日本）', '町名・番地', '建物名・部屋番号']) {
       expect(within(formalooPalette).queryByLabelText(`${label}を追加`)).toBeNull()
     }
   })

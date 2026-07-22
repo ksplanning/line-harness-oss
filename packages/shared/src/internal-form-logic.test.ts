@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { HarnessField, HarnessLogicRule } from './formaloo-forms.js';
+import * as internalFormLogic from './internal-form-logic.js';
 import {
   INTERNAL_FORM_CHANNEL_SOURCE_ID,
   evaluateInternalFormLogic,
@@ -44,6 +45,17 @@ describe('normalizePostalLookupCode', () => {
 
   test.each(['１２３－４５Ａ７', '１２３－４５６'])('推測補完せず不正な値を不正なまま残す: %s', (value) => {
     expect(normalizePostalLookupCode(value)).not.toMatch(/^\d{7}$/);
+  });
+});
+
+describe('normalizeSingleLineAddress', () => {
+  test('すべての改行を半角スペースへ変換して1行データにする', () => {
+    const normalize = (internalFormLogic as Record<string, unknown>).normalizeSingleLineAddress;
+
+    expect(normalize).toBeTypeOf('function');
+    if (typeof normalize !== 'function') return;
+    expect(normalize('東京都\r\n千代田区\n千代田\r1-1')).toBe('東京都 千代田区 千代田 1-1');
+    expect(normalize('東京都\u2028千代田区\u2029千代田')).toBe('東京都 千代田区 千代田');
   });
 });
 

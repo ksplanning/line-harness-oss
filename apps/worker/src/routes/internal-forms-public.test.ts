@@ -173,6 +173,56 @@ afterEach(() => {
 });
 
 describe('internal public form GET /f/:formId', () => {
+  test('住所を折り返し欄で配信し、改行を除いて保存する', async () => {
+    seedForm('fa_address', {
+      definition: {
+        fields: [{ id: 'address', type: 'address', label: '住所', required: true, position: 0, config: {} }],
+        logic: [],
+      },
+    });
+
+    const getResponse = await app().request('/f/fa_address', {}, env());
+    const html = await getResponse.text();
+    expect(getResponse.status).toBe(200);
+    expect(html).toMatch(/<textarea[^>]+rows="2"[^>]+data-single-line-address[^>]+data-answer-field="address"/);
+    expect(html).toContain('/assets/internal-form-logic.js');
+
+    const response = await postForm('fa_address', new URLSearchParams({
+      a_0: ' 東京都\r\n千代田区\n千代田1-1\r本館 ',
+    }));
+    expect(response.status).toBe(200);
+    const stored = raw.prepare(
+      "SELECT answers_json FROM internal_form_submissions WHERE form_id = 'fa_address'",
+    ).get() as { answers_json: string };
+    expect(JSON.parse(stored.answers_json)).toEqual({ address: '東京都 千代田区 千代田1-1 本館' });
+    expect(stored.answers_json).not.toMatch(/\\[nr]/);
+  });
+
+  test('住所の改行を分岐評価前にも1行化してプレビューと同じ条件結果にする', async () => {
+    seedForm('fa_address_logic', {
+      definition: {
+        fields: [
+          { id: 'address', type: 'address', label: '住所', required: true, position: 0, config: {} },
+          { id: 'note', type: 'text', label: '配送メモ', required: true, position: 1, config: {} },
+        ],
+        logic: [{
+          id: 'show-note', sourceFieldId: 'address', operator: 'equals',
+          value: '東京都 千代田区', action: 'show', targetFieldId: 'note',
+        }],
+      },
+    });
+
+    const response = await postForm('fa_address_logic', new URLSearchParams({
+      a_0: '東京都\n千代田区',
+    }));
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain('配送メモ は必須項目です');
+    expect(raw.prepare(
+      "SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = 'fa_address_logic'",
+    ).get()).toEqual({ n: 0 });
+  });
+
   test('renders the nine W1 field types as mobile-first HTML and escapes stored copy', async () => {
     seedForm('fa_internal');
     const token = await signFriendToken('friend-1', FRIEND_SECRET);

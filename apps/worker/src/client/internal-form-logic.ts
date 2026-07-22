@@ -2,6 +2,7 @@ import {
   evaluateInternalFormLogic,
   nextInternalFormFieldId,
   normalizePostalLookupCode,
+  normalizeSingleLineAddress,
   type InternalFormChannel,
 } from '@line-crm/shared/internal-form-logic';
 import type { HarnessField, HarnessLogicRule } from '@line-crm/shared';
@@ -21,6 +22,32 @@ const POSTAL_LOOKUP_MESSAGES: Record<number, string> = {
   429: '検索が混み合っています。少し待ってからお試しください',
   503: '住所検索を一時的に利用できません。住所を直接入力してください',
 };
+
+function initSingleLineAddresses(root: ParentNode): void {
+  root.querySelectorAll<HTMLTextAreaElement>('textarea[data-single-line-address]').forEach((control) => {
+    if (control.dataset.singleLineAddressReady === 'true') return;
+    control.dataset.singleLineAddressReady = 'true';
+    control.value = normalizeSingleLineAddress(control.value);
+    control.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') event.preventDefault();
+    });
+    control.addEventListener('input', () => {
+      control.value = normalizeSingleLineAddress(control.value);
+    });
+    control.addEventListener('paste', (event) => {
+      const pasted = event.clipboardData?.getData('text');
+      if (pasted === undefined || pasted === normalizeSingleLineAddress(pasted)) return;
+      event.preventDefault();
+      control.setRangeText(
+        normalizeSingleLineAddress(pasted),
+        control.selectionStart,
+        control.selectionEnd,
+        'end',
+      );
+      control.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  });
+}
 
 function initInternalFormPostalLookup(root: ParentNode): void {
   const field = (id: string | undefined): AnswerControl | undefined => Array.from(
@@ -135,6 +162,7 @@ function readConfig(root: ParentNode): InternalFormLogicConfig | null {
 }
 
 export function initInternalFormLogic(root: ParentNode = document): void {
+  initSingleLineAddresses(root);
   initInternalFormPostalLookup(root);
   const config = readConfig(root);
   const form = root.querySelector<HTMLElement>('[data-internal-form]');

@@ -8,6 +8,7 @@ import {
   normalizeFormOperationsSettings,
   normalizeFormRedirect,
   normalizePostalLookupCode,
+  normalizeSingleLineAddress,
   normalizeSuccessPages,
   validateHarnessField,
   type FormDesign,
@@ -751,6 +752,10 @@ function normalizeScalarField(
       return { ok: false, error: `${label} は${field.config.maxLength}文字以内で入力してください` };
     }
     return { ok: true, present: true, value };
+  }
+
+  if (field.type === 'address') {
+    return { ok: true, present: true, value: normalizeSingleLineAddress(value).trim() };
   }
 
   if (field.type === 'number') {

@@ -127,6 +127,32 @@ describe('form answer column block', () => {
     });
   });
 
+  test('住所の回答はシートへも改行なしで投影し、シート編集の改行も1行へ戻す', () => {
+    expect(ledgerColumns.projectFormAnswerRow('form-entry', [
+      { fieldId: 'address', header: '住所', type: 'address' },
+    ], {
+      address: '東京都\r\n千代田区\n千代田1-1',
+    })).toEqual({
+      'answer:form-entry:address': '東京都 千代田区 千代田1-1',
+    });
+
+    expect(ledgerColumns.parseFormAnswerSheetValue(
+      { fieldId: 'address', header: '住所', type: 'address' },
+      '東京都\n千代田区\r千代田1-1',
+      '旧住所',
+    )).toEqual({ ok: true, value: '東京都 千代田区 千代田1-1' });
+  });
+
+  test('住所も既存のシートセル長上限を迂回しない', () => {
+    const address = 'あ'.repeat(49_001);
+
+    expect(ledgerColumns.projectFormAnswerRow('form-entry', [
+      { fieldId: 'address', header: '住所', type: 'address' },
+    ], { address })).toEqual({
+      'answer:form-entry:address': `[回答が長いため省略（${address.length}文字）]`,
+    });
+  });
+
   test('treats an answer label colliding with a friend heading as ambiguous', () => {
     const answerApi = ledgerColumns as typeof ledgerColumns & {
       buildFormAnswerColumns?: (

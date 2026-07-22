@@ -56,6 +56,7 @@ export const INTERNAL_ONLY_FIELD_TYPES = [
   'address_city',
   'address_street',
   'address_building',
+  'address',
 ] as const;
 export type InternalOnlyFieldType = (typeof INTERNAL_ONLY_FIELD_TYPES)[number];
 

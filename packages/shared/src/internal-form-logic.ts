@@ -24,6 +24,11 @@ export function normalizePostalLookupCode(value: unknown): string {
     .replace(/[\s\-－ー−‐‑]/g, '');
 }
 
+/** 折り返し表示する住所欄の値を、保存・連携用の1行文字列へそろえる。 */
+export function normalizeSingleLineAddress(value: unknown): string {
+  return String(value ?? '').replace(/\r\n|[\n\r\u2028\u2029]/g, ' ');
+}
+
 /**
  * Internal 公開画面と builder preview が共有する分岐評価器。
  *

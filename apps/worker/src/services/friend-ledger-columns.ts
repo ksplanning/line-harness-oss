@@ -1,4 +1,5 @@
 import type { SheetCellValue } from './google-sheets.js';
+import { normalizeSingleLineAddress } from '@line-crm/shared';
 
 export const FRIEND_LEDGER_IDENTITY_HEADERS = ['表示名', 'userId', '登録日'] as const;
 const MAX_FORM_ANSWER_SHEET_CELL_LENGTH = 49_000;
@@ -175,7 +176,9 @@ function projectFormAnswerValue(field: FormAnswerField, value: unknown): string 
     }
     return normalizeSheetCell(value) ? '[添付ファイルあり]' : '';
   }
-  const normalized = normalizeSheetCell(value);
+  const normalized = field.type === 'address'
+    ? normalizeSingleLineAddress(normalizeSheetCell(value)).trim()
+    : normalizeSheetCell(value);
   return normalized.length > MAX_FORM_ANSWER_SHEET_CELL_LENGTH
     ? `[回答が長いため省略（${normalized.length}文字）]`
     : normalized;
@@ -208,6 +211,10 @@ export function parseFormAnswerSheetValue(
     if (normalized === 'true') return { ok: true, value: true };
     if (normalized === 'false') return { ok: true, value: false };
     return { ok: false, reason: 'invalid_boolean' };
+  }
+
+  if (field.type === 'address') {
+    return { ok: true, value: normalizeSingleLineAddress(observed).trim() };
   }
 
   const currentIsArray = Array.isArray(current) || field.type === 'multiple_select';
