@@ -23,6 +23,7 @@ import {
 } from './form-results-sync.js';
 
 export const SHEETS_SYNC_CHUNK_SIZE = 200;
+export const SHEETS_SYNC_MAX_INLINE_CHUNKS = 8;
 const JOB_LOCK_MS = 5 * 60_000;
 const SAFE_ERROR_MESSAGE = '同期が途中で止まりました。接続設定を確認して、続きから再開してください。';
 const DISPATCH_ERROR_MESSAGE = '次の同期処理を開始できませんでした。続きから再開してください。';
@@ -314,6 +315,15 @@ export interface ProcessNextSheetsSyncJobResult {
   job: SheetsSyncJob | null;
 }
 
+export interface ProcessSheetsSyncJobBatchOptions extends ProcessNextSheetsSyncJobOptions {
+  maxChunks?: number;
+  trigger?: 'manual' | 'cron' | 'signed_internal';
+}
+
+export interface ProcessSheetsSyncJobBatchResult extends ProcessNextSheetsSyncJobResult {
+  chunks: number;
+}
+
 async function nextRunnableJobId(
   db: D1Database,
   now: string,
@@ -576,6 +586,34 @@ export async function processNextSheetsSyncJob(
     const continuationJobId = await nextRunnableJobId(options.db, toJstString(nowFactory()));
     return { attempted: 1, hasMore: continuationJobId !== null, continuationJobId, job };
   }
+}
+
+export async function processSheetsSyncJobBatch(
+  options: ProcessSheetsSyncJobBatchOptions,
+): Promise<ProcessSheetsSyncJobBatchResult> {
+  const maxChunks = Math.min(
+    SHEETS_SYNC_MAX_INLINE_CHUNKS,
+    Math.max(1, Math.trunc(options.maxChunks ?? SHEETS_SYNC_MAX_INLINE_CHUNKS)),
+  );
+  let chunks = 0;
+  let result: ProcessNextSheetsSyncJobResult = {
+    attempted: 0,
+    hasMore: false,
+    continuationJobId: null,
+    job: null,
+  };
+  while (chunks < maxChunks) {
+    result = await processNextSheetsSyncJob(options);
+    if (result.attempted === 0) break;
+    chunks += 1;
+    if (result.job) {
+      console.log(
+        `[friend-ledger-sync] runner=inline trigger=${options.trigger ?? 'unspecified'} chunk=${chunks} processed=${result.job.processedCount}/${result.job.totalCount} status=${result.job.status} has_more=${result.hasMore}`,
+      );
+    }
+    if (!result.hasMore) break;
+  }
+  return { ...result, chunks };
 }
 
 export async function recordSheetsSyncDispatchError(db: D1Database, jobId?: string): Promise<void> {

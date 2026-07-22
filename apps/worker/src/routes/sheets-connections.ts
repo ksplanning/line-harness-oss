@@ -29,10 +29,11 @@ import {
 import { drainFormResultsWebhookEvents } from '../services/form-results-sync.js';
 import {
   getLatestSheetsSyncJob,
-  recordSheetsSyncDispatchError,
+  processSheetsSyncJobBatch,
+  SHEETS_SYNC_CHUNK_SIZE,
+  SHEETS_SYNC_MAX_INLINE_CHUNKS,
   startSheetsSyncJob,
 } from '../services/sheets-sync-jobs.js';
-import { dispatchSheetsSyncWork } from '../services/sheets-sync-dispatch.js';
 import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
 import {
   deriveSheetsWebhookSecret,
@@ -694,12 +695,25 @@ sheetsConnections.post(`${BASE_PATH}/:id/sync`, async (c) => {
       actor: c.get('staff').id,
       target,
     })));
+    console.log(
+      `[friend-ledger-sync] runner=inline trigger=manual self_binding=${c.env.SELF ? 'present' : 'missing'}`,
+    );
     c.executionCtx.waitUntil(
-      dispatchSheetsSyncWork(c.env).catch(async () => {
-        await Promise.all(jobs.map((job) => (
-          recordSheetsSyncDispatchError(c.env.DB, job.id).catch(() => undefined)
-        )));
-        console.error('Manual Google Sheets sync dispatch failed');
+      processSheetsSyncJobBatch({
+        db: c.env.DB,
+        credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+        adminOrigin: parseAllowedOrigins(c.env)[0] ?? null,
+        chunkSize: SHEETS_SYNC_CHUNK_SIZE,
+        maxChunks: SHEETS_SYNC_MAX_INLINE_CHUNKS,
+        trigger: 'manual',
+      }).then((result) => {
+        if (result.chunks > 0 && result.job) {
+          console.log(
+            `[friend-ledger-sync] runner=inline trigger=manual chunks=${result.chunks} processed=${result.job.processedCount}/${result.job.totalCount} status=${result.job.status} has_more=${result.hasMore}`,
+          );
+        }
+      }).catch(() => {
+        console.error('Manual Google Sheets sync inline runner failed');
       }),
     );
     return c.json({ success: true, data: jobs[0] }, 202);

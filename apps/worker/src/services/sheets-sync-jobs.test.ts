@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createSheetsConnection, type SheetsConnection } from '@line-crm/db';
 import {
   getLatestSheetsSyncJob,
+  processSheetsSyncJobBatch,
   processNextSheetsSyncJob,
   recordSheetsSyncDispatchError,
   startSheetsSyncJob,
@@ -80,6 +81,97 @@ beforeEach(async () => {
 });
 
 describe('durable Sheets sync jobs', () => {
+  test('drains 1,450 rows in one bounded eight-chunk batch without another invocation', async () => {
+    insertFriends(1_450);
+    await startSheetsSyncJob({ db, connection, source: 'manual', actor: 'owner-1' });
+    const sync = vi.fn().mockImplementation(async () => {
+      const call = sync.mock.calls.length;
+      const processed = call < 8 ? 200 : 50;
+      const lastIndex = Math.min(call * 200, 1_450) - 1;
+      return {
+        status: call < 8 ? 'running' : 'success',
+        warning: null,
+        warnings: [],
+        busy: false,
+        appendedRows: processed,
+        updatedRows: 0,
+        importedFields: 0,
+        ignoredIdentityEdits: 0,
+        chunk: {
+          processed,
+          hasMore: call < 8,
+          cursor: {
+            createdAt: `2026-07-20T10:${String(Math.floor(lastIndex / 60)).padStart(2, '0')}:${String(lastIndex % 60).padStart(2, '0')}+09:00`,
+            friendId: `friend-${String(lastIndex).padStart(4, '0')}`,
+          },
+        },
+      };
+    });
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const result = await processSheetsSyncJobBatch({
+      db, sync, chunkSize: 200, maxChunks: 8, trigger: 'manual',
+    });
+
+    expect(sync).toHaveBeenCalledTimes(8);
+    expect(result).toMatchObject({
+      chunks: 8,
+      hasMore: false,
+      continuationJobId: null,
+      job: { status: 'success', processedCount: 1_450, totalCount: 1_450 },
+    });
+    expect(log.mock.calls.map((call) => String(call[0]).match(/processed=(\d+)\/1450/)?.[1]))
+      .toEqual(['200', '400', '600', '800', '1000', '1200', '1400', '1450']);
+    log.mockRestore();
+  });
+
+  test('caps an inline batch at eight chunks and lets the next poll finish the remainder', async () => {
+    insertFriends(1_800);
+    await startSheetsSyncJob({ db, connection, source: 'polling', actor: 'system_poll' });
+    const sync = vi.fn().mockImplementation(async () => {
+      const call = sync.mock.calls.length;
+      const hasMore = call < 9;
+      const lastIndex = call * 200 - 1;
+      return {
+        status: hasMore ? 'running' : 'success',
+        warning: null,
+        warnings: [],
+        busy: false,
+        appendedRows: 200,
+        updatedRows: 0,
+        importedFields: 0,
+        ignoredIdentityEdits: 0,
+        chunk: {
+          processed: 200,
+          hasMore,
+          cursor: {
+            createdAt: `2026-07-20T10:${String(call).padStart(2, '0')}:00+09:00`,
+            friendId: `friend-${String(lastIndex).padStart(4, '0')}`,
+          },
+        },
+      };
+    });
+
+    const firstPoll = await processSheetsSyncJobBatch({
+      db, sync, chunkSize: 200, maxChunks: 99, trigger: 'cron',
+    });
+    expect(firstPoll).toMatchObject({
+      chunks: 8,
+      hasMore: true,
+      job: { status: 'running', processedCount: 1_600, totalCount: 1_800 },
+    });
+
+    const nextPoll = await processSheetsSyncJobBatch({
+      db, sync, chunkSize: 200, maxChunks: 8, trigger: 'cron',
+    });
+    expect(nextPoll).toMatchObject({
+      chunks: 1,
+      hasMore: false,
+      job: { status: 'success', processedCount: 1_800, totalCount: 1_800 },
+    });
+    expect(sync).toHaveBeenCalledTimes(9);
+  });
+
   test('advances a stable cursor in bounded invocations until all 450 rows finish', async () => {
     insertFriends(450);
     const started = await startSheetsSyncJob({

@@ -6,15 +6,15 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 const spies = vi.hoisted(() => ({
   enqueue: vi.fn(async () => ({ enqueued: 0, runnable: 0 })),
-  process: vi.fn(async () => ({ attempted: 0, hasMore: false, continuationJobId: null, job: null })),
-  dispatchFailed: vi.fn(async () => undefined),
+  batch: vi.fn(async () => ({
+    attempted: 0, chunks: 0, hasMore: false, continuationJobId: null, job: null,
+  })),
 }));
 
 vi.mock('./sheets-sync-jobs.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('./sheets-sync-jobs.js')>(),
   enqueueSheetsSyncPollingJobs: spies.enqueue,
-  processNextSheetsSyncJob: spies.process,
-  recordSheetsSyncDispatchError: spies.dispatchFailed,
+  processSheetsSyncJobBatch: spies.batch,
 }));
 
 import worker from '../index.js';
@@ -67,124 +67,140 @@ function sheetsCalls() {
   return isolatedFetch.mock.calls.filter((call) => String(call[0]).endsWith('/internal/sheets-sync-work'));
 }
 
+async function signedSheetsRequest(
+  requestOrigin = 'https://worker.example.test',
+  signedOrigin = requestOrigin,
+): Promise<Request> {
+  const timestamp = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const payload = [
+    'line-harness:sheets-sync-work:v1',
+    'POST',
+    '/internal/sheets-sync-work',
+    signedOrigin,
+    timestamp,
+    nonce,
+  ].join('\n');
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode('secret'),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const bytes = new Uint8Array(await crypto.subtle.sign(
+    'HMAC', key, new TextEncoder().encode(payload),
+  ));
+  const signature = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return new Request(`${requestOrigin}/internal/sheets-sync-work`, {
+    method: 'POST',
+    headers: {
+      'x-sheets-sync-timestamp': timestamp,
+      'x-sheets-sync-nonce': nonce,
+      'x-sheets-sync-signature': signature,
+    },
+  });
+}
+
 beforeEach(() => {
+  vi.restoreAllMocks();
   raw = new Database(':memory:');
   raw.exec(readFileSync(join(DB_ROOT, 'bootstrap.sql'), 'utf8'));
   spies.enqueue.mockReset().mockResolvedValue({ enqueued: 0, runnable: 0 });
-  spies.process.mockReset().mockResolvedValue({
-    attempted: 0, hasMore: false, continuationJobId: null, job: null,
+  spies.batch.mockReset().mockResolvedValue({
+    attempted: 0, chunks: 0, hasMore: false, continuationJobId: null, job: null,
   });
-  spies.dispatchFailed.mockReset().mockResolvedValue(undefined);
   waitUntil.mockClear();
   isolatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
   vi.stubGlobal('fetch', isolatedFetch);
 });
 
 describe('scheduled Sheets sync work', () => {
-  test('enqueues cron work and self-dispatches one signed isolated invocation with the worker User-Agent', async () => {
-    spies.enqueue.mockResolvedValueOnce({ enqueued: 1, runnable: 1 });
-    await worker.scheduled(tick(), env() as never, CTX);
-
-    expect(spies.enqueue).toHaveBeenCalledWith(expect.anything(), 10);
-    expect(sheetsCalls()).toHaveLength(1);
-    const [url, init] = sheetsCalls()[0];
-    expect(url).toBe('https://worker.example.test/internal/sheets-sync-work');
-    const headers = new Headers(init?.headers);
-    expect(headers.get('user-agent')).toBe('line-harness-worker/0.0.0-dev');
-    expect(headers.get('x-sheets-sync-timestamp')).toMatch(/^\d+$/);
-    expect(headers.get('x-sheets-sync-nonce')).toMatch(/^[0-9a-f-]{36}$/);
-    expect(headers.get('x-sheets-sync-signature')).toMatch(/^[0-9a-f]{64}$/);
-    expect(JSON.stringify([url, init])).not.toContain('secret');
-    expect(JSON.stringify([url, init])).not.toContain('credential');
-  });
-
-  test('advances a signed chunk and continuation through SELF when public self-fetch is unavailable', async () => {
-    const selfFetch = vi.fn(async (
-      _input: string | URL | Request,
-      _init?: RequestInit,
-    ) => new Response(null, { status: 204 }));
-    const bindings = { ...env(), SELF: { fetch: selfFetch } };
+  test('advances cron work inline when neither SELF nor public self-fetch is usable', async () => {
+    const selfFetch = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).includes('/internal/sheets-sync-work')) {
+        throw new Error('service binding self-call unavailable');
+      }
+      return new Response(null, { status: 204 });
+    });
     isolatedFetch.mockImplementation(async (input) => {
       if (String(input).includes('/internal/')) throw new Error('Cloudflare 1042 self-fetch blocked');
       return new Response(null, { status: 204 });
     });
     spies.enqueue.mockResolvedValueOnce({ enqueued: 1, runnable: 1 });
-
-    await worker.scheduled(tick(), bindings as never, CTX);
-
-    const initialCalls = selfFetch.mock.calls.filter((call) => (
-      String(call[0]).endsWith('/internal/sheets-sync-work')
-    ));
-    expect(initialCalls).toHaveLength(1);
-    expect(sheetsCalls()).toHaveLength(0);
-
-    spies.process.mockResolvedValueOnce({
+    spies.batch.mockResolvedValueOnce({
       attempted: 1,
+      chunks: 1,
       hasMore: true,
       continuationJobId: 'job-1',
-      job: { id: 'job-1', status: 'running', processedCount: 200, totalCount: 1450 },
+      job: { id: 'job-1', status: 'running', processedCount: 200, totalCount: 1_450 },
     });
-    selfFetch.mockClear();
-    waitUntil.mockClear();
-    const [url, init] = initialCalls[0];
 
-    const response = await worker.fetch(
-      new Request(String(url), init as RequestInit),
-      bindings as never,
-      CTX,
-    );
+    await worker.scheduled(tick(), { ...env(), SELF: { fetch: selfFetch } } as never, CTX);
 
-    expect(response.status).toBe(204);
-    expect(spies.process).toHaveBeenCalledWith(expect.objectContaining({
-      db: expect.anything(), credentialsJson: '{"service":"credential"}', chunkSize: 200,
+    expect(spies.batch).toHaveBeenCalledWith(expect.objectContaining({
+      db: expect.anything(), credentialsJson: '{"service":"credential"}', chunkSize: 200, maxChunks: 8,
+      trigger: 'cron',
     }));
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    await waitUntil.mock.calls[0][0];
     expect(selfFetch.mock.calls.filter((call) => (
-      String(call[0]).endsWith('/internal/sheets-sync-work')
-    ))).toHaveLength(1);
+      String(call[0]).includes('/internal/sheets-sync-work')
+    ))).toHaveLength(0);
     expect(sheetsCalls()).toHaveLength(0);
-    expect(spies.dispatchFailed).not.toHaveBeenCalled();
   });
 
-  test('persists a safe job error when the cron entry dispatch cannot start', async () => {
-    spies.enqueue.mockResolvedValueOnce({ enqueued: 2, runnable: 2 });
-    isolatedFetch.mockImplementation(async (input) => (
-      String(input).endsWith('/internal/sheets-sync-work')
-        ? new Response('blocked', { status: 503 })
-        : new Response(null, { status: 204 })
-    ));
+  test('leaves work beyond eight chunks running for the next cron poll', async () => {
+    spies.enqueue.mockResolvedValue({ enqueued: 0, runnable: 1 });
+    spies.batch
+      .mockResolvedValueOnce({
+        attempted: 1,
+        chunks: 8,
+        hasMore: true,
+        continuationJobId: 'job-1',
+        job: { id: 'job-1', status: 'running', processedCount: 1_600, totalCount: 1_800 },
+      })
+      .mockResolvedValueOnce({
+        attempted: 1,
+        chunks: 1,
+        hasMore: false,
+        continuationJobId: null,
+        job: { id: 'job-1', status: 'success', processedCount: 1_800, totalCount: 1_800 },
+      });
 
     await worker.scheduled(tick(), env() as never, CTX);
+    await worker.scheduled(tick(), env() as never, CTX);
 
-    expect(spies.dispatchFailed).toHaveBeenCalledWith(expect.anything());
+    expect(spies.enqueue).toHaveBeenCalledTimes(2);
+    expect(spies.batch).toHaveBeenCalledTimes(2);
+    expect(sheetsCalls()).toHaveLength(0);
   });
 
-  test('runs exactly one bounded chunk and immediately dispatches its continuation', async () => {
-    spies.enqueue.mockResolvedValueOnce({ enqueued: 1, runnable: 1 });
-    const bindings = env();
-    await worker.scheduled(tick(), bindings as never, CTX);
-    const signed = new Headers(sheetsCalls()[0][1]?.headers);
-    isolatedFetch.mockClear();
-    spies.process.mockResolvedValueOnce({
+  test('accepts an origin-bound signed request and drains its inline batch without continuation fetch', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const selfFetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const bindings = { ...env(), SELF: { fetch: selfFetch } };
+    spies.batch.mockResolvedValueOnce({
       attempted: 1,
-      hasMore: true,
-      continuationJobId: 'job-1',
-      job: { id: 'job-1', status: 'running', processedCount: 200, totalCount: 1450 },
+      chunks: 8,
+      hasMore: false,
+      continuationJobId: null,
+      job: { id: 'job-1', status: 'success', processedCount: 1_450, totalCount: 1_450 },
     });
 
-    const response = await worker.fetch(new Request(
-      'https://worker.example.test/internal/sheets-sync-work',
-      { method: 'POST', headers: signed },
-    ), bindings as never, CTX);
+    const response = await worker.fetch(await signedSheetsRequest(), bindings as never, CTX);
 
     expect(response.status).toBe(204);
-    expect(spies.process).toHaveBeenCalledWith(expect.objectContaining({
-      db: expect.anything(), credentialsJson: '{"service":"credential"}', chunkSize: 200,
+    expect(spies.batch).toHaveBeenCalledWith(expect.objectContaining({
+      db: expect.anything(), credentialsJson: '{"service":"credential"}', chunkSize: 200, maxChunks: 8,
+      trigger: 'signed_internal',
     }));
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    await waitUntil.mock.calls[0][0];
-    expect(sheetsCalls()).toHaveLength(1);
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(selfFetch).not.toHaveBeenCalled();
+    expect(sheetsCalls()).toHaveLength(0);
+    const safeLogs = log.mock.calls.flat().join('\n');
+    expect(safeLogs).toContain('work request origin=https://worker.example.test verified=true self_binding=present');
+    expect(safeLogs).toContain('chunks=8 processed=1450/1450 status=success has_more=false');
+    expect(safeLogs).not.toContain('secret');
+    expect(safeLogs).not.toContain('credential');
   });
 
   test('rejects an unsigned internal request without touching job state', async () => {
@@ -193,34 +209,21 @@ describe('scheduled Sheets sync work', () => {
       { method: 'POST' },
     ), env() as never, CTX);
     expect(response.status).toBe(401);
-    expect(spies.process).not.toHaveBeenCalled();
+    expect(spies.batch).not.toHaveBeenCalled();
   });
 
-  test('stores a safe job error when continuation dispatch fails after durable progress', async () => {
-    spies.enqueue.mockResolvedValueOnce({ enqueued: 1, runnable: 1 });
-    const bindings = env();
-    await worker.scheduled(tick(), bindings as never, CTX);
-    const signed = new Headers(sheetsCalls()[0][1]?.headers);
-    isolatedFetch.mockClear();
-    isolatedFetch.mockResolvedValueOnce(new Response('blocked', { status: 403 }));
-    spies.process.mockResolvedValueOnce({
-      attempted: 1,
-      hasMore: true,
-      continuationJobId: 'job-1',
-      job: { id: 'job-1', status: 'running', processedCount: 200, totalCount: 1450 },
-    });
+  test('rejects a valid HMAC when the receiving request origin differs', async () => {
+    const response = await worker.fetch(await signedSheetsRequest(
+      'https://service-binding.internal',
+      'https://worker.example.test',
+    ), env() as never, CTX);
 
-    const response = await worker.fetch(new Request(
-      'https://worker.example.test/internal/sheets-sync-work',
-      { method: 'POST', headers: signed },
-    ), bindings as never, CTX);
-    expect(response.status).toBe(204);
-    await waitUntil.mock.calls[0][0];
-    expect(spies.dispatchFailed).toHaveBeenCalledWith(expect.anything(), 'job-1');
+    expect(response.status).toBe(401);
+    expect(spies.batch).not.toHaveBeenCalled();
   });
 });
 
-describe('SELF service binding config', () => {
+describe('SELF service binding config for other internal work', () => {
   test.each([
     ['wrangler.ks.toml', 'line-harness-ks'],
     ['wrangler.piecemaker.toml', 'line-harness-piecemaker'],

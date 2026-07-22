@@ -38,12 +38,11 @@ import {
 import { dispatchInternalWork, verifyInternalWork } from './services/internal-work-dispatch.js';
 import {
   enqueueSheetsSyncPollingJobs,
-  processNextSheetsSyncJob,
-  recordSheetsSyncDispatchError,
+  processSheetsSyncJobBatch,
   SHEETS_SYNC_CHUNK_SIZE,
+  SHEETS_SYNC_MAX_INLINE_CHUNKS,
 } from './services/sheets-sync-jobs.js';
 import {
-  dispatchSheetsSyncWork,
   SHEETS_SYNC_WORK_PATH,
   verifySheetsSyncWork,
 } from './services/sheets-sync-dispatch.js';
@@ -481,31 +480,28 @@ app.post(RICH_MENU_RULE_WORK_PATH, async (c) => {
   }
 });
 
-// Friend-ledger work uses a separate invocation budget from the shared cron.
-// Each request advances at most one durable 200-row job chunk, then signs and
-// dispatches the continuation without exposing the server-side credential.
+// A signed request advances a bounded inline batch. Jobs beyond that bound stay
+// durable and running so the five-minute cron can resume them without self-fetch.
 app.post(SHEETS_SYNC_WORK_PATH, async (c) => {
-  if (!await verifySheetsSyncWork(c.req.raw, c.env.LINE_CHANNEL_SECRET)) {
+  const requestOrigin = new URL(c.req.url).origin;
+  const verified = await verifySheetsSyncWork(c.req.raw, c.env.LINE_CHANNEL_SECRET);
+  console.log(
+    `[friend-ledger-sync] work request origin=${requestOrigin} verified=${verified} self_binding=${c.env.SELF ? 'present' : 'missing'}`,
+  );
+  if (!verified) {
     return c.text('unauthorized', 401);
   }
-  const result = await processNextSheetsSyncJob({
+  const result = await processSheetsSyncJobBatch({
     db: c.env.DB,
     credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
     adminOrigin: parseAllowedOrigins(c.env)[0] ?? null,
     chunkSize: SHEETS_SYNC_CHUNK_SIZE,
+    maxChunks: SHEETS_SYNC_MAX_INLINE_CHUNKS,
+    trigger: 'signed_internal',
   });
-  if (result.attempted > 0 && result.job) {
+  if (result.chunks > 0 && result.job) {
     console.log(
-      `[friend-ledger-sync] processed=${result.job.processedCount}/${result.job.totalCount} status=${result.job.status}`,
-    );
-  }
-  if (result.hasMore && result.continuationJobId) {
-    const jobId = result.continuationJobId;
-    c.executionCtx.waitUntil(
-      dispatchSheetsSyncWork(c.env).catch(async () => {
-        await recordSheetsSyncDispatchError(c.env.DB, jobId).catch(() => undefined);
-        console.error('[friend-ledger-sync] continuation dispatch error');
-      }),
+      `[friend-ledger-sync] runner=inline trigger=signed_internal chunks=${result.chunks} processed=${result.job.processedCount}/${result.job.totalCount} status=${result.job.status} has_more=${result.hasMore}`,
     );
   }
   return c.body(null, 204);
@@ -904,11 +900,18 @@ async function scheduled(
       try {
         const jobs = await enqueueSheetsSyncPollingJobs(env.DB, 10);
         if (jobs.runnable > 0) {
-          try {
-            await dispatchSheetsSyncWork(env);
-          } catch {
-            await recordSheetsSyncDispatchError(env.DB).catch(() => undefined);
-            console.error('[friend-ledger-sync] isolated dispatch error');
+          const result = await processSheetsSyncJobBatch({
+            db: env.DB,
+            credentialsJson: env.GOOGLE_SERVICE_ACCOUNT_JSON,
+            adminOrigin: parseAllowedOrigins(env)[0] ?? null,
+            chunkSize: SHEETS_SYNC_CHUNK_SIZE,
+            maxChunks: SHEETS_SYNC_MAX_INLINE_CHUNKS,
+            trigger: 'cron',
+          });
+          if (result.chunks > 0 && result.job) {
+            console.log(
+              `[friend-ledger-sync] runner=inline trigger=cron self_binding=${env.SELF ? 'present' : 'missing'} chunks=${result.chunks} processed=${result.job.processedCount}/${result.job.totalCount} status=${result.job.status} has_more=${result.hasMore}`,
+            );
           }
         }
       } catch {
