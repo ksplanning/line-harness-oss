@@ -1793,6 +1793,7 @@ CREATE TABLE IF NOT EXISTS internal_form_submissions (
   origin_channel TEXT NOT NULL DEFAULT 'embed'
                  CHECK (origin_channel IN ('line', 'embed', 'invalid')),
   edit_version INTEGER NOT NULL DEFAULT 0 CHECK (edit_version >= 0),
+  deleted_at   TEXT,
   submitted_at TEXT NOT NULL,
   created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );

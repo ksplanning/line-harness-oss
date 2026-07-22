@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test } from 'vitest';
 import {
   beginFormalooDefinitionSave,
+  countInternalFormSubmissionsForForm,
   createInternalFormSubmission,
   createInternalFormSubmissionForPublishedDefinition,
   createInternalFormSubmissionWithinLimit,
@@ -15,6 +16,7 @@ import {
   publishInternalFormDefinition,
   saveInternalFormDefinition,
   setFormRenderBackend,
+  softDeleteInternalFormSubmission,
   switchFormRenderBackendToDraft,
   unpublishInternalFormDefinition,
   updateLatestInternalFormSubmissionAnswersForSheets,
@@ -102,6 +104,51 @@ describe('internal form persistence', () => {
     expect(await getInternalFormSubmission(DB, 'fa_internal', created.id))
       .toMatchObject({ id: created.id, friend_id: 'friend-1' });
     expect(await getInternalFormSubmission(DB, 'fa_other', created.id)).toBeNull();
+  });
+
+  test('soft-deletes one form-scoped submission while preserving its stored answers', async () => {
+    await setFormRenderBackend(DB, 'fa_internal', 'internal');
+    const deleted = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      friendId: 'friend-1',
+      answers: { name: '削除対象', keep: '復元用に保持' },
+    });
+    const survivor = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      friendId: 'friend-2',
+      answers: { name: '残す回答' },
+    });
+    const deletedAt = '2026-07-22T13:00:00+09:00';
+
+    await expect(softDeleteInternalFormSubmission(DB, 'fa_other', deleted.id, deletedAt))
+      .resolves.toBe(false);
+    await expect(softDeleteInternalFormSubmission(DB, 'fa_internal', deleted.id, deletedAt))
+      .resolves.toBe(true);
+    await expect(softDeleteInternalFormSubmission(DB, 'fa_internal', deleted.id, deletedAt))
+      .resolves.toBe(false);
+
+    expect(raw.prepare(
+      'SELECT answers_json, deleted_at FROM internal_form_submissions WHERE id = ?',
+    ).get(deleted.id)).toEqual({
+      answers_json: '{"name":"削除対象","keep":"復元用に保持"}',
+      deleted_at: deletedAt,
+    });
+    await expect(getInternalFormSubmission(DB, 'fa_internal', deleted.id)).resolves.toBeNull();
+    await expect(listInternalFormSubmissions(DB, 'fa_internal', { limit: 20, offset: 0 }))
+      .resolves.toMatchObject({
+        total: 1,
+        rows: [expect.objectContaining({ id: survivor.id })],
+      });
+    await expect(countInternalFormSubmissionsForForm(DB, 'fa_internal')).resolves.toBe(1);
+    await expect(updateInternalFormSubmissionAnswers(DB, {
+      authorization: 'admin',
+      formId: 'fa_internal',
+      submissionId: deleted.id,
+      expectedEditVersion: 0,
+      expectedAnswersJson: deleted.answers_json,
+      expectedDefinitionJson: '{"fields":[],"logic":[]}',
+      answers: { name: '削除後の更新' },
+    })).resolves.toEqual({ status: 'conflict', submission: null });
   });
 
   test('lists anonymous submissions plus the latest verified submission per friend in the requested tenant', async () => {

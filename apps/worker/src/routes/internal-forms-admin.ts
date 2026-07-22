@@ -10,6 +10,7 @@ import {
   publishInternalFormDefinition,
   saveFormalooDefinition,
   saveInternalFormDefinition,
+  softDeleteInternalFormSubmission,
   switchFormRenderBackendToDraft,
   unpublishInternalFormDefinition,
   updateInternalFormSubmissionAnswers,
@@ -72,7 +73,7 @@ async function queryInternalSubmissions(
     offset: number;
   },
 ): Promise<{ rows: InternalFormSubmission[]; total: number }> {
-  const where = ['form_id = ?'];
+  const where = ['form_id = ?', 'deleted_at IS NULL'];
   const binds: unknown[] = [formId];
   if (params.q) {
     where.push("(answers_json LIKE ? OR IFNULL(friend_id, '') LIKE ?)");
@@ -878,6 +879,23 @@ internalFormsAdmin.delete('/api/forms-advanced/:id', rejectInternalFormalooMutat
 internalFormsAdmin.get('/api/forms-advanced/:id/pull', rejectInternalFormalooMutation);
 internalFormsAdmin.get('/api/forms-advanced/:id/embed', rejectInternalFormalooMutation);
 internalFormsAdmin.post('/api/forms-advanced/:id/reapply-hosted', rejectInternalFormalooMutation);
+internalFormsAdmin.delete('/api/forms-advanced/:id/rows/:rowId', async (c, next) => {
+  try {
+    const id = c.req.param('id');
+    const form = await getInternalForm(c.env.DB, id);
+    if (!form) return next();
+    const deleted = await softDeleteInternalFormSubmission(
+      c.env.DB,
+      id,
+      c.req.param('rowId'),
+    );
+    if (!deleted) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    return c.json({ success: true, data: null });
+  } catch (error) {
+    console.error('DELETE internal /api/forms-advanced/:id/rows/:rowId error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
 internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) => {
   try {
     const id = c.req.param('id');
@@ -1165,7 +1183,7 @@ internalFormsAdmin.get('/api/forms-advanced/:id/stats', async (c, next) => {
     const verifiedRow = await c.env.DB
       .prepare(
         `SELECT COUNT(*) AS n FROM internal_form_submissions
-         WHERE form_id = ? AND friend_id IS NOT NULL`,
+         WHERE form_id = ? AND friend_id IS NOT NULL AND deleted_at IS NULL`,
       )
       .bind(id)
       .first<{ n: number }>();
@@ -1173,7 +1191,7 @@ internalFormsAdmin.get('/api/forms-advanced/:id/stats', async (c, next) => {
       .prepare(
         `SELECT substr(submitted_at, 1, 10) AS day, COUNT(*) AS count
          FROM internal_form_submissions
-         WHERE form_id = ?
+         WHERE form_id = ? AND deleted_at IS NULL
          GROUP BY substr(submitted_at, 1, 10)
          ORDER BY day ASC`,
       )

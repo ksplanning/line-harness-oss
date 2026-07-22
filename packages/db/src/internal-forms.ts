@@ -11,6 +11,7 @@ export interface InternalFormSubmission {
   answers_json: string;
   origin_channel: InternalFormOriginChannel;
   edit_version: number;
+  deleted_at: string | null;
   submitted_at: string;
   created_at: string;
 }
@@ -320,7 +321,8 @@ export async function createInternalFormSubmissionWithinLimit(
       `INSERT INTO internal_form_submissions
          (id, form_id, friend_id, answers_json, submitted_at, created_at)
        SELECT ?, ?, ?, ?, ?, ?
-       WHERE (SELECT COUNT(*) FROM internal_form_submissions WHERE form_id = ?) < ?`,
+       WHERE (SELECT COUNT(*) FROM internal_form_submissions
+              WHERE form_id = ? AND deleted_at IS NULL) < ?`,
     )
     .bind(
       id,
@@ -373,7 +375,8 @@ export async function createInternalFormSubmissionForPublishedDefinition(
            AND builder_status = 'published' AND definition_json = ?
        )
        AND (? IS NULL OR (
-         SELECT COUNT(*) FROM internal_form_submissions WHERE form_id = ?
+         SELECT COUNT(*) FROM internal_form_submissions
+         WHERE form_id = ? AND deleted_at IS NULL
        ) < ?)
        AND (? IS NULL OR julianday(?) >= julianday(?))
        AND (? IS NULL OR julianday(?) < julianday(?))`,
@@ -407,6 +410,7 @@ export async function createInternalFormSubmissionForPublishedDefinition(
     answers_json: answersJson,
     origin_channel: input.originChannel ?? 'embed',
     edit_version: 0,
+    deleted_at: null,
     submitted_at: now,
     created_at: now,
   };
@@ -420,13 +424,15 @@ export async function listInternalFormSubmissions(
   const limit = Math.max(1, Math.min(100, Math.trunc(params.limit)));
   const offset = Math.max(0, Math.trunc(params.offset));
   const totalRow = await db
-    .prepare('SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = ?')
+    .prepare(
+      'SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = ? AND deleted_at IS NULL',
+    )
     .bind(formId)
     .first<{ n: number }>();
   const rows = await db
     .prepare(
       `SELECT * FROM internal_form_submissions
-       WHERE form_id = ?
+       WHERE form_id = ? AND deleted_at IS NULL
        ORDER BY julianday(submitted_at) DESC, rowid DESC
        LIMIT ? OFFSET ?`,
     )
@@ -448,13 +454,15 @@ export async function listLatestVerifiedInternalFormSubmissions(
 ): Promise<InternalFormSubmission[]> {
   const rows = await db.prepare(
     `SELECT submission.id, submission.form_id, submission.friend_id,
-            submission.answers_json, submission.submitted_at, submission.created_at
+            submission.answers_json, submission.origin_channel, submission.edit_version,
+            submission.deleted_at, submission.submitted_at, submission.created_at
      FROM internal_form_submissions submission
      LEFT JOIN friends friend
        ON friend.id = submission.friend_id AND friend.line_account_id = ?
      INNER JOIN formaloo_forms form
        ON form.id = submission.form_id
      WHERE submission.form_id = ?
+       AND submission.deleted_at IS NULL
        AND (submission.friend_id IS NULL OR friend.id IS NOT NULL)
        AND form.deleted = 0 AND form.render_backend = 'internal'
        AND (form.line_account_id = ? OR form.line_account_id IS NULL)
@@ -463,6 +471,7 @@ export async function listLatestVerifiedInternalFormSubmissions(
          FROM internal_form_submissions newer
          WHERE newer.form_id = submission.form_id
            AND newer.friend_id = submission.friend_id
+           AND newer.deleted_at IS NULL
            AND (
              julianday(newer.submitted_at) > julianday(submission.submitted_at)
              OR (
@@ -489,6 +498,7 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
     `UPDATE internal_form_submissions
      SET answers_json = ?
      WHERE id = ? AND form_id = ? AND friend_id = ? AND answers_json = ?
+       AND deleted_at IS NULL
        AND EXISTS (
          SELECT 1 FROM friends friend
          WHERE friend.id = internal_form_submissions.friend_id
@@ -504,6 +514,7 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
          SELECT 1 FROM internal_form_submissions newer
          WHERE newer.form_id = internal_form_submissions.form_id
            AND newer.friend_id = internal_form_submissions.friend_id
+           AND newer.deleted_at IS NULL
            AND (
              julianday(newer.submitted_at) > julianday(internal_form_submissions.submitted_at)
              OR (
@@ -553,13 +564,15 @@ export async function listVerifiedInternalFormSubmissionsForSheets(
 ): Promise<InternalFormSubmission[]> {
   const rows = await db.prepare(
     `SELECT submission.id, submission.form_id, submission.friend_id,
-            submission.answers_json, submission.submitted_at, submission.created_at
+            submission.answers_json, submission.origin_channel, submission.edit_version,
+            submission.deleted_at, submission.submitted_at, submission.created_at
      FROM internal_form_submissions submission
      LEFT JOIN friends friend
        ON friend.id = submission.friend_id AND friend.line_account_id = ?
      INNER JOIN formaloo_forms form
        ON form.id = submission.form_id
      WHERE submission.form_id = ?
+       AND submission.deleted_at IS NULL
        AND (submission.friend_id IS NULL OR friend.id IS NOT NULL)
        AND form.deleted = 0 AND form.render_backend = 'internal'
        AND (form.line_account_id = ? OR form.line_account_id IS NULL)
@@ -583,6 +596,7 @@ export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId
     `UPDATE internal_form_submissions
      SET answers_json = ?
      WHERE id = ? AND form_id = ? AND answers_json = ?
+       AND deleted_at IS NULL
        AND (
          friend_id IS NULL
          OR EXISTS (
@@ -629,9 +643,30 @@ export async function getInternalFormSubmission(
   submissionId: string,
 ): Promise<InternalFormSubmission | null> {
   return db
-    .prepare('SELECT * FROM internal_form_submissions WHERE id = ? AND form_id = ?')
+    .prepare(
+      'SELECT * FROM internal_form_submissions WHERE id = ? AND form_id = ? AND deleted_at IS NULL',
+    )
     .bind(submissionId, formId)
     .first<InternalFormSubmission>();
+}
+
+export async function softDeleteInternalFormSubmission(
+  db: D1Database,
+  formId: string,
+  submissionId: string,
+  deletedAt = jstNow(),
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE internal_form_submissions
+     SET deleted_at = ?
+     WHERE id = ? AND form_id = ? AND deleted_at IS NULL
+       AND EXISTS (
+         SELECT 1 FROM formaloo_forms form
+         WHERE form.id = internal_form_submissions.form_id
+           AND form.deleted = 0 AND form.render_backend = 'internal'
+       )`,
+  ).bind(deletedAt, submissionId, formId).run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 export async function updateInternalFormSubmissionAnswers(
@@ -644,6 +679,7 @@ export async function updateInternalFormSubmissionAnswers(
           `UPDATE internal_form_submissions
            SET answers_json = ?, edit_version = edit_version + 1
            WHERE id = ? AND form_id = ? AND edit_version = ? AND answers_json = ?
+             AND deleted_at IS NULL
              AND EXISTS (
                SELECT 1
                FROM formaloo_forms AS form
@@ -669,6 +705,7 @@ export async function updateInternalFormSubmissionAnswers(
           `UPDATE internal_form_submissions
            SET answers_json = ?, edit_version = edit_version + 1
            WHERE id = ? AND form_id = ? AND edit_version = ?
+             AND deleted_at IS NULL
              AND EXISTS (
                SELECT 1
                FROM internal_form_notification_settings AS notification_settings
@@ -708,7 +745,9 @@ export async function countInternalFormSubmissionsForForm(
   formId: string,
 ): Promise<number> {
   const row = await db
-    .prepare('SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = ?')
+    .prepare(
+      'SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = ? AND deleted_at IS NULL',
+    )
     .bind(formId)
     .first<{ n: number }>();
   return row?.n ?? 0;

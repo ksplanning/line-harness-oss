@@ -1092,6 +1092,70 @@ describe('internal answer admin read path', () => {
     expect(rangeData.rows.map((row) => row.id)).toEqual(['sub-2', 'sub-3']);
   });
 
+  test('DELETE soft-deletes only the requested form-scoped answer and hides it from admin reads', async () => {
+    const crossed = await call('DELETE', '/api/forms-advanced/internal-form/rows/not-in-this-form');
+    expect(crossed.status).toBe(404);
+
+    seedInternalSubmission(
+      'not-in-this-form',
+      'other-internal-form',
+      { name: '別フォーム' },
+      '2026-07-03T09:00:00+09:00',
+    );
+    expect((await call(
+      'DELETE',
+      '/api/forms-advanced/internal-form/rows/not-in-this-form',
+    )).status).toBe(404);
+
+    const response = await call('DELETE', '/api/forms-advanced/internal-form/rows/sub-2');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true, data: null });
+    expect(raw.prepare(
+      'SELECT answers_json, deleted_at FROM internal_form_submissions WHERE id = ?',
+    ).get('sub-2')).toMatchObject({
+      answers_json: '{"name":"二郎","contact":"two@example.test"}',
+      deleted_at: expect.any(String),
+    });
+
+    const list = await call('GET', '/api/forms-advanced/internal-form/rows?page=1&pageSize=25');
+    expect((await list.json() as { data: { total: number; rows: Array<{ id: string }> } }).data)
+      .toMatchObject({ total: 2, rows: [{ id: 'sub-3' }, { id: 'sub-1' }] });
+    expect((await call('GET', '/api/forms-advanced/internal-form/rows/sub-2')).status).toBe(404);
+    const stats = await call('GET', '/api/forms-advanced/internal-form/stats');
+    expect((await stats.json() as { data: { total: number; verified: number } }).data)
+      .toMatchObject({ total: 2, verified: 0 });
+    expect(raw.prepare(
+      'SELECT deleted_at FROM internal_form_submissions WHERE id = ?',
+    ).get('not-in-this-form')).toEqual({ deleted_at: null });
+  });
+
+  test('DELETE keeps the existing authentication and forms_advanced permission boundary', async () => {
+    expect((await call(
+      'DELETE',
+      '/api/forms-advanced/internal-form/rows/sub-1',
+      undefined,
+      { auth: '' },
+    )).status).toBe(401);
+
+    const roleId = (await createRole(DB, { name: '回答削除担当' })).id;
+    await setRolePermissions(DB, roleId, [{ feature_key: 'forms_advanced', allowed: false }]);
+    seedStaff('delete-staff', 'delete-key', roleId);
+    expect((await call(
+      'DELETE',
+      '/api/forms-advanced/internal-form/rows/sub-1',
+      undefined,
+      { auth: 'Bearer delete-key' },
+    )).status).toBe(403);
+
+    await setRolePermissions(DB, roleId, [{ feature_key: 'forms_advanced', allowed: true }]);
+    expect((await call(
+      'DELETE',
+      '/api/forms-advanced/internal-form/rows/sub-1',
+      undefined,
+      { auth: 'Bearer delete-key' },
+    )).status).toBe(200);
+  });
+
   test('detail exposes allow_post_edit, real field editability, editVersion, and form scope', async () => {
     raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
       .run(JSON.stringify(EDITABLE_DEFINITION), 'internal-form');
