@@ -65,7 +65,10 @@ describe('InternalSheetsSetupPanel', () => {
 
     const save = screen.getByRole('button', { name: 'シート連携を保存' }) as HTMLButtonElement
     expect(save.disabled).toBe(true)
-    expect(screen.queryByLabelText('対応するシート（タブ）')).toBeNull()
+    expect(screen.queryByLabelText('友だち台帳のシート（タブ）')).toBeNull()
+    expect(screen.queryByLabelText('フォーム回答を記録するシート（タブ）')).toBeNull()
+    expect((screen.getByRole('checkbox', { name: '友だち台帳も同期する' }) as HTMLInputElement).checked).toBe(false)
+    expect((screen.getByRole('checkbox', { name: 'フォーム回答シート（別タブ）' }) as HTMLInputElement).checked).toBe(true)
 
     const answerFields = ['お名前', '合計', '明細']
     for (const label of answerFields) {
@@ -86,9 +89,18 @@ describe('InternalSheetsSetupPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '接続を確認' }))
 
     await waitFor(() => expect(p.onInspect).toHaveBeenCalledWith(sharingUrl))
-    const tabs = await screen.findByLabelText('対応するシート（タブ）') as HTMLSelectElement
-    expect(Array.from(tabs.options).map((option) => option.textContent)).toEqual(['回答', '集計'])
-    fireEvent.change(tabs, { target: { value: '集計' } })
+    const ledgerTabs = await screen.findByLabelText('友だち台帳のシート（タブ）') as HTMLSelectElement
+    const resultTabs = screen.getByLabelText('フォーム回答を記録するシート（タブ）') as HTMLSelectElement
+    expect(Array.from(ledgerTabs.options).map((option) => option.textContent)).toEqual(['回答', '集計'])
+    expect(Array.from(resultTabs.options).map((option) => option.textContent)).toEqual(['回答', '集計'])
+    expect(ledgerTabs.value).toBe('集計')
+    expect(resultTabs.value).toBe('回答')
+    expect(save.disabled).toBe(false)
+
+    fireEvent.change(resultTabs, { target: { value: '集計' } })
+    expect(save.disabled).toBe(true)
+    expect(screen.getByRole('alert').textContent).toContain('友だち台帳とフォーム回答は別のタブ')
+    fireEvent.change(resultTabs, { target: { value: '回答' } })
     expect(save.disabled).toBe(false)
 
     fireEvent.click(screen.getByRole('checkbox', { name: '合計' }))
@@ -105,6 +117,9 @@ describe('InternalSheetsSetupPanel', () => {
       sheetName: '集計',
       syncDirection: 'bidirectional',
       selectedFormFieldIds: ['name', 'calc'],
+      friendLedgerEnabled: false,
+      formResultsEnabled: true,
+      formResultsSheetName: '回答',
     }))
     expect(screen.getByRole('status').textContent).toContain('保存しました')
   })
@@ -125,7 +140,8 @@ describe('InternalSheetsSetupPanel', () => {
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('スプレッドシートの共有設定に上のアドレスを追加してください')
     expect(alert.textContent).not.toContain('PERMISSION_DENIED')
-    expect(screen.queryByLabelText('対応するシート（タブ）')).toBeNull()
+    expect(screen.queryByLabelText('友だち台帳のシート（タブ）')).toBeNull()
+    expect(screen.queryByLabelText('フォーム回答を記録するシート（タブ）')).toBeNull()
   })
 
   test('starts an existing connection as inspected with its current tab and saved field subset', async () => {
@@ -137,12 +153,18 @@ describe('InternalSheetsSetupPanel', () => {
         sheetName: '既存回答',
         syncDirection: 'to_sheets',
         selectedFormFieldIds: ['calc'],
+        friendLedgerEnabled: true,
+        formResultsEnabled: false,
+        formResultsSheetName: null,
       },
       onInspect,
       onSave,
     })} />)
 
-    expect((screen.getByLabelText('対応するシート（タブ）') as HTMLSelectElement).value).toBe('既存回答')
+    expect((screen.getByLabelText('友だち台帳のシート（タブ）') as HTMLSelectElement).value).toBe('既存回答')
+    expect((screen.getByLabelText('フォーム回答を記録するシート（タブ）') as HTMLSelectElement).value).toBe('')
+    expect((screen.getByRole('checkbox', { name: '友だち台帳も同期する' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('checkbox', { name: 'フォーム回答シート（別タブ）' }) as HTMLInputElement).checked).toBe(false)
     expect((screen.getByRole('checkbox', { name: 'お名前' }) as HTMLInputElement).checked).toBe(false)
     expect((screen.getByRole('checkbox', { name: '合計' }) as HTMLInputElement).checked).toBe(true)
     expect((screen.getByLabelText('同期方向') as HTMLSelectElement).value).toBe('to_sheets')
@@ -153,6 +175,9 @@ describe('InternalSheetsSetupPanel', () => {
       sheetName: '既存回答',
       syncDirection: 'to_sheets',
       selectedFormFieldIds: ['calc'],
+      friendLedgerEnabled: true,
+      formResultsEnabled: false,
+      formResultsSheetName: null,
     }))
     expect(onInspect).not.toHaveBeenCalled()
     expect(document.body.textContent).not.toContain('formId')

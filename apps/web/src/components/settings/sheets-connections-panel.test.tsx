@@ -8,9 +8,11 @@ afterEach(() => cleanup())
 
 const connection: SheetsConnection = {
   id: 'gsc_1', lineAccountId: 'acc-1', formId: 'form-1', formName: '入会フォーム', spreadsheetId: 'sheet_1',
-  sheetName: '回答', syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins',
+  sheetName: '友だち台帳', syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins',
   friendFieldMappings: [{ fieldId: 'field-rank', header: '会員ランク' }],
   friendLedgerEnabled: true,
+  formResultsEnabled: true,
+  formResultsSheetName: '回答',
   lastSyncAt: '2026-07-21T10:00:00.000+09:00', lastSyncStatus: 'success', lastSyncWarning: null,
   isActive: true, createdAt: '2026-07-20', updatedAt: '2026-07-20',
 }
@@ -54,7 +56,8 @@ describe('SheetsConnectionsPanel', () => {
     render(<SheetsConnectionsPanel {...p} />)
     const item = screen.getByTestId('sheets-item-gsc_1')
     expect(item.textContent).toContain('入会フォーム')
-    expect(item.textContent).toContain('回答')
+    expect(item.textContent).toContain('友だち台帳: 同期する（友だち台帳）')
+    expect(item.textContent).toContain('フォーム回答シート: 同期する（回答）')
     expect(item.textContent).toContain('双方向')
     expect(item.textContent).toContain('成功')
     expect(item.textContent).toContain('2026-07-21T10:00:00.000+09:00')
@@ -63,6 +66,21 @@ describe('SheetsConnectionsPanel', () => {
     expect(item.textContent).not.toContain('sheet_1')
     fireEvent.click(screen.getByTestId('sheets-test-gsc_1'))
     expect(p.onTest).toHaveBeenCalledWith('gsc_1')
+  })
+
+  test('台帳とフォーム回答をそれぞれ同期しない設定も日常語で表示する', () => {
+    render(<SheetsConnectionsPanel {...props({
+      connections: [{
+        ...connection,
+        friendLedgerEnabled: false,
+        formResultsEnabled: false,
+        formResultsSheetName: null,
+      }],
+    })} />)
+
+    const item = screen.getByTestId('sheets-item-gsc_1')
+    expect(item.textContent).toContain('友だち台帳: 同期しない')
+    expect(item.textContent).toContain('フォーム回答シート: 同期しない')
   })
 
   test('is a monitoring page and directs setup to each form builder', () => {

@@ -13,6 +13,9 @@ export interface InternalSheetsSetupConnection {
   spreadsheetId: string
   sheetName: string
   syncDirection: InternalSheetsSyncDirection
+  friendLedgerEnabled: boolean
+  formResultsEnabled: boolean
+  formResultsSheetName: string | null
   /** null/undefined means every syncable form field for backward compatibility. */
   selectedFormFieldIds?: string[] | null
 }
@@ -27,6 +30,9 @@ export interface InternalSheetsSaveInput {
   sheetName: string
   syncDirection: InternalSheetsSyncDirection
   selectedFormFieldIds: string[]
+  friendLedgerEnabled: boolean
+  formResultsEnabled: boolean
+  formResultsSheetName: string | null
 }
 
 export interface InternalSheetsSetupPanelProps {
@@ -87,8 +93,13 @@ export default function InternalSheetsSetupPanel({
   const allFieldIds = useMemo(() => syncableFields.map((field) => field.id), [syncableFields])
   const [sharedUrl, setSharedUrl] = useState(() => initialUrl(connection))
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(connection?.spreadsheetId ?? null)
-  const [sheetNames, setSheetNames] = useState<string[]>(() => connection ? [connection.sheetName] : [])
+  const [sheetNames, setSheetNames] = useState<string[]>(() => connection
+    ? uniqueSheetNames([connection.sheetName, connection.formResultsSheetName ?? ''])
+    : [])
   const [sheetName, setSheetName] = useState(connection?.sheetName ?? '')
+  const [friendLedgerEnabled, setFriendLedgerEnabled] = useState(connection?.friendLedgerEnabled ?? false)
+  const [formResultsEnabled, setFormResultsEnabled] = useState(connection?.formResultsEnabled ?? true)
+  const [formResultsSheetName, setFormResultsSheetName] = useState(connection?.formResultsSheetName ?? '')
   const [syncDirection, setSyncDirection] = useState<InternalSheetsSyncDirection>(
     connection?.syncDirection ?? 'bidirectional',
   )
@@ -108,6 +119,7 @@ export default function InternalSheetsSetupPanel({
     setSpreadsheetId(null)
     setSheetNames([])
     setSheetName('')
+    setFormResultsSheetName('')
   }
 
   const inspect = async () => {
@@ -134,9 +146,16 @@ export default function InternalSheetsSetupPanel({
       }
       setSpreadsheetId(inspected.spreadsheetId)
       setSheetNames(nextSheetNames)
-      setSheetName(nextSheetNames.includes(connection?.sheetName ?? '')
-        ? connection?.sheetName ?? nextSheetNames[0]
-        : nextSheetNames[0])
+      const savedLedgerSheet = connection?.sheetName ?? ''
+      const savedResultsSheet = connection?.formResultsSheetName ?? ''
+      const nextResultsSheet = nextSheetNames.includes(savedResultsSheet)
+        ? savedResultsSheet
+        : nextSheetNames[0]
+      const nextLedgerSheet = nextSheetNames.includes(savedLedgerSheet)
+        ? savedLedgerSheet
+        : nextSheetNames.find((name) => name !== nextResultsSheet) ?? nextSheetNames[0]
+      setSheetName(nextLedgerSheet)
+      setFormResultsSheetName(nextResultsSheet)
       setFeedback({ kind: 'success', text: '接続できました。対応するシート（タブ）を選んでください。' })
     } catch (error) {
       if (generation !== inspectGeneration.current) return
@@ -167,14 +186,29 @@ export default function InternalSheetsSetupPanel({
   }
 
   const allSelected = allFieldIds.length > 0 && allFieldIds.every((id) => selectedFormFieldIds.includes(id))
-  const canSave = Boolean(spreadsheetId && sheetName && busy === null)
+  const usesSameSheet = Boolean(sheetName && formResultsSheetName && sheetName === formResultsSheetName)
+  const canSave = Boolean(
+    spreadsheetId
+    && sheetName
+    && (!formResultsEnabled || formResultsSheetName)
+    && !usesSameSheet
+    && busy === null,
+  )
 
   const save = async () => {
     if (!spreadsheetId || !sheetName || busy !== null) return
     setBusy('save')
     setFeedback(null)
     try {
-      await onSave({ spreadsheetId, sheetName, syncDirection, selectedFormFieldIds })
+      await onSave({
+        spreadsheetId,
+        sheetName,
+        syncDirection,
+        selectedFormFieldIds,
+        friendLedgerEnabled,
+        formResultsEnabled,
+        formResultsSheetName: formResultsSheetName || null,
+      })
       setFeedback({ kind: 'success', text: 'シート連携を保存しました。' })
     } catch (error) {
       setFeedback({
@@ -237,18 +271,65 @@ export default function InternalSheetsSetupPanel({
         </button>
       </div>
 
-      {spreadsheetId && sheetNames.length > 0 && (
-        <label className="block text-xs text-gray-600">
-          対応するシート（タブ）
-          <select
-            aria-label="対応するシート（タブ）"
-            value={sheetName}
-            onChange={(event) => setSheetName(event.target.value)}
-            className="mt-1 w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm"
-          >
-            {sheetNames.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select>
+      <div className="space-y-3 rounded-lg border border-gray-200 p-3">
+        <label className="flex items-center gap-2 text-sm font-medium text-gray-800">
+          <input
+            type="checkbox"
+            checked={formResultsEnabled}
+            onChange={(event) => setFormResultsEnabled(event.target.checked)}
+          />
+          フォーム回答シート（別タブ）
         </label>
+        <p className="text-xs leading-relaxed text-gray-600">
+          1回の回答を1行に記録し、シート側の修正もLINEハーネスに戻します。
+        </p>
+        {spreadsheetId && sheetNames.length > 0 && (
+          <label className="block text-xs text-gray-600">
+            フォーム回答を記録するシート（タブ）
+            <select
+              aria-label="フォーム回答を記録するシート（タブ）"
+              value={formResultsSheetName}
+              onChange={(event) => setFormResultsSheetName(event.target.value)}
+              className="mt-1 w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm"
+            >
+              {!formResultsSheetName && <option value="">選択してください</option>}
+              {sheetNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+
+      <div className="space-y-3 rounded-lg border border-gray-200 p-3">
+        <label className="flex items-center gap-2 text-sm font-medium text-gray-800">
+          <input
+            type="checkbox"
+            checked={friendLedgerEnabled}
+            onChange={(event) => setFriendLedgerEnabled(event.target.checked)}
+          />
+          友だち台帳も同期する
+        </label>
+        <p className="text-xs leading-relaxed text-gray-600">
+          友だち一覧をシートで管理したい場合だけオンにします。
+        </p>
+        {spreadsheetId && sheetNames.length > 0 && (
+          <label className="block text-xs text-gray-600">
+            友だち台帳のシート（タブ）
+            <select
+              aria-label="友だち台帳のシート（タブ）"
+              value={sheetName}
+              onChange={(event) => setSheetName(event.target.value)}
+              className="mt-1 w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm"
+            >
+              {sheetNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+
+      {usesSameSheet && (
+        <p role="alert" className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">
+          友だち台帳とフォーム回答は別のタブを選んでください。
+        </p>
       )}
 
       <label className="block text-xs text-gray-600">

@@ -26,9 +26,11 @@ import SheetsSettingsPage from './page'
 
 const item = (id: string, account = 'acc-1') => ({
   id, lineAccountId: account, formId: `form-${id}`, formName: `${id} の申込フォーム`, spreadsheetId: `sheet_${id}`,
-  sheetName: '回答', syncDirection: 'bidirectional' as const, conflictPolicy: 'last_write_wins' as const,
+  sheetName: '友だち台帳', syncDirection: 'bidirectional' as const, conflictPolicy: 'last_write_wins' as const,
   friendFieldMappings: [{ fieldId: 'field-rank', header: '会員ランク' }],
   friendLedgerEnabled: true,
+  formResultsEnabled: true,
+  formResultsSheetName: '回答',
   lastSyncAt: '2026-07-21T10:00:00.000+09:00', lastSyncStatus: 'success' as const, lastSyncWarning: null,
   isActive: true, createdAt: '2026-07-20', updatedAt: '2026-07-20',
 })
@@ -63,6 +65,8 @@ describe('Sheets settings page', () => {
     await waitFor(() => expect(mocks.list).toHaveBeenCalledWith('acc-1'))
     const row = await screen.findByTestId('sheets-item-one')
     expect(row.textContent).toContain('one の申込フォーム')
+    expect(row.textContent).toContain('友だち台帳: 同期する（友だち台帳）')
+    expect(row.textContent).toContain('フォーム回答シート: 同期する（回答）')
     expect(row.textContent).not.toContain('form-one')
     expect(row.textContent).not.toContain('sheet_one')
     expect(screen.queryByTestId('sheets-form-id')).toBeNull()

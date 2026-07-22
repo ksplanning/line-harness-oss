@@ -130,7 +130,16 @@ export default function SheetsConnectionsPanel({
                   <div className="flex flex-wrap items-start gap-3">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-gray-900">{name}</p>
-                      <p className="truncate text-xs text-gray-500">対応シート: {connection.sheetName}</p>
+                      <p className="truncate text-xs text-gray-500">
+                        友だち台帳: {connection.friendLedgerEnabled
+                          ? `同期する（${connection.sheetName}）`
+                          : '同期しない'}
+                      </p>
+                      <p className="truncate text-xs text-gray-500">
+                        フォーム回答シート: {connection.formResultsEnabled && connection.formResultsSheetName
+                          ? `同期する（${connection.formResultsSheetName}）`
+                          : '同期しない'}
+                      </p>
                       <p className="mt-1 text-xs text-gray-600">接続状態: {connection.isActive ? '接続中' : '停止中'}</p>
                       <p className="mt-1 text-xs text-gray-600">同期方向: {DIRECTION_LABELS[connection.syncDirection]}</p>
                       <p className="mt-1 text-xs text-gray-600">同期状態: {SYNC_STATUS_LABELS[lastSyncStatus]}</p>

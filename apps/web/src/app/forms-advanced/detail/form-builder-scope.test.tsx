@@ -141,6 +141,7 @@ describe('詳細画面 scope 照合', () => {
       syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins',
       friendFieldMappings: [{ fieldId: 'friend-plan', header: '利用プラン' }],
       friendLedgerEnabled: true, selectedFormFieldIds: null, lastSyncAt: null, lastSyncStatus: 'idle',
+      formResultsEnabled: false, formResultsSheetName: null,
       lastSyncWarning: null, isActive: true, createdAt: 'x', updatedAt: 'x',
     }
     const updated = { ...connection, syncDirection: 'to_sheets', selectedFormFieldIds: ['name'] }
@@ -156,6 +157,9 @@ describe('詳細画面 scope 照合', () => {
         sheetName: '回答',
         syncDirection: 'to_sheets',
         selectedFormFieldIds: ['name'],
+        friendLedgerEnabled: true,
+        formResultsEnabled: false,
+        formResultsSheetName: null,
       })
     })
 
@@ -165,6 +169,9 @@ describe('詳細画面 scope 照合', () => {
       syncDirection: 'to_sheets',
       selectedFieldIds: ['friend-plan'],
       selectedFormFieldIds: ['name'],
+      friendLedgerEnabled: true,
+      formResultsEnabled: false,
+      formResultsSheetName: null,
     })
     expect(sheetsCreateMock).not.toHaveBeenCalled()
     expect(sheetsSetupPanelProps.current?.connection).toEqual(updated)
@@ -366,6 +373,7 @@ describe('詳細画面 scope 照合', () => {
       id: 'gsc_1', lineAccountId: 'acc_A', formId: 'fa1', spreadsheetId: 'sheet_1', sheetName: '回答一覧',
       syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins', friendFieldMappings: [],
       friendLedgerEnabled: true, lastSyncAt: '2026-07-21T10:00:00.000+09:00', lastSyncStatus: 'success',
+      formResultsEnabled: false, formResultsSheetName: null,
       lastSyncWarning: null, isActive: true, createdAt: 'x', updatedAt: 'x',
     }
     sheetsListMock.mockResolvedValue([connection])
@@ -397,6 +405,7 @@ describe('詳細画面 scope 照合', () => {
       id: 'gsc-new', lineAccountId: 'acc_A', formId: 'fa1', spreadsheetId: 'sheet-new', sheetName: '集計',
       syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins', friendFieldMappings: [],
       friendLedgerEnabled: true, selectedFormFieldIds: ['name'], lastSyncAt: null, lastSyncStatus: 'idle',
+      formResultsEnabled: true, formResultsSheetName: '回答',
       lastSyncWarning: null, isActive: true, createdAt: 'x', updatedAt: 'x',
     }
     getMock.mockResolvedValue(initial)
@@ -419,6 +428,9 @@ describe('詳細画面 scope 照合', () => {
         sheetName: '集計',
         syncDirection: 'bidirectional',
         selectedFormFieldIds: ['name'],
+        friendLedgerEnabled: false,
+        formResultsEnabled: true,
+        formResultsSheetName: '回答',
       })
     })
     expect(sheetsCreateMock).toHaveBeenCalledWith({
@@ -429,6 +441,9 @@ describe('詳細画面 scope 照合', () => {
       syncDirection: 'bidirectional',
       selectedFieldIds: [],
       selectedFormFieldIds: ['name'],
+      friendLedgerEnabled: false,
+      formResultsEnabled: true,
+      formResultsSheetName: '回答',
     })
     expect(sheetsSetupPanelProps.current?.connection).toEqual(created)
     expect(document.body.textContent).not.toContain('フォーム ID')

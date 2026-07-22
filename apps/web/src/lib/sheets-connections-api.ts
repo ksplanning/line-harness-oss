@@ -56,6 +56,8 @@ export interface SheetsConnection {
   conflictPolicy: 'last_write_wins'
   friendFieldMappings: SheetsFriendFieldMapping[]
   friendLedgerEnabled: boolean
+  formResultsEnabled: boolean
+  formResultsSheetName: string | null
   selectedFormFieldIds?: string[] | null
   lastSyncAt: string | null
   lastSyncStatus: SheetsLastSyncStatus
@@ -74,11 +76,21 @@ export interface CreateSheetsConnectionInput {
   syncDirection: SheetsSyncDirection
   selectedFieldIds: string[]
   selectedFormFieldIds?: string[]
+  friendLedgerEnabled: boolean
+  formResultsEnabled: boolean
+  formResultsSheetName: string | null
 }
 
 export type UpdateSheetsConnectionInput = Pick<
   CreateSheetsConnectionInput,
-  'spreadsheetId' | 'sheetName' | 'syncDirection' | 'selectedFieldIds' | 'selectedFormFieldIds'
+  | 'spreadsheetId'
+  | 'sheetName'
+  | 'syncDirection'
+  | 'selectedFieldIds'
+  | 'selectedFormFieldIds'
+  | 'friendLedgerEnabled'
+  | 'formResultsEnabled'
+  | 'formResultsSheetName'
 >
 
 interface Envelope<T> {

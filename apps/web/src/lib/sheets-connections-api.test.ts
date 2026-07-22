@@ -12,6 +12,8 @@ const created = {
   sheetName: '回答', syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins',
   friendFieldMappings: [{ fieldId: 'field-rank', header: '会員ランク' }],
   friendLedgerEnabled: true,
+  formResultsEnabled: true,
+  formResultsSheetName: 'フォーム回答',
   lastSyncAt: '2026-07-21T10:00:00.000+09:00', lastSyncStatus: 'success', lastSyncWarning: null,
   isActive: true, createdAt: '2026-07-20', updatedAt: '2026-07-20',
 }
@@ -41,6 +43,9 @@ describe('sheetsConnectionsApi', () => {
       lineAccountId: 'acc/1', formId: 'form/1', spreadsheetId: 'sheet_1',
       sheetName: '回答', syncDirection: 'bidirectional' as const,
       selectedFieldIds: ['field-rank'],
+      friendLedgerEnabled: false,
+      formResultsEnabled: true,
+      formResultsSheetName: 'フォーム回答',
     }
     await sheetsConnectionsApi.create(createInput)
     expect(fetchApiMock).toHaveBeenNthCalledWith(1, '/api/integrations/google-sheets/connections', {
@@ -50,6 +55,9 @@ describe('sheetsConnectionsApi', () => {
     const updateInput = {
       spreadsheetId: 'sheet_1', sheetName: '集計', syncDirection: 'from_sheets' as const,
       selectedFieldIds: ['field-rank', 'field-note'],
+      friendLedgerEnabled: true,
+      formResultsEnabled: false,
+      formResultsSheetName: null,
     }
     await sheetsConnectionsApi.update('acc/1', 'gsc/1', updateInput)
     expect(fetchApiMock).toHaveBeenNthCalledWith(2, '/api/integrations/google-sheets/connections/gsc%2F1', {
