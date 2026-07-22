@@ -3,6 +3,7 @@ import { jstNow } from './utils.js';
 export type SheetsSyncDirection = 'to_sheets' | 'from_sheets' | 'bidirectional';
 export type SheetsConflictPolicy = 'last_write_wins';
 export type SheetsSyncStatus = 'idle' | 'running' | 'success' | 'warning' | 'error';
+export type SheetsSyncTarget = 'ledger' | 'form_results';
 
 export interface SheetsFriendFieldMapping {
   fieldId: string;
@@ -28,6 +29,9 @@ export interface SheetsConnection {
   friendLedgerEnabled: boolean;
   friendLedgerHeaders: string[];
   formAnswerHeaders: SheetsFormAnswerHeader[];
+  formResultsEnabled: boolean;
+  formResultsSheetName: string | null;
+  formResultsHeaders: SheetsFormAnswerHeader[];
   selectedFormFieldIds: string[] | null;
   lastSyncAt: string | null;
   lastSyncStatus: SheetsSyncStatus;
@@ -52,6 +56,9 @@ interface SheetsConnectionRow {
   friend_ledger_enabled: number;
   friend_ledger_headers_json: string;
   form_answer_headers_json: string;
+  form_results_enabled: number;
+  form_results_sheet_name: string | null;
+  form_results_headers_json: string;
   selected_form_field_ids_json: string | null;
   last_sync_at: string | null;
   last_sync_status: SheetsSyncStatus;
@@ -70,6 +77,8 @@ export interface CreateSheetsConnectionInput {
   syncDirection: SheetsSyncDirection;
   friendFieldMappings?: SheetsFriendFieldMapping[];
   friendLedgerEnabled?: boolean;
+  formResultsEnabled?: boolean;
+  formResultsSheetName?: string | null;
   selectedFormFieldIds?: string[] | null;
 }
 
@@ -79,6 +88,8 @@ export interface UpdateSheetsConnectionInput {
   syncDirection: SheetsSyncDirection;
   friendFieldMappings?: SheetsFriendFieldMapping[];
   friendLedgerEnabled?: boolean;
+  formResultsEnabled?: boolean;
+  formResultsSheetName?: string | null;
   selectedFormFieldIds?: string[] | null;
 }
 
@@ -102,6 +113,7 @@ export interface SheetsWebhookEvent {
   connectionId: string;
   lineAccountId: string;
   connectionVersion: number;
+  target: SheetsSyncTarget;
   eventId: string;
   actor: string;
   actorKind: SheetsWebhookActorKind;
@@ -122,6 +134,7 @@ interface SheetsWebhookEventRow {
   connection_id: string;
   line_account_id: string;
   connection_version: number;
+  target: SheetsSyncTarget;
   event_id: string;
   actor: string;
   actor_kind: SheetsWebhookActorKind;
@@ -400,6 +413,9 @@ function serialize(row: SheetsConnectionRow): SheetsConnection {
     friendLedgerEnabled: row.friend_ledger_enabled === 1,
     friendLedgerHeaders: parseStringArray(row.friend_ledger_headers_json),
     formAnswerHeaders: parseFormAnswerHeaders(row.form_answer_headers_json),
+    formResultsEnabled: row.form_results_enabled === 1,
+    formResultsSheetName: row.form_results_sheet_name,
+    formResultsHeaders: parseFormAnswerHeaders(row.form_results_headers_json),
     selectedFormFieldIds: parseNullableStringArray(row.selected_form_field_ids_json),
     lastSyncAt: row.last_sync_at,
     lastSyncStatus: row.last_sync_status,
@@ -415,7 +431,8 @@ const ACTIVE_SELECT = `
   SELECT id, line_account_id, form_id, spreadsheet_id, sheet_name,
          sync_direction, conflict_policy, conflict_clock, config_version,
          friend_field_mappings_json, friend_ledger_enabled, friend_ledger_headers_json,
-         form_answer_headers_json, selected_form_field_ids_json,
+         form_answer_headers_json, form_results_enabled, form_results_sheet_name,
+         form_results_headers_json, selected_form_field_ids_json,
          last_sync_at, last_sync_status,
          last_sync_warning, last_sync_error_code,
          is_active, created_at, updated_at
@@ -473,8 +490,9 @@ export async function createSheetsConnection(
     `INSERT INTO sheets_connections
        (id, line_account_id, form_id, spreadsheet_id, sheet_name, sync_direction,
         conflict_policy, friend_field_mappings_json, friend_ledger_enabled,
+        form_results_enabled, form_results_sheet_name,
         selected_form_field_ids_json, is_active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'last_write_wins', ?, ?, ?, 1, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 'last_write_wins', ?, ?, ?, ?, ?, 1, ?, ?)`,
   ).bind(
     id,
     input.lineAccountId,
@@ -484,6 +502,8 @@ export async function createSheetsConnection(
     input.syncDirection,
     JSON.stringify(input.friendFieldMappings ?? []),
     input.friendLedgerEnabled ? 1 : 0,
+    input.formResultsEnabled ? 1 : 0,
+    input.formResultsSheetName ?? null,
     input.selectedFormFieldIds == null ? null : JSON.stringify(input.selectedFormFieldIds),
     now,
     now,
@@ -515,8 +535,9 @@ export async function replaceSheetsConnection(
       `INSERT INTO sheets_connections
          (id, line_account_id, form_id, spreadsheet_id, sheet_name, sync_direction,
           conflict_policy, friend_field_mappings_json, friend_ledger_enabled,
+          form_results_enabled, form_results_sheet_name,
           selected_form_field_ids_json, is_active, created_at, updated_at)
-       SELECT ?, ?, ?, ?, ?, ?, 'last_write_wins', ?, ?, ?, 1, ?, ?
+       SELECT ?, ?, ?, ?, ?, ?, 'last_write_wins', ?, ?, ?, ?, ?, 1, ?, ?
        WHERE NOT EXISTS (
          SELECT 1 FROM sheets_connections
          WHERE line_account_id = ? AND form_id = ?
@@ -531,6 +552,8 @@ export async function replaceSheetsConnection(
       input.syncDirection,
       JSON.stringify(input.friendFieldMappings ?? []),
       input.friendLedgerEnabled ? 1 : 0,
+      input.formResultsEnabled ? 1 : 0,
+      input.formResultsSheetName ?? null,
       input.selectedFormFieldIds == null ? null : JSON.stringify(input.selectedFormFieldIds),
       now,
       now,
@@ -549,6 +572,51 @@ export async function updateSheetsConnection(
   input: UpdateSheetsConnectionInput,
 ): Promise<SheetsConnection | null> {
   const now = jstNow();
+  if (input.friendLedgerEnabled !== undefined || input.formResultsEnabled !== undefined) {
+    const current = await getSheetsConnection(db, lineAccountId, id);
+    if (!current) return null;
+    const friendLedgerEnabled = input.friendLedgerEnabled ?? current.friendLedgerEnabled;
+    const formResultsEnabled = input.formResultsEnabled ?? current.formResultsEnabled;
+    const targetFlagsChanged = friendLedgerEnabled !== current.friendLedgerEnabled
+      || formResultsEnabled !== current.formResultsEnabled;
+    const nonFlagSettingsChanged = input.spreadsheetId !== current.spreadsheetId
+      || input.sheetName !== current.sheetName
+      || input.syncDirection !== current.syncDirection
+      || (input.friendFieldMappings !== undefined
+        && JSON.stringify(input.friendFieldMappings) !== JSON.stringify(current.friendFieldMappings))
+      || (input.formResultsSheetName !== undefined
+        && (input.formResultsSheetName ?? null) !== current.formResultsSheetName)
+      || (input.selectedFormFieldIds !== undefined
+        && JSON.stringify(input.selectedFormFieldIds) !== JSON.stringify(current.selectedFormFieldIds));
+
+    if (targetFlagsChanged && !nonFlagSettingsChanged) {
+      // A target-only flag flip must not invalidate the other tab's in-flight
+      // webhook/job generation. Keep config_version and updated_at stable; the
+      // migration-127 trigger kills pending events only for the changed target.
+      const targetOnly = await db.prepare(
+        `UPDATE sheets_connections
+         SET friend_ledger_enabled = ?, form_results_enabled = ?
+         WHERE id = ? AND line_account_id = ? AND config_version = ?
+           AND is_active = 1 AND deleted_at IS NULL
+           AND (
+             sync_lock_token IS NULL OR sync_lock_expires_at IS NULL
+             OR julianday(sync_lock_expires_at) <= julianday(?)
+           )`,
+      ).bind(
+        friendLedgerEnabled ? 1 : 0,
+        formResultsEnabled ? 1 : 0,
+        id,
+        lineAccountId,
+        current.configVersion,
+        now,
+      ).run();
+      if ((targetOnly.meta.changes ?? 0) === 1) {
+        return getSheetsConnection(db, lineAccountId, id);
+      }
+      // A concurrent settings write won the compare-and-swap. Fall through to
+      // the established whole-settings LWW update instead of losing this save.
+    }
+  }
   const mappingsJson = input.friendFieldMappings === undefined
     ? null
     : JSON.stringify(input.friendFieldMappings);
@@ -556,11 +624,20 @@ export async function updateSheetsConnection(
   const selectedFormFieldIdsJson = hasFormFieldSelection
     ? input.selectedFormFieldIds === null ? null : JSON.stringify(input.selectedFormFieldIds)
     : null;
+  const hasFormResultsSheetName = input.formResultsSheetName !== undefined;
+  const formResultsSheetName = hasFormResultsSheetName ? input.formResultsSheetName ?? null : null;
   const update = db.prepare(
     `UPDATE sheets_connections
      SET spreadsheet_id = ?, sheet_name = ?, sync_direction = ?,
          friend_field_mappings_json = COALESCE(?, friend_field_mappings_json),
          friend_ledger_enabled = COALESCE(?, friend_ledger_enabled),
+         form_results_enabled = COALESCE(?, form_results_enabled),
+         form_results_sheet_name = CASE WHEN ? = 1 THEN ? ELSE form_results_sheet_name END,
+         form_results_headers_json = CASE
+           WHEN spreadsheet_id <> ? THEN '[]'
+           WHEN ? = 1 AND form_results_sheet_name IS NOT ? THEN '[]'
+           ELSE form_results_headers_json
+         END,
          selected_form_field_ids_json = CASE WHEN ? = 1 THEN ? ELSE selected_form_field_ids_json END,
          friend_ledger_headers_json = CASE
            WHEN spreadsheet_id <> ? OR sheet_name <> ? THEN '[]'
@@ -590,6 +667,12 @@ export async function updateSheetsConnection(
     input.syncDirection,
     mappingsJson,
     input.friendLedgerEnabled === undefined ? null : input.friendLedgerEnabled ? 1 : 0,
+    input.formResultsEnabled === undefined ? null : input.formResultsEnabled ? 1 : 0,
+    hasFormResultsSheetName ? 1 : 0,
+    formResultsSheetName,
+    input.spreadsheetId,
+    hasFormResultsSheetName ? 1 : 0,
+    formResultsSheetName,
     hasFormFieldSelection ? 1 : 0,
     selectedFormFieldIdsJson,
     input.spreadsheetId,
@@ -717,7 +800,7 @@ export async function listActiveSheetsConnectionsForSync(
   limit: number,
 ): Promise<SheetsConnection[]> {
   const result = await db.prepare(
-    `${ACTIVE_SELECT} AND friend_ledger_enabled = 1
+    `${ACTIVE_SELECT} AND (friend_ledger_enabled = 1 OR form_results_enabled = 1)
      ORDER BY COALESCE(last_sync_at, '') ASC, id ASC LIMIT ?`,
   ).bind(boundedLimit(limit)).all<SheetsConnectionRow>();
   return result.results.map(serialize);
@@ -787,6 +870,39 @@ export async function recordSheetsFormAnswerHeaders(
   return (result.meta.changes ?? 0) === 1;
 }
 
+/** Results-tab analog of recordSheetsFormAnswerHeaders (form_results_headers_json). */
+export async function recordSheetsFormResultsHeaders(
+  db: D1Database,
+  lineAccountId: string,
+  id: string,
+  configVersion: number,
+  headers: SheetsFormAnswerHeader[],
+  lease: SheetsSyncLeaseGuard,
+): Promise<boolean> {
+  const seen = new Set<string>();
+  const normalized = headers.flatMap(({ fieldId, header }) => {
+    if (fieldId.length === 0 || header.length === 0 || seen.has(fieldId)) return [];
+    seen.add(fieldId);
+    return [{ fieldId, header }];
+  });
+  const result = await db.prepare(
+    `UPDATE sheets_connections
+     SET form_results_headers_json = ?
+     WHERE id = ? AND line_account_id = ? AND config_version = ?
+       AND is_active = 1 AND deleted_at IS NULL
+       AND sync_lock_token = ? AND sync_lock_expires_at IS NOT NULL
+       AND julianday(sync_lock_expires_at) > julianday(?)`,
+  ).bind(
+    JSON.stringify(normalized),
+    id,
+    lineAccountId,
+    configVersion,
+    lease.token,
+    lease.now,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
 function serializeWebhookEvent(row: SheetsWebhookEventRow): SheetsWebhookEvent {
   let payload: Record<string, unknown> | null = null;
   if (row.payload_json) {
@@ -804,6 +920,7 @@ function serializeWebhookEvent(row: SheetsWebhookEventRow): SheetsWebhookEvent {
     connectionId: row.connection_id,
     lineAccountId: row.line_account_id,
     connectionVersion: row.connection_version,
+    target: row.target,
     eventId: row.event_id,
     actor: row.actor,
     actorKind: row.actor_kind,
@@ -832,19 +949,26 @@ export async function enqueueSheetsWebhookEvent(
     occurredAt: string;
     payload: Record<string, unknown>;
     receivedAt: string;
+    target?: SheetsSyncTarget;
   },
 ): Promise<{ sequence: number; status: SheetsWebhookEventStatus; enqueued: boolean } | null> {
+  const target: SheetsSyncTarget = input.target ?? 'ledger';
   const inserted = await db.prepare(
     `INSERT INTO sheets_sync_webhook_events
-       (connection_id, line_account_id, connection_version, event_id, actor, actor_kind,
+       (connection_id, line_account_id, connection_version, target, event_id, actor, actor_kind,
         occurred_at, payload_json, available_at, received_at)
-     SELECT c.id, c.line_account_id, c.config_version, ?, ?, ?, ?, ?, ?, ?
+     SELECT c.id, c.line_account_id, c.config_version, ?, ?, ?, ?, ?, ?, ?, ?
      FROM sheets_connections c
      WHERE c.id = ? AND c.line_account_id = ? AND c.config_version = ?
-       AND c.friend_ledger_enabled = 1 AND c.is_active = 1 AND c.deleted_at IS NULL
+       AND (
+         (? = 'ledger' AND c.friend_ledger_enabled = 1)
+         OR (? = 'form_results' AND c.form_results_enabled = 1)
+       )
+       AND c.is_active = 1 AND c.deleted_at IS NULL
      ON CONFLICT(connection_id, event_id) DO NOTHING
      RETURNING sequence, status`,
   ).bind(
+    target,
     input.eventId,
     input.actor,
     input.actorKind,
@@ -855,6 +979,8 @@ export async function enqueueSheetsWebhookEvent(
     connectionId,
     lineAccountId,
     connectionVersion,
+    target,
+    target,
   ).first<{ sequence: number; status: SheetsWebhookEventStatus }>();
   if (inserted) return { ...inserted, enqueued: true };
   const duplicate = await db.prepare(
@@ -880,8 +1006,10 @@ export async function claimNextSheetsWebhookEvent(
     expiresAt: string;
     discardBefore: string;
     maxAttempts: number;
+    target?: SheetsSyncTarget;
   },
 ): Promise<SheetsWebhookEvent | null> {
+  const target: SheetsSyncTarget = input.target ?? 'ledger';
   await db.prepare(
     `UPDATE sheets_sync_webhook_events
      SET status = 'dead', payload_json = NULL, actor = 'redacted', actor_kind = 'unavailable',
@@ -909,7 +1037,7 @@ export async function claimNextSheetsWebhookEvent(
        FROM sheets_sync_webhook_events e
        JOIN sheets_connections c ON c.id = e.connection_id
        WHERE e.line_account_id = ? AND e.connection_id = ?
-         AND e.connection_version = ? AND e.status = 'pending'
+         AND e.connection_version = ? AND e.target = ? AND e.status = 'pending'
          AND e.attempts < ? AND julianday(e.available_at) <= julianday(?)
          AND (
            e.processing_token IS NULL OR e.processing_expires_at IS NULL
@@ -925,7 +1053,11 @@ export async function claimNextSheetsWebhookEvent(
          )
          AND c.line_account_id = e.line_account_id
          AND c.config_version = e.connection_version
-         AND c.friend_ledger_enabled = 1 AND c.is_active = 1 AND c.deleted_at IS NULL
+         AND (
+           (e.target = 'ledger' AND c.friend_ledger_enabled = 1)
+           OR (e.target = 'form_results' AND c.form_results_enabled = 1)
+         )
+         AND c.is_active = 1 AND c.deleted_at IS NULL
          AND (
            c.sync_lock_token IS NULL OR c.sync_lock_expires_at IS NULL
            OR julianday(c.sync_lock_expires_at) <= julianday(?)
@@ -939,8 +1071,8 @@ export async function claimNextSheetsWebhookEvent(
          processing_token IS NULL OR processing_expires_at IS NULL
          OR julianday(processing_expires_at) <= julianday(?)
        )
-     RETURNING sequence, connection_id, line_account_id, connection_version, event_id,
-               actor, actor_kind, occurred_at, payload_json, status, attempts,
+     RETURNING sequence, connection_id, line_account_id, connection_version, target,
+               event_id, actor, actor_kind, occurred_at, payload_json, status, attempts,
                available_at, processing_token, processing_expires_at, received_at,
                completed_at, last_error_code`,
   ).bind(
@@ -949,6 +1081,7 @@ export async function claimNextSheetsWebhookEvent(
     lineAccountId,
     connectionId,
     connectionVersion,
+    target,
     input.maxAttempts,
     input.now,
     input.now,

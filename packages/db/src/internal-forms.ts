@@ -27,6 +27,17 @@ export interface UpdateLatestInternalFormSubmissionAnswersForSheetsInput {
   lease: SheetsSyncLeaseGuard;
 }
 
+export interface UpdateInternalFormSubmissionAnswersForSheetsBySubmissionIdInput {
+  lineAccountId: string;
+  connectionId: string;
+  connectionVersion: number;
+  formId: string;
+  submissionId: string;
+  expectedAnswersJson: string;
+  answers: Record<string, unknown>;
+  lease: SheetsSyncLeaseGuard;
+}
+
 export type UpdateInternalFormSubmissionAnswersResult =
   | { status: 'updated'; submission: InternalFormSubmission }
   | { status: 'conflict'; submission: InternalFormSubmission | null }
@@ -494,6 +505,86 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
     input.submissionId,
     input.formId,
     input.friendId,
+    input.expectedAnswersJson,
+    input.lineAccountId,
+    input.lineAccountId,
+    input.connectionId,
+    input.lineAccountId,
+    input.connectionVersion,
+    input.lease.token,
+    input.lease.now,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Returns every friend-verified internal answer row of a form (1 submission =
+ * 1 results-tab row). The friend join supplies identity verification and
+ * tenant scope; ordering matches SQLite binary order so a chunk cursor over
+ * (submitted_at, id) resumes deterministically.
+ */
+export async function listVerifiedInternalFormSubmissionsForSheets(
+  db: D1Database,
+  lineAccountId: string,
+  formId: string,
+): Promise<InternalFormSubmission[]> {
+  const rows = await db.prepare(
+    `SELECT submission.id, submission.form_id, submission.friend_id,
+            submission.answers_json, submission.submitted_at, submission.created_at
+     FROM internal_form_submissions submission
+     INNER JOIN friends friend
+       ON friend.id = submission.friend_id AND friend.line_account_id = ?
+     INNER JOIN formaloo_forms form
+       ON form.id = submission.form_id
+     WHERE submission.form_id = ? AND submission.friend_id IS NOT NULL
+       AND form.deleted = 0 AND form.render_backend = 'internal'
+       AND (form.line_account_id = ? OR form.line_account_id IS NULL)
+     ORDER BY submission.submitted_at ASC, submission.id ASC`,
+  ).bind(lineAccountId, formId, lineAccountId).all<InternalFormSubmission>();
+  return rows.results;
+}
+
+/**
+ * Applies a results-tab Sheets edit to one exact submission using
+ * compare-and-swap on answers_json. Unlike the combined-sheet variant there is
+ * deliberately NO newer-submission guard: the results tab keys 1 submission =
+ * 1 row, so an older submission's row stays editable after a re-answer.
+ * Gated on form_results_enabled and the connection lease.
+ */
+export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId(
+  db: D1Database,
+  input: UpdateInternalFormSubmissionAnswersForSheetsBySubmissionIdInput,
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE internal_form_submissions
+     SET answers_json = ?
+     WHERE id = ? AND form_id = ? AND answers_json = ?
+       AND friend_id IS NOT NULL
+       AND EXISTS (
+         SELECT 1 FROM friends friend
+         WHERE friend.id = internal_form_submissions.friend_id
+           AND friend.line_account_id = ?
+       )
+       AND EXISTS (
+         SELECT 1 FROM formaloo_forms form
+         WHERE form.id = internal_form_submissions.form_id
+           AND form.deleted = 0 AND form.render_backend = 'internal'
+           AND (form.line_account_id = ? OR form.line_account_id IS NULL)
+       )
+       AND EXISTS (
+         SELECT 1 FROM sheets_connections connection
+         WHERE connection.id = ? AND connection.line_account_id = ?
+           AND connection.form_id = internal_form_submissions.form_id
+           AND connection.config_version = ? AND connection.form_results_enabled = 1
+           AND connection.is_active = 1 AND connection.deleted_at IS NULL
+           AND connection.sync_lock_token = ?
+           AND connection.sync_lock_expires_at IS NOT NULL
+           AND julianday(connection.sync_lock_expires_at) > julianday(?)
+       )`,
+  ).bind(
+    JSON.stringify(input.answers),
+    input.submissionId,
+    input.formId,
     input.expectedAnswersJson,
     input.lineAccountId,
     input.lineAccountId,

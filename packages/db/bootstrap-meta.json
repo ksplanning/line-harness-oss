@@ -110,7 +110,9 @@
     "124_internal_submission_notifications.sql",
     "124_template_pack_message_types.sql",
     "125_sheets_connection_field_selection.sql",
-    "126_sheets_sync_jobs.sql"
+    "126_sheets_sync_jobs.sql",
+    "127_form_results_sync.sql",
+    "128_sheets_sync_jobs_target.sql"
   ],
-  "migrationCount": 111
+  "migrationCount": 113
 }

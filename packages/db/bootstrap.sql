@@ -1237,6 +1237,12 @@ CREATE TABLE sheets_connections (
                   CHECK (json_valid(friend_ledger_headers_json) AND json_type(friend_ledger_headers_json) = 'array'),
   form_answer_headers_json TEXT NOT NULL DEFAULT '[]'
                   CHECK (json_valid(form_answer_headers_json) AND json_type(form_answer_headers_json) = 'array'),
+  -- Separate form-results tab (migration 127). Default 0 keeps the legacy
+  -- combined-sheet layout until the owner flips the new toggle.
+  form_results_enabled INTEGER NOT NULL DEFAULT 0 CHECK (form_results_enabled IN (0, 1)),
+  form_results_sheet_name TEXT,
+  form_results_headers_json TEXT NOT NULL DEFAULT '[]'
+                  CHECK (json_valid(form_results_headers_json) AND json_type(form_results_headers_json) = 'array'),
   -- NULL keeps pre-125 connections on the legacy all-form-fields behavior.
   -- A JSON array stores an explicit selection; [] intentionally selects none.
   selected_form_field_ids_json TEXT
@@ -1327,6 +1333,8 @@ CREATE TABLE sheets_sync_jobs (
   created_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   completed_at               TEXT,
+  -- Which sync target the job advances (migration 128).
+  target                     TEXT NOT NULL DEFAULT 'ledger' CHECK (target IN ('ledger', 'form_results')),
   CHECK ((lock_token IS NULL) = (locked_until IS NULL)),
   CHECK ((snapshot_friend_created_at IS NULL) = (snapshot_record_key IS NULL))
 );
@@ -1354,6 +1362,8 @@ CREATE TABLE sheets_sync_webhook_events (
   connection_id      TEXT NOT NULL REFERENCES sheets_connections (id) ON DELETE CASCADE,
   line_account_id    TEXT NOT NULL REFERENCES line_accounts (id) ON DELETE CASCADE,
   connection_version INTEGER NOT NULL CHECK (connection_version >= 1),
+  -- Which sync target the edited tab belongs to (migration 127).
+  target              TEXT NOT NULL DEFAULT 'ledger' CHECK (target IN ('ledger', 'form_results')),
   event_id            TEXT NOT NULL CHECK (length(event_id) BETWEEN 16 AND 200),
   actor               TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 320),
   actor_kind          TEXT NOT NULL CHECK (actor_kind IN ('google_email', 'unavailable')),
@@ -1877,15 +1887,19 @@ CREATE INDEX idx_sheets_sync_jobs_connection_history
   ON sheets_sync_jobs (line_account_id, connection_id, created_at DESC, id DESC);
 
 CREATE UNIQUE INDEX idx_sheets_sync_jobs_one_running
-  ON sheets_sync_jobs (connection_id)
+  ON sheets_sync_jobs (connection_id, target)
   WHERE status = 'running';
 
 CREATE INDEX idx_sheets_sync_jobs_runnable
   ON sheets_sync_jobs (status, locked_until, created_at, id);
 
-CREATE UNIQUE INDEX idx_sheets_sync_ledger_row
+CREATE UNIQUE INDEX idx_sheets_sync_ledger_row_form_results
   ON sheets_sync_ledger (connection_id, sheet_row_number)
-  WHERE sheet_row_number IS NOT NULL;
+  WHERE sheet_row_number IS NOT NULL AND record_key LIKE 'sub:%';
+
+CREATE UNIQUE INDEX idx_sheets_sync_ledger_row_ledger
+  ON sheets_sync_ledger (connection_id, sheet_row_number)
+  WHERE sheet_row_number IS NOT NULL AND record_key NOT LIKE 'sub:%';
 
 CREATE INDEX idx_sheets_sync_webhook_events_lifecycle
   ON sheets_sync_webhook_events (status, received_at, sequence);
@@ -2024,9 +2038,11 @@ BEFORE UPDATE ON sheets_sync_audit_log
 BEGIN SELECT RAISE(ABORT, 'sheets_sync_audit_log is append-only'); END;
 
 CREATE TRIGGER trg_sheets_sync_ledger_connection_changed
-AFTER UPDATE OF config_version, spreadsheet_id, sheet_name ON sheets_connections
+AFTER UPDATE OF config_version, spreadsheet_id, sheet_name, form_results_sheet_name, friend_ledger_enabled, form_results_enabled ON sheets_connections
 WHEN NEW.config_version <> OLD.config_version
-BEGIN DELETE FROM sheets_sync_ledger WHERE connection_id = NEW.id AND (NEW.spreadsheet_id <> OLD.spreadsheet_id OR NEW.sheet_name <> OLD.sheet_name); UPDATE sheets_sync_ledger SET connection_version = NEW.config_version, version = version + 1 WHERE connection_id = NEW.id AND NEW.spreadsheet_id = OLD.spreadsheet_id AND NEW.sheet_name = OLD.sheet_name; END;
+  OR NEW.friend_ledger_enabled <> OLD.friend_ledger_enabled
+  OR NEW.form_results_enabled <> OLD.form_results_enabled
+BEGIN DELETE FROM sheets_sync_ledger WHERE connection_id = NEW.id AND record_key NOT LIKE 'sub:%' AND (NEW.spreadsheet_id <> OLD.spreadsheet_id OR NEW.sheet_name <> OLD.sheet_name OR NEW.friend_ledger_enabled <> OLD.friend_ledger_enabled); DELETE FROM sheets_sync_ledger WHERE connection_id = NEW.id AND record_key LIKE 'sub:%' AND (NEW.spreadsheet_id <> OLD.spreadsheet_id OR NEW.form_results_sheet_name IS NOT OLD.form_results_sheet_name OR NEW.form_results_enabled <> OLD.form_results_enabled); UPDATE sheets_sync_ledger SET connection_version = NEW.config_version, version = version + 1 WHERE connection_id = NEW.id AND NEW.config_version <> OLD.config_version; END;
 
 CREATE TRIGGER trg_sheets_sync_ledger_version_insert
 BEFORE INSERT ON sheets_sync_ledger
@@ -2039,10 +2055,11 @@ WHEN NOT EXISTS (SELECT 1 FROM sheets_connections WHERE id = NEW.connection_id A
 BEGIN SELECT RAISE(ABORT, 'sheets_sync_ledger connection version mismatch'); END;
 
 CREATE TRIGGER trg_sheets_sync_webhook_events_connection_changed
-AFTER UPDATE OF config_version, friend_ledger_enabled, is_active, deleted_at, line_account_id
+AFTER UPDATE OF config_version, friend_ledger_enabled, form_results_enabled, is_active, deleted_at, line_account_id
 ON sheets_connections
 WHEN NEW.config_version <> OLD.config_version
   OR NEW.friend_ledger_enabled <> OLD.friend_ledger_enabled
+  OR NEW.form_results_enabled <> OLD.form_results_enabled
   OR NEW.is_active <> OLD.is_active
   OR NEW.deleted_at IS NOT OLD.deleted_at
   OR NEW.line_account_id IS NOT OLD.line_account_id
@@ -2052,4 +2069,12 @@ BEGIN
       processing_token = NULL, processing_expires_at = NULL,
       completed_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'),
       last_error_code = 'connection_changed'
-  WHERE connection_id = NEW.id AND status = 'pending'; END;
+  WHERE connection_id = NEW.id AND status = 'pending'
+    AND (
+      NEW.config_version <> OLD.config_version
+      OR NEW.is_active <> OLD.is_active
+      OR NEW.deleted_at IS NOT OLD.deleted_at
+      OR NEW.line_account_id IS NOT OLD.line_account_id
+      OR (target = 'ledger' AND NEW.friend_ledger_enabled <> OLD.friend_ledger_enabled)
+      OR (target = 'form_results' AND NEW.form_results_enabled <> OLD.form_results_enabled)
+    ); END;
