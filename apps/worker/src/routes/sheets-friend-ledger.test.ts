@@ -14,6 +14,9 @@ const service = vi.hoisted(() => ({
   drainFriendLedgerWebhookEvents: vi.fn(),
   listFriendLedgerAudit: vi.fn(),
 }));
+const resultsService = vi.hoisted(() => ({
+  drainFormResultsWebhookEvents: vi.fn(),
+}));
 const jobs = vi.hoisted(() => ({
   startSheetsSyncJob: vi.fn(),
   getLatestSheetsSyncJob: vi.fn(),
@@ -24,6 +27,9 @@ const jobs = vi.hoisted(() => ({
 vi.mock('../services/friend-ledger-sync.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/friend-ledger-sync.js')>()),
   ...service,
+}));
+vi.mock('../services/form-results-sync.js', () => ({
+  drainFormResultsWebhookEvents: resultsService.drainFormResultsWebhookEvents,
 }));
 vi.mock('../services/sheets-sync-jobs.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/sheets-sync-jobs.js')>()),
@@ -177,6 +183,9 @@ beforeEach(() => {
   service.drainFriendLedgerWebhookEvents.mockReset().mockResolvedValue({
     attempted: 1, applied: 1, deferred: 0, dead: 0,
   });
+  resultsService.drainFormResultsWebhookEvents.mockReset().mockResolvedValue({
+    attempted: 1, applied: 1, deferred: 0, dead: 0,
+  });
   service.listFriendLedgerAudit.mockReset().mockResolvedValue([]);
   jobs.startSheetsSyncJob.mockReset().mockResolvedValue({
     id: 'job-1', connectionId: 'conn-a', lineAccountId: 'acc-1', configVersion: 1,
@@ -239,10 +248,64 @@ describe('friend ledger owner routes', () => {
       connection: expect.objectContaining({ id: 'conn-a', lineAccountId: 'acc-1' }),
       source: 'manual',
       actor: 'env-owner',
+      target: 'ledger',
     }));
     expect(waitUntil).toHaveBeenCalledTimes(1);
     await waitUntil.mock.calls[0][0];
     expect(jobs.dispatchSheetsSyncWork).toHaveBeenCalled();
+  });
+
+  test('manual sync starts only the enabled results target', async () => {
+    raw.prepare(`UPDATE sheets_connections
+      SET friend_ledger_enabled = 0, form_results_enabled = 1, form_results_sheet_name = 'フォーム回答'
+      WHERE id = 'conn-a'`).run();
+    jobs.startSheetsSyncJob.mockResolvedValueOnce({
+      id: 'job-results', connectionId: 'conn-a', lineAccountId: 'acc-1', configVersion: 1,
+      source: 'manual', actor: 'env-owner', target: 'form_results', status: 'running',
+      totalCount: 10, processedCount: 0, errorMessage: null, warning: null,
+    });
+
+    const response = await call(
+      'POST',
+      '/api/integrations/google-sheets/connections/conn-a/sync?lineAccountId=acc-1',
+      { auth: OWNER },
+    );
+
+    expect(response.status).toBe(202);
+    expect(jobs.startSheetsSyncJob).toHaveBeenCalledTimes(1);
+    expect(jobs.startSheetsSyncJob).toHaveBeenCalledWith(expect.objectContaining({ target: 'form_results' }));
+  });
+
+  test('manual sync starts both enabled targets and records dispatch failure for every job', async () => {
+    raw.prepare(`UPDATE sheets_connections
+      SET form_results_enabled = 1, form_results_sheet_name = 'フォーム回答'
+      WHERE id = 'conn-a'`).run();
+    jobs.startSheetsSyncJob
+      .mockResolvedValueOnce({
+        id: 'job-ledger', connectionId: 'conn-a', lineAccountId: 'acc-1', configVersion: 1,
+        source: 'manual', actor: 'env-owner', target: 'ledger', status: 'running',
+        totalCount: 10, processedCount: 0, errorMessage: null, warning: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'job-results', connectionId: 'conn-a', lineAccountId: 'acc-1', configVersion: 1,
+        source: 'manual', actor: 'env-owner', target: 'form_results', status: 'running',
+        totalCount: 20, processedCount: 0, errorMessage: null, warning: null,
+      });
+    jobs.dispatchSheetsSyncWork.mockRejectedValueOnce(new Error('dispatch failed'));
+
+    const response = await call(
+      'POST',
+      '/api/integrations/google-sheets/connections/conn-a/sync?lineAccountId=acc-1',
+      { auth: OWNER },
+    );
+
+    expect(response.status).toBe(202);
+    expect(jobs.startSheetsSyncJob.mock.calls.map(([options]) => options.target))
+      .toEqual(['ledger', 'form_results']);
+    await waitUntil.mock.calls.at(-1)?.[0];
+    expect(jobs.recordSheetsSyncDispatchError).toHaveBeenCalledTimes(2);
+    expect(jobs.recordSheetsSyncDispatchError).toHaveBeenCalledWith(expect.anything(), 'job-ledger');
+    expect(jobs.recordSheetsSyncDispatchError).toHaveBeenCalledWith(expect.anything(), 'job-results');
   });
 
   test('returns latest durable progress only inside the selected account', async () => {
@@ -505,6 +568,53 @@ describe('POST /integrations/google-sheets/friend-ledger/webhook', () => {
     expect(service.syncFriendLedger).not.toHaveBeenCalled();
     expect(raw.prepare(`SELECT attempts FROM sheets_sync_webhook_events
       WHERE event_id=?`).get(payload.eventId)).toEqual({ attempts: 0 });
+  });
+
+  test('routes enabled ledger and results tabs to their own target and drain, then rejects a disabled tab', async () => {
+    raw.prepare(`UPDATE sheets_connections
+      SET form_results_enabled = 1, form_results_sheet_name = 'フォーム回答'
+      WHERE id = 'conn-a'`).run();
+    const send = async (eventId: string, sheetName: string) => {
+      const payload = {
+        version: 2,
+        eventId,
+        occurredAt: WEBHOOK_TIMESTAMP,
+        connectionId: 'conn-a',
+        spreadsheetId: 'sheet-a',
+        sheetName,
+        range: { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+        snapshot: {
+          rowNumber: 2, columnNumber: 4, header: '入金確認', rowUserId: 'U_AYAKO',
+          value: '後', oldValue: '前', oldValueKnown: true,
+        },
+        actor: 'editor@example.test',
+        actorKind: 'google_email',
+      };
+      const body = JSON.stringify(payload);
+      return call('POST', '/integrations/google-sheets/friend-ledger/webhook', {
+        body,
+        headers: {
+          'X-Sheets-Signature': await hmacHex(body, WEBHOOK_TIMESTAMP),
+          'X-Sheets-Timestamp': WEBHOOK_TIMESTAMP,
+          'X-Sheets-Connection-Id': 'conn-a',
+        },
+      });
+    };
+
+    expect((await send('event-ledger-target-01', '友だち台帳')).status).toBe(202);
+    expect((await send('event-results-target-1', 'フォーム回答')).status).toBe(202);
+    await Promise.all(waitUntil.mock.calls.map(([work]) => work));
+
+    expect(raw.prepare(`SELECT event_id, target FROM sheets_sync_webhook_events
+      WHERE connection_id = 'conn-a' ORDER BY sequence`).all()).toEqual([
+      { event_id: 'event-ledger-target-01', target: 'ledger' },
+      { event_id: 'event-results-target-1', target: 'form_results' },
+    ]);
+    expect(service.drainFriendLedgerWebhookEvents).toHaveBeenCalledTimes(1);
+    expect(resultsService.drainFormResultsWebhookEvents).toHaveBeenCalledTimes(1);
+
+    raw.prepare(`UPDATE sheets_connections SET friend_ledger_enabled = 0 WHERE id = 'conn-a'`).run();
+    expect((await send('event-disabled-ledger-1', '友だち台帳')).status).toBe(404);
   });
 
   test('rejects an oversized webhook before signature work or DB access', async () => {

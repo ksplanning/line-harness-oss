@@ -11,6 +11,7 @@ import {
   toJstString,
   updateSheetsConnection,
   type SheetsSyncDirection,
+  type SheetsSyncTarget,
 } from '@line-crm/db';
 import { ownerGate } from '../lib/owner-gate.js';
 import {
@@ -25,6 +26,7 @@ import {
   parseFriendLedgerWebhookEventPayload,
   type FriendLedgerWebhookEventPayload,
 } from '../services/friend-ledger-sync.js';
+import { drainFormResultsWebhookEvents } from '../services/form-results-sync.js';
 import {
   getLatestSheetsSyncJob,
   recordSheetsSyncDispatchError,
@@ -62,6 +64,9 @@ interface ConnectionInput {
   syncDirection?: unknown;
   selectedFieldIds?: unknown;
   selectedFormFieldIds?: unknown;
+  friendLedgerEnabled?: unknown;
+  formResultsEnabled?: unknown;
+  formResultsSheetName?: unknown;
 }
 
 type ValidSettings = {
@@ -70,6 +75,9 @@ type ValidSettings = {
   syncDirection: SheetsSyncDirection;
   selectedFieldIds?: string[];
   selectedFormFieldIds?: string[];
+  friendLedgerEnabled?: boolean;
+  formResultsEnabled?: boolean;
+  formResultsSheetName?: string | null;
 };
 
 type ValidCreate = ValidSettings & {
@@ -97,6 +105,30 @@ function validateSettings(body: ConnectionInput): ValidationResult<ValidSettings
   }
   if (!VALID_DIRECTIONS.has(syncDirection)) {
     return { ok: false, error: '同期方向を選択してください' };
+  }
+  if (body.friendLedgerEnabled !== undefined && typeof body.friendLedgerEnabled !== 'boolean') {
+    return { ok: false, error: '友だち台帳の同期設定を正しく選択してください' };
+  }
+  if (body.formResultsEnabled !== undefined && typeof body.formResultsEnabled !== 'boolean') {
+    return { ok: false, error: 'フォーム回答シートの同期設定を正しく選択してください' };
+  }
+  let formResultsSheetName: string | null | undefined;
+  if (body.formResultsSheetName !== undefined) {
+    formResultsSheetName = body.formResultsSheetName === null
+      ? null
+      : cleanString(body.formResultsSheetName);
+    if (formResultsSheetName !== null) {
+      if (
+        !formResultsSheetName
+        || formResultsSheetName.length > 200
+        || /[\u0000-\u001f\u007f]/.test(formResultsSheetName)
+      ) {
+        return { ok: false, error: 'フォーム回答シート名を正しく選択してください' };
+      }
+      if (formResultsSheetName === sheetName) {
+        return { ok: false, error: 'フォーム回答は友だち台帳と別のタブを選択してください' };
+      }
+    }
   }
   let selectedFieldIds: string[] | undefined;
   if (body.selectedFieldIds !== undefined) {
@@ -135,6 +167,9 @@ function validateSettings(body: ConnectionInput): ValidationResult<ValidSettings
       syncDirection,
       selectedFieldIds,
       selectedFormFieldIds,
+      friendLedgerEnabled: body.friendLedgerEnabled as boolean | undefined,
+      formResultsEnabled: body.formResultsEnabled as boolean | undefined,
+      formResultsSheetName,
     },
   };
 }
@@ -149,6 +184,9 @@ function validateCreate(body: ConnectionInput): ValidationResult<ValidCreate> {
   }
   if (!formId || formId.length > 200 || /[\u0000-\u001f\u007f]/.test(formId)) {
     return { ok: false, error: 'フォーム ID を正しく入力してください' };
+  }
+  if ((settings.value.formResultsEnabled ?? true) && !settings.value.formResultsSheetName) {
+    return { ok: false, error: 'フォーム回答シートのタブを選択してください' };
   }
   return { ok: true, value: { lineAccountId, formId, ...settings.value } };
 }
@@ -444,7 +482,9 @@ sheetsConnections.post(BASE_PATH, async (c) => {
       sheetName: validated.value.sheetName,
       syncDirection: validated.value.syncDirection,
       friendFieldMappings: mappings.value ?? [],
-      friendLedgerEnabled: true,
+      friendLedgerEnabled: validated.value.friendLedgerEnabled ?? false,
+      formResultsEnabled: validated.value.formResultsEnabled ?? true,
+      formResultsSheetName: validated.value.formResultsSheetName ?? null,
       selectedFormFieldIds: validated.value.selectedFormFieldIds,
     });
     if (!created) {
@@ -471,6 +511,22 @@ sheetsConnections.patch(`${BASE_PATH}/:id`, async (c) => {
   const validated = validateScopedSettings(await readJson(c));
   if (!validated.ok) return c.json({ success: false, error: validated.error }, 400);
   try {
+    const existing = await getSheetsConnection(
+      c.env.DB,
+      validated.value.lineAccountId,
+      c.req.param('id'),
+    );
+    if (!existing) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    const formResultsEnabled = validated.value.formResultsEnabled ?? existing.formResultsEnabled;
+    const formResultsSheetName = validated.value.formResultsSheetName === undefined
+      ? existing.formResultsSheetName
+      : validated.value.formResultsSheetName;
+    if (formResultsEnabled && !formResultsSheetName) {
+      return c.json({ success: false, error: 'フォーム回答シートのタブを選択してください' }, 400);
+    }
+    if (formResultsSheetName === validated.value.sheetName) {
+      return c.json({ success: false, error: 'フォーム回答は友だち台帳と別のタブを選択してください' }, 400);
+    }
     const mappings = await resolveFriendFieldMappings(c.env.DB, validated.value.selectedFieldIds);
     if (!mappings.ok) return c.json({ success: false, error: mappings.error }, 400);
     const updated = await updateSheetsConnection(c.env.DB, validated.value.lineAccountId, c.req.param('id'), {
@@ -478,12 +534,14 @@ sheetsConnections.patch(`${BASE_PATH}/:id`, async (c) => {
       sheetName: validated.value.sheetName,
       syncDirection: validated.value.syncDirection,
       friendFieldMappings: mappings.value,
-      friendLedgerEnabled: true,
+      friendLedgerEnabled: validated.value.friendLedgerEnabled,
+      formResultsEnabled: validated.value.formResultsEnabled,
+      formResultsSheetName: validated.value.formResultsSheetName,
       selectedFormFieldIds: validated.value.selectedFormFieldIds,
     });
     if (!updated) {
-      const existing = await getSheetsConnection(c.env.DB, validated.value.lineAccountId, c.req.param('id'));
-      if (existing) {
+      const current = await getSheetsConnection(c.env.DB, validated.value.lineAccountId, c.req.param('id'));
+      if (current) {
         return c.json({ success: false, error: '同期中です。少し待ってからもう一度保存してください' }, 409);
       }
       return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
@@ -549,7 +607,12 @@ sheetsConnections.post(`${BASE_PATH}/:id/test`, async (c) => {
   }
   try {
     const client = new GoogleSheetsClient({ credentials });
-    await client.readValues(connection.spreadsheetId, quotedA1SheetName(connection.sheetName));
+    const sheetName = !connection.friendLedgerEnabled
+      && connection.formResultsEnabled
+      && connection.formResultsSheetName
+      ? connection.formResultsSheetName
+      : connection.sheetName;
+    await client.readValues(connection.spreadsheetId, quotedA1SheetName(sheetName));
     return c.json({ success: true, data: { ok: true } });
   } catch (error) {
     const failure: {
@@ -614,27 +677,33 @@ sheetsConnections.post(`${BASE_PATH}/:id/sync`, async (c) => {
   try {
     const connection = await getSheetsConnection(c.env.DB, lineAccountId.value, c.req.param('id'));
     if (!connection) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
-    if (!connection.friendLedgerEnabled) {
-      return c.json({ success: false, error: '友だち台帳の同期設定を保存してください' }, 409);
+    const targets: SheetsSyncTarget[] = [];
+    if (connection.friendLedgerEnabled) targets.push('ledger');
+    if (connection.formResultsEnabled && connection.formResultsSheetName) targets.push('form_results');
+    if (targets.length === 0) {
+      return c.json({ success: false, error: '同期するシートを選択してください' }, 409);
     }
     if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
       return c.json({ success: false, error: SETUP_MESSAGE }, 503);
     }
-    const job = await startSheetsSyncJob({
+    const jobs = await Promise.all(targets.map((target) => startSheetsSyncJob({
       db: c.env.DB,
       connection,
       source: 'manual',
       actor: c.get('staff').id,
-    });
+      target,
+    })));
     c.executionCtx.waitUntil(
       dispatchSheetsSyncWork(c.env).catch(async () => {
-        await recordSheetsSyncDispatchError(c.env.DB, job.id).catch(() => undefined);
-        console.error('Manual friend ledger sync dispatch failed');
+        await Promise.all(jobs.map((job) => (
+          recordSheetsSyncDispatchError(c.env.DB, job.id).catch(() => undefined)
+        )));
+        console.error('Manual Google Sheets sync dispatch failed');
       }),
     );
-    return c.json({ success: true, data: job }, 202);
+    return c.json({ success: true, data: jobs[0] }, 202);
   } catch {
-    console.error('Manual friend ledger sync failed');
+    console.error('Manual Google Sheets sync failed');
     return c.json({ success: false, error: '手動同期に失敗しました' }, 500);
   }
 });
@@ -719,11 +788,17 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
 
   try {
     const connection = await getActiveSheetsConnectionById(c.env.DB, payload.connectionId);
+    const target: SheetsSyncTarget | null = connection?.friendLedgerEnabled
+      && connection.sheetName === payload.sheetName
+      ? 'ledger'
+      : connection?.formResultsEnabled
+        && connection.formResultsSheetName === payload.sheetName
+        ? 'form_results'
+        : null;
     if (
       !connection
-      || !connection.friendLedgerEnabled
       || connection.spreadsheetId !== payload.spreadsheetId
-      || connection.sheetName !== payload.sheetName
+      || !target
     ) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
     const acceptedAt = toJstString(new Date());
     const queued = await enqueueSheetsWebhookEvent(
@@ -738,11 +813,15 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
         occurredAt: payload.occurredAt,
         payload: { range: payload.range, snapshot: payload.snapshot },
         receivedAt: acceptedAt,
+        target,
       },
     );
     if (!queued) return c.json({ success: false, error: '接続設定が更新されました' }, 409);
     if (queued.status === 'pending' && c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-      const work = drainFriendLedgerWebhookEvents({
+      const drainWebhookEvents = target === 'form_results'
+        ? drainFormResultsWebhookEvents
+        : drainFriendLedgerWebhookEvents;
+      const work = drainWebhookEvents({
         db: c.env.DB,
         connection,
         credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,

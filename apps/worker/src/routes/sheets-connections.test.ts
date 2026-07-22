@@ -109,7 +109,8 @@ const validInput = {
   lineAccountId: 'acc-1',
   formId: 'internal-form-1',
   spreadsheetId: '1AbCd_ef-GhIj',
-  sheetName: '回答',
+  sheetName: '友だち台帳',
+  formResultsSheetName: '回答',
   syncDirection: 'bidirectional',
 };
 
@@ -195,6 +196,84 @@ describe('Sheets connections CRUD API', () => {
       .toMatchObject({ is_active: 0, deleted_at: expect.any(String) });
   });
 
+  test('new connections default to results-only, PATCH omission preserves flags, and results require a separate tab', async () => {
+    const id = await createOne();
+    const created = await call('GET', '/api/integrations/google-sheets/connections?lineAccountId=acc-1');
+    expect(await created.json()).toMatchObject({
+      data: [{
+        id,
+        friendLedgerEnabled: false,
+        formResultsEnabled: true,
+        formResultsSheetName: '回答',
+      }],
+    });
+
+    const patched = await call('PATCH', `/api/integrations/google-sheets/connections/${id}`, {
+      lineAccountId: 'acc-1',
+      spreadsheetId: validInput.spreadsheetId,
+      sheetName: '台帳（未使用）',
+      syncDirection: 'from_sheets',
+    });
+    expect(patched.status).toBe(200);
+    expect(await patched.json()).toMatchObject({
+      data: {
+        friendLedgerEnabled: false,
+        formResultsEnabled: true,
+        formResultsSheetName: '回答',
+      },
+    });
+
+    const disabledResults = await call('PATCH', `/api/integrations/google-sheets/connections/${id}`, {
+      lineAccountId: 'acc-1',
+      spreadsheetId: validInput.spreadsheetId,
+      sheetName: '台帳（未使用）',
+      syncDirection: 'from_sheets',
+      friendLedgerEnabled: true,
+      formResultsEnabled: false,
+      formResultsSheetName: null,
+    });
+    expect(disabledResults.status).toBe(200);
+    expect(await disabledResults.json()).toMatchObject({
+      data: {
+        friendLedgerEnabled: true,
+        formResultsEnabled: false,
+        formResultsSheetName: null,
+      },
+    });
+
+    const missingResultsTab = await call('POST', '/api/integrations/google-sheets/connections', {
+      lineAccountId: validInput.lineAccountId,
+      formId: validInput.formId,
+      spreadsheetId: validInput.spreadsheetId,
+      sheetName: validInput.sheetName,
+      syncDirection: validInput.syncDirection,
+      formResultsEnabled: true,
+    });
+    expect(missingResultsTab.status).toBe(400);
+
+    const sameTab = await call('POST', '/api/integrations/google-sheets/connections', {
+      ...validInput,
+      formResultsEnabled: true,
+      formResultsSheetName: validInput.sheetName,
+    });
+    expect(sameTab.status).toBe(400);
+
+    const ledgerOnly = await call('POST', '/api/integrations/google-sheets/connections', {
+      ...validInput,
+      friendLedgerEnabled: true,
+      formResultsEnabled: false,
+      formResultsSheetName: null,
+    });
+    expect(ledgerOnly.status).toBe(201);
+    expect(await ledgerOnly.json()).toMatchObject({
+      data: {
+        friendLedgerEnabled: true,
+        formResultsEnabled: false,
+        formResultsSheetName: null,
+      },
+    });
+  });
+
   test('validates account/form/spreadsheet/sheet/direction and safely replaces an active form connection', async () => {
     const cases = [
       { ...validInput, lineAccountId: 'missing' },
@@ -257,7 +336,11 @@ describe('Sheets connections CRUD API', () => {
       { fieldId: 'field-plan', header: '利用プラン' },
       { fieldId: 'field-note', header: '担当メモ' },
     ]);
-    expect(body.data).toMatchObject({ friendLedgerEnabled: true });
+    expect(body.data).toMatchObject({
+      friendLedgerEnabled: false,
+      formResultsEnabled: true,
+      formResultsSheetName: '回答',
+    });
     expect(body.data).toMatchObject({ selectedFormFieldIds: ['name', 'plan'] });
 
     const unsafeCases = [
@@ -479,6 +562,7 @@ describe('Sheets connection test API', () => {
     expect(apiCalls).toHaveLength(1);
     expect(apiCalls[0]).toContain('/spreadsheets/1AbCd_ef-GhIj/values/');
     expect(apiCalls[0]).toContain('A1%3AA1');
+    expect(decodeURIComponent(apiCalls[0])).toContain("values/'回答'!A1:A1");
     expect(JSON.stringify(body)).not.toContain('SENTINEL_CELL_VALUE');
   });
 
