@@ -60,8 +60,14 @@ curl -fsS -o /dev/null -w "KS worker /admin/version -> %{http_code}\n" "$KS_WORK
 echo "########## [4/6] KS admin build + deploy ##########"
 (
   set -a; . "$ROOT/.env"; set +a
+  KS_ADMIN_KEY="${ADMIN_API_KEY:-${NEXT_PUBLIC_ADMIN_API_KEY:-${API_KEY:-}}}"
+  if [ -z "$KS_ADMIN_KEY" ] && [ -f /root/.openclaw/credentials/line-harness-ks-bootstrap-secrets.env ]; then
+    set -a; . /root/.openclaw/credentials/line-harness-ks-bootstrap-secrets.env; set +a
+    KS_ADMIN_KEY="${ADMIN_API_KEY:-${NEXT_PUBLIC_ADMIN_API_KEY:-${API_KEY:-}}}"
+  fi
+  [ -n "$KS_ADMIN_KEY" ] || { echo "!!! ABORT: KS admin key が見つからない (.env / credentials の ADMIN_API_KEY / NEXT_PUBLIC_ADMIN_API_KEY / API_KEY を確認)"; exit 1; }
   cd "$ROOT/apps/web"
-  NEXT_PUBLIC_API_URL="$KS_WORKER_URL" NEXT_PUBLIC_ADMIN_API_KEY="${ADMIN_API_KEY:?ADMIN_API_KEY が .env に無い}" \
+  NEXT_PUBLIC_API_URL="$KS_WORKER_URL" NEXT_PUBLIC_ADMIN_API_KEY="$KS_ADMIN_KEY" \
   NEXT_PUBLIC_UPDATE_BANNER_ENABLED=false pnpm build
   echo "--- 焼き込み検証 (KS admin) ---"
   grep -rq "web-8af" out/ || { echo "!!! ABORT: KS worker URL が out に焼かれていない"; exit 1; }
