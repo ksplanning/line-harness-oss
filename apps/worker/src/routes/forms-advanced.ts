@@ -270,10 +270,16 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
   // NULL/不一致/非 email は fail-closed。複数 email の先頭 fallback は行わない。
   let editMailFieldId: string | null = null;
   if (form.edit_mail_field_slug) {
-    const fieldMap = await getFormalooFieldMap(db, form.id);
-    editMailFieldId = fieldMap.find((row) =>
-      row.formaloo_field_slug === form.edit_mail_field_slug && row.field_type === 'email',
-    )?.id ?? null;
+    if (internalDefinition?.ok) {
+      editMailFieldId = internalDefinition.definition.fields.find((field) => (
+        field.id === form.edit_mail_field_slug && field.type === 'email'
+      ))?.id ?? null;
+    } else {
+      const fieldMap = await getFormalooFieldMap(db, form.id);
+      editMailFieldId = fieldMap.find((row) =>
+        row.formaloo_field_slug === form.edit_mail_field_slug && row.field_type === 'email',
+      )?.id ?? null;
+    }
   }
   return {
     id: form.id,

@@ -1727,6 +1727,207 @@ describe('internal hosting provider boundary', () => {
     expect(externalFetch).not.toHaveBeenCalled();
   });
 
+  test('edit flags survive internal save, publish, exact GET, and list readback', async () => {
+    seedForm('internal-edit-flags', 'internal');
+
+    const saved = await call('PUT', '/api/forms-advanced/internal-edit-flags', {
+      fields: DEFINITION.fields,
+      logic: [],
+      allowPostEdit: '1',
+      allowBranchEdit: true,
+      allowEditMail: 1,
+      editMailFieldId: 'contact',
+    });
+
+    expect(saved.status).toBe(200);
+    const savedBody = await saved.json() as {
+      data: {
+        allowPostEdit: number;
+        allowBranchEdit: number;
+        allowEditMail: number;
+        editMailFieldId: string | null;
+        publishRevision: string;
+      };
+    };
+    expect(savedBody.data).toMatchObject({
+      allowPostEdit: 1,
+      allowBranchEdit: 1,
+      allowEditMail: 1,
+      editMailFieldId: 'contact',
+    });
+    expect(raw.prepare(
+      `SELECT allow_post_edit, allow_branch_edit, allow_edit_mail, edit_mail_field_slug
+       FROM formaloo_forms WHERE id = ?`,
+    ).get('internal-edit-flags')).toEqual({
+      allow_post_edit: 1,
+      allow_branch_edit: 1,
+      allow_edit_mail: 1,
+      edit_mail_field_slug: 'contact',
+    });
+
+    const published = await call('POST', '/api/forms-advanced/internal-edit-flags/publish', {
+      publishRevision: savedBody.data.publishRevision,
+    });
+    expect(published.status).toBe(200);
+
+    const loaded = await call('GET', '/api/forms-advanced/internal-edit-flags');
+    expect(loaded.status).toBe(200);
+    expect((await loaded.json() as { data: Record<string, unknown> }).data).toMatchObject({
+      builderStatus: 'published',
+      allowPostEdit: 1,
+      allowBranchEdit: 1,
+      allowEditMail: 1,
+      editMailFieldId: 'contact',
+    });
+
+    const listed = await call('GET', '/api/forms-advanced');
+    expect(listed.status).toBe(200);
+    const listItem = (await listed.json() as { data: Array<Record<string, unknown>> }).data
+      .find((form) => form.id === 'internal-edit-flags');
+    expect(listItem).toMatchObject({
+      allowPostEdit: 1,
+      allowBranchEdit: 1,
+      allowEditMail: 1,
+      editMailFieldId: 'contact',
+    });
+  });
+
+  test('internal edit flags use present-key updates and reject a non-email recipient field', async () => {
+    seedForm('internal-edit-flags-present-key', 'internal');
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET allow_post_edit = 1, allow_branch_edit = 1, allow_edit_mail = 1, edit_mail_field_slug = 'contact'
+       WHERE id = ?`,
+    ).run('internal-edit-flags-present-key');
+
+    const omitted = await call('PUT', '/api/forms-advanced/internal-edit-flags-present-key', {
+      title: 'フラグを維持する保存',
+      fields: DEFINITION.fields,
+      logic: [],
+    });
+    expect(omitted.status).toBe(200);
+    expect((await omitted.json() as { data: Record<string, unknown> }).data).toMatchObject({
+      allowPostEdit: 1,
+      allowBranchEdit: 1,
+      allowEditMail: 1,
+      editMailFieldId: 'contact',
+    });
+
+    const invalid = await call('PUT', '/api/forms-advanced/internal-edit-flags-present-key', {
+      fields: DEFINITION.fields,
+      logic: [],
+      allowPostEdit: 0,
+      allowBranchEdit: 0,
+      allowEditMail: 0,
+      editMailFieldId: 'name',
+    });
+    expect(invalid.status).toBe(400);
+    expect(raw.prepare(
+      `SELECT allow_post_edit, allow_branch_edit, allow_edit_mail, edit_mail_field_slug
+       FROM formaloo_forms WHERE id = ?`,
+    ).get('internal-edit-flags-present-key')).toEqual({
+      allow_post_edit: 1,
+      allow_branch_edit: 1,
+      allow_edit_mail: 1,
+      edit_mail_field_slug: 'contact',
+    });
+
+    const cleared = await call('PUT', '/api/forms-advanced/internal-edit-flags-present-key', {
+      fields: DEFINITION.fields,
+      logic: [],
+      allowPostEdit: null,
+      allowBranchEdit: '0',
+      allowEditMail: false,
+      editMailFieldId: null,
+    });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json() as { data: Record<string, unknown> }).data).toMatchObject({
+      allowPostEdit: 0,
+      allowBranchEdit: 0,
+      allowEditMail: 0,
+      editMailFieldId: null,
+    });
+    expect(raw.prepare(
+      `SELECT allow_post_edit, allow_branch_edit, allow_edit_mail, edit_mail_field_slug
+       FROM formaloo_forms WHERE id = ?`,
+    ).get('internal-edit-flags-present-key')).toEqual({
+      allow_post_edit: 0,
+      allow_branch_edit: 0,
+      allow_edit_mail: 0,
+      edit_mail_field_slug: null,
+    });
+  });
+
+  test('an edit flag save invalidates an older publish revision', async () => {
+    seedForm('internal-edit-flags-revision', 'internal');
+    raw.prepare(
+      "UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'internal-edit-flags-revision'",
+    ).run();
+    const baseline = await call('PUT', '/api/forms-advanced/internal-edit-flags-revision', {
+      fields: DEFINITION.fields,
+      logic: [],
+    });
+    expect(baseline.status).toBe(200);
+    const staleRevision = (await baseline.json() as { data: { publishRevision: string } })
+      .data.publishRevision;
+
+    const saved = await call('PUT', '/api/forms-advanced/internal-edit-flags-revision', {
+      fields: DEFINITION.fields,
+      logic: [],
+      allowBranchEdit: 1,
+    });
+    expect(saved.status).toBe(200);
+    const currentRevision = (await saved.json() as { data: { publishRevision: string } })
+      .data.publishRevision;
+    expect(currentRevision).not.toBe(staleRevision);
+
+    const stalePublish = await call('POST', '/api/forms-advanced/internal-edit-flags-revision/publish', {
+      publishRevision: staleRevision,
+    });
+    expect(stalePublish.status).toBe(409);
+    const currentPublish = await call('POST', '/api/forms-advanced/internal-edit-flags-revision/publish', {
+      publishRevision: currentRevision,
+    });
+    expect(currentPublish.status).toBe(200);
+  });
+
+  test('definition and edit flags are committed by one internal row update', async () => {
+    seedForm('internal-edit-flags-atomic', 'internal');
+    const base = DB;
+    DB = {
+      prepare(sql: string) {
+        if (/UPDATE formaloo_forms/i.test(sql)
+          && /allow_post_edit/i.test(sql)
+          && !/definition_json/i.test(sql)) {
+          throw new Error('split settings update rejected');
+        }
+        return base.prepare(sql);
+      },
+    } as D1Database;
+
+    const saved = await call('PUT', '/api/forms-advanced/internal-edit-flags-atomic', {
+      title: '設定も同時保存',
+      fields: DEFINITION.fields,
+      logic: [],
+      allowPostEdit: 1,
+      allowBranchEdit: 1,
+      allowEditMail: 1,
+      editMailFieldId: 'contact',
+    });
+
+    expect(saved.status).toBe(200);
+    expect(raw.prepare(
+      `SELECT title, allow_post_edit, allow_branch_edit, allow_edit_mail, edit_mail_field_slug
+       FROM formaloo_forms WHERE id = ?`,
+    ).get('internal-edit-flags-atomic')).toEqual({
+      title: '設定も同時保存',
+      allow_post_edit: 1,
+      allow_branch_edit: 1,
+      allow_edit_mail: 1,
+      edit_mail_field_slug: 'contact',
+    });
+  });
+
   test.each([
     [
       'legacy text',

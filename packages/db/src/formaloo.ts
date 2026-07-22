@@ -732,6 +732,57 @@ export async function saveFormalooDefinition(
   await db.prepare(`UPDATE formaloo_forms SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
 }
 
+/** Internal builder の定義・draft 遷移・回答編集設定を同じ row update で確定する。 */
+export async function updateFormalooForm(
+  db: D1Database,
+  id: string,
+  params: {
+    definitionJson: string;
+    title: string;
+    description: string | null;
+    updatedAt: string;
+    allowPostEdit?: number;
+    allowBranchEdit?: number;
+    allowEditMail?: number;
+    editMailFieldSlug?: string | null;
+  },
+): Promise<boolean> {
+  const sets = [
+    'definition_json = ?',
+    'title = ?',
+    'description = ?',
+    "builder_status = 'draft'",
+    'updated_at = ?',
+  ];
+  const vals: (string | number | null)[] = [
+    params.definitionJson,
+    params.title,
+    params.description,
+    params.updatedAt,
+  ];
+  if (params.allowPostEdit !== undefined) {
+    sets.push('allow_post_edit = ?');
+    vals.push(params.allowPostEdit);
+  }
+  if (params.allowBranchEdit !== undefined) {
+    sets.push('allow_branch_edit = ?');
+    vals.push(params.allowBranchEdit);
+  }
+  if (params.allowEditMail !== undefined) {
+    sets.push('allow_edit_mail = ?');
+    vals.push(params.allowEditMail);
+  }
+  if (params.editMailFieldSlug !== undefined) {
+    sets.push('edit_mail_field_slug = ?');
+    vals.push(params.editMailFieldSlug);
+  }
+  const result = await db.prepare(
+    `UPDATE formaloo_forms SET ${sets.join(', ')}
+     WHERE id = ? AND render_backend = 'internal'`,
+  ).bind(...vals, id).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
 /** publish gate 遷移。published にする時は publishedAt を記録 (未指定なら jstNow)。 */
 export async function updateFormalooBuilderStatus(
   db: D1Database,

@@ -13,6 +13,7 @@ import {
   softDeleteInternalFormSubmission,
   switchFormRenderBackendToDraft,
   unpublishInternalFormDefinition,
+  updateFormalooForm,
   updateInternalFormSubmissionAnswers,
   type FormalooForm,
   type InternalFormSubmission,
@@ -314,6 +315,10 @@ async function internalPublishRevision(form: FormalooForm): Promise<string> {
     form.definition_json,
     form.title,
     form.description,
+    form.allow_post_edit,
+    form.allow_branch_edit,
+    form.allow_edit_mail,
+    form.edit_mail_field_slug,
   ]);
   const digest = new Uint8Array(await crypto.subtle.digest(
     'SHA-256',
@@ -330,6 +335,11 @@ async function serializeInternalForm(c: Context<Env>, form: FormalooForm) {
   const parsed = parseInternalFormDefinition(form.definition_json);
   if (!parsed.ok) throw new Error(parsed.error);
   const raw = jsonObject(form.definition_json);
+  const editMailFieldId = form.edit_mail_field_slug
+    ? parsed.definition.fields.find((field) => (
+        field.id === form.edit_mail_field_slug && field.type === 'email'
+      ))?.id ?? null
+    : null;
   const submitCount = await countInternalFormSubmissionsForForm(c.env.DB, form.id);
   const published = form.builder_status === 'published';
   const base = publicBase(c);
@@ -346,8 +356,9 @@ async function serializeInternalForm(c: Context<Env>, form: FormalooForm) {
     onSubmitScenarioId: form.on_submit_scenario_id,
     submitMessage: form.submit_message,
     allowPostEdit: form.allow_post_edit,
+    allowBranchEdit: form.allow_branch_edit,
     allowEditMail: form.allow_edit_mail,
-    editMailFieldId: null,
+    editMailFieldId,
     fields: parsed.definition.fields,
     logic: parsed.definition.logic,
     logicFingerprint: null,
@@ -687,6 +698,15 @@ internalFormsAdmin.put('/api/forms-advanced/:id', async (c, next) => {
     if (body.formType !== undefined && body.formType !== 'simple' && body.formType !== 'multi_step') {
       return c.json({ success: false, error: '表示形式が不正です' }, 400);
     }
+    const allowPostEdit = body.allowPostEdit === undefined
+      ? undefined
+      : (body.allowPostEdit === 1 || body.allowPostEdit === true || body.allowPostEdit === '1' ? 1 : 0);
+    const allowBranchEdit = body.allowBranchEdit === undefined
+      ? undefined
+      : (body.allowBranchEdit === 1 || body.allowBranchEdit === true || body.allowBranchEdit === '1' ? 1 : 0);
+    const allowEditMail = body.allowEditMail === undefined
+      ? undefined
+      : (body.allowEditMail === 1 || body.allowEditMail === true || body.allowEditMail === '1' ? 1 : 0);
     const redirectCheck = validateFormRedirectInput(body.formRedirect);
     if (!redirectCheck.ok) return c.json({ success: false, error: redirectCheck.error }, 400);
 
@@ -728,6 +748,21 @@ internalFormsAdmin.put('/api/forms-advanced/:id', async (c, next) => {
 
     const parsed = parseInternalFormDefinition(JSON.stringify(candidate));
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const editMailFieldIdProvided = hasOwn(body, 'editMailFieldId');
+    let editMailFieldId: string | null | undefined;
+    if (editMailFieldIdProvided) {
+      if (body.editMailFieldId === null) {
+        editMailFieldId = null;
+      } else if (typeof body.editMailFieldId !== 'string' || !body.editMailFieldId) {
+        return c.json({ success: false, error: '編集URLメールの宛先項目が不正です' }, 400);
+      } else {
+        const selected = parsed.definition.fields.find((field) => field.id === body.editMailFieldId);
+        if (!selected || selected.type !== 'email') {
+          return c.json({ success: false, error: '編集URLメールの宛先にはメール項目を選んでください' }, 400);
+        }
+        editMailFieldId = selected.id;
+      }
+    }
     const designProvided = hasOwn(body, 'design');
     const designImagesProvided = hasOwn(body, 'designImages');
     const uploadOrigin = new URL(c.req.url).origin;
@@ -770,14 +805,21 @@ internalFormsAdmin.put('/api/forms-advanced/:id', async (c, next) => {
       title,
       description,
       builder_status: 'draft',
+      allow_post_edit: allowPostEdit ?? form.allow_post_edit,
+      allow_branch_edit: allowBranchEdit ?? form.allow_branch_edit,
+      allow_edit_mail: allowEditMail ?? form.allow_edit_mail,
+      edit_mail_field_slug: editMailFieldId === undefined ? form.edit_mail_field_slug : editMailFieldId,
       updated_at: updatedAt,
     });
-    const saved = await saveInternalFormDefinition(c.env.DB, {
-      formId: form.id,
+    const saved = await updateFormalooForm(c.env.DB, form.id, {
       definitionJson,
       title,
       description,
       updatedAt,
+      allowPostEdit,
+      allowBranchEdit,
+      allowEditMail,
+      editMailFieldSlug: editMailFieldId,
     });
     if (!saved) {
       return c.json({
