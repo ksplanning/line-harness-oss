@@ -29,6 +29,16 @@ const postalFields: HarnessField[] = [
   { id: 'town', type: 'text', label: '町域', required: false, position: 3, config: {} },
 ]
 
+const nativePostalFields: HarnessField[] = [
+  {
+    id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+    config: { postalAutofill: { zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town' } },
+  },
+  { id: 'pref', type: 'prefecture', label: '都道府県', required: true, position: 1, config: {} },
+  { id: 'city', type: 'address_city', label: '市区町村', required: true, position: 2, config: {} },
+  { id: 'town', type: 'address_street', label: '町域', required: false, position: 3, config: {} },
+]
+
 describe('internal preview input freedoms', () => {
   test.each([
     ['text', '1行'],
@@ -110,7 +120,7 @@ describe('internal preview input freedoms', () => {
       json: vi.fn().mockResolvedValue({ pref: '東京都', city: '千代田区', town: '千代田' }),
     })
     vi.stubGlobal('fetch', fetchMock)
-    render(<FormPreview title="住所" fields={postalFields} internalLogicPreview />)
+    render(<FormPreview title="住所" fields={nativePostalFields} internalLogicPreview />)
     const zip = screen.getByLabelText('郵便番号') as HTMLInputElement
     const rawZip = '１－２ー３−４‐５‑６-７'
 
@@ -131,7 +141,7 @@ describe('internal preview input freedoms', () => {
   test('変換後も7桁数字でないプレビュー入力は従来エラーを示し、APIを呼ばない', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    render(<FormPreview title="住所" fields={postalFields} internalLogicPreview />)
+    render(<FormPreview title="住所" fields={nativePostalFields} internalLogicPreview />)
     const zip = screen.getByLabelText('郵便番号') as HTMLInputElement
     const rawZip = '１２３－４５Ａ７'
 

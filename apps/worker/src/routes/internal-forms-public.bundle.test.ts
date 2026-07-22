@@ -29,6 +29,13 @@ const definition = {
     { id: 'pref', type: 'text', label: '都道府県', required: true, position: 3, config: {} },
     { id: 'city', type: 'text', label: '市区町村', required: true, position: 4, config: {} },
     { id: 'town', type: 'text', label: '町域', required: false, position: 5, config: {} },
+    {
+      id: 'zip-native', type: 'postal_code', label: '専用郵便番号', required: true, position: 6,
+      config: { postalAutofill: { zipField: 'zip-native', prefField: 'pref-native', cityField: 'city-native', townField: 'town-native' } },
+    },
+    { id: 'pref-native', type: 'prefecture', label: '専用都道府県', required: true, position: 7, config: {} },
+    { id: 'city-native', type: 'address_city', label: '専用市区町村', required: true, position: 8, config: {} },
+    { id: 'town-native', type: 'address_street', label: '専用町名・番地', required: false, position: 9, config: {} },
   ],
   logic: [
     { id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'company' },
@@ -148,5 +155,19 @@ describe('deployed internal form logic bundle', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/postal-lookup?zip=1234567', expect.any(Object));
     expect(zip.value).toBe(rawZip);
     expect(document.querySelector<HTMLInputElement>('[data-answer-field="pref"]')!.value).toBe('東京都');
+
+    const nativeZip = document.querySelector<HTMLInputElement>('[data-answer-field="zip-native"]')!;
+    const nativeRawZip = '５６９－００００';
+    nativeZip.value = nativeRawZip;
+    document.querySelector<HTMLButtonElement>('[data-zip-field="zip-native"]')!.click();
+
+    await vi.waitFor(() => expect(
+      document.querySelector<HTMLSelectElement>('[data-answer-field="pref-native"]')!.value,
+    ).toBe('東京都'));
+    expect(fetchMock).toHaveBeenCalledWith('/api/postal-lookup?zip=5690000', expect.any(Object));
+    expect(nativeZip.value).toBe(nativeRawZip);
+    expect(document.querySelector<HTMLSelectElement>('[data-answer-field="pref-native"]')!.value).toBe('東京都');
+    expect(document.querySelector<HTMLInputElement>('[data-answer-field="city-native"]')!.value).toBe('千代田区');
+    expect(document.querySelector<HTMLInputElement>('[data-answer-field="town-native"]')!.value).toBe('千代田');
   });
 });

@@ -7,6 +7,7 @@ import {
   normalizeFormDesign,
   normalizeFormOperationsSettings,
   normalizeFormRedirect,
+  normalizePostalLookupCode,
   normalizeSuccessPages,
   validateHarnessField,
   type FormDesign,
@@ -494,7 +495,10 @@ export function parseInternalFormDefinition(
     if (
       postal.zipField !== field.id
       || new Set(referencedIds).size !== referencedIds.length
-      || referencedIds.some((id) => fieldForPostal.get(id)?.type !== 'text')
+      || !['text', 'postal_code'].includes(fieldForPostal.get(postal.zipField)?.type ?? '')
+      || !['text', 'prefecture'].includes(fieldForPostal.get(postal.prefField)?.type ?? '')
+      || !['text', 'address_city'].includes(fieldForPostal.get(postal.cityField)?.type ?? '')
+      || !['text', 'address_street'].includes(fieldForPostal.get(postal.townField)?.type ?? '')
     ) {
       return { ok: false, error: '郵便番号自動入力の項目設定が正しくありません' };
     }
@@ -812,7 +816,7 @@ function normalizeScalarField(
   }
 
   if (field.type === 'postal_code') {
-    const normalized = value.trim().replace(/[\s\-ー－]/g, '');
+    const normalized = normalizePostalLookupCode(value);
     return /^\d{7}$/.test(normalized)
       ? { ok: true, present: true, value: normalized }
       : invalidFormat(label);

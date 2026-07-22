@@ -263,7 +263,7 @@ export interface HarnessFieldConfig {
   defaultValue?: string;
   /** internal renderer の複数選択型に使う既定値。Formaloo payload には送らない。 */
   defaultValues?: string[];
-  /** 自前 renderer 専用。設定元の text field を郵便番号欄として住所 3 欄を自動補完する。 */
+  /** 自前 renderer 専用。postal_code（既存互換では text）を元に住所 3 欄を自動補完する。 */
   postalAutofill?: PostalAutofillConfig;
   /**
    * choice/dropdown/multiple_select の選択肢を title+slug で additive 保持 (form-route-branching)。

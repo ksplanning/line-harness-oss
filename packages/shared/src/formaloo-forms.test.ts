@@ -88,6 +88,19 @@ describe('formaloo-forms — validateHarnessField (M-21 明示 reject)', () => {
     if (result.ok) expect(result.field.config.postalAutofill).toEqual(postalAutofill);
   });
 
+  test('郵便番号専用項目でも既存 postalAutofill の保存形式を変えない', () => {
+    const postalAutofill = {
+      zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town',
+    };
+    const result = validateHarnessField({
+      id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+      config: { postalAutofill },
+    }, { allowInternalOnly: true });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.field.config.postalAutofill).toEqual(postalAutofill);
+  });
+
   test('section は config.text を保持し、page_break も受理する (T-B1)', () => {
     const section = validateHarnessField({
       id: 'decoration-section',

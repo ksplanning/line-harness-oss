@@ -803,8 +803,41 @@ function SettingsPanel({
   const onDeleteRule = (rule: HarnessLogicRule) => {
     applyLogic(logic.filter((r) => r.id !== rule.id), rule.action === 'submit' ? (rule.terminalHostWasRequired ?? false) : undefined)
   }
-  const postalDestinationFields = allFields.filter((candidate) => candidate.type === 'text' && candidate.id !== field.id)
   const postalAutofill = cfg.postalAutofill
+  const textPostalDestinations = allFields.filter((candidate) => candidate.type === 'text' && candidate.id !== field.id)
+  const postalDestinationFields = {
+    prefField: [
+      ...allFields.filter((candidate) => candidate.type === 'prefecture' && candidate.id !== field.id),
+      ...textPostalDestinations,
+    ],
+    cityField: [
+      ...allFields.filter((candidate) => candidate.type === 'address_city' && candidate.id !== field.id),
+      ...textPostalDestinations,
+    ],
+    townField: [
+      ...allFields.filter((candidate) => candidate.type === 'address_street' && candidate.id !== field.id),
+      ...textPostalDestinations,
+    ],
+  }
+  const defaultPostalAutofill = (() => {
+    const selected = new Set<string>()
+    const selectFirstUnused = (key: 'prefField' | 'cityField' | 'townField') => {
+      const destination = postalDestinationFields[key].find((candidate) => !selected.has(candidate.id))
+      if (destination) selected.add(destination.id)
+      return destination
+    }
+    const prefecture = selectFirstUnused('prefField')
+    const city = selectFirstUnused('cityField')
+    const town = selectFirstUnused('townField')
+    return prefecture && city && town
+      ? {
+          zipField: field.id,
+          prefField: prefecture.id,
+          cityField: city.id,
+          townField: town.id,
+        }
+      : undefined
+  })()
   const togglePostalAutofill = (enabled: boolean) => {
     if (!enabled) {
       const nextConfig = { ...cfg }
@@ -812,16 +845,8 @@ function SettingsPanel({
       onChange({ ...field, config: nextConfig })
       return
     }
-    const [prefecture, city, town] = postalDestinationFields
-    if (!prefecture || !city || !town) return
-    setCfg({
-      postalAutofill: {
-        zipField: field.id,
-        prefField: prefecture.id,
-        cityField: city.id,
-        townField: town.id,
-      },
-    })
+    if (!defaultPostalAutofill) return
+    setCfg({ postalAutofill: defaultPostalAutofill })
   }
   const updatePostalDestination = (key: 'prefField' | 'cityField' | 'townField', value: string) => {
     if (!postalAutofill) return
@@ -846,7 +871,7 @@ function SettingsPanel({
           onChange={(event) => updatePostalDestination(key, event.target.value)}
           className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1"
         >
-          {postalDestinationFields.map((candidate) => (
+          {postalDestinationFields[key].map((candidate) => (
             <option key={candidate.id} value={candidate.id} disabled={otherDestinations.includes(candidate.id)}>
               {candidate.label}
             </option>
@@ -891,30 +916,30 @@ function SettingsPanel({
         />
       </div>
 
-      {internalRenderer && field.type === 'text' && (
+      {internalRenderer && (field.type === 'postal_code' || (field.type === 'text' && postalAutofill)) && (
         <div className="space-y-2 border-t border-gray-100 pt-3" data-testid="postal-autofill-settings">
           <label className="flex items-center gap-2">
             <input
               type="checkbox"
               aria-label="郵便番号から住所を自動入力"
               checked={Boolean(postalAutofill)}
-              disabled={!postalAutofill && postalDestinationFields.length < 3}
+              disabled={!postalAutofill && !defaultPostalAutofill}
               onChange={(event) => togglePostalAutofill(event.target.checked)}
             />
             <span>郵便番号から住所を自動入力する</span>
           </label>
-          {postalDestinationFields.length < 3 && !postalAutofill ? (
+          {!defaultPostalAutofill && !postalAutofill ? (
             <p className="text-[10px] leading-snug text-amber-600">
-              都道府県・市区町村・町域の入力先に使うテキスト項目を、あと3つ用意してください。
+              都道府県・市区町村・町名・番地の入力先として、専用項目または一行テキスト項目を3つ用意してください。
             </p>
           ) : null}
           {postalAutofill ? (
             <div className="grid gap-2">
               {postalDestinationSelect('prefField', '都道府県の入力先')}
               {postalDestinationSelect('cityField', '市区町村の入力先')}
-              {postalDestinationSelect('townField', '町域の入力先')}
+              {postalDestinationSelect('townField', '町名・番地の入力先')}
               <p className="text-[10px] leading-snug text-gray-400">
-                3つの入力先には、それぞれ別の一行テキスト項目を選んでください。
+                専用項目を先に表示しています。互換のため一行テキスト項目も選べます。3つの入力先には別々の項目を選んでください。
               </p>
             </div>
           ) : null}

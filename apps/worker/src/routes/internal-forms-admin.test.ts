@@ -1134,6 +1134,60 @@ describe('internal hosting provider boundary', () => {
     expect(externalFetch).not.toHaveBeenCalled();
   });
 
+  test.each([
+    [
+      'legacy text',
+      [
+        {
+          id: 'zip', type: 'text', label: '郵便番号', required: true, position: 0,
+          config: { postalAutofill: { zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town' } },
+        },
+        { id: 'pref', type: 'text', label: '都道府県', required: true, position: 1, config: {} },
+        { id: 'city', type: 'text', label: '市区町村', required: true, position: 2, config: {} },
+        { id: 'town', type: 'text', label: '町域', required: false, position: 3, config: {} },
+      ],
+    ],
+    [
+      'native postal',
+      [
+        {
+          id: 'zip', type: 'postal_code', label: '郵便番号', required: true, position: 0,
+          config: { postalAutofill: { zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town' } },
+        },
+        { id: 'pref', type: 'prefecture', label: '都道府県', required: true, position: 1, config: {} },
+        { id: 'city', type: 'address_city', label: '市区町村', required: true, position: 2, config: {} },
+        { id: 'town', type: 'address_street', label: '町名・番地', required: false, position: 3, config: {} },
+      ],
+    ],
+  ] as const)('normal PUT and GET preserve the existing four-key postal shape for %s fields', async (kind, fields) => {
+    const formId = kind === 'legacy text' ? 'legacy-postal-save' : 'native-postal-save';
+    seedForm(formId, 'internal', { definition: { fields, logic: [] } });
+
+    const saved = await call('PUT', `/api/forms-advanced/${formId}`, { fields, logic: [] });
+    expect(saved.status).toBe(200);
+
+    const loaded = await call('GET', `/api/forms-advanced/${formId}`);
+    expect(loaded.status).toBe(200);
+    const loadedBody = await loaded.json() as {
+      data: { fields: Array<{ id: string; type: string; config: Record<string, unknown> }> };
+    };
+    const source = loadedBody.data.fields.find((field) => field.id === 'zip');
+    expect(source?.type).toBe(fields[0].type);
+    expect(source?.config.postalAutofill).toEqual({
+      zipField: 'zip', prefField: 'pref', cityField: 'city', townField: 'town',
+    });
+    expect(Object.keys(source?.config.postalAutofill as object)).toEqual([
+      'zipField', 'prefField', 'cityField', 'townField',
+    ]);
+
+    const stored = JSON.parse((raw.prepare(
+      'SELECT definition_json FROM formaloo_forms WHERE id = ?',
+    ).get(formId) as { definition_json: string }).definition_json) as {
+      fields: Array<{ id: string; type: string; config: Record<string, unknown> }>;
+    };
+    expect(stored.fields.find((field) => field.id === 'zip')).toEqual(source);
+  });
+
   test('internal save preserves every existing Formaloo field mapping byte-for-byte', async () => {
     seedForm('internal-form', 'internal');
     const now = jstNow();
