@@ -1,0 +1,6 @@
+case-scope-echo: caseId=postal-field-native-autofill target_paths=["/root/.openclaw/line-harness-ks/.plans/2026-07-22-postal-field-native-autofill/tasks.md"]
+
+- D-1: PASS — `pnpm --filter worker test -- src/services/internal-form-runtime.test.ts` → native postal mapping・共有正規化・不正入力を含む 82 tests passed、`pnpm --filter web test -- src/components/forms-advanced/form-preview.internal-fields.test.tsx` → 専用項目の全角正規化・7桁不成立エラーを含む 15 tests passed (exit 0)
+- D-2: PASS — `pnpm --filter web test -- src/components/forms-advanced/builder-postal-autofill.test.tsx src/components/forms-advanced/form-preview.internal-fields.test.tsx` → 専用項目優先＋text fallback、保存、new-text 非表示、grandfather 維持を含む 24 tests passed (exit 0)
+- D-3: PASS — `rtk pnpm --filter web exec vitest run --config vitest.config.ts --no-file-parallelism` → 212 files・1615 tests passed、`rtk pnpm --filter worker test` → 276 files・3274 tests passed（admin 87 tests・deployed bundle 1 test を含む）、shared/db/sdk/update-engine suites と web/worker/shared typecheck も passed (exit 0)
+- D-4: PASS — `test -s .sola/live-checklist.md && rg -n 'postal-field-native-autofill' .sola/live-checklist.md && rg -n '公開ページ' .sola/live-checklist.md && rg -n 'postal-zip-normalize-e2e-check' .sola/live-checklist.md` → owner 日常語、専用項目の公開実クリック、既存フォーム不変確認の手順を検出 (exit 0)
