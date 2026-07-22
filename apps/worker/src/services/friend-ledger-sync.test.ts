@@ -64,7 +64,11 @@ function parseA1(range: string): { row: number; column: number } {
 
 class FakeSheetsClient {
   values: SheetCellValue[][] = [];
-  readonly writes: Array<{ kind: 'update' | 'append' | 'batch'; range?: string }> = [];
+  readonly writes: Array<{
+    kind: 'update' | 'append' | 'batch';
+    range?: string;
+    rowCount?: number;
+  }> = [];
   readCount = 0;
   afterWrite?: (kind: 'update' | 'append' | 'batch') => void | Promise<void>;
   afterRead?: () => void | Promise<void>;
@@ -77,21 +81,21 @@ class FakeSheetsClient {
   }
 
   async updateValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
-    this.writes.push({ kind: 'update', range });
+    this.writes.push({ kind: 'update', range, rowCount: values.length });
     this.apply(range, values);
     await this.afterWrite?.('update');
     return { spreadsheetId: 'sheet-1', updatedRows: values.length };
   }
 
   async appendValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
-    this.writes.push({ kind: 'append', range });
+    this.writes.push({ kind: 'append', range, rowCount: values.length });
     this.values.push(...values.map((row) => [...row]));
     await this.afterWrite?.('append');
     return { spreadsheetId: 'sheet-1' };
   }
 
   async batchUpdateValues(_spreadsheetId: string, data: SheetsDataUpdate[]) {
-    this.writes.push({ kind: 'batch' });
+    this.writes.push({ kind: 'batch', rowCount: data.length });
     for (const update of data) this.apply(update.range, update.values);
     await this.afterWrite?.('batch');
     return { spreadsheetId: 'sheet-1', totalUpdatedRows: data.length };
@@ -212,6 +216,70 @@ async function run(
   });
 }
 
+type TestFriendLedgerChunkCursor = {
+  createdAt: string;
+  friendId: string;
+};
+
+type TestFriendLedgerChunkMetadata = {
+  processed: number;
+  hasMore: boolean;
+  cursor: TestFriendLedgerChunkCursor | null;
+};
+
+type ChunkedSyncOptions = Parameters<typeof syncFriendLedger>[0] & {
+  chunk: {
+    limit: number;
+    after: TestFriendLedgerChunkCursor | null;
+  };
+};
+
+async function runChunk(
+  after: TestFriendLedgerChunkCursor | null,
+  limit = 250,
+): Promise<Awaited<ReturnType<typeof syncFriendLedger>> & { chunk: TestFriendLedgerChunkMetadata }> {
+  connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+  const options: ChunkedSyncOptions = {
+    db,
+    connection,
+    client,
+    source: 'manual',
+    actor: 'owner',
+    now: () => new Date('2026-07-21T03:00:00.000Z'),
+    chunk: { limit, after },
+  };
+  return syncFriendLedger(options) as Promise<
+    Awaited<ReturnType<typeof syncFriendLedger>> & { chunk: TestFriendLedgerChunkMetadata }
+  >;
+}
+
+function replaceAccountFriends(count: number): void {
+  raw.prepare(`DELETE FROM friends WHERE line_account_id='acc-1'`).run();
+  const insert = raw.prepare(`INSERT INTO friends
+    (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+    VALUES (?, ?, ?, 'acc-1', ?, ?, ?)`);
+  const createdAt = '2026-07-20T10:00:00+09:00';
+  raw.transaction(() => {
+    for (let index = 0; index < count; index += 1) {
+      const suffix = String(index).padStart(4, '0');
+      insert.run(
+        `friend-${suffix}`,
+        `U_${suffix}`,
+        `友だち${suffix}`,
+        JSON.stringify({ '入金確認': '未' }),
+        createdAt,
+        createdAt,
+      );
+    }
+  })();
+}
+
+function sheetUserIds(): string[] {
+  const userIdIndex = client.values[0]?.indexOf('userId') ?? -1;
+  if (userIdIndex < 0) return [];
+  return client.values.slice(1).map((row) => String(row[userIdIndex] ?? ''));
+}
+
 beforeEach(async () => {
   raw = new Database(':memory:');
   raw.pragma('foreign_keys = ON');
@@ -283,6 +351,171 @@ describe('friend ledger bidirectional sync', () => {
     expect(second).toMatchObject({ appendedRows: 0, updatedRows: 0, importedFields: 0 });
     expect(client.writes).toHaveLength(writesAfterFirst);
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger').get()).toEqual({ count: 1 });
+  });
+
+  test('finishes 1,450 friends through a stable 250-row cursor window', async () => {
+    replaceAccountFriends(1_450);
+    let cursor: TestFriendLedgerChunkCursor | null = null;
+    let hasMore = true;
+    const processedPerInvocation: number[] = [];
+
+    while (hasMore) {
+      const appendCountBefore = client.writes.filter((write) => write.kind === 'append').length;
+      const result = await runChunk(cursor, 250);
+
+      expect(result).toMatchObject({
+        chunk: {
+          processed: expect.any(Number),
+          hasMore: expect.any(Boolean),
+          cursor: { createdAt: expect.any(String), friendId: expect.any(String) },
+        },
+      });
+      expect(result.chunk.processed).toBeGreaterThan(0);
+      expect(result.chunk.processed).toBeLessThanOrEqual(250);
+      const appendWrites = client.writes
+        .filter((write) => write.kind === 'append')
+        .slice(appendCountBefore);
+      expect(appendWrites).toHaveLength(1);
+      expect(appendWrites[0].rowCount).toBe(result.chunk.processed);
+      expect(appendWrites[0].rowCount).toBeLessThanOrEqual(250);
+
+      processedPerInvocation.push(result.chunk.processed);
+      cursor = result.chunk.cursor;
+      hasMore = result.chunk.hasMore;
+    }
+
+    expect(processedPerInvocation).toEqual([250, 250, 250, 250, 250, 200]);
+    expect(cursor).toEqual({
+      createdAt: '2026-07-20T10:00:00+09:00',
+      friendId: 'friend-1449',
+    });
+    expect(client.writes.filter((write) => write.kind === 'append').map((write) => write.rowCount))
+      .toEqual([250, 250, 250, 250, 250, 200]);
+    expect(sheetUserIds()).toHaveLength(1_450);
+    expect(new Set(sheetUserIds()).size).toBe(1_450);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_ledger
+      WHERE connection_id=?`).get(connection.id)).toEqual({ count: 1_450 });
+  }, 60_000);
+
+  test('uses the same binary cursor order as SQLite across mixed timestamp formats', async () => {
+    raw.prepare("DELETE FROM friends WHERE line_account_id='acc-1'").run();
+    const insert = raw.prepare(`INSERT INTO friends
+      (id, line_user_id, display_name, line_account_id, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, 'acc-1', '{"\u5165\u91d1\u78ba\u8a8d":"\u672a"}', ?, ?)`);
+    insert.run(
+      'friend-offset',
+      'U_OFFSET',
+      'オフセット',
+      '2026-07-20T10:00:00+09:00',
+      '2026-07-20T10:00:00+09:00',
+    );
+    insert.run(
+      'friend-millis',
+      'U_MILLIS',
+      'ミリ秒',
+      '2026-07-20T10:00:00.000+09:00',
+      '2026-07-20T10:00:00.000+09:00',
+    );
+
+    const first = await runChunk(null, 1);
+    const second = await runChunk(first.chunk.cursor, 1);
+
+    expect(first.chunk).toMatchObject({
+      processed: 1,
+      hasMore: true,
+      cursor: { friendId: 'friend-offset' },
+    });
+    expect(second.chunk).toMatchObject({
+      processed: 1,
+      hasMore: false,
+      cursor: { friendId: 'friend-millis' },
+    });
+    expect(sheetUserIds()).toEqual(['U_OFFSET', 'U_MILLIS']);
+  });
+
+  test('retries an interrupted chunk from the prior cursor without duplicate sheet or ledger rows', async () => {
+    replaceAccountFriends(1_450);
+    const first = await runChunk(null, 250);
+    expect(first.chunk).toMatchObject({
+      processed: 250,
+      hasMore: true,
+      cursor: { friendId: 'friend-0249' },
+    });
+    const durableCursor = first.chunk.cursor!;
+
+    let interrupted = false;
+    client.afterWrite = (kind) => {
+      if (kind === 'append' && !interrupted) {
+        interrupted = true;
+        throw new Error('simulated_worker_cutoff_after_sheet_append');
+      }
+    };
+    await expect(runChunk(durableCursor, 250))
+      .rejects.toThrow('simulated_worker_cutoff_after_sheet_append');
+    client.afterWrite = undefined;
+
+    expect(sheetUserIds()).toHaveLength(500);
+    expect(new Set(sheetUserIds()).size).toBe(500);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_ledger
+      WHERE connection_id=?`).get(connection.id)).toEqual({ count: 250 });
+
+    const appendCountBeforeRetry = client.writes.filter((write) => write.kind === 'append').length;
+    const retried = await runChunk(durableCursor, 250);
+    expect(retried.chunk).toEqual({
+      processed: 250,
+      hasMore: true,
+      cursor: {
+        createdAt: '2026-07-20T10:00:00+09:00',
+        friendId: 'friend-0499',
+      },
+    });
+    expect(client.writes.filter((write) => write.kind === 'append')).toHaveLength(appendCountBeforeRetry);
+    expect(sheetUserIds()).toHaveLength(500);
+    expect(new Set(sheetUserIds()).size).toBe(500);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_ledger
+      WHERE connection_id=?`).get(connection.id)).toEqual({ count: 500 });
+
+    let cursor = retried.chunk.cursor;
+    let hasMore = retried.chunk.hasMore;
+    while (hasMore) {
+      const next = await runChunk(cursor, 250);
+      cursor = next.chunk.cursor;
+      hasMore = next.chunk.hasMore;
+    }
+    expect(cursor?.friendId).toBe('friend-1449');
+    expect(sheetUserIds()).toHaveLength(1_450);
+    expect(new Set(sheetUserIds()).size).toBe(1_450);
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sheets_sync_ledger
+      WHERE connection_id=?`).get(connection.id)).toEqual({ count: 1_450 });
+  }, 60_000);
+
+  test('keeps a signed webhook bounded to its target while a 1,450-row job is incomplete', async () => {
+    replaceAccountFriends(1_450);
+    await runChunk(null, 250);
+    client.values[1][3] = '署名済み編集';
+    client.afterWrite = (kind) => {
+      if (kind === 'append') throw new Error('webhook_escaped_signed_target');
+    };
+
+    const result = await run(
+      'webhook',
+      'bounded-editor@example.test',
+      { rowStart: 2, rowEnd: 2, columnStart: 4, columnEnd: 4 },
+      {
+        rowNumber: 2,
+        columnNumber: 4,
+        header: '入金確認',
+        rowUserId: 'U_0000',
+        value: '署名済み編集',
+        oldValue: '未',
+        oldValueKnown: true,
+      },
+      'event-bounded-1450',
+    );
+
+    expect(result).toMatchObject({ importedFields: 1, appendedRows: 0 });
+    expect(sheetUserIds()).toHaveLength(250);
+    expect(metadata('friend-0000')).toMatchObject({ '入金確認': '署名済み編集' });
   });
 
   test('joins the latest verified internal-form answers to the right of each friend row', async () => {

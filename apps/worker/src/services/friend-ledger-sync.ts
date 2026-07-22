@@ -115,10 +115,26 @@ export interface SyncFriendLedgerOptions {
   webhookEventId?: string;
   webhookTargetError?: 'stale_webhook_generation';
   initialWarnings?: string[];
+  chunk?: {
+    limit: number;
+    after: FriendLedgerChunkCursor | null;
+    through?: FriendLedgerChunkCursor | null;
+  };
+}
+
+export interface FriendLedgerChunkCursor {
+  createdAt: string;
+  friendId: string;
+}
+
+export interface FriendLedgerChunkMetadata {
+  processed: number;
+  hasMore: boolean;
+  cursor: FriendLedgerChunkCursor | null;
 }
 
 export interface FriendLedgerSyncResult {
-  status: 'success' | 'warning';
+  status: 'success' | 'warning' | 'running';
   busy: boolean;
   warning: string | null;
   warnings: string[];
@@ -126,6 +142,7 @@ export interface FriendLedgerSyncResult {
   updatedRows: number;
   importedFields: number;
   ignoredIdentityEdits: number;
+  chunk?: FriendLedgerChunkMetadata;
 }
 
 interface RowPlan {
@@ -393,6 +410,14 @@ async function listFriends(db: D1Database, lineAccountId: string): Promise<Frien
      ORDER BY created_at ASC, id ASC`,
   ).bind(lineAccountId).all<FriendRow>();
   return result.results.map(serializeFriend);
+}
+
+function compareFriendCursor(friend: FriendState, cursor: FriendLedgerChunkCursor): number {
+  const createdAt = friend.createdAt < cursor.createdAt
+    ? -1
+    : friend.createdAt > cursor.createdAt ? 1 : 0;
+  if (createdAt !== 0) return createdAt;
+  return friend.id < cursor.friendId ? -1 : friend.id > cursor.friendId ? 1 : 0;
 }
 
 async function saveImportedMetadata(
@@ -804,10 +829,40 @@ export async function syncFriendLedger(
     };
     for (const warning of options.initialWarnings ?? []) addWarning(warning);
     for (const warning of answerSetupWarnings) addWarning(warning);
-    const friends = allFriends.filter((friend) => friend.metadataValid);
-    if (friends.length !== allFriends.length) {
+    const candidateFriends = options.source === 'webhook' && options.snapshot
+      ? options.snapshot.rowUserId === null
+        ? []
+        : allFriends.filter((friend) => friend.lineUserId === options.snapshot!.rowUserId)
+      : allFriends;
+    const chunkLimit = options.chunk
+      ? Math.min(500, Math.max(1, Math.trunc(options.chunk.limit)))
+      : candidateFriends.length;
+    const chunkCandidatesWithLookahead = options.chunk
+      ? candidateFriends.filter((friend) => (
+        (!options.chunk!.after || compareFriendCursor(friend, options.chunk!.after) > 0)
+        && (
+          options.chunk!.through === undefined
+          || (options.chunk!.through !== null && compareFriendCursor(friend, options.chunk!.through) <= 0)
+        )
+      )).slice(0, chunkLimit + 1)
+      : candidateFriends;
+    const chunkCandidates = options.chunk
+      ? chunkCandidatesWithLookahead.slice(0, chunkLimit)
+      : chunkCandidatesWithLookahead;
+    const friends = chunkCandidates.filter((friend) => friend.metadataValid);
+    if (friends.length !== chunkCandidates.length) {
       addWarning('保存済みの friend metadata が壊れている友だちをスキップしました');
     }
+    const lastChunkFriend = chunkCandidates.at(-1);
+    const chunkMetadata: FriendLedgerChunkMetadata | undefined = options.chunk
+      ? {
+        processed: chunkCandidates.length,
+        hasMore: chunkCandidatesWithLookahead.length > chunkLimit,
+        cursor: lastChunkFriend
+          ? { createdAt: lastChunkFriend.createdAt, friendId: lastChunkFriend.id }
+          : options.chunk.after,
+      }
+      : undefined;
     const projectionForFriend = (friend: FriendState): Record<string, string> => ({
       ...projectedWithDefaults(friend, options.connection, defaults),
       ...projectAnswers(
@@ -1202,6 +1257,7 @@ export async function syncFriendLedger(
         }
       }
       const exactRowOwner = new Map<number, string>();
+      const pendingChunkAppends: Array<{ plan: RowPlan; row: SheetCellValue[] }> = [];
       for (const friend of friends) {
         const rows = positions.get(friend.lineUserId) ?? [];
         if (rows.length === 1) exactRowOwner.set(rows[0], friend.id);
@@ -1610,14 +1666,6 @@ export async function syncFriendLedger(
             continue;
           }
           const nextRow = rowForProjection(headers.length, projection, columns, resolved.indexByKey);
-          await renewLease();
-          const appended = await client.appendValues(
-            options.connection.spreadsheetId,
-            `${quoteSheetName(options.connection.sheetName)}!A:${columnLabel(Math.max(0, headers.length - 1))}`,
-            [nextRow],
-          );
-          rowNumber = appendedStartRow(appended, values.length + appendedRows + 1);
-          appendedRows += 1;
           const canonical = Object.fromEntries(
             columns.map((column) => [column.key, canonicalValue(projection[column.key] ?? '')]),
           );
@@ -1626,8 +1674,8 @@ export async function syncFriendLedger(
             addWarning('保護列を含む友だち行の削除を検知し、元に戻しました');
             ignoredIdentityEdits += columns.filter((column) => column.kind === 'identity').length;
           }
-          plans.push({
-            friend, rowNumber, ledger, canonical, imports: {}, customCells: {},
+          const appendPlan: RowPlan = {
+            friend, rowNumber: 0, ledger, canonical, imports: {}, customCells: {},
             answerCells: {}, answerImports: {}, answerState, sheetUpdates: [],
             direction: 'to_sheets', conflictResolution: restoredDeletedRow ? 'harness_wins' : null, isAppend: true,
             details: columns
@@ -1651,7 +1699,20 @@ export async function syncFriendLedger(
                       : 'custom_field',
                   )
               )),
-          });
+          };
+          if (options.chunk) {
+            pendingChunkAppends.push({ plan: appendPlan, row: nextRow });
+          } else {
+            await renewLease();
+            const appended = await client.appendValues(
+              options.connection.spreadsheetId,
+              `${quoteSheetName(options.connection.sheetName)}!A:${columnLabel(Math.max(0, headers.length - 1))}`,
+              [nextRow],
+            );
+            appendPlan.rowNumber = appendedStartRow(appended, values.length + appendedRows + 1);
+            appendedRows += 1;
+          }
+          plans.push(appendPlan);
           continue;
         }
 
@@ -2007,6 +2068,19 @@ export async function syncFriendLedger(
           direction, conflictResolution, isAppend: false, webhookEventId, auditOutcome, auditErrorCode,
         });
       }
+      if (pendingChunkAppends.length > 0) {
+        await renewLease();
+        const appended = await client.appendValues(
+          options.connection.spreadsheetId,
+          `${quoteSheetName(options.connection.sheetName)}!A:${columnLabel(Math.max(0, headers.length - 1))}`,
+          pendingChunkAppends.map((entry) => entry.row),
+        );
+        const firstAppendedRow = appendedStartRow(appended, values.length + appendedRows + 1);
+        pendingChunkAppends.forEach((entry, index) => {
+          entry.plan.rowNumber = firstAppendedRow + index;
+        });
+        appendedRows += pendingChunkAppends.length;
+      }
     }
 
     const allSheetUpdates = plans.flatMap((plan) => plan.sheetUpdates);
@@ -2195,7 +2269,9 @@ export async function syncFriendLedger(
       await persistPlan(options.db, options.connection, plan, completedAt, renewLease);
     }
 
-    const status = warnings.length > 0 ? 'warning' : 'success';
+    const status = chunkMetadata?.hasMore
+      ? 'running'
+      : warnings.length > 0 ? 'warning' : 'success';
     const warning = warnings.length > 0 ? warnings.join(' / ') : null;
     const finalLease = await renewLease();
     const statusUpdated = await updateSheetsSyncStatus(
@@ -2204,7 +2280,7 @@ export async function syncFriendLedger(
       options.connection.id,
       {
         status,
-        lastSyncAt: completedAt,
+        lastSyncAt: status === 'running' ? options.connection.lastSyncAt : completedAt,
         warning,
         errorCode: warnings.length > 0 ? 'friend_ledger_warning' : null,
       },
@@ -2220,6 +2296,7 @@ export async function syncFriendLedger(
       updatedRows: updatedRowNumbers.size,
       importedFields,
       ignoredIdentityEdits,
+      ...(chunkMetadata ? { chunk: chunkMetadata } : {}),
     };
   } catch (error) {
     failure = error;
@@ -2258,6 +2335,22 @@ export interface FriendLedgerWebhookDrainResult {
   dead: number;
   exhausted: boolean;
   warnings: string[];
+}
+
+export async function maintainFriendLedgerWebhookEvents(
+  db: D1Database,
+  now: Date = new Date(),
+): Promise<void> {
+  await expireSheetsWebhookEvents(db, {
+    now: toJstString(now),
+    discardBefore: toJstString(new Date(now.getTime() - WEBHOOK_EVENT_RETENTION_MS)),
+    maxAttempts: MAX_WEBHOOK_EVENT_ATTEMPTS,
+    limit: 100,
+  });
+  await purgeSheetsWebhookEventTombstones(db, {
+    completedBefore: toJstString(new Date(now.getTime() - WEBHOOK_TOMBSTONE_RETENTION_MS)),
+    limit: 100,
+  });
 }
 
 export async function drainFriendLedgerWebhookEvents(
@@ -2425,16 +2518,7 @@ export async function runFriendLedgerPolling(
   options: RunFriendLedgerPollingOptions,
 ): Promise<{ attempted: number; succeeded: number; warnings: number; failed: number }> {
   const cleanupTime = (options.now ?? (() => new Date()))();
-  await expireSheetsWebhookEvents(options.db, {
-    now: toJstString(cleanupTime),
-    discardBefore: toJstString(new Date(cleanupTime.getTime() - WEBHOOK_EVENT_RETENTION_MS)),
-    maxAttempts: MAX_WEBHOOK_EVENT_ATTEMPTS,
-    limit: 100,
-  });
-  await purgeSheetsWebhookEventTombstones(options.db, {
-    completedBefore: toJstString(new Date(cleanupTime.getTime() - WEBHOOK_TOMBSTONE_RETENTION_MS)),
-    limit: 100,
-  });
+  await maintainFriendLedgerWebhookEvents(options.db, cleanupTime);
   if (!options.client && !options.credentialsJson) {
     return { attempted: 0, succeeded: 0, warnings: 0, failed: 0 };
   }
