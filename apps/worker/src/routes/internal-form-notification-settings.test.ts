@@ -110,14 +110,44 @@ describe('internal submission notification settings API', () => {
     });
   });
 
-  test('enabled settings reject a recipient field that is absent or not email typed', async () => {
-    for (const recipientEmailFieldId of [null, 'name', 'missing']) {
+  test('allows LINE-only notification when the form has no email field', async () => {
+    dbMocks.getFormalooForm.mockResolvedValue({
+      ...internalForm,
+      definition_json: JSON.stringify({
+        fields: [
+          { id: 'name', type: 'text', label: 'お名前', required: true, position: 0, config: {} },
+        ],
+        logic: [],
+      }),
+    });
+
+    const response = await app().request('/api/forms-advanced/form-1/submission-notification', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true, recipientEmailFieldId: null, messageTemplate: null }),
+    }, env());
+
+    expect(response.status).toBe(200);
+    expect(dbMocks.upsertInternalFormNotificationSettings).toHaveBeenCalledWith(DB, {
+      formId: 'form-1',
+      enabled: true,
+      recipientEmailFieldId: null,
+      messageTemplate: null,
+    });
+  });
+
+  test('rejects a selected recipient field that is absent or not email typed', async () => {
+    for (const recipientEmailFieldId of ['name', 'missing']) {
       const response = await app().request('/api/forms-advanced/form-1/submission-notification', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: true, recipientEmailFieldId, messageTemplate: null }),
       }, env());
       expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        success: false,
+        error: '選択したメール欄が見つかりません。メール欄を選び直してください',
+      });
     }
     expect(dbMocks.upsertInternalFormNotificationSettings).not.toHaveBeenCalled();
   });

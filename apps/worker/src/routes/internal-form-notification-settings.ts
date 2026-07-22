@@ -85,10 +85,10 @@ internalFormNotificationSettings.put(
       ).find(
         (field) => field.id === recipientEmailFieldId && field.type === 'email',
       );
-      if (!recipientField && (body.enabled || recipientEmailFieldId !== null)) {
+      if (recipientEmailFieldId !== null && !recipientField) {
         return c.json({
           success: false,
-          error: '自動通知を有効にするには、回答者本人のメール項目を選んでください',
+          error: '選択したメール欄が見つかりません。メール欄を選び直してください',
         }, 400);
       }
 
