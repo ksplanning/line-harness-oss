@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import DataCockpit from '@/components/forms-advanced/data-cockpit'
@@ -30,6 +30,7 @@ function labelForSlug(detail: RowDetail, slug: string): string {
 
 function readonlyAnswerText(value: unknown): string {
   if (isFileAnswer(value)) return fileAnswerSummary(value)
+  if (typeof value === 'boolean') return value ? 'はい' : 'いいえ'
   if (Array.isArray(value)) return value.length > 0
     ? value.map(readonlyAnswerText).join('、')
     : '—'
@@ -40,6 +41,73 @@ function readonlyAnswerText(value: unknown): string {
       : '—'
   }
   return String(value ?? '—')
+}
+
+type DetailAnswerItem = { slug: string; label: string; value: unknown }
+
+/** 0 / false は有効な回答。空白・空配列・空 object だけを未回答として扱う。 */
+function hasReadableAnswer(value: unknown): boolean {
+  if (value === null || value === undefined) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.some(hasReadableAnswer)
+  if (typeof value === 'object') return Object.values(value).some(hasReadableAnswer)
+  return true
+}
+
+/** field 定義順を正本にし、定義外の回答も末尾へ残して安定分割する。 */
+function detailAnswerSections(detail: RowDetail): {
+  answered: DetailAnswerItem[]
+  unanswered: DetailAnswerItem[]
+} {
+  const ordered: DetailAnswerItem[] = []
+  const seen = new Set<string>()
+  for (const field of detail.fields ?? []) {
+    if (seen.has(field.slug)) continue
+    seen.add(field.slug)
+    ordered.push({ slug: field.slug, label: field.label, value: detail.answers[field.slug] })
+  }
+  for (const [slug, value] of Object.entries(detail.answers)) {
+    if (seen.has(slug)) continue
+    seen.add(slug)
+    ordered.push({ slug, label: labelForSlug(detail, slug), value })
+  }
+  return {
+    answered: ordered.filter((item) => hasReadableAnswer(item.value)),
+    unanswered: ordered.filter((item) => !hasReadableAnswer(item.value)),
+  }
+}
+
+/** 複合値は項目ごとのリスト、通常値は改行を保つテキストとして表示する。 */
+function ReadonlyAnswerValue({ value }: { value: unknown }): ReactNode {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '—'
+    const includesComposite = value.some((item) => item !== null && typeof item === 'object')
+    if (!includesComposite) return readonlyAnswerText(value)
+    return (
+      <ul className="space-y-1" role="list">
+        {value.map((item, index) => (
+          <li key={index} className="rounded-md bg-gray-50 px-2 py-1.5" role="listitem">
+            <ReadonlyAnswerValue value={item} />
+          </li>
+        ))}
+      </ul>
+    )
+  }
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value)
+    if (entries.length === 0) return '—'
+    return (
+      <ul className="space-y-1" role="list">
+        {entries.map(([key, nested]) => (
+          <li key={key} className="min-w-0 rounded-md bg-gray-50 px-2 py-1.5" role="listitem">
+            <span className="font-medium text-gray-600">{key}: </span>
+            <ReadonlyAnswerValue value={nested} />
+          </li>
+        ))}
+      </ul>
+    )
+  }
+  return readonlyAnswerText(value)
 }
 
 function canEditField(field: RowEditFieldMeta): boolean {
@@ -264,6 +332,57 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
     } finally { setSaving(false) }
   }
 
+  const visibleDetailAnswers = detail
+    ? detailAnswerSections(detail)
+    : { answered: [], unanswered: [] }
+  const renderDetailAnswer = (item: DetailAnswerItem) => {
+    if (!detail) return null
+    const answered = hasReadableAnswer(item.value)
+    return (
+      <div
+        key={item.slug}
+        data-answer-slug={item.slug}
+        className="min-w-0 rounded-lg border border-gray-200 bg-white p-3"
+      >
+        <dt className="text-xs font-medium text-gray-500">{item.label}</dt>
+        {!answered ? (
+          <dd data-testid={`answer-value-${item.slug}`} className="mt-1 text-sm text-gray-400">未回答</dd>
+        ) : isFileAnswer(item.value) ? (
+          <dd data-testid={`answer-value-${item.slug}`} className="mt-1.5 space-y-2">
+            {item.value.map((file, index) => (
+              <div
+                key={`${file.key}-${index}`}
+                className="flex flex-col items-start gap-1.5 rounded-md bg-gray-50 p-2 text-sm text-gray-900 sm:flex-row sm:items-center"
+              >
+                <span className="min-w-0 break-words [overflow-wrap:anywhere]">{file.name || '添付ファイル'}</span>
+                {typeof file.size === 'number' && (
+                  <span className="shrink-0 text-xs text-gray-400">({fileSizeLabel(file.size)})</span>
+                )}
+                {detail.source === 'internal' && (
+                  <button
+                    type="button"
+                    data-testid={`download-file-${item.slug}-${index}`}
+                    onClick={() => onDownloadFile(item.slug, index, file.name || '添付ファイル')}
+                    className="min-h-[40px] shrink-0 rounded-lg border border-gray-300 bg-white px-3 text-xs font-medium text-gray-700 hover:bg-gray-100 sm:ml-auto"
+                  >
+                    ダウンロード
+                  </button>
+                )}
+              </div>
+            ))}
+          </dd>
+        ) : (
+          <dd
+            data-testid={`answer-value-${item.slug}`}
+            className="mt-1 min-w-0 whitespace-pre-wrap break-words text-sm leading-6 text-gray-900 [overflow-wrap:anywhere]"
+          >
+            <ReadonlyAnswerValue value={item.value} />
+          </dd>
+        )}
+      </div>
+    )
+  }
+
   // F6-2 表示スコープ照合 (Codex B#3): 別アカウント向け form の回答データは表示しない (NULL 共通は許容)。
   //   これは表示フィルタで、API 直打ちは防げない (N-17)。
   const scopeBlocked =
@@ -342,10 +461,29 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
 
       {detail && (
         <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onClick={closeDetail}>
-          <div className="h-full w-full max-w-md overflow-y-auto bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between">
+          <div className="h-full w-full max-w-xl overflow-x-hidden overflow-y-auto bg-white p-4 shadow-xl sm:p-6" onClick={(e) => e.stopPropagation()}>
+            <div data-testid="detail-header" className="mb-3 flex items-start justify-between gap-3">
               <h2 className="text-sm font-bold text-gray-900">回答の詳細</h2>
-              <button type="button" onClick={closeDetail} className="text-gray-400 hover:text-gray-700">閉じる</button>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {/* 弾M (T-D2): allow_post_edit=1 のときのみ、見つけやすい上部に「編集」を表示。 */}
+                {detail.allowPostEdit === 1 && !editMode && (
+                  <button
+                    type="button"
+                    data-testid="edit-answer"
+                    onClick={startEdit}
+                    className="min-h-[40px] rounded-lg bg-gray-900 px-3 text-xs font-medium text-white hover:bg-gray-700"
+                  >
+                    回答を編集
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={closeDetail}
+                  className="min-h-[40px] rounded-lg px-2 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                >
+                  閉じる
+                </button>
+              </div>
             </div>
             <div className="text-xs text-gray-400">
               {formatJstMinute(detail.submittedAt)}・
@@ -362,50 +500,40 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
 
             {!editMode ? (
               <>
-                <dl className="mt-3 space-y-2">
-                  {Object.entries(detail.answers).map(([k, v]) => (
-                    <div key={k} className="rounded border border-gray-100 p-2">
-                      <dt className="text-xs text-gray-500">{labelForSlug(detail, k)}</dt>
-                      {isFileAnswer(v) ? (
-                        <dd className="mt-0.5 space-y-1">
-                          {v.map((file, index) => (
-                            <div key={`${file.key}-${index}`} className="flex items-center justify-between gap-2 text-sm text-gray-900">
-                              <span className="min-w-0 truncate">{file.name || '添付ファイル'}</span>
-                              {typeof file.size === 'number' && (
-                                <span className="shrink-0 text-xs text-gray-400">({fileSizeLabel(file.size)})</span>
-                              )}
-                              {detail.source === 'internal' && (
-                                <button
-                                  type="button"
-                                  data-testid={`download-file-${k}-${index}`}
-                                  onClick={() => onDownloadFile(k, index, file.name || '添付ファイル')}
-                                  className="shrink-0 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50"
-                                >
-                                  ダウンロード
-                                </button>
-                              )}
-                            </div>
-                          ))}
-                        </dd>
-                      ) : (
-                        <dd className="mt-0.5 text-sm text-gray-900">{readonlyAnswerText(v)}</dd>
-                      )}
-                    </div>
-                  ))}
-                  {Object.keys(detail.answers).length === 0 && <div className="text-sm text-gray-400">回答項目がありません</div>}
-                </dl>
-                {/* 弾M (T-D2): allow_post_edit=1 のときのみ「編集」ボタンを表示 */}
-                {detail.allowPostEdit === 1 && (
-                  <button type="button" data-testid="edit-answer" onClick={startEdit}
-                    className="mt-4 rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700">
-                    回答を編集
-                  </button>
+                <section data-testid="answered-answers" className="mt-4" aria-labelledby="answered-answers-heading">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 id="answered-answers-heading" className="text-sm font-semibold text-gray-900">回答済みの項目</h3>
+                    <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                      {visibleDetailAnswers.answered.length}件
+                    </span>
+                  </div>
+                  <dl className="mt-2 space-y-2">
+                    {visibleDetailAnswers.answered.map(renderDetailAnswer)}
+                  </dl>
+                  {visibleDetailAnswers.answered.length === 0 && (
+                    <p className="mt-2 rounded-lg bg-gray-50 p-3 text-sm text-gray-500">回答済みの項目はありません</p>
+                  )}
+                </section>
+
+                {visibleDetailAnswers.unanswered.length > 0 && (
+                  <details data-testid="unanswered-answers" className="mt-4 rounded-lg border border-gray-200 bg-gray-50">
+                    <summary className="min-h-[44px] cursor-pointer px-3 py-3 text-sm font-medium text-gray-700">
+                      未回答の項目（{visibleDetailAnswers.unanswered.length}件）
+                    </summary>
+                    <dl className="space-y-2 border-t border-gray-200 p-2">
+                      {visibleDetailAnswers.unanswered.map(renderDetailAnswer)}
+                    </dl>
+                  </details>
+                )}
+
+                {visibleDetailAnswers.answered.length === 0 && visibleDetailAnswers.unanswered.length === 0 && (
+                  <div className="mt-3 text-sm text-gray-400">回答項目がありません</div>
                 )}
                 {detail.source === 'internal' && !confirmingDelete && (
                   <button
                     type="button"
                     onClick={() => { setConfirmingDelete(true); setDeleteError(null) }}
-                    className="mt-4 ml-2 rounded border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                    className="mt-4 rounded border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
                   >
                     回答を削除
                   </button>

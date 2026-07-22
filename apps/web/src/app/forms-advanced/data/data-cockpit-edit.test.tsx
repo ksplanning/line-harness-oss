@@ -7,7 +7,7 @@
  *   - ④最終編集者・日時が表示される。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, cleanup, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: null }
@@ -81,6 +81,82 @@ async function openDetail() {
 }
 
 describe('T-D2 回答詳細 編集モード', () => {
+  it('回答済みをフォーム順で先に並べ、未回答は件数付きで初期状態を閉じる', async () => {
+    rowMock.mockResolvedValue({
+      ...detailFor(1),
+      fields: [
+        { slug: 'nameSlug', label: '名前', type: 'text', required: false, editable: true },
+        { slug: 'zeroSlug', label: '参加回数', type: 'number', required: false, editable: true },
+        { slug: 'falseSlug', label: '同意', type: 'yes_no', required: false, editable: true },
+        { slug: 'blankSlug', label: '備考', type: 'text', required: false, editable: true },
+        { slug: 'missingSlug', label: '紹介者', type: 'text', required: false, editable: true },
+        { slug: 'emptyArraySlug', label: '希望', type: 'multiple_select', required: false, editable: true },
+      ],
+      answers: {
+        unknownSlug: '定義外の回答',
+        falseSlug: false,
+        blankSlug: '   ',
+        zeroSlug: 0,
+        nameSlug: '田中',
+        emptyArraySlug: [],
+      },
+    })
+    await openDetail()
+
+    const answered = screen.getByTestId('answered-answers')
+    expect(Array.from(answered.querySelectorAll('[data-answer-slug]')).map((node) => node.getAttribute('data-answer-slug')))
+      .toEqual(['nameSlug', 'zeroSlug', 'falseSlug', 'unknownSlug'])
+    expect(within(answered).getByText('回答済みの項目')).toBeTruthy()
+    expect(within(answered).getByText('0')).toBeTruthy()
+    expect(within(answered).getByText('いいえ')).toBeTruthy()
+
+    const unanswered = screen.getByTestId('unanswered-answers') as HTMLDetailsElement
+    expect(unanswered.open).toBe(false)
+    expect(unanswered.querySelector('summary')?.textContent).toContain('未回答の項目（3件）')
+    expect(Array.from(unanswered.querySelectorAll('[data-answer-slug]')).map((node) => node.getAttribute('data-answer-slug')))
+      .toEqual(['blankSlug', 'missingSlug', 'emptyArraySlug'])
+  })
+
+  it('長文は改行を保って強制折返しし、複合値は項目ごとのリストで表示する', async () => {
+    const longAnswer = `一行目\n${'very-long-value'.repeat(20)}`
+    rowMock.mockResolvedValue({
+      ...detailFor(0),
+      fields: [
+        { slug: 'longSlug', label: '長文', type: 'textarea', required: false, editable: true },
+        { slug: 'profileSlug', label: 'プロフィール', type: 'matrix', required: false, editable: false },
+      ],
+      answers: {
+        profileSlug: { 住所: '東京都', 備考: '車いすを利用' },
+        longSlug: longAnswer,
+      },
+    })
+    await openDetail()
+
+    const longValue = screen.getByTestId('answer-value-longSlug')
+    expect(longValue.textContent).toBe(longAnswer)
+    expect(longValue.className).toContain('whitespace-pre-wrap')
+    expect(longValue.className).toContain('[overflow-wrap:anywhere]')
+    const composite = screen.getByTestId('answer-value-profileSlug')
+    expect(within(composite).getAllByRole('listitem')).toHaveLength(2)
+    expect(composite.textContent).toContain('住所: 東京都')
+    expect(composite.textContent).toContain('備考: 車いすを利用')
+  })
+
+  it('回答を編集ボタンを詳細見出しと同じ上部に置き、回答一覧より前に表示する', async () => {
+    rowMock.mockResolvedValue(detailFor(1))
+    await openDetail()
+
+    const header = screen.getByTestId('detail-header')
+    const editButton = within(header).getByTestId('edit-answer')
+    const answered = screen.getByTestId('answered-answers')
+    expect(header.compareDocumentPosition(answered) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(editButton.textContent).toContain('回答を編集')
+    expect(editButton.className).toContain('min-h-[40px]')
+
+    fireEvent.click(editButton)
+    expect(screen.getByTestId('edit-input-nameSlug')).toBeTruthy()
+  })
+
   it('internal source も editVersion CAS 付きで編集し、自前配信表示を保つ', async () => {
     getMock.mockResolvedValue({ id: 'fa1', title: 'F', lineAccountId: null, renderBackend: 'internal' })
     getRenderBackendMock.mockResolvedValue('internal')

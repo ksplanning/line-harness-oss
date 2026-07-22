@@ -89,10 +89,14 @@ describe('回答詳細 drawer の file 回答', () => {
   it('ファイル名とサイズを列挙し [object Object] を出さない', async () => {
     await openDetail()
     expect(document.body.textContent).not.toContain('[object Object]')
-    expect(screen.getByText('見積書.pdf')).toBeTruthy()
+    const fileName = screen.getByText('見積書.pdf')
+    expect(fileName.className).not.toContain('truncate')
+    expect(fileName.className).toContain('[overflow-wrap:anywhere]')
+    expect(fileName.parentElement?.className).toContain('flex-col')
     expect(screen.getByText('(1.0 KB)')).toBeTruthy()
     expect(screen.getByText('写真.png')).toBeTruthy()
     expect(screen.getByText('(2.0 MB)')).toBeTruthy()
+    expect(screen.getByTestId('download-file-docs-0').className).toContain('min-h-[40px]')
   })
 
   it('各ボタンから正しい index の download API を呼ぶ', async () => {
