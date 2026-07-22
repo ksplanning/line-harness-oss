@@ -1,19 +1,15 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FriendFieldDefinition } from '@line-crm/shared'
 import Header from '@/components/layout/header'
 import SheetsConnectionsPanel, {
-  type SheetsConnectionDraft,
   type SheetsSyncResultState,
 } from '@/components/settings/sheets-connections-panel'
 import { useAccount } from '@/contexts/account-context'
-import { api } from '@/lib/api'
 import {
   sheetsConnectionsApi,
   type SheetsAuditEntry,
   type SheetsConnection,
-  type UpdateSheetsConnectionInput,
 } from '@/lib/sheets-connections-api'
 
 type TestState = 'testing' | 'ok' | 'ng'
@@ -26,12 +22,10 @@ function errorMessage(error: unknown): string {
 export default function SheetsSettingsPage() {
   const { selectedAccountId, loading } = useAccount()
   const [connections, setConnections] = useState<SheetsConnection[]>([])
-  const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
   const [testResults, setTestResults] = useState<Record<string, TestState>>({})
   const [syncResults, setSyncResults] = useState<Record<string, SheetsSyncResultState>>({})
   const [auditEntries, setAuditEntries] = useState<Record<string, SheetsAuditEntry[]>>({})
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
   const requestVersion = useRef(0)
   const auditGeneration = useRef(0)
   const testVersions = useRef<Record<string, number>>({})
@@ -71,24 +65,6 @@ export default function SheetsSettingsPage() {
   }, [])
 
   useEffect(() => {
-    let active = true
-    void api.friendFieldDefinitions.list()
-      .then((response) => {
-        if (active && response.success) {
-          setFieldDefinitions(
-            response.data
-              .filter((definition) => definition.isActive)
-              .sort((a, b) => a.displayOrder - b.displayOrder || a.id.localeCompare(b.id)),
-          )
-        }
-      })
-      .catch(() => {
-        if (active) setFieldDefinitions([])
-      })
-    return () => { active = false }
-  }, [])
-
-  useEffect(() => {
     requestVersion.current += 1
     auditGeneration.current += 1
     setConnections([])
@@ -98,91 +74,11 @@ export default function SheetsSettingsPage() {
     testVersions.current = {}
     syncVersions.current = {}
     setError(null)
-    setBusy(false)
     if (selectedAccountId) void load(selectedAccountId)
   }, [selectedAccountId, load])
 
   const refreshIfCurrent = async (accountId: string) => {
     if (activeAccount.current === accountId) await load(accountId)
-  }
-
-  const handleCreate = async (input: SheetsConnectionDraft) => {
-    const accountId = selectedAccountId
-    if (!accountId) return
-    setBusy(true)
-    setError(null)
-    try {
-      await sheetsConnectionsApi.create({ lineAccountId: accountId, ...input })
-      await refreshIfCurrent(accountId)
-    } catch (cause) {
-      if (activeAccount.current === accountId) setError(errorMessage(cause))
-    } finally {
-      if (activeAccount.current === accountId) setBusy(false)
-    }
-  }
-
-  const handleUpdate = async (id: string, input: UpdateSheetsConnectionInput) => {
-    const accountId = selectedAccountId
-    if (!accountId) return
-    setBusy(true)
-    setError(null)
-    testVersions.current[id] = (testVersions.current[id] ?? 0) + 1
-    syncVersions.current[id] = (syncVersions.current[id] ?? 0) + 1
-    setTestResults((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    setSyncResults((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    setAuditEntries((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    try {
-      await sheetsConnectionsApi.update(accountId, id, input)
-      await refreshIfCurrent(accountId)
-    } catch (cause) {
-      if (activeAccount.current === accountId) setError(errorMessage(cause))
-    } finally {
-      if (activeAccount.current === accountId) setBusy(false)
-    }
-  }
-
-  const handleRemove = async (id: string) => {
-    const accountId = selectedAccountId
-    if (!accountId) return
-    setBusy(true)
-    setError(null)
-    testVersions.current[id] = (testVersions.current[id] ?? 0) + 1
-    syncVersions.current[id] = (syncVersions.current[id] ?? 0) + 1
-    setTestResults((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    setSyncResults((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    setAuditEntries((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    try {
-      await sheetsConnectionsApi.remove(accountId, id)
-      await refreshIfCurrent(accountId)
-    } catch (cause) {
-      if (activeAccount.current === accountId) setError(errorMessage(cause))
-    } finally {
-      if (activeAccount.current === accountId) setBusy(false)
-    }
   }
 
   const handleTest = async (id: string) => {
@@ -238,7 +134,7 @@ export default function SheetsSettingsPage() {
     <div>
       <Header
         title="Google スプレッドシート連携"
-        description="フォームごとに接続先と同期方向を登録し、実際に 1 セル読めるか確認します。"
+        description="フォームごとの接続状態、最終同期、エラーをまとめて確認します。"
       />
       {loading ? (
         <p className="text-sm text-gray-500">LINEアカウントを読み込んでいます...</p>
@@ -250,17 +146,12 @@ export default function SheetsSettingsPage() {
         <SheetsConnectionsPanel
           key={selectedAccountId}
           connections={connections}
-          fieldDefinitions={fieldDefinitions}
-          onCreate={(input) => { void handleCreate(input) }}
-          onUpdate={(id, input) => { void handleUpdate(id, input) }}
-          onRemove={(id) => { void handleRemove(id) }}
           onTest={(id) => { void handleTest(id) }}
           onSync={(id) => { void handleSync(id) }}
           testResults={testResults}
           syncResults={syncResults}
           auditEntries={auditEntries}
           error={error}
-          busy={busy}
         />
       )}
     </div>

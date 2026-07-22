@@ -5,13 +5,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   account: { selectedAccountId: 'acc-1' as string | null, loading: false },
   list: vi.fn(),
-  create: vi.fn(),
-  update: vi.fn(),
-  remove: vi.fn(),
   testConnection: vi.fn(),
   sync: vi.fn(),
   audit: vi.fn(),
-  listFieldDefinitions: vi.fn(),
 }))
 
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => mocks.account }))
@@ -19,43 +15,21 @@ vi.mock('@/components/layout/header', () => ({ default: () => null }))
 vi.mock('@/lib/sheets-connections-api', () => ({
   sheetsConnectionsApi: {
     list: (...args: unknown[]) => mocks.list(...args),
-    create: (...args: unknown[]) => mocks.create(...args),
-    update: (...args: unknown[]) => mocks.update(...args),
-    remove: (...args: unknown[]) => mocks.remove(...args),
     test: (...args: unknown[]) => mocks.testConnection(...args),
     sync: (...args: unknown[]) => mocks.sync(...args),
     audit: (...args: unknown[]) => mocks.audit(...args),
   },
 }))
-vi.mock('@/lib/api', () => ({
-  api: {
-    friendFieldDefinitions: {
-      list: (...args: unknown[]) => mocks.listFieldDefinitions(...args),
-    },
-  },
-}))
-
 import SheetsSettingsPage from './page'
 
 const item = (id: string, account = 'acc-1') => ({
-  id, lineAccountId: account, formId: `form-${id}`, spreadsheetId: `sheet_${id}`,
+  id, lineAccountId: account, formId: `form-${id}`, formName: `${id} の申込フォーム`, spreadsheetId: `sheet_${id}`,
   sheetName: '回答', syncDirection: 'bidirectional' as const, conflictPolicy: 'last_write_wins' as const,
   friendFieldMappings: [{ fieldId: 'field-rank', header: '会員ランク' }],
   friendLedgerEnabled: true,
   lastSyncAt: '2026-07-21T10:00:00.000+09:00', lastSyncStatus: 'success' as const, lastSyncWarning: null,
   isActive: true, createdAt: '2026-07-20', updatedAt: '2026-07-20',
 })
-
-const fieldDefinitions = [
-  {
-    id: 'field-rank', name: '会員ランク', defaultValue: '', displayOrder: 1,
-    isActive: true, createdAt: '2026-07-20', updatedAt: '2026-07-20',
-  },
-  {
-    id: 'field-inactive', name: '停止中の項目', defaultValue: '', displayOrder: 2,
-    isActive: false, createdAt: '2026-07-20', updatedAt: '2026-07-20',
-  },
-]
 
 const auditEntry = (actor: string) => ({
   actor,
@@ -70,32 +44,24 @@ beforeEach(() => {
   mocks.account.selectedAccountId = 'acc-1'
   mocks.account.loading = false
   mocks.list.mockReset().mockResolvedValue([item('one')])
-  mocks.create.mockReset().mockResolvedValue(item('new'))
-  mocks.update.mockReset().mockResolvedValue(item('one'))
-  mocks.remove.mockReset().mockResolvedValue(undefined)
   mocks.testConnection.mockReset().mockResolvedValue(true)
   mocks.sync.mockReset().mockResolvedValue({ status: 'success', warning: null })
   mocks.audit.mockReset().mockResolvedValue([])
-  mocks.listFieldDefinitions.mockReset().mockResolvedValue({ success: true, data: fieldDefinitions })
 })
 
 afterEach(() => cleanup())
 
 describe('Sheets settings page', () => {
-  test('loads only the selected LINE account and creates in that account', async () => {
+  test('loads only the selected LINE account as a read-only monitoring page', async () => {
     render(<SheetsSettingsPage />)
     await waitFor(() => expect(mocks.list).toHaveBeenCalledWith('acc-1'))
-    await screen.findByTestId('sheets-item-one')
-    const field = await screen.findByRole('checkbox', { name: '会員ランク' })
-    expect(screen.queryByRole('checkbox', { name: '停止中の項目' })).toBeNull()
-    fireEvent.change(screen.getByTestId('sheets-form-id'), { target: { value: 'form-new' } })
-    fireEvent.change(screen.getByTestId('sheets-spreadsheet-id'), { target: { value: 'sheet_new' } })
-    fireEvent.click(field)
-    fireEvent.click(screen.getByTestId('sheets-save'))
-    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith({
-      lineAccountId: 'acc-1', formId: 'form-new', spreadsheetId: 'sheet_new',
-      sheetName: 'Sheet1', syncDirection: 'bidirectional', selectedFieldIds: ['field-rank'],
-    }))
+    const row = await screen.findByTestId('sheets-item-one')
+    expect(row.textContent).toContain('one の申込フォーム')
+    expect(row.textContent).not.toContain('form-one')
+    expect(row.textContent).not.toContain('sheet_one')
+    expect(screen.queryByTestId('sheets-form-id')).toBeNull()
+    expect(screen.queryByTestId('sheets-spreadsheet-id')).toBeNull()
+    expect(screen.getByRole('link', { name: 'one の申込フォームの「回答後の動き」を開く' })).toBeTruthy()
   })
 
   test('does not call API without an account and shows a selection hint', () => {
@@ -120,38 +86,6 @@ describe('Sheets settings page', () => {
     await Promise.resolve()
     expect(screen.queryByTestId('sheets-item-stale')).toBeNull()
     expect(screen.getByTestId('sheets-item-new-account')).toBeTruthy()
-  })
-
-  test('resets an account-scoped edit draft when the selected account changes', async () => {
-    mocks.list.mockImplementation((accountId: string) => Promise.resolve([
-      item(accountId === 'acc-1' ? 'one' : 'two', accountId),
-    ]))
-    const view = render(<SheetsSettingsPage />)
-    await screen.findByTestId('sheets-item-one')
-    fireEvent.click(screen.getByTestId('sheets-edit-one'))
-    fireEvent.change(screen.getByTestId('sheets-spreadsheet-id'), { target: { value: 'account-a-draft' } })
-
-    mocks.account.selectedAccountId = 'acc-2'
-    view.rerender(<SheetsSettingsPage />)
-    await screen.findByTestId('sheets-item-two')
-
-    expect((screen.getByTestId('sheets-form-id') as HTMLInputElement).disabled).toBe(false)
-    expect((screen.getByTestId('sheets-form-id') as HTMLInputElement).value).toBe('')
-    expect((screen.getByTestId('sheets-spreadsheet-id') as HTMLInputElement).value).toBe('')
-  })
-
-  test('clears an old successful test result when settings are updated', async () => {
-    render(<SheetsSettingsPage />)
-    await screen.findByTestId('sheets-item-one')
-    fireEvent.click(screen.getByTestId('sheets-test-one'))
-    await screen.findByTestId('sheets-test-result-one')
-
-    fireEvent.click(screen.getByTestId('sheets-edit-one'))
-    fireEvent.change(screen.getByTestId('sheets-sheet-name'), { target: { value: '変更後' } })
-    fireEvent.click(screen.getByTestId('sheets-save'))
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledTimes(1))
-
-    expect(screen.queryByTestId('sheets-test-result-one')).toBeNull()
   })
 
   test('clears a previous setup error before a successful retry', async () => {
