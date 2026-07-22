@@ -308,6 +308,42 @@ describe('friend ledger bidirectional sync', () => {
     expect(client.values.slice(1).filter((row) => row.includes('U_AYAKO'))).toHaveLength(1);
   });
 
+  test('writes and reads only explicitly selected form fields', async () => {
+    raw.prepare(`UPDATE sheets_connections SET is_active=0, deleted_at='2026-07-21T11:00:00+09:00'
+      WHERE id=?`).run(connection.id);
+    connection = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1',
+      formId: 'friend-ledger',
+      spreadsheetId: 'sheet-selected',
+      sheetName: '友だち台帳',
+      syncDirection: 'bidirectional',
+      friendFieldMappings: [{ fieldId: 'field-paid', header: '入金確認' }],
+      friendLedgerEnabled: true,
+      selectedFormFieldIds: ['plan'],
+    });
+    enableInternalAnswerForm([
+      { id: 'name', label: '申込者名', position: 0 },
+      { id: 'plan', label: '希望プラン', type: 'dropdown', position: 1 },
+    ]);
+    insertInternalAnswer('answer-selected', { name: 'シートへ出さない', plan: 'B' }, '2026-07-21T11:00:00+09:00');
+
+    await run();
+
+    expect(client.values).toEqual([
+      ['表示名', 'userId', '登録日', '入金確認', '希望プラン'],
+      ['あやこ', 'U_AYAKO', '2026-07-20T10:00:00+09:00', '未', 'B'],
+    ]);
+    expect(client.values.flat()).not.toContain('申込者名');
+    expect(client.values.flat()).not.toContain('シートへ出さない');
+
+    client.values[1][4] = 'C';
+    client.values[0].push('申込者名');
+    client.values[1].push('読み込まない');
+    await run('polling', 'system_poll');
+
+    expect(latestInternalAnswers()).toEqual({ name: 'シートへ出さない', plan: 'C' });
+  });
+
   test('scopes a common internal form through the connection account', async () => {
     enableInternalAnswerForm([{ id: 'name', label: '申込者名', position: 0 }]);
     raw.prepare(`UPDATE formaloo_forms SET line_account_id=NULL

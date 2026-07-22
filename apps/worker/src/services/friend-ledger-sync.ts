@@ -720,8 +720,14 @@ export async function syncFriendLedger(
             }
           }
 
-          const definedFields = formAnswerFields(parsed.definition.fields);
-          const definedById = new Map(definedFields.map((field) => [field.fieldId, field]));
+          const allDefinedFields = formAnswerFields(parsed.definition.fields);
+          const selectedFieldIds = options.connection.selectedFormFieldIds == null
+            ? null
+            : new Set(options.connection.selectedFormFieldIds);
+          const definedFields = selectedFieldIds === null
+            ? allDefinedFields
+            : allDefinedFields.filter((field) => selectedFieldIds.has(field.fieldId));
+          const allDefinedById = new Map(allDefinedFields.map((field) => [field.fieldId, field]));
           const ownedById = new Map(
             options.connection.formAnswerHeaders.map((header) => [header.fieldId, header]),
           );
@@ -753,7 +759,7 @@ export async function syncFriendLedger(
             reservedHeaders.add(field.header);
           }
           removedAnswerFields = options.connection.formAnswerHeaders.flatMap((owned) => (
-            definedById.has(owned.fieldId)
+            allDefinedById.has(owned.fieldId)
               ? []
               : [{ fieldId: owned.fieldId, header: owned.header, type: 'removed', readOnly: true }]
           ));

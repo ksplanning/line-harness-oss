@@ -28,12 +28,14 @@ export interface SheetsConnection {
   id: string
   lineAccountId: string
   formId: string
+  formName?: string
   spreadsheetId: string
   sheetName: string
   syncDirection: SheetsSyncDirection
   conflictPolicy: 'last_write_wins'
   friendFieldMappings: SheetsFriendFieldMapping[]
   friendLedgerEnabled: boolean
+  selectedFormFieldIds?: string[] | null
   lastSyncAt: string | null
   lastSyncStatus: SheetsLastSyncStatus
   lastSyncWarning: string | null
@@ -49,11 +51,12 @@ export interface CreateSheetsConnectionInput {
   sheetName: string
   syncDirection: SheetsSyncDirection
   selectedFieldIds: string[]
+  selectedFormFieldIds?: string[]
 }
 
 export type UpdateSheetsConnectionInput = Pick<
   CreateSheetsConnectionInput,
-  'spreadsheetId' | 'sheetName' | 'syncDirection' | 'selectedFieldIds'
+  'spreadsheetId' | 'sheetName' | 'syncDirection' | 'selectedFieldIds' | 'selectedFormFieldIds'
 >
 
 interface Envelope<T> {
@@ -62,9 +65,45 @@ interface Envelope<T> {
   error?: string
 }
 
+export interface InspectSheetsConnectionInput {
+  lineAccountId: string
+  formId: string
+  spreadsheetUrl: string
+}
+
+export interface InspectedSheetsConnection {
+  spreadsheetId: string
+  sheetNames: string[]
+}
+
 const BASE_PATH = '/api/integrations/google-sheets/connections'
 
 export const sheetsConnectionsApi = {
+  async setup(): Promise<{ serviceAccountEmail: string }> {
+    return (await fetchApi<Envelope<{ serviceAccountEmail: string }>>(`${BASE_PATH}/setup`)).data
+  },
+
+  async inspect(input: InspectSheetsConnectionInput): Promise<InspectedSheetsConnection> {
+    const response = await fetchApi<Envelope<
+      | ({ ok: true } & InspectedSheetsConnection)
+      | { ok: false; category: string; message: string }
+    >>(`${BASE_PATH}/inspect`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    if (!response.data.ok) {
+      const error = new Error(response.data.message) as Error & {
+        body: { error: string; category: string }
+      }
+      error.body = { error: response.data.message, category: response.data.category }
+      throw error
+    }
+    return {
+      spreadsheetId: response.data.spreadsheetId,
+      sheetNames: response.data.sheetNames,
+    }
+  },
+
   async list(lineAccountId: string, formId?: string): Promise<SheetsConnection[]> {
     const query = `lineAccountId=${encodeURIComponent(lineAccountId)}`
       + (formId ? `&formId=${encodeURIComponent(formId)}` : '')

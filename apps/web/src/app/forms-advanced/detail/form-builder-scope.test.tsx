@@ -12,6 +12,7 @@ import type { ReactNode } from 'react'
 const builderProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
 const sharePanelProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
 const notificationSettingsProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
+const sheetsSetupPanelProps = vi.hoisted(() => ({ current: undefined as Record<string, unknown> | undefined }))
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: 'acc_A' }
 const getMock = vi.fn()
 const getRenderBackendMock = vi.fn()
@@ -19,6 +20,10 @@ const setRenderBackendMock = vi.fn()
 const shareMock = vi.fn()
 const saveDefinitionMock = vi.fn()
 const sheetsListMock = vi.fn()
+const sheetsSetupMock = vi.fn()
+const sheetsInspectMock = vi.fn()
+const sheetsCreateMock = vi.fn()
+const sheetsUpdateMock = vi.fn()
 const submitForReviewMock = vi.fn()
 const publishMock = vi.fn()
 const unpublishMock = vi.fn()
@@ -60,6 +65,12 @@ vi.mock('@/components/forms-advanced/internal-submission-notification-settings',
     )
   },
 }))
+vi.mock('@/components/forms-advanced/internal-sheets-setup-panel', () => ({
+  default: (props: Record<string, unknown>) => {
+    sheetsSetupPanelProps.current = props
+    return <div data-testid="internal-sheets-setup-panel" />
+  },
+}))
 vi.mock('@/contexts/account-context', () => ({ useAccount: () => mockAccount }))
 vi.mock('@/lib/formaloo-advanced-api', () => ({
   formsAdvancedApi: {
@@ -77,6 +88,10 @@ vi.mock('@/lib/formaloo-advanced-api', () => ({
 vi.mock('@/lib/sheets-connections-api', () => ({
   sheetsConnectionsApi: {
     list: (...a: unknown[]) => sheetsListMock(...a),
+    setup: (...a: unknown[]) => sheetsSetupMock(...a),
+    inspect: (...a: unknown[]) => sheetsInspectMock(...a),
+    create: (...a: unknown[]) => sheetsCreateMock(...a),
+    update: (...a: unknown[]) => sheetsUpdateMock(...a),
   },
 }))
 vi.mock('@/lib/api', () => ({ fetchApi: (...a: unknown[]) => fetchApiMock(...a) }))
@@ -88,14 +103,17 @@ function form(lineAccountId: string | null, renderBackend: 'formaloo' | 'interna
 }
 
 beforeEach(() => {
-  getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); sheetsListMock.mockReset(); submitForReviewMock.mockReset(); publishMock.mockReset(); unpublishMock.mockReset(); reimportMock.mockReset(); fetchApiMock.mockReset()
+  getMock.mockReset(); getRenderBackendMock.mockReset(); setRenderBackendMock.mockReset(); shareMock.mockReset(); saveDefinitionMock.mockReset(); sheetsListMock.mockReset(); sheetsSetupMock.mockReset(); sheetsInspectMock.mockReset(); sheetsCreateMock.mockReset(); sheetsUpdateMock.mockReset(); submitForReviewMock.mockReset(); publishMock.mockReset(); unpublishMock.mockReset(); reimportMock.mockReset(); fetchApiMock.mockReset()
   builderProps.current = undefined
   sharePanelProps.current = undefined
   notificationSettingsProps.current = undefined
+  sheetsSetupPanelProps.current = undefined
   mockAccount.selectedAccountId = 'acc_A'
   getRenderBackendMock.mockResolvedValue('formaloo')
   setRenderBackendMock.mockImplementation(async (_id: string, backend: string) => backend)
   sheetsListMock.mockResolvedValue([])
+  sheetsSetupMock.mockResolvedValue({ serviceAccountEmail: 'sync@example.iam.gserviceaccount.com' })
+  sheetsInspectMock.mockResolvedValue({ spreadsheetId: 'sheet-new', sheetNames: ['回答', '集計'] })
   shareMock.mockResolvedValue({ published: false, publicUrl: null, iframeCode: null, scriptCode: null, gsheetConnected: false, gsheetUrl: null })
   fetchApiMock.mockImplementation(async (path: string) => (
     path === '/api/friend-field-definitions'
@@ -115,6 +133,41 @@ describe('詳細画面 scope 照合', () => {
     await waitFor(() => expect(screen.getByTestId('scope-blocked')).toBeTruthy())
     expect(screen.queryByTestId('form-builder')).toBeNull()
     expect(sheetsListMock).not.toHaveBeenCalled()
+  })
+
+  it('同じ接続先の同期項目だけを変えるときは接続世代を置き換えない', async () => {
+    const connection = {
+      id: 'gsc-existing', lineAccountId: 'acc_A', formId: 'fa1', spreadsheetId: 'sheet-existing', sheetName: '回答',
+      syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins',
+      friendFieldMappings: [{ fieldId: 'friend-plan', header: '利用プラン' }],
+      friendLedgerEnabled: true, selectedFormFieldIds: null, lastSyncAt: null, lastSyncStatus: 'idle',
+      lastSyncWarning: null, isActive: true, createdAt: 'x', updatedAt: 'x',
+    }
+    const updated = { ...connection, syncDirection: 'to_sheets', selectedFormFieldIds: ['name'] }
+    getMock.mockResolvedValue(form('acc_A', 'internal'))
+    sheetsListMock.mockResolvedValue([connection])
+    sheetsUpdateMock.mockResolvedValue(updated)
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(sheetsSetupPanelProps.current?.connection).toEqual(connection))
+    await act(async () => {
+      await (sheetsSetupPanelProps.current?.onSave as (input: Record<string, unknown>) => Promise<void>)({
+        spreadsheetId: 'sheet-existing',
+        sheetName: '回答',
+        syncDirection: 'to_sheets',
+        selectedFormFieldIds: ['name'],
+      })
+    })
+
+    expect(sheetsUpdateMock).toHaveBeenCalledWith('acc_A', 'gsc-existing', {
+      spreadsheetId: 'sheet-existing',
+      sheetName: '回答',
+      syncDirection: 'to_sheets',
+      selectedFieldIds: ['friend-plan'],
+      selectedFormFieldIds: ['name'],
+    })
+    expect(sheetsCreateMock).not.toHaveBeenCalled()
+    expect(sheetsSetupPanelProps.current?.connection).toEqual(updated)
   })
 
   it('NULL 共通 form は表示 (blocked でない)', async () => {
@@ -323,13 +376,62 @@ describe('詳細画面 scope 照合', () => {
     })))
     expect(builderProps.current?.publicUrl).toBe('https://api.example.test/f/fa1')
     expect(builderProps.current?.embedCode).toBeNull()
-    await waitFor(() => expect(sharePanelProps.current?.internalSheetConnection).toEqual(connection))
+    await waitFor(() => expect(sheetsSetupPanelProps.current?.connection).toEqual(connection))
+    expect(sheetsSetupPanelProps.current?.serviceAccountEmail).toBe('sync@example.iam.gserviceaccount.com')
+    expect(sheetsSetupPanelProps.current?.fields).toEqual([])
     expect(sheetsListMock).toHaveBeenCalledWith('acc_A', 'fa1')
+    expect(sheetsSetupMock).toHaveBeenCalledTimes(1)
     expect(sharePanelProps.current?.renderBackend).toBe('internal')
     expect(sharePanelProps.current?.isOwner).toBe(true)
     expect(screen.queryByTestId('instant-webhook-settings')).toBeNull()
     expect(builderProps.current?.onSubmitForReview).toBeUndefined()
     expect(builderProps.current?.onReimport).toBeUndefined()
+  })
+
+  it('回答後の動きから共有URLを確認し、開いているフォームへタブと同期項目を保存する', async () => {
+    const initial = {
+      ...form('acc_A', 'internal'),
+      fields: [{ id: 'name', type: 'text', label: 'お名前', required: true, config: {} }],
+    }
+    const created = {
+      id: 'gsc-new', lineAccountId: 'acc_A', formId: 'fa1', spreadsheetId: 'sheet-new', sheetName: '集計',
+      syncDirection: 'bidirectional', conflictPolicy: 'last_write_wins', friendFieldMappings: [],
+      friendLedgerEnabled: true, selectedFormFieldIds: ['name'], lastSyncAt: null, lastSyncStatus: 'idle',
+      lastSyncWarning: null, isActive: true, createdAt: 'x', updatedAt: 'x',
+    }
+    getMock.mockResolvedValue(initial)
+    sheetsCreateMock.mockResolvedValue(created)
+    render(<FormBuilderClient id="fa1" />)
+
+    await waitFor(() => expect(screen.getByTestId('internal-sheets-setup-panel')).toBeTruthy())
+    await expect((sheetsSetupPanelProps.current?.onInspect as (url: string) => Promise<unknown>)(
+      'https://docs.google.com/spreadsheets/d/sheet-new/edit',
+    )).resolves.toEqual({ spreadsheetId: 'sheet-new', sheetNames: ['回答', '集計'] })
+    expect(sheetsInspectMock).toHaveBeenCalledWith({
+      lineAccountId: 'acc_A',
+      formId: 'fa1',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-new/edit',
+    })
+
+    await act(async () => {
+      await (sheetsSetupPanelProps.current?.onSave as (input: Record<string, unknown>) => Promise<void>)({
+        spreadsheetId: 'sheet-new',
+        sheetName: '集計',
+        syncDirection: 'bidirectional',
+        selectedFormFieldIds: ['name'],
+      })
+    })
+    expect(sheetsCreateMock).toHaveBeenCalledWith({
+      lineAccountId: 'acc_A',
+      formId: 'fa1',
+      spreadsheetId: 'sheet-new',
+      sheetName: '集計',
+      syncDirection: 'bidirectional',
+      selectedFieldIds: [],
+      selectedFormFieldIds: ['name'],
+    })
+    expect(sheetsSetupPanelProps.current?.connection).toEqual(created)
+    expect(document.body.textContent).not.toContain('フォーム ID')
   })
 
   it('自前公開の応答が失われても authoritative GET が published なら成功扱いにする', async () => {

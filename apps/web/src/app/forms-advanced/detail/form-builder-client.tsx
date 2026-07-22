@@ -7,6 +7,9 @@ import FormBuilder, { type BuilderWorkspaceTab } from '@/components/forms-advanc
 import SharePanel from '@/components/forms-advanced/share-panel'
 import InstantWebhookSettings from '@/components/forms-advanced/instant-webhook-settings'
 import InternalSubmissionNotificationSettings from '@/components/forms-advanced/internal-submission-notification-settings'
+import InternalSheetsSetupPanel, {
+  type InternalSheetsSaveInput,
+} from '@/components/forms-advanced/internal-sheets-setup-panel'
 import { formsAdvancedApi, type AdvancedForm, type RenderBackend, type ShareInfo } from '@/lib/formaloo-advanced-api'
 import { fetchApi } from '@/lib/api'
 import { sheetsConnectionsApi, type SheetsConnection } from '@/lib/sheets-connections-api'
@@ -27,6 +30,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
   const [workspaceTab, setWorkspaceTab] = useState<BuilderWorkspaceTab>('build')
   const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
   const [internalSheetConnection, setInternalSheetConnection] = useState<SheetsConnection | null>(null)
+  const [serviceAccountEmail, setServiceAccountEmail] = useState<string | null>(null)
   const shareRequestGeneration = useRef(0)
   const loadRequestGeneration = useRef(0)
 
@@ -104,6 +108,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
   useEffect(() => {
     let active = true
     setInternalSheetConnection(null)
+    setServiceAccountEmail(null)
     const formId = form?.id
     const formLineAccountId = form?.lineAccountId ?? null
     if (
@@ -124,8 +129,44 @@ export default function FormBuilderClient({ id }: { id: string }) {
       .catch(() => {
         if (active) setInternalSheetConnection(null)
       })
+    void sheetsConnectionsApi.setup()
+      .then((setup) => {
+        if (active) setServiceAccountEmail(setup.serviceAccountEmail)
+      })
+      .catch(() => {
+        if (active) setServiceAccountEmail(null)
+      })
     return () => { active = false }
   }, [form?.id, form?.lineAccountId, isOwner, renderBackend, selectedAccountId])
+
+  const internalSheetsScope = () => {
+    if (!form || renderBackend !== 'internal' || !isOwner) return null
+    const lineAccountId = form.lineAccountId ?? selectedAccountId
+    return lineAccountId ? { lineAccountId, formId: form.id } : null
+  }
+
+  const handleInspectInternalSheets = async (spreadsheetUrl: string) => {
+    const scope = internalSheetsScope()
+    if (!scope) throw new Error('フォームと LINE アカウントを確認できません。')
+    return sheetsConnectionsApi.inspect({ ...scope, spreadsheetUrl })
+  }
+
+  const handleSaveInternalSheets = async (input: InternalSheetsSaveInput) => {
+    const scope = internalSheetsScope()
+    if (!scope) throw new Error('フォームと LINE アカウントを確認できません。')
+    const settings = {
+      ...input,
+      selectedFieldIds: internalSheetConnection?.friendFieldMappings.map((mapping) => mapping.fieldId) ?? [],
+    }
+    const sameTarget = internalSheetConnection
+      && internalSheetConnection.spreadsheetId === input.spreadsheetId
+      && internalSheetConnection.sheetName === input.sheetName
+    const saved = sameTarget
+      ? await sheetsConnectionsApi.update(scope.lineAccountId, internalSheetConnection.id, settings)
+      : await sheetsConnectionsApi.create({ ...scope, ...settings })
+    setInternalSheetConnection(saved)
+    setNotice('自前シート連携を保存しました')
+  }
 
   const withErr = (
     fn: () => Promise<AdvancedForm>,
@@ -333,11 +374,27 @@ export default function FormBuilderClient({ id }: { id: string }) {
                 {renderBackend === 'formaloo' ? (
                   <InstantWebhookSettings formId={form.id} />
                 ) : (
-                  <InternalSubmissionNotificationSettings
-                    formId={form.id}
-                    formTitle={form.title}
-                    fields={form.fields}
-                  />
+                  <div className="space-y-4">
+                    <InternalSubmissionNotificationSettings
+                      formId={form.id}
+                      formTitle={form.title}
+                      fields={form.fields}
+                    />
+                    {isOwner ? (
+                      <InternalSheetsSetupPanel
+                        key={internalSheetConnection?.id ?? 'new-sheet-connection'}
+                        serviceAccountEmail={serviceAccountEmail}
+                        connection={internalSheetConnection}
+                        fields={form.fields}
+                        onInspect={handleInspectInternalSheets}
+                        onSave={handleSaveInternalSheets}
+                      />
+                    ) : (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                        自前シート連携はオーナーが設定できます。
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -349,7 +406,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
                 hidden={workspaceTab !== 'publish'}
                 className="mt-4"
               >
-                <SharePanel share={share} renderBackend={renderBackend} isOwner={isOwner} internalSheetConnection={internalSheetConnection} connecting={connecting} onConnectSheets={handleConnectSheets} />
+                <SharePanel share={share} renderBackend={renderBackend} isOwner={isOwner} connecting={connecting} onConnectSheets={handleConnectSheets} />
               </div>
             )}
             onSave={handleSave}

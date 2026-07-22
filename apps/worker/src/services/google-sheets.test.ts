@@ -227,6 +227,38 @@ describe('GoogleSheetsClient — WebCrypto service account JWT', () => {
 });
 
 describe('GoogleSheetsClient — Sheets API v4 contracts', () => {
+  test('lists spreadsheet tab titles from metadata without requesting cell data', async () => {
+    const apiCalls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url === TOKEN_URL) {
+        return jsonResponse({ access_token: 'ACCESS-METADATA', expires_in: 3600 });
+      }
+      apiCalls.push({ url, init });
+      return jsonResponse({
+        sheets: [
+          { properties: { title: '回答', sheetId: 10 }, data: [{ rowData: 'SENTINEL_CELL_DATA' }] },
+          { properties: { title: '集計', sheetId: 20 } },
+        ],
+      });
+    }) as unknown as typeof fetch;
+    const client = new GoogleSheetsClient({
+      credentials: parseGoogleServiceAccountCredentials(credentialsJson()),
+      fetchImpl,
+      now: () => FIXED_NOW,
+    });
+
+    await expect(client.listSheetTitles('sheet/id')).resolves.toEqual(['回答', '集計']);
+
+    expect(apiCalls).toHaveLength(1);
+    expect(apiCalls[0].url).toBe(
+      'https://sheets.googleapis.com/v4/spreadsheets/sheet%2Fid?fields=sheets.properties(title)',
+    );
+    expect(apiCalls[0].init.method).toBe('GET');
+    expect(apiCalls[0].init.body).toBeUndefined();
+    expect(new Headers(apiCalls[0].init.headers).get('authorization')).toBe('Bearer ACCESS-METADATA');
+  });
+
   test('batch update preserves unrelated columns by sending only named ranges', async () => {
     const apiCalls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {

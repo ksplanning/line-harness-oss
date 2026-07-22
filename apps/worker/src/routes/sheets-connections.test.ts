@@ -16,7 +16,7 @@ const OWNER = 'Bearer env-owner-key';
 const CONNECTION_ERRORS = {
   key_format: 'サービスアカウントの秘密鍵を読み取れません。Worker secret の改行と PEM 形式を確認してください。',
   auth_rejected: 'Google の認証に失敗しました。サービスアカウントの設定を確認してください。',
-  sheet_permission: 'スプレッドシートを読み取れません。スプレッドシート ID・シート名と、サービスアカウントへの共有権限を確認してください。',
+  sheet_permission: 'スプレッドシートの共有設定に上のアドレスを追加してください。',
   network: 'Google に接続できませんでした。時間をおいて、もう一度接続テストをしてください。',
 } as const;
 const WEBHOOK_MASTER_SECRET = 'deployment-master-secret-at-least-32-characters';
@@ -141,6 +141,11 @@ beforeEach(() => {
   raw.exec(readFileSync(join(DB_ROOT, 'schema.sql'), 'utf8'));
   raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
     VALUES ('acc-1', 'channel-1', 'A', 'token', 'secret'), ('acc-2', 'channel-2', 'B', 'token', 'secret')`).run();
+  raw.prepare(`INSERT INTO formaloo_forms
+    (id, title, definition_json, render_backend, line_account_id)
+    VALUES
+      ('internal-form-1', '申込フォーム', '{"fields":[],"logic":[]}', 'internal', 'acc-1'),
+      ('internal-form-2', '別アカウントフォーム', '{"fields":[],"logic":[]}', 'internal', 'acc-2')`).run();
   DB = d1(raw);
 });
 
@@ -159,6 +164,10 @@ describe('Sheets connections CRUD API', () => {
     expect((await call('PATCH', '/api/integrations/google-sheets/connections/id', validInput, auth)).status).toBe(403);
     expect((await call('DELETE', '/api/integrations/google-sheets/connections/id', undefined, auth)).status).toBe(403);
     expect((await call('POST', '/api/integrations/google-sheets/connections/id/test', undefined, auth)).status).toBe(403);
+    expect((await call('GET', '/api/integrations/google-sheets/connections/setup', undefined, auth)).status).toBe(403);
+    expect((await call('POST', '/api/integrations/google-sheets/connections/inspect', {
+      lineAccountId: 'acc-1', formId: 'internal-form-1', spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/1AbCd_ef-GhIj/edit',
+    }, auth)).status).toBe(403);
     expect((await call('POST', '/api/integrations/google-sheets/connections/id/webhook-secret?lineAccountId=acc-1', undefined, auth)).status).toBe(403);
   });
 
@@ -166,7 +175,9 @@ describe('Sheets connections CRUD API', () => {
     const id = await createOne();
     const list = await call('GET', '/api/integrations/google-sheets/connections?lineAccountId=acc-1');
     expect(list.status).toBe(200);
-    expect(await list.json()).toMatchObject({ data: [{ id, ...validInput, conflictPolicy: 'last_write_wins' }] });
+    expect(await list.json()).toMatchObject({
+      data: [{ id, ...validInput, formName: '申込フォーム', conflictPolicy: 'last_write_wins' }],
+    });
     const other = await call('GET', '/api/integrations/google-sheets/connections?lineAccountId=acc-2');
     expect((await other.json() as { data: unknown[] }).data).toEqual([]);
 
@@ -184,10 +195,12 @@ describe('Sheets connections CRUD API', () => {
       .toMatchObject({ is_active: 0, deleted_at: expect.any(String) });
   });
 
-  test('validates account/form/spreadsheet/sheet/direction and rejects a duplicate active form', async () => {
+  test('validates account/form/spreadsheet/sheet/direction and safely replaces an active form connection', async () => {
     const cases = [
       { ...validInput, lineAccountId: 'missing' },
       { ...validInput, formId: '' },
+      { ...validInput, formId: 'missing-form' },
+      { ...validInput, formId: 'internal-form-2' },
       { ...validInput, spreadsheetId: 'https://docs.google.com/spreadsheets/d/id/edit' },
       { ...validInput, sheetName: '' },
       { ...validInput, syncDirection: 'sideways' },
@@ -195,8 +208,33 @@ describe('Sheets connections CRUD API', () => {
     for (const input of cases) {
       expect((await call('POST', '/api/integrations/google-sheets/connections', input)).status).toBe(400);
     }
-    await createOne();
-    expect((await call('POST', '/api/integrations/google-sheets/connections', validInput)).status).toBe(409);
+    const previousId = await createOne();
+    const replaced = await call('POST', '/api/integrations/google-sheets/connections', {
+      ...validInput,
+      spreadsheetId: 'replacement-sheet',
+      selectedFormFieldIds: ['name'],
+    });
+    expect(replaced.status).toBe(201);
+    const replacement = (await replaced.json() as { data: { id: string; selectedFormFieldIds: string[] } }).data;
+    expect(replacement.id).not.toBe(previousId);
+    expect(replacement.selectedFormFieldIds).toEqual(['name']);
+    expect(raw.prepare(`SELECT is_active, deleted_at FROM sheets_connections WHERE id=?`).get(previousId))
+      .toMatchObject({ is_active: 0, deleted_at: expect.any(String) });
+  });
+
+  test('uses a daily fallback name when a historical connection no longer has a visible form', async () => {
+    raw.prepare(`INSERT INTO sheets_connections
+      (id, line_account_id, form_id, spreadsheet_id, sheet_name)
+      VALUES ('historical', 'acc-1', 'deleted-form-id', 'historical-sheet-id', '回答')`).run();
+
+    const response = await call('GET', '/api/integrations/google-sheets/connections?lineAccountId=acc-1');
+    const body = await response.json() as { data: Array<{ formId: string; formName: string }> };
+
+    expect(response.status).toBe(200);
+    expect(body.data).toEqual([expect.objectContaining({
+      formId: 'deleted-form-id',
+      formName: 'フォーム名を確認できません',
+    })]);
   });
 
   test('snapshots only selected active custom-field headings and rejects unsafe selections', async () => {
@@ -211,6 +249,7 @@ describe('Sheets connections CRUD API', () => {
     const created = await call('POST', '/api/integrations/google-sheets/connections', {
       ...validInput,
       selectedFieldIds: ['field-note', 'field-plan'],
+      selectedFormFieldIds: ['name', 'plan'],
     });
     expect(created.status).toBe(201);
     const body = await created.json() as { data: { id: string; friendFieldMappings: unknown[] } };
@@ -219,6 +258,7 @@ describe('Sheets connections CRUD API', () => {
       { fieldId: 'field-note', header: '担当メモ' },
     ]);
     expect(body.data).toMatchObject({ friendLedgerEnabled: true });
+    expect(body.data).toMatchObject({ selectedFormFieldIds: ['name', 'plan'] });
 
     const unsafeCases = [
       ['field-old'],
@@ -236,6 +276,15 @@ describe('Sheets connections CRUD API', () => {
       });
       expect(response.status).toBe(400);
     }
+
+    const invalidFormSelection = await call('PATCH', `/api/integrations/google-sheets/connections/${body.data.id}`, {
+      lineAccountId: 'acc-1',
+      spreadsheetId: validInput.spreadsheetId,
+      sheetName: validInput.sheetName,
+      syncDirection: validInput.syncDirection,
+      selectedFormFieldIds: ['name', 'name'],
+    });
+    expect(invalidFormSelection.status).toBe(400);
   });
 
   test('asks the owner to retry settings changes while a sync holds the target lock', async () => {
@@ -248,9 +297,14 @@ describe('Sheets connections CRUD API', () => {
       lineAccountId: 'acc-1', spreadsheetId: 'new-sheet', sheetName: '台帳', syncDirection: 'to_sheets',
     });
     const remove = await call('DELETE', `/api/integrations/google-sheets/connections/${id}?lineAccountId=acc-1`);
+    const replace = await call('POST', '/api/integrations/google-sheets/connections', {
+      ...validInput,
+      spreadsheetId: 'replacement-while-locked',
+    });
 
     expect(patch.status).toBe(409);
     expect(remove.status).toBe(409);
+    expect(replace.status).toBe(409);
     expect(raw.prepare('SELECT spreadsheet_id, is_active FROM sheets_connections WHERE id=?').get(id))
       .toEqual({ spreadsheet_id: validInput.spreadsheetId, is_active: 1 });
   });
@@ -303,6 +357,103 @@ describe('Sheets connections CRUD API', () => {
       { SHEETS_WEBHOOK_SECRET: undefined },
     );
     expect(missingMaster.status).toBe(503);
+  });
+});
+
+describe('Sheets connection builder setup API', () => {
+  test('returns only the service-account email needed for the sharing guide', async () => {
+    const response = await call('GET', '/api/integrations/google-sheets/connections/setup');
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({
+      success: true,
+      data: { serviceAccountEmail: 'sheets-test@example.iam.gserviceaccount.com' },
+    });
+    expect(text).not.toContain('PRIVATE KEY');
+    expect(text).not.toContain('privateKey');
+  });
+
+  test('shared URL inspection extracts the id, tests access, and returns real tab names', async () => {
+    const apiCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === 'https://oauth2.googleapis.com/token') {
+        return new Response(JSON.stringify({ access_token: 'ACCESS', expires_in: 3600 }), { status: 200 });
+      }
+      apiCalls.push(url);
+      return new Response(JSON.stringify({
+        sheets: [
+          { properties: { title: 'フォームの回答 1' } },
+          { properties: { title: '集計' } },
+        ],
+      }), { status: 200 });
+    }));
+
+    const response = await call('POST', '/api/integrations/google-sheets/connections/inspect', {
+      lineAccountId: 'acc-1',
+      formId: 'internal-form-1',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/u/0/d/1AbCd_ef-GhIj/edit?gid=42#gid=42',
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      data: {
+        ok: true,
+        spreadsheetId: '1AbCd_ef-GhIj',
+        sheetNames: ['フォームの回答 1', '集計'],
+      },
+    });
+    expect(apiCalls).toHaveLength(1);
+    expect(apiCalls[0]).toContain('/spreadsheets/1AbCd_ef-GhIj?');
+    expect(apiCalls[0]).toContain('fields=');
+  });
+
+  test('rejects anything except an ordinary Google Sheets sharing URL in daily language', async () => {
+    for (const spreadsheetUrl of [
+      '1AbCd_ef-GhIj',
+      'https://example.com/spreadsheets/d/1AbCd_ef-GhIj/edit',
+      'https://docs.google.com/spreadsheets/d/e/2PACX-published/pubhtml',
+    ]) {
+      const response = await call('POST', '/api/integrations/google-sheets/connections/inspect', {
+        lineAccountId: 'acc-1', formId: 'internal-form-1', spreadsheetUrl,
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        success: false,
+        error: 'Google スプレッドシートの共有URLを貼り付けてください',
+      });
+    }
+  });
+
+  test('permission errors never expose Google response bodies and tell the owner how to share', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      if (String(input) === 'https://oauth2.googleapis.com/token') {
+        return new Response(JSON.stringify({ access_token: 'ACCESS', expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: 'SENTINEL_ENGLISH_GOOGLE_ERROR' }), { status: 403 });
+    }));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const response = await call('POST', '/api/integrations/google-sheets/connections/inspect', {
+      lineAccountId: 'acc-1',
+      formId: 'internal-form-1',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/1AbCd_ef-GhIj/edit',
+    });
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(text)).toEqual({
+      success: true,
+      data: {
+        ok: false,
+        category: 'sheet_permission',
+        message: 'スプレッドシートの共有設定に上のアドレスを追加してください。',
+      },
+    });
+    expect(text).not.toContain('SENTINEL_ENGLISH_GOOGLE_ERROR');
   });
 });
 

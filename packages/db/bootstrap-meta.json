@@ -108,7 +108,8 @@
     "123_auto_reply_response_messages.sql",
     "123_faq_draft_answerable.sql",
     "124_internal_submission_notifications.sql",
-    "124_template_pack_message_types.sql"
+    "124_template_pack_message_types.sql",
+    "125_sheets_connection_field_selection.sql"
   ],
-  "migrationCount": 109
+  "migrationCount": 110
 }

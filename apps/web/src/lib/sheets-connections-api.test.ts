@@ -70,6 +70,63 @@ describe('sheetsConnectionsApi', () => {
     })
   })
 
+  test('loads the service-account guide and inspects a sharing URL before save', async () => {
+    fetchApiMock
+      .mockResolvedValueOnce({
+        success: true,
+        data: { serviceAccountEmail: 'sheets@example.iam.gserviceaccount.com' },
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: { ok: true, spreadsheetId: 'sheet_1', sheetNames: ['回答', '集計'] },
+      })
+
+    await expect(sheetsConnectionsApi.setup()).resolves.toEqual({
+      serviceAccountEmail: 'sheets@example.iam.gserviceaccount.com',
+    })
+    expect(fetchApiMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/integrations/google-sheets/connections/setup',
+    )
+
+    const input = {
+      lineAccountId: 'acc/1',
+      formId: 'form/1',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet_1/edit',
+    }
+    await expect(sheetsConnectionsApi.inspect(input)).resolves.toEqual({
+      spreadsheetId: 'sheet_1',
+      sheetNames: ['回答', '集計'],
+    })
+    expect(fetchApiMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/integrations/google-sheets/connections/inspect',
+      { method: 'POST', body: JSON.stringify(input) },
+    )
+  })
+
+  test('turns a structured inspection failure into the daily-language API error', async () => {
+    fetchApiMock.mockResolvedValue({
+      success: true,
+      data: {
+        ok: false,
+        category: 'sheet_permission',
+        message: 'スプレッドシートの共有設定に上のアドレスを追加してください。',
+      },
+    })
+
+    await expect(sheetsConnectionsApi.inspect({
+      lineAccountId: 'acc-1',
+      formId: 'form-1',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet_1/edit',
+    })).rejects.toMatchObject({
+      body: {
+        error: 'スプレッドシートの共有設定に上のアドレスを追加してください。',
+        category: 'sheet_permission',
+      },
+    })
+  })
+
   test('manual sync and recent audit use account-scoped endpoints and return their payloads', async () => {
     const summary = { status: 'success', warning: null }
     const audit = [{

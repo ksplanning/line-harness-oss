@@ -1237,6 +1237,16 @@ CREATE TABLE sheets_connections (
                   CHECK (json_valid(friend_ledger_headers_json) AND json_type(friend_ledger_headers_json) = 'array'),
   form_answer_headers_json TEXT NOT NULL DEFAULT '[]'
                   CHECK (json_valid(form_answer_headers_json) AND json_type(form_answer_headers_json) = 'array'),
+  -- NULL keeps pre-125 connections on the legacy all-form-fields behavior.
+  -- A JSON array stores an explicit selection; [] intentionally selects none.
+  selected_form_field_ids_json TEXT
+                  CHECK (
+                    selected_form_field_ids_json IS NULL
+                    OR (
+                      json_valid(selected_form_field_ids_json)
+                      AND json_type(selected_form_field_ids_json) = 'array'
+                    )
+                  ),
   last_sync_at    TEXT,
   last_sync_status TEXT NOT NULL DEFAULT 'idle'
                   CHECK (last_sync_status IN ('idle', 'running', 'success', 'warning', 'error')),

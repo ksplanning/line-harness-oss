@@ -7,7 +7,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../../../..');
 
 describe('Google Sheets owner handoff documents', () => {
-  test('10-minute guide covers Cloud setup, sharing, secret registration, UI test, and screenshot positions', () => {
+  test('10-minute guide covers Cloud setup, URL-based builder setup, and the monitoring page', () => {
     const guide = readFileSync(join(ROOT, 'docs/google-sheets-service-account-setup.md'), 'utf8');
     for (const required of [
       '10分',
@@ -20,21 +20,29 @@ describe('Google Sheets owner handoff documents', () => {
       'GOOGLE_SERVICE_ACCOUNT_JSON',
       'wrangler secret put',
       '--config wrangler.ks.toml',
+      'フォームビルダー',
+      '回答後の動き',
+      '共有 URL',
+      'タブ',
+      '同期するフォーム項目',
       '/settings/sheets',
-      'スプレッドシート ID',
-      'シート名',
       '接続テスト',
       'スクリーンショット',
     ]) {
       expect(guide).toContain(required);
     }
-    expect(guide).toContain('同期エンジン')
-    expect(guide).toContain('まだ実行しません')
+    expect(guide).toContain('確認ページ')
+    expect(guide).not.toContain('フォーム ID:')
+    expect(guide).not.toContain('スプレッドシート ID:')
     expect(guide).not.toMatch(/-----BEGIN PRIVATE KEY-----/)
   });
 
   test('host checklist requires one real read without recording secrets or cell values', () => {
     const checklist = readFileSync(join(ROOT, '.sola/live-checklist.md'), 'utf8');
+    expect(checklist).toContain('# sheets-connect-ux — host 実測チェックリスト');
+    expect(checklist).toContain('共有 URL を貼り');
+    expect(checklist).toContain('選んだ項目だけ');
+    expect(checklist).toContain('本番で使っている3フォームには触らない');
     expect(checklist).toContain('# selfform-w4-sheets-foundation — host live checklist');
     expect(checklist).toContain('実サービスアカウント');
     expect(checklist).toContain('read 疎通を 1 回');

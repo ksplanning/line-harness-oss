@@ -28,6 +28,7 @@ export interface SheetsConnection {
   friendLedgerEnabled: boolean;
   friendLedgerHeaders: string[];
   formAnswerHeaders: SheetsFormAnswerHeader[];
+  selectedFormFieldIds: string[] | null;
   lastSyncAt: string | null;
   lastSyncStatus: SheetsSyncStatus;
   lastSyncWarning: string | null;
@@ -51,6 +52,7 @@ interface SheetsConnectionRow {
   friend_ledger_enabled: number;
   friend_ledger_headers_json: string;
   form_answer_headers_json: string;
+  selected_form_field_ids_json: string | null;
   last_sync_at: string | null;
   last_sync_status: SheetsSyncStatus;
   last_sync_warning: string | null;
@@ -68,6 +70,7 @@ export interface CreateSheetsConnectionInput {
   syncDirection: SheetsSyncDirection;
   friendFieldMappings?: SheetsFriendFieldMapping[];
   friendLedgerEnabled?: boolean;
+  selectedFormFieldIds?: string[] | null;
 }
 
 export interface UpdateSheetsConnectionInput {
@@ -76,6 +79,7 @@ export interface UpdateSheetsConnectionInput {
   syncDirection: SheetsSyncDirection;
   friendFieldMappings?: SheetsFriendFieldMapping[];
   friendLedgerEnabled?: boolean;
+  selectedFormFieldIds?: string[] | null;
 }
 
 export interface UpdateSheetsSyncStatusInput {
@@ -296,6 +300,10 @@ function parseStringArray(value: string): string[] {
   }
 }
 
+function parseNullableStringArray(value: string | null): string[] | null {
+  return value === null ? null : parseStringArray(value);
+}
+
 function parseCanonicalSnapshot(value: string): Record<string, SheetsCanonicalCellValue> {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -392,6 +400,7 @@ function serialize(row: SheetsConnectionRow): SheetsConnection {
     friendLedgerEnabled: row.friend_ledger_enabled === 1,
     friendLedgerHeaders: parseStringArray(row.friend_ledger_headers_json),
     formAnswerHeaders: parseFormAnswerHeaders(row.form_answer_headers_json),
+    selectedFormFieldIds: parseNullableStringArray(row.selected_form_field_ids_json),
     lastSyncAt: row.last_sync_at,
     lastSyncStatus: row.last_sync_status,
     lastSyncWarning: row.last_sync_warning,
@@ -406,7 +415,7 @@ const ACTIVE_SELECT = `
   SELECT id, line_account_id, form_id, spreadsheet_id, sheet_name,
          sync_direction, conflict_policy, conflict_clock, config_version,
          friend_field_mappings_json, friend_ledger_enabled, friend_ledger_headers_json,
-         form_answer_headers_json,
+         form_answer_headers_json, selected_form_field_ids_json,
          last_sync_at, last_sync_status,
          last_sync_warning, last_sync_error_code,
          is_active, created_at, updated_at
@@ -464,8 +473,8 @@ export async function createSheetsConnection(
     `INSERT INTO sheets_connections
        (id, line_account_id, form_id, spreadsheet_id, sheet_name, sync_direction,
         conflict_policy, friend_field_mappings_json, friend_ledger_enabled,
-        is_active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'last_write_wins', ?, ?, 1, ?, ?)`,
+        selected_form_field_ids_json, is_active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'last_write_wins', ?, ?, ?, 1, ?, ?)`,
   ).bind(
     id,
     input.lineAccountId,
@@ -475,12 +484,62 @@ export async function createSheetsConnection(
     input.syncDirection,
     JSON.stringify(input.friendFieldMappings ?? []),
     input.friendLedgerEnabled ? 1 : 0,
+    input.selectedFormFieldIds == null ? null : JSON.stringify(input.selectedFormFieldIds),
     now,
     now,
   ).run();
   const created = await getSheetsConnection(db, input.lineAccountId, id);
   if (!created) throw new Error('Sheets connection was not created');
   return created;
+}
+
+/** Atomically soft-deactivate the current form target and create its replacement. */
+export async function replaceSheetsConnection(
+  db: D1Database,
+  input: CreateSheetsConnectionInput,
+): Promise<SheetsConnection | null> {
+  const id = `gsc_${crypto.randomUUID()}`;
+  const now = jstNow();
+  const results = await db.batch([
+    db.prepare(
+      `UPDATE sheets_connections
+       SET is_active = 0, deleted_at = ?, updated_at = ?
+       WHERE line_account_id = ? AND form_id = ?
+         AND is_active = 1 AND deleted_at IS NULL
+         AND (
+           sync_lock_token IS NULL OR sync_lock_expires_at IS NULL
+           OR julianday(sync_lock_expires_at) <= julianday(?)
+         )`,
+    ).bind(now, now, input.lineAccountId, input.formId, now),
+    db.prepare(
+      `INSERT INTO sheets_connections
+         (id, line_account_id, form_id, spreadsheet_id, sheet_name, sync_direction,
+          conflict_policy, friend_field_mappings_json, friend_ledger_enabled,
+          selected_form_field_ids_json, is_active, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, ?, 'last_write_wins', ?, ?, ?, 1, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM sheets_connections
+         WHERE line_account_id = ? AND form_id = ?
+           AND is_active = 1 AND deleted_at IS NULL
+       )`,
+    ).bind(
+      id,
+      input.lineAccountId,
+      input.formId,
+      input.spreadsheetId,
+      input.sheetName,
+      input.syncDirection,
+      JSON.stringify(input.friendFieldMappings ?? []),
+      input.friendLedgerEnabled ? 1 : 0,
+      input.selectedFormFieldIds == null ? null : JSON.stringify(input.selectedFormFieldIds),
+      now,
+      now,
+      input.lineAccountId,
+      input.formId,
+    ),
+  ]);
+  if ((results[1]?.meta.changes ?? 0) !== 1) return null;
+  return getSheetsConnection(db, input.lineAccountId, id);
 }
 
 export async function updateSheetsConnection(
@@ -493,11 +552,16 @@ export async function updateSheetsConnection(
   const mappingsJson = input.friendFieldMappings === undefined
     ? null
     : JSON.stringify(input.friendFieldMappings);
+  const hasFormFieldSelection = input.selectedFormFieldIds !== undefined;
+  const selectedFormFieldIdsJson = hasFormFieldSelection
+    ? input.selectedFormFieldIds === null ? null : JSON.stringify(input.selectedFormFieldIds)
+    : null;
   const update = db.prepare(
     `UPDATE sheets_connections
      SET spreadsheet_id = ?, sheet_name = ?, sync_direction = ?,
          friend_field_mappings_json = COALESCE(?, friend_field_mappings_json),
          friend_ledger_enabled = COALESCE(?, friend_ledger_enabled),
+         selected_form_field_ids_json = CASE WHEN ? = 1 THEN ? ELSE selected_form_field_ids_json END,
          friend_ledger_headers_json = CASE
            WHEN spreadsheet_id <> ? OR sheet_name <> ? THEN '[]'
            WHEN ? IS NULL THEN friend_ledger_headers_json
@@ -526,6 +590,8 @@ export async function updateSheetsConnection(
     input.syncDirection,
     mappingsJson,
     input.friendLedgerEnabled === undefined ? null : input.friendLedgerEnabled ? 1 : 0,
+    hasFormFieldSelection ? 1 : 0,
+    selectedFormFieldIdsJson,
     input.spreadsheetId,
     input.sheetName,
     mappingsJson,

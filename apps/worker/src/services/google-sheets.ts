@@ -54,7 +54,13 @@ export interface BatchUpdateValuesResponse {
   totalUpdatedCells?: number;
 }
 
-export type GoogleSheetsOperation = 'token' | 'append' | 'read' | 'update' | 'batch_update';
+export type GoogleSheetsOperation =
+  | 'token'
+  | 'metadata'
+  | 'append'
+  | 'read'
+  | 'update'
+  | 'batch_update';
 export type GoogleSheetsErrorCategory =
   | 'key_format'
   | 'auth_rejected'
@@ -139,6 +145,12 @@ interface GoogleSheetsClientOptions {
 interface CachedToken {
   value: string;
   expiresAt: number;
+}
+
+interface SheetsMetadataResponse {
+  sheets?: Array<{
+    properties?: { title?: unknown };
+  }>;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -334,6 +346,16 @@ export class GoogleSheetsClient {
     const body = await response.json().catch(() => null);
     if (body === null) throw new GoogleSheetsError(operation, response.status, 'network');
     return body as T;
+  }
+
+  async listSheetTitles(spreadsheetId: string): Promise<string[]> {
+    const url = `${GOOGLE_SHEETS_API}/spreadsheets/${encodePathPart(spreadsheetId)}?fields=sheets.properties(title)`;
+    const metadata = await this.request<SheetsMetadataResponse>('metadata', url, { method: 'GET' });
+    if (!Array.isArray(metadata.sheets)) return [];
+    return metadata.sheets.flatMap((sheet) => {
+      const title = sheet.properties?.title;
+      return typeof title === 'string' && title.length > 0 ? [title] : [];
+    });
   }
 
   appendValues(spreadsheetId: string, range: string, values: SheetCellValue[][]): Promise<AppendValuesResponse> {

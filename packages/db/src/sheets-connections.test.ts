@@ -9,6 +9,7 @@ const {
   createSheetsConnection,
   getSheetsConnection,
   listSheetsConnections,
+  replaceSheetsConnection,
   reserveSheetsSyncSequence,
   softDeleteSheetsConnection,
   updateSheetsConnection,
@@ -33,6 +34,7 @@ interface FriendLedgerConnectionContract {
   friendLedgerEnabled: boolean;
   friendLedgerHeaders: string[];
   formAnswerHeaders: FormAnswerHeader[];
+  selectedFormFieldIds: string[] | null;
   lastSyncAt: string | null;
   lastSyncStatus: SheetsSyncStatus;
   lastSyncWarning: string | null;
@@ -108,6 +110,7 @@ interface FriendLedgerDbContract {
       syncDirection: 'to_sheets' | 'from_sheets' | 'bidirectional';
       friendFieldMappings?: FriendFieldMapping[];
       friendLedgerEnabled?: boolean;
+      selectedFormFieldIds?: string[] | null;
     },
   ): Promise<FriendLedgerConnectionContract>;
   updateSheetsConnection(
@@ -120,6 +123,7 @@ interface FriendLedgerDbContract {
       syncDirection: 'to_sheets' | 'from_sheets' | 'bidirectional';
       friendFieldMappings?: FriendFieldMapping[];
       friendLedgerEnabled?: boolean;
+      selectedFormFieldIds?: string[] | null;
     },
   ): Promise<FriendLedgerConnectionContract | null>;
   updateSheetsSyncStatus(
@@ -408,6 +412,35 @@ describe('Sheets connections DB helper', () => {
     expect(await softDeleteSheetsConnection(db, 'acc-1', created.id)).toBe(false);
   });
 
+  test('replaces one form connection with a new row and leaves a locked connection untouched', async () => {
+    const first = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'replace-form', spreadsheetId: 'sheet-old',
+      sheetName: '旧回答', syncDirection: 'bidirectional',
+    });
+    const replacement = await replaceSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'replace-form', spreadsheetId: 'sheet-new',
+      sheetName: '新回答', syncDirection: 'to_sheets', selectedFormFieldIds: ['name'],
+    });
+
+    expect(replacement).toMatchObject({
+      formId: 'replace-form', spreadsheetId: 'sheet-new', sheetName: '新回答',
+      selectedFormFieldIds: ['name'], isActive: true,
+    });
+    expect(replacement?.id).not.toBe(first.id);
+    expect(raw.prepare(`SELECT is_active, deleted_at FROM sheets_connections WHERE id=?`).get(first.id))
+      .toMatchObject({ is_active: 0, deleted_at: expect.any(String) });
+    expect(await listSheetsConnections(db, 'acc-1', 'replace-form')).toHaveLength(1);
+
+    raw.prepare(`UPDATE sheets_connections
+      SET sync_lock_token='running', sync_lock_expires_at='2099-01-01T00:00:00+09:00'
+      WHERE id=?`).run(replacement!.id);
+    await expect(replaceSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'replace-form', spreadsheetId: 'blocked-sheet',
+      sheetName: 'ブロック', syncDirection: 'bidirectional',
+    })).resolves.toBeNull();
+    expect((await listSheetsConnections(db, 'acc-1', 'replace-form'))[0].id).toBe(replacement!.id);
+  });
+
   test('reserves a monotonic server sequence only for the active connection generation', async () => {
     const created = await createSheetsConnection(db, {
       lineAccountId: 'acc-1', formId: 'form-1', spreadsheetId: 'sheet-1',
@@ -483,6 +516,46 @@ describe('Sheets connections DB helper', () => {
       configVersion: 3,
       friendLedgerHeaders: [],
     });
+  });
+
+  test('stores an explicit form-field selection while legacy connections remain all-fields', async () => {
+    const legacy = await friendLedgerDb.createSheetsConnection(db, {
+      lineAccountId: 'acc-1',
+      formId: 'legacy-form',
+      spreadsheetId: 'legacy-sheet',
+      sheetName: '回答',
+      syncDirection: 'bidirectional',
+    });
+    expect(legacy.selectedFormFieldIds).toBeNull();
+
+    const selected = await friendLedgerDb.createSheetsConnection(db, {
+      lineAccountId: 'acc-1',
+      formId: 'selected-form',
+      spreadsheetId: 'selected-sheet',
+      sheetName: '回答',
+      syncDirection: 'bidirectional',
+      selectedFormFieldIds: ['field-name', 'field-plan'],
+    });
+    expect(selected.selectedFormFieldIds).toEqual(['field-name', 'field-plan']);
+    expect(raw.prepare(`SELECT selected_form_field_ids_json FROM sheets_connections
+      WHERE id=?`).get(selected.id)).toEqual({
+      selected_form_field_ids_json: '["field-name","field-plan"]',
+    });
+
+    const emptySelection = await friendLedgerDb.updateSheetsConnection(db, 'acc-1', selected.id, {
+      spreadsheetId: selected.spreadsheetId,
+      sheetName: selected.sheetName,
+      syncDirection: selected.syncDirection,
+      selectedFormFieldIds: [],
+    });
+    expect(emptySelection?.selectedFormFieldIds).toEqual([]);
+
+    const preserved = await friendLedgerDb.updateSheetsConnection(db, 'acc-1', selected.id, {
+      spreadsheetId: selected.spreadsheetId,
+      sheetName: selected.sheetName,
+      syncDirection: 'to_sheets',
+    });
+    expect(preserved?.selectedFormFieldIds).toEqual([]);
   });
 
   test('records form-answer header snapshots only under the active lease and resets them only after a target move', async () => {
