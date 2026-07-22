@@ -33,6 +33,7 @@ export interface AutoReplyDraft {
   responseMessages?: AutoReplyResponseMessage[]
   templateId: string | null
   lineAccountId: string | null
+  keepInUnresponded: boolean
   isActive: boolean
 }
 
@@ -179,6 +180,7 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
   const [builderIndex, setBuilderIndex] = useState<number | null>(null)
   const [builderInitial, setBuilderInitial] = useState<BuilderModel | undefined>()
   const [advancedJsonIndex, setAdvancedJsonIndex] = useState<number | null>(null)
+  const [keepInUnresponded, setKeepInUnresponded] = useState(draft.keepInUnresponded)
   const [isActive, setIsActive] = useState(draft.isActive)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -323,6 +325,7 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
         responseMessages: preserveTemplateReference || replyMode === 'silent' ? null : payloadMessages,
         templateId: preserveTemplateReference ? sourceTemplateId : null,
         lineAccountId: draft.lineAccountId,
+        keepInUnresponded,
         isActive,
       }
       if (draft.id) await api.autoReplies.update(draft.id, body)
@@ -449,6 +452,23 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
               </div>
             </>
           )}
+
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <label htmlFor="auto-reply-keep-in-unresponded" className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                id="auto-reply-keep-in-unresponded"
+                type="checkbox"
+                checked={keepInUnresponded}
+                onChange={(event) => setKeepInUnresponded(event.target.checked)}
+                aria-describedby="auto-reply-keep-in-unresponded-help"
+                className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+              />
+              <span className="text-xs font-medium text-gray-700">未対応リストに残す（スタッフの対応が必要な用件向け）</span>
+            </label>
+            <p id="auto-reply-keep-in-unresponded-help" className="mt-1 pl-6 text-xs text-gray-500">
+              オンにすると、自動返信後もスタッフが確認できるよう未対応リストに残します。
+            </p>
+          </div>
 
           <label className="inline-flex items-center gap-2 cursor-pointer">
             <input type="checkbox" checked={isActive} onChange={(event) => setIsActive(event.target.checked)} className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500" />

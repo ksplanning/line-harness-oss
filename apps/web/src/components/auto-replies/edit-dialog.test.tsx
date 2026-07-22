@@ -51,6 +51,7 @@ function draft(overrides: Record<string, unknown> = {}): AutoReplyDraft {
     responseContent: '旧本文',
     templateId: null,
     lineAccountId: 'acc-1',
+    keepInUnresponded: false,
     isActive: true,
     ...overrides,
   } as unknown as AutoReplyDraft
@@ -93,6 +94,28 @@ describe('自動返信ルール編集 — 日本語ラベル', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
     expect((await screen.findByRole('alert')).textContent).toContain('キーワードを入力してください')
+  })
+
+  it('新規は未対応リストへ残さず、編集時のopt-inを説明つきチェックで保存する', async () => {
+    const first = render(<EditDialog draft={draft({ id: undefined })} templates={templates} onClose={vi.fn()} onSaved={vi.fn()} />)
+    const defaultCheckbox = screen.getByRole('checkbox', {
+      name: '未対応リストに残す（スタッフの対応が必要な用件向け）',
+    }) as HTMLInputElement
+    expect(defaultCheckbox.checked).toBe(false)
+    expect(screen.getByText('オンにすると、自動返信後もスタッフが確認できるよう未対応リストに残します。')).toBeTruthy()
+    first.unmount()
+
+    render(<EditDialog draft={draft({ keepInUnresponded: true })} templates={templates} onClose={vi.fn()} onSaved={vi.fn()} />)
+    const optedInCheckbox = screen.getByRole('checkbox', {
+      name: '未対応リストに残す（スタッフの対応が必要な用件向け）',
+    }) as HTMLInputElement
+    expect(optedInCheckbox.checked).toBe(true)
+    fireEvent.click(optedInCheckbox)
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(m.update).toHaveBeenCalledWith('rule-1', expect.objectContaining({
+      keepInUnresponded: false,
+    })))
   })
 })
 

@@ -50,6 +50,7 @@ describe('/auto-replies center埋め込み', () => {
     expect(screen.getByRole('columnheader', { name: '一致方法' })).toBeTruthy()
     expect(screen.getByRole('columnheader', { name: '返信内容' })).toBeTruthy()
     expect(screen.getByRole('columnheader', { name: 'テンプレート' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: '未対応リスト' })).toBeTruthy()
   })
 
   it('例外ルールの凡例と返信種別を日常語で表示する', async () => {
@@ -63,6 +64,7 @@ describe('/auto-replies center埋め込み', () => {
         responseMessages: null,
         templateId: null,
         lineAccountId: 'acc-1',
+        keepInUnresponded: true,
         isActive: true,
         createdAt: '2026-07-21T00:00:00.000Z',
         effectiveAccounts: [{ accountId: 'acc-1', accountName: '本店', status: 'reply', via: 'inline' }],
@@ -76,6 +78,7 @@ describe('/auto-replies center埋め込み', () => {
         responseMessages: null,
         templateId: null,
         lineAccountId: 'acc-1',
+        keepInUnresponded: false,
         isActive: true,
         createdAt: '2026-07-21T00:00:00.000Z',
         effectiveAccounts: [{ accountId: 'acc-1', accountName: '本店', status: 'reply', via: 'automation' }],
@@ -89,6 +92,7 @@ describe('/auto-replies center埋め込み', () => {
         responseMessages: null,
         templateId: null,
         lineAccountId: 'acc-1',
+        keepInUnresponded: false,
         isActive: true,
         createdAt: '2026-07-21T00:00:00.000Z',
         effectiveAccounts: [{ accountId: 'acc-1', accountName: '本店', status: 'silent', via: null }],
@@ -103,6 +107,8 @@ describe('/auto-replies center埋め込み', () => {
     expect(screen.getByText(/直接設定/)).toBeTruthy()
     expect(screen.getByText(/自動処理（オートメーション）/)).toBeTruthy()
     expect(screen.getByText('部分一致')).toBeTruthy()
+    expect(screen.getByText('残す')).toBeTruthy()
+    expect(screen.getAllByText('残さない')).toHaveLength(2)
   })
 
   it('旧page headerは重ねず「新規ルール」操作は残す', async () => {
@@ -133,6 +139,7 @@ describe('/auto-replies center埋め込み', () => {
       responseMessages,
       templateId: null,
       lineAccountId: 'acc-1',
+      keepInUnresponded: true,
       isActive: true,
       createdAt: '2026-07-21T00:00:00.000Z',
       effectiveAccounts: [],
@@ -142,5 +149,6 @@ describe('/auto-replies center埋め込み', () => {
     fireEvent.click(await screen.findByRole('button', { name: '編集' }))
 
     expect(m.editDraft?.responseMessages).toEqual(responseMessages)
+    expect(m.editDraft?.keepInUnresponded).toBe(true)
   })
 })

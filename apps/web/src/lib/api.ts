@@ -1135,6 +1135,7 @@ export const api = {
         responseMessages: AutoReplyResponseMessage[];
         templateId: string | null;
         lineAccountId: string | null;
+        keepInUnresponded: boolean;
         isActive: boolean;
         createdAt: string;
         effectiveAccounts?: Array<{
@@ -1155,6 +1156,7 @@ export const api = {
         responseMessages: AutoReplyResponseMessage[];
         templateId: string | null;
         lineAccountId: string | null;
+        keepInUnresponded: boolean;
         isActive: boolean;
         createdAt: string;
       }>>(`/api/auto-replies/${id}`),
@@ -1166,6 +1168,7 @@ export const api = {
       responseMessages?: AutoReplyResponseMessage[] | null;
       templateId?: string | null;
       lineAccountId?: string | null;
+      keepInUnresponded?: boolean;
     }) =>
       fetchApi<ApiResponse<{ id: string }>>('/api/auto-replies', {
         method: 'POST',
@@ -1179,6 +1182,7 @@ export const api = {
       responseMessages?: AutoReplyResponseMessage[] | null;
       templateId?: string | null;
       lineAccountId?: string | null;
+      keepInUnresponded?: boolean;
       isActive?: boolean;
     }) =>
       fetchApi<ApiResponse<{ id: string }>>(`/api/auto-replies/${id}`, {

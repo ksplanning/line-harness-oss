@@ -23,6 +23,7 @@ interface AutoReply {
   responseMessages: AutoReplyDraft['responseMessages']
   templateId: string | null
   lineAccountId: string | null
+  keepInUnresponded: boolean
   isActive: boolean
   createdAt: string
   effectiveAccounts?: EffectiveAccount[]
@@ -160,6 +161,7 @@ export default function AutoRepliesPage() {
         responseContent: '',
         templateId: null,
         lineAccountId: selectedAccountId,
+        keepInUnresponded: false,
         isActive: true,
       })}
       className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
@@ -196,7 +198,7 @@ export default function AutoRepliesPage() {
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px]">
+          <table className="w-full min-w-[960px]">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">キーワード</th>
@@ -204,15 +206,16 @@ export default function AutoRepliesPage() {
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">返信内容</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">テンプレート</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">適用アカウント</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">未対応リスト</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">状態</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">読み込み中...</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400 text-sm">読み込み中...</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">自動返信ルールがありません</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400 text-sm">自動返信ルールがありません</td></tr>
               ) : (
                 items.map((r) => (
                   <tr key={r.id} className="hover:bg-gray-50">
@@ -221,6 +224,11 @@ export default function AutoRepliesPage() {
                     <td className="px-4 py-3">{renderResponseCell(r)}</td>
                     <td className="px-4 py-3">{renderTemplateCell(r)}</td>
                     <td className="px-4 py-3">{renderEffectiveCell(r)}</td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${r.keepInUnresponded ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
+                        {r.keepInUnresponded ? '残す' : '残さない'}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${r.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                         {r.isActive ? '有効' : '無効'}
@@ -237,6 +245,7 @@ export default function AutoRepliesPage() {
                           responseMessages: r.responseMessages,
                           templateId: r.templateId,
                           lineAccountId: r.lineAccountId,
+                          keepInUnresponded: r.keepInUnresponded,
                           isActive: r.isActive,
                         })}
                         className="px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-md"
