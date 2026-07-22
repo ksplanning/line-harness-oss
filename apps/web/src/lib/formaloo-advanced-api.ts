@@ -1,4 +1,4 @@
-import { fetchApi, downloadCsv } from './api'
+import { fetchApi, downloadCsv, downloadFile } from './api'
 import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
 
 // =============================================================================
@@ -351,6 +351,12 @@ export const formalooDataApi = {
   /** CSV 書き出し (owner gated)。fetchApi は blob 不可のため downloadCsv の専用 fetch 経路。 */
   async exportCsv(id: string, filename: string): Promise<void> {
     await downloadCsv(`/api/forms-advanced/${id}/export.csv`, filename)
+  },
+  async downloadAttachment(id: string, rowId: string, fieldId: string, index: number, filename: string): Promise<void> {
+    await downloadFile(
+      `/api/forms-advanced/${id}/rows/${rowId}/files/${encodeURIComponent(fieldId)}/${index}`,
+      filename,
+    )
   },
   async importCsv(id: string, csv: string): Promise<{ parsed: number; pushed: boolean; note: string }> {
     return (await fetchApi<Envelope<{ parsed: number; pushed: boolean; note: string }>>(`/api/forms-advanced/${id}/import`, { method: 'POST', body: JSON.stringify({ csv }) })).data

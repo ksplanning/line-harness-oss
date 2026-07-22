@@ -252,9 +252,18 @@ async function uploadMediaFile(
  * (呼び出し側 UI が error banner に出す)。成功時は blob を downloadBlob で保存する。
  */
 export async function downloadCsv(path: string, filename: string): Promise<void> {
+  await downloadFile(path, filename, 'CSV の出力に失敗しました。もう一度お試しください。')
+}
+
+/** 認証 cookie を付けて binary response を取得し、指定ファイル名で保存する。 */
+export async function downloadFile(
+  path: string,
+  filename: string,
+  fallbackError = 'ファイルのダウンロードに失敗しました。もう一度お試しください。',
+): Promise<void> {
   const res = await fetch(`${API_URL}${path}`, { credentials: 'include' })
   if (!res.ok) {
-    let message = 'CSV の出力に失敗しました。もう一度お試しください。'
+    let message = fallbackError
     try {
       const body = (await res.json()) as { error?: string }
       if (body?.error) message = body.error
