@@ -741,9 +741,10 @@ function SettingsPanel({
   const addRule = () => {
     const other = allFields.find((f) => f.id !== field.id && isBranchTarget(f))
     if (!other) return
+    const initialValue = hasChoices(field.type) ? (cfg.choices?.[0] ?? '') : ''
     onLogicChange([
       ...logic,
-      { id: `r_${Math.random().toString(36).slice(2, 8)}`, sourceFieldId: field.id, operator: 'equals', value: '', action: 'show', targetFieldId: other.id },
+      { id: `r_${Math.random().toString(36).slice(2, 8)}`, sourceFieldId: field.id, operator: 'equals', value: initialValue, action: 'show', targetFieldId: other.id },
     ])
   }
   // route-terminal-submit (F-MED-1): submit 状態遷移を一元化。
@@ -1261,6 +1262,7 @@ function SettingsPanel({
                   onChange={(e) => onLogicChange(logic.map((r) => (r.id === rule.id ? { ...r, value: e.target.value } : r)))}
                   className="border border-gray-300 rounded px-1"
                 >
+                  {selectedChoiceTitle === '' ? <option value="">条件値が未選択です</option> : null}
                   {/* pull 由来で choices に無い値も選択維持できるよう現値を先頭に補完 */}
                   {!choiceTitles.includes(selectedChoiceTitle) && selectedChoiceTitle ? <option value={selectedChoiceTitle}>{selectedChoiceTitle}</option> : null}
                   {choiceTitles.map((t, i) => <option key={i} value={t}>{t}</option>)}
@@ -1762,6 +1764,17 @@ export default function FormBuilder(props: BuilderProps) {
 
   const handleSave = async (): Promise<{ publishRevision?: string } | null> => {
     if (!title.trim() || reimporting || renderBackendSaving) return null
+    const incompleteChoiceRule = logic.find((rule) => {
+      if (rule.action === 'submit' || rule.value !== '') return false
+      const source = fieldsRef.current.find((field) => field.id === rule.sourceFieldId)
+      return Boolean(source && hasChoices(source.type) && (source.config.choices?.length ?? 0) > 0)
+    })
+    if (incompleteChoiceRule) {
+      const source = fieldsRef.current.find((field) => field.id === incompleteChoiceRule.sourceFieldId)
+      setSaveWarnings([`「${source?.label ?? '選択項目'}」の条件分岐の値を選択してください。`])
+      return null
+    }
+    setSaveWarnings([])
     // route-terminal-phase2 (T-C1): 危険/不正な redirect URL は保存を阻む (inline error を先に直させる)。
     if (redirectUrlError) return null
     if (renderBackend === 'formaloo' && allowEditMail === 1 && !editMailFieldId) {

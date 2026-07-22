@@ -125,6 +125,45 @@ describe('T-D1 — jump 選択で form_type 自動切替 + 可視通知', () => 
 })
 
 describe('T-D1 — choice source の分岐値は選択肢 select', () => {
+  it('分岐追加直後の先頭選択肢を触らず保存しても表示値と保存値が一致する', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave, initialFields: [choiceSrc, textTgt] })} />)
+    selectField('ルート')
+
+    fireEvent.click(screen.getByText('＋ 分岐を追加'))
+
+    expect((screen.getByLabelText('分岐の値') as HTMLSelectElement).value).toBe('Aルート')
+    fireEvent.click(screen.getByText('保存'))
+    expect((onSave.mock.calls[0][0] as { logic: HarnessLogicRule[] }).logic[0].value).toBe('Aルート')
+  })
+
+  it('保存済みの空条件は先頭選択肢に見せず未選択と明示する', () => {
+    render(<FormBuilder {...base({ initialFields: [choiceSrc, textTgt], initialLogic: [
+      { id: 'empty', sourceFieldId: 'q1', operator: 'equals', value: '', action: 'show', targetFieldId: 't1' },
+    ] })} />)
+    selectField('ルート')
+
+    const valueSelect = screen.getByLabelText('分岐の値') as HTMLSelectElement
+    expect(valueSelect.value).toBe('')
+    expect(within(valueSelect).getByRole('option', { name: '条件値が未選択です' })).toBeTruthy()
+  })
+
+  it('保存済みの空条件は明示選択するまで保存しない', () => {
+    const onSave = vi.fn()
+    render(<FormBuilder {...base({ onSave, initialFields: [choiceSrc, textTgt], initialLogic: [
+      { id: 'empty', sourceFieldId: 'q1', operator: 'equals', value: '', action: 'show', targetFieldId: 't1' },
+    ] })} />)
+    selectField('ルート')
+
+    fireEvent.click(screen.getByText('保存'))
+    expect(onSave).not.toHaveBeenCalled()
+    expect(screen.getByText(/条件分岐の値を選択してください/)).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('分岐の値'), { target: { value: 'Aルート' } })
+    fireEvent.click(screen.getByText('保存'))
+    expect((onSave.mock.calls[0][0] as { logic: HarnessLogicRule[] }).logic[0].value).toBe('Aルート')
+  })
+
   it('choice source は分岐の値を select で選ぶ (title 表示)', () => {
     render(<FormBuilder {...base({ initialFields: [choiceSrc, pageBreak, textTgt], initialLogic: [
       { id: 'r1', sourceFieldId: 'q1', operator: 'equals', value: 'ciC', action: 'jump', targetFieldId: 'pb' },
