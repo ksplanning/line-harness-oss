@@ -293,6 +293,53 @@ describe('GoogleSheetsClient — Sheets API v4 contracts', () => {
     });
   });
 
+  test('deletes requested rows from one named tab in descending index order', async () => {
+    const apiCalls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url === TOKEN_URL) {
+        return jsonResponse({ access_token: 'ACCESS-DELETE', expires_in: 3600 });
+      }
+      apiCalls.push({ url, init });
+      if (init.method === 'GET') {
+        return jsonResponse({
+          sheets: [
+            { properties: { title: '回答', sheetId: 10 } },
+            { properties: { title: '集計', sheetId: 20 } },
+          ],
+        });
+      }
+      return jsonResponse({ spreadsheetId: 'sheet/id', replies: [{}, {}] });
+    }) as unknown as typeof fetch;
+    const client = new GoogleSheetsClient({
+      credentials: parseGoogleServiceAccountCredentials(credentialsJson()),
+      fetchImpl,
+      now: () => FIXED_NOW,
+    });
+
+    await expect(client.resolveSheetId('sheet/id', '回答')).resolves.toBe(10);
+    await expect(client.deleteRows('sheet/id', '回答', [2, 4])).resolves.toEqual({
+      spreadsheetId: 'sheet/id',
+      deletedRows: 2,
+    });
+
+    expect(apiCalls).toHaveLength(2);
+    expect(apiCalls[0].url).toBe(
+      'https://sheets.googleapis.com/v4/spreadsheets/sheet%2Fid?fields=sheets.properties(sheetId%2Ctitle)',
+    );
+    expect(apiCalls[0].init.method).toBe('GET');
+    expect(apiCalls[1].url).toBe(
+      'https://sheets.googleapis.com/v4/spreadsheets/sheet%2Fid:batchUpdate',
+    );
+    expect(apiCalls[1].init.method).toBe('POST');
+    expect(JSON.parse(String(apiCalls[1].init.body))).toEqual({
+      requests: [
+        { deleteDimension: { range: { sheetId: 10, dimension: 'ROWS', startIndex: 3, endIndex: 4 } } },
+        { deleteDimension: { range: { sheetId: 10, dimension: 'ROWS', startIndex: 1, endIndex: 2 } } },
+      ],
+    });
+  });
+
   test('append/read/update が正しい URL・method・Bearer・ValueRange を送る', async () => {
     const apiCalls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {

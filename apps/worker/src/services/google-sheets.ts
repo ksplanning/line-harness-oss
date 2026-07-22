@@ -149,8 +149,18 @@ interface CachedToken {
 
 interface SheetsMetadataResponse {
   sheets?: Array<{
-    properties?: { title?: unknown };
+    properties?: { sheetId?: unknown; title?: unknown };
   }>;
+}
+
+interface SheetsBatchUpdateResponse {
+  spreadsheetId?: unknown;
+  replies?: unknown[];
+}
+
+export interface DeleteRowsResponse {
+  spreadsheetId: string;
+  deletedRows: number;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -238,6 +248,7 @@ export class GoogleSheetsClient {
   private readonly webCrypto: Crypto;
   private readonly requestTimeoutMs: number;
   private cachedToken: CachedToken | null = null;
+  private readonly sheetIds = new Map<string, number>();
 
   constructor(options: GoogleSheetsClientOptions) {
     if (options.credentials.tokenUri !== GOOGLE_TOKEN_URL) {
@@ -358,6 +369,21 @@ export class GoogleSheetsClient {
     });
   }
 
+  async resolveSheetId(spreadsheetId: string, sheetName: string): Promise<number> {
+    const cacheKey = `${spreadsheetId}\u0000${sheetName}`;
+    const cached = this.sheetIds.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const metadataUrl = `${GOOGLE_SHEETS_API}/spreadsheets/${encodePathPart(spreadsheetId)}?fields=sheets.properties(sheetId%2Ctitle)`;
+    const metadata = await this.request<SheetsMetadataResponse>('metadata', metadataUrl, { method: 'GET' });
+    const sheetId = metadata.sheets?.find((sheet) => sheet.properties?.title === sheetName)
+      ?.properties?.sheetId;
+    if (typeof sheetId !== 'number' || !Number.isInteger(sheetId)) {
+      throw new GoogleSheetsError('metadata', 404, 'sheet_permission');
+    }
+    this.sheetIds.set(cacheKey, sheetId);
+    return sheetId;
+  }
+
   appendValues(spreadsheetId: string, range: string, values: SheetCellValue[][]): Promise<AppendValuesResponse> {
     const url = `${GOOGLE_SHEETS_API}/spreadsheets/${encodePathPart(spreadsheetId)}/values/${encodePathPart(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
     return this.request('append', url, {
@@ -391,5 +417,39 @@ export class GoogleSheetsClient {
         })),
       }),
     });
+  }
+
+  async deleteRows(
+    spreadsheetId: string,
+    sheetName: string,
+    rowNumbers: number[],
+  ): Promise<DeleteRowsResponse> {
+    const rows = [...new Set(rowNumbers)]
+      .filter((rowNumber) => Number.isInteger(rowNumber) && rowNumber > 1)
+      .sort((left, right) => right - left);
+    if (rows.length !== rowNumbers.length) {
+      throw new Error('Google Sheets row deletion requires unique data-row numbers');
+    }
+    if (rows.length === 0) return { spreadsheetId, deletedRows: 0 };
+
+    const sheetId = await this.resolveSheetId(spreadsheetId, sheetName);
+
+    const url = `${GOOGLE_SHEETS_API}/spreadsheets/${encodePathPart(spreadsheetId)}:batchUpdate`;
+    await this.request<SheetsBatchUpdateResponse>('batch_update', url, {
+      method: 'POST',
+      body: JSON.stringify({
+        requests: rows.map((rowNumber) => ({
+          deleteDimension: {
+            range: {
+              sheetId,
+              dimension: 'ROWS',
+              startIndex: rowNumber - 1,
+              endIndex: rowNumber,
+            },
+          },
+        })),
+      }),
+    });
+    return { spreadsheetId, deletedRows: rows.length };
   }
 }

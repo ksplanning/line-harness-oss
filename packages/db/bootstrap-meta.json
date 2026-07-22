@@ -113,7 +113,9 @@
     "126_sheets_sync_jobs.sql",
     "127_form_results_sync.sql",
     "128_sheets_sync_jobs_target.sql",
-    "129_formaloo_branch_edit.sql"
+    "129_formaloo_branch_edit.sql",
+    "130_internal_form_submission_soft_delete.sql",
+    "131_sheets_form_results_row_shift_fence.sql"
   ],
-  "migrationCount": 114
+  "migrationCount": 116
 }

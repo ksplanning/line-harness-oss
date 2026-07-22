@@ -39,6 +39,36 @@ export interface UpdateInternalFormSubmissionAnswersForSheetsBySubmissionIdInput
   lease: SheetsSyncLeaseGuard;
 }
 
+export interface DeleteSoftDeletedInternalFormSubmissionLedgerEntriesInput {
+  lineAccountId: string;
+  connectionId: string;
+  connectionVersion: number;
+  formId: string;
+  submissionIds: string[];
+  lease: SheetsSyncLeaseGuard;
+}
+
+export interface FormResultsRowShiftLeaseInput {
+  lineAccountId: string;
+  connectionId: string;
+  connectionVersion: number;
+  formId: string;
+  lease: SheetsSyncLeaseGuard;
+}
+
+export interface BeginFormResultsRowShiftInput extends FormResultsRowShiftLeaseInput {
+  pendingUntil: string;
+}
+
+export interface CompleteFormResultsRowShiftInput extends FormResultsRowShiftLeaseInput {
+  shiftedAt: string;
+}
+
+export interface FormResultsRowShiftFence {
+  shiftedAt: string | null;
+  pendingUntil: string | null;
+}
+
 export type UpdateInternalFormSubmissionAnswersResult =
   | { status: 'updated'; submission: InternalFormSubmission }
   | { status: 'conflict'; submission: InternalFormSubmission | null }
@@ -579,6 +609,170 @@ export async function listVerifiedInternalFormSubmissionsForSheets(
      ORDER BY submission.submitted_at ASC, submission.id ASC`,
   ).bind(lineAccountId, formId, lineAccountId).all<InternalFormSubmission>();
   return rows.results;
+}
+
+export async function listSoftDeletedInternalFormSubmissionIdsForSheets(
+  db: D1Database,
+  lineAccountId: string,
+  formId: string,
+): Promise<string[]> {
+  const rows = await db.prepare(
+    `SELECT submission.id
+     FROM internal_form_submissions submission
+     INNER JOIN formaloo_forms form ON form.id = submission.form_id
+     WHERE submission.form_id = ? AND submission.deleted_at IS NOT NULL
+       AND form.deleted = 0 AND form.render_backend = 'internal'
+       AND (form.line_account_id = ? OR form.line_account_id IS NULL)
+     ORDER BY submission.id ASC`,
+  ).bind(formId, lineAccountId).all<{ id: string }>();
+  return rows.results.map((row) => row.id);
+}
+
+export async function deleteSoftDeletedInternalFormSubmissionLedgerEntries(
+  db: D1Database,
+  input: DeleteSoftDeletedInternalFormSubmissionLedgerEntriesInput,
+): Promise<boolean> {
+  const submissionIds = [...new Set(input.submissionIds)];
+  if (submissionIds.length === 0) return true;
+  const result = await db.prepare(
+    `DELETE FROM sheets_sync_ledger
+     WHERE connection_id = ? AND connection_version = ?
+       AND record_key IN (
+         SELECT 'sub:' || CAST(value AS TEXT) FROM json_each(?)
+       )
+       AND EXISTS (
+         SELECT 1 FROM internal_form_submissions submission
+         WHERE submission.id = substr(sheets_sync_ledger.record_key, 5)
+           AND submission.form_id = ? AND submission.deleted_at IS NOT NULL
+       )
+       AND EXISTS (
+         SELECT 1 FROM sheets_connections connection
+         WHERE connection.id = sheets_sync_ledger.connection_id
+           AND connection.line_account_id = ? AND connection.form_id = ?
+           AND connection.config_version = ? AND connection.form_results_enabled = 1
+           AND connection.is_active = 1 AND connection.deleted_at IS NULL
+           AND connection.sync_lock_token = ?
+           AND connection.sync_lock_expires_at IS NOT NULL
+           AND julianday(connection.sync_lock_expires_at) > julianday(?)
+       )`,
+  ).bind(
+    input.connectionId,
+    input.connectionVersion,
+    JSON.stringify(submissionIds),
+    input.formId,
+    input.lineAccountId,
+    input.formId,
+    input.connectionVersion,
+    input.lease.token,
+    input.lease.now,
+  ).run();
+  return (result.meta.changes ?? 0) === submissionIds.length;
+}
+
+export async function beginFormResultsRowShift(
+  db: D1Database,
+  input: BeginFormResultsRowShiftInput,
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE sheets_connections
+     SET form_results_row_shifted_at = CASE
+           WHEN form_results_row_shift_pending_until IS NOT NULL
+             AND (
+               form_results_row_shifted_at IS NULL
+               OR julianday(form_results_row_shift_pending_until)
+                  > julianday(form_results_row_shifted_at)
+             )
+             THEN form_results_row_shift_pending_until
+           ELSE form_results_row_shifted_at
+         END,
+         form_results_row_shift_pending_until = ?
+     WHERE id = ? AND line_account_id = ? AND form_id = ? AND config_version = ?
+       AND form_results_enabled = 1 AND is_active = 1 AND deleted_at IS NULL
+       AND sync_lock_token = ? AND sync_lock_expires_at IS NOT NULL
+       AND julianday(sync_lock_expires_at) > julianday(?)`,
+  ).bind(
+    input.pendingUntil,
+    input.connectionId,
+    input.lineAccountId,
+    input.formId,
+    input.connectionVersion,
+    input.lease.token,
+    input.lease.now,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+export async function completeFormResultsRowShift(
+  db: D1Database,
+  input: CompleteFormResultsRowShiftInput,
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE sheets_connections
+     SET form_results_row_shifted_at = CASE
+           WHEN form_results_row_shifted_at IS NULL
+             OR julianday(?) > julianday(form_results_row_shifted_at)
+             THEN ?
+           ELSE form_results_row_shifted_at
+         END,
+         form_results_row_shift_pending_until = NULL
+     WHERE id = ? AND line_account_id = ? AND form_id = ? AND config_version = ?
+       AND form_results_enabled = 1 AND is_active = 1 AND deleted_at IS NULL
+       AND sync_lock_token = ? AND sync_lock_expires_at IS NOT NULL
+       AND julianday(sync_lock_expires_at) > julianday(?)`,
+  ).bind(
+    input.shiftedAt,
+    input.shiftedAt,
+    input.connectionId,
+    input.lineAccountId,
+    input.formId,
+    input.connectionVersion,
+    input.lease.token,
+    input.lease.now,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+export async function cancelFormResultsRowShift(
+  db: D1Database,
+  input: FormResultsRowShiftLeaseInput,
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE sheets_connections
+     SET form_results_row_shift_pending_until = NULL
+     WHERE id = ? AND line_account_id = ? AND form_id = ? AND config_version = ?
+       AND form_results_enabled = 1 AND is_active = 1 AND deleted_at IS NULL
+       AND sync_lock_token = ? AND sync_lock_expires_at IS NOT NULL
+       AND julianday(sync_lock_expires_at) > julianday(?)`,
+  ).bind(
+    input.connectionId,
+    input.lineAccountId,
+    input.formId,
+    input.connectionVersion,
+    input.lease.token,
+    input.lease.now,
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+export async function getFormResultsRowShiftFence(
+  db: D1Database,
+  lineAccountId: string,
+  connectionId: string,
+  connectionVersion: number,
+): Promise<FormResultsRowShiftFence> {
+  const row = await db.prepare(
+    `SELECT form_results_row_shifted_at, form_results_row_shift_pending_until
+     FROM sheets_connections
+     WHERE id = ? AND line_account_id = ? AND config_version = ?
+       AND is_active = 1 AND deleted_at IS NULL`,
+  ).bind(connectionId, lineAccountId, connectionVersion).first<{
+    form_results_row_shifted_at: string | null;
+    form_results_row_shift_pending_until: string | null;
+  }>();
+  return {
+    shiftedAt: row?.form_results_row_shifted_at ?? null,
+    pendingUntil: row?.form_results_row_shift_pending_until ?? null,
+  };
 }
 
 /**

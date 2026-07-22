@@ -1,17 +1,23 @@
 import {
+  beginFormResultsRowShift,
+  cancelFormResultsRowShift,
   claimNextSheetsWebhookEvent,
   claimSheetsSyncLock,
   clearSheetsSyncLedgerRowNumbers,
+  completeFormResultsRowShift,
   commitSheetsSyncRow,
+  deleteSoftDeletedInternalFormSubmissionLedgerEntries,
   deferSheetsWebhookEvent,
   failSheetsWebhookEvent,
   finishSheetsWebhookEvent,
   getFormalooForm,
+  getFormResultsRowShiftFence,
   getInternalFormSubmission,
   hasSheetsSyncAuditForWebhookEvent,
   appendSheetsSyncAudit,
   listFriendFieldDefinitions,
   listSheetsSyncLedger,
+  listSoftDeletedInternalFormSubmissionIdsForSheets,
   listVerifiedInternalFormSubmissionsForSheets,
   recordSheetsFormResultsHeaders,
   releaseSheetsSyncLock,
@@ -63,7 +69,7 @@ import {
   type FriendLedgerColumn,
 } from './friend-ledger-columns.js';
 import { parseInternalFormDefinition } from './internal-form-runtime.js';
-import type { SheetCellValue, SheetsDataUpdate } from './google-sheets.js';
+import type { GoogleSheetsClient, SheetCellValue, SheetsDataUpdate } from './google-sheets.js';
 
 const LOCK_DURATION_MS = 2 * 60_000;
 const MAX_SYNC_WARNINGS = 20;
@@ -97,7 +103,7 @@ export interface FormResultsChunkMetadata {
 export interface SyncFormResultsOptions {
   db: D1Database;
   connection: SheetsConnection;
-  client?: FriendLedgerSheetsClient;
+  client?: FormResultsSheetsClient;
   credentialsJson?: string;
   adminOrigin?: string | null;
   source: SheetsSyncAuditSource;
@@ -106,6 +112,7 @@ export interface SyncFormResultsOptions {
   range?: FriendLedgerEditRange;
   snapshot?: FriendLedgerWebhookSnapshot;
   webhookEventId?: string;
+  webhookOccurredAt?: string;
   webhookTargetError?: 'stale_webhook_generation';
   initialWarnings?: string[];
   chunk?: {
@@ -114,6 +121,11 @@ export interface SyncFormResultsOptions {
     through?: FormResultsChunkCursor | null;
   };
 }
+
+type FormResultsSheetsClient = FriendLedgerSheetsClient & Partial<Pick<
+  GoogleSheetsClient,
+  'deleteRows' | 'resolveSheetId'
+>>;
 
 export interface FormResultsSyncResult {
   status: 'success' | 'warning' | 'running';
@@ -315,8 +327,46 @@ export async function syncFormResults(
       { token: lockToken, now: startedAt },
     );
     if (!runningStatus) throw new Error('form_results_sync_lock_lost');
-    const client = makeClient(options);
-    const [submissions, allLedgerEntries, definitions, friends, response, form] = await Promise.all([
+    let effectiveWebhookTargetError = options.webhookTargetError;
+    if (
+      !effectiveWebhookTargetError
+      && options.source === 'webhook'
+      && options.webhookOccurredAt
+    ) {
+      // This read happens only after this worker owns the same sync lock used
+      // by row deletion. A drain-level read could race with a polling delete
+      // between checking the fence and acquiring the lock.
+      const shiftFence = await getFormResultsRowShiftFence(
+        options.db,
+        options.connection.lineAccountId,
+        options.connection.id,
+        options.connection.configVersion,
+      );
+      const occurredTimestamp = parseFriendLedgerTimestamp(options.webhookOccurredAt);
+      const shiftedTimestamp = Math.max(
+        ...[shiftFence.shiftedAt, shiftFence.pendingUntil].flatMap((timestamp) => {
+          if (!timestamp) return [];
+          const parsed = parseFriendLedgerTimestamp(timestamp);
+          return Number.isFinite(parsed) ? [parsed] : [];
+        }),
+        Number.NEGATIVE_INFINITY,
+      );
+      if (
+        Number.isFinite(occurredTimestamp)
+        && Number.isFinite(shiftedTimestamp)
+        && occurredTimestamp <= shiftedTimestamp
+      ) effectiveWebhookTargetError = 'stale_webhook_generation';
+    }
+    const client = makeClient(options) as FormResultsSheetsClient;
+    const [
+      submissions,
+      allLedgerEntries,
+      definitions,
+      friends,
+      response,
+      form,
+      softDeletedSubmissionIds,
+    ] = await Promise.all([
       listVerifiedInternalFormSubmissionsForSheets(
         options.db,
         options.connection.lineAccountId,
@@ -330,6 +380,11 @@ export async function syncFormResults(
         quoteSheetName(resultsSheetName),
       ),
       getFormalooForm(options.db, options.connection.formId),
+      listSoftDeletedInternalFormSubmissionIdsForSheets(
+        options.db,
+        options.connection.lineAccountId,
+        options.connection.formId,
+      ),
     ]);
     await renewLease();
     const warnings: string[] = [];
@@ -349,6 +404,26 @@ export async function syncFormResults(
     ]));
     const friendById = new Map(friends.map((friend) => [friend.id, friend]));
     const values = (response.values ?? []).map((row) => [...row]);
+    const deletedSubmissionIdSet = new Set(softDeletedSubmissionIds);
+    const deletedLedgerSubmissionIds = ledgerEntries.flatMap((entry) => {
+      const submissionId = entry.recordKey.slice(FORM_RESULTS_RECORD_KEY_PREFIX.length);
+      return deletedSubmissionIdSet.has(submissionId) ? [submissionId] : [];
+    });
+    const preclearedRowKeys = new Set<string>();
+    const removeDeletedLedgerEntries = async (submissionIds: string[]): Promise<void> => {
+      if (submissionIds.length === 0) return;
+      const lease = await renewLease();
+      const removed = await deleteSoftDeletedInternalFormSubmissionLedgerEntries(options.db, {
+        lineAccountId: options.connection.lineAccountId,
+        connectionId: options.connection.id,
+        connectionVersion: options.connection.configVersion,
+        formId: options.connection.formId,
+        submissionIds,
+        lease,
+      });
+      if (!removed) throw new Error('form_results_deleted_ledger_cleanup_failed');
+      for (const submissionId of submissionIds) ledgerBySubmission.delete(submissionId);
+    };
 
     // Answer column ownership mirrors the ledger tab, recorded separately in
     // form_results_headers_json so the two tabs never fight over headings.
@@ -467,6 +542,9 @@ export async function syncFormResults(
     // Chunk selection over the (submitted_at, id) cursor.
     const rowStates: SubmissionRowState[] = [];
     for (const submission of submissions) {
+      // The active/deleted reads run concurrently. If an admin deletion lands
+      // between them, the tombstone wins so this pass cannot re-append the row.
+      if (deletedSubmissionIdSet.has(submission.id)) continue;
       const friend = submission.friend_id ? friendById.get(submission.friend_id) : undefined;
       if (submission.friend_id && !friend) continue;
       rowStates.push({ submission, friend, answers: parseInternalAnswers(submission) });
@@ -542,7 +620,7 @@ export async function syncFormResults(
       | 'unselected_webhook_column'
       | 'stale_webhook_event'
       | null
-      = options.webhookTargetError ?? null;
+      = effectiveWebhookTargetError ?? null;
     if (options.source === 'webhook' && options.snapshot) {
       const rowIndex = options.snapshot.rowNumber - 1;
       const columnIndex = options.snapshot.columnNumber - 1;
@@ -701,8 +779,8 @@ export async function syncFormResults(
     };
 
     const plans: ResultsRowPlan[] = [];
-    const preclearedRowKeys = new Set<string>();
     let appendedRows = 0;
+    let deletedRows = 0;
     let importedFields = 0;
     let ignoredIdentityEdits = 0;
     const generatedHeaders = columns.map((column) => column.header);
@@ -719,6 +797,14 @@ export async function syncFormResults(
       );
       values[0] = [...generatedHeaders];
       await recordResultsHeaders();
+    }
+    if (
+      options.source !== 'webhook'
+      && headerIsEmpty
+      && !hasEstablishedDataRows
+      && deletedLedgerSubmissionIds.length > 0
+    ) {
+      await removeDeletedLedgerEntries(deletedLedgerSubmissionIds);
     }
     if (headerIsEmpty && !hasEstablishedDataRows) {
       if (chunkRows.length > 0) {
@@ -794,9 +880,11 @@ export async function syncFormResults(
       for (const headerWarning of resolved.warnings) {
         addWarning(warningText(headerWarning.code, headerWarning.header));
       }
-      const submissionIdIndex = resolved.indexByKey['identity:submissionId'];
+      let submissionIdIndex = resolved.indexByKey['identity:submissionId'];
       const positions = new Map<string, number[]>();
-      if (submissionIdIndex !== undefined) {
+      const indexSubmissionRows = (): void => {
+        positions.clear();
+        if (submissionIdIndex === undefined) return;
         for (let index = 1; index < values.length; index += 1) {
           const submissionId = normalizeSheetCell(effectiveRow(index + 1)[submissionIdIndex]);
           if (!submissionId) continue;
@@ -804,12 +892,201 @@ export async function syncFormResults(
           rows.push(index + 1);
           positions.set(submissionId, rows);
         }
+      };
+      indexSubmissionRows();
+      if (submissionIdIndex !== undefined) {
         for (const [, rows] of positions) {
           if (rows.length > 1) addWarning('送信IDが重複している行があります');
         }
       }
+      const deletionSubmissionIds = new Set(deletedLedgerSubmissionIds);
+      for (const submissionId of positions.keys()) {
+        if (deletedSubmissionIdSet.has(submissionId)) deletionSubmissionIds.add(submissionId);
+      }
+      if (
+        options.source !== 'webhook'
+        && !chunkMetadata?.hasMore
+        && deletionSubmissionIds.size > 0
+      ) {
+        const candidateRows = new Map<string, number>();
+        if (submissionIdIndex === undefined) {
+          addWarning('送信ID列が見つからないため、削除済み回答の行を除去できませんでした');
+        } else {
+          for (const submissionId of deletionSubmissionIds) {
+            const matchingRows = positions.get(submissionId) ?? [];
+            if (matchingRows.length === 0) {
+              if (ledgerBySubmission.has(submissionId)) {
+                addWarning('削除済み回答の送信IDが見つからないため、行を除去しませんでした');
+              }
+              continue;
+            }
+            if (matchingRows.length > 1) {
+              addWarning('削除済み回答と同じ送信IDが複数あるため、行を除去できませんでした');
+              continue;
+            }
+            candidateRows.set(submissionId, matchingRows[0]);
+          }
+        }
+        if (candidateRows.size > 0) {
+          // Resolve the stable tab id before the final cell preflight. The
+          // production client caches it, so deleteRows can issue batchUpdate
+          // immediately instead of widening the row-number race with another
+          // metadata round trip.
+          if (client.resolveSheetId) {
+            await client.resolveSheetId(options.connection.spreadsheetId, resultsSheetName);
+          }
+          const shiftIntentLease = await renewLease();
+          const shiftIntentStarted = await beginFormResultsRowShift(options.db, {
+            lineAccountId: options.connection.lineAccountId,
+            connectionId: options.connection.id,
+            connectionVersion: options.connection.configVersion,
+            formId: options.connection.formId,
+            pendingUntil: toJstString(new Date(nowFactory().getTime() + LOCK_DURATION_MS)),
+            lease: shiftIntentLease,
+          });
+          if (!shiftIntentStarted) throw new Error('form_results_row_shift_intent_failed');
+          const cancelShiftIntent = async (): Promise<void> => {
+            const cancelLease = await renewLease();
+            const cancelled = await cancelFormResultsRowShift(options.db, {
+              lineAccountId: options.connection.lineAccountId,
+              connectionId: options.connection.id,
+              connectionVersion: options.connection.configVersion,
+              formId: options.connection.formId,
+              lease: cancelLease,
+            });
+            if (!cancelled) throw new Error('form_results_row_shift_intent_cancel_failed');
+          };
+          // Recheck both systems immediately before the destructive call. The
+          // Sheets lease only serializes Harness workers; it cannot prevent a
+          // person from sorting or inserting a row in Google Sheets.
+          await renewLease();
+          let freshState;
+          try {
+            freshState = await Promise.all([
+              listSoftDeletedInternalFormSubmissionIdsForSheets(
+                options.db,
+                options.connection.lineAccountId,
+                options.connection.formId,
+              ),
+              client.readValues(
+                options.connection.spreadsheetId,
+                quoteSheetName(resultsSheetName),
+              ),
+            ]);
+          } catch (error) {
+            // The destructive request was never issued, so this intent cannot
+            // represent an uncertain row shift and must not stale webhooks.
+            await cancelShiftIntent();
+            throw error;
+          }
+          const [freshDeletedSubmissionIds, freshResponse] = freshState;
+          const freshDeletedSubmissionIdSet = new Set(freshDeletedSubmissionIds);
+          for (const submissionId of freshDeletedSubmissionIdSet) {
+            deletedSubmissionIdSet.add(submissionId);
+          }
+          values.splice(
+            0,
+            values.length,
+            ...(freshResponse.values ?? []).map((row) => [...row]),
+          );
+          headers = effectiveRow(1);
+          resolved = resolveFriendLedgerHeaders(headers, columns);
+          submissionIdIndex = resolved.indexByKey['identity:submissionId'];
+          for (const headerWarning of resolved.warnings) {
+            addWarning(warningText(headerWarning.code, headerWarning.header));
+          }
+          indexSubmissionRows();
+          const safeSubmissionIds: string[] = [];
+          const rowsToDelete: number[] = [];
+          if (submissionIdIndex === undefined) {
+            addWarning('送信ID列が見つからないため、削除済み回答の行を除去できませんでした');
+          } else {
+            for (const [submissionId, originalRow] of candidateRows) {
+              if (!freshDeletedSubmissionIdSet.has(submissionId)) {
+                addWarning('回答の削除状態を再確認できないため、行を除去しませんでした');
+                continue;
+              }
+              const freshRows = positions.get(submissionId) ?? [];
+              if (freshRows.length === 0) {
+                addWarning('削除済み回答の送信IDが見つからないため、行を除去しませんでした');
+                continue;
+              }
+              if (freshRows.length > 1) {
+                addWarning('削除済み回答と同じ送信IDが複数あるため、行を除去できませんでした');
+                continue;
+              }
+              if (freshRows[0] !== originalRow) {
+                addWarning('削除直前に回答行が移動したため、行を除去しませんでした');
+                continue;
+              }
+              safeSubmissionIds.push(submissionId);
+              rowsToDelete.push(originalRow);
+            }
+          }
+          if (safeSubmissionIds.length > 0) {
+            if (!client.deleteRows) {
+              await cancelShiftIntent();
+              throw new Error('form_results_row_delete_unsupported');
+            }
+            const deleted = await client.deleteRows(
+              options.connection.spreadsheetId,
+              resultsSheetName,
+              rowsToDelete,
+            );
+            if (deleted.deletedRows !== rowsToDelete.length) {
+              throw new Error('form_results_row_delete_incomplete');
+            }
+            const shiftLease = await renewLease();
+            const shiftMarked = await completeFormResultsRowShift(options.db, {
+              lineAccountId: options.connection.lineAccountId,
+              connectionId: options.connection.id,
+              connectionVersion: options.connection.configVersion,
+              formId: options.connection.formId,
+              shiftedAt: toJstString(nowFactory()),
+              lease: shiftLease,
+            });
+            if (!shiftMarked) throw new Error('form_results_row_shift_fence_failed');
+            deletedRows += deleted.deletedRows;
+            for (const rowNumber of [...rowsToDelete].sort((left, right) => right - left)) {
+              values.splice(rowNumber - 1, 1);
+            }
+
+            const activeLedgerKeys = ledgerEntries
+              .filter((entry) => !deletedSubmissionIdSet.has(
+                entry.recordKey.slice(FORM_RESULTS_RECORD_KEY_PREFIX.length),
+              ))
+              .map((entry) => entry.recordKey);
+            if (activeLedgerKeys.length > 0) {
+              const lease = await renewLease();
+              const cleared = await clearSheetsSyncLedgerRowNumbers(
+                options.db,
+                options.connection.lineAccountId,
+                options.connection.id,
+                options.connection.configVersion,
+                activeLedgerKeys,
+                lease,
+              );
+              if (!cleared) throw new Error('form_results_sync_lock_lost');
+              for (const [submissionId, ledger] of ledgerBySubmission) {
+                if (deletedSubmissionIdSet.has(submissionId)) continue;
+                ledgerBySubmission.set(submissionId, { ...ledger, sheetRowNumber: null });
+                preclearedRowKeys.add(formResultsRecordKey(submissionId));
+              }
+            }
+            await removeDeletedLedgerEntries(
+              safeSubmissionIds.filter((submissionId) => ledgerBySubmission.has(submissionId)),
+            );
+            indexSubmissionRows();
+          } else {
+            await cancelShiftIntent();
+          }
+        }
+      }
       const pendingChunkAppends: Array<{ plan: ResultsRowPlan; row: SheetCellValue[] }> = [];
       for (const state of chunkRows) {
+        // A tombstone discovered by the destructive preflight wins over the
+        // earlier active snapshot; never import or recommit that stale row.
+        if (deletedSubmissionIdSet.has(state.submission.id)) continue;
         const ledger = ledgerBySubmission.get(state.submission.id) ?? null;
         const matchingRows = positions.get(state.submission.id) ?? [];
         if (matchingRows.length > 1) continue;
@@ -1349,7 +1626,7 @@ export async function syncFormResults(
       warning,
       warnings,
       appendedRows,
-      updatedRows: updatedRowNumbers.size,
+      updatedRows: updatedRowNumbers.size + deletedRows,
       importedFields,
       ignoredIdentityEdits,
       ...(chunkMetadata ? { chunk: chunkMetadata } : {}),
@@ -1378,7 +1655,7 @@ export async function syncFormResults(
 export interface DrainFormResultsWebhookEventsOptions {
   db: D1Database;
   connection: SheetsConnection;
-  client?: FriendLedgerSheetsClient;
+  client?: FormResultsSheetsClient;
   credentialsJson?: string;
   maxEvents: number;
   now?: () => Date;
@@ -1478,6 +1755,7 @@ export async function drainFormResultsWebhookEvents(
         range: payload.range,
         snapshot: payload.snapshot,
         webhookEventId: event.eventId,
+        webhookOccurredAt: event.occurredAt,
         webhookTargetError: (
           Number.isFinite(parseFriendLedgerTimestamp(event.occurredAt))
           && Number.isFinite(parseFriendLedgerTimestamp(options.connection.updatedAt))

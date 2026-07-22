@@ -62,12 +62,28 @@ function parseA1(range: string): { row: number; column: number } {
 
 class FakeSheetsClient {
   values: SheetCellValue[][] = [];
-  readonly writes: Array<{ kind: 'update' | 'append' | 'batch'; range?: string; rowCount?: number }> = [];
+  readonly writes: Array<{
+    kind: 'update' | 'append' | 'batch' | 'delete';
+    range?: string;
+    rowCount?: number;
+    sheetName?: string;
+    rowNumbers?: number[];
+  }> = [];
   readCount = 0;
+  afterRead: ((readCount: number) => void) | null = null;
+  readError: Error | null = null;
+  deleteErrorAfterApply: Error | null = null;
 
   async readValues() {
     this.readCount += 1;
-    return { majorDimension: 'ROWS' as const, values: this.values.map((row) => [...row]) };
+    if (this.readError) {
+      const error = this.readError;
+      this.readError = null;
+      throw error;
+    }
+    const values = this.values.map((row) => [...row]);
+    this.afterRead?.(this.readCount);
+    return { majorDimension: 'ROWS' as const, values };
   }
 
   async updateValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
@@ -86,6 +102,23 @@ class FakeSheetsClient {
     this.writes.push({ kind: 'batch', rowCount: data.length });
     for (const update of data) this.apply(update.range, update.values);
     return { spreadsheetId: 'sheet-1', totalUpdatedRows: data.length };
+  }
+
+  async deleteRows(_spreadsheetId: string, sheetName: string, rowNumbers: number[]) {
+    const sorted = [...rowNumbers].sort((left, right) => right - left);
+    this.writes.push({
+      kind: 'delete',
+      rowCount: sorted.length,
+      sheetName,
+      rowNumbers: sorted,
+    });
+    for (const rowNumber of sorted) this.values.splice(rowNumber - 1, 1);
+    if (this.deleteErrorAfterApply) {
+      const error = this.deleteErrorAfterApply;
+      this.deleteErrorAfterApply = null;
+      throw error;
+    }
+    return { spreadsheetId: 'sheet-1', deletedRows: sorted.length };
   }
 
   private apply(range: string, values: SheetCellValue[][]): void {
@@ -254,6 +287,227 @@ describe('form results sheet — one row per submission', () => {
     const result = await run();
     expect(result.status).toBe('success');
     expect(resultsClient.writes.length).toBe(writesBefore);
+  });
+
+  test('removes only the exact results row after its Harness submission is soft-deleted', async () => {
+    await run();
+    resultsClient.values[0].push('会社メモ');
+    resultsClient.values[1].push('削除対象の社内値');
+    resultsClient.values[2].push('残す社内値');
+    const survivorBefore = [...resultsClient.values[2]];
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+
+    const result = await run();
+
+    expect(result.updatedRows).toBe(1);
+    expect(resultsClient.writes.filter((write) => write.kind === 'delete')).toEqual([{
+      kind: 'delete',
+      rowCount: 1,
+      sheetName: '回答',
+      rowNumbers: [2],
+    }]);
+    expect(resultsClient.values).toEqual([
+      ['表示名', 'userId', '入金確認', '送信日時', '送信ID', '質問1', '質問2', '会社メモ'],
+      survivorBefore,
+    ]);
+    expect(raw.prepare(
+      'SELECT answers_json, deleted_at FROM internal_form_submissions WHERE id = ?',
+    ).get('ifs-001')).toEqual({
+      answers_json: '{"q1":"回答A1","q2":"回答A2"}',
+      deleted_at: '2026-07-22T13:00:00+09:00',
+    });
+    expect(raw.prepare(
+      `SELECT record_key, sheet_row_number
+       FROM sheets_sync_ledger WHERE connection_id = ? ORDER BY record_key`,
+    ).all(connection.id)).toEqual([{ record_key: 'sub:ifs-002', sheet_row_number: 2 }]);
+    expect(raw.prepare(
+      'SELECT form_results_row_shifted_at FROM sheets_connections WHERE id = ?',
+    ).get(connection.id)).toEqual({ form_results_row_shifted_at: expect.any(String) });
+  });
+
+  test('fails closed when a row moves after the deletion sync reads the sheet', async () => {
+    await run();
+    const unrelatedRow = ['会社管理', '', '', '', '', '', '', '消してはいけない'];
+    resultsClient.afterRead = (readCount) => {
+      if (readCount === 2) resultsClient.values.splice(1, 0, unrelatedRow);
+    };
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+
+    const result = await run();
+
+    expect(result.warnings).toContain('削除直前に回答行が移動したため、行を除去しませんでした');
+    expect(resultsClient.writes.some((write) => write.kind === 'delete')).toBe(false);
+    expect(resultsClient.values).toContainEqual(unrelatedRow);
+    expect(resultsClient.values.some((row) => row[4] === 'ifs-001')).toBe(true);
+    expect(raw.prepare(
+      `SELECT record_key FROM sheets_sync_ledger
+       WHERE connection_id = ? AND record_key = 'sub:ifs-001'`,
+    ).get(connection.id)).toEqual({ record_key: 'sub:ifs-001' });
+  });
+
+  test('cancels the intent fence when the final preflight read fails before deletion starts', async () => {
+    await run();
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+    resultsClient.afterRead = (readCount) => {
+      if (readCount === 2) resultsClient.readError = new Error('preflight read failed');
+    };
+
+    await expect(run()).rejects.toThrow('preflight read failed');
+
+    expect(resultsClient.writes.some((write) => write.kind === 'delete')).toBe(false);
+    expect(raw.prepare(
+      'SELECT form_results_row_shift_pending_until FROM sheets_connections WHERE id = ?',
+    ).get(connection.id)).toEqual({ form_results_row_shift_pending_until: null });
+  });
+
+  test('cancels the intent fence when row deletion is unsupported before any request', async () => {
+    await run();
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+    Object.defineProperty(resultsClient, 'deleteRows', { value: undefined });
+
+    await expect(run()).rejects.toThrow('form_results_row_delete_unsupported');
+
+    expect(resultsClient.writes.some((write) => write.kind === 'delete')).toBe(false);
+    expect(raw.prepare(
+      'SELECT form_results_row_shift_pending_until FROM sheets_connections WHERE id = ?',
+    ).get(connection.id)).toEqual({ form_results_row_shift_pending_until: null });
+  });
+
+  test('retains the deletion ledger when the protected submission ID is missing', async () => {
+    await run();
+    resultsClient.values[1][4] = '';
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+
+    const result = await run();
+
+    expect(result.warnings).toContain('削除済み回答の送信IDが見つからないため、行を除去しませんでした');
+    expect(resultsClient.writes.some((write) => write.kind === 'delete')).toBe(false);
+    expect(raw.prepare(
+      `SELECT record_key FROM sheets_sync_ledger
+       WHERE connection_id = ? AND record_key = 'sub:ifs-001'`,
+    ).get(connection.id)).toEqual({ record_key: 'sub:ifs-001' });
+  });
+
+  test('removes an exact soft-deleted row even when its prior ledger baseline is missing', async () => {
+    await run();
+    raw.prepare(
+      `DELETE FROM sheets_sync_ledger
+       WHERE connection_id = ? AND record_key = 'sub:ifs-001'`,
+    ).run(connection.id);
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+
+    const result = await run();
+
+    expect(result.updatedRows).toBe(1);
+    expect(resultsClient.writes.filter((write) => write.kind === 'delete')).toEqual([{
+      kind: 'delete',
+      rowCount: 1,
+      sheetName: '回答',
+      rowNumbers: [2],
+    }]);
+    expect(resultsClient.values.some((row) => row[4] === 'ifs-001')).toBe(false);
+    expect(resultsClient.values.some((row) => row[4] === 'ifs-002')).toBe(true);
+  });
+
+  test('never moves the persisted row-shift fence backward', async () => {
+    await run();
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+    const later = Math.max(
+      Date.parse(connection.updatedAt),
+      Date.parse(connection.lastSyncAt ?? connection.updatedAt),
+    ) + 60_000;
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+    await run('polling', { now: () => new Date(later) });
+    const firstFence = raw.prepare(
+      'SELECT form_results_row_shifted_at FROM sheets_connections WHERE id = ?',
+    ).get(connection.id) as { form_results_row_shifted_at: string };
+    insertSubmission(
+      'ifs-003',
+      { q1: '回答C1', q2: '回答C2' },
+      '2026-07-22T10:00:00+09:00',
+    );
+    await run('polling', { now: () => new Date(later - 30_000) });
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:01:00+09:00', 'ifs-003');
+
+    await run('polling', { now: () => new Date(later - 30_000) });
+
+    expect(raw.prepare(
+      `SELECT form_results_row_shifted_at, form_results_row_shift_pending_until
+       FROM sheets_connections WHERE id = ?`,
+    ).get(connection.id)).toEqual({
+      form_results_row_shifted_at: firstFence.form_results_row_shifted_at,
+      form_results_row_shift_pending_until: null,
+    });
+  });
+
+  test('lets a concurrent tombstone win over the stale active-submission read', async () => {
+    await run();
+    const writesBefore = resultsClient.writes.length;
+    resultsClient.afterRead = (readCount) => {
+      if (readCount === 2) {
+        raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+          .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+      }
+    };
+
+    await run();
+
+    expect(resultsClient.values.some((row) => row[4] === 'ifs-001')).toBe(false);
+    expect(resultsClient.writes.slice(writesBefore).filter((write) => write.kind === 'delete'))
+      .toHaveLength(1);
+    expect(resultsClient.writes.slice(writesBefore).filter((write) => write.kind === 'append'))
+      .toHaveLength(0);
+    expect(raw.prepare(
+      `SELECT record_key, sheet_row_number FROM sheets_sync_ledger
+       WHERE connection_id = ? ORDER BY record_key`,
+    ).all(connection.id)).toEqual([{ record_key: 'sub:ifs-002', sheet_row_number: 2 }]);
+  });
+
+  test('postpones a physical deletion until the terminal chunk can advance the sync fence', async () => {
+    insertSubmission(
+      'ifs-003',
+      { q1: '回答C1', q2: '回答C2' },
+      '2026-07-22T10:00:00+09:00',
+    );
+    await run();
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+
+    const first = await runChunk(null, 1);
+
+    expect(first.status).toBe('running');
+    expect(resultsClient.writes.filter((write) => write.kind === 'delete')).toHaveLength(0);
+    expect(raw.prepare(
+      `SELECT record_key FROM sheets_sync_ledger
+       WHERE connection_id = ? AND record_key = 'sub:ifs-001'`,
+    ).get(connection.id)).toEqual({ record_key: 'sub:ifs-001' });
+
+    const terminal = await runChunk(first.chunk!.cursor, 1);
+
+    expect(terminal.status).toBe('success');
+    expect(resultsClient.writes.filter((write) => write.kind === 'delete')).toHaveLength(1);
+    expect(resultsClient.values.some((row) => row[4] === 'ifs-001')).toBe(false);
+  });
+
+  test('restores a sheet-only row deletion without deleting the Harness submission', async () => {
+    await run();
+    resultsClient.values.splice(1, 1);
+
+    const result = await run();
+
+    expect(result.appendedRows).toBe(1);
+    expect(resultsClient.values.some((row) => row[4] === 'ifs-001')).toBe(true);
+    expect(raw.prepare(
+      'SELECT deleted_at FROM internal_form_submissions WHERE id = ?',
+    ).get('ifs-001')).toEqual({ deleted_at: null });
   });
 
   test('includes three friend-backed and three anonymous submissions while excluding other tenants', async () => {
@@ -626,5 +880,187 @@ describe('target isolation (D-2 独立スイッチ)', () => {
       q1: 'フラグ変更後の回答',
       q2: '回答A2',
     });
+  });
+
+  test('does not retarget a queued pre-deletion webhook after a results row shifts', async () => {
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ?')
+      .run(JSON.stringify({ q1: '共通値', q2: '回答2' }));
+    insertSubmission(
+      'ifs-003',
+      { q1: '共通値', q2: '回答2' },
+      '2026-07-22T10:00:00+09:00',
+    );
+    await run();
+    const targetRowIndex = resultsClient.values.findIndex((row) => row[4] === 'ifs-002');
+    expect(targetRowIndex).toBeGreaterThan(0);
+    resultsClient.values[targetRowIndex][5] = '本来はifs-002だけの編集';
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+    const baselineAt = Math.max(
+      Date.parse(connection.updatedAt),
+      Date.parse(connection.lastSyncAt ?? connection.updatedAt),
+    );
+    const occurredAt = new Date(baselineAt + 1_000).toISOString();
+    const queued = await enqueueSheetsWebhookEvent(
+      db,
+      'acc-1',
+      connection.id,
+      connection.configVersion,
+      {
+        eventId: 'evt-before-results-row-delete',
+        actor: 'editor@example.test',
+        actorKind: 'google_email',
+        occurredAt,
+        receivedAt: occurredAt,
+        target: 'form_results',
+        payload: {
+          range: {
+            rowStart: targetRowIndex + 1,
+            rowEnd: targetRowIndex + 1,
+            columnStart: 6,
+            columnEnd: 6,
+          },
+          snapshot: {
+            rowNumber: targetRowIndex + 1,
+            columnNumber: 6,
+            header: '質問1',
+            rowUserId: 'U_AYAKO',
+            value: '本来はifs-002だけの編集',
+            oldValue: '共通値',
+            oldValueKnown: true,
+          },
+        },
+      },
+    );
+    expect(queued?.enqueued).toBe(true);
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+    const deletionCompletedAt = baselineAt + 10_000;
+
+    await run('polling', { now: () => new Date(deletionCompletedAt) });
+
+    expect(submissionAnswers('ifs-002')).toEqual({
+      q1: '本来はifs-002だけの編集',
+      q2: '回答2',
+    });
+    expect(submissionAnswers('ifs-003')).toEqual({ q1: '共通値', q2: '回答2' });
+    // `run` keeps the caller's pre-completion connection object. The drain
+    // must fetch the persisted lastSyncAt fence rather than trusting it.
+    expect(Date.parse(connection.lastSyncAt ?? '')).toBeLessThan(deletionCompletedAt);
+    const drained = await drainFormResultsWebhookEvents({
+      db,
+      connection,
+      client: resultsClient,
+      maxEvents: 1,
+      now: () => new Date(deletionCompletedAt + 10_000),
+    });
+
+    expect(drained).toMatchObject({ attempted: 1, applied: 1, dead: 0 });
+    expect(submissionAnswers('ifs-003')).toEqual({ q1: '共通値', q2: '回答2' });
+    expect(raw.prepare(
+      `SELECT error_code FROM sheets_sync_audit_log
+       WHERE webhook_event_id = 'evt-before-results-row-delete'`,
+    ).get()).toEqual({ error_code: 'stale_webhook_generation' });
+  });
+
+  test('does not discard a queued edit merely because an unrelated sync failed', async () => {
+    await run();
+    resultsClient.values[1][5] = '失敗後も取り込む編集';
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+    const baselineAt = Math.max(
+      Date.parse(connection.updatedAt),
+      Date.parse(connection.lastSyncAt ?? connection.updatedAt),
+    );
+    const occurredAt = new Date(baselineAt + 1_000).toISOString();
+    const queued = await enqueueSheetsWebhookEvent(
+      db,
+      'acc-1',
+      connection.id,
+      connection.configVersion,
+      {
+        eventId: 'evt-before-unrelated-sync-failure',
+        actor: 'editor@example.test',
+        actorKind: 'google_email',
+        occurredAt,
+        receivedAt: occurredAt,
+        target: 'form_results',
+        payload: {
+          range: { rowStart: 2, rowEnd: 2, columnStart: 6, columnEnd: 6 },
+          snapshot: {
+            rowNumber: 2,
+            columnNumber: 6,
+            header: '質問1',
+            rowUserId: 'U_AYAKO',
+            value: '失敗後も取り込む編集',
+            oldValue: '回答A1',
+            oldValueKnown: true,
+          },
+        },
+      },
+    );
+    expect(queued?.enqueued).toBe(true);
+    resultsClient.readError = new Error('temporary sheets read failure');
+    const failureAt = baselineAt + 10_000;
+
+    await expect(run('polling', { now: () => new Date(failureAt) }))
+      .rejects.toThrow('temporary sheets read failure');
+
+    const drained = await drainFormResultsWebhookEvents({
+      db,
+      connection,
+      client: resultsClient,
+      maxEvents: 1,
+      now: () => new Date(failureAt + 10_000),
+    });
+    expect(drained).toMatchObject({ attempted: 1, applied: 1, dead: 0 });
+    expect(submissionAnswers('ifs-001')).toEqual({
+      q1: '失敗後も取り込む編集',
+      q2: '回答A2',
+    });
+  });
+
+  test('keeps an intent fence when the row-delete response is uncertain', async () => {
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ?')
+      .run(JSON.stringify({ q1: '共通値', q2: '回答2' }));
+    insertSubmission(
+      'ifs-003',
+      { q1: '共通値', q2: '回答2' },
+      '2026-07-22T10:00:00+09:00',
+    );
+    await run();
+    const targetRow = resultsClient.values.findIndex((row) => row[4] === 'ifs-002') + 1;
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+    const baselineAt = Math.max(
+      Date.parse(connection.updatedAt),
+      Date.parse(connection.lastSyncAt ?? connection.updatedAt),
+    );
+    const occurredAt = new Date(baselineAt + 1_000).toISOString();
+    resultsClient.values[targetRow - 1][5] = 'ifs-002だけの編集';
+    raw.prepare('UPDATE internal_form_submissions SET deleted_at = ? WHERE id = ?')
+      .run('2026-07-22T13:00:00+09:00', 'ifs-001');
+    resultsClient.deleteErrorAfterApply = new Error('delete response lost');
+
+    await expect(run('polling', { now: () => new Date(baselineAt + 10_000) }))
+      .rejects.toThrow('delete response lost');
+
+    expect(raw.prepare(
+      'SELECT form_results_row_shift_pending_until FROM sheets_connections WHERE id = ?',
+    ).get(connection.id)).toEqual({ form_results_row_shift_pending_until: expect.any(String) });
+    const result = await run('webhook', {
+      range: { rowStart: targetRow, rowEnd: targetRow, columnStart: 6, columnEnd: 6 },
+      snapshot: {
+        rowNumber: targetRow,
+        columnNumber: 6,
+        header: '質問1',
+        rowUserId: 'U_AYAKO',
+        value: 'ifs-002だけの編集',
+        oldValue: '共通値',
+        oldValueKnown: true,
+      },
+      webhookEventId: 'evt-uncertain-row-delete',
+      webhookOccurredAt: occurredAt,
+    });
+
+    expect(result.warnings).toContain('編集後に行・列または同期設定が変わったため、古い編集通知を取り込みませんでした');
+    expect(submissionAnswers('ifs-003')).toEqual({ q1: '共通値', q2: '回答2' });
   });
 });

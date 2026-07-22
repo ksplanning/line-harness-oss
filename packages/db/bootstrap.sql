@@ -1259,6 +1259,8 @@ CREATE TABLE sheets_connections (
                   CHECK (last_sync_status IN ('idle', 'running', 'success', 'warning', 'error')),
   last_sync_warning TEXT,
   last_sync_error_code TEXT,
+  form_results_row_shifted_at TEXT,
+  form_results_row_shift_pending_until TEXT,
   sync_lock_token TEXT,
   sync_lock_expires_at TEXT,
   is_active       INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
