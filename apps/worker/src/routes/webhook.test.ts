@@ -849,12 +849,47 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
-  test('silent rule automation dead-letter stays unread with its provisional unmatched marker', async () => {
+  test('silent rule without a sending automation still finalizes its handled marker and suppresses unread', async () => {
     vi.mocked(fireEvent).mockResolvedValueOnce({
       automationMessageSent: false,
     });
 
-    const { db, incomingStatement, preparedStatements } = await postTextWebhook({}, '#自動処理', [{
+    const { incomingStatement, preparedStatements } = await postTextWebhook({}, '#案内のみ', [{
+      id: 'auto-silent-only',
+      keyword: '#案内のみ',
+      match_type: 'exact',
+      response_type: 'silent',
+      response_content: '',
+      response_messages: null,
+      template_id: null,
+      keep_in_unresponded: 0,
+      is_active: 1,
+      created_at: '2026-07-22T00:00:00+09:00',
+    }]);
+
+    expect(incomingStatement?.bind).toHaveBeenCalledWith(
+      expect.any(String),
+      'friend-1',
+      '#案内のみ',
+      'user_unmatched',
+      expect.any(String),
+    );
+    const sourceUpdate = preparedStatements.find(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    );
+    expect(sourceUpdate?.statement.bind).toHaveBeenCalledWith(
+      'auto_reply_keyword',
+      expect.any(String),
+    );
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('silent rule automation dead-letter remains handled because no reply is the rule result', async () => {
+    vi.mocked(fireEvent).mockResolvedValueOnce({
+      automationMessageSent: false,
+    });
+
+    const { incomingStatement, preparedStatements } = await postTextWebhook({}, '#自動処理', [{
       id: 'auto-automation-dead-letter',
       keyword: '#自動処理',
       match_type: 'exact',
@@ -874,10 +909,14 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       'user_unmatched',
       expect.any(String),
     );
-    expect(preparedStatements.some(({ sql }) =>
+    const sourceUpdate = preparedStatements.find(({ sql }) =>
       sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
-    )).toBe(false);
-    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    );
+    expect(sourceUpdate?.statement.bind).toHaveBeenCalledWith(
+      'auto_reply_keep_unresponded',
+      expect.any(String),
+    );
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
   test('[fail-closed] a sent reply with an unpersisted handled marker remains unread', async () => {

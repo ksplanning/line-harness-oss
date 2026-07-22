@@ -609,7 +609,7 @@ async function handleEvent(
     const matchedKeywordSource = matchedRule?.keep_in_unresponded
       ? AUTO_REPLY_KEEP_UNRESPONDED_SOURCE
       : AUTO_REPLY_KEYWORD_SOURCE;
-    const awaitingAutomation = !!(
+    const matchedSilentRule = !!(
       matchedRule
       && !skipAutoReply
       && matchedRule.response_type === 'silent'
@@ -617,7 +617,8 @@ async function handleEvent(
     const completedActionSource = matchedRule?.keep_in_unresponded
       ? AUTO_REPLY_KEEP_UNRESPONDED_SOURCE
       : AUTO_REPLY_HANDLED_SOURCE;
-    // direct reply と automation は外部送信が完了するまで fail-closed marker のままにする。
+    // direct reply は外部送信完了まで、silent は event-bus dispatch 完了まで
+    // fail-closed marker のままにする。silent 自体は送信を必要としない。
     const incomingSource = UNMATCHED_USER_SOURCE;
 
     // 判定結果を incoming 自身へ保存する。集計画面は今後この marker を読み、
@@ -711,9 +712,9 @@ async function handleEvent(
       }
     }
 
-    // silent rule は event-bus automation の実送信結果を待つ。downstream の既存契約では
-    // rule match 自体を matched=true として渡し、未読/marker の確定だけを送信後へ遅らせる。
-    let matched = awaitingAutomation;
+    // silent は「返信しない」こと自体が正常な処理結果。downstream automation の有無や
+    // 送信成否には依存せず matched=true とし、marker は event-bus dispatch 後に確定する。
+    let matched = matchedSilentRule;
     let replyTokenConsumed = false;
 
     // 応答時間帯ゲート (G28) — is_enabled の時だけ介入。既定 OFF / schedule 無しは
@@ -831,9 +832,8 @@ async function handleEvent(
     // Pass replyToken only when auto_reply didn't actually consume it.
     // businessHoursSuppressed は営業時間内にオペレーターへ回した合図 → event-bus 側で
     // message_received automation の send_message を抑止する (HIGH-1)。
-    let eventResult: Awaited<ReturnType<typeof fireEvent>> | undefined;
     try {
-      eventResult = await fireEvent(db, 'message_received', {
+      await fireEvent(db, 'message_received', {
         friendId: friend.id,
         eventData: businessHoursSuppressed
           ? { text: incomingText, matched, businessHoursSuppressed: true }
@@ -841,23 +841,19 @@ async function handleEvent(
         replyToken: replyTokenConsumed ? undefined : event.replyToken,
       }, lineAccessToken, lineAccountId);
     } catch (err) {
-      if (!awaitingAutomation) throw err;
-      console.error('Failed to complete silent-rule automation', err);
+      if (!matchedSilentRule) throw err;
+      console.error('Failed to dispatch silent-rule event', err);
     }
 
-    if (awaitingAutomation) {
-      if (eventResult?.automationMessageSent) {
-        try {
-          await db
-            .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
-            .bind(matchedKeywordSource, logId)
-            .run();
-        } catch (err) {
-          // LINE への再送はせず、provisional marker のままスタッフへ見せる。
-          console.error('Failed to persist silent-rule automation marker', err);
-          await upsertChatOnMessage(db, friend.id);
-        }
-      } else {
+    if (matchedSilentRule) {
+      try {
+        await db
+          .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
+          .bind(matchedKeywordSource, logId)
+          .run();
+      } catch (err) {
+        // 外部処理は再実行せず、provisional marker のままスタッフへ見せる。
+        console.error('Failed to persist silent-rule marker', err);
         await upsertChatOnMessage(db, friend.id);
       }
     }
