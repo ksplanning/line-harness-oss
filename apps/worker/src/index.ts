@@ -140,6 +140,7 @@ export type Env = {
     DB: D1Database;
     IMAGES: R2Bucket;
     ASSETS: Fetcher;
+    SELF?: Fetcher;
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
     API_KEY: string;
@@ -306,6 +307,7 @@ async function dispatchRichMenuRuleWork(env: Env['Bindings']): Promise<void> {
     ...RICH_MENU_RULE_PROTOCOL,
     publicUrl: env.WORKER_PUBLIC_URL,
     secret: env.LINE_CHANNEL_SECRET,
+    self: env.SELF,
     userAgent: `line-harness-worker/${BUNDLE_VERSION}`,
   });
 }

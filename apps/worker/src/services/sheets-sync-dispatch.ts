@@ -15,11 +15,13 @@ const protocol = {
 export async function dispatchSheetsSyncWork(env: {
   WORKER_PUBLIC_URL?: string;
   LINE_CHANNEL_SECRET: string;
+  SELF?: Fetcher;
 }): Promise<void> {
   return dispatchInternalWork({
     ...protocol,
     publicUrl: env.WORKER_PUBLIC_URL,
     secret: env.LINE_CHANNEL_SECRET,
+    self: env.SELF,
     userAgent: `line-harness-worker/${BUNDLE_VERSION}`,
   });
 }

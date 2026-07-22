@@ -98,6 +98,55 @@ describe('scheduled Sheets sync work', () => {
     expect(JSON.stringify([url, init])).not.toContain('credential');
   });
 
+  test('advances a signed chunk and continuation through SELF when public self-fetch is unavailable', async () => {
+    const selfFetch = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 204 }));
+    const bindings = { ...env(), SELF: { fetch: selfFetch } };
+    isolatedFetch.mockImplementation(async (input) => {
+      if (String(input).includes('/internal/')) throw new Error('Cloudflare 1042 self-fetch blocked');
+      return new Response(null, { status: 204 });
+    });
+    spies.enqueue.mockResolvedValueOnce({ enqueued: 1, runnable: 1 });
+
+    await worker.scheduled(tick(), bindings as never, CTX);
+
+    const initialCalls = selfFetch.mock.calls.filter((call) => (
+      String(call[0]).endsWith('/internal/sheets-sync-work')
+    ));
+    expect(initialCalls).toHaveLength(1);
+    expect(sheetsCalls()).toHaveLength(0);
+
+    spies.process.mockResolvedValueOnce({
+      attempted: 1,
+      hasMore: true,
+      continuationJobId: 'job-1',
+      job: { id: 'job-1', status: 'running', processedCount: 200, totalCount: 1450 },
+    });
+    selfFetch.mockClear();
+    waitUntil.mockClear();
+    const [url, init] = initialCalls[0];
+
+    const response = await worker.fetch(
+      new Request(String(url), init as RequestInit),
+      bindings as never,
+      CTX,
+    );
+
+    expect(response.status).toBe(204);
+    expect(spies.process).toHaveBeenCalledWith(expect.objectContaining({
+      db: expect.anything(), credentialsJson: '{"service":"credential"}', chunkSize: 200,
+    }));
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await waitUntil.mock.calls[0][0];
+    expect(selfFetch.mock.calls.filter((call) => (
+      String(call[0]).endsWith('/internal/sheets-sync-work')
+    ))).toHaveLength(1);
+    expect(sheetsCalls()).toHaveLength(0);
+    expect(spies.dispatchFailed).not.toHaveBeenCalled();
+  });
+
   test('persists a safe job error when the cron entry dispatch cannot start', async () => {
     spies.enqueue.mockResolvedValueOnce({ enqueued: 2, runnable: 2 });
     isolatedFetch.mockImplementation(async (input) => (

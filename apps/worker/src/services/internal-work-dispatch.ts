@@ -8,6 +8,7 @@ interface InternalWorkProtocol {
 interface DispatchInternalWorkOptions extends InternalWorkProtocol {
   publicUrl?: string;
   secret: string;
+  self?: Fetcher;
   userAgent: string;
 }
 
@@ -70,7 +71,7 @@ export async function dispatchInternalWork(options: DispatchInternalWorkOptions)
   const timestamp = String(Date.now());
   const nonce = crypto.randomUUID();
   const signed = await signature(options.secret, options, target.origin, timestamp, nonce);
-  const response = await fetch(target.toString(), {
+  const requestInit: RequestInit = {
     method: 'POST',
     headers: {
       'User-Agent': options.userAgent,
@@ -79,7 +80,10 @@ export async function dispatchInternalWork(options: DispatchInternalWorkOptions)
       [`${options.headerPrefix}-signature`]: signed,
     },
     redirect: 'error',
-  });
+  };
+  const response = options.self
+    ? await options.self.fetch(target.toString(), requestInit)
+    : await fetch(target.toString(), requestInit);
   if (!response.ok) throw new Error(`isolated ${options.label} worker returned ${response.status}`);
 }
 
