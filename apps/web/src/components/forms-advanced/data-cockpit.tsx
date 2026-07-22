@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import type { SubmissionRow, FormStats, SavedFilter, RowsQuery } from '@/lib/formaloo-advanced-api'
 import { formatJstMinute } from '@/lib/datetime'
+import { fileAnswerSummary, isFileAnswer } from '@/lib/file-answer'
 
 // =============================================================================
 // DataCockpit (F-4 / T-D1・T-D2) — フォームビルダーの回答データページ本体 (presentational)。
@@ -38,6 +39,7 @@ export interface DataCockpitProps {
 
 function cellText(v: unknown): string {
   if (v === null || v === undefined || v === '') return '—'
+  if (isFileAnswer(v)) return fileAnswerSummary(v)
   if (Array.isArray(v)) return v.join('、')
   return String(v)
 }

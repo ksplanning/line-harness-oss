@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import DataCockpit from '@/components/forms-advanced/data-cockpit'
@@ -17,6 +17,7 @@ import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import { csvDateStamp, safeFilenamePart } from '@/lib/download'
 import { formatJstMinute } from '@/lib/datetime'
+import { fileSizeLabel, isFileAnswer } from '@/lib/file-answer'
 
 const DEFAULT_QUERY: RowsQuery = { sort: 'desc', page: 1, pageSize: 25 }
 type RenderBackendState = 'unknown' | 'formaloo' | 'internal'
@@ -27,7 +28,7 @@ function labelForSlug(detail: RowDetail, slug: string): string {
 }
 
 // F-4 データコックピット本体。id は data/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
-export default function DataCockpitClient({ id }: { id: string }) {
+export default function DataCockpitClient({ id, initialRowId }: { id: string; initialRowId?: string | null }) {
   const { selectedAccountId } = useAccount()
   const [title, setTitle] = useState('')
   // F6-2 表示スコープ: 読み込んだ form の lineAccountId (undefined=未取得 / null=共通)。
@@ -106,6 +107,20 @@ export default function DataCockpitClient({ id }: { id: string }) {
   }
   const onOpenRow = async (rowId: string) => {
     try { setDetail(await formalooDataApi.row(id, rowId)); setEditMode(false); setEditError(null) } catch { setNotice('回答の取得に失敗しました') }
+  }
+  const autoOpenedRef = useRef(false)
+  useEffect(() => {
+    if (loading || !initialRowId || autoOpenedRef.current) return
+    autoOpenedRef.current = true
+    void onOpenRow(initialRowId)
+  }, [loading, initialRowId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const onDownloadFile = async (fieldId: string, index: number, name: string) => {
+    if (!detail) return
+    try {
+      await formalooDataApi.downloadAttachment(id, detail.id, fieldId, index, name)
+    } catch (error) {
+      setNotice((error as { message?: string })?.message ?? 'ファイルのダウンロードに失敗しました')
+    }
   }
   const closeDetail = () => { setDetail(null); setEditMode(false); setEditError(null) }
   // 弾M (T-D2): 編集モードに入る = 編集可能 field の現在値を入力欄に載せる。
@@ -234,7 +249,30 @@ export default function DataCockpitClient({ id }: { id: string }) {
                   {Object.entries(detail.answers).map(([k, v]) => (
                     <div key={k} className="rounded border border-gray-100 p-2">
                       <dt className="text-xs text-gray-500">{labelForSlug(detail, k)}</dt>
-                      <dd className="mt-0.5 text-sm text-gray-900">{Array.isArray(v) ? v.join('、') : String(v ?? '—')}</dd>
+                      {isFileAnswer(v) ? (
+                        <dd className="mt-0.5 space-y-1">
+                          {v.map((file, index) => (
+                            <div key={`${file.key}-${index}`} className="flex items-center justify-between gap-2 text-sm text-gray-900">
+                              <span className="min-w-0 truncate">{file.name || '添付ファイル'}</span>
+                              {typeof file.size === 'number' && (
+                                <span className="shrink-0 text-xs text-gray-400">({fileSizeLabel(file.size)})</span>
+                              )}
+                              {detail.source === 'internal' && (
+                                <button
+                                  type="button"
+                                  data-testid={`download-file-${k}-${index}`}
+                                  onClick={() => onDownloadFile(k, index, file.name || '添付ファイル')}
+                                  className="shrink-0 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50"
+                                >
+                                  ダウンロード
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </dd>
+                      ) : (
+                        <dd className="mt-0.5 text-sm text-gray-900">{Array.isArray(v) ? v.join('、') : String(v ?? '—')}</dd>
+                      )}
                     </div>
                   ))}
                   {Object.keys(detail.answers).length === 0 && <div className="text-sm text-gray-400">回答項目がありません</div>}
