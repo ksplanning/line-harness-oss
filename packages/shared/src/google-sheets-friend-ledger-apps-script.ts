@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+
 /**
  * Browser-loadable URL for the copyable Apps Script.
  *
