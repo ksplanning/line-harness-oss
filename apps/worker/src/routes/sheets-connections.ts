@@ -127,7 +127,11 @@ function validateSettings(body: ConnectionInput): ValidationResult<ValidSettings
       ) {
         return { ok: false, error: 'フォーム回答シート名を正しく選択してください' };
       }
-      if (formResultsSheetName === sheetName) {
+      if (
+        body.friendLedgerEnabled === true
+        && body.formResultsEnabled === true
+        && formResultsSheetName === sheetName
+      ) {
         return { ok: false, error: 'フォーム回答は友だち台帳と別のタブを選択してください' };
       }
     }
@@ -189,6 +193,13 @@ function validateCreate(body: ConnectionInput): ValidationResult<ValidCreate> {
   }
   if ((settings.value.formResultsEnabled ?? true) && !settings.value.formResultsSheetName) {
     return { ok: false, error: 'フォーム回答シートのタブを選択してください' };
+  }
+  if (
+    (settings.value.friendLedgerEnabled ?? false)
+    && (settings.value.formResultsEnabled ?? true)
+    && settings.value.formResultsSheetName === settings.value.sheetName
+  ) {
+    return { ok: false, error: 'フォーム回答は友だち台帳と別のタブを選択してください' };
   }
   return { ok: true, value: { lineAccountId, formId, ...settings.value } };
 }
@@ -519,6 +530,7 @@ sheetsConnections.patch(`${BASE_PATH}/:id`, async (c) => {
       c.req.param('id'),
     );
     if (!existing) return c.json({ success: false, error: '接続設定が見つかりません' }, 404);
+    const friendLedgerEnabled = validated.value.friendLedgerEnabled ?? existing.friendLedgerEnabled;
     const formResultsEnabled = validated.value.formResultsEnabled ?? existing.formResultsEnabled;
     const formResultsSheetName = validated.value.formResultsSheetName === undefined
       ? existing.formResultsSheetName
@@ -526,7 +538,11 @@ sheetsConnections.patch(`${BASE_PATH}/:id`, async (c) => {
     if (formResultsEnabled && !formResultsSheetName) {
       return c.json({ success: false, error: 'フォーム回答シートのタブを選択してください' }, 400);
     }
-    if (formResultsSheetName === validated.value.sheetName) {
+    if (
+      friendLedgerEnabled
+      && formResultsEnabled
+      && formResultsSheetName === validated.value.sheetName
+    ) {
       return c.json({ success: false, error: 'フォーム回答は友だち台帳と別のタブを選択してください' }, 400);
     }
     const mappings = await resolveFriendFieldMappings(c.env.DB, validated.value.selectedFieldIds);

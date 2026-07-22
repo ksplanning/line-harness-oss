@@ -100,6 +100,7 @@ describe('manual Sheets sync inline runner', () => {
     expect(spies.startJob).toHaveBeenCalledWith(expect.objectContaining({
       source: 'manual', actor: 'owner-1', target: 'ledger',
     }));
+    expect(spies.startJob).toHaveBeenCalledTimes(1);
     expect(waitUntil).toHaveBeenCalledTimes(1);
     await Promise.all(pending);
     expect(spies.batch).toHaveBeenCalledWith(expect.objectContaining({
@@ -110,6 +111,33 @@ describe('manual Sheets sync inline runner', () => {
       maxChunks: 8,
       trigger: 'manual',
     }));
+    expect(selfFetch).not.toHaveBeenCalled();
+  });
+
+  test('starts only the form-results target for a results-only connection', async () => {
+    spies.getConnection.mockResolvedValue({
+      id: 'connection-1',
+      lineAccountId: 'acc-1',
+      configVersion: 1,
+      friendLedgerEnabled: false,
+      formResultsEnabled: true,
+      formResultsSheetName: '回答',
+    });
+    const selfFetch = vi.fn(async () => {
+      throw new Error('SELF.fetch must not be used by Sheets sync');
+    });
+
+    const response = await testApp().fetch(new Request(
+      'https://worker.example.test/api/integrations/google-sheets/connections/connection-1/sync?lineAccountId=acc-1',
+      { method: 'POST' },
+    ), bindings(selfFetch), CTX);
+
+    expect(response.status).toBe(202);
+    expect(spies.startJob).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'manual', actor: 'owner-1', target: 'form_results',
+    }));
+    expect(spies.startJob).toHaveBeenCalledTimes(1);
+    await Promise.all(pending);
     expect(selfFetch).not.toHaveBeenCalled();
   });
 });

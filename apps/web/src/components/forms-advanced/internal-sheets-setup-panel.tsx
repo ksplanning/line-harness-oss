@@ -402,7 +402,13 @@ export default function InternalSheetsSetupPanel({
   }
 
   const allSelected = allFieldIds.length > 0 && allFieldIds.every((id) => selectedFormFieldIds.includes(id))
-  const usesSameSheet = Boolean(sheetName && formResultsSheetName && sheetName === formResultsSheetName)
+  const usesSameSheet = Boolean(
+    friendLedgerEnabled
+    && formResultsEnabled
+    && sheetName
+    && formResultsSheetName
+    && sheetName === formResultsSheetName,
+  )
   const canSave = Boolean(
     spreadsheetId
     && sheetName

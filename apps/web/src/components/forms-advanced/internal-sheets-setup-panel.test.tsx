@@ -104,10 +104,15 @@ describe('InternalSheetsSetupPanel', () => {
     expect(save.disabled).toBe(false)
 
     fireEvent.change(resultTabs, { target: { value: '集計' } })
+    expect(save.disabled).toBe(false)
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(screen.getByRole('checkbox', { name: '友だち台帳も同期する' }))
     expect(save.disabled).toBe(true)
     expect(screen.getByRole('alert').textContent).toContain('友だち台帳とフォーム回答は別のタブ')
     fireEvent.change(resultTabs, { target: { value: '回答' } })
     expect(save.disabled).toBe(false)
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(screen.getByRole('checkbox', { name: '友だち台帳も同期する' }))
 
     fireEvent.click(screen.getByRole('checkbox', { name: '合計' }))
     expect((screen.getByRole('checkbox', { name: '同期する項目をすべて選択' }) as HTMLInputElement).checked).toBe(false)
@@ -128,6 +133,54 @@ describe('InternalSheetsSetupPanel', () => {
       formResultsSheetName: '回答',
     }))
     expect(screen.getByRole('status').textContent).toContain('保存しました')
+  })
+
+  test('allows a one-tab sheet while either sync target is disabled', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(<InternalSheetsSetupPanel {...props({
+      onInspect: vi.fn().mockResolvedValue({
+        spreadsheetId: 'one_tab_spreadsheet',
+        sheetNames: ['共通タブ'],
+      }),
+      onSave,
+    })} />)
+
+    const sharingUrl = 'https://docs.google.com/spreadsheets/d/one_tab_spreadsheet/edit'
+    fireEvent.change(screen.getByLabelText('スプレッドシートの共有URL'), {
+      target: { value: sharingUrl },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '接続を確認' }))
+
+    const ledgerTab = await screen.findByLabelText('友だち台帳のシート（タブ）') as HTMLSelectElement
+    const resultsTab = screen.getByLabelText('フォーム回答を記録するシート（タブ）') as HTMLSelectElement
+    const save = screen.getByRole('button', { name: 'シート連携を保存' }) as HTMLButtonElement
+    expect(ledgerTab.value).toBe('共通タブ')
+    expect(resultsTab.value).toBe('共通タブ')
+    expect(save.disabled).toBe(false)
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    fireEvent.click(save)
+    await waitFor(() => expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
+      sheetName: '共通タブ',
+      friendLedgerEnabled: false,
+      formResultsEnabled: true,
+      formResultsSheetName: '共通タブ',
+    })))
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '友だち台帳も同期する' }))
+    expect(save.disabled).toBe(true)
+    expect(screen.getByRole('alert').textContent).toContain('友だち台帳とフォーム回答は別のタブ')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'フォーム回答シート（別タブ）' }))
+    expect(save.disabled).toBe(false)
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(save)
+    await waitFor(() => expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
+      sheetName: '共通タブ',
+      friendLedgerEnabled: true,
+      formResultsEnabled: false,
+      formResultsSheetName: '共通タブ',
+    })))
   })
 
   test('turns a permission failure into daily Japanese without exposing the raw error', async () => {

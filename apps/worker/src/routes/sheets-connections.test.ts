@@ -196,7 +196,7 @@ describe('Sheets connections CRUD API', () => {
       .toMatchObject({ is_active: 0, deleted_at: expect.any(String) });
   });
 
-  test('new connections default to results-only, PATCH omission preserves flags, and results require a separate tab', async () => {
+  test('new connections default to results-only and PATCH omission preserves flags', async () => {
     const id = await createOne();
     const created = await call('GET', '/api/integrations/google-sheets/connections?lineAccountId=acc-1');
     expect(await created.json()).toMatchObject({
@@ -251,13 +251,6 @@ describe('Sheets connections CRUD API', () => {
     });
     expect(missingResultsTab.status).toBe(400);
 
-    const sameTab = await call('POST', '/api/integrations/google-sheets/connections', {
-      ...validInput,
-      formResultsEnabled: true,
-      formResultsSheetName: validInput.sheetName,
-    });
-    expect(sameTab.status).toBe(400);
-
     const ledgerOnly = await call('POST', '/api/integrations/google-sheets/connections', {
       ...validInput,
       friendLedgerEnabled: true,
@@ -272,6 +265,73 @@ describe('Sheets connections CRUD API', () => {
         formResultsSheetName: null,
       },
     });
+  });
+
+  test('requires separate tabs only while both sync targets are enabled', async () => {
+    const defaultEnabledResultsSameTab = await call('POST', '/api/integrations/google-sheets/connections', {
+      ...validInput,
+      friendLedgerEnabled: true,
+      formResultsSheetName: validInput.sheetName,
+    });
+    expect(defaultEnabledResultsSameTab.status).toBe(400);
+
+    const resultsOnlySameTab = await call('POST', '/api/integrations/google-sheets/connections', {
+      ...validInput,
+      friendLedgerEnabled: false,
+      formResultsEnabled: true,
+      formResultsSheetName: validInput.sheetName,
+    });
+    expect(resultsOnlySameTab.status).toBe(201);
+    const resultsOnly = await resultsOnlySameTab.json() as { data: { id: string } };
+    expect(resultsOnly).toMatchObject({
+      data: {
+        friendLedgerEnabled: false,
+        formResultsEnabled: true,
+        sheetName: validInput.sheetName,
+        formResultsSheetName: validInput.sheetName,
+      },
+    });
+
+    const bothEnabledSameTab = await call('PATCH', `/api/integrations/google-sheets/connections/${resultsOnly.data.id}`, {
+      lineAccountId: validInput.lineAccountId,
+      spreadsheetId: validInput.spreadsheetId,
+      sheetName: validInput.sheetName,
+      syncDirection: validInput.syncDirection,
+      friendLedgerEnabled: true,
+      formResultsEnabled: true,
+      formResultsSheetName: validInput.sheetName,
+    });
+    expect(bothEnabledSameTab.status).toBe(400);
+
+    const ledgerOnlySameTab = await call('PATCH', `/api/integrations/google-sheets/connections/${resultsOnly.data.id}`, {
+      lineAccountId: validInput.lineAccountId,
+      spreadsheetId: validInput.spreadsheetId,
+      sheetName: validInput.sheetName,
+      syncDirection: validInput.syncDirection,
+      friendLedgerEnabled: true,
+      formResultsEnabled: false,
+      formResultsSheetName: validInput.sheetName,
+    });
+    expect(ledgerOnlySameTab.status).toBe(200);
+    expect(await ledgerOnlySameTab.json()).toMatchObject({
+      data: {
+        friendLedgerEnabled: true,
+        formResultsEnabled: false,
+        sheetName: validInput.sheetName,
+        formResultsSheetName: validInput.sheetName,
+      },
+    });
+
+    const bothEnabledDifferentTabs = await call('PATCH', `/api/integrations/google-sheets/connections/${resultsOnly.data.id}`, {
+      lineAccountId: validInput.lineAccountId,
+      spreadsheetId: validInput.spreadsheetId,
+      sheetName: validInput.sheetName,
+      syncDirection: validInput.syncDirection,
+      friendLedgerEnabled: true,
+      formResultsEnabled: true,
+      formResultsSheetName: '回答',
+    });
+    expect(bothEnabledDifferentTabs.status).toBe(200);
   });
 
   test('validates account/form/spreadsheet/sheet/direction and safely replaces an active form connection', async () => {
