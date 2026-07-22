@@ -73,9 +73,15 @@ describe('InternalSubmissionNotificationSettings', () => {
     expect(notificationApi.get).toHaveBeenCalledWith('form-1');
     expect((screen.getByRole('checkbox', { name: '回答後の自動通知' }) as HTMLInputElement).checked).toBe(false);
 
-    const emailSelect = screen.getByRole('combobox', { name: '回答者本人のメール項目' });
+    const emailSelect = screen.getByRole('combobox', { name: 'メールの送り先に使う回答欄（任意）' });
     expect((emailSelect as HTMLSelectElement).value).toBe('');
     expect((screen.getByRole('option', { name: 'メールアドレス' }) as HTMLOptionElement).value).toBe('email');
+    expect(screen.getByText(
+      'LINE公式アカウントの友だちだと確認できた方にはLINEで、選んだメール欄にアドレスを入力した方にはメールで返信します。両方に送る場合もあります。',
+    )).toBeTruthy();
+    expect(screen.getByText(
+      'メール欄を選ばない場合、メールは送りません。LINEで確認できた方への返信だけになります。',
+    )).toBeTruthy();
 
     expect(screen.getByRole('button', { name: '{{display_name}} を差し込む' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '{{回答:お名前}} を差し込む' })).toBeTruthy();
@@ -153,16 +159,28 @@ describe('InternalSubmissionNotificationSettings', () => {
     expect(notificationApi.save).not.toHaveBeenCalled();
   });
 
-  test('requires an explicit respondent email field before enabling and saves the complete draft', async () => {
-    renderEditor();
+  test('enables and saves LINE-only notification when the form has no email field', async () => {
+    renderEditor([field('name', 'お名前')]);
     const enabled = await screen.findByRole('checkbox', { name: '回答後の自動通知' });
     fireEvent.click(enabled);
     fireEvent.click(screen.getByRole('button', { name: '通知設定を保存' }));
 
-    expect(screen.getByRole('alert').textContent).toContain('回答者本人のメール項目を選んでください');
-    expect(notificationApi.save).not.toHaveBeenCalled();
+    await waitFor(() => expect(notificationApi.save).toHaveBeenCalledWith('form-1', {
+      enabled: true,
+      recipientEmailFieldId: null,
+      messageTemplate: null,
+    }));
+    expect(await screen.findByText('通知設定を保存しました')).toBeTruthy();
+    expect(screen.getByTestId('notification-enabled-status').textContent).toContain('ON');
+    expect(screen.getByRole('option', { name: 'メールを送らない' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'メールアドレス' })).toBeNull();
+  });
 
-    fireEvent.change(screen.getByRole('combobox', { name: '回答者本人のメール項目' }), {
+  test('saves an explicit email destination and the complete draft', async () => {
+    renderEditor();
+    const enabled = await screen.findByRole('checkbox', { name: '回答後の自動通知' });
+    fireEvent.click(enabled);
+    fireEvent.change(screen.getByRole('combobox', { name: 'メールの送り先に使う回答欄（任意）' }), {
       target: { value: 'email' },
     });
     fireEvent.change(screen.getByRole('textbox', { name: '通知文面' }), {

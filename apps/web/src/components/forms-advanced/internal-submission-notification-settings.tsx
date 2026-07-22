@@ -120,10 +120,6 @@ export default function InternalSubmissionNotificationSettings({
 
   const save = async () => {
     if (busy || !settings || !preview.ok) return;
-    if (enabled && !emailFields.some((field) => field.id === recipientEmailFieldId)) {
-      setFeedback({ kind: 'error', text: '回答者本人のメール項目を選んでください' });
-      return;
-    }
 
     setBusy(true);
     setFeedback(null);
@@ -187,7 +183,7 @@ export default function InternalSubmissionNotificationSettings({
             <div>
               <h2 className="font-semibold text-gray-900">回答後の自動通知</h2>
               <p className="mt-1 text-xs leading-5 text-gray-500">
-                LINEから回答した方にはLINE、埋め込みフォームから回答した方にはメールで、回答内容と編集リンクを送ります。
+                LINE公式アカウントの友だちだと確認できた方にはLINEで、選んだメール欄にアドレスを入力した方にはメールで返信します。両方に送る場合もあります。
               </p>
             </div>
             <label className="flex shrink-0 items-center gap-2 text-xs font-semibold">
@@ -206,19 +202,19 @@ export default function InternalSubmissionNotificationSettings({
           </div>
 
           <label className="block">
-            <span className="mb-1 block text-xs font-semibold text-gray-700">回答者本人のメール項目</span>
+            <span className="mb-1 block text-xs font-semibold text-gray-700">メールの送り先に使う回答欄（任意）</span>
             <select
-              aria-label="回答者本人のメール項目"
+              aria-label="メールの送り先に使う回答欄（任意）"
               value={recipientEmailFieldId}
               disabled={busy}
               onChange={(event) => changeDraft(() => setRecipientEmailFieldId(event.target.value))}
               className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
             >
-              <option value="">選択してください</option>
+              <option value="">メールを送らない</option>
               {emailFields.map((field) => <option key={field.id} value={field.id}>{field.label}</option>)}
             </select>
             <span className="mt-1 block text-[11px] leading-4 text-gray-500">
-              埋め込みフォーム経由の通知は、ここで選んだ回答欄のアドレスだけに送られます。
+              メール欄を選ばない場合、メールは送りません。LINEで確認できた方への返信だけになります。
             </span>
           </label>
 
