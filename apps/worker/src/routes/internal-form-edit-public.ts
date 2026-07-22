@@ -10,6 +10,7 @@ import {
 } from '@line-crm/db';
 import {
   evaluateInternalFormLogic,
+  INTERNAL_FORM_CHANNEL_SOURCE_ID,
   isDecorationType,
   type InternalFormLogicAnswers,
 } from '@line-crm/shared';
@@ -79,6 +80,32 @@ function isEditableField(field: InternalFormField, repeatingTemplates: ReadonlyS
     && !repeatingTemplates.has(field.id);
 }
 
+function branchSourceFieldIds(definition: InternalFormDefinition): Set<string> {
+  const known = new Set(definition.fields.map((field) => field.id));
+  const sources = new Set<string>();
+  for (const rule of definition.logic) {
+    if (rule.sourceFieldId !== INTERNAL_FORM_CHANNEL_SOURCE_ID && known.has(rule.sourceFieldId)) {
+      sources.add(rule.sourceFieldId);
+    }
+    for (const condition of rule.conditions ?? []) {
+      if (condition.sourceFieldId !== INTERNAL_FORM_CHANNEL_SOURCE_ID && known.has(condition.sourceFieldId)) {
+        sources.add(condition.sourceFieldId);
+      }
+    }
+  }
+  return sources;
+}
+
+function isEditableForBranchPolicy(
+  field: InternalFormField,
+  repeatingTemplates: ReadonlySet<string>,
+  branchSources: ReadonlySet<string>,
+  allowBranchEdit: boolean,
+): boolean {
+  return isEditableField(field, repeatingTemplates)
+    && (allowBranchEdit || !branchSources.has(field.id));
+}
+
 function currentInputValue(field: InternalFormField, value: unknown): string {
   if (field.type === 'yes_no') {
     if (value === true) return 'yes';
@@ -96,15 +123,22 @@ function options(field: InternalFormField): Array<{ value: string; label: string
   return (field.config.choices ?? []).map((value) => ({ value, label: value }));
 }
 
-function renderEditableField(field: InternalFormField, index: number, current: unknown): string {
+function renderEditableField(
+  field: InternalFormField,
+  index: number,
+  current: unknown,
+  initiallyVisible: boolean,
+): string {
   const id = `answer-${index}`;
   const name = `a_${index}`;
-  const required = field.required ? ' required' : '';
+  const required = field.required && initiallyVisible ? ' required' : '';
+  const requiredData = field.required ? ' data-required="true"' : '';
+  const disabled = initiallyVisible ? '' : ' disabled';
   const requiredCopy = field.required ? '<span class="required">必須</span>' : '';
   const label = `<span class="label">${escapeHtml(field.label)}${requiredCopy}</span>`;
 
   if (field.type === 'textarea') {
-    return `<label class="field" for="${id}">${label}<textarea id="${id}" name="${name}"${required}>${escapeHtml(currentInputValue(field, current))}</textarea></label>`;
+    return `<label class="field" for="${id}">${label}<textarea id="${id}" name="${name}"${requiredData}${required}${disabled}>${escapeHtml(currentInputValue(field, current))}</textarea></label>`;
   }
 
   if (field.type === 'multiple_select') {
@@ -112,7 +146,7 @@ function renderEditableField(field: InternalFormField, index: number, current: u
     const checkboxes = options(field).map((option, optionIndex) => {
       const checked = selected.has(option.value) ? ' checked' : '';
       const optionId = `${id}-${optionIndex}`;
-      return `<label class="choice" for="${optionId}"><input id="${optionId}" type="checkbox" name="${name}" value="${escapeHtml(option.value)}"${checked}> <span>${escapeHtml(option.label)}</span></label>`;
+      return `<label class="choice" for="${optionId}"><input id="${optionId}" type="checkbox" name="${name}" value="${escapeHtml(option.value)}"${checked}${disabled}> <span>${escapeHtml(option.label)}</span></label>`;
     }).join('');
     return `<fieldset class="field"><legend>${escapeHtml(field.label)}${requiredCopy}</legend>${checkboxes}</fieldset>`;
   }
@@ -128,7 +162,7 @@ function renderEditableField(field: InternalFormField, index: number, current: u
     const choices = options(field).map((option) => (
       `<option value="${escapeHtml(option.value)}"${option.value === currentValue ? ' selected' : ''}>${escapeHtml(option.label)}</option>`
     )).join('');
-    return `<label class="field" for="${id}">${label}<select id="${id}" name="${name}"${required}><option value="">選択してください</option>${choices}</select></label>`;
+    return `<label class="field" for="${id}">${label}<select id="${id}" name="${name}"${requiredData}${required}${disabled}><option value="">選択してください</option>${choices}</select></label>`;
   }
 
   const type = field.type === 'email'
@@ -146,7 +180,7 @@ function renderEditableField(field: InternalFormField, index: number, current: u
               : field.type === 'website'
                 ? 'url'
                 : 'text';
-  return `<label class="field" for="${id}">${label}<input id="${id}" type="${type}" name="${name}" value="${escapeHtml(currentInputValue(field, current))}"${required}></label>`;
+  return `<label class="field" for="${id}">${label}<input id="${id}" type="${type}" name="${name}" value="${escapeHtml(currentInputValue(field, current))}"${requiredData}${required}${disabled}></label>`;
 }
 
 function formatReadOnlyValue(value: unknown): string {
@@ -193,6 +227,15 @@ function renderInvalidPage(): string {
   return renderDocument('リンクが無効です', '<section class="result"><h1>このリンクは使用できません</h1><p>有効期限が切れているか、リンクが無効になっています。</p></section>');
 }
 
+function safeJsonForHtml(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/&/g, '\\u0026')
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
 function renderEditPage(
   value: ResolvedEdit,
   error?: string,
@@ -205,14 +248,40 @@ function renderEditPage(
     value.submission.origin_channel === 'line' ? 'line' : 'web',
   ).visibleFieldIds);
   const templates = repeatingTemplateIds(value.definition.fields);
+  const branchSources = branchSourceFieldIds(value.definition);
+  const allowBranchEdit = value.form.allow_branch_edit === 1;
   const rows = value.definition.fields.map((field, index) => {
-    if (!visible.has(field.id) || isDecorationType(field.type) || templates.has(field.id)) return '';
-    return isEditableField(field, templates)
-      ? renderEditableField(field, index, currentAnswers[field.id])
-      : renderReadOnlyField(field, currentAnswers[field.id]);
+    if (isDecorationType(field.type) || templates.has(field.id)) return '';
+    const initiallyVisible = visible.has(field.id);
+    if (!allowBranchEdit && !initiallyVisible) return '';
+    const editable = isEditableForBranchPolicy(field, templates, branchSources, allowBranchEdit);
+    const rendered = editable
+      ? renderEditableField(field, index, initiallyVisible ? currentAnswers[field.id] : undefined, initiallyVisible)
+      : renderReadOnlyField(field, initiallyVisible ? currentAnswers[field.id] : undefined);
+    const hidden = initiallyVisible ? '' : ' hidden';
+    const requiredGroup = editable && field.type === 'multiple_select' && field.required
+      ? ' data-required-group="true"'
+      : '';
+    return `<div data-field-id="${escapeHtml(field.id)}"${requiredGroup}${hidden}>${rendered}</div>`;
   }).join('');
   const errorHtml = error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : '';
-  return renderDocument('回答の編集', `<h1>回答の編集</h1><p class="intro">${escapeHtml(value.form.title)}</p>${errorHtml}<form method="post"><input type="hidden" name="editVersion" value="${value.submission.edit_version}">${rows}<button type="submit">保存する</button></form>`);
+  const channel = value.submission.origin_channel === 'line' ? 'line' : 'web';
+  const dynamicAttributes = allowBranchEdit
+    ? ` data-internal-form data-channel="${channel}" data-form-type="simple"`
+    : '';
+  const submitAttribute = allowBranchEdit ? ' data-submit' : '';
+  const fixedAnswers = Object.fromEntries(value.definition.fields
+    .filter((field) => branchSources.has(field.id) && !isEditableField(field, templates))
+    .filter((field) => Object.prototype.hasOwnProperty.call(currentAnswers, field.id))
+    .map((field) => [field.id, currentAnswers[field.id]]));
+  const client = allowBranchEdit
+    ? `<script type="application/json" data-internal-form-logic-config>${safeJsonForHtml({
+        fields: value.definition.fields.map(({ id, position, type }) => ({ id, position, type })),
+        logic: value.definition.logic,
+        ...(Object.keys(fixedAnswers).length ? { fixedAnswers } : {}),
+      })}</script><script type="module" src="/assets/internal-form-logic.js" data-internal-form-logic-client></script>`
+    : '';
+  return renderDocument('回答の編集', `<h1>回答の編集</h1><p class="intro">${escapeHtml(value.form.title)}</p>${errorHtml}<form method="post"${dynamicAttributes}><input type="hidden" name="editVersion" value="${value.submission.edit_version}">${rows}<button type="submit"${submitAttribute}>保存する</button></form>${client}`);
 }
 
 function renderSuccessPage(): string {
@@ -259,6 +328,8 @@ function buildValidationInput(
   definition: InternalFormDefinition,
   body: Record<string, string | File | (string | File)[]>,
   visibleFieldIds: ReadonlySet<string>,
+  branchSources: ReadonlySet<string>,
+  allowBranchEdit: boolean,
 ): { fields: InternalFormField[]; input: InternalAnswerInput; editableIds: string[] } {
   const templates = repeatingTemplateIds(definition.fields);
   const fields: InternalFormField[] = [];
@@ -266,14 +337,14 @@ function buildValidationInput(
   const editableIds: string[] = [];
 
   for (const [originalIndex, field] of definition.fields.entries()) {
-    const editable = isEditableField(field, templates);
-    if (editable) editableIds.push(field.id);
+    const editable = isEditableForBranchPolicy(field, templates, branchSources, allowBranchEdit);
     if (!visibleFieldIds.has(field.id)) continue;
     const formula = field.type === 'variable' && field.config.variableSubType === 'formula';
     if (!editable && !formula) continue;
     const validationIndex = fields.length;
     fields.push(field);
     if (!editable) continue;
+    editableIds.push(field.id);
     const value = normalizeBodyValue(body[`a_${originalIndex}`]);
     if (value !== undefined) input[`a_${validationIndex}`] = value;
   }
@@ -284,11 +355,13 @@ function buildCandidateLogicAnswers(
   definition: InternalFormDefinition,
   body: Record<string, string | File | (string | File)[]>,
   storedAnswers: Record<string, unknown>,
+  branchSources: ReadonlySet<string>,
+  allowBranchEdit: boolean,
 ): InternalFormLogicAnswers {
   const candidate: InternalFormLogicAnswers = { ...storedAnswers };
   const templates = repeatingTemplateIds(definition.fields);
   for (const [originalIndex, field] of definition.fields.entries()) {
-    if (!isEditableField(field, templates)) continue;
+    if (!isEditableForBranchPolicy(field, templates, branchSources, allowBranchEdit)) continue;
     const value = normalizeBodyValue(body[`a_${originalIndex}`]);
     if (value === undefined) delete candidate[field.id];
     else candidate[field.id] = value;
@@ -331,14 +404,33 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
     }
 
     const storedAnswers = parseAnswers(resolved.value.submission.answers_json);
-    const candidateAnswers = buildCandidateLogicAnswers(resolved.value.definition, body, storedAnswers);
+    const branchSources = branchSourceFieldIds(resolved.value.definition);
+    const allowBranchEdit = resolved.value.form.allow_branch_edit === 1;
+    if (!allowBranchEdit && resolved.value.definition.fields.some((field, index) => (
+      branchSources.has(field.id) && Object.prototype.hasOwnProperty.call(body, `a_${index}`)
+    ))) {
+      return c.html(renderEditPage(resolved.value, '分岐項目は変更できません。'), 403, PRIVATE_HEADERS);
+    }
+    const candidateAnswers = buildCandidateLogicAnswers(
+      resolved.value.definition,
+      body,
+      storedAnswers,
+      branchSources,
+      allowBranchEdit,
+    );
     const visibleFieldIds = new Set(evaluateInternalFormLogic(
       resolved.value.definition.fields,
       resolved.value.definition.logic,
       candidateAnswers,
       resolved.value.submission.origin_channel === 'line' ? 'line' : 'web',
     ).visibleFieldIds);
-    const validationInput = buildValidationInput(resolved.value.definition, body, visibleFieldIds);
+    const validationInput = buildValidationInput(
+      resolved.value.definition,
+      body,
+      visibleFieldIds,
+      branchSources,
+      allowBranchEdit,
+    );
     const validation = validateInternalFormAnswers(validationInput.fields, validationInput.input);
     if (!validation.ok) {
       return c.html(renderEditPage(resolved.value, validation.error, candidateAnswers), 400, PRIVATE_HEADERS);

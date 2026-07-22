@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,6 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 import { editTokenExp, signEditToken } from '../services/formaloo-edit-token.js';
+import { initInternalFormLogic } from '../client/internal-form-logic.js';
 import { internalFormEditPublic } from './internal-form-edit-public.js';
 import type { Env } from '../index.js';
 
@@ -83,6 +85,18 @@ const originalAnswers = {
   repeat: [{ repeat_name: '田中', repeat_age: 20 }],
 };
 
+const conditionalDefinition = {
+  fields: [
+    { id: 'kind', type: 'choice', label: '区分', required: true, position: 0, config: { choices: ['個人', '法人'] } },
+    { id: 'personal', type: 'text', label: 'お名前', required: true, position: 1, config: {} },
+    { id: 'company', type: 'text', label: '会社名', required: true, position: 2, config: {} },
+  ],
+  logic: [
+    { id: 'show-personal', sourceFieldId: 'kind', operator: 'equals', value: '個人', action: 'show', targetFieldId: 'personal' },
+    { id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'company' },
+  ],
+};
+
 let raw: Database.Database;
 let DB: D1Database;
 
@@ -131,12 +145,19 @@ function seedForm(options: {
   epoch?: number;
   withSettings?: boolean;
   definition?: unknown;
+  allowBranchEdit?: number;
 } = {}): string {
   const id = options.id ?? 'form-1';
   raw.prepare(
-    `INSERT INTO formaloo_forms (id, title, definition_json, builder_status, render_backend)
-     VALUES (?, '回答編集テスト', ?, ?, ?)`,
-  ).run(id, JSON.stringify(options.definition ?? definition), options.status ?? 'published', options.backend ?? 'internal');
+    `INSERT INTO formaloo_forms (id, title, definition_json, builder_status, render_backend, allow_branch_edit)
+     VALUES (?, '回答編集テスト', ?, ?, ?, ?)`,
+  ).run(
+    id,
+    JSON.stringify(options.definition ?? definition),
+    options.status ?? 'published',
+    options.backend ?? 'internal',
+    options.allowBranchEdit ?? 0,
+  );
   if (options.withSettings !== false) {
     raw.prepare(
       `INSERT INTO internal_form_notification_settings
@@ -239,29 +260,125 @@ describe('GET /ife/:token', () => {
     expect(response.status).toBe(500);
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(signed);
   });
+
+  test('allow_branch_edit=0 は分岐元を readonly にし、client 再評価 asset を載せない', async () => {
+    seedForm({ definition: conditionalDefinition });
+    seedSubmission('form-1', { kind: '個人', personal: '佐藤' });
+
+    const response = await app().request(`/ife/${await token()}`, {}, bindings());
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('aria-label="区分"');
+    expect(html).not.toContain('name="a_0"');
+    expect(html).toContain('name="a_1"');
+    expect(html).not.toContain('data-internal-form-logic-client');
+  });
+
+  test('allow_branch_edit=1 は全分岐候補を安全な DOM に載せ、共有 client が入力時に出し分ける', async () => {
+    seedForm({ definition: conditionalDefinition, allowBranchEdit: 1 });
+    seedSubmission('form-1', { kind: '個人', personal: '佐藤', company: '初期非表示の秘密' });
+
+    const response = await app().request(`/ife/${await token()}`, {}, bindings());
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain('data-internal-form-logic-config');
+    expect(html).toContain('src="/assets/internal-form-logic.js"');
+    expect(html).not.toContain('初期非表示の秘密');
+
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    initInternalFormLogic(parsed);
+    const kind = parsed.querySelector<HTMLSelectElement>('select[name="a_0"]')!;
+    const personal = parsed.querySelector<HTMLElement>('[data-field-id="personal"]')!;
+    const company = parsed.querySelector<HTMLElement>('[data-field-id="company"]')!;
+    expect(personal.hidden).toBe(false);
+    expect(company.hidden).toBe(true);
+
+    kind.value = '法人';
+    kind.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(personal.hidden).toBe(true);
+    expect(personal.querySelector<HTMLInputElement>('input')?.disabled).toBe(true);
+    expect(company.hidden).toBe(false);
+    expect(company.querySelector<HTMLInputElement>('input')?.disabled).toBe(false);
+    expect(company.querySelector<HTMLInputElement>('input')?.required).toBe(true);
+  });
+
+  test('logic JSON の script 終端文字列を escape して設定 script から脱出させない', async () => {
+    const attack = '</script><script>globalThis.__editBranchXss = true</script>';
+    const dangerousDefinition = {
+      fields: [
+        { id: 'kind', type: 'choice', label: '区分', required: true, position: 0, config: { choices: [attack] } },
+        { id: 'target', type: 'text', label: '対象', required: false, position: 1, config: {} },
+      ],
+      logic: [{ id: 'danger', sourceFieldId: 'kind', operator: 'equals', value: attack, action: 'show', targetFieldId: 'target' }],
+    };
+    seedForm({ definition: dangerousDefinition, allowBranchEdit: 1 });
+    seedSubmission('form-1', { kind: attack });
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+
+    expect(html).not.toContain(attack);
+    expect(html).toContain('\\u003c/script\\u003e');
+    expect(new DOMParser().parseFromString(html, 'text/html').querySelectorAll('script')).toHaveLength(2);
+  });
+
+  test('control を持たない既存 readonly source も固定回答で client 評価を維持する', async () => {
+    const readonlySourceDefinition = {
+      fields: [
+        { id: 'approval', type: 'signature', label: '承認署名', required: false, position: 0, config: {} },
+        { id: 'approved_note', type: 'text', label: '承認後の連絡', required: false, position: 1, config: {} },
+      ],
+      logic: [{
+        id: 'approved', sourceFieldId: 'approval', operator: 'equals', value: 'approved',
+        action: 'show', targetFieldId: 'approved_note',
+      }],
+    };
+    seedForm({ definition: readonlySourceDefinition, allowBranchEdit: 1 });
+    seedSubmission('form-1', { approval: 'approved', approved_note: '連絡済み' });
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+
+    initInternalFormLogic(parsed);
+    expect(parsed.querySelector<HTMLElement>('[data-field-id="approved_note"]')?.hidden).toBe(false);
+    expect(parsed.querySelector('[data-internal-form-logic-config]')?.textContent).toContain('fixedAnswers');
+  });
+
+  test('compound conditions の各 source も分岐元として readonly にする', async () => {
+    const compound = {
+      fields: [
+        { id: 'kind', type: 'choice', label: '区分', required: true, position: 0, config: { choices: ['法人'] } },
+        { id: 'region', type: 'choice', label: '地域', required: true, position: 1, config: { choices: ['関東'] } },
+        { id: 'target', type: 'text', label: '法人名', required: true, position: 2, config: {} },
+      ],
+      logic: [{
+        id: 'compound', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'target',
+        conditionJoin: 'and',
+        conditions: [
+          { sourceFieldId: 'kind', operator: 'equals', value: '法人' },
+          { sourceFieldId: 'region', operator: 'equals', value: '関東' },
+        ],
+      }],
+    };
+    seedForm({ definition: compound });
+    seedSubmission('form-1', { kind: '法人', region: '関東', target: 'テスト社' });
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    expect(html).not.toContain('name="a_0"');
+    expect(html).not.toContain('name="a_1"');
+    expect(html).toContain('name="a_2"');
+  });
 });
 
 describe('POST /ife/:token', () => {
-  test('edits only the active W3 logic branch and drops answers from the branch that became hidden', async () => {
-    const conditionalDefinition = {
-      fields: [
-        { id: 'kind', type: 'choice', label: '区分', required: true, position: 0, config: { choices: ['個人', '法人'] } },
-        { id: 'personal', type: 'text', label: 'お名前', required: true, position: 1, config: {} },
-        { id: 'company', type: 'text', label: '会社名', required: true, position: 2, config: {} },
-      ],
-      logic: [
-        { id: 'show-personal', sourceFieldId: 'kind', operator: 'equals', value: '個人', action: 'show', targetFieldId: 'personal' },
-        { id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'company' },
-      ],
-    };
-    seedForm({ definition: conditionalDefinition });
-    seedSubmission('form-1', { kind: '個人', personal: '佐藤' }, 3);
+  test('edits only the active W3 logic branch and retains the answer from the branch that became hidden', async () => {
+    seedForm({ definition: conditionalDefinition, allowBranchEdit: 1 });
+    seedSubmission('form-1', { kind: '個人', personal: '佐藤', company: '旧会社名' }, 3);
     const signed = await token();
 
     const initial = await app().request(`/ife/${signed}`, {}, bindings());
     const initialHtml = await initial.text();
-    expect(initialHtml).toContain('name="a_1"');
-    expect(initialHtml).not.toContain('name="a_2"');
+    const initialDocument = new DOMParser().parseFromString(initialHtml, 'text/html');
+    expect(initialDocument.querySelector<HTMLElement>('[data-field-id="personal"]')?.hidden).toBe(false);
+    expect(initialDocument.querySelector<HTMLElement>('[data-field-id="company"]')?.hidden).toBe(true);
+    expect(initialHtml).not.toContain('旧会社名');
 
     const changedBranch = await app().request(`/ife/${signed}`, {
       method: 'POST',
@@ -270,18 +387,40 @@ describe('POST /ife/:token', () => {
     }, bindings());
     const changedHtml = await changedBranch.text();
     expect(changedBranch.status).toBe(400);
-    expect(changedHtml).not.toContain('name="a_1"');
-    expect(changedHtml).toContain('name="a_2"');
+    const changedDocument = new DOMParser().parseFromString(changedHtml, 'text/html');
+    expect(changedDocument.querySelector<HTMLElement>('[data-field-id="personal"]')?.hidden).toBe(true);
+    expect(changedDocument.querySelector<HTMLElement>('[data-field-id="company"]')?.hidden).toBe(false);
 
     const saved = await app().request(`/ife/${signed}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ editVersion: '3', a_0: '法人', a_2: '株式会社テスト' }),
+      body: new URLSearchParams({ editVersion: '3', a_0: '法人', a_1: '偽造された非表示値', a_2: '株式会社テスト' }),
     }, bindings());
     expect(saved.status).toBe(200);
     const row = raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
       .get('ifs-1') as { answers_json: string };
-    expect(JSON.parse(row.answers_json)).toEqual({ kind: '法人', company: '株式会社テスト' });
+    expect(JSON.parse(row.answers_json)).toEqual({
+      kind: '法人',
+      personal: '佐藤',
+      company: '株式会社テスト',
+    });
+  });
+
+  test('allow_branch_edit=0 は forged branch POST を 403 で拒否し回答と版を変えない', async () => {
+    seedForm({ definition: conditionalDefinition });
+    seedSubmission('form-1', { kind: '個人', personal: '佐藤' }, 3);
+
+    const response = await app().request(`/ife/${await token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ editVersion: '3', a_0: '法人', a_2: '攻撃者の会社' }),
+    }, bindings());
+
+    expect(response.status).toBe(403);
+    const stored = raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
+      .get('ifs-1') as { answers_json: string; edit_version: number };
+    expect(stored.edit_version).toBe(3);
+    expect(JSON.parse(stored.answers_json)).toEqual({ kind: '個人', personal: '佐藤' });
   });
 
   test('validates and saves editable answers with CAS, ignores forged fields, preserves complex answers, and reads back the change', async () => {

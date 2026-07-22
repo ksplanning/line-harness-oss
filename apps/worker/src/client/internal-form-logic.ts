@@ -13,6 +13,8 @@ type AnswerControl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 interface InternalFormLogicConfig {
   fields: LogicField[];
   logic: HarnessLogicRule[];
+  /** 編集画面の file/署名等、control を持たない固定回答。公開入力画面では未指定。 */
+  fixedAnswers?: Record<string, unknown>;
 }
 
 const POSTAL_LOOKUP_MESSAGES: Record<number, string> = {
@@ -191,7 +193,7 @@ export function initInternalFormLogic(root: ParentNode = document): void {
   let currentFieldId: string | null = null;
 
   const answers = (): Record<string, unknown> => {
-    const result: Record<string, unknown> = {};
+    const result: Record<string, unknown> = { ...(config.fixedAnswers ?? {}) };
     for (const wrapper of wrappers) {
       const id = wrapper.dataset.fieldId;
       if (!id) continue;
