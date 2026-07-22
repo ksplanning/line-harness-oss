@@ -300,6 +300,7 @@ export interface ProcessNextSheetsSyncJobOptions {
   db: D1Database;
   credentialsJson?: string;
   client?: SyncFriendLedgerOptions['client'];
+  adminOrigin?: string | null;
   chunkSize?: number;
   sync?: SyncImplementation;
   syncResults?: ResultsSyncImplementation;
@@ -478,6 +479,7 @@ export async function processNextSheetsSyncJob(
         connection,
         client: options.client,
         credentialsJson: options.credentialsJson,
+        adminOrigin: options.adminOrigin,
         source: claimed.source,
         actor: claimed.actor,
         initialWarnings,

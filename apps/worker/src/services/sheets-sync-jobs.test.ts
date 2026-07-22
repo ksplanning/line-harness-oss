@@ -112,7 +112,12 @@ describe('durable Sheets sync jobs', () => {
         chunk: { processed: 50, hasMore: false, cursor: cursors[2] },
       });
 
-    const first = await processNextSheetsSyncJob({ db, sync, chunkSize: 200 });
+    const first = await processNextSheetsSyncJob({
+      db,
+      sync,
+      adminOrigin: 'https://admin.example.test',
+      chunkSize: 200,
+    });
     expect(first.job).toMatchObject({ status: 'running', processedCount: 200, totalCount: 450 });
     const second = await processNextSheetsSyncJob({ db, sync, chunkSize: 200 });
     expect(second.job).toMatchObject({ status: 'running', processedCount: 400, totalCount: 450 });
@@ -120,6 +125,9 @@ describe('durable Sheets sync jobs', () => {
     expect(third.job).toMatchObject({ status: 'success', processedCount: 450, totalCount: 450 });
     expect(sync).toHaveBeenNthCalledWith(2, expect.objectContaining({
       chunk: expect.objectContaining({ after: cursors[0], limit: 200 }),
+    }));
+    expect(sync).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      adminOrigin: 'https://admin.example.test',
     }));
   });
 

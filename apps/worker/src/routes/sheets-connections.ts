@@ -33,6 +33,7 @@ import {
   startSheetsSyncJob,
 } from '../services/sheets-sync-jobs.js';
 import { dispatchSheetsSyncWork } from '../services/sheets-sync-dispatch.js';
+import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
 import {
   deriveSheetsWebhookSecret,
   verifySheetsWebhookSignature,
@@ -825,6 +826,7 @@ sheetsConnections.post('/integrations/google-sheets/friend-ledger/webhook', asyn
         db: c.env.DB,
         connection,
         credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+        adminOrigin: parseAllowedOrigins(c.env)[0] ?? null,
         maxEvents: 1,
       }).catch(() => undefined);
       try {

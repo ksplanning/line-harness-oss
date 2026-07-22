@@ -159,20 +159,59 @@ export function projectFormAnswerRow(
   formId: string,
   fields: FormAnswerField[],
   answers: Record<string, unknown>,
+  context: FormAnswerProjectionContext = {},
 ): Record<string, string> {
   return Object.fromEntries(fields.map((field) => [
     `answer:${formId}:${field.fieldId}`,
-    projectFormAnswerValue(field, answers[field.fieldId]),
+    projectFormAnswerValue(field, answers[field.fieldId], formId, context),
   ]));
 }
 
-function projectFormAnswerValue(field: FormAnswerField, value: unknown): string {
+export interface FormAnswerProjectionContext {
+  adminOrigin?: string | null;
+  submissionId?: string | null;
+}
+
+function projectFileAnswerCell(
+  files: unknown[],
+  formId: string,
+  context: FormAnswerProjectionContext,
+): string {
+  const adminOrigin = context.adminOrigin?.replace(/\/+$/, '') ?? null;
+  const submissionId = context.submissionId ?? null;
+  if (!adminOrigin || !submissionId) return `[添付ファイル ${files.length}件]`;
+
+  const link = `${adminOrigin}/forms-advanced/data?id=${encodeURIComponent(formId)}&rowId=${encodeURIComponent(submissionId)}`;
+  const suffix = ` (${files.length}件) 回答を開く: ${link}`;
+  const names = files.map((entry) => {
+    const name = entry !== null && typeof entry === 'object'
+      && typeof (entry as { name?: unknown }).name === 'string'
+      ? (entry as { name: string }).name
+      : '';
+    return name || '添付ファイル';
+  });
+  let list = names.join(', ');
+  const budget = Math.max(0, MAX_FORM_ANSWER_SHEET_CELL_LENGTH - suffix.length);
+  if (list.length > budget) {
+    const head = names[0] ?? '添付ファイル';
+    const collapsed = names.length > 1 ? `${head} ほか${names.length - 1}件` : head;
+    list = collapsed.slice(0, budget);
+  }
+  return `${list}${suffix}`;
+}
+
+function projectFormAnswerValue(
+  field: FormAnswerField,
+  value: unknown,
+  formId: string,
+  context: FormAnswerProjectionContext,
+): string {
   if (field.type === 'signature') {
     return normalizeSheetCell(value) ? '[署名あり]' : '';
   }
   if (field.type === 'file') {
     if (Array.isArray(value)) {
-      return value.length > 0 ? `[添付ファイル ${value.length}件]` : '';
+      return value.length > 0 ? projectFileAnswerCell(value, formId, context) : '';
     }
     return normalizeSheetCell(value) ? '[添付ファイルあり]' : '';
   }

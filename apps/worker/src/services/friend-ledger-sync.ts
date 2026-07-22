@@ -107,6 +107,7 @@ export interface SyncFriendLedgerOptions {
   connection: SheetsConnection;
   client?: FriendLedgerSheetsClient;
   credentialsJson?: string;
+  adminOrigin?: string | null;
   source: SheetsSyncAuditSource;
   actor: string;
   now?: () => Date;
@@ -243,9 +244,13 @@ function projectAnswers(
   activeFields: FormAnswerField[],
   removedFields: FormAnswerField[],
   state: InternalAnswerState | null,
+  adminOrigin: string | null,
 ): Record<string, string> {
   return {
-    ...projectFormAnswerRow(formId, activeFields, state?.answers ?? {}),
+    ...projectFormAnswerRow(formId, activeFields, state?.answers ?? {}, {
+      adminOrigin,
+      submissionId: state?.submission.id ?? null,
+    }),
     ...Object.fromEntries(removedFields.map((field) => [
       `answer:${formId}:${field.fieldId}`,
       '',
@@ -878,6 +883,7 @@ export async function syncFriendLedger(
         activeAnswerFields,
         removedAnswerFields,
         latestAnswersByFriend.get(friend.id) ?? null,
+        options.adminOrigin ?? null,
       ),
     });
     let liveSnapshotValue: string | null = null;
@@ -2201,6 +2207,7 @@ export async function syncFriendLedger(
               activeAnswerFields,
               removedAnswerFields,
               plan.answerState,
+              options.adminOrigin ?? null,
             );
             for (const fieldId of answerImportIds) {
               const cell = plan.answerCells[fieldId];
@@ -2242,6 +2249,7 @@ export async function syncFriendLedger(
             activeAnswerFields,
             removedAnswerFields,
             latestState,
+            options.adminOrigin ?? null,
           );
           for (const fieldId of answerImportIds) {
             const cell = plan.answerCells[fieldId];
@@ -2332,6 +2340,7 @@ export interface DrainFriendLedgerWebhookEventsOptions {
   connection: SheetsConnection;
   client?: FriendLedgerSheetsClient;
   credentialsJson?: string;
+  adminOrigin?: string | null;
   maxEvents: number;
   now?: () => Date;
 }
@@ -2441,6 +2450,7 @@ export async function drainFriendLedgerWebhookEvents(
         connection: options.connection,
         client: options.client,
         credentialsJson: options.credentialsJson,
+        adminOrigin: options.adminOrigin,
         source: 'webhook',
         actor: event.actorKind === 'google_email' ? event.actor : 'google_sheets_editor_unavailable',
         range: payload.range,
@@ -2518,6 +2528,7 @@ export interface RunFriendLedgerPollingOptions {
   db: D1Database;
   credentialsJson?: string;
   client?: FriendLedgerSheetsClient;
+  adminOrigin?: string | null;
   maxConnections: number;
   now?: () => Date;
 }
@@ -2545,6 +2556,7 @@ export async function runFriendLedgerPolling(
         db: options.db,
         connection,
         client,
+        adminOrigin: options.adminOrigin,
         maxEvents: 1,
         now: options.now,
       });
@@ -2552,6 +2564,7 @@ export async function runFriendLedgerPolling(
         db: options.db,
         connection,
         client,
+        adminOrigin: options.adminOrigin,
         source: 'polling',
         actor: 'system_poll',
         initialWarnings: drained.warnings,

@@ -110,7 +110,7 @@ import { faqs } from './routes/faqs.js';
 import { knowledge } from './routes/knowledge.js';
 import { staffDocs } from './routes/staff-docs.js';
 import { adminAuth } from './routes/admin-auth.js';
-import { resolveCorsOrigin } from './middleware/admin-auth-config.js';
+import { parseAllowedOrigins, resolveCorsOrigin } from './middleware/admin-auth-config.js';
 import booking from './routes/booking.js';
 import events from './routes/events.js';
 import { trafficPools } from './routes/traffic-pools.js';
@@ -489,6 +489,7 @@ app.post(SHEETS_SYNC_WORK_PATH, async (c) => {
   const result = await processNextSheetsSyncJob({
     db: c.env.DB,
     credentialsJson: c.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+    adminOrigin: parseAllowedOrigins(c.env)[0] ?? null,
     chunkSize: SHEETS_SYNC_CHUNK_SIZE,
   });
   if (result.attempted > 0 && result.job) {

@@ -541,6 +541,33 @@ describe('friend ledger bidirectional sync', () => {
     expect(client.values.slice(1).filter((row) => row.includes('U_AYAKO'))).toHaveLength(1);
   });
 
+  test('threads the admin origin and submission id into a downloadable file-answer sheet cell', async () => {
+    enableInternalAnswerForm([
+      { id: 'docs', label: '添付資料', type: 'file', position: 0 },
+    ]);
+    insertInternalAnswer('answer-files', {
+      docs: [
+        { key: 'private/r2-key-1', name: '見積書.pdf' },
+        { key: 'private/r2-key-2', name: '写真.png' },
+      ],
+    }, '2026-07-21T11:00:00+09:00');
+    connection = (await getSheetsConnection(db, 'acc-1', connection.id))!;
+
+    await syncFriendLedger({
+      db,
+      connection,
+      client,
+      adminOrigin: 'https://admin.example.test',
+      source: 'manual',
+      actor: 'owner',
+      now: () => new Date('2026-07-21T03:00:00.000Z'),
+    });
+
+    expect(client.values[1][4]).toBe(
+      '見積書.pdf, 写真.png (2件) 回答を開く: https://admin.example.test/forms-advanced/data?id=friend-ledger&rowId=answer-files',
+    );
+  });
+
   test('writes and reads only explicitly selected form fields', async () => {
     raw.prepare(`UPDATE sheets_connections SET is_active=0, deleted_at='2026-07-21T11:00:00+09:00'
       WHERE id=?`).run(connection.id);

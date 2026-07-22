@@ -269,4 +269,56 @@ describe('form answer column block', () => {
     expect(projection['answer:form-entry:long'].length).toBeLessThan(50_000);
     expect(projection['answer:form-entry:long']).not.toContain('private');
   });
+
+  test('projects file answers as a filename list with an admin deep link', () => {
+    const fields = [{ fieldId: 'file', header: '添付', type: 'file', readOnly: true }];
+    const projection = ledgerColumns.projectFormAnswerRow('form-entry', fields, {
+      file: [
+        { key: 'private/r2-key-1', name: '見積書.pdf' },
+        { key: 'private/r2-key-2', name: '写真.png' },
+      ],
+    }, { adminOrigin: 'https://admin.example.test', submissionId: 'sub-1' });
+
+    expect(projection['answer:form-entry:file']).toBe(
+      '見積書.pdf, 写真.png (2件) 回答を開く: https://admin.example.test/forms-advanced/data?id=form-entry&rowId=sub-1',
+    );
+  });
+
+  test('collapses long filename lists while always preserving the deep link', () => {
+    const fields = [{ fieldId: 'file', header: '添付', type: 'file', readOnly: true }];
+    const files = Array.from({ length: 200 }, (_, index) => ({
+      key: `private/r2-key-${index}`,
+      name: `${'長い資料名'.repeat(80)}_${index}.pdf`,
+    }));
+    const projection = ledgerColumns.projectFormAnswerRow('form-entry', fields, { file: files }, {
+      adminOrigin: 'https://admin.example.test',
+      submissionId: 'sub-1',
+    });
+
+    const cell = projection['answer:form-entry:file'];
+    expect(cell.length).toBeLessThanOrEqual(49_000);
+    expect(cell).toContain('ほか199件');
+    expect(cell).toContain(
+      '(200件) 回答を開く: https://admin.example.test/forms-advanced/data?id=form-entry&rowId=sub-1',
+    );
+  });
+
+  test('falls back to the count marker when adminOrigin or submissionId is unavailable', () => {
+    const fields = [{ fieldId: 'file', header: '添付', type: 'file', readOnly: true }];
+    const answers = { file: [{ key: 'k1', name: 'a.pdf' }, { key: 'k2', name: 'b.png' }] };
+
+    expect(ledgerColumns.projectFormAnswerRow('form-entry', fields, answers, { adminOrigin: null, submissionId: 'sub-1' }))
+      .toEqual({ 'answer:form-entry:file': '[添付ファイル 2件]' });
+    expect(ledgerColumns.projectFormAnswerRow('form-entry', fields, answers, { adminOrigin: 'https://admin.example.test', submissionId: null }))
+      .toEqual({ 'answer:form-entry:file': '[添付ファイル 2件]' });
+  });
+
+  test('file cells stay readOnly — sheet edits keep being refused', () => {
+    const result = ledgerColumns.parseFormAnswerSheetValue(
+      { fieldId: 'file', header: '添付', type: 'file', readOnly: true },
+      'tampered',
+      [{ key: 'k1', name: 'a.pdf' }],
+    );
+    expect(result).toEqual({ ok: false, reason: 'read_only' });
+  });
 });
