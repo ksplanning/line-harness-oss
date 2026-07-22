@@ -28,6 +28,10 @@ account_id = "8afbae04688d10af42d2d4ab5a323019"
 directory = "dist/client"
 binding = "ASSETS"
 
+[[services]]
+binding = "SELF"
+service = "line-harness-ks"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "line-harness-ks"

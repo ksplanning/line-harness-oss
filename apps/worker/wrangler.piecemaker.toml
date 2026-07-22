@@ -33,6 +33,10 @@ account_id = "9e4c603b3f47d4072f8a3a27759e8aff"
 directory = "dist/client"
 binding = "ASSETS"
 
+[[services]]
+binding = "SELF"
+service = "line-harness-piecemaker"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "line-harness-piecemaker"

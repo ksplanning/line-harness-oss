@@ -219,3 +219,22 @@ describe('scheduled Sheets sync work', () => {
     expect(spies.dispatchFailed).toHaveBeenCalledWith(expect.anything(), 'job-1');
   });
 });
+
+describe('SELF service binding config', () => {
+  test.each([
+    ['wrangler.ks.toml', 'line-harness-ks'],
+    ['wrangler.piecemaker.toml', 'line-harness-piecemaker'],
+  ])('%s binds SELF to its own worker service', (fileName, expectedService) => {
+    const config = readFileSync(join(__dirname, '../../', fileName), 'utf8');
+    const workerName = config.match(/^name = "([^"]+)"$/m)?.[1];
+    const selfBindings = config.match(/^binding = "SELF"$/gm) ?? [];
+
+    expect(workerName).toBe(expectedService);
+    expect(selfBindings).toHaveLength(1);
+    expect(config).toContain([
+      '[[services]]',
+      'binding = "SELF"',
+      `service = "${workerName}"`,
+    ].join('\n'));
+  });
+});
