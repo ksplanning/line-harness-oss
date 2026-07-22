@@ -19,6 +19,33 @@ function errorMessage(error: unknown): string {
   return body?.error || '操作に失敗しました。入力内容と接続設定を確認してください。'
 }
 
+function shouldUseLatestJob(
+  current: SheetsSyncResultState | undefined,
+  latest: SheetsSyncResultState,
+): boolean {
+  if (!current) return true
+  if (!current.id) return current.status !== 'running'
+  if (current.id !== latest.id) {
+    if (current.updatedAt && latest.updatedAt && latest.updatedAt <= current.updatedAt) return false
+    return true
+  }
+  if (
+    current.status === 'running'
+    && latest.status === 'running'
+    && (latest.processedCount ?? 0) < (current.processedCount ?? 0)
+  ) return false
+  if (current.updatedAt && latest.updatedAt && latest.updatedAt < current.updatedAt) return false
+  if (
+    current.status === latest.status
+    && current.processedCount === latest.processedCount
+    && current.totalCount === latest.totalCount
+    && current.warning === latest.warning
+    && current.errorMessage === latest.errorMessage
+    && current.updatedAt === latest.updatedAt
+  ) return false
+  return true
+}
+
 export default function SheetsSettingsPage() {
   const { selectedAccountId, loading } = useAccount()
   const [connections, setConnections] = useState<SheetsConnection[]>([])
@@ -41,6 +68,18 @@ export default function SheetsSettingsPage() {
       if (version === requestVersion.current && activeAccount.current === accountId) {
         const generation = ++auditGeneration.current
         setConnections(list)
+        setSyncResults((current) => {
+          const next = { ...current }
+          for (const connection of list) {
+            if (
+              connection.latestSyncJob
+              && shouldUseLatestJob(next[connection.id], connection.latestSyncJob)
+            ) {
+              next[connection.id] = connection.latestSyncJob
+            }
+          }
+          return next
+        })
         setAuditEntries({})
         for (const connection of list) {
           void sheetsConnectionsApi.audit(accountId, connection.id)
@@ -81,6 +120,83 @@ export default function SheetsSettingsPage() {
     if (activeAccount.current === accountId) await load(accountId)
   }
 
+  useEffect(() => {
+    const accountId = selectedAccountId
+    const runningIds = Object.entries(syncResults)
+      .filter(([, result]) => result.status === 'running')
+      .map(([id]) => id)
+    if (!accountId || runningIds.length === 0) return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const poll = async () => {
+      const results = await Promise.all(runningIds.map(async (id) => {
+        try {
+          const latest = await sheetsConnectionsApi.latestSyncJob(accountId, id)
+          if (cancelled || activeAccount.current !== accountId || !latest) return false
+          setSyncResults((current) => {
+            if (current[id]?.status !== 'running') return current
+            return { ...current, [id]: latest }
+          })
+          return latest.status !== 'running'
+        } catch {
+          return false
+        }
+      }))
+
+      if (activeAccount.current !== accountId) return
+      if (results.some(Boolean)) {
+        await load(accountId)
+        return
+      }
+      if (cancelled) return
+      timer = setTimeout(() => { void poll() }, 5_000)
+    }
+
+    timer = setTimeout(() => { void poll() }, 5_000)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [selectedAccountId, syncResults, load])
+
+  useEffect(() => {
+    const accountId = selectedAccountId
+    const connectionIds = connections.map((connection) => connection.id)
+    if (!accountId || connectionIds.length === 0) return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const discover = async () => {
+      const latestJobs = await Promise.all(connectionIds.map(async (id) => {
+        try {
+          return [id, await sheetsConnectionsApi.latestSyncJob(accountId, id)] as const
+        } catch {
+          return [id, null] as const
+        }
+      }))
+      if (cancelled || activeAccount.current !== accountId) return
+      setSyncResults((current) => {
+        let changed = false
+        const next = { ...current }
+        for (const [id, latest] of latestJobs) {
+          if (!latest || !shouldUseLatestJob(next[id], latest)) continue
+          next[id] = latest
+          changed = true
+        }
+        return changed ? next : current
+      })
+      if (!cancelled) timer = setTimeout(() => { void discover() }, 30_000)
+    }
+
+    timer = setTimeout(() => { void discover() }, 30_000)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [selectedAccountId, connections])
+
   const handleTest = async (id: string) => {
     const accountId = selectedAccountId
     if (!accountId) return
@@ -107,24 +223,37 @@ export default function SheetsSettingsPage() {
     setError(null)
     const syncVersion = (syncVersions.current[id] ?? 0) + 1
     syncVersions.current[id] = syncVersion
-    setSyncResults((current) => ({ ...current, [id]: { status: 'running' } }))
-    try {
-      const summary = await sheetsConnectionsApi.sync(accountId, id)
-      if (activeAccount.current !== accountId || syncVersions.current[id] !== syncVersion) return
-      if (summary.status === 'failed') {
-        setSyncResults((current) => ({
-          ...current,
-          [id]: { status: 'failed', message: summary.warning ?? '手動同期に失敗しました。' },
-        }))
-        return
+    setSyncResults((current) => {
+      const previous = current[id] ?? connections.find((connection) => connection.id === id)?.latestSyncJob
+      return {
+        ...current,
+        [id]: {
+          status: 'running',
+          processedCount: previous?.processedCount ?? 0,
+          totalCount: previous?.totalCount ?? 0,
+          warning: null,
+          errorMessage: null,
+        },
       }
-      const status = summary.status === 'warning' || summary.warning ? 'warning' : 'success'
-      setSyncResults((current) => ({ ...current, [id]: { status, summary } }))
-      await refreshIfCurrent(accountId)
+    })
+    try {
+      const job = await sheetsConnectionsApi.sync(accountId, id)
+      if (activeAccount.current !== accountId || syncVersions.current[id] !== syncVersion) return
+      setSyncResults((current) => ({ ...current, [id]: job }))
+      if (job.status !== 'running') await refreshIfCurrent(accountId)
     } catch (cause) {
       if (activeAccount.current === accountId && syncVersions.current[id] === syncVersion) {
         const message = errorMessage(cause)
-        setSyncResults((current) => ({ ...current, [id]: { status: 'failed', message } }))
+        setSyncResults((current) => ({
+          ...current,
+          [id]: {
+            status: 'error',
+            processedCount: current[id]?.processedCount ?? 0,
+            totalCount: current[id]?.totalCount ?? 0,
+            warning: null,
+            errorMessage: message,
+          },
+        }))
         setError(message)
       }
     }

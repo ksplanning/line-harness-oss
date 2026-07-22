@@ -8,9 +8,30 @@ export interface SheetsFriendFieldMapping {
   header: string
 }
 
-export interface SheetsSyncSummary {
-  status: 'success' | 'warning' | 'failed'
+export type SheetsSyncJobStatus = 'running' | 'success' | 'warning' | 'error'
+
+export interface SheetsSyncJob {
+  id: string
+  connectionId: string
+  lineAccountId: string
+  configVersion: number
+  source: 'manual' | 'polling'
+  actor: string
+  status: SheetsSyncJobStatus
+  totalCount: number
+  processedCount: number
+  lastFriendCreatedAt: string | null
+  lastFriendId: string | null
+  appendedRows: number
+  updatedRows: number
+  importedFields: number
+  ignoredIdentityEdits: number
   warning: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
 }
 
 export interface SheetsAuditEntry {
@@ -42,6 +63,7 @@ export interface SheetsConnection {
   isActive: boolean
   createdAt: string
   updatedAt: string
+  latestSyncJob?: SheetsSyncJob | null
 }
 
 export interface CreateSheetsConnectionInput {
@@ -138,10 +160,16 @@ export const sheetsConnectionsApi = {
     )).data.ok
   },
 
-  async sync(lineAccountId: string, id: string): Promise<SheetsSyncSummary> {
-    return (await fetchApi<Envelope<SheetsSyncSummary>>(
+  async sync(lineAccountId: string, id: string): Promise<SheetsSyncJob> {
+    return (await fetchApi<Envelope<SheetsSyncJob>>(
       `${BASE_PATH}/${encodeURIComponent(id)}/sync?lineAccountId=${encodeURIComponent(lineAccountId)}`,
       { method: 'POST' },
+    )).data
+  },
+
+  async latestSyncJob(lineAccountId: string, id: string): Promise<SheetsSyncJob | null> {
+    return (await fetchApi<Envelope<SheetsSyncJob | null>>(
+      `${BASE_PATH}/${encodeURIComponent(id)}/sync/latest?lineAccountId=${encodeURIComponent(lineAccountId)}`,
     )).data
   },
 

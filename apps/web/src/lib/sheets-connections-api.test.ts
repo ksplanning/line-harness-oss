@@ -127,7 +127,7 @@ describe('sheetsConnectionsApi', () => {
     })
   })
 
-  test('manual sync and recent audit use account-scoped endpoints and return their payloads', async () => {
+  test('manual sync, latest job, and recent audit use account-scoped endpoints and return their payloads', async () => {
     const summary = { status: 'success', warning: null }
     const audit = [{
       actor: 'オーナー',
@@ -139,6 +139,7 @@ describe('sheetsConnectionsApi', () => {
     }]
     fetchApiMock
       .mockResolvedValueOnce({ success: true, data: summary })
+      .mockResolvedValueOnce({ success: true, data: summary })
       .mockResolvedValueOnce({ success: true, data: audit })
 
     await expect(sheetsConnectionsApi.sync('acc/1', 'gsc/1')).resolves.toEqual(summary)
@@ -148,9 +149,15 @@ describe('sheetsConnectionsApi', () => {
       { method: 'POST' },
     )
 
-    await expect(sheetsConnectionsApi.audit('acc/1', 'gsc/1')).resolves.toEqual(audit)
+    await expect(sheetsConnectionsApi.latestSyncJob('acc/1', 'gsc/1')).resolves.toEqual(summary)
     expect(fetchApiMock).toHaveBeenNthCalledWith(
       2,
+      '/api/integrations/google-sheets/connections/gsc%2F1/sync/latest?lineAccountId=acc%2F1',
+    )
+
+    await expect(sheetsConnectionsApi.audit('acc/1', 'gsc/1')).resolves.toEqual(audit)
+    expect(fetchApiMock).toHaveBeenNthCalledWith(
+      3,
       '/api/integrations/google-sheets/connections/gsc%2F1/audit?lineAccountId=acc%2F1',
     )
   })

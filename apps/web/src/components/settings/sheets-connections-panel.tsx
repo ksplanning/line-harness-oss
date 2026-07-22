@@ -4,16 +4,23 @@ import Link from 'next/link'
 import type {
   SheetsAuditEntry,
   SheetsConnection,
-  SheetsSyncSummary,
   SheetsSyncDirection,
+  SheetsSyncJobStatus,
 } from '@/lib/sheets-connections-api'
 
 type TestState = 'testing' | 'ok' | 'ng'
 
-export type SheetsSyncResultState =
-  | { status: 'running' }
-  | { status: 'success' | 'warning'; summary: SheetsSyncSummary }
-  | { status: 'failed'; message: string }
+export interface SheetsSyncResultState {
+  id?: string
+  createdAt?: string
+  status: SheetsSyncJobStatus
+  source?: 'manual' | 'polling'
+  processedCount?: number
+  totalCount?: number
+  warning?: string | null
+  errorMessage?: string | null
+  updatedAt?: string
+}
 
 export interface SheetsConnectionsPanelProps {
   connections: SheetsConnection[]
@@ -102,11 +109,16 @@ export default function SheetsConnectionsPanel({
             {connections.map((connection) => {
               const name = formName(connection)
               const testState = testResults[connection.id]
-              const syncState = syncResults[connection.id]
+              const syncState = syncResults[connection.id] ?? connection.latestSyncJob ?? undefined
+              const syncLabel = syncState?.source === 'polling' ? '定期同期' : '手動同期'
               const audits = auditEntries[connection.id] ?? []
               const mappings = connection.friendFieldMappings ?? []
               const lastSyncStatus = connection.lastSyncStatus ?? 'idle'
-              const lastError = connection.lastSyncWarning
+              const hasDurableIssue = Boolean(syncState?.warning)
+                || syncState?.status === 'warning'
+                || syncState?.status === 'error'
+              const lastError = (syncState?.status === 'error' ? syncState.errorMessage : null)
+                || (!hasDurableIssue ? connection.lastSyncWarning : null)
                 || (lastSyncStatus === 'error' ? '前回の同期に失敗しました。接続テストで共有設定を確認してください。' : 'ありません')
 
               return (
@@ -156,7 +168,9 @@ export default function SheetsConnectionsPanel({
                         disabled={busy || testState === 'testing' || syncState?.status === 'running'}
                         className="rounded border border-[#087A39] px-3 py-1.5 text-xs text-[#087A39] disabled:opacity-50"
                       >
-                        {syncState?.status === 'running' ? '同期中...' : '手動同期'}
+                        {syncState?.status === 'running'
+                          ? '同期中...'
+                          : syncState?.status === 'error' ? '続きから再開' : '手動同期'}
                       </button>
                     </div>
                   </div>
@@ -170,24 +184,37 @@ export default function SheetsConnectionsPanel({
                       接続できませんでした。スプレッドシートの共有設定を確認してください。
                     </p>
                   )}
-                  {connection.lastSyncWarning && (
+                  {connection.lastSyncWarning && !hasDurableIssue && (
                     <p role="alert" className="mt-2 rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">
                       {connection.lastSyncWarning}
                     </p>
                   )}
+                  {syncState?.status === 'running' && (
+                    <p role="status" data-testid={`sheets-sync-result-${connection.id}`} className="mt-2 text-xs text-blue-700">
+                      処理済み {syncState.processedCount ?? 0} / {syncState.totalCount ?? 0}件
+                    </p>
+                  )}
+                  {syncState?.status === 'running' && syncState.warning && (
+                    <p role="alert" className="mt-2 text-xs text-amber-800">
+                      {syncState.warning}
+                    </p>
+                  )}
                   {syncState?.status === 'success' && (
                     <p role="status" data-testid={`sheets-sync-result-${connection.id}`} className="mt-2 text-xs text-green-700">
-                      手動同期が完了しました。
+                      {syncLabel}が完了しました。
                     </p>
                   )}
                   {syncState?.status === 'warning' && (
                     <p role="alert" data-testid={`sheets-sync-result-${connection.id}`} className="mt-2 text-xs text-amber-800">
-                      手動同期は警告つきで完了しました。{syncState.summary.warning ?? ''}
+                      {syncLabel}は警告つきで完了しました。
+                      {syncState.processedCount ?? 0} / {syncState.totalCount ?? 0}件を処理しました。
+                      {syncState.warning ?? ''}
                     </p>
                   )}
-                  {syncState?.status === 'failed' && (
+                  {syncState?.status === 'error' && (
                     <p role="alert" data-testid={`sheets-sync-result-${connection.id}`} className="mt-2 text-xs text-red-600">
-                      {syncState.message}
+                      同期は途中で停止しました。{syncState.processedCount ?? 0} / {syncState.totalCount ?? 0}件まで処理しました。
+                      {syncState.errorMessage ?? '続きから再開してください。'}
                     </p>
                   )}
                   {audits.length > 0 && (

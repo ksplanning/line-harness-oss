@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   testConnection: vi.fn(),
   sync: vi.fn(),
+  latestSyncJob: vi.fn(),
   audit: vi.fn(),
 }))
 
@@ -17,6 +18,7 @@ vi.mock('@/lib/sheets-connections-api', () => ({
     list: (...args: unknown[]) => mocks.list(...args),
     test: (...args: unknown[]) => mocks.testConnection(...args),
     sync: (...args: unknown[]) => mocks.sync(...args),
+    latestSyncJob: (...args: unknown[]) => mocks.latestSyncJob(...args),
     audit: (...args: unknown[]) => mocks.audit(...args),
   },
 }))
@@ -46,10 +48,14 @@ beforeEach(() => {
   mocks.list.mockReset().mockResolvedValue([item('one')])
   mocks.testConnection.mockReset().mockResolvedValue(true)
   mocks.sync.mockReset().mockResolvedValue({ status: 'success', warning: null })
+  mocks.latestSyncJob.mockReset().mockResolvedValue(null)
   mocks.audit.mockReset().mockResolvedValue([])
 })
 
-afterEach(() => cleanup())
+afterEach(() => {
+  vi.useRealTimers()
+  cleanup()
+})
 
 describe('Sheets settings page', () => {
   test('loads only the selected LINE account as a read-only monitoring page', async () => {
@@ -115,6 +121,141 @@ describe('Sheets settings page', () => {
     expect(result.textContent).toContain('手動同期が完了しました')
     await waitFor(() => expect(mocks.audit).toHaveBeenLastCalledWith('acc-1', 'one'))
     expect((await screen.findByTestId('sheets-audit-one')).textContent).toContain('オーナー')
+  })
+
+  test('does not report a durable manual job as complete until polling reaches a terminal state', async () => {
+    const started = {
+      status: 'running' as const,
+      processedCount: 200,
+      totalCount: 1450,
+      errorMessage: null,
+      warning: null,
+    }
+    const progressed = { ...started, processedCount: 900 }
+    const completed = {
+      ...started,
+      status: 'success' as const,
+      processedCount: 1450,
+    }
+    mocks.sync.mockResolvedValueOnce(started)
+
+    render(<SheetsSettingsPage />)
+    await screen.findByTestId('sheets-item-one')
+    await waitFor(() => expect(mocks.audit).toHaveBeenCalledTimes(1))
+    await act(async () => { await Promise.resolve() })
+    mocks.latestSyncJob.mockReset()
+      .mockResolvedValueOnce(progressed)
+      .mockResolvedValueOnce(completed)
+    vi.useFakeTimers()
+
+    fireEvent.click(screen.getByTestId('sheets-sync-one'))
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mocks.sync).toHaveBeenCalledWith('acc-1', 'one')
+    expect(screen.getByTestId('sheets-item-one').textContent).toContain('処理済み 200 / 1450件')
+    expect(screen.queryByText('手動同期が完了しました。')).toBeNull()
+    expect(mocks.list).toHaveBeenCalledTimes(1)
+    expect(mocks.audit).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mocks.latestSyncJob).toHaveBeenNthCalledWith(1, 'acc-1', 'one')
+    expect(screen.getByTestId('sheets-item-one').textContent).toContain('処理済み 900 / 1450件')
+    expect(screen.queryByText('手動同期が完了しました。')).toBeNull()
+    expect(mocks.list).toHaveBeenCalledTimes(1)
+    expect(mocks.audit).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mocks.latestSyncJob).toHaveBeenNthCalledWith(2, 'acc-1', 'one')
+    expect(screen.getByTestId('sheets-sync-result-one').textContent).toContain('手動同期が完了しました。')
+    expect(mocks.list).toHaveBeenCalledTimes(2)
+    expect(mocks.audit).toHaveBeenCalledTimes(2)
+  })
+
+  test('discovers a later cron job while an older terminal result is still on screen', async () => {
+    const oldJob = {
+      id: 'job-old',
+      source: 'polling' as const,
+      status: 'success' as const,
+      processedCount: 1450,
+      totalCount: 1450,
+      warning: null,
+      errorMessage: null,
+      updatedAt: '2026-07-22T10:00:00.000+09:00',
+    }
+    const nextJob = {
+      ...oldJob,
+      id: 'job-next',
+      status: 'running' as const,
+      processedCount: 400,
+      updatedAt: '2026-07-22T10:30:00.000+09:00',
+    }
+    mocks.list.mockResolvedValueOnce([{ ...item('one'), latestSyncJob: oldJob }])
+    mocks.latestSyncJob.mockResolvedValue(nextJob)
+    vi.useFakeTimers()
+
+    render(<SheetsSettingsPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId('sheets-sync-result-one').textContent).toContain('定期同期が完了しました')
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mocks.latestSyncJob).toHaveBeenCalledWith('acc-1', 'one')
+    expect(screen.getByTestId('sheets-sync-result-one').textContent).toContain('処理済み 400 / 1450件')
+  })
+
+  test('replaces a cached terminal result when a refresh returns a newer job id', async () => {
+    const manual = {
+      id: 'job-manual',
+      source: 'manual' as const,
+      status: 'success' as const,
+      processedCount: 1450,
+      totalCount: 1450,
+      warning: null,
+      errorMessage: null,
+      updatedAt: '2026-07-22T10:00:00.000+09:00',
+    }
+    const cron = {
+      ...manual,
+      id: 'job-cron',
+      source: 'polling' as const,
+      status: 'running' as const,
+      processedCount: 200,
+      updatedAt: '2026-07-22T10:05:00.000+09:00',
+    }
+    mocks.sync.mockResolvedValueOnce(manual)
+    mocks.list
+      .mockResolvedValueOnce([item('one')])
+      .mockResolvedValueOnce([{ ...item('one'), latestSyncJob: cron }])
+
+    render(<SheetsSettingsPage />)
+    await screen.findByTestId('sheets-item-one')
+    fireEvent.click(screen.getByTestId('sheets-sync-one'))
+
+    await waitFor(() => expect(mocks.list).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId('sheets-sync-result-one').textContent).toContain('処理済み 200 / 1450件')
   })
 
   test('discards a stale manual-sync result after the selected account changes', async () => {

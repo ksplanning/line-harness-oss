@@ -38,6 +38,16 @@ function props(overrides: Partial<SheetsConnectionsPanelProps> = {}): SheetsConn
   }
 }
 
+function durableSyncResult(overrides: {
+  status: 'running' | 'success' | 'warning' | 'error'
+  processedCount: number
+  totalCount: number
+  errorMessage: string | null
+  warning: string | null
+}): SheetsConnectionsPanelProps['syncResults'] {
+  return { gsc_1: overrides } as unknown as SheetsConnectionsPanelProps['syncResults']
+}
+
 describe('SheetsConnectionsPanel', () => {
   test('shows form names and operational status without exposing internal IDs', () => {
     const p = props()
@@ -94,12 +104,152 @@ describe('SheetsConnectionsPanel', () => {
     expect(p.onSync).toHaveBeenCalledWith('gsc_1')
   })
 
-  test('disables manual sync while it is running', () => {
-    render(<SheetsConnectionsPanel {...props({ syncResults: { gsc_1: { status: 'running' } } })} />)
+  test('shows exact durable progress and disables manual sync while a job is running', () => {
+    render(<SheetsConnectionsPanel {...props({
+      syncResults: durableSyncResult({
+        status: 'running',
+        processedCount: 400,
+        totalCount: 1450,
+        errorMessage: null,
+        warning: null,
+      }),
+    })} />)
 
     const button = screen.getByTestId('sheets-sync-gsc_1') as HTMLButtonElement
     expect(button.disabled).toBe(true)
     expect(button.textContent).toContain('同期中')
+    expect(screen.getByTestId('sheets-item-gsc_1').textContent).toContain('処理済み 400 / 1450件')
+    expect(screen.queryByText('手動同期が完了しました。')).toBeNull()
+  })
+
+  test('shows durable failure progress and its safe error, then offers continuation', () => {
+    const p = props({
+      syncResults: durableSyncResult({
+        status: 'error',
+        processedCount: 600,
+        totalCount: 1450,
+        errorMessage: 'Google Sheets への書き込みが時間内に完了しませんでした。',
+        warning: null,
+      }),
+    })
+    render(<SheetsConnectionsPanel {...p} />)
+
+    const item = screen.getByTestId('sheets-item-gsc_1')
+    expect(item.textContent).toContain('600 / 1450件まで処理しました')
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain('Google Sheets への書き込みが時間内に完了しませんでした。')
+    expect(alert.textContent).not.toContain('共有設定を確認')
+
+    const button = screen.getByTestId('sheets-sync-gsc_1') as HTMLButtonElement
+    expect(button.disabled).toBe(false)
+    expect(button.textContent).toContain('続きから再開')
+    fireEvent.click(button)
+    expect(p.onSync).toHaveBeenCalledWith('gsc_1')
+  })
+
+  test('keeps the legacy success and warning copy for completed durable jobs', () => {
+    const { rerender } = render(<SheetsConnectionsPanel {...props({
+      syncResults: durableSyncResult({
+        status: 'success',
+        processedCount: 1450,
+        totalCount: 1450,
+        errorMessage: null,
+        warning: null,
+      }),
+    })} />)
+
+    expect(screen.getByTestId('sheets-sync-result-gsc_1').textContent).toContain('手動同期が完了しました。')
+
+    rerender(<SheetsConnectionsPanel {...props({
+      syncResults: durableSyncResult({
+        status: 'warning',
+        processedCount: 1450,
+        totalCount: 1450,
+        errorMessage: null,
+        warning: '見出しが変わった1列は安全のため取り込みませんでした。',
+      }),
+    })} />)
+
+    const warning = screen.getByTestId('sheets-sync-result-gsc_1')
+    expect(warning.getAttribute('role')).toBe('alert')
+    expect(warning.textContent).toContain('手動同期は警告つきで完了しました。')
+    expect(warning.textContent).toContain('見出しが変わった1列は安全のため取り込みませんでした。')
+  })
+
+  test('labels polling completion honestly and does not repeat a legacy warning beside its durable result', () => {
+    const legacyWarning = '前回の定期同期で見出しが変わりました。'
+    const pollingJob = {
+      status: 'warning' as const,
+      source: 'polling' as const,
+      processedCount: 1450,
+      totalCount: 1450,
+      errorMessage: null,
+      warning: legacyWarning,
+    }
+    const { rerender } = render(<SheetsConnectionsPanel {...props({
+      connections: [{
+        ...connection,
+        lastSyncStatus: 'warning',
+        lastSyncWarning: legacyWarning,
+        latestSyncJob: pollingJob as unknown as NonNullable<SheetsConnection['latestSyncJob']>,
+      }],
+    })} />)
+
+    const warning = screen.getByTestId('sheets-sync-result-gsc_1')
+    expect(warning.textContent).toContain('定期同期は警告つきで完了しました。')
+    expect(warning.textContent).not.toContain('手動同期')
+    expect(screen.getByTestId('sheets-item-gsc_1').textContent?.split(legacyWarning)).toHaveLength(2)
+
+    rerender(<SheetsConnectionsPanel {...props({
+      connections: [{
+        ...connection,
+        latestSyncJob: {
+          ...pollingJob,
+          status: 'success',
+          warning: null,
+        } as unknown as NonNullable<SheetsConnection['latestSyncJob']>,
+      }],
+    })} />)
+
+    expect(screen.getByTestId('sheets-sync-result-gsc_1').textContent).toContain('定期同期が完了しました。')
+  })
+
+  test('does not repeat a legacy connection warning when the durable job has stopped with an error', () => {
+    const legacyWarning = '古い接続エラーです。'
+    render(<SheetsConnectionsPanel {...props({
+      connections: [{
+        ...connection,
+        lastSyncStatus: 'error',
+        lastSyncWarning: legacyWarning,
+        latestSyncJob: {
+          status: 'error',
+          source: 'polling',
+          processedCount: 600,
+          totalCount: 1450,
+          errorMessage: '定期同期を続きから再開してください。',
+          warning: null,
+        } as unknown as NonNullable<SheetsConnection['latestSyncJob']>,
+      }],
+    })} />)
+
+    expect(screen.getByTestId('sheets-item-gsc_1').textContent).not.toContain(legacyWarning)
+    expect(screen.getByRole('alert').textContent).toContain('定期同期を続きから再開してください。')
+  })
+
+  test('keeps an interrupted-worker recovery warning visible with its durable progress', () => {
+    const recovery = '前回の同期が途中で止まりました。保存済みの続きから再開しました。'
+    render(<SheetsConnectionsPanel {...props({
+      syncResults: durableSyncResult({
+        status: 'running',
+        processedCount: 800,
+        totalCount: 1450,
+        errorMessage: null,
+        warning: recovery,
+      }),
+    })} />)
+
+    expect(screen.getByTestId('sheets-sync-result-gsc_1').textContent).toContain('処理済み 800 / 1450件')
+    expect(screen.getByRole('alert').textContent).toContain(recovery)
   })
 
   test('shows recent audit actor, field, before/after values, source, and change kind', () => {
