@@ -103,6 +103,9 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
   const [editValues, setEditValues] = useState<Record<string, EditValue>>({})
   const [editError, setEditError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const loadRows = useCallback(async (q: RowsQuery) => {
     try {
@@ -162,7 +165,13 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
     try { const r = await formalooDataApi.bulkDelete(id, ids); setNotice(`${r.deleted}件を削除しました`); await Promise.all([loadRows(query), refreshStats()]) } catch (e) { setNotice((e as { body?: { error?: string } })?.body?.error ?? '削除に失敗しました') }
   }
   const onOpenRow = async (rowId: string) => {
-    try { setDetail(await formalooDataApi.row(id, rowId)); setEditMode(false); setEditError(null) } catch { setNotice('回答の取得に失敗しました') }
+    try {
+      setDetail(await formalooDataApi.row(id, rowId))
+      setEditMode(false)
+      setEditError(null)
+      setConfirmingDelete(false)
+      setDeleteError(null)
+    } catch { setNotice('回答の取得に失敗しました') }
   }
   const autoOpenedRef = useRef(false)
   useEffect(() => {
@@ -178,7 +187,29 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
       setNotice((error as { message?: string })?.message ?? 'ファイルのダウンロードに失敗しました')
     }
   }
-  const closeDetail = () => { setDetail(null); setEditMode(false); setEditError(null) }
+  const closeDetail = () => {
+    setDetail(null)
+    setEditMode(false)
+    setEditError(null)
+    setConfirmingDelete(false)
+    setDeleteError(null)
+  }
+  const deleteAnswer = async () => {
+    if (!detail || detail.source !== 'internal') return
+    const rowId = detail.id
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await formalooDataApi.deleteRow(id, rowId)
+      closeDetail()
+      setNotice('回答を削除しました')
+      await Promise.all([loadRows(query), refreshStats()])
+    } catch (e) {
+      setDeleteError((e as { body?: { error?: string } })?.body?.error ?? '削除に失敗しました')
+    } finally {
+      setDeleting(false)
+    }
+  }
   // 弾M (T-D2): 編集モードに入る = 編集可能 field の現在値を入力欄に載せる。
   const startEdit = () => {
     if (!detail) return
@@ -369,6 +400,39 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
                     className="mt-4 rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700">
                     回答を編集
                   </button>
+                )}
+                {detail.source === 'internal' && !confirmingDelete && (
+                  <button
+                    type="button"
+                    onClick={() => { setConfirmingDelete(true); setDeleteError(null) }}
+                    className="mt-4 ml-2 rounded border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                  >
+                    回答を削除
+                  </button>
+                )}
+                {detail.source === 'internal' && confirmingDelete && (
+                  <div data-testid="delete-answer-confirm" className="mt-4 rounded border border-red-200 bg-red-50 p-3">
+                    <p className="text-xs text-red-800">この回答を削除しますか？</p>
+                    {deleteError && <p className="mt-2 text-xs text-red-700">{deleteError}</p>}
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={deleting}
+                        onClick={() => { setConfirmingDelete(false); setDeleteError(null) }}
+                        className="rounded border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        キャンセル
+                      </button>
+                      <button
+                        type="button"
+                        disabled={deleting}
+                        onClick={() => void deleteAnswer()}
+                        className="rounded bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                      >
+                        {deleting ? '削除中…' : '削除する'}
+                      </button>
+                    </div>
+                  </div>
                 )}
               </>
             ) : (

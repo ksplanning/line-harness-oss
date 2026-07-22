@@ -342,6 +342,9 @@ export const formalooDataApi = {
   async row(id: string, rowId: string): Promise<RowDetail> {
     return (await fetchApi<Envelope<RowDetail>>(`/api/forms-advanced/${id}/rows/${rowId}`)).data
   },
+  async deleteRow(id: string, rowId: string): Promise<void> {
+    await fetchApi<Envelope<null>>(`/api/forms-advanced/${id}/rows/${rowId}`, { method: 'DELETE' })
+  },
   /**
    * 弾M (form-post-edit / T-D1): ①管理者編集の保存。PATCH で編集後 answers を送る。
    * 反映されない編集は worker が正直エラー (非 2xx) を返す → fetchApi が throw = 呼び出し側で保存を止める。
