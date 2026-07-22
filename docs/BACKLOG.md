@@ -871,3 +871,20 @@ real-time ミラー + verified restore には Formaloo webhook 配線（`FORMALO
 - **ks 実測**: job `4da10274-...`（対象外のため即完了・foreignUnlinked 0/変更なし130/失敗0＝期待通りno-op）。
 - **未解決**: ① owner 自身の実端末での最終目視確認は closer 不能のため owner 立会待ち。②上記 WAF起因の自動cron dispatch 不具合は本ケースのスコープ外の別バグとして次回対応要（`dispatchRichMenuRuleWork`の`fetch()`にUser-Agent付与が最有力対策）。③「変更なし2」がタブ2ページ目/正規個別リンクのどちらかは本ラウンドで内訳未特定（rich_menu_friend_assignments 0行・display rules 0件のため次回精査時参照）。
 - 詳細: `.sola/live-checklist.md`「richmenu-foreign-unlink-fix」節 + REPORT `/root/.openclaw/line-harness-ks/REPORT_2026-07-21_205600_richmenu-foreign-unlink-fix.md`（Box working folder 386663013201）。
+
+## postal-field-native-autofill — 郵便番号自動入力を専用項目へ移設（2026-07-22 closer / status: completed（原スコープD-1〜D-4）/ 🚨 D-5・D-6 REQUIRED-BACKLOG）
+- **owner原文**: 「一行テキストにその機能が付与されています。本来は郵便番号の項目があるのでそちらで実装では？？…動作に問題なければ一行テキスト項目に付与されている…チェックや機能を外すはどうでしょうか」
+- **land済み・4面デプロイ**: 郵便番号(postal_code)専用項目に自動入力チェック+入力先ドロップダウン（都道府県/市区町村（日本）/町名・番地の専用項目を第一候補・既存一行テキストも選択肢維持）を実装。新規の一行テキストには自動入力チェック非表示（grandfather=既存設定は表示・動作維持）。実装は internal render backend（自前配信β）限定機能。KS worker Version `e7fe4b3a-c924-4168-82a0-8df4c543aafa`／KS admin `https://f184d2db.line-harness-ks-admin.pages.dev`／piecemaker worker Version `61dce394-8a99-41ce-b8d6-7a43699f35aa`／piecemaker admin `https://6271a64a.line-harness-piecemaker-admin.pages.dev`。HEAD `aac67dd38b199a3602b6784723affb12c7871a5a`。
+- **closer live実測PASS（piecemaker使い捨てinternalフォーム）**: 郵便番号`860-0047`→ボタンクリック→都道府県`熊本県`/市区町村`熊本市西区`/町名・番地`春日`が公開ページで実際に自動入力（「住所を入力しました」表示）。新規1行テキストに自動入力チェックボックスが出ないことを実クリックで確認（grandfather negative-case PASS）。既存config保持のgrandfather positive-caseはreviewer unit test済み(builder-postal-autofill.test.tsx)・closerはlive再現なし（正直申告）。
+- **🚨🔴 [REQUIRED-BACKLOG] D-5・D-6 未実装（次回generator round必須）**: 実装完了後、owner追加発注（原文「住所って項目を作って、郵便番号項目で一括かバラバラかを選び…」「住所も…一行の折り返し二行とかって出来ませんか」）がtasks.mdへ追記されたが、本diffには未実装（reviewerが検証時に発見・明記）。palette に「住所」パーツは実機確認で存在しないことを確認済み。
+  - D-5: 「住所」パーツ新設 + 郵便番号側で一括/分割の選択（一括=連結住所を住所項目へ、分割=既定・従来動作）
+  - D-6: 住所パーツの折り返し表示（最低2行相当・auto-grow）+ 1行データ（改行コード不使用・Enter無効・ペースト改行→スペース変換）
+- 詳細: `.plans/2026-07-22-postal-field-native-autofill/tasks.md`（D-5/D-6は末尾「追加要件」節） + REPORT（本closer）。
+
+## unanswered-inbox-relocate — 未対応インボックスを個別チャット配下へ移設 + エラー表示透明化（2026-07-22 closer / ✅ 完了）
+- **owner原文**: 「自動化タブの中にある未対応インボックスなんだけど これって人間が返事してない通知だから個別チャットの下か、個別チャットに組み入れたらどうかあな？？ あと取得に失敗しましたってログが黄色背景で出てます」
+- **infra-ops実査（再調査不要）**: worker `/api/inbox/unanswered`(+/count)は両テナント健全（機能バグ・テナント差・shape齟齬は除外済み）。真因=`apps/web/src/app/notifications/page.tsx:76-82`の裸catchが`err.status`/`err.body`を捨て一律バナー化。
+- **land済み**: エラー出し分け（401→再ログイン誘導表示/5xx・network→一時エラー表示+rows保持+自動再取得、banner表示前に1回だけ自動リトライ）。サイドバー「未対応」を「自動化」配下から「個別チャット」直下へ移設（URL不変=リンク切れ物理ゼロ）。worker/API/データ不変更。
+- **4面デプロイ**: postal-field-native-autofillと同一便（上記Version参照）。
+- **closer live実測PASS**: piecemaker admin実ログイン後、サイドバー「個別チャット」直下に「未対応(5)」バッジ表示（「自動化」配下から消滅）をscreenshot確認。一覧5件（あやこ/三原栄一/やまもと/tetsuko kitasaka/yurie）が裸catchでのバナー化なく正常表示。エラー状態の強制再現（devtools offline等）は本ラウンドでは未実施（正常系のみ実測）。
+- 詳細: `.plans/2026-07-22-unanswered-inbox-relocate/tasks.md` + REPORT（本closer）。
