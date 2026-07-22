@@ -55,7 +55,7 @@ import {
   type SheetsDataUpdate,
 } from './google-sheets.js';
 
-type FriendLedgerSheetsClient = Pick<
+export type FriendLedgerSheetsClient = Pick<
   GoogleSheetsClient,
   'readValues' | 'updateValues' | 'appendValues' | 'batchUpdateValues'
 >;
@@ -69,7 +69,7 @@ interface FriendRow {
   updated_at: string;
 }
 
-interface FriendState {
+export interface FriendState {
   id: string;
   lineUserId: string;
   displayName: string | null;
@@ -175,7 +175,7 @@ interface ImportedMetadataResult {
   rejected: Record<string, string>;
 }
 
-interface InternalAnswerState {
+export interface InternalAnswerState {
   submission: InternalFormSubmission;
   answers: Record<string, unknown>;
   valid: boolean;
@@ -205,7 +205,7 @@ function parseMetadata(raw: string): { value: Record<string, unknown>; valid: bo
   }
 }
 
-function parseInternalAnswers(submission: InternalFormSubmission): InternalAnswerState {
+export function parseInternalAnswers(submission: InternalFormSubmission): InternalAnswerState {
   try {
     const parsed = JSON.parse(submission.answers_json) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -217,7 +217,7 @@ function parseInternalAnswers(submission: InternalFormSubmission): InternalAnswe
   }
 }
 
-function formAnswerFields(fields: InternalFormField[]): FormAnswerField[] {
+export function formAnswerFields(fields: InternalFormField[]): FormAnswerField[] {
   const repeatingTemplates = new Set(
     fields
       .filter((field) => field.type === 'repeating_section')
@@ -267,11 +267,11 @@ function serializeFriend(row: FriendRow): FriendState {
   };
 }
 
-function quoteSheetName(sheetName: string): string {
+export function quoteSheetName(sheetName: string): string {
   return `'${sheetName.replace(/'/g, "''")}'`;
 }
 
-function columnLabel(index: number): string {
+export function columnLabel(index: number): string {
   let value = index + 1;
   let label = '';
   while (value > 0) {
@@ -282,16 +282,16 @@ function columnLabel(index: number): string {
   return label;
 }
 
-function cellRange(sheetName: string, rowNumber: number, columnIndex: number): string {
+export function cellRange(sheetName: string, rowNumber: number, columnIndex: number): string {
   const cell = `${columnLabel(columnIndex)}${rowNumber}`;
   return `${quoteSheetName(sheetName)}!${cell}:${cell}`;
 }
 
-function blockRange(sheetName: string, rowNumber: number, width: number): string {
+export function blockRange(sheetName: string, rowNumber: number, width: number): string {
   return `${quoteSheetName(sheetName)}!A${rowNumber}:${columnLabel(Math.max(0, width - 1))}${rowNumber}`;
 }
 
-function horizontalRange(
+export function horizontalRange(
   sheetName: string,
   rowNumber: number,
   startColumnIndex: number,
@@ -302,7 +302,7 @@ function horizontalRange(
   return `${quoteSheetName(sheetName)}!${start}${rowNumber}:${end}${rowNumber}`;
 }
 
-function appendedStartRow(response: { updates?: Record<string, unknown> }, fallback: number): number {
+export function appendedStartRow(response: { updates?: Record<string, unknown> }, fallback: number): number {
   const updatedRange = response.updates?.updatedRange;
   if (typeof updatedRange !== 'string') return fallback;
   const match = /![A-Z]+(\d+)(?::|$)/i.exec(updatedRange.replace(/\$/g, ''));
@@ -310,12 +310,12 @@ function appendedStartRow(response: { updates?: Record<string, unknown> }, fallb
   return Number.isSafeInteger(row) && row >= 2 ? row : fallback;
 }
 
-function cleanActor(actor: string, source: SheetsSyncAuditSource): string {
+export function cleanActor(actor: string, source: SheetsSyncAuditSource): string {
   const cleaned = actor.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 320);
   return cleaned || (source === 'polling' ? 'system_poll' : 'unknown_editor');
 }
 
-function canonicalValue(value: unknown): SheetsCanonicalCellValue {
+export function canonicalValue(value: unknown): SheetsCanonicalCellValue {
   if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     return value;
   }
@@ -395,14 +395,14 @@ export function parseFriendLedgerWebhookEventPayload(
   };
 }
 
-async function fingerprint(snapshot: Record<string, SheetsCanonicalCellValue>): Promise<string> {
+export async function fingerprint(snapshot: Record<string, SheetsCanonicalCellValue>): Promise<string> {
   const keys = Object.keys(snapshot).sort();
   const stable = JSON.stringify(keys.map((key) => [key, snapshot[key]]));
   const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(stable)));
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function listFriends(db: D1Database, lineAccountId: string): Promise<FriendState[]> {
+export async function listFriends(db: D1Database, lineAccountId: string): Promise<FriendState[]> {
   const result = await db.prepare(
     `SELECT id, line_user_id, display_name, metadata, created_at, updated_at
      FROM friends
@@ -420,7 +420,7 @@ function compareFriendCursor(friend: FriendState, cursor: FriendLedgerChunkCurso
   return friend.id < cursor.friendId ? -1 : friend.id > cursor.friendId ? 1 : 0;
 }
 
-async function saveImportedMetadata(
+export async function saveImportedMetadata(
   db: D1Database,
   connection: SheetsConnection,
   friend: FriendState,
@@ -491,7 +491,7 @@ async function saveImportedMetadata(
   throw new Error('friend_metadata_concurrent_update');
 }
 
-function warningText(code: string, header: string): string {
+export function warningText(code: string, header: string): string {
   const safeHeader = header.slice(0, 200);
   if (code === 'duplicate_header') return `見出し「${safeHeader}」が重複しています`;
   if (code === 'configured_header_collision') return `設定した見出し「${safeHeader}」が保護列と重複しています`;
@@ -518,7 +518,7 @@ function projectedWithDefaults(
   }, connection.friendFieldMappings);
 }
 
-function rowForProjection(
+export function rowForProjection(
   width: number,
   projection: Record<string, string>,
   columns: FriendLedgerColumn[],
@@ -532,7 +532,7 @@ function rowForProjection(
   return row;
 }
 
-function detail(
+export function detail(
   actor: string,
   fieldName: string,
   oldValue: string | null,
@@ -551,7 +551,7 @@ function detail(
   };
 }
 
-function answerDetail(
+export function answerDetail(
   actor: string,
   fieldName: string,
   source: SheetsSyncAuditSource,
@@ -622,7 +622,9 @@ async function persistPlan(
   if (!committed) throw new Error('stale_sheets_row_commit_generation');
 }
 
-function makeClient(options: SyncFriendLedgerOptions): FriendLedgerSheetsClient {
+export function makeClient(
+  options: Pick<SyncFriendLedgerOptions, 'client' | 'credentialsJson'>,
+): FriendLedgerSheetsClient {
   if (options.client) return options.client;
   if (!options.credentialsJson) throw new Error('google_sheets_credentials_missing');
   return new GoogleSheetsClient({
@@ -709,6 +711,12 @@ export async function syncFriendLedger(
     const defaults = new Map(definitions.map((definition) => [definition.id, definition.defaultValue]));
     const values = (response.values ?? []).map((row) => [...row]);
     const friendColumns = buildFriendLedgerColumns(options.connection.friendFieldMappings);
+    // When the separate form-results tab is active it owns the answer columns;
+    // the ledger tab then carries friend columns only (legacy combined layout
+    // keeps emitting answers untouched while the toggle stays off).
+    const resultsTabActive = Boolean(
+      options.connection.formResultsEnabled && options.connection.formResultsSheetName,
+    );
     const answerSetupWarnings: string[] = [];
     const latestAnswersByFriend = new Map<string, InternalAnswerState>();
     let activeAnswerFields: FormAnswerField[] = [];
@@ -717,7 +725,7 @@ export async function syncFriendLedger(
     const newAnswerColumnKeys = new Set<string>();
     let answerSyncEnabled = false;
 
-    if (form?.render_backend === 'internal') {
+    if (form?.render_backend === 'internal' && !resultsTabActive) {
       if (
         form.deleted !== 0
         || (form.line_account_id !== null && form.line_account_id !== options.connection.lineAccountId)
@@ -2525,7 +2533,10 @@ export async function runFriendLedgerPolling(
   const client = options.client ?? new GoogleSheetsClient({
     credentials: parseGoogleServiceAccountCredentials(options.credentialsJson!),
   });
-  const connections = await listActiveSheetsConnectionsForSync(options.db, options.maxConnections);
+  // The sync list now also surfaces results-only connections; this legacy
+  // entry point drives the friend ledger target only.
+  const connections = (await listActiveSheetsConnectionsForSync(options.db, options.maxConnections))
+    .filter((connection) => connection.friendLedgerEnabled);
   const summary = { attempted: 0, succeeded: 0, warnings: 0, failed: 0 };
   for (const connection of connections) {
     summary.attempted += 1;

@@ -5,6 +5,7 @@ import {
   updateSheetsSyncStatus,
   type SheetsConnection,
   type SheetsSyncAuditSource,
+  type SheetsSyncTarget,
 } from '@line-crm/db';
 import {
   drainFriendLedgerWebhookEvents,
@@ -13,6 +14,13 @@ import {
   type FriendLedgerSyncResult,
   type SyncFriendLedgerOptions,
 } from './friend-ledger-sync.js';
+import {
+  drainFormResultsWebhookEvents,
+  syncFormResults,
+  type FormResultsChunkCursor,
+  type FormResultsSyncResult,
+  type SyncFormResultsOptions,
+} from './form-results-sync.js';
 
 export const SHEETS_SYNC_CHUNK_SIZE = 200;
 const JOB_LOCK_MS = 5 * 60_000;
@@ -31,6 +39,7 @@ interface SheetsSyncJobRow {
   config_version: number;
   source: SheetsSyncJobSource;
   actor: string;
+  target: SheetsSyncTarget;
   status: StoredSheetsSyncJobStatus;
   total_count: number;
   processed_count: number;
@@ -59,10 +68,13 @@ export interface SheetsSyncJob {
   configVersion: number;
   source: SheetsSyncJobSource;
   actor: string;
+  target: SheetsSyncTarget;
   status: SheetsSyncJobStatus;
   totalCount: number;
   processedCount: number;
+  /** Ledger jobs: friend created_at cursor. Results jobs: submission submitted_at cursor. */
   lastFriendCreatedAt: string | null;
+  /** Ledger jobs: friend id cursor. Results jobs: submission id cursor. */
   lastFriendId: string | null;
   appendedRows: number;
   updatedRows: number;
@@ -90,6 +102,7 @@ function serializeJob(row: SheetsSyncJobRow): SheetsSyncJob {
     configVersion: row.config_version,
     source: row.source,
     actor: row.actor,
+    target: row.target,
     status: publicStatus(row.status),
     totalCount: row.total_count,
     processedCount: row.processed_count,
@@ -133,12 +146,14 @@ export async function getLatestSheetsSyncJob(
   db: D1Database,
   lineAccountId: string,
   connectionId: string,
+  target?: SheetsSyncTarget,
 ): Promise<SheetsSyncJob | null> {
   const row = await db.prepare(
     `SELECT * FROM sheets_sync_jobs
      WHERE line_account_id = ? AND connection_id = ?
+       AND (? IS NULL OR target = ?)
      ORDER BY created_at DESC, id DESC LIMIT 1`,
-  ).bind(lineAccountId, connectionId).first<SheetsSyncJobRow>();
+  ).bind(lineAccountId, connectionId, target ?? null, target ?? null).first<SheetsSyncJobRow>();
   return row ? serializeJob(row) : null;
 }
 
@@ -147,13 +162,15 @@ export async function startSheetsSyncJob(options: {
   connection: SheetsConnection;
   source: SheetsSyncJobSource;
   actor: string;
+  target?: SheetsSyncTarget;
 }): Promise<SheetsSyncJob> {
   const actor = cleanActor(options.actor, options.source);
+  const target: SheetsSyncTarget = options.target ?? 'ledger';
   const running = await options.db.prepare(
     `SELECT * FROM sheets_sync_jobs
-     WHERE connection_id = ? AND status = 'running'
+     WHERE connection_id = ? AND target = ? AND status = 'running'
      ORDER BY created_at DESC, id DESC LIMIT 1`,
-  ).bind(options.connection.id).first<SheetsSyncJobRow>();
+  ).bind(options.connection.id, target).first<SheetsSyncJobRow>();
   if (running?.config_version === options.connection.configVersion) return serializeJob(running);
   if (running) {
     await options.db.prepare(
@@ -169,12 +186,14 @@ export async function startSheetsSyncJob(options: {
 
   const failed = await options.db.prepare(
     `SELECT * FROM sheets_sync_jobs
-     WHERE connection_id = ? AND line_account_id = ? AND config_version = ? AND status = 'failed'
+     WHERE connection_id = ? AND line_account_id = ? AND config_version = ?
+       AND target = ? AND status = 'failed'
      ORDER BY created_at DESC, id DESC LIMIT 1`,
   ).bind(
     options.connection.id,
     options.connection.lineAccountId,
     options.connection.configVersion,
+    target,
   ).first<SheetsSyncJobRow>();
   if (failed) {
     const resumed = await options.db.prepare(
@@ -188,22 +207,38 @@ export async function startSheetsSyncJob(options: {
     if (resumed) return serializeJob(resumed);
   }
 
-  const snapshot = await options.db.prepare(
-    `SELECT id, created_at, COUNT(*) OVER () AS total_count FROM friends
-     WHERE line_account_id = ?
-     ORDER BY created_at DESC, id DESC LIMIT 1`,
-  ).bind(options.connection.lineAccountId).first<{
-    id: string;
-    created_at: string;
-    total_count: number;
-  }>();
+  // The snapshot bound freezes the record set of this job: friends for the
+  // ledger target, verified submissions for the form-results target.
+  const snapshot = target === 'form_results'
+    ? await options.db.prepare(
+      `SELECT submission.id, submission.submitted_at AS created_at,
+              COUNT(*) OVER () AS total_count
+       FROM internal_form_submissions submission
+       INNER JOIN friends friend
+         ON friend.id = submission.friend_id AND friend.line_account_id = ?
+       WHERE submission.form_id = ? AND submission.friend_id IS NOT NULL
+       ORDER BY submission.submitted_at DESC, submission.id DESC LIMIT 1`,
+    ).bind(options.connection.lineAccountId, options.connection.formId).first<{
+      id: string;
+      created_at: string;
+      total_count: number;
+    }>()
+    : await options.db.prepare(
+      `SELECT id, created_at, COUNT(*) OVER () AS total_count FROM friends
+       WHERE line_account_id = ?
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).bind(options.connection.lineAccountId).first<{
+      id: string;
+      created_at: string;
+      total_count: number;
+    }>();
   const id = `gsj_${crypto.randomUUID()}`;
   try {
     const created = await options.db.prepare(
       `INSERT INTO sheets_sync_jobs
-       (id, connection_id, line_account_id, config_version, source, actor,
+       (id, connection_id, line_account_id, config_version, source, actor, target,
         total_count, snapshot_friend_created_at, snapshot_record_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING *`,
     ).bind(
       id,
@@ -212,6 +247,7 @@ export async function startSheetsSyncJob(options: {
       options.connection.configVersion,
       options.source,
       actor,
+      target,
       snapshot?.total_count ?? 0,
       snapshot?.created_at ?? null,
       snapshot?.id ?? null,
@@ -221,9 +257,9 @@ export async function startSheetsSyncJob(options: {
   } catch (error) {
     const concurrent = await options.db.prepare(
       `SELECT * FROM sheets_sync_jobs
-       WHERE connection_id = ? AND status = 'running'
+       WHERE connection_id = ? AND target = ? AND status = 'running'
        ORDER BY created_at DESC, id DESC LIMIT 1`,
-    ).bind(options.connection.id).first<SheetsSyncJobRow>();
+    ).bind(options.connection.id, target).first<SheetsSyncJobRow>();
     if (concurrent) return serializeJob(concurrent);
     throw error;
   }
@@ -236,11 +272,20 @@ export async function enqueueSheetsSyncPollingJobs(
   const connections = await listActiveSheetsConnectionsForSync(db, maxConnections);
   let enqueued = 0;
   for (const connection of connections) {
-    const before = await db.prepare(
-      `SELECT id FROM sheets_sync_jobs WHERE connection_id = ? AND status = 'running' LIMIT 1`,
-    ).bind(connection.id).first<{ id: string }>();
-    await startSheetsSyncJob({ db, connection, source: 'polling', actor: 'system_poll' });
-    if (!before) enqueued += 1;
+    const targets: SheetsSyncTarget[] = [
+      ...(connection.friendLedgerEnabled ? ['ledger' as const] : []),
+      ...(connection.formResultsEnabled && connection.formResultsSheetName
+        ? ['form_results' as const]
+        : []),
+    ];
+    for (const target of targets) {
+      const before = await db.prepare(
+        `SELECT id FROM sheets_sync_jobs
+         WHERE connection_id = ? AND target = ? AND status = 'running' LIMIT 1`,
+      ).bind(connection.id, target).first<{ id: string }>();
+      await startSheetsSyncJob({ db, connection, source: 'polling', actor: 'system_poll', target });
+      if (!before) enqueued += 1;
+    }
   }
   const running = await db.prepare(
     `SELECT COUNT(*) AS count FROM sheets_sync_jobs WHERE status = 'running'`,
@@ -249,6 +294,7 @@ export async function enqueueSheetsSyncPollingJobs(
 }
 
 type SyncImplementation = (options: SyncFriendLedgerOptions) => Promise<FriendLedgerSyncResult>;
+type ResultsSyncImplementation = (options: SyncFormResultsOptions) => Promise<FormResultsSyncResult>;
 
 export interface ProcessNextSheetsSyncJobOptions {
   db: D1Database;
@@ -256,6 +302,7 @@ export interface ProcessNextSheetsSyncJobOptions {
   client?: SyncFriendLedgerOptions['client'];
   chunkSize?: number;
   sync?: SyncImplementation;
+  syncResults?: ResultsSyncImplementation;
   now?: () => Date;
 }
 
@@ -375,37 +422,69 @@ export async function processNextSheetsSyncJob(
   }
 
   const chunkSize = Math.min(500, Math.max(1, Math.trunc(options.chunkSize ?? SHEETS_SYNC_CHUNK_SIZE)));
-  const after: FriendLedgerChunkCursor | null = claimed.last_record_key
-    ? { createdAt: claimed.last_friend_created_at ?? '', friendId: claimed.last_record_key }
-    : null;
-  const through: FriendLedgerChunkCursor | null = claimed.snapshot_record_key
-    ? { createdAt: claimed.snapshot_friend_created_at!, friendId: claimed.snapshot_record_key }
-    : null;
   const initialWarnings = claimed.warning_message ? [claimed.warning_message] : [];
 
   try {
-    if (claimed.source === 'polling' && claimed.processed_count === 0) {
-      const drained = await drainFriendLedgerWebhookEvents({
+    let result: FriendLedgerSyncResult | FormResultsSyncResult;
+    if (claimed.target === 'form_results') {
+      const after: FormResultsChunkCursor | null = claimed.last_record_key
+        ? { submittedAt: claimed.last_friend_created_at ?? '', submissionId: claimed.last_record_key }
+        : null;
+      const through: FormResultsChunkCursor | null = claimed.snapshot_record_key
+        ? { submittedAt: claimed.snapshot_friend_created_at!, submissionId: claimed.snapshot_record_key }
+        : null;
+      if (claimed.source === 'polling' && claimed.processed_count === 0) {
+        const drained = await drainFormResultsWebhookEvents({
+          db: options.db,
+          connection,
+          client: options.client,
+          credentialsJson: options.credentialsJson,
+          maxEvents: 1,
+          now: options.now,
+        });
+        initialWarnings.push(...drained.warnings);
+      }
+      result = await (options.syncResults ?? syncFormResults)({
         db: options.db,
         connection,
         client: options.client,
         credentialsJson: options.credentialsJson,
-        maxEvents: 1,
+        source: claimed.source,
+        actor: claimed.actor,
+        initialWarnings,
         now: options.now,
+        chunk: { limit: chunkSize, after, through },
       });
-      initialWarnings.push(...drained.warnings);
+    } else {
+      const after: FriendLedgerChunkCursor | null = claimed.last_record_key
+        ? { createdAt: claimed.last_friend_created_at ?? '', friendId: claimed.last_record_key }
+        : null;
+      const through: FriendLedgerChunkCursor | null = claimed.snapshot_record_key
+        ? { createdAt: claimed.snapshot_friend_created_at!, friendId: claimed.snapshot_record_key }
+        : null;
+      if (claimed.source === 'polling' && claimed.processed_count === 0) {
+        const drained = await drainFriendLedgerWebhookEvents({
+          db: options.db,
+          connection,
+          client: options.client,
+          credentialsJson: options.credentialsJson,
+          maxEvents: 1,
+          now: options.now,
+        });
+        initialWarnings.push(...drained.warnings);
+      }
+      result = await (options.sync ?? syncFriendLedger)({
+        db: options.db,
+        connection,
+        client: options.client,
+        credentialsJson: options.credentialsJson,
+        source: claimed.source,
+        actor: claimed.actor,
+        initialWarnings,
+        now: options.now,
+        chunk: { limit: chunkSize, after, through },
+      });
     }
-    const result = await (options.sync ?? syncFriendLedger)({
-      db: options.db,
-      connection,
-      client: options.client,
-      credentialsJson: options.credentialsJson,
-      source: claimed.source,
-      actor: claimed.actor,
-      initialWarnings,
-      now: options.now,
-      chunk: { limit: chunkSize, after, through },
-    });
     if (result.busy) {
       await options.db.prepare(
         `UPDATE sheets_sync_jobs SET lock_token = NULL, locked_until = NULL,
@@ -429,16 +508,22 @@ export async function processNextSheetsSyncJob(
     const processedCount = Math.min(claimed.total_count, claimed.processed_count + result.chunk.processed);
     let warning = mergeWarning(claimed.warning_message, result.warning);
     if (!result.chunk.hasMore && processedCount < claimed.total_count) {
+      const changedSubject = claimed.target === 'form_results' ? 'フォーム回答' : '友だち台帳';
       warning = mergeWarning(
         warning,
-        `同期中に友だち台帳が変更されたため、${processedCount} / ${claimed.total_count}件を処理して終了しました。`,
+        `同期中に${changedSubject}が変更されたため、${processedCount} / ${claimed.total_count}件を処理して終了しました。`,
       );
     }
     const storedStatus: StoredSheetsSyncJobStatus = result.chunk.hasMore
       ? 'running'
       : warning ? 'warning' : 'completed';
     const completedAt = storedStatus === 'running' ? null : toJstString(nowFactory());
-    const cursor = result.chunk.cursor;
+    const rawCursor = result.chunk.cursor;
+    const cursor = rawCursor === null
+      ? null
+      : 'friendId' in rawCursor
+        ? { createdAt: rawCursor.createdAt, recordKey: rawCursor.friendId }
+        : { createdAt: rawCursor.submittedAt, recordKey: rawCursor.submissionId };
     const updated = await options.db.prepare(
       `UPDATE sheets_sync_jobs SET status = ?, processed_count = ?,
          last_friend_created_at = ?, last_record_key = ?,
@@ -455,7 +540,7 @@ export async function processNextSheetsSyncJob(
       storedStatus,
       processedCount,
       cursor?.createdAt ?? claimed.last_friend_created_at,
-      cursor?.friendId ?? claimed.last_record_key,
+      cursor?.recordKey ?? claimed.last_record_key,
       result.appendedRows,
       result.updatedRows,
       result.importedFields,
