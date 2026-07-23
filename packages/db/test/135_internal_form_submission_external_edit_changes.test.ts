@@ -7,7 +7,7 @@ import { describe, expect, test } from 'vitest';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, '..');
 const MIGRATIONS_DIR = join(PKG_ROOT, 'migrations');
-const MIGRATION_FILE = '134_internal_form_submission_external_edit_changes.sql';
+const MIGRATION_FILE = '135_internal_form_submission_external_edit_changes.sql';
 const BENIGN = /duplicate column name|already exists/i;
 
 function applyStatements(db: Database.Database, sql: string): void {
