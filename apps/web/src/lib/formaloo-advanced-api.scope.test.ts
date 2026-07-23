@@ -93,6 +93,19 @@ describe('formalooDataApi — external edit review metadata', () => {
     ],
   }
 
+  it('serializes the pending-review filter for the rows API', async () => {
+    fetchApi.mockResolvedValueOnce({
+      success: true,
+      data: { rows: [], total: 0, page: 1, pageSize: 25 },
+    })
+
+    await formalooDataApi.rows('form-1', { externalEdit: 'pending' })
+
+    expect(fetchApi).toHaveBeenCalledWith(
+      '/api/forms-advanced/form-1/rows?externalEdit=pending',
+    )
+  })
+
   it('keeps review metadata on list and detail rows', async () => {
     fetchApi
       .mockResolvedValueOnce({

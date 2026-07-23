@@ -351,6 +351,7 @@ export interface RowsQuery {
   sort?: 'asc' | 'desc'
   page?: number
   pageSize?: number
+  externalEdit?: 'pending'
 }
 
 function toQueryString(q: RowsQuery): string {
@@ -361,6 +362,7 @@ function toQueryString(q: RowsQuery): string {
   if (q.sort) p.set('sort', q.sort)
   if (q.page) p.set('page', String(q.page))
   if (q.pageSize) p.set('pageSize', String(q.pageSize))
+  if (q.externalEdit) p.set('externalEdit', q.externalEdit)
   const s = p.toString()
   return s ? `?${s}` : ''
 }

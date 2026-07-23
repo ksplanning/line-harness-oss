@@ -25,7 +25,6 @@ type ExternalSubmissionRow = SubmissionRow & {
   externalEditApprovedAt?: string | null
   externalEditChanges?: ExternalEditChange[]
 }
-type ExternalRowsQuery = RowsQuery & { externalEdit?: 'pending' }
 type ExternalFormStats = FormStats & { externalEditPending?: number }
 
 function pendingExternalEditRevision(row: SubmissionRow): string | null {
@@ -121,7 +120,7 @@ export default function DataCockpit(props: DataCockpitProps) {
   ]).size
   const hiddenColumnCount = Math.max(0, totalFieldCount - columns.length)
 
-  const currentFilter = (externalOnly = externalEditOnly): ExternalRowsQuery => ({
+  const currentFilter = (externalOnly = externalEditOnly): RowsQuery => ({
     q: q || undefined,
     from: from || undefined,
     to: to || undefined,
@@ -164,7 +163,7 @@ export default function DataCockpit(props: DataCockpitProps) {
   }
 
   const applySaved = (f: SavedFilter) => {
-    const flt = f.filter as ExternalRowsQuery
+    const flt = f.filter as RowsQuery
     setQ(typeof flt.q === 'string' ? flt.q : '')
     setFrom(typeof flt.from === 'string' ? flt.from : '')
     setTo(typeof flt.to === 'string' ? flt.to : '')
