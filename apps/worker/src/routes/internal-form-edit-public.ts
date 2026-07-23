@@ -911,6 +911,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
       submissionId: resolved.value.binding.submissionId,
       expectedEditVersion,
       expectedEditLinkEpoch: resolved.value.payload.epoch,
+      previousAnswers: storedAnswers,
       answers: merged,
     });
     if (result.status === 'revoked') {

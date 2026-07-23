@@ -19,6 +19,7 @@ import {
   updateFormalooForm,
   updateInternalFormSubmissionAnswers,
   type FormalooForm,
+  type InternalFormExternalEditChange,
   type InternalFormSubmission,
 } from '@line-crm/db';
 import {
@@ -428,6 +429,32 @@ function internalEditMetadata(
   };
 }
 
+function parseExternalEditChanges(value: string | null): InternalFormExternalEditChange[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((candidate) => {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
+      const change = candidate as Record<string, unknown>;
+      if (
+        typeof change.fieldId !== 'string'
+        || !Object.prototype.hasOwnProperty.call(change, 'before')
+        || !Object.prototype.hasOwnProperty.call(change, 'after')
+      ) {
+        return [];
+      }
+      return [{
+        fieldId: change.fieldId,
+        before: change.before,
+        after: change.after,
+      }];
+    });
+  } catch {
+    return [];
+  }
+}
+
 function serializeRow(row: InternalFormSubmission) {
   return {
     id: row.id,
@@ -438,6 +465,7 @@ function serializeRow(row: InternalFormSubmission) {
     externalEditSource: row.external_edit_source,
     externalEditedAt: row.external_edited_at,
     externalEditApprovedAt: row.external_edit_approved_at,
+    externalEditChanges: parseExternalEditChanges(row.external_edit_changes_json),
     // A friend id is persisted only after the signed fr_id is verified and the
     // friend exists, so this is the internal equivalent of Formaloo `verified`.
     verified: row.friend_id !== null,

@@ -1846,6 +1846,7 @@ describe('POST /ife/:token', () => {
           externalEditSource: string | null;
           externalEditedAt: string | null;
           externalEditApprovedAt: string | null;
+          externalEditChanges: Array<{ fieldId: string; before: unknown; after: unknown }>;
         }>;
         total: number;
         externalEditPendingCount: number;
@@ -1857,9 +1858,29 @@ describe('POST /ife/:token', () => {
         externalEditSource: 'edit_link',
         externalEditedAt: expect.any(String),
         externalEditApprovedAt: null,
+        externalEditChanges: [
+          { fieldId: 'name', before: '佐藤 <script>', after: '外部編集後' },
+          { fieldId: 'email', before: 'old@example.test', after: 'external@example.test' },
+        ],
       }],
       total: 1,
       externalEditPendingCount: 1,
+    });
+
+    const detail = await adminApp().request(
+      '/api/forms-advanced/form-1/rows/ifs-1',
+      {},
+      bindings(),
+    );
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({
+      success: true,
+      data: {
+        externalEditChanges: [
+          { fieldId: 'name', before: '佐藤 <script>', after: '外部編集後' },
+          { fieldId: 'email', before: 'old@example.test', after: 'external@example.test' },
+        ],
+      },
     });
 
     const answersBeforeApproval = (raw.prepare(
@@ -1878,6 +1899,15 @@ describe('POST /ife/:token', () => {
       bindings(),
     );
     expect(approved.status).toBe(200);
+    expect(await approved.json()).toMatchObject({
+      success: true,
+      data: {
+        externalEditChanges: [
+          { fieldId: 'name', before: '佐藤 <script>', after: '外部編集後' },
+          { fieldId: 'email', before: 'old@example.test', after: 'external@example.test' },
+        ],
+      },
+    });
     expect((raw.prepare(
       `SELECT answers_json FROM internal_form_submissions WHERE id = 'ifs-1'`,
     ).get() as { answers_json: string }).answers_json).toBe(answersBeforeApproval);

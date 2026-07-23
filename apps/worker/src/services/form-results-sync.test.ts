@@ -834,12 +834,15 @@ describe('answer edits (D-1 回答欄)', () => {
     expect(submissionAnswers('ifs-001')).toEqual({ q1: '修正済み回答', q2: '回答A2' });
     expect(submissionAnswers('ifs-002')).toEqual({ q1: '回答B1', q2: '回答B2' });
     expect(raw.prepare(
-      `SELECT external_edit_source, external_edited_at, external_edit_approved_at
+      `SELECT external_edit_source, external_edited_at, external_edit_approved_at,
+              external_edit_changes_json
        FROM internal_form_submissions WHERE id = 'ifs-001'`,
     ).get()).toEqual({
       external_edit_source: 'sheet',
       external_edited_at: expect.any(String),
       external_edit_approved_at: null,
+      external_edit_changes_json:
+        '[{"fieldId":"q1","before":"回答A1","after":"修正済み回答"}]',
     });
   });
 

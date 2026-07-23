@@ -273,7 +273,8 @@ describe('internal form persistence', () => {
     })).resolves.toBe(true);
     expect(raw.prepare(
       `SELECT answers_json, submitted_at, external_edit_source,
-              external_edited_at, external_edit_approved_at
+              external_edited_at, external_edit_approved_at,
+              external_edit_changes_json
        FROM internal_form_submissions WHERE id=?`,
     )
       .get(original.id)).toEqual({
@@ -282,6 +283,8 @@ describe('internal form persistence', () => {
       external_edit_source: 'sheet',
       external_edited_at: expect.any(String),
       external_edit_approved_at: null,
+      external_edit_changes_json:
+        '[{"fieldId":"name","before":"初回","after":"シート編集"}]',
     });
     expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 1 });
 
@@ -710,6 +713,7 @@ describe('internal form persistence', () => {
       submissionId: created.id,
       expectedEditVersion: 0,
       expectedEditLinkEpoch: 4,
+      previousAnswers: { name: '変更前' },
       answers: { name: '変更後' },
     });
     expect(updated).toMatchObject({
@@ -721,6 +725,8 @@ describe('internal form persistence', () => {
         external_edit_source: 'edit_link',
         external_edited_at: expect.any(String),
         external_edit_approved_at: null,
+        external_edit_changes_json:
+          '[{"fieldId":"name","before":"変更前","after":"変更後"}]',
       },
     });
 
@@ -729,6 +735,7 @@ describe('internal form persistence', () => {
       submissionId: created.id,
       expectedEditVersion: 0,
       expectedEditLinkEpoch: 4,
+      previousAnswers: { name: '変更前' },
       answers: { name: '競合書き込み' },
     });
     expect(conflict).toMatchObject({
@@ -750,6 +757,7 @@ describe('internal form persistence', () => {
       submissionId: created.id,
       expectedEditVersion: 1,
       expectedEditLinkEpoch: 4,
+      previousAnswers: { name: '変更後' },
       answers: { name: '再編集' },
     });
     expect(editedAgain).toMatchObject({
@@ -759,6 +767,8 @@ describe('internal form persistence', () => {
         edit_version: 2,
         external_edit_source: 'edit_link',
         external_edit_approved_at: null,
+        external_edit_changes_json:
+          '[{"fieldId":"name","before":"変更後","after":"再編集"}]',
       },
     });
   });
@@ -981,6 +991,7 @@ describe('internal form persistence', () => {
         external_edit_source: null,
         external_edited_at: null,
         external_edit_approved_at: null,
+        external_edit_changes_json: null,
       },
     });
     await expect(listLatestVerifiedInternalFormSubmissions(DB, 'acc-admin', 'fa_internal'))
@@ -1036,6 +1047,7 @@ describe('internal form persistence', () => {
       submissionId: created.id,
       expectedEditVersion: 0,
       expectedEditLinkEpoch: 4,
+      previousAnswers: { name: '元の回答' },
       answers: { name: '失効済みリンクからの更新' },
     })).toEqual({
       status: 'revoked',
@@ -1059,6 +1071,7 @@ describe('internal form persistence', () => {
       submissionId: created.id,
       expectedEditVersion: 0,
       expectedEditLinkEpoch: 4,
+      previousAnswers: { name: '元の回答' },
       answers: { name: '越境更新' },
     })).toEqual({ status: 'conflict', submission: null });
     expect(await getInternalFormSubmission(DB, 'fa_internal', created.id))

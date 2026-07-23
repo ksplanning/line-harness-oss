@@ -5,6 +5,12 @@ export type FormRenderBackend = 'formaloo' | 'internal';
 export type InternalFormOriginChannel = 'line' | 'embed' | 'invalid';
 export type InternalFormExternalEditSource = 'edit_link' | 'sheet';
 
+export interface InternalFormExternalEditChange {
+  fieldId: string;
+  before: unknown;
+  after: unknown;
+}
+
 export interface InternalFormSubmission {
   id: string;
   form_id: string;
@@ -15,6 +21,7 @@ export interface InternalFormSubmission {
   external_edit_source: InternalFormExternalEditSource | null;
   external_edited_at: string | null;
   external_edit_approved_at: string | null;
+  external_edit_changes_json: string | null;
   deleted_at: string | null;
   submitted_at: string;
   created_at: string;
@@ -95,8 +102,42 @@ type UpdateInternalFormSubmissionAnswersInput = {
   | {
       authorization?: 'edit-link' | 'admin-origin';
       expectedEditLinkEpoch: number;
+      previousAnswers: Record<string, unknown>;
     }
 );
+
+function parseAnswerSnapshot(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function externalEditChangesJson(
+  beforeAnswers: Record<string, unknown>,
+  afterAnswers: Record<string, unknown>,
+): string {
+  const fieldIds = new Set([
+    ...Object.keys(beforeAnswers),
+    ...Object.keys(afterAnswers),
+  ]);
+  const changes: InternalFormExternalEditChange[] = [];
+  for (const fieldId of fieldIds) {
+    const before = Object.prototype.hasOwnProperty.call(beforeAnswers, fieldId)
+      ? beforeAnswers[fieldId]
+      : null;
+    const after = Object.prototype.hasOwnProperty.call(afterAnswers, fieldId)
+      ? afterAnswers[fieldId]
+      : null;
+    if (JSON.stringify(before) === JSON.stringify(after)) continue;
+    changes.push({ fieldId, before, after });
+  }
+  return JSON.stringify(changes);
+}
 
 export async function setFormRenderBackend(
   db: D1Database,
@@ -447,6 +488,7 @@ export async function createInternalFormSubmissionForPublishedDefinition(
     external_edit_source: null,
     external_edited_at: null,
     external_edit_approved_at: null,
+    external_edit_changes_json: null,
     deleted_at: null,
     submitted_at: now,
     created_at: now,
@@ -501,7 +543,7 @@ export async function listLatestVerifiedInternalFormSubmissions(
     `SELECT submission.id, submission.form_id, submission.friend_id,
             submission.answers_json, submission.origin_channel, submission.edit_version,
             submission.external_edit_source, submission.external_edited_at,
-            submission.external_edit_approved_at,
+            submission.external_edit_approved_at, submission.external_edit_changes_json,
             submission.deleted_at, submission.submitted_at, submission.created_at
      FROM internal_form_submissions submission
      LEFT JOIN friends friend
@@ -542,12 +584,17 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
   input: UpdateLatestInternalFormSubmissionAnswersForSheetsInput,
 ): Promise<boolean> {
   const externalEditedAt = jstNow();
+  const changesJson = externalEditChangesJson(
+    parseAnswerSnapshot(input.expectedAnswersJson),
+    input.answers,
+  );
   const result = await db.prepare(
     `UPDATE internal_form_submissions
      SET answers_json = ?,
          external_edit_source = 'sheet',
          external_edited_at = ?,
-         external_edit_approved_at = NULL
+         external_edit_approved_at = NULL,
+         external_edit_changes_json = ?
      WHERE id = ? AND form_id = ? AND friend_id = ? AND answers_json = ?
        AND deleted_at IS NULL
        AND EXISTS (
@@ -587,6 +634,7 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
   ).bind(
     JSON.stringify(input.answers),
     externalEditedAt,
+    changesJson,
     input.submissionId,
     input.formId,
     input.friendId,
@@ -618,7 +666,7 @@ export async function listVerifiedInternalFormSubmissionsForSheets(
     `SELECT submission.id, submission.form_id, submission.friend_id,
             submission.answers_json, submission.origin_channel, submission.edit_version,
             submission.external_edit_source, submission.external_edited_at,
-            submission.external_edit_approved_at,
+            submission.external_edit_approved_at, submission.external_edit_changes_json,
             submission.deleted_at, submission.submitted_at, submission.created_at
      FROM internal_form_submissions submission
      LEFT JOIN friends friend
@@ -811,12 +859,17 @@ export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId
   input: UpdateInternalFormSubmissionAnswersForSheetsBySubmissionIdInput,
 ): Promise<boolean> {
   const externalEditedAt = jstNow();
+  const changesJson = externalEditChangesJson(
+    parseAnswerSnapshot(input.expectedAnswersJson),
+    input.answers,
+  );
   const result = await db.prepare(
     `UPDATE internal_form_submissions
      SET answers_json = ?,
          external_edit_source = 'sheet',
          external_edited_at = ?,
-         external_edit_approved_at = NULL
+         external_edit_approved_at = NULL,
+         external_edit_changes_json = ?
      WHERE id = ? AND form_id = ? AND answers_json = ?
        AND deleted_at IS NULL
        AND (
@@ -846,6 +899,7 @@ export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId
   ).bind(
     JSON.stringify(input.answers),
     externalEditedAt,
+    changesJson,
     input.submissionId,
     input.formId,
     input.expectedAnswersJson,
@@ -896,6 +950,9 @@ export async function updateInternalFormSubmissionAnswers(
   db: D1Database,
   input: UpdateInternalFormSubmissionAnswersInput,
 ): Promise<UpdateInternalFormSubmissionAnswersResult> {
+  const changesJson = input.authorization === 'admin'
+    ? null
+    : externalEditChangesJson(input.previousAnswers, input.answers);
   const updated = input.authorization === 'admin'
     ? await db
         .prepare(
@@ -953,7 +1010,8 @@ export async function updateInternalFormSubmissionAnswers(
                edit_version = edit_version + 1,
                external_edit_source = 'edit_link',
                external_edited_at = ?,
-               external_edit_approved_at = NULL
+               external_edit_approved_at = NULL,
+               external_edit_changes_json = ?
            WHERE id = ? AND form_id = ? AND edit_version = ?
              AND deleted_at IS NULL
              AND EXISTS (
@@ -967,6 +1025,7 @@ export async function updateInternalFormSubmissionAnswers(
         .bind(
           JSON.stringify(input.answers),
           jstNow(),
+          changesJson,
           input.submissionId,
           input.formId,
           input.expectedEditVersion,

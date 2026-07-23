@@ -1548,9 +1548,14 @@ describe('internal answer admin read path', () => {
        SET answers_json = ?,
            external_edit_source = 'sheet',
            external_edited_at = '2026-07-23T09:00:00+09:00',
-           external_edit_approved_at = '2026-07-23T09:01:00+09:00'
+           external_edit_approved_at = '2026-07-23T09:01:00+09:00',
+           external_edit_changes_json = ?
        WHERE id = ?`,
-    ).run(JSON.stringify(original), 'sub-2');
+    ).run(
+      JSON.stringify(original),
+      JSON.stringify([{ fieldId: 'name', before: '変更前', after: '二郎' }]),
+      'sub-2',
+    );
     const context = await internalEditContext('internal-form', 'sub-2');
 
     const saved = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
@@ -1563,6 +1568,7 @@ describe('internal answer admin read path', () => {
       data: {
         id: 'sub-2', source: 'internal', editVersion: 1,
         answerRevision: expect.stringMatching(/^[a-f0-9]{64}$/), lastEdit: null,
+        externalEditChanges: [{ fieldId: 'name', before: '変更前', after: '二郎' }],
         answers: {
           name: '更新後',
           contact: 'new@example.test',
@@ -1577,7 +1583,8 @@ describe('internal answer admin read path', () => {
     });
     expect(raw.prepare(
       `SELECT friend_id, submitted_at, edit_version, external_edit_source,
-              external_edited_at, external_edit_approved_at
+              external_edited_at, external_edit_approved_at,
+              external_edit_changes_json
        FROM internal_form_submissions WHERE id = ?`,
     )
       .get('sub-2')).toEqual({
@@ -1587,6 +1594,8 @@ describe('internal answer admin read path', () => {
         external_edit_source: 'sheet',
         external_edited_at: '2026-07-23T09:00:00+09:00',
         external_edit_approved_at: '2026-07-23T09:01:00+09:00',
+        external_edit_changes_json:
+          '[{"fieldId":"name","before":"変更前","after":"二郎"}]',
       });
 
     const stale = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
