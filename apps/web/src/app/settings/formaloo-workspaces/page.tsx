@@ -6,7 +6,7 @@ import FormalooWorkspacesPanel from '@/components/settings/formaloo-workspaces-p
 import FormalooAccountBindingsPanel, { type AccountLite } from '@/components/settings/formaloo-account-bindings-panel'
 import { formalooWorkspacesApi, type FormalooWorkspace } from '@/lib/formaloo-workspaces-api'
 import { formalooAccountBindingsApi } from '@/lib/formaloo-account-bindings-api'
-import { api } from '@/lib/api'
+import { useAccount } from '@/contexts/account-context'
 
 // F6-1/F6-2: Formaloo workspace の API キー設定管理 + アカウント→既定 workspace binding (owner のみ /
 //   静的 export 互換 = dynamic route なし / N-18)。
@@ -18,8 +18,8 @@ function errorMessage(e: unknown): string {
 }
 
 export default function FormalooWorkspacesPage() {
+  const { selectedAccount } = useAccount()
   const [workspaces, setWorkspaces] = useState<FormalooWorkspace[]>([])
-  const [accounts, setAccounts] = useState<AccountLite[]>([])
   const [bindings, setBindings] = useState<Record<string, string | null>>({})
   const [testResult, setTestResult] = useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')
   const [addError, setAddError] = useState<string | null>(null)
@@ -46,15 +46,15 @@ export default function FormalooWorkspacesPage() {
   useEffect(() => {
     void reload()
     void reloadBindings()
-    void (async () => {
-      try {
-        const res = await api.lineAccounts.list()
-        if (res.success) setAccounts((res.data as AccountLite[]) ?? [])
-      } catch {
-        setAccounts([])
-      }
-    })()
   }, [reload, reloadBindings])
+
+  const accounts: AccountLite[] = selectedAccount
+    ? [{
+        id: selectedAccount.id,
+        name: selectedAccount.name,
+        displayName: selectedAccount.displayName,
+      }]
+    : []
 
   const handleSetBinding = async (lineAccountId: string, workspaceId: string) => {
     setBusy(true)

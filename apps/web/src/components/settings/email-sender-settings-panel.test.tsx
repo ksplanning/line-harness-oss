@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -70,13 +68,6 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('EmailSenderSettingsPanel', () => {
-  test('LINEアカウント管理画面から開けるように配線されている', () => {
-    const source = readFileSync(join(process.cwd(), 'src/app/accounts/page.tsx'), 'utf8')
-    expect(source).toContain("import EmailSenderSettingsDialog from '@/components/settings/email-sender-settings-dialog'")
-    expect(source).toContain('<EmailSenderSettingsDialog')
-    expect(source).toContain('メール差出人')
-  })
-
   test('保存した差出人メールと差出人名を応答値で再表示する', async () => {
     const saved = {
       ...pendingView,

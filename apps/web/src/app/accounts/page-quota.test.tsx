@@ -18,7 +18,19 @@ vi.mock('@/lib/api', () => ({
     },
   },
 }))
-vi.mock('@/components/layout/header', () => ({ default: ({ title }: { title: string }) => <h1>{title}</h1> }))
+vi.mock('next/link', () => ({
+  default: ({ href, children }: { href: string; children: React.ReactNode }) => (
+    <a href={href}>{children}</a>
+  ),
+}))
+vi.mock('@/components/layout/header', () => ({
+  default: ({ title, action }: { title: string; action?: React.ReactNode }) => (
+    <header>
+      <h1>{title}</h1>
+      {action}
+    </header>
+  ),
+}))
 vi.mock('@/components/cc-prompt-button', () => ({ default: () => null }))
 vi.mock('@/components/accounts/test-recipients-setting', () => ({ default: () => null }))
 vi.mock('@/components/accounts/monthly-cap-settings', () => ({ default: () => null }))
@@ -145,20 +157,17 @@ describe('LINEアカウント管理の友だち統計', () => {
 })
 
 describe('LINEアカウント管理の設定導線', () => {
-  it('誤配線のスタッフ通知ボタンを出さず、既存メール差出人導線は維持する', async () => {
+  it('カード別のメール差出人設定を出さず、選択中アカウントへ追随する通知設定に一本化する', async () => {
     render(<AccountsPage />)
 
-    const emailButton = await screen.findByRole('button', {
-      name: 'メール差出人',
+    const settingsLink = await screen.findByRole('link', {
+      name: '通知設定を開く',
     })
+    expect(settingsLink.getAttribute('href')).toBe('/settings')
+    expect(screen.queryByRole('button', { name: 'メール差出人' })).toBeNull()
     expect(screen.queryByRole('button', {
       name: 'スタッフ通知(Chatwork/LINE)',
     })).toBeNull()
-
-    fireEvent.click(emailButton)
-
-    expect(
-      screen.getByTestId('email-sender-settings-dialog').getAttribute('data-account-id'),
-    ).toBe('acc-1')
+    expect(screen.queryByTestId('email-sender-settings-dialog')).toBeNull()
   })
 })

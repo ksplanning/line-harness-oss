@@ -229,23 +229,23 @@ describe('設定ページ', () => {
     expect(screen.queryByRole('heading', { level: 1, name: '設定' })).toBeNull()
   })
 
-  test('アカウントを選び、メールDNS設定とChatwork/LINE通知設定を別内容として開く', async () => {
+  test('独自のアカウント選択を出さず、左上の選択中アカウントに両設定が追随する', async () => {
     const view = render(<SettingsPage />)
 
-    const accountSelect = screen.getByLabelText('設定する LINE アカウント')
-    expect(screen.getByRole('option', { name: 'メインアカウント' })).toBeTruthy()
-    expect(screen.getByRole('option', { name: 'サブアカウント' })).toBeTruthy()
-    expect((accountSelect as HTMLSelectElement).value).toBe('account-1')
+    expect(screen.queryByLabelText('設定する LINE アカウント')).toBeNull()
+    expect(screen.queryByText('複数ある場合は、先に設定したいアカウントを選んでください。'))
+      .toBeNull()
+    expect(mocks.account.setSelectedAccountId).not.toHaveBeenCalled()
 
     expect(await screen.findByTestId('email-sender-dns-guide')).toBeTruthy()
+    await waitFor(() => expect(mocks.emailGet).toHaveBeenCalledWith('account-1'))
     expect(screen.getByTestId('email-sender-settings-panel')).toBeTruthy()
     expect(screen.queryByTestId('staff-notification-settings-panel')).toBeNull()
 
-    fireEvent.change(accountSelect, { target: { value: 'account-2' } })
-    expect(mocks.account.setSelectedAccountId).toHaveBeenCalledWith('account-2')
     mocks.account.selectedAccountId = 'account-2'
     view.rerender(<SettingsPage />)
     await waitFor(() => expect(mocks.emailGet).toHaveBeenCalledWith('account-2'))
+    expect(await screen.findByDisplayValue('sub@example.net')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'スタッフ通知を開く' }))
 
@@ -255,6 +255,38 @@ describe('設定ページ', () => {
     expect(screen.getByRole('option', { name: 'LINE' })).toBeTruthy()
     expect(screen.queryByTestId('email-sender-settings-panel')).toBeNull()
     expect(screen.queryByTestId('email-sender-dns-guide')).toBeNull()
+  })
+
+  test('左上切替で保存先と再取得先が分かれ、A→B→Aを往復しても混線しない', async () => {
+    const view = render(<SettingsPage />)
+
+    const accountOneEmail = await screen.findByLabelText('差出人メールアドレス')
+    fireEvent.change(accountOneEmail, { target: { value: 'saved-one@example.com' } })
+    fireEvent.click(screen.getByRole('button', { name: '差出人を保存' }))
+    await waitFor(() => expect(mocks.emailSave).toHaveBeenCalledWith('account-1', {
+      senderEmail: 'saved-one@example.com',
+      senderName: '変更前',
+    }))
+
+    mocks.account.selectedAccountId = 'account-2'
+    view.rerender(<SettingsPage />)
+    const accountTwoEmail = await screen.findByDisplayValue('sub@example.net')
+    fireEvent.change(accountTwoEmail, { target: { value: 'saved-two@example.net' } })
+    fireEvent.click(screen.getByRole('button', { name: '差出人を保存' }))
+    await waitFor(() => expect(mocks.emailSave).toHaveBeenCalledWith('account-2', {
+      senderEmail: 'saved-two@example.net',
+      senderName: 'サブ担当',
+    }))
+
+    mocks.account.selectedAccountId = 'account-1'
+    view.rerender(<SettingsPage />)
+    expect(await screen.findByDisplayValue('saved-one@example.com')).toBeTruthy()
+    expect(screen.queryByDisplayValue('saved-two@example.net')).toBeNull()
+
+    mocks.account.selectedAccountId = 'account-2'
+    view.rerender(<SettingsPage />)
+    expect(await screen.findByDisplayValue('saved-two@example.net')).toBeTruthy()
+    expect(screen.queryByDisplayValue('saved-one@example.com')).toBeNull()
   })
 
   test('両設定を保存し、自動応答通知ONを含む再取得値と一致する', async () => {

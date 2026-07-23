@@ -26,12 +26,7 @@ const settingsSections: Array<{
 ]
 
 export default function SettingsPage() {
-  const {
-    accounts,
-    selectedAccountId,
-    setSelectedAccountId,
-    loading,
-  } = useAccount()
+  const { selectedAccountId } = useAccount()
   const [activeSection, setActiveSection] = useState<SettingsSection>('email-sender')
 
   const activeLabel = settingsSections.find(
@@ -42,39 +37,8 @@ export default function SettingsPage() {
     <div>
       <Header
         title="通知設定"
-        description="LINE アカウントごとのメール差出人とスタッフ通知を、ここでまとめて設定できます。"
+        description="左上で選択中の LINE アカウントについて、メール差出人とスタッフ通知を設定します。"
       />
-
-      <section className="mb-6 rounded-xl border border-gray-200 bg-white p-4 sm:p-5">
-        <label
-          htmlFor="settings-line-account"
-          className="block text-sm font-semibold text-gray-900"
-        >
-          設定する LINE アカウント
-        </label>
-        <p className="mt-1 text-sm text-gray-600">
-          複数ある場合は、先に設定したいアカウントを選んでください。
-        </p>
-        <select
-          id="settings-line-account"
-          value={selectedAccountId ?? ''}
-          onChange={(event) => {
-            if (event.target.value) setSelectedAccountId(event.target.value)
-          }}
-          disabled={loading || accounts.length === 0}
-          className="mt-3 w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 disabled:bg-gray-100 disabled:text-gray-500 sm:max-w-md"
-        >
-          {loading && <option value="">アカウントを読み込んでいます...</option>}
-          {!loading && accounts.length === 0 && (
-            <option value="">選べるアカウントがありません</option>
-          )}
-          {accounts.map((account) => (
-            <option key={account.id} value={account.id}>
-              {account.displayName || account.name}
-            </option>
-          ))}
-        </select>
-      </section>
 
       <div
         role="group"

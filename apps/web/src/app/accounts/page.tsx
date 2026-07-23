@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
@@ -16,7 +17,6 @@ import {
 import AccountSetupUrls from '@/components/accounts/account-setup-urls'
 import AccountEditModal from '@/components/accounts/account-edit-modal'
 import ResponseScheduleModal from '@/components/accounts/response-schedule-modal'
-import EmailSenderSettingsDialog from '@/components/settings/email-sender-settings-dialog'
 import { LineQuotaSummary } from '@/components/shared/line-quota-display'
 import FriendStatsPanel from '@/components/accounts/friend-stats-panel'
 
@@ -69,7 +69,6 @@ export default function AccountsPage() {
   const [showReorder, setShowReorder] = useState(false)
   const [editing, setEditing] = useState<LineAccountListItem | null>(null)
   const [scheduleFor, setScheduleFor] = useState<LineAccountListItem | null>(null)
-  const [emailSettingsFor, setEmailSettingsFor] = useState<LineAccountListItem | null>(null)
   const [form, setForm] = useState<AccountFormState>(emptyAccountFormState)
   const [createError, setCreateError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -147,6 +146,12 @@ export default function AccountsPage() {
         description="マルチアカウント設定"
         action={
           <div className="flex gap-2">
+            <Link
+              href="/settings"
+              className="rounded-lg border border-emerald-200 px-3 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50"
+            >
+              通知設定を開く
+            </Link>
             <button
               onClick={() => setShowReorder(true)}
               className="px-3 py-2 rounded-lg text-xs font-medium border border-gray-300 hover:bg-gray-50"
@@ -338,12 +343,6 @@ export default function AccountsPage() {
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button
-                    onClick={() => setEmailSettingsFor(account)}
-                    className="text-xs text-emerald-700 hover:bg-emerald-50 rounded px-1"
-                  >
-                    メール差出人
-                  </button>
-                  <button
                     onClick={() => setScheduleFor(account)}
                     className="text-xs text-gray-600 hover:bg-gray-50 rounded px-1"
                   >
@@ -395,13 +394,6 @@ export default function AccountsPage() {
         <ResponseScheduleModal
           accountId={scheduleFor.id}
           onClose={() => setScheduleFor(null)}
-        />
-      )}
-      {emailSettingsFor && (
-        <EmailSenderSettingsDialog
-          accountId={emailSettingsFor.id}
-          accountName={emailSettingsFor.displayName}
-          onClose={() => setEmailSettingsFor(null)}
         />
       )}
     </div>
