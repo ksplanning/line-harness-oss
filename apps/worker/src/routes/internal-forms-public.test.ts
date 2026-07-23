@@ -244,6 +244,9 @@ describe('internal public form GET /f/:formId', () => {
     expect(response.headers.get('content-type')).toContain('text/html');
     expect(html).toContain('name="viewport"');
     expect(html).toContain('<form method="post" action="/f/fa_internal">');
+    expect(html).not.toContain('enctype="multipart/form-data"');
+    expect(html).not.toContain('data-file-attachment');
+    expect(html).not.toContain('src="/assets/internal-form-logic.js"');
     expect(html).toMatch(/<input[^>]+type="text"[^>]+name="a_0"/);
     expect(html).toMatch(/<textarea[^>]+name="a_1"/);
     expect(html).toMatch(/<input[^>]+type="number"[^>]+name="a_2"/);

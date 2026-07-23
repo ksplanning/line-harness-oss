@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
+import {
+  addInternalFormAttachmentFiles,
+  removeInternalFormAttachmentFile,
+} from '../client/internal-form-attachment.js';
 import { internalFormsPublic } from './internal-forms-public.js';
 import type { Env } from '../index.js';
 
@@ -226,6 +230,35 @@ describe('internal public form W2 rendering', () => {
     expect(html).toMatch(/type="number"[^>]+name="a_0"/);
     expect(html).toContain('placeholder="点数を入力"');
   });
+
+  test('wires the attachment block and client asset for a simple file-only form', async () => {
+    seedForm('fa_file_only', [{
+      id: 'file', type: 'file', label: '資料', required: true, position: 0,
+      config: {
+        placeholder: 'PDFのみ', allowedExtensions: ['pdf'], maxSizeKb: 256,
+        allowMultipleFiles: true,
+      },
+    }] as typeof fields);
+
+    const response = await app().request('/f/fa_file_only', {}, env(r2Stub().bucket));
+    const html = await response.text();
+    const input = html.match(/<input type="file"[^>]*>/)?.[0] ?? '';
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('data-file-attachment');
+    expect(input).toContain('name="a_0"');
+    expect(input).toContain('accept=".pdf"');
+    expect(input).toContain('multiple');
+    expect(input).toContain('required');
+    expect(input).toContain('data-file-input');
+    expect(input).toContain('data-max-files="10"');
+    expect(input).toContain('data-max-size-kb="256"');
+    expect(input).not.toContain('hidden');
+    expect(input).not.toContain('disabled');
+    expect(html).toContain('data-file-list');
+    expect(html).toContain('data-file-status');
+    expect(html).toContain('src="/assets/internal-form-logic.js"');
+  });
 });
 
 describe('internal public form W2 multipart persistence', () => {
@@ -274,6 +307,66 @@ describe('internal public form W2 multipart persistence', () => {
     expect(response.status).toBe(400);
     expect(r2.put).not.toHaveBeenCalled();
     expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 0 });
+  });
+
+  test('persists the accumulated final client list in multipart order', async () => {
+    const multipleFileFields = fields.map((field) => field.id === 'file'
+      ? { ...field, config: { ...field.config, allowMultipleFiles: true } }
+      : field);
+    seedForm('fa_roundtrip', multipleFileFields);
+    const r2 = r2Stub();
+    const removed = new File(['remove'], 'removed.pdf', { type: 'application/pdf' });
+    const kept = new File(['keep'], 'kept.pdf', { type: 'application/pdf' });
+    const added = new File(['added'], 'added.pdf', { type: 'application/pdf' });
+    let visibleFiles = addInternalFormAttachmentFiles([], [removed, kept], {
+      accept: '.pdf', maxFiles: 10, maxSizeKb: 256,
+    }).files;
+    visibleFiles = removeInternalFormAttachmentFile(visibleFiles, 0);
+    visibleFiles = addInternalFormAttachmentFiles(visibleFiles, [added], {
+      accept: '.pdf', maxFiles: 10, maxSizeKb: 256,
+    }).files;
+    const body = validMultipart();
+    body.delete('a_8');
+    for (const file of visibleFiles) body.append('a_8', file);
+
+    expect(visibleFiles.map((file) => file.name)).toEqual(['kept.pdf', 'added.pdf']);
+    expect(body.getAll('a_8').map((entry) => (entry as File).name))
+      .toEqual(visibleFiles.map((file) => file.name));
+
+    const response = await app().request('/f/fa_roundtrip', { method: 'POST', body }, env(r2.bucket));
+
+    expect(response.status).toBe(200);
+    expect(r2.put).toHaveBeenCalledTimes(2);
+    const row = raw.prepare(
+      "SELECT answers_json FROM internal_form_submissions WHERE form_id = 'fa_roundtrip'",
+    ).get() as { answers_json: string };
+    const stored = (JSON.parse(row.answers_json) as {
+      file: Array<{ key: string; name: string; size: number; type: string }>;
+    }).file;
+    expect(stored.map(({ name, size, type }) => ({ name, size, type }))).toEqual(
+      visibleFiles.map((file) => ({ name: file.name, size: file.size, type: file.type })),
+    );
+    expect(stored.map(({ key }) => key)).toEqual(r2.put.mock.calls.map(([key]) => key));
+  });
+
+  test('accepts a native file input submission without running the client enhancement', async () => {
+    seedForm('fa_native_file', [{
+      id: 'file', type: 'file', label: '資料', required: true, position: 0,
+      config: { allowedExtensions: ['pdf'], maxSizeKb: 256 },
+    }] as typeof fields);
+    const r2 = r2Stub();
+    const body = new FormData();
+    body.append('a_0', new File(['native'], 'native.pdf', { type: 'application/pdf' }));
+
+    const response = await app().request('/f/fa_native_file', { method: 'POST', body }, env(r2.bucket));
+
+    expect(response.status).toBe(200);
+    expect(r2.put).toHaveBeenCalledTimes(1);
+    const row = raw.prepare(
+      "SELECT answers_json FROM internal_form_submissions WHERE form_id = 'fa_native_file'",
+    ).get() as { answers_json: string };
+    expect((JSON.parse(row.answers_json) as { file: Array<{ name: string }> }).file)
+      .toMatchObject([{ name: 'native.pdf' }]);
   });
 
   test('deletes uploaded objects when database persistence fails', async () => {

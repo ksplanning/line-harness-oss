@@ -15,6 +15,7 @@ import {
 import {
   buildRedirectTargetUrl,
   evaluateInternalFormLogic,
+  MAX_FILES_PER_FORM_FIELD,
   normalizeSingleLineAddress,
   type FormDesign,
   type InternalFormChannel,
@@ -177,6 +178,18 @@ function shell(title: string, content: string, design: FormDesign = {}): string 
     .video-decoration iframe { display: block; width: 100%; border: 0; border-radius: 10px; }
     .image-decoration { margin: 18px 0 24px; text-align: center; }
     .image-decoration img { display: block; height: auto; margin: 0 auto; border-radius: 10px; }
+    .attachment-list { display: grid; gap: 10px; margin: 12px 0 0; padding: 0; list-style: none; }
+    .attachment-list:empty { display: none; }
+    .attachment-item { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--form-border); border-radius: 10px; }
+    .attachment-thumbnail, .attachment-icon { width: 56px; height: 56px; flex: 0 0 56px; border-radius: 8px; }
+    .attachment-thumbnail { object-fit: cover; background: #eef2f6; }
+    .attachment-icon { display: grid; place-items: center; background: #eef2f6; color: #344054; font-size: .75rem; font-weight: 800; }
+    .attachment-details { min-width: 0; flex: 1; }
+    .attachment-name, .attachment-size { display: block; }
+    .attachment-name { overflow-wrap: anywhere; font-weight: 700; }
+    .attachment-size { margin-top: 3px; color: #667085; font-size: .82rem; }
+    .attachment-remove { width: auto; min-height: 38px; padding: 7px 11px; border: 1px solid #fda29b; background: #fff; color: #b42318; font-size: .85rem; }
+    .attachment-status { margin: 8px 0 0; color: #b42318; font-size: .9rem; }
     [data-page-step][hidden] { display: none; }
     .page-actions { display: flex; gap: 10px; margin-top: 22px; }
     .page-actions .secondary { margin: 0; }
@@ -387,7 +400,9 @@ function renderField(
       .filter((extension) => /^[a-z0-9]+$/.test(extension));
     const accept = extensions.length ? ` accept="${extensions.map((extension) => `.${extension}`).join(',')}"` : '';
     const multiple = field.config.allowMultipleFiles ? ' multiple' : '';
-    return `<div class="field"><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}${placeholderHint(field)}<input type="file" id="${id}" name="${name}"${accept}${multiple}${required}></div>`;
+    const maxFiles = field.config.allowMultipleFiles ? MAX_FILES_PER_FORM_FIELD : 1;
+    const maxSizeKb = field.config.maxSizeKb ?? 2048;
+    return `<div class="field attachment-field" data-file-attachment><label class="label" for="${id}">${escapeHtml(field.label)}${requiredMark(field)}</label>${helpText(field)}${placeholderHint(field)}<input type="file" id="${id}" name="${name}"${accept}${multiple}${required} data-file-input data-max-files="${maxFiles}" data-max-size-kb="${maxSizeKb}" data-allowed-extensions="${extensions.join(',')}" aria-describedby="${id}-file-status"><p class="attachment-status" id="${id}-file-status" data-file-status role="alert" aria-live="polite" hidden></p><ul class="attachment-list" data-file-list aria-label="選択済みファイル" aria-live="polite"></ul></div>`;
   }
 
   if (field.type === 'matrix') {
@@ -806,7 +821,8 @@ function renderFormPage(
     : '';
   const hasPostal = definition.fields.some((field) => field.config.postalAutofill);
   const hasAddress = definition.fields.some((field) => field.type === 'address');
-  const enctype = definition.fields.some((field) => field.type === 'file')
+  const hasFile = definition.fields.some((field) => field.type === 'file');
+  const enctype = hasFile
     ? ' enctype="multipart/form-data"'
     : '';
   return shell(form.title, `
@@ -819,7 +835,7 @@ function renderFormPage(
       </form>
     </div>
     ${runtimeScript()}
-    ${usesLogicRuntime || hasPostal || hasAddress ? logicClientMarkup(definition) : ''}`, definition.design);
+    ${usesLogicRuntime || hasPostal || hasAddress || hasFile ? logicClientMarkup(definition) : ''}`, definition.design);
 }
 
 function renderCompletion(

@@ -6,6 +6,7 @@ import {
   type InternalFormChannel,
 } from '@line-crm/shared/internal-form-logic';
 import type { HarnessField, HarnessLogicRule } from '@line-crm/shared';
+import { initInternalFormAttachments } from './internal-form-attachment.js';
 
 type LogicField = Pick<HarnessField, 'id' | 'position' | 'type'>;
 type AnswerControl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
@@ -173,6 +174,7 @@ function readConfig(root: ParentNode): InternalFormLogicConfig | null {
 }
 
 export function initInternalFormLogic(root: ParentNode = document): void {
+  initInternalFormAttachments(root);
   initSingleLineAddresses(root);
   initInternalFormPostalLookup(root);
   const config = readConfig(root);
