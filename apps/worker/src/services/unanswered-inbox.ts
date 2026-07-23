@@ -110,6 +110,15 @@ const CANDIDATES_SQL = `
         THEN created_at END) AS last_machine
     FROM messages_log
     GROUP BY friend_id
+  ),
+  latest_chat_read AS (
+    SELECT c.friend_id, c.read_at
+    FROM chats c
+    WHERE c.rowid = (
+      SELECT MAX(c2.rowid)
+      FROM chats c2
+      WHERE c2.friend_id = c.friend_id
+    )
   )
   SELECT
     f.id            AS friend_id,
@@ -119,14 +128,20 @@ const CANDIDATES_SQL = `
     COALESCE(la.name, '(未分類)') AS account_name,
     agg.last_incoming,
     agg.last_manual,
-    agg.last_machine
+    agg.last_machine,
+    lcr.read_at
   FROM friends f
   LEFT JOIN line_accounts la ON la.id = f.line_account_id
   JOIN agg ON agg.friend_id = f.id
+  LEFT JOIN latest_chat_read lcr ON lcr.friend_id = f.id
   WHERE f.is_following = 1
     AND (la.id IS NULL OR la.is_active = 1)
     AND agg.last_incoming IS NOT NULL
     AND (agg.last_manual IS NULL OR agg.last_manual < agg.last_incoming)
+    AND (
+      lcr.read_at IS NULL
+      OR julianday(lcr.read_at) < julianday(agg.last_incoming)
+    )
   ORDER BY agg.last_incoming ASC
 `;
 
@@ -217,6 +232,7 @@ interface RawCandidateRow {
   last_incoming: string;
   last_manual: string | null;
   last_machine: string | null;
+  read_at: string | null;
 }
 
 interface RawIncomingRow {
@@ -292,7 +308,12 @@ export async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRo
 
   const rows: UnansweredRow[] = [];
   for (const c of candidates) {
-    const incomings = incomingsByFriend.get(c.friend_id) ?? [];
+    // Older test doubles and pre-migration rows omit the additive column entirely.
+    // Treat both null and undefined as "not read" so the new boundary stays additive.
+    const readAtMs = c.read_at == null ? null : new Date(c.read_at).getTime();
+    const incomings = (incomingsByFriend.get(c.friend_id) ?? []).filter((row) => (
+      readAtMs === null || new Date(row.created_at).getTime() > readAtMs
+    ));
     // outgoings は consume するのでコピーを作る (元 Map の他参照を破壊しない)。
     // incomings は新しい順に処理し、各 outgoing を 1 incoming にしか割り当てない。
     const remainingOutgoings = [...(autoReplyOutgoingsByFriend.get(c.friend_id) ?? [])];

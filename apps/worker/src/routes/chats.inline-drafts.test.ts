@@ -115,8 +115,10 @@ beforeEach(() => {
       id TEXT PRIMARY KEY,
       friend_id TEXT NOT NULL,
       operator_id TEXT,
+      assigned_staff_id TEXT,
       status TEXT NOT NULL,
       notes TEXT,
+      read_at TEXT,
       last_message_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -132,7 +134,12 @@ beforeEach(() => {
       delivery_type TEXT,
       source TEXT,
       line_account_id TEXT,
+      staff_member_id TEXT,
       created_at TEXT NOT NULL
+    );
+    CREATE TABLE staff_members (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
     );
     CREATE TABLE ai_faq_drafts (
       id TEXT PRIMARY KEY,

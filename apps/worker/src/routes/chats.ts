@@ -11,6 +11,10 @@ import {
   createChat,
   getFriendById,
   getLineAccountById,
+  getStaffById,
+  setStaffReplySignatureEnabled,
+  claimChatForStaff,
+  completeChat,
   updateChat,
   jstNow,
 } from '@line-crm/db';
@@ -59,8 +63,10 @@ type ChatLike = {
   id: string;
   friend_id: string;
   operator_id: string | null;
+  assigned_staff_id: string | null;
   status: string;
   notes: string | null;
+  read_at: string | null;
   last_message_at: string | null;
   created_at: string;
   updated_at: string;
@@ -83,21 +89,27 @@ async function resolveOrCreateChat(db: D1Database, id: string): Promise<ChatLike
 
   const lastMsg = await db
     .prepare(
-      `SELECT MAX(created_at) AS last FROM messages_log WHERE friend_id = ? AND (delivery_type IS NULL OR delivery_type != 'test')`,
+      `SELECT created_at AS last, direction
+         FROM messages_log
+        WHERE friend_id = ?
+          AND (delivery_type IS NULL OR delivery_type != 'test')
+        ORDER BY created_at DESC
+        LIMIT 1`,
     )
     .bind(friend.id)
-    .first<{ last: string | null }>();
+    .first<{ last: string; direction: string }>();
   const newId = crypto.randomUUID();
   const now = jstNow();
   const lastMessageAt = lastMsg?.last ?? null;
+  const initialStatus = lastMsg?.direction === 'incoming' ? 'unread' : 'resolved';
   // 同時実行で二重挿入されないように WHERE NOT EXISTS で原子挿入。挿入結果に関わらず最古行を返して収束。
   await db
     .prepare(
       `INSERT INTO chats (id, friend_id, status, last_message_at, created_at, updated_at)
-       SELECT ?, ?, 'resolved', ?, ?, ?
+       SELECT ?, ?, ?, ?, ?, ?
        WHERE NOT EXISTS (SELECT 1 FROM chats WHERE friend_id = ?)`,
     )
-    .bind(newId, friend.id, lastMessageAt, now, now, friend.id)
+    .bind(newId, friend.id, initialStatus, lastMessageAt, now, now, friend.id)
     .run();
   return (await db
     .prepare(`SELECT * FROM chats WHERE friend_id = ? ORDER BY created_at ASC LIMIT 1`)
@@ -112,19 +124,23 @@ async function resolveFriendAndAccessToken(
 ) {
   const friend = await getFriendById(db, friendId);
   if (!friend) {
-    return { friend: null, accessToken: defaultAccessToken };
+    return { friend: null, accessToken: null, accountName: null };
   }
 
   if (!friend.line_account_id) {
-    return { friend, accessToken: defaultAccessToken };
+    return { friend, accessToken: defaultAccessToken, accountName: null };
   }
 
   const account = await getLineAccountById(db, friend.line_account_id);
-  if (!account) {
-    return { friend, accessToken: defaultAccessToken };
+  if (!account || !account.is_active) {
+    return { friend, accessToken: null, accountName: null };
   }
 
-  return { friend, accessToken: account.channel_access_token };
+  return {
+    friend,
+    accessToken: account.channel_access_token,
+    accountName: account.name,
+  };
 }
 
 // ========== オペレーターCRUD ==========
@@ -367,84 +383,208 @@ chats.get('/api/chats', async (c) => {
   }
 });
 
-chats.get('/api/chats/:id', async (c) => {
-  try {
-    const rawId = c.req.param('id');
+async function loadChatDetail(db: D1Database, rawId: string) {
+  // id は chats.id または friend.id のどちらでもOK。
+  let chatRow = await getChatById(db, rawId);
+  let friendId: string | null = null;
 
-    // id は chats.id または friend.id のどちらでもOK。
-    // 優先順: chats.id 一致 → friend.id のとき chats.friend_id 最新行 → 何も無ければ friend のみで synthetic
-    let chatRow = await getChatById(c.env.DB, rawId);
-    let friendId: string | null = null;
+  if (!chatRow) {
+    const friendRow = await getFriendById(db, rawId);
+    if (!friendRow) return null;
+    friendId = friendRow.id;
+    chatRow = await db
+      .prepare(`SELECT * FROM chats WHERE friend_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .bind(friendRow.id)
+      .first<Awaited<ReturnType<typeof getChatById>>>();
+  }
 
-    if (!chatRow) {
-      const friendRow = await getFriendById(c.env.DB, rawId);
-      if (!friendRow) return c.json({ success: false, error: 'Chat not found' }, 404);
-      friendId = friendRow.id;
-      // 同じ friend に紐づく chats 行があれば採用（lazy-create 後の再読みで status/notes を拾うため）
-      const existing = await c.env.DB
-        .prepare(`SELECT * FROM chats WHERE friend_id = ? ORDER BY created_at DESC LIMIT 1`)
-        .bind(friendRow.id)
-        .first<{ id: string; friend_id: string; operator_id: string | null; status: string; notes: string | null; last_message_at: string | null; created_at: string; updated_at: string }>();
-      if (existing) {
-        chatRow = existing as Awaited<ReturnType<typeof getChatById>>;
-      }
-    }
-
-    const resolvedFriendId = chatRow?.friend_id ?? friendId!;
-    // 公開 ID は常に friend_id に統一する（lazy-create で ID が変わるのを防ぐため）。
-    const responseId = resolvedFriendId;
-    const operatorId = chatRow?.operator_id ?? null;
-    const status = chatRow?.status ?? 'resolved';
-    const notes = chatRow?.notes ?? null;
-    const lastMessageAt = chatRow?.last_message_at ?? null;
-    const createdAt = chatRow?.created_at ?? null;
-
-    const friend = await c.env.DB
-      .prepare(`SELECT display_name, picture_url, line_user_id FROM friends WHERE id = ?`)
-      .bind(resolvedFriendId)
-      .first<{ display_name: string | null; picture_url: string | null; line_user_id: string }>();
-
-    // 新しい1000件を取って昇順に戻す。LIMIT 200 ASC だと古い200件だけで broadcast/scenario 等の
-    // 新しい push が欠落していた（Shu で 481件中 281件欠落のバグあり）。一覧側と同様に test 配信は除外。
-    // 現状の最重量ユーザー(481件)の2倍バッファ。これ以上の履歴はページング未実装（Phase 2 TODO）。
-    const messages = await c.env.DB
+  const resolvedFriendId = chatRow?.friend_id ?? friendId!;
+  const assignedStaffId = chatRow?.assigned_staff_id ?? null;
+  const [friend, assignedStaff, messages, pendingDrafts, unansweredIds] = await Promise.all([
+    db
       .prepare(
-        `SELECT id, friend_id, direction, message_type, content, created_at
-         FROM messages_log
-         WHERE friend_id = ? AND (delivery_type IS NULL OR delivery_type != 'test')
-         ORDER BY created_at DESC LIMIT 1000`,
+        `SELECT f.display_name, f.picture_url, f.line_user_id,
+                f.line_account_id, la.name AS line_account_name
+           FROM friends f
+           LEFT JOIN line_accounts la ON la.id = f.line_account_id
+          WHERE f.id = ?`,
       )
       .bind(resolvedFriendId)
-      .all();
-    messages.results = (messages.results as Record<string, unknown>[]).reverse();
-    const pendingDrafts = await listInlineAiFaqDrafts(c.env.DB, resolvedFriendId);
-    const isUnanswered = (await getUnansweredFriendIds(c.env.DB)).has(resolvedFriendId);
+      .first<{
+        display_name: string | null;
+        picture_url: string | null;
+        line_user_id: string;
+        line_account_id: string | null;
+        line_account_name: string | null;
+      }>(),
+    assignedStaffId ? getStaffById(db, assignedStaffId) : Promise.resolve(null),
+    db
+      .prepare(
+        `SELECT ml.id, ml.friend_id, ml.direction, ml.message_type, ml.content,
+                ml.staff_member_id, sm.name AS staff_member_name, ml.created_at
+           FROM messages_log ml
+           LEFT JOIN staff_members sm ON sm.id = ml.staff_member_id
+          WHERE ml.friend_id = ?
+            AND (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
+          ORDER BY ml.created_at DESC
+          LIMIT 1000`,
+      )
+      .bind(resolvedFriendId)
+      .all<Record<string, unknown>>(),
+    listInlineAiFaqDrafts(db, resolvedFriendId),
+    getUnansweredFriendIds(db),
+  ]);
 
+  return {
+    id: resolvedFriendId,
+    friendId: resolvedFriendId,
+    friendName: friend?.display_name || '名前なし',
+    friendPictureUrl: friend?.picture_url || null,
+    lineAccountId: friend?.line_account_id ?? null,
+    lineAccountName: friend?.line_account_name ?? null,
+    operatorId: chatRow?.operator_id ?? null,
+    assignedStaffId,
+    assignedStaffName: assignedStaff?.name
+      ?? (assignedStaffId === 'env-owner' ? 'Owner' : null),
+    status: chatRow?.status ?? 'resolved',
+    isUnanswered: unansweredIds.has(resolvedFriendId),
+    notes: chatRow?.notes ?? null,
+    readAt: chatRow?.read_at ?? null,
+    lastMessageAt: chatRow?.last_message_at ?? null,
+    createdAt: chatRow?.created_at ?? null,
+    messages: (messages.results ?? []).reverse().map((message) => ({
+      id: message.id,
+      direction: message.direction,
+      messageType: message.message_type,
+      content: message.content,
+      staffMemberId: message.staff_member_id ?? null,
+      staffMemberName: message.staff_member_name ?? null,
+      createdAt: message.created_at,
+    })),
+    pendingDrafts,
+  };
+}
+
+async function loadInquiryPreferences(
+  db: D1Database,
+  actor: { id: string; name: string },
+) {
+  const staff = await getStaffById(db, actor.id);
+  return {
+    staffId: actor.id,
+    staffName: actor.name,
+    replySignatureEnabled: staff?.reply_signature_enabled !== 0,
+    canUpdate: staff !== null,
+  };
+}
+
+chats.get('/api/chats/inquiry/preferences', async (c) => {
+  const actor = c.get('staff');
+  if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
+  try {
     return c.json({
       success: true,
-      data: {
-        id: responseId,
-        friendId: resolvedFriendId,
-        friendName: friend?.display_name || '名前なし',
-        friendPictureUrl: friend?.picture_url || null,
-        operatorId,
-        status,
-        isUnanswered,
-        notes,
-        lastMessageAt,
-        createdAt,
-        messages: (messages.results as Record<string, unknown>[]).map((m) => ({
-          id: m.id,
-          direction: m.direction,
-          messageType: m.message_type,
-          content: m.content,
-          createdAt: m.created_at,
-        })),
-        pendingDrafts,
-      },
+      data: await loadInquiryPreferences(c.env.DB, actor),
     });
   } catch (err) {
+    console.error('GET /api/chats/inquiry/preferences error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.patch('/api/chats/inquiry/preferences', async (c) => {
+  const actor = c.get('staff');
+  if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
+  let body: { replySignatureEnabled?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: 'JSON body required' }, 400);
+  }
+  if (typeof body.replySignatureEnabled !== 'boolean') {
+    return c.json({
+      success: false,
+      error: 'replySignatureEnabled must be a boolean',
+    }, 400);
+  }
+  try {
+    const staff = await setStaffReplySignatureEnabled(
+      c.env.DB,
+      actor.id,
+      body.replySignatureEnabled,
+    );
+    if (!staff) {
+      return c.json({
+        success: false,
+        error: 'This session does not have a staff preference record',
+      }, 409);
+    }
+    return c.json({
+      success: true,
+      data: await loadInquiryPreferences(c.env.DB, actor),
+    });
+  } catch (err) {
+    console.error('PATCH /api/chats/inquiry/preferences error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.get('/api/chats/:id', async (c) => {
+  try {
+    const data = await loadChatDetail(c.env.DB, c.req.param('id'));
+    if (!data) return c.json({ success: false, error: 'Chat not found' }, 404);
+    return c.json({ success: true, data });
+  } catch (err) {
     console.error('GET /api/chats/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+function isAssignedToAnotherStaff(chat: ChatLike, staffId: string): boolean {
+  return chat.status === 'in_progress'
+    && chat.assigned_staff_id !== null
+    && chat.assigned_staff_id !== staffId;
+}
+
+chats.post('/api/chats/:id/inquiry/open', async (c) => {
+  const actor = c.get('staff');
+  if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
+  try {
+    const chat = await resolveOrCreateChat(c.env.DB, c.req.param('id'));
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    await claimChatForStaff(c.env.DB, chat.id, actor.id);
+    const data = await loadChatDetail(c.env.DB, chat.friend_id);
+    if (!data) return c.json({ success: false, error: 'Chat not found' }, 404);
+    return c.json({ success: true, data });
+  } catch (err) {
+    console.error('POST /api/chats/:id/inquiry/open error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.post('/api/chats/:id/complete', async (c) => {
+  const actor = c.get('staff');
+  if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
+  try {
+    let chat = await resolveOrCreateChat(c.env.DB, c.req.param('id'));
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    if (isAssignedToAnotherStaff(chat, actor.id)) {
+      return c.json({ success: false, error: 'Another staff member is handling this inquiry' }, 409);
+    }
+    if (chat.status === 'unread') {
+      chat = (await claimChatForStaff(c.env.DB, chat.id, actor.id)) as ChatLike;
+    } else if (chat.status === 'in_progress' && chat.assigned_staff_id === null) {
+      await updateChat(c.env.DB, chat.id, {
+        assignedStaffId: actor.id,
+        readAt: jstNow(),
+      });
+    }
+    await completeChat(c.env.DB, chat.id);
+    const data = await loadChatDetail(c.env.DB, chat.friend_id);
+    if (!data) return c.json({ success: false, error: 'Chat not found' }, 404);
+    return c.json({ success: true, data });
+  } catch (err) {
+    console.error('POST /api/chats/:id/complete error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -596,6 +736,9 @@ chats.post('/api/chats/:id/loading', async (c) => {
       c.env.LINE_CHANNEL_ACCESS_TOKEN,
     );
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+    if (!accessToken) {
+      return c.json({ success: false, error: 'LINE account is unavailable' }, 409);
+    }
 
     await startLoadingAnimation(
       accessToken,
@@ -613,10 +756,31 @@ chats.post('/api/chats/:id/loading', async (c) => {
 
 // オペレーターからメッセージ送信
 chats.post('/api/chats/:id/send', async (c) => {
+  const actor = c.get('staff');
+  if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
   try {
     const chatId = c.req.param('id');
-    const chat = await resolveOrCreateChat(c.env.DB, chatId);
+    let chat = await resolveOrCreateChat(c.env.DB, chatId);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    if (chat.status === 'unread') {
+      chat = (await claimChatForStaff(c.env.DB, chat.id, actor.id)) as ChatLike;
+    } else if (chat.status === 'in_progress' && chat.assigned_staff_id === null) {
+      await updateChat(c.env.DB, chat.id, {
+        assignedStaffId: actor.id,
+        readAt: jstNow(),
+      });
+      chat = (await getChatById(c.env.DB, chat.id)) as ChatLike;
+    } else if (chat.status === 'resolved') {
+      await updateChat(c.env.DB, chat.id, {
+        status: 'in_progress',
+        assignedStaffId: actor.id,
+        readAt: jstNow(),
+      });
+      chat = (await getChatById(c.env.DB, chat.id)) as ChatLike;
+    }
+    if (isAssignedToAnotherStaff(chat, actor.id)) {
+      return c.json({ success: false, error: 'Another staff member is handling this inquiry' }, 409);
+    }
 
     const body = await c.req.json<{ messageType?: string; content: string }>();
     if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
@@ -627,19 +791,27 @@ chats.post('/api/chats/:id/send', async (c) => {
       c.env.LINE_CHANNEL_ACCESS_TOKEN,
     );
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+    if (!accessToken) {
+      return c.json({ success: false, error: 'LINE account is unavailable' }, 409);
+    }
 
     // LINE APIでメッセージ送信
     const { LineClient } = await import('@line-crm/line-sdk');
     const lineClient = new LineClient(accessToken);
     const messageType = body.messageType ?? 'text';
+    const staff = await getStaffById(c.env.DB, actor.id);
+    const signatureEnabled = staff?.reply_signature_enabled !== 0;
+    const deliveredContent = messageType === 'text' && signatureEnabled
+      ? `担当: ${actor.name}\n${body.content}`
+      : body.content;
 
     if (messageType === 'text') {
-      await lineClient.pushTextMessage(friend.line_user_id, body.content);
+      await lineClient.pushTextMessage(friend.line_user_id, deliveredContent);
     } else if (messageType === 'flex') {
-      const contents = JSON.parse(body.content);
+      const contents = JSON.parse(deliveredContent);
       await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
     } else if (messageType === 'image') {
-      const parsed = JSON.parse(body.content) as {
+      const parsed = JSON.parse(deliveredContent) as {
         originalContentUrl: string;
         previewImageUrl: string;
       };
@@ -652,15 +824,49 @@ chats.post('/api/chats/:id/send', async (c) => {
 
     // メッセージログに記録
     const logId = crypto.randomUUID();
+    const sentAt = jstNow();
     await c.env.DB
-      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, created_at) VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?)`)
-      .bind(logId, friend.id, messageType, body.content, jstNow())
+      .prepare(
+        `INSERT INTO messages_log
+          (id, friend_id, direction, message_type, content, delivery_type,
+           source, line_account_id, staff_member_id, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, 'push', 'manual', ?, ?, ?)`,
+      )
+      .bind(
+        logId,
+        friend.id,
+        messageType,
+        deliveredContent,
+        friend.line_account_id,
+        actor.id,
+        sentAt,
+      )
       .run();
 
     // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）
-    await updateChat(c.env.DB, chat.id, { status: 'in_progress', lastMessageAt: jstNow() });
+    await updateChat(c.env.DB, chat.id, {
+      status: 'in_progress',
+      assignedStaffId: actor.id,
+      readAt: sentAt,
+      lastMessageAt: sentAt,
+    });
 
-    return c.json({ success: true, data: { sent: true, messageId: logId } });
+    return c.json({
+      success: true,
+      data: {
+        sent: true,
+        messageId: logId,
+        message: {
+          id: logId,
+          direction: 'outgoing',
+          messageType,
+          content: deliveredContent,
+          staffMemberId: actor.id,
+          staffMemberName: actor.name,
+          createdAt: sentAt,
+        },
+      },
+    });
   } catch (err) {
     console.error('POST /api/chats/:id/send error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
