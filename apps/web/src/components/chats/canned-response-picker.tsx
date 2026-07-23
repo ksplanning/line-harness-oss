@@ -10,12 +10,18 @@ interface Props {
   accountId: string | null
   onSelect: (content: string) => void
   compact?: boolean
+  compactLabel?: string
 }
 
 // composer 上に開く定型文ピッカー。行選択で onSelect(content) を呼ぶ "だけ"。
 // 送信系 (api.chats.send / handleSendMessage / triggerLoadingAnimation) を import しない
 // = 構造的に送信不能 (failure_observable 筆頭を構造で潰す)。
-export default function CannedResponsePicker({ accountId, onSelect, compact = false }: Props) {
+export default function CannedResponsePicker({
+  accountId,
+  onSelect,
+  compact = false,
+  compactLabel,
+}: Props) {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<CannedResponseData[]>([])
   const [loading, setLoading] = useState(false)
@@ -60,7 +66,9 @@ export default function CannedResponsePicker({ accountId, onSelect, compact = fa
           aria-haspopup="dialog"
           title={compact ? '定型文を選ぶ' : undefined}
           className={compact
-            ? `inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 disabled:cursor-not-allowed disabled:opacity-50 ${
+            ? `inline-flex h-11 shrink-0 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 disabled:cursor-not-allowed disabled:opacity-50 ${
+                compactLabel ? 'gap-2 px-3' : 'w-11'
+              } ${
                 open
                   ? 'border-green-500 bg-green-50 text-green-700'
                   : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
@@ -68,9 +76,12 @@ export default function CannedResponsePicker({ accountId, onSelect, compact = fa
             : 'min-h-[36px] whitespace-nowrap rounded-md border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50'}
         >
           {compact ? (
-            <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5h6m-6 4h6m-6 4h4m-6 7h10a2 2 0 002-2V6a2 2 0 00-2-2h-1.5a2.5 2.5 0 00-5 0H7a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
+            <>
+              <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5h6m-6 4h6m-6 4h4m-6 7h10a2 2 0 002-2V6a2 2 0 00-2-2h-1.5a2.5 2.5 0 00-5 0H7a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              {compactLabel && <span className="text-xs font-medium">{compactLabel}</span>}
+            </>
           ) : '📋 定型文'}
         </button>
         {!compact && (

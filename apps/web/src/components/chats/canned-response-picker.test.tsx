@@ -64,4 +64,21 @@ describe('CannedResponsePicker', () => {
     expect(button.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByRole('dialog', { name: '定型文を選ぶ' })).toBeNull()
   })
+
+  it('compactのまま任意の文字ラベルをアイコンへ併記できる', () => {
+    render(
+      <CannedResponsePicker
+        accountId="account-1"
+        onSelect={() => {}}
+        compact
+        compactLabel="定型文"
+      />,
+    )
+
+    const button = screen.getByRole('button', { name: '定型文を選ぶ' })
+    expect(button.textContent).toContain('定型文')
+    expect(button.className).toContain('gap-2')
+    expect(button.className).toContain('px-3')
+    expect(button.className).not.toContain('w-11')
+  })
 })

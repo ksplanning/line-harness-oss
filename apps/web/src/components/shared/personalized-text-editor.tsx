@@ -18,9 +18,13 @@ interface PersonalizedTextEditorProps {
   pickerPlacement?: 'above' | 'below'
   toolbarPlacement?: 'above' | 'below'
   compactToolbar?: boolean
+  compactToolbarLabel?: string
   toolbarClassName?: string
   toolbarLeading?: ReactNode
   toolbarTrailing?: ReactNode
+  fieldRowClassName?: string
+  fieldRowTestId?: string
+  fieldTrailing?: ReactNode
   multiline?: boolean
   disabled?: boolean
   textareaRef?: Ref<HTMLTextAreaElement>
@@ -78,9 +82,13 @@ export default function PersonalizedTextEditor({
   pickerPlacement = 'below',
   toolbarPlacement = 'above',
   compactToolbar = false,
+  compactToolbarLabel,
   toolbarClassName = 'flex-wrap',
   toolbarLeading,
   toolbarTrailing,
+  fieldRowClassName = 'flex items-end gap-2',
+  fieldRowTestId,
+  fieldTrailing,
   multiline = true,
   disabled = false,
   textareaRef,
@@ -197,7 +205,9 @@ export default function PersonalizedTextEditor({
             setVariablesOpen(false)
           }}
           className={compactToolbar
-            ? `inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
+            ? `inline-flex h-11 shrink-0 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                compactToolbarLabel ? 'gap-2 px-3' : 'w-11'
+              } ${
                 emojiOpen
                   ? 'border-green-500 bg-green-50 text-green-700'
                   : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
@@ -205,9 +215,12 @@ export default function PersonalizedTextEditor({
             : 'min-h-[44px] rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:border-green-500 hover:text-green-700'}
         >
           {compactToolbar ? (
-            <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 14s1.5 2 4 2 4-2 4-2m-5-4h.01M16 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
+            <>
+              <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 14s1.5 2 4 2 4-2 4-2m-5-4h.01M16 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              {compactToolbarLabel && <span className="text-xs font-medium">{compactToolbarLabel}</span>}
+            </>
           ) : '😊 絵文字'}
         </button>
         {toolbarTrailing}
@@ -306,41 +319,48 @@ export default function PersonalizedTextEditor({
       </div>
   )
 
+  const field = multiline ? (
+    <textarea
+      {...textareaProps}
+      ref={(element) => {
+        fieldRef.current = element
+        assignRef(textareaRef, element)
+      }}
+      aria-label={ariaLabel}
+      className={className}
+      disabled={disabled}
+      rows={rows}
+      placeholder={placeholder}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ) : (
+    <input
+      {...inputProps}
+      ref={(element) => {
+        fieldRef.current = element
+        assignRef(inputRef, element)
+      }}
+      type="text"
+      aria-label={ariaLabel}
+      className={className}
+      disabled={disabled}
+      placeholder={placeholder}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  )
+
   return (
     <div className={containerClassName}>
       {toolbarPlacement === 'above' && toolbar}
 
-      {multiline ? (
-        <textarea
-          {...textareaProps}
-          ref={(element) => {
-            fieldRef.current = element
-            assignRef(textareaRef, element)
-          }}
-          aria-label={ariaLabel}
-          className={className}
-          disabled={disabled}
-          rows={rows}
-          placeholder={placeholder}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      ) : (
-        <input
-          {...inputProps}
-          ref={(element) => {
-            fieldRef.current = element
-            assignRef(inputRef, element)
-          }}
-          type="text"
-          aria-label={ariaLabel}
-          className={className}
-          disabled={disabled}
-          placeholder={placeholder}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      )}
+      {fieldTrailing ? (
+        <div data-testid={fieldRowTestId} className={fieldRowClassName}>
+          <div className="min-w-0 flex-1">{field}</div>
+          {fieldTrailing}
+        </div>
+      ) : field}
       {toolbarPlacement === 'below' && toolbar}
       {variablesEnabled && (
         <p className="text-xs text-gray-400">

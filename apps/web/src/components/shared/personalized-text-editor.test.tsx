@@ -223,6 +223,33 @@ describe('PersonalizedTextEditor', () => {
     expect(screen.queryByRole('dialog', { name: '絵文字を選ぶ' })).toBeNull();
   });
 
+  test('compactの見た目を保ったまま絵文字ラベルを表示し、送信を入力欄の横へ置ける', () => {
+    render(
+      <PersonalizedTextEditor
+        value=""
+        onChange={() => {}}
+        mode="emoji-only"
+        ariaLabel="返信本文"
+        toolbarPlacement="below"
+        compactToolbar
+        compactToolbarLabel="絵文字"
+        fieldRowClassName="flex items-end gap-2"
+        fieldTrailing={<button type="button">送信</button>}
+      />,
+    );
+
+    const textarea = screen.getByRole('textbox', { name: '返信本文' });
+    const emojiButton = screen.getByRole('button', { name: '絵文字を選ぶ' });
+    const sendButton = screen.getByRole('button', { name: '送信' });
+
+    expect(emojiButton.textContent).toContain('絵文字');
+    expect(emojiButton.className).toContain('gap-2');
+    expect(emojiButton.className).toContain('px-3');
+    expect(emojiButton.className).not.toContain('w-11');
+    expect(textarea.parentElement?.parentElement).toBe(sendButton.parentElement);
+    expect(sendButton.parentElement?.className).toContain('items-end');
+  });
+
   test('端末内の最近使った絵文字を先頭行へ出し、選択順・重複排除・最大8件を保存する', async () => {
     window.localStorage.setItem(
       'line-crm:recent-emojis',
