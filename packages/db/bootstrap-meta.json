@@ -124,7 +124,8 @@
     "136_staff_notification_destinations.sql",
     "137_inquiry_console.sql",
     "138_form_submit_actions.sql",
-    "139_broadcast_recipient_snapshots.sql"
+    "139_broadcast_recipient_snapshots.sql",
+    "140_friend_stats_index.sql"
   ],
-  "migrationCount": 125
+  "migrationCount": 126
 }

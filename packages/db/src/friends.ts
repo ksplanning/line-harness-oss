@@ -288,3 +288,93 @@ export async function getFriendCount(db: D1Database): Promise<number> {
     .first<{ count: number }>();
   return row?.count ?? 0;
 }
+
+export interface FriendCountSummary {
+  total: number;
+  blocked: number;
+  sendable: number;
+}
+
+/**
+ * Account-scoped friend counts used by the account management display.
+ * `blocked` reflects the local follow state (`is_following = 0`), while
+ * `sendable` is the same following population used by broadcast targeting.
+ */
+export async function getFriendCountSummary(
+  db: D1Database,
+  lineAccountId: string,
+): Promise<FriendCountSummary> {
+  const row = await db
+    .prepare(
+      `SELECT
+         COUNT(*) AS total,
+         COALESCE(SUM(CASE WHEN is_following = 0 THEN 1 ELSE 0 END), 0) AS blocked,
+         COALESCE(SUM(CASE WHEN is_following = 1 THEN 1 ELSE 0 END), 0) AS sendable
+       FROM friends
+       WHERE line_account_id = ?`,
+    )
+    .bind(lineAccountId)
+    .first<FriendCountSummary>();
+
+  return {
+    total: row?.total ?? 0,
+    blocked: row?.blocked ?? 0,
+    sendable: row?.sendable ?? 0,
+  };
+}
+
+export interface FriendRegistrationPoint {
+  date: string;
+  registrations: number;
+}
+
+/**
+ * Daily first-registration counts for an inclusive JST calendar range.
+ *
+ * Most rows use the app's naive JST timestamp, while bulk imports may contain
+ * an ISO UTC/offset timestamp. The CASE expression normalizes only timestamped
+ * rows that carry an explicit zone; naive values remain their stored JST day.
+ */
+export async function getFriendRegistrationTrend(
+  db: D1Database,
+  lineAccountId: string,
+  startDate: string,
+  endDate: string,
+): Promise<FriendRegistrationPoint[]> {
+  const result = await db
+    .prepare(
+      `WITH RECURSIVE days(day) AS (
+         SELECT ?
+         UNION ALL
+         SELECT date(day, '+1 day')
+         FROM days
+         WHERE day < ?
+       ),
+       normalized AS (
+         SELECT CASE
+           WHEN created_at LIKE '%Z'
+             OR created_at GLOB '*[+-][0-9][0-9]:[0-9][0-9]'
+           THEN date(created_at, '+9 hours')
+           ELSE substr(created_at, 1, 10)
+         END AS day
+         FROM friends
+         WHERE line_account_id = ?
+           AND created_at >= date(?, '-1 day') || 'T00:00:00'
+           AND created_at < date(?, '+2 days') || 'T00:00:00'
+       ),
+       registrations AS (
+         SELECT day, COUNT(*) AS registrations
+         FROM normalized
+         WHERE day BETWEEN ? AND ?
+         GROUP BY day
+       )
+       SELECT days.day AS date, COALESCE(registrations.registrations, 0) AS registrations
+       FROM days
+       LEFT JOIN registrations ON registrations.day = days.day
+       ORDER BY days.day`,
+    )
+    .bind(startDate, endDate, lineAccountId, startDate, endDate, startDate, endDate)
+    .all<FriendRegistrationPoint>();
+
+  return result.results;
+}
