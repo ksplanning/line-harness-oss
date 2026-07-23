@@ -8,6 +8,12 @@ import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, Form
 export type BuilderStatus = 'draft' | 'in_review' | 'published'
 export type RenderBackend = 'formaloo' | 'internal'
 
+export type FormSubmitAction =
+  | { type: 'add_tag'; tagId: string }
+  | { type: 'remove_tag'; tagId: string }
+  | { type: 'set_field'; fieldId: string; value: string }
+  | { type: 'clear_field'; fieldId: string }
+
 export interface AdvancedForm {
   id: string
   title: string
@@ -17,6 +23,11 @@ export interface AdvancedForm {
   builderStatus: BuilderStatus
   publishedAt: string | null
   submitCount: number
+  /** 旧 onSubmitTagId を含む server 正規化済みの ordered action 一覧。 */
+  submitActions?: FormSubmitAction[]
+  /** 段階 deploy 中の旧 worker 応答から synthetic action を復元するための互換値。 */
+  onSubmitTagId?: string | null
+  onSubmitScenarioId?: string | null
   fields: HarnessField[]
   logic: HarnessLogicRule[]
   // treasure-b2-form-settings: 非既定値だけを持つ form 単位の運用制御。
@@ -120,6 +131,8 @@ export interface SaveDefinitionBody {
   successPages?: SuccessPageSpec[]
   // row-status-friend-sync: form 単位の Formaloo field → friend.metadata mapping。
   friendMetadataMappings?: FriendMetadataMapping[]
+  /** 送信後に順番どおり実行するタグ・カスタム項目アクション。present-key でのみ更新する。 */
+  submitActions?: FormSubmitAction[]
   // form-media-limits ③: 回答者後編集の許可フラグ (0|1)。harness 側保存のみ (Formaloo push しない)。
   allowPostEdit?: number
   // internal 編集画面の分岐項目変更許可 (0|1)。harness 側保存のみ。

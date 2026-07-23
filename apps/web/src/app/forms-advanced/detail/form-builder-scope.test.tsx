@@ -94,7 +94,10 @@ vi.mock('@/lib/sheets-connections-api', () => ({
     update: (...a: unknown[]) => sheetsUpdateMock(...a),
   },
 }))
-vi.mock('@/lib/api', () => ({ fetchApi: (...a: unknown[]) => fetchApiMock(...a) }))
+vi.mock('@/lib/api', () => ({
+  fetchApi: (...a: unknown[]) => fetchApiMock(...a),
+  api: { tags: { list: vi.fn(async () => ({ success: true, data: [] })) } },
+}))
 
 import FormBuilderClient from './form-builder-client'
 

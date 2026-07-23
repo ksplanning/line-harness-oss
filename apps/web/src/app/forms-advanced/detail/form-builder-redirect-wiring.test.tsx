@@ -37,7 +37,10 @@ vi.mock('@/lib/formaloo-advanced-api', () => ({
     saveDefinition: (...a: unknown[]) => saveDefinitionMock(...a),
   },
 }))
-vi.mock('@/lib/api', () => ({ fetchApi: (...a: unknown[]) => fetchApiMock(...a) }))
+vi.mock('@/lib/api', () => ({
+  fetchApi: (...a: unknown[]) => fetchApiMock(...a),
+  api: { tags: { list: vi.fn(async () => ({ success: true, data: [] })) } },
+}))
 
 import FormBuilderClient from './form-builder-client'
 

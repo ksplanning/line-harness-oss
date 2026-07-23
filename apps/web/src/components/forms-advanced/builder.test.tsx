@@ -921,6 +921,7 @@ describe('FormBuilder — 情報設計 (formbuilder-ia-restructure)', () => {
     ['utm-tracking', 'publish'],
     ['allow-post-edit', 'after-submit'],
     ['allow-branch-edit', 'after-submit'],
+    ['submit-actions', 'after-submit'],
     ['friend-metadata', 'after-submit'],
     ['allow-edit-mail', 'after-submit'],
     ['edit-mail-field', 'after-submit'],

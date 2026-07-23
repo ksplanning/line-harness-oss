@@ -27,7 +27,10 @@ vi.mock('@/lib/formaloo-advanced-api', () => ({
     share: (...args: unknown[]) => shareMock(...args),
   },
 }))
-vi.mock('@/lib/api', () => ({ fetchApi: vi.fn(async () => ({ data: { role: 'owner' } })) }))
+vi.mock('@/lib/api', () => ({
+  fetchApi: vi.fn(async () => ({ data: { role: 'owner' } })),
+  api: { tags: { list: vi.fn(async () => ({ success: true, data: [] })) } },
+}))
 
 import FormBuilderClient from './form-builder-client'
 

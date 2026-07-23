@@ -10,11 +10,11 @@ import InternalSubmissionNotificationSettings from '@/components/forms-advanced/
 import InternalSheetsSetupPanel, {
   type InternalSheetsSaveInput,
 } from '@/components/forms-advanced/internal-sheets-setup-panel'
-import { formsAdvancedApi, type AdvancedForm, type RenderBackend, type ShareInfo } from '@/lib/formaloo-advanced-api'
-import { fetchApi } from '@/lib/api'
+import { formsAdvancedApi, type AdvancedForm, type FormSubmitAction, type RenderBackend, type ShareInfo } from '@/lib/formaloo-advanced-api'
+import { api, fetchApi } from '@/lib/api'
 import { sheetsConnectionsApi, type SheetsConnection } from '@/lib/sheets-connections-api'
 import { useAccount } from '@/contexts/account-context'
-import type { FriendFieldDefinition, HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettingsPatch } from '@line-crm/shared'
+import type { FriendFieldDefinition, HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettingsPatch, Tag } from '@line-crm/shared'
 
 // F-2/F-5 フォームビルダー本体。id は detail/page.tsx が ?id= から解決して渡す (static export 互換 / 新地雷)。
 export default function FormBuilderClient({ id }: { id: string }) {
@@ -29,6 +29,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [workspaceTab, setWorkspaceTab] = useState<BuilderWorkspaceTab>('build')
   const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
+  const [tags, setTags] = useState<Tag[]>([])
   const [internalSheetConnection, setInternalSheetConnection] = useState<SheetsConnection | null>(null)
   const [serviceAccountEmail, setServiceAccountEmail] = useState<string | null>(null)
   const shareRequestGeneration = useRef(0)
@@ -101,6 +102,18 @@ export default function FormBuilderClient({ id }: { id: string }) {
       })
       .catch(() => {
         // Fail-soft: mapping suggestions must not block the form builder.
+      })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    void api.tags.list()
+      .then((response) => {
+        if (active && response.success) setTags(response.data)
+      })
+      .catch(() => {
+        // Fail-soft: action targets may be retried after reloading without blocking the builder.
       })
     return () => { active = false }
   }, [])
@@ -206,7 +219,7 @@ export default function FormBuilderClient({ id }: { id: string }) {
     }
   }
 
-  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowBranchEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => {
+  const handleSave = async (def: { fields: HarnessField[]; logic: HarnessLogicRule[]; rawLogic?: unknown; logicFingerprint?: string | null; title?: string; description?: string | null; design?: FormDesign; designImages?: FormDesignImages; formType?: FormDisplayType; formCopy?: FormCopy; formRedirect?: FormRedirect; successPages?: SuccessPageSpec[]; friendMetadataMappings?: FriendMetadataMapping[]; submitActions?: FormSubmitAction[]; operationsSettings?: FormOperationsSettingsPatch; allowPostEdit?: number; allowBranchEdit?: number; allowEditMail?: number; editMailFieldId?: string | null }) => {
     const expectedBackend = renderBackend
     invalidateShare()
     try {
@@ -349,10 +362,14 @@ export default function FormBuilderClient({ id }: { id: string }) {
             initialFormRedirect={form.formRedirect ?? undefined}
             initialSuccessPages={form.successPages ?? undefined}
             initialFriendMetadataMappings={form.friendMetadataMappings ?? undefined}
+            initialSubmitActions={form.submitActions ?? (
+              form.onSubmitTagId ? [{ type: 'add_tag', tagId: form.onSubmitTagId }] : undefined
+            )}
             initialOperationsSettings={form.operationsSettings ?? undefined}
             initialRenderBackend={renderBackend}
             internalAvailability={form.internalAvailability}
             fieldDefinitions={fieldDefinitions}
+            tags={tags}
             initialAllowPostEdit={form.allowPostEdit}
             initialAllowBranchEdit={form.allowBranchEdit}
             initialAllowEditMail={form.allowEditMail}
