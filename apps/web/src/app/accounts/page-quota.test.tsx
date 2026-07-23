@@ -122,7 +122,9 @@ describe('LINEアカウント管理の友だち統計', () => {
 
     const trend = await screen.findByRole('region', { name: '友だち登録推移' })
     expect(apiMocks.getFriendTrend).toHaveBeenCalledWith('acc-1', 30)
-    expect(within(trend).getByRole('figure', { name: '30日間の友だち登録推移' })).toBeTruthy()
+    expect(
+      await within(trend).findByRole('figure', { name: '30日間の友だち登録推移' }),
+    ).toBeTruthy()
     expect(within(trend).getByTitle('2026-07-22: 1人登録')).toBeTruthy()
     expect(within(trend).getByTitle('2026-07-23: 3人登録')).toBeTruthy()
     expect(within(trend).getByText(/管理画面に初めて登録された日ごとの人数/)).toBeTruthy()
