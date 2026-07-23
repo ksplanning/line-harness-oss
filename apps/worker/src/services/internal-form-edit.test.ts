@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import { verifyEditToken } from './formaloo-edit-token.js';
-import { createInternalFormEditUrl } from './internal-form-edit.js';
+import {
+  INTERNAL_FORM_ADMIN_EDIT_TTL_SECONDS,
+  createInternalFormEditUrl,
+  parseInternalFormEditTokenBinding,
+} from './internal-form-edit.js';
 
 const NOW = 1_786_800_000;
 const SECRET = 'internal-form-edit-test-secret';
@@ -42,5 +46,30 @@ describe('createInternalFormEditUrl', () => {
     await expect(createInternalFormEditUrl({ ...base, formId: '', secret: SECRET })).resolves.toBeNull();
     await expect(createInternalFormEditUrl({ ...base, submissionId: '', secret: SECRET })).resolves.toBeNull();
     await expect(createInternalFormEditUrl({ ...base, publicBaseUrl: 'not a URL', secret: SECRET })).resolves.toBeNull();
+  });
+
+  test('signs a short-lived admin-origin binding without changing the public token rail', async () => {
+    const editUrl = await createInternalFormEditUrl({
+      publicBaseUrl: 'https://worker.example.test',
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      editLinkEpoch: 7,
+      secret: SECRET,
+      nowSec: NOW,
+      origin: 'admin-origin',
+    });
+
+    const token = decodeURIComponent(new URL(editUrl!).pathname.slice('/ife/'.length));
+    const payload = await verifyEditToken(token, SECRET, NOW);
+    expect(payload).toMatchObject({
+      formId: 'form-1',
+      epoch: 7,
+      exp: NOW + INTERNAL_FORM_ADMIN_EDIT_TTL_SECONDS,
+    });
+    expect(parseInternalFormEditTokenBinding(payload!.rowRef)).toEqual({
+      origin: 'admin-origin',
+      submissionId: 'ifs-1',
+    });
+    expect(payload!.exp).toBeLessThan(NOW + 30 * 86_400);
   });
 });

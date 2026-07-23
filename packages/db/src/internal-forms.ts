@@ -93,7 +93,7 @@ type UpdateInternalFormSubmissionAnswersInput = {
       expectedDefinitionJson: string;
     }
   | {
-      authorization?: 'edit-link';
+      authorization?: 'edit-link' | 'admin-origin';
       expectedEditLinkEpoch: number;
     }
 );
@@ -923,6 +923,29 @@ export async function updateInternalFormSubmissionAnswers(
           input.expectedDefinitionJson,
         )
         .first<InternalFormSubmission>()
+    : input.authorization === 'admin-origin'
+      ? await db
+          .prepare(
+            `UPDATE internal_form_submissions
+             SET answers_json = ?, edit_version = edit_version + 1
+             WHERE id = ? AND form_id = ? AND edit_version = ?
+               AND deleted_at IS NULL
+               AND EXISTS (
+                 SELECT 1
+                 FROM internal_form_notification_settings AS notification_settings
+                 WHERE notification_settings.form_id = internal_form_submissions.form_id
+                   AND notification_settings.edit_link_epoch = ?
+               )
+             RETURNING *`,
+          )
+          .bind(
+            JSON.stringify(input.answers),
+            input.submissionId,
+            input.formId,
+            input.expectedEditVersion,
+            input.expectedEditLinkEpoch,
+          )
+          .first<InternalFormSubmission>()
     : await db
         .prepare(
           `UPDATE internal_form_submissions

@@ -3253,6 +3253,46 @@ describe('internal hosting provider boundary', () => {
   });
 });
 
+describe('admin-origin edit URL issuance', () => {
+  test('inherits admin auth, binds one internal row, and returns only an opaque /ife/ URL', async () => {
+    seedForm('internal-form', 'internal');
+    raw.prepare("UPDATE formaloo_forms SET allow_post_edit = 1 WHERE id = 'internal-form'").run();
+    seedInternalSubmission(
+      'sub-1',
+      'internal-form',
+      { name: '一郎', contact: 'one@example.test' },
+      '2026-07-01T10:00:00+09:00',
+    );
+    raw.prepare(
+      `INSERT INTO internal_form_notification_settings
+         (form_id, enabled, edit_link_epoch, created_at, updated_at)
+       VALUES ('internal-form', 1, 4, '2026-07-23T00:00:00+09:00', '2026-07-23T00:00:00+09:00')`,
+    ).run();
+    bindingOverrides = { FORMALOO_EDIT_TOKEN_SECRET: 'admin-origin-test-secret' };
+    const path = '/api/forms-advanced/internal-form/rows/sub-1/admin-edit-url';
+
+    expect((await call('POST', path, undefined, { auth: '' })).status).toBe(401);
+
+    const roleId = (await createRole(DB, { name: '回答編集URL発行不可' })).id;
+    await setRolePermissions(DB, roleId, [{ feature_key: 'forms_advanced', allowed: false }]);
+    seedStaff('edit-url-denied', 'edit-url-denied-key', roleId);
+    expect((await call('POST', path, undefined, {
+      auth: 'Bearer edit-url-denied-key',
+    })).status).toBe(403);
+
+    const issued = await call('POST', path);
+    expect(issued.status).toBe(200);
+    const data = (await issued.json() as { data: { editUrl: string } }).data;
+    expect(data.editUrl).toMatch(/^https:\/\/api\.example\.test\/ife\/[^/?#]+$/);
+    expect(data.editUrl).not.toContain('sub-1');
+
+    expect((await call(
+      'POST',
+      '/api/forms-advanced/internal-form/rows/other-row/admin-edit-url',
+    )).status).toBe(404);
+  });
+});
+
 describe('auth, permission, and Formaloo passthrough regression', () => {
   test('selector remains authenticated and uses the existing forms_advanced permission gate', async () => {
     seedForm('internal-form', 'internal');

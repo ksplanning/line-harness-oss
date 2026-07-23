@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 import { editTokenExp, signEditToken } from '../services/formaloo-edit-token.js';
+import { createInternalFormEditUrl } from '../services/internal-form-edit.js';
 import { initInternalFormLogic } from '../client/internal-form-logic.js';
 const sheetsSyncMocks = vi.hoisted(() => ({
   syncSheetsAfterFormMutation: vi.fn(),
@@ -306,17 +307,20 @@ function seedForm(options: {
   withSettings?: boolean;
   definition?: unknown;
   allowBranchEdit?: number;
+  allowPostEdit?: number;
 } = {}): string {
   const id = options.id ?? 'form-1';
   raw.prepare(
-    `INSERT INTO formaloo_forms (id, title, definition_json, builder_status, render_backend, allow_branch_edit)
-     VALUES (?, '回答編集テスト', ?, ?, ?, ?)`,
+    `INSERT INTO formaloo_forms
+       (id, title, definition_json, builder_status, render_backend, allow_branch_edit, allow_post_edit)
+     VALUES (?, '回答編集テスト', ?, ?, ?, ?, ?)`,
   ).run(
     id,
     JSON.stringify(options.definition ?? definition),
     options.status ?? 'published',
     options.backend ?? 'internal',
     options.allowBranchEdit ?? 0,
+    options.allowPostEdit ?? 0,
   );
   if (options.withSettings !== false) {
     raw.prepare(
@@ -359,6 +363,18 @@ async function token(formId = 'form-1', submissionId = 'ifs-1', options: {
     exp: options.expired ? now - 1 : editTokenExp(now, 30),
   }, options.secret ?? EDIT_SECRET);
   return signed!;
+}
+
+async function adminToken(formId = 'form-1', submissionId = 'ifs-1'): Promise<string> {
+  const editUrl = await createInternalFormEditUrl({
+    publicBaseUrl: 'https://worker.example.test',
+    formId,
+    submissionId,
+    editLinkEpoch: 4,
+    secret: EDIT_SECRET,
+    origin: 'admin-origin',
+  });
+  return decodeURIComponent(new URL(editUrl!).pathname.slice('/ife/'.length));
 }
 
 beforeEach(() => {
@@ -511,6 +527,34 @@ describe('GET /ife/:token', () => {
     expect(wrapper?.querySelector('.attachment-add-label')).toBeNull();
     expect(document.querySelector('form')?.hasAttribute('enctype')).toBe(false);
     expect(html).not.toContain(key);
+  });
+
+  test('uses the exact same renderer for respondent and admin-origin tokens when no policy field differs', async () => {
+    seedForm({ definition: fileSourceDefinition, allowBranchEdit: 1 });
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(
+        'internal-form-submissions/form-1/attachment/existing.pdf',
+        'existing.pdf',
+        'application/pdf',
+      )],
+      attachment_note: '表示中',
+    });
+    const respondentToken = await token();
+    const originToken = await adminToken();
+
+    const respondentHtml = await (await app().request(
+      `/ife/${respondentToken}`,
+      {},
+      bindings(),
+    )).text();
+    const adminHtml = await (await app().request(
+      `/ife/${originToken}`,
+      {},
+      bindings(),
+    )).text();
+
+    expect(adminHtml.replaceAll(originToken, '<token>'))
+      .toBe(respondentHtml.replaceAll(respondentToken, '<token>'));
   });
 
   test('re-enables a full single-file input when the saved file is marked for replacement', async () => {
@@ -1050,6 +1094,93 @@ describe('POST /ife/:token', () => {
     const readbackHtml = await readback.text();
     expect(readbackHtml).toContain('変更前の氏名');
     expect(readbackHtml).not.toContain('改ざんされた氏名');
+  });
+
+  test('admin endpoint issues an admin-origin token that edits locked fields without external review', async () => {
+    seedForm({
+      definition: editLockedDefinition,
+      allowPostEdit: 1,
+    });
+    seedSubmission('form-1', {
+      locked_name: '変更前の氏名',
+      open_note: '変更前の追記',
+    });
+
+    const issued = await adminApp().request(
+      '/api/forms-advanced/form-1/rows/ifs-1/admin-edit-url',
+      { method: 'POST' },
+      bindings(),
+    );
+    expect(issued.status).toBe(200);
+    const editUrl = (await issued.json() as { data: { editUrl: string } }).data.editUrl;
+    const originToken = decodeURIComponent(new URL(editUrl).pathname.slice('/ife/'.length));
+
+    const editPage = await app().request(`/ife/${originToken}`, {}, bindings());
+    const editDocument = new DOMParser().parseFromString(await editPage.text(), 'text/html');
+    expect(editPage.status).toBe(200);
+    expect(editDocument.querySelector<HTMLInputElement>('input[name="a_0"]')?.value)
+      .toBe('変更前の氏名');
+
+    const saved = await app().request(`/ife/${originToken}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        editVersion: '3',
+        a_0: '管理画面で変更した氏名',
+        a_1: '管理画面で変更した追記',
+      }),
+    }, bindings());
+    expect(saved.status).toBe(200);
+
+    expect(raw.prepare(
+      `SELECT answers_json, edit_version, external_edit_source,
+              external_edited_at, external_edit_approved_at
+       FROM internal_form_submissions WHERE id = ?`,
+    ).get('ifs-1')).toEqual({
+      answers_json: JSON.stringify({
+        locked_name: '管理画面で変更した氏名',
+        open_note: '管理画面で変更した追記',
+      }),
+      edit_version: 4,
+      external_edit_source: null,
+      external_edited_at: null,
+      external_edit_approved_at: null,
+    });
+
+    const adminReadback = await adminApp().request(
+      '/api/forms-advanced/form-1/rows/ifs-1',
+      {},
+      bindings(),
+    );
+    expect(adminReadback.status).toBe(200);
+    expect((await adminReadback.json() as {
+      data: { answers: Record<string, unknown> };
+    }).data.answers).toEqual({
+      locked_name: '管理画面で変更した氏名',
+      open_note: '管理画面で変更した追記',
+    });
+
+    const ifeReadback = await app().request(`/ife/${originToken}`, {}, bindings());
+    const ifeHtml = await ifeReadback.text();
+    expect(ifeHtml).toContain('name="editVersion" value="4"');
+    expect(ifeHtml).toContain('value="管理画面で変更した氏名"');
+
+    const respondentToken = await token();
+    const respondentHtml = await (await app().request(
+      `/ife/${respondentToken}`,
+      {},
+      bindings(),
+    )).text();
+    expect(respondentHtml).not.toContain('name="a_0"');
+    const forged = await app().request(`/ife/${respondentToken}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        editVersion: '4',
+        a_0: '回答者による改ざん',
+      }),
+    }, bindings());
+    expect(forged.status).toBe(403);
   });
 
   test('updates an unlocked legacy field while preserving an omitted editLocked answer', async () => {

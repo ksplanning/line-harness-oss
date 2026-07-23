@@ -763,6 +763,67 @@ describe('internal form persistence', () => {
     });
   });
 
+  test('admin-origin keeps edit-link epoch and version CAS without raising an external-edit review', async () => {
+    const created = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '変更前' },
+    });
+
+    const updated = await updateInternalFormSubmissionAnswers(DB, {
+      authorization: 'admin-origin',
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 0,
+      expectedEditLinkEpoch: 4,
+      answers: { name: '管理画面から変更' },
+    });
+    expect(updated).toMatchObject({
+      status: 'updated',
+      submission: {
+        answers_json: '{"name":"管理画面から変更"}',
+        edit_version: 1,
+        external_edit_source: null,
+        external_edited_at: null,
+        external_edit_approved_at: null,
+      },
+    });
+
+    const stale = await updateInternalFormSubmissionAnswers(DB, {
+      authorization: 'admin-origin',
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 0,
+      expectedEditLinkEpoch: 4,
+      answers: { name: '古い管理画面から変更' },
+    });
+    expect(stale).toMatchObject({
+      status: 'conflict',
+      submission: {
+        answers_json: '{"name":"管理画面から変更"}',
+        edit_version: 1,
+      },
+    });
+
+    raw.prepare(
+      'UPDATE internal_form_notification_settings SET edit_link_epoch = 5 WHERE form_id = ?',
+    ).run('fa_internal');
+    const revoked = await updateInternalFormSubmissionAnswers(DB, {
+      authorization: 'admin-origin',
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 1,
+      expectedEditLinkEpoch: 4,
+      answers: { name: '失効済み管理画面から変更' },
+    });
+    expect(revoked).toMatchObject({
+      status: 'revoked',
+      submission: {
+        answers_json: '{"name":"管理画面から変更"}',
+        edit_version: 1,
+      },
+    });
+  });
+
   test('filters pending external edits and approval only clears the review queue', async () => {
     const pending = await createInternalFormSubmission(DB, {
       formId: 'fa_internal',

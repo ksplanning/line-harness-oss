@@ -16,6 +16,10 @@ import {
   type InternalFormLogicAnswers,
 } from '@line-crm/shared';
 import { verifyEditToken, type EditTokenPayload } from '../services/formaloo-edit-token.js';
+import {
+  parseInternalFormEditTokenBinding,
+  type InternalFormEditTokenBinding,
+} from '../services/internal-form-edit.js';
 import { syncSheetsAfterFormMutation } from '../services/sheets-sync-jobs.js';
 import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
 import {
@@ -76,6 +80,7 @@ type ResolvedEdit = {
   submission: InternalFormSubmission;
   definition: InternalFormDefinition;
   payload: EditTokenPayload;
+  binding: InternalFormEditTokenBinding;
 };
 
 type ResolveResult =
@@ -136,8 +141,9 @@ function isEditableForBranchPolicy(
   repeatingTemplates: ReadonlySet<string>,
   branchSources: ReadonlySet<string>,
   allowBranchEdit: boolean,
+  editLockedEditable = false,
 ): boolean {
-  if (field.config.editLocked === true) return false;
+  if (!editLockedEditable && field.config.editLocked === true) return false;
   const respondentEditable = isEditableField(field, repeatingTemplates)
     || (field.type === 'file' && !repeatingTemplates.has(field.id));
   return respondentEditable
@@ -392,6 +398,7 @@ function renderEditPage(
   error?: string,
   currentAnswers: Record<string, unknown> = parseAnswers(value.submission.answers_json),
 ): string {
+  const adminOrigin = value.binding.origin === 'admin-origin';
   const visible = new Set(evaluateInternalFormLogic(
     value.definition.fields,
     value.definition.logic,
@@ -406,10 +413,16 @@ function renderEditPage(
     if (isDecorationType(field.type) || templates.has(field.id)) return '';
     const initiallyVisible = visible.has(field.id);
     if (!allowBranchEdit && !initiallyVisible) return '';
-    const editable = isEditableForBranchPolicy(field, templates, branchSources, allowBranchEdit);
+    const editable = isEditableForBranchPolicy(
+      field,
+      templates,
+      branchSources,
+      allowBranchEdit,
+      adminOrigin,
+    );
     const current = initiallyVisible ? currentAnswers[field.id] : undefined;
     if (editable && field.type === 'file') hasEditableAttachment = true;
-    const rendered = field.type === 'file' && field.config.editLocked === true
+    const rendered = field.type === 'file' && field.config.editLocked === true && !adminOrigin
       ? renderReadOnlyAttachmentField(value, token, field, current)
       : editable && field.type === 'file'
         ? renderAttachmentField(value, token, field, index, current, initiallyVisible)
@@ -430,7 +443,7 @@ function renderEditPage(
   const submitAttribute = allowBranchEdit ? ' data-submit' : '';
   const fixedAnswers = Object.fromEntries(value.definition.fields
     .filter((field) => branchSources.has(field.id) && (
-      field.config.editLocked === true
+      (!adminOrigin && field.config.editLocked === true)
       || (field.type !== 'file' && !isEditableField(field, templates))
     ))
     // 初期状態で非表示の保存値は edit HTML へ出さない。表示中の readonly source だけを
@@ -469,6 +482,8 @@ async function resolveEdit(env: Env['Bindings'], token: string): Promise<Resolve
     Math.floor(Date.now() / 1000),
   );
   if (!payload) return { ok: false, status: 403 };
+  const binding = parseInternalFormEditTokenBinding(payload.rowRef);
+  if (!binding) return { ok: false, status: 403 };
 
   const form = await getFormalooForm(env.DB, payload.formId);
   if (!form || form.deleted) return { ok: false, status: 404 };
@@ -479,14 +494,14 @@ async function resolveEdit(env: Env['Bindings'], token: string): Promise<Resolve
   const settings = await getInternalFormNotificationSettings(env.DB, payload.formId);
   if (!settings || settings.editLinkEpoch !== payload.epoch) return { ok: false, status: 403 };
 
-  const submission = await getInternalFormSubmission(env.DB, payload.formId, payload.rowRef);
+  const submission = await getInternalFormSubmission(env.DB, payload.formId, binding.submissionId);
   if (!submission) return { ok: false, status: 404 };
 
   const parsed = parseInternalFormDefinition(form.definition_json);
   if (!parsed.ok) return { ok: false, status: 422 };
   return {
     ok: true,
-    value: { form, settings, submission, definition: parsed.definition, payload },
+    value: { form, settings, submission, definition: parsed.definition, payload, binding },
   };
 }
 
@@ -506,6 +521,7 @@ function buildValidationInput(
   visibleFieldIds: ReadonlySet<string>,
   branchSources: ReadonlySet<string>,
   allowBranchEdit: boolean,
+  editLockedEditable: boolean,
 ): { fields: InternalFormField[]; input: InternalAnswerInput; editableIds: string[] } {
   const templates = repeatingTemplateIds(definition.fields);
   const fields: InternalFormField[] = [];
@@ -513,7 +529,13 @@ function buildValidationInput(
   const editableIds: string[] = [];
 
   for (const [originalIndex, field] of definition.fields.entries()) {
-    const editable = isEditableForBranchPolicy(field, templates, branchSources, allowBranchEdit);
+    const editable = isEditableForBranchPolicy(
+      field,
+      templates,
+      branchSources,
+      allowBranchEdit,
+      editLockedEditable,
+    );
     if (!visibleFieldIds.has(field.id)) continue;
     const formula = field.type === 'variable' && field.config.variableSubType === 'formula';
     if (!editable && !formula) continue;
@@ -533,11 +555,18 @@ function buildCandidateLogicAnswers(
   storedAnswers: Record<string, unknown>,
   branchSources: ReadonlySet<string>,
   allowBranchEdit: boolean,
+  editLockedEditable: boolean,
 ): InternalFormLogicAnswers {
   const candidate: InternalFormLogicAnswers = { ...storedAnswers };
   const templates = repeatingTemplateIds(definition.fields);
   for (const [originalIndex, field] of definition.fields.entries()) {
-    if (!isEditableForBranchPolicy(field, templates, branchSources, allowBranchEdit)) continue;
+    if (!isEditableForBranchPolicy(
+      field,
+      templates,
+      branchSources,
+      allowBranchEdit,
+      editLockedEditable,
+    )) continue;
     // File descriptors are server-owned values. Browser File objects and
     // deletion controls must not become branch-logic answers.
     if (field.type === 'file') continue;
@@ -575,13 +604,20 @@ function applyAttachmentSourceLogicAnswers(
   initiallyVisibleFieldIds: ReadonlySet<string>,
   branchSources: ReadonlySet<string>,
   allowBranchEdit: boolean,
+  editLockedEditable: boolean,
 ): boolean {
   const templates = repeatingTemplateIds(definition.fields);
   for (const [index, field] of definition.fields.entries()) {
     if (
       field.type !== 'file'
       || !branchSources.has(field.id)
-      || !isEditableForBranchPolicy(field, templates, branchSources, allowBranchEdit)
+      || !isEditableForBranchPolicy(
+        field,
+        templates,
+        branchSources,
+        allowBranchEdit,
+        editLockedEditable,
+      )
     ) continue;
     const existing = initiallyVisibleFieldIds.has(field.id) ? storedAnswers[field.id] : [];
     const removals = bodyStrings(body[`remove_a_${index}`]);
@@ -603,6 +639,7 @@ function buildAttachmentEditState(
   initiallyVisibleFieldIds: ReadonlySet<string>,
   branchSources: ReadonlySet<string>,
   allowBranchEdit: boolean,
+  editLockedEditable: boolean,
 ): { ok: true; state: AttachmentEditState } | { ok: false } {
   const retainedByField = Object.create(null) as Record<string, unknown[]>;
   const retainedFileCounts = Object.create(null) as Record<string, number>;
@@ -611,7 +648,13 @@ function buildAttachmentEditState(
     if (
       field.type !== 'file'
       || !visibleFieldIds.has(field.id)
-      || !isEditableForBranchPolicy(field, templates, branchSources, allowBranchEdit)
+      || !isEditableForBranchPolicy(
+        field,
+        templates,
+        branchSources,
+        allowBranchEdit,
+        editLockedEditable,
+      )
     ) continue;
     const removals = bodyStrings(body[`remove_a_${index}`]);
     if (!removals) return { ok: false };
@@ -713,6 +756,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
     const token = c.req.param('token');
     const resolved = await resolveEdit(c.env, token);
     if (!resolved.ok) return c.html(renderInvalidPage(), resolved.status, PRIVATE_HEADERS);
+    const adminOrigin = resolved.value.binding.origin === 'admin-origin';
 
     const body = await c.req.parseBody({ all: true }).catch(() => null) as EditBody | null;
     if (!body) {
@@ -734,7 +778,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
     const storedAnswers = parseAnswers(resolved.value.submission.answers_json);
     const branchSources = branchSourceFieldIds(resolved.value.definition);
     const allowBranchEdit = resolved.value.form.allow_branch_edit === 1;
-    if (resolved.value.definition.fields.some((field, index) => (
+    if (!adminOrigin && resolved.value.definition.fields.some((field, index) => (
       field.config.editLocked === true
       && (
         Object.prototype.hasOwnProperty.call(body, `a_${index}`)
@@ -772,6 +816,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
       storedAnswers,
       branchSources,
       allowBranchEdit,
+      adminOrigin,
     );
     for (const field of resolved.value.definition.fields) {
       if (field.type === 'file' && !initiallyVisibleFieldIds.has(field.id)) delete candidateAnswers[field.id];
@@ -788,6 +833,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
       initiallyVisibleFieldIds,
       branchSources,
       allowBranchEdit,
+      adminOrigin,
     )) {
       return c.html(
         renderEditPage(resolved.value, token, '添付の削除指定が正しくありません', candidateAnswers),
@@ -809,6 +855,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
       initiallyVisibleFieldIds,
       branchSources,
       allowBranchEdit,
+      adminOrigin,
     );
     if (!attachmentEdits.ok) {
       return c.html(
@@ -823,6 +870,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
       visibleFieldIds,
       branchSources,
       allowBranchEdit,
+      adminOrigin,
     );
     const validation = validateInternalFormAnswers(validationInput.fields, validationInput.input, {
       retainedFileCounts: attachmentEdits.state.retainedFileCounts,
@@ -842,7 +890,10 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
     );
     const merged = Object.assign(Object.create(null) as Record<string, unknown>, storedAnswers);
     for (const field of resolved.value.definition.fields) {
-      if (!visibleFieldIds.has(field.id) && field.config.editLocked !== true) delete merged[field.id];
+      if (
+        !visibleFieldIds.has(field.id)
+        && (adminOrigin || field.config.editLocked !== true)
+      ) delete merged[field.id];
     }
     for (const fieldId of validationInput.editableIds) delete merged[fieldId];
     Object.assign(merged, validation.answers);
@@ -855,8 +906,9 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
       else delete merged[fieldId];
     }
     const result = await updateInternalFormSubmissionAnswers(c.env.DB, {
+      authorization: adminOrigin ? 'admin-origin' : 'edit-link',
       formId: resolved.value.payload.formId,
-      submissionId: resolved.value.payload.rowRef,
+      submissionId: resolved.value.binding.submissionId,
       expectedEditVersion,
       expectedEditLinkEpoch: resolved.value.payload.epoch,
       answers: merged,
@@ -876,7 +928,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
     const readback = await getInternalFormSubmission(
       c.env.DB,
       resolved.value.payload.formId,
-      resolved.value.payload.rowRef,
+      resolved.value.binding.submissionId,
     );
     if (
       !readback

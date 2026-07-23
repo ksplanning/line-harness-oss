@@ -5,6 +5,7 @@ import {
   countPendingInternalFormExternalEdits,
   getFormalooFieldMap,
   getFormalooForm,
+  getInternalFormNotificationSettings,
   getInternalFormSubmission,
   hasBlockingFormalooRecurringSubmissions,
   jstNow,
@@ -53,6 +54,7 @@ import {
   type StoredInternalFormUploads,
 } from '../services/internal-form-attachments.js';
 import { validateFormRedirectInput } from '../services/formaloo-redirect.js';
+import { createInternalFormEditUrl } from '../services/internal-form-edit.js';
 import { isEditableField, repeatingTemplateIds } from './internal-form-edit-public.js';
 import type { Env } from '../index.js';
 
@@ -1171,6 +1173,42 @@ internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/approve-external-ed
     return c.json({ success: true, data: serializeRow(readback) });
   } catch (error) {
     console.error('POST internal approve external edit error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/admin-edit-url', async (c, next) => {
+  try {
+    const id = c.req.param('id');
+    const form = await getInternalForm(c.env.DB, id);
+    if (!form) return next();
+    if (form.allow_post_edit !== 1) {
+      return c.json({ success: false, error: 'このフォームは回答編集を許可していません' }, 403);
+    }
+    if (form.builder_status !== 'published') {
+      return c.json({ success: false, error: '公開中のフォームだけ回答を編集できます' }, 409);
+    }
+
+    const row = await getInternalFormSubmission(c.env.DB, id, c.req.param('rowId'));
+    if (!row) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    const settings = await getInternalFormNotificationSettings(c.env.DB, id);
+    if (!settings) {
+      return c.json({ success: false, error: '編集URLの設定が見つかりません' }, 409);
+    }
+    const editUrl = await createInternalFormEditUrl({
+      publicBaseUrl: publicBase(c),
+      formId: id,
+      submissionId: row.id,
+      editLinkEpoch: settings.editLinkEpoch,
+      secret: c.env.FORMALOO_EDIT_TOKEN_SECRET,
+      origin: 'admin-origin',
+    });
+    if (!editUrl) {
+      return c.json({ success: false, error: '編集URLを発行できません' }, 503);
+    }
+    return c.json({ success: true, data: { editUrl } });
+  } catch {
+    // The generated URL contains a bearer credential. Keep error logs token-free.
+    console.error('POST internal admin edit URL error');
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
