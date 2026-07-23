@@ -13,7 +13,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, '..');
 const MIGRATIONS_DIR = join(PKG_ROOT, 'migrations');
-const MIGRATION_FILE = '138_broadcast_recipient_snapshots.sql';
+const MIGRATION_FILE = '139_broadcast_recipient_snapshots.sql';
 const MIGRATION_PATH = join(MIGRATIONS_DIR, MIGRATION_FILE);
 const BENIGN = /duplicate column name|already exists/i;
 
