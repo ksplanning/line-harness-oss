@@ -22,6 +22,7 @@ import {
   type FormResultsSyncResult,
   type SyncFormResultsOptions,
 } from './form-results-sync.js';
+import { GoogleSheetsError } from './google-sheets.js';
 
 export const SHEETS_SYNC_CHUNK_SIZE = 200;
 export const SHEETS_SYNC_MAX_INLINE_CHUNKS = 8;
@@ -33,6 +34,7 @@ const DISPATCH_ERROR_MESSAGE = '次の同期処理を開始できませんでし
 const RECOVERY_WARNING = '前回の同期が途中で止まりました。保存済みの続きから再開しました。';
 const FORM_MUTATION_REFRESH_REQUESTED = 'sheets_sync_refresh_requested';
 const FORM_MUTATION_TARGET_REFRESH_REQUESTED = 'sheets_sync_target_refresh_requested';
+const UNEXPECTED_ERROR_MESSAGE = 'Unexpected Sheets sync failure';
 
 type StoredSheetsSyncJobStatus = 'running' | 'completed' | 'warning' | 'failed';
 export type SheetsSyncJobStatus = 'running' | 'success' | 'warning' | 'error';
@@ -145,6 +147,69 @@ function mergeWarning(previous: string | null, current: string | null): string |
 function isFormMutationRefreshRequest(errorCode: string | null): boolean {
   return errorCode === FORM_MUTATION_REFRESH_REQUESTED
     || errorCode === FORM_MUTATION_TARGET_REFRESH_REQUESTED;
+}
+
+function safeSheetsStack(error: Error): string | null {
+  const frames = error.stack?.split('\n').slice(1).flatMap((line) => {
+    const sourceMatch = /\/apps\/worker\/src\/services\/(google-sheets|form-results-sync|friend-ledger-sync|sheets-sync-jobs)\.(ts|js):(\d+):(\d+)/.exec(line);
+    if (sourceMatch) {
+      return [`at apps/worker/src/services/${sourceMatch[1]}.${sourceMatch[2]}:${sourceMatch[3]}:${sourceMatch[4]}`];
+    }
+    const bundleMatch = /(?:^|[/(])(?:worker|index)(?:-[A-Za-z0-9]+)?\.(?:js|mjs|cjs):(\d+):(\d+)/.exec(
+      line.trim(),
+    );
+    return bundleMatch ? [`at worker-bundle:${bundleMatch[1]}:${bundleMatch[2]}`] : [];
+  }).slice(0, 8) ?? [];
+  return frames.length > 0 ? frames.join('\n') : null;
+}
+
+function safeUnexpectedErrorMessage(error: Error): string {
+  const message = error.message.trim();
+  return /^(?:sheets_sync|friend_ledger|form_results|stale_sheets)_[a-z0-9_]{1,80}$/.test(message)
+    ? message
+    : UNEXPECTED_ERROR_MESSAGE;
+}
+
+function safeChunkFailure(error: unknown): {
+  errorMessage: string;
+  diagnostic: {
+    type: string;
+    operation: string | null;
+    status: number | null;
+    message: string;
+    stack: string | null;
+  };
+} {
+  if (error instanceof GoogleSheetsError) {
+    const operation = [
+      'token', 'metadata', 'append', 'read', 'update', 'batch_update',
+    ].includes(error.operation) ? error.operation : 'unknown';
+    const status = Number.isInteger(error.status) && error.status >= 0 && error.status <= 599
+      ? error.status
+      : 0;
+    const statusLabel = status > 0 ? `HTTP ${status}` : 'network';
+    return {
+      errorMessage: `Google Sheets ${operation} request failed (${statusLabel}).`,
+      diagnostic: {
+        type: 'GoogleSheetsError',
+        operation,
+        status,
+        message: `Google Sheets ${operation} request failed`,
+        stack: safeSheetsStack(error),
+      },
+    };
+  }
+  const caughtError = error instanceof Error ? error : null;
+  return {
+    errorMessage: SAFE_ERROR_MESSAGE,
+    diagnostic: {
+      type: caughtError ? 'Error' : 'UnknownError',
+      operation: null,
+      status: null,
+      message: caughtError ? safeUnexpectedErrorMessage(caughtError) : UNEXPECTED_ERROR_MESSAGE,
+      stack: caughtError ? safeSheetsStack(caughtError) : null,
+    },
+  };
 }
 
 async function jobById(db: D1Database, id: string): Promise<SheetsSyncJobRow | null> {
@@ -911,8 +976,20 @@ export async function processNextSheetsSyncJob(
       continuationJobId,
       job: serializeJob(updated),
     };
-  } catch {
-    const job = await failClaimedJob(options, claimed, lockToken);
+  } catch (error) {
+    const failure = safeChunkFailure(error);
+    console.error('[sheets-sync-job] chunk failed', {
+      jobId: claimed.id,
+      target: claimed.target,
+      ...failure.diagnostic,
+    });
+    const job = await failClaimedJob(
+      options,
+      claimed,
+      lockToken,
+      'sheets_sync_chunk_failed',
+      failure.errorMessage,
+    );
     const continuationJobId = await nextRunnableJobId(
       options.db,
       toJstString(nowFactory()),

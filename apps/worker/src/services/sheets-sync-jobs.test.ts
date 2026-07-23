@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createSheetsConnection, type SheetsConnection } from '@line-crm/db';
+import { GoogleSheetsError } from './google-sheets.js';
 import {
   getLatestSheetsSyncJob,
   processSheetsSyncJobBatch,
@@ -234,11 +235,13 @@ describe('durable Sheets sync jobs', () => {
     });
     await processNextSheetsSyncJob({ db, sync: firstSync, chunkSize: 200 });
 
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await expect(processNextSheetsSyncJob({
       db,
       sync: vi.fn().mockRejectedValue(new Error('upstream body must never be exposed')),
       chunkSize: 200,
     })).resolves.toMatchObject({ job: { status: 'error', processedCount: 200 } });
+    errorLog.mockRestore();
     const failed = await getLatestSheetsSyncJob(db, 'acc-1', connection.id);
     expect(failed).toMatchObject({
       id: started.id,
@@ -269,6 +272,112 @@ describe('durable Sheets sync jobs', () => {
     expect(finalSync).toHaveBeenCalledWith(expect.objectContaining({
       chunk: expect.objectContaining({ after: cursor }),
     }));
+  });
+
+  test('logs a redacted chunk failure diagnostic and stores a safe Google API summary', async () => {
+    insertFriends(1);
+    const started = await startSheetsSyncJob({ db, connection, source: 'manual', actor: 'owner-1' });
+    const sentinels = ['ACCESS_TOKEN_SENTINEL', 'PRIVATE_KEY_SENTINEL', 'SHEET_CONTENT_SENTINEL'];
+    const cause = new GoogleSheetsError(
+      'update',
+      400,
+      'sheet_permission',
+      sentinels.join(' '),
+    );
+    cause.name = sentinels[1];
+    cause.message = sentinels[0];
+    cause.stack = [
+      `${sentinels[1]}: ${sentinels[0]}`,
+      `    at unsafe (${sentinels[2]}:1:1)`,
+      '    at request (/workspace/apps/worker/src/services/google-sheets.ts:337:20)',
+    ].join('\n');
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const result = await processNextSheetsSyncJob({
+        db,
+        sync: vi.fn().mockRejectedValue(cause),
+        chunkSize: 200,
+      });
+
+      expect(result.job).toMatchObject({
+        id: started.id,
+        target: 'ledger',
+        status: 'error',
+        errorCode: 'sheets_sync_chunk_failed',
+        errorMessage: 'Google Sheets update request failed (HTTP 400).',
+      });
+      const serializedLog = JSON.stringify(errorLog.mock.calls, (_key, value: unknown) => {
+        if (!(value instanceof Error)) return value;
+        return {
+          ...value,
+          name: value.name,
+          message: value.message,
+          stack: value.stack,
+        };
+      });
+      expect(serializedLog).toContain(started.id);
+      expect(serializedLog).toContain('"target":"ledger"');
+      expect(serializedLog).toContain('"type":"GoogleSheetsError"');
+      expect(serializedLog).toContain('"operation":"update"');
+      expect(serializedLog).toContain('"status":400');
+      expect(serializedLog).toContain('"message":"Google Sheets update request failed"');
+      expect(serializedLog).toContain(
+        '"stack":"at apps/worker/src/services/google-sheets.ts:337:20"',
+      );
+      for (const sentinel of sentinels) {
+        expect(serializedLog).not.toContain(sentinel);
+        expect(JSON.stringify(result.job)).not.toContain(sentinel);
+      }
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  test('logs a safe unexpected-error message and allowlisted stack without raw cause data', async () => {
+    insertFriends(1);
+    const started = await startSheetsSyncJob({ db, connection, source: 'manual', actor: 'owner-1' });
+    const sentinels = ['UNEXPECTED_TOKEN_SENTINEL', 'UNEXPECTED_KEY_SENTINEL', 'UNEXPECTED_SHEET_SENTINEL'];
+    const cause = new Error(sentinels.join(' '));
+    cause.name = sentinels[1];
+    cause.stack = [
+      `${sentinels[1]}: ${sentinels.join(' ')}`,
+      `    at unsafe (${sentinels[2]}:1:1)`,
+      '    at syncFormResults (/workspace/apps/worker/src/services/form-results-sync.ts:1634:9)',
+    ].join('\n');
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const result = await processNextSheetsSyncJob({
+        db,
+        sync: vi.fn().mockRejectedValue(cause),
+        chunkSize: 200,
+      });
+
+      expect(result.job).toMatchObject({
+        id: started.id,
+        status: 'error',
+        errorCode: 'sheets_sync_chunk_failed',
+        errorMessage: '同期が途中で止まりました。接続設定を確認して、続きから再開してください。',
+      });
+      const serializedLog = JSON.stringify(errorLog.mock.calls, (_key, value: unknown) => {
+        if (!(value instanceof Error)) return value;
+        return { ...value, name: value.name, message: value.message, stack: value.stack };
+      });
+      expect(serializedLog).toContain(started.id);
+      expect(serializedLog).toContain('"target":"ledger"');
+      expect(serializedLog).toContain('"type":"Error"');
+      expect(serializedLog).toContain('"message":"Unexpected Sheets sync failure"');
+      expect(serializedLog).toContain(
+        '"stack":"at apps/worker/src/services/form-results-sync.ts:1634:9"',
+      );
+      for (const sentinel of sentinels) {
+        expect(serializedLog).not.toContain(sentinel);
+        expect(JSON.stringify(result.job)).not.toContain(sentinel);
+      }
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   test('returns the one existing running job instead of resetting its progress', async () => {
@@ -373,7 +482,9 @@ describe('durable Sheets sync jobs', () => {
       throw new Error('stale worker failure');
     });
 
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await processNextSheetsSyncJob({ db, sync, chunkSize: 200 });
+    errorLog.mockRestore();
 
     expect(raw.prepare(`SELECT last_sync_status, last_sync_warning, last_sync_error_code
       FROM sheets_connections WHERE id=?`).get(connection.id)).toEqual({
