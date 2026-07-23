@@ -87,13 +87,18 @@ describe('LINEアカウント管理の公式送信数', () => {
   })
 })
 
-describe('LINEアカウント管理のスタッフ通知設定', () => {
-  it('スタッフ通知(Chatwork/LINE)の明示導線から対象アカウントの設定を開く', async () => {
+describe('LINEアカウント管理の設定導線', () => {
+  it('誤配線のスタッフ通知ボタンを出さず、既存メール差出人導線は維持する', async () => {
     render(<AccountsPage />)
 
-    fireEvent.click(await screen.findByRole('button', {
+    const emailButton = await screen.findByRole('button', {
+      name: 'メール差出人',
+    })
+    expect(screen.queryByRole('button', {
       name: 'スタッフ通知(Chatwork/LINE)',
-    }))
+    })).toBeNull()
+
+    fireEvent.click(emailButton)
 
     expect(
       screen.getByTestId('email-sender-settings-dialog').getAttribute('data-account-id'),

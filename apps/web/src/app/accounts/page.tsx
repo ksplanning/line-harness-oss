@@ -337,12 +337,6 @@ export default function AccountsPage() {
                     メール差出人
                   </button>
                   <button
-                    onClick={() => setEmailSettingsFor(account)}
-                    className="text-xs text-emerald-700 hover:bg-emerald-50 rounded px-1"
-                  >
-                    スタッフ通知(Chatwork/LINE)
-                  </button>
-                  <button
                     onClick={() => setScheduleFor(account)}
                     className="text-xs text-gray-600 hover:bg-gray-50 rounded px-1"
                   >
