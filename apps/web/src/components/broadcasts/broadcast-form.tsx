@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react'
 import type { Tag } from '@line-crm/shared'
 import { api, eventsApi, type ApiBroadcast, type EventListItem, type MessageBlock } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
-import MultiAccountDedupSection from './multi-account-dedup-section'
 import PackInsertSelector from './pack-insert-selector'
 import MessageBlockEditor from './message-block-editor'
 import SenderSelect from './sender-select'
@@ -34,8 +33,6 @@ interface FormState {
   segmentConditions: SegmentCondition | null
   scheduledAt: string
   sendNow: boolean
-  accountIds: string[]
-  dedupPriority: string[]
   senderPresetId: string | null
   // G1 A/B 紐付け (この配信を A/B テストの案 A/B として作る)。null = 非 A/B。
   abTestId: string | null
@@ -68,15 +65,12 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     segmentConditions: null,
     scheduledAt: '',
     sendNow: true,
-    accountIds: [],
-    dedupPriority: [],
     senderPresetId: null,
     abTestId: null,
     abVariant: null,
   })
   const [tagTargetCount, setTagTargetCount] = useState<number | null>(null)
   const [segmentTargetCount, setSegmentTargetCount] = useState<number | null>(null)
-  const [dedupTargetCount, setDedupTargetCount] = useState<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -98,10 +92,8 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     return () => { cancelled = true }
   }, [form.targetTagId, form.targetType, selectedAccountId])
 
-  const targetCount = form.targetType === 'multi-account-dedup'
-    ? dedupTargetCount ?? 0
-    : form.targetType === 'segment'
-      ? segmentTargetCount ?? 0
+  const targetCount = form.targetType === 'segment'
+    ? segmentTargetCount ?? 0
     : form.targetType === 'tag'
       ? tagTargetCount ?? 0
       : selectedAccount?.stats?.friendCount ?? 0
@@ -143,11 +135,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
   }, [selectedAccountId])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const draftTestAccountIds = form.targetType === 'multi-account-dedup'
-    ? form.accountIds
-    : selectedAccountId
-      ? [selectedAccountId]
-      : []
+  const draftTestAccountIds = selectedAccountId ? [selectedAccountId] : []
 
   const handleSave = async () => {
     if (!form.title.trim()) { setError('配信タイトルを入力してください'); return }
@@ -171,10 +159,6 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
       setError('予約配信の場合は配信日時を指定してください')
       return
     }
-    if (form.targetType === 'multi-account-dedup' && form.accountIds.length === 0) {
-      setError('複数アカ重複除外: 配信先アカウントを 1 つ以上選択してください')
-      return
-    }
     if (form.targetType === 'segment' && !form.segmentConditions) {
       setError('詳細条件を設定して「適用」を押してください')
       return
@@ -191,17 +175,9 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         messageContent: messages[0].content,
         messages,
         targetType: form.targetType,
-        // tag mode: required; multi-account-dedup mode: optional narrowing filter; else: null
-        targetTagId:
-          form.targetType === 'tag'
-            ? form.targetTagId || null
-            : form.targetType === 'multi-account-dedup'
-            ? form.targetTagId || null
-            : null,
+        targetTagId: form.targetType === 'tag' ? form.targetTagId || null : null,
         status: 'draft',
-        lineAccountId: form.targetType === 'multi-account-dedup' ? null : (selectedAccountId || null),
-        accountIds: form.targetType === 'multi-account-dedup' ? form.accountIds : undefined,
-        dedupPriority: form.targetType === 'multi-account-dedup' ? form.dedupPriority : undefined,
+        lineAccountId: selectedAccountId || null,
         ...(form.targetType === 'segment'
           ? { segmentConditions: form.segmentConditions }
           : {}),
@@ -391,22 +367,6 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             >
               詳細条件
             </button>
-            <button
-              type="button"
-              onClick={() => setForm({
-                ...form,
-                targetType: 'multi-account-dedup',
-                targetTagId: '',
-                segmentConditions: null,
-              })}
-              className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
-                form.targetType === 'multi-account-dedup'
-                  ? 'border-green-500 text-green-700 bg-green-50'
-                  : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
-              }`}
-            >
-              複数アカ重複除外
-            </button>
           </div>
           {form.targetType === 'tag' && (
             <select
@@ -443,18 +403,6 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
               }}
               onCountChange={setSegmentTargetCount}
               followingOnly
-            />
-          )}
-          {form.targetType === 'multi-account-dedup' && (
-            <MultiAccountDedupSection
-              accountIds={form.accountIds}
-              dedupPriority={form.dedupPriority}
-              targetTagId={form.targetTagId || null}
-              tags={tags}
-              onAccountIdsChange={(ids) => setForm({ ...form, accountIds: ids })}
-              onDedupPriorityChange={(ids) => setForm({ ...form, dedupPriority: ids })}
-              onTargetTagIdChange={(id) => setForm({ ...form, targetTagId: id ?? '' })}
-              onRecipientCountChange={setDedupTargetCount}
             />
           )}
         </div>

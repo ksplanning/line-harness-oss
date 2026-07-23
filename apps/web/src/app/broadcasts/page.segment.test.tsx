@@ -5,6 +5,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   tagsList: vi.fn(),
+  selectedAccountId: 'acc-1',
 }))
 
 vi.mock('next/navigation', () => ({
@@ -12,7 +13,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
 vi.mock('@/contexts/account-context', () => ({
-  useAccount: () => ({ selectedAccountId: 'acc-1' }),
+  useAccount: () => ({ selectedAccountId: mocks.selectedAccountId }),
 }))
 vi.mock('@/lib/api', () => ({
   api: {
@@ -37,6 +38,7 @@ vi.mock('@/components/cc-prompt-button', () => ({ default: () => null }))
 import BroadcastsPage from './page'
 
 beforeEach(() => {
+  mocks.selectedAccountId = 'acc-1'
   mocks.list.mockResolvedValue({
     success: true,
     data: [{
@@ -72,5 +74,19 @@ describe('broadcast list segment target', () => {
     await waitFor(() => expect(screen.getByText('詳細条件の配信')).toBeTruthy())
     expect(screen.getByText('詳細条件')).toBeTruthy()
     expect(screen.queryByText('タグ指定')).toBeNull()
+  })
+
+  it('P2の複数アカウント配信タブを出さず、左上アカウントの一覧だけを表示する', async () => {
+    const view = render(<BroadcastsPage />)
+    await waitFor(() => expect(mocks.list).toHaveBeenCalledWith({ accountId: 'acc-1' }))
+
+    expect(screen.queryByRole('button', { name: /複アカ重複除外/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /単アカ配信/ })).toBeNull()
+
+    mocks.selectedAccountId = 'acc-2'
+    view.rerender(<BroadcastsPage />)
+    await waitFor(() => expect(mocks.list).toHaveBeenLastCalledWith({
+      accountId: 'acc-2',
+    }))
   })
 })

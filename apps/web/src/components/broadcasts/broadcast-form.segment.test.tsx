@@ -5,11 +5,17 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 const { createMock } = vi.hoisted(() => ({
   createMock: vi.fn(),
 }))
+const account = vi.hoisted(() => ({
+  selectedAccountId: 'acc-1',
+}))
 
 vi.mock('@/contexts/account-context', () => ({
   useAccount: () => ({
-    selectedAccountId: 'acc-1',
-    selectedAccount: { id: 'acc-1', stats: { friendCount: 10 } },
+    selectedAccountId: account.selectedAccountId,
+    selectedAccount: {
+      id: account.selectedAccountId,
+      stats: { friendCount: 10 },
+    },
   }),
 }))
 
@@ -66,25 +72,6 @@ vi.mock('./segment-builder', () => ({
   ),
 }))
 
-vi.mock('./multi-account-dedup-section', () => ({
-  default: ({
-    onAccountIdsChange,
-    onDedupPriorityChange,
-  }: {
-    onAccountIdsChange: (ids: string[]) => void
-    onDedupPriorityChange: (ids: string[]) => void
-  }) => (
-    <>
-      <button type="button" onClick={() => onAccountIdsChange(['acc-1', 'acc-2'])}>
-        __select_dedup_accounts__
-      </button>
-      <button type="button" onClick={() => onDedupPriorityChange(['acc-2', 'acc-1'])}>
-        __set_dedup_priority__
-      </button>
-    </>
-  ),
-}))
-
 vi.mock('./sender-select', () => ({ default: () => null }))
 vi.mock('./pack-insert-selector', () => ({ default: () => null }))
 vi.mock('@/components/shared/test-send-dialog', () => ({ default: () => null }))
@@ -95,6 +82,7 @@ import BroadcastForm from './broadcast-form'
 const tags = [{ id: 'tag-vip', name: 'VIP' } as never]
 
 beforeEach(() => {
+  account.selectedAccountId = 'acc-1'
   createMock.mockReset()
   createMock.mockResolvedValue({ success: true, data: { id: 'broadcast-1' } })
 })
@@ -102,13 +90,14 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 function renderForm() {
-  render(<BroadcastForm tags={tags} onSuccess={vi.fn()} onCancel={vi.fn()} />)
+  const view = render(<BroadcastForm tags={tags} onSuccess={vi.fn()} onCancel={vi.fn()} />)
   fireEvent.change(screen.getByPlaceholderText('例: 3月のキャンペーン告知'), {
     target: { value: '条件つき配信' },
   })
   fireEvent.change(screen.getByRole('textbox', { name: '本文' }), {
     target: { value: 'お知らせです' },
   })
+  return view
 }
 
 async function saveAndGetPayload(): Promise<Record<string, unknown>> {
@@ -149,10 +138,16 @@ describe('BroadcastForm segment target', () => {
     await saveAndGetPayload()
   })
 
-  it('keeps legacy all/tag/multi-account payloads free of segmentConditions', async () => {
+  it('独自の配信先アカウント選択を出さず、all/tag を選択中アカウントへ固定する', async () => {
     renderForm()
+    expect(screen.queryByRole('button', { name: '複数アカ重複除外' })).toBeNull()
+    expect(screen.queryByText('配信先アカウント')).toBeNull()
+
     let payload = await saveAndGetPayload()
     expect(payload.targetType).toBe('all')
+    expect(payload.lineAccountId).toBe('acc-1')
+    expect(payload).not.toHaveProperty('accountIds')
+    expect(payload).not.toHaveProperty('dedupPriority')
     expect(payload).not.toHaveProperty('segmentConditions')
 
     cleanup()
@@ -163,18 +158,19 @@ describe('BroadcastForm segment target', () => {
     payload = await saveAndGetPayload()
     expect(payload.targetType).toBe('tag')
     expect(payload.targetTagId).toBe('tag-vip')
+    expect(payload.lineAccountId).toBe('acc-1')
+    expect(payload).not.toHaveProperty('accountIds')
+    expect(payload).not.toHaveProperty('dedupPriority')
     expect(payload).not.toHaveProperty('segmentConditions')
 
     cleanup()
     createMock.mockClear()
-    renderForm()
-    fireEvent.click(screen.getByRole('button', { name: '複数アカ重複除外' }))
-    fireEvent.click(screen.getByRole('button', { name: '__select_dedup_accounts__' }))
-    fireEvent.click(screen.getByRole('button', { name: '__set_dedup_priority__' }))
+    const view = renderForm()
+    account.selectedAccountId = 'acc-2'
+    view.rerender(<BroadcastForm tags={tags} onSuccess={vi.fn()} onCancel={vi.fn()} />)
     payload = await saveAndGetPayload()
-    expect(payload.targetType).toBe('multi-account-dedup')
-    expect(payload.accountIds).toEqual(['acc-1', 'acc-2'])
-    expect(payload.dedupPriority).toEqual(['acc-2', 'acc-1'])
-    expect(payload).not.toHaveProperty('segmentConditions')
+    expect(payload.lineAccountId).toBe('acc-2')
+    expect(payload).not.toHaveProperty('accountIds')
+    expect(payload).not.toHaveProperty('dedupPriority')
   })
 })
