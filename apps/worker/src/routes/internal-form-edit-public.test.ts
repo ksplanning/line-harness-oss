@@ -419,6 +419,69 @@ describe('GET /ife/:token', () => {
     expect(html).not.toContain(pdfKey);
   });
 
+  test('re-enables a full single-file input when the saved file is marked for replacement', async () => {
+    seedForm({
+      definition: {
+        fields: [{
+          ...attachmentDefinition.fields[0],
+          config: { allowMultipleFiles: false, allowedExtensions: ['pdf'], maxSizeKb: 256 },
+        }],
+        logic: [],
+      },
+      allowBranchEdit: 1,
+    });
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(
+        'internal-form-submissions/form-1/attachment/existing.pdf',
+        'existing.pdf',
+        'application/pdf',
+      )],
+    });
+
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    const page = new DOMParser().parseFromString(html, 'text/html');
+    const capacityClient = page.querySelector<HTMLScriptElement>(
+      'script[data-edit-attachment-capacity-client]',
+    );
+
+    expect(capacityClient).not.toBeNull();
+    const runCapacityClient = () => new Function(
+      'document',
+      capacityClient?.textContent ?? '',
+    )(page);
+    if (capacityClient?.type === 'module') {
+      initInternalFormLogic(page);
+      runCapacityClient();
+    } else {
+      runCapacityClient();
+      initInternalFormLogic(page);
+    }
+    const input = page.querySelector<HTMLInputElement>('[data-file-input]')!;
+    const removal = page.querySelector<HTMLInputElement>('[data-existing-file-remove]')!;
+    expect(input.multiple).toBe(false);
+    expect(input.dataset.maxFiles).toBe('1');
+    expect(input.disabled).toBe(true);
+
+    removal.checked = true;
+    removal.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(input.disabled).toBe(false);
+
+    let selectedFiles: File[] = [new File(['new'], 'new.pdf', { type: 'application/pdf' })];
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      get: () => selectedFiles as unknown as FileList,
+    });
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    removal.checked = false;
+    removal.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(input.disabled).toBe(false);
+
+    selectedFiles = [];
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.disabled).toBe(true);
+  });
+
   test('renders an empty optional attachment input without changing a no-file edit page', async () => {
     seedForm({
       definition: {

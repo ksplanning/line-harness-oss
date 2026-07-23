@@ -274,7 +274,7 @@ function renderAttachmentField(
   const required = field.required && entries.length === 0 && initiallyVisible ? ' required' : '';
   const disabled = initiallyVisible ? '' : ' disabled';
   const requiredCopy = field.required ? '<span class="required">必須</span>' : '';
-  return `<div class="field attachment-field" data-file-attachment><span class="label">${escapeHtml(field.label)}${requiredCopy}</span><ul class="attachment-list existing-attachment-list" data-existing-file-list aria-label="保存済みファイル">${saved}</ul><label class="attachment-add-label" for="${id}">ファイルを追加</label><input type="file" id="${id}" name="${name}"${accept}${multiple}${requiredData}${required}${disabled} data-file-input data-logic-ignore data-max-files="${maxFiles}" data-max-size-kb="${maxSizeKb}" data-allowed-extensions="${extensions.join(',')}" aria-describedby="${id}-file-status"><p class="attachment-status" id="${id}-file-status" data-file-status role="alert" aria-live="polite" hidden></p><ul class="attachment-list" data-file-list aria-label="追加するファイル" aria-live="polite"></ul></div>`;
+  return `<div class="field attachment-field" data-file-attachment data-edit-file-capacity><span class="label">${escapeHtml(field.label)}${requiredCopy}</span><ul class="attachment-list existing-attachment-list" data-existing-file-list aria-label="保存済みファイル">${saved}</ul><label class="attachment-add-label" for="${id}">ファイルを追加</label><input type="file" id="${id}" name="${name}"${accept}${multiple}${requiredData}${required}${disabled} data-file-input data-logic-ignore data-max-files="${maxFiles}" data-max-size-kb="${maxSizeKb}" data-allowed-extensions="${extensions.join(',')}" aria-describedby="${id}-file-status"><p class="attachment-status" id="${id}-file-status" data-file-status role="alert" aria-live="polite" hidden></p><ul class="attachment-list" data-file-list aria-label="追加するファイル" aria-live="polite"></ul></div>`;
 }
 
 function formatReadOnlyValue(value: unknown): string {
@@ -330,6 +330,27 @@ function safeJsonForHtml(value: unknown): string {
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
 }
+
+const EDIT_ATTACHMENT_CAPACITY_CLIENT = `(() => {
+  for (const root of document.querySelectorAll('[data-edit-file-capacity]')) {
+    const input = root.querySelector('[data-file-input]');
+    if (!(input instanceof HTMLInputElement)) continue;
+    const maxFiles = Number(input.dataset.maxFiles);
+    if (!Number.isSafeInteger(maxFiles) || maxFiles < 1) continue;
+    const field = root.closest('[data-field-id]');
+    const eventRoot = root.closest('form') ?? root;
+    const syncCapacity = () => {
+      const retainedCount = [...root.querySelectorAll('[data-existing-file-remove]')]
+        .filter((control) => !control.checked).length;
+      const additionCount = input.files?.length ?? 0;
+      const hidden = field instanceof HTMLElement && field.hidden;
+      input.disabled = hidden || (additionCount === 0 && retainedCount >= maxFiles);
+    };
+    eventRoot.addEventListener('change', syncCapacity);
+    eventRoot.addEventListener('input', syncCapacity);
+    syncCapacity();
+  }
+})();`;
 
 function projectFixedLogicAnswer(value: unknown): unknown {
   const scalar = (entry: unknown): unknown => (
@@ -398,8 +419,11 @@ function renderEditPage(
   const clientAsset = allowBranchEdit || hasEditableAttachment
     ? '<script type="module" src="/assets/internal-form-logic.js" data-internal-form-logic-client></script>'
     : '';
+  const attachmentCapacityClient = hasEditableAttachment
+    ? `<script type="module" data-edit-attachment-capacity-client>${EDIT_ATTACHMENT_CAPACITY_CLIENT}</script>`
+    : '';
   const enctype = hasEditableAttachment ? ' enctype="multipart/form-data"' : '';
-  return renderDocument('回答の編集', `<h1>回答の編集</h1><p class="intro">${escapeHtml(value.form.title)}</p>${errorHtml}<form method="post"${enctype}${dynamicAttributes}><input type="hidden" name="editVersion" value="${value.submission.edit_version}">${rows}<button type="submit"${submitAttribute}>保存する</button></form>${logicConfig}${clientAsset}`);
+  return renderDocument('回答の編集', `<h1>回答の編集</h1><p class="intro">${escapeHtml(value.form.title)}</p>${errorHtml}<form method="post"${enctype}${dynamicAttributes}><input type="hidden" name="editVersion" value="${value.submission.edit_version}">${rows}<button type="submit"${submitAttribute}>保存する</button></form>${logicConfig}${clientAsset}${attachmentCapacityClient}`);
 }
 
 function renderSuccessPage(): string {
