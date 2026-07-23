@@ -13,8 +13,12 @@ const notificationMocks = vi.hoisted(() => ({
 const sheetsSyncMocks = vi.hoisted(() => ({
   syncSheetsAfterFormMutation: vi.fn(),
 }));
+const staffNotificationMocks = vi.hoisted(() => ({
+  dispatchStaffNotification: vi.fn(),
+}));
 
 vi.mock('../services/internal-submission-notifier.js', () => notificationMocks);
+vi.mock('../services/staff-notify/router.js', () => staffNotificationMocks);
 vi.mock('../services/sheets-sync-jobs.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/sheets-sync-jobs.js')>(),
   syncSheetsAfterFormMutation: sheetsSyncMocks.syncSheetsAfterFormMutation,
@@ -168,6 +172,7 @@ beforeEach(() => {
     line: { status: 'skipped', reason: 'disabled' },
     email: { status: 'skipped', reason: 'disabled' },
   });
+  staffNotificationMocks.dispatchStaffNotification.mockReset().mockResolvedValue([]);
   sheetsSyncMocks.syncSheetsAfterFormMutation.mockReset().mockResolvedValue(undefined);
   raw = new Database(':memory:');
   replayAll(raw);
@@ -423,6 +428,123 @@ function logicDefinition() {
 }
 
 describe('internal public form POST /f/:formId', () => {
+  test('fans out the accepted form event and keeps HTTP 200 when staff notification rejects', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-staff', 'channel-staff', 'Staff', 'token', 'secret')`).run();
+    seedForm('fa_staff_notify');
+    raw.prepare(
+      "UPDATE formaloo_forms SET line_account_id = 'acc-staff' WHERE id = 'fa_staff_notify'",
+    ).run();
+    staffNotificationMocks.dispatchStaffNotification.mockRejectedValueOnce(
+      new Error('private provider response'),
+    );
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const response = await postForm('fa_staff_notify', validBody());
+
+      expect(response.status).toBe(200);
+      const submission = raw.prepare(
+        "SELECT id FROM internal_form_submissions WHERE form_id = 'fa_staff_notify'",
+      ).get() as { id: string };
+      expect(staffNotificationMocks.dispatchStaffNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ DB }),
+        {
+          eventType: 'form_submitted',
+          lineAccountId: 'acc-staff',
+          name: '佐藤',
+          excerpt: 'よろしくお願いします',
+          deepLink: `https://worker.example.test/forms-advanced/data?id=fa_staff_notify&rowId=${submission.id}`,
+        },
+      );
+      expect(JSON.stringify(error.mock.calls)).not.toContain('private provider response');
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  test('skips email, phone, and address fields when choosing the notification excerpt', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-staff', 'channel-staff', 'Staff', 'token', 'secret')`).run();
+    seedForm('fa_staff_privacy', {
+      definition: {
+        fields: [
+          { id: 'name', type: 'text', label: 'お名前', required: true, position: 0, config: {} },
+          { id: 'email', type: 'email', label: 'メール', required: true, position: 1, config: {} },
+          { id: 'phone', type: 'phone', label: '電話', required: true, position: 2, config: {} },
+          { id: 'address', type: 'address', label: '住所', required: true, position: 3, config: {} },
+          { id: 'message', type: 'textarea', label: 'ご相談内容', required: false, position: 4, config: {} },
+        ],
+        logic: [],
+      },
+    });
+    raw.prepare(
+      "UPDATE formaloo_forms SET line_account_id = 'acc-staff' WHERE id = 'fa_staff_privacy'",
+    ).run();
+
+    const response = await postForm('fa_staff_privacy', new URLSearchParams({
+      a_0: '佐藤',
+      a_1: 'private@example.com',
+      a_2: '090-1111-2222',
+      a_3: '東京都千代田区1-1',
+      a_4: '予約について相談したいです',
+    }));
+
+    expect(response.status).toBe(200);
+    expect(staffNotificationMocks.dispatchStaffNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ DB }),
+      expect.objectContaining({
+        name: '佐藤',
+        excerpt: '予約について相談したいです',
+      }),
+    );
+    const payload = JSON.stringify(
+      staffNotificationMocks.dispatchStaffNotification.mock.calls[0]?.[1],
+    );
+    expect(payload).not.toContain('private@example.com');
+    expect(payload).not.toContain('090-1111-2222');
+    expect(payload).not.toContain('東京都千代田区1-1');
+  });
+
+  test('returns the accepted form response without waiting for a slow staff provider', async () => {
+    raw.prepare(`INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+      VALUES ('acc-staff', 'channel-staff', 'Staff', 'token', 'secret')`).run();
+    seedForm('fa_staff_async');
+    raw.prepare(
+      "UPDATE formaloo_forms SET line_account_id = 'acc-staff' WHERE id = 'fa_staff_async'",
+    ).run();
+    let releaseDispatch!: () => void;
+    staffNotificationMocks.dispatchStaffNotification.mockImplementationOnce(
+      () => new Promise<never[]>((resolve) => {
+        releaseDispatch = () => resolve([]);
+      }),
+    );
+    const pending: Promise<unknown>[] = [];
+    const executionCtx = {
+      waitUntil(promise: Promise<unknown>) { pending.push(promise); },
+    } as unknown as ExecutionContext;
+
+    const responsePromise = app().fetch(new Request(
+      'https://worker.example.test/f/fa_staff_async',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: validBody().toString(),
+      },
+    ), env(), executionCtx);
+    const observed = await Promise.race([
+      responsePromise,
+      new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 25)),
+    ]);
+    releaseDispatch();
+
+    expect(observed).not.toBe('blocked');
+    expect((await responsePromise).status).toBe(200);
+    await expect(Promise.all(pending)).resolves.toEqual(
+      pending.map(() => undefined),
+    );
+  });
+
   test('queues an immediate Sheets sync in waitUntil after an accepted answer', async () => {
     seedForm('fa_internal');
     raw.prepare("UPDATE formaloo_forms SET line_account_id = 'acc-1' WHERE id = 'fa_internal'").run();
@@ -455,7 +577,7 @@ describe('internal public form POST /f/:formId', () => {
     }), env({ GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), executionCtx);
 
     expect(response.status).toBe(200);
-    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(waitUntil).toHaveBeenCalledTimes(2);
     await Promise.all(pending);
     expect(sheetsSyncMocks.syncSheetsAfterFormMutation).toHaveBeenCalledWith(expect.objectContaining({
       db: DB,
@@ -511,7 +633,7 @@ describe('internal public form POST /f/:formId', () => {
     }), env({ GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), executionCtx);
 
     expect(response.status).toBe(200);
-    await expect(Promise.all(pending)).resolves.toEqual([undefined]);
+    await expect(Promise.all(pending)).resolves.toEqual([undefined, undefined]);
     expect(raw.prepare('SELECT COUNT(*) AS count FROM internal_form_submissions').get()).toEqual({ count: 1 });
     expect(error).toHaveBeenCalledWith('Immediate Google Sheets sync after form submission failed');
   });

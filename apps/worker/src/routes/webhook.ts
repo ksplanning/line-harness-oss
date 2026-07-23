@@ -32,9 +32,28 @@ import {
 } from '../services/auto-reply-keyword-match.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { createFaqAiRuntime, type FaqAiRuntime } from '../services/llm/runtime.js';
+import { tryLinkStaffLineFromWebhook } from '../services/staff-notify/line-link.js';
+import { dispatchStaffNotification } from '../services/staff-notify/router.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
+
+function queueStaffNotification(
+  env: Env['Bindings'],
+  queueWork: ((work: Promise<void>) => void) | undefined,
+  payload: Parameters<typeof dispatchStaffNotification>[1],
+): void {
+  const work = dispatchStaffNotification(env, payload)
+    .then(() => undefined)
+    .catch(() => {
+      console.error('[staff-notify] inquiry dispatch failed');
+    });
+  if (queueWork) {
+    queueWork(work);
+  } else {
+    void work;
+  }
+}
 
 // LINE webhook bodies are small (events array). Cap defends against unauthenticated
 // large-payload DoS before signature verification (#104). 1 MiB leaves room for
@@ -174,13 +193,28 @@ webhook.post('/webhook', async (c) => {
 
   // 非同期処理 — LINE は ~1s 以内のレスポンスを要求
   const processingPromise = (async () => {
+    const staffNotificationWork: Promise<void>[] = [];
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES, c.env.FAQ_BOT_ENABLED, faqAiRuntime);
+        await handleEvent(
+          db,
+          lineClient,
+          event,
+          channelAccessToken,
+          matchedAccountId,
+          c.env.WORKER_URL || new URL(c.req.url).origin,
+          c.env.LIFF_URL,
+          c.env.IMAGES,
+          c.env.FAQ_BOT_ENABLED,
+          faqAiRuntime,
+          c.env,
+          (work) => staffNotificationWork.push(work),
+        );
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
     }
+    await Promise.all(staffNotificationWork);
   })();
 
   c.executionCtx.waitUntil(processingPromise);
@@ -199,6 +233,8 @@ async function handleEvent(
   r2?: R2Bucket,
   faqBotEnabled?: string,
   faqAiRuntime?: FaqAiRuntime | null,
+  staffNotifyEnv?: Env['Bindings'],
+  queueStaffNotificationWork?: (work: Promise<void>) => void,
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -536,19 +572,73 @@ async function handleEvent(
       )
       .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, jstNow())
       .run();
+
+    if (lineAccountId && staffNotifyEnv) {
+      const adminBase = (
+        staffNotifyEnv.ADMIN_PUBLIC_URL
+        || staffNotifyEnv.WORKER_URL
+        || workerUrl
+        || ''
+      ).replace(/\/+$/, '');
+      const notificationExcerpt = msg.type === 'file'
+        ? '[ファイル]'
+        : msg.type === 'location'
+          ? '[位置情報]'
+          : content;
+      queueStaffNotification(
+        staffNotifyEnv,
+        queueStaffNotificationWork,
+        {
+          eventType: 'inquiry_received',
+          lineAccountId,
+          name: friend.display_name?.trim() || '名前未設定',
+          excerpt: notificationExcerpt,
+          deepLink: `${adminBase}/chats?friend=${encodeURIComponent(friend.id)}`,
+        },
+      );
+    }
     return;
   }
 
   if (event.type === 'message' && event.message.type === 'text') {
     const textMessage = event.message as TextEventMessage;
+    const incomingText = textMessage.text;
     const userId =
       event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
+    if (lineAccountId) {
+      let linkStatus: 'not_handled' | 'linked' | 'invalid_code' = 'not_handled';
+      try {
+        const result = await tryLinkStaffLineFromWebhook(db, {
+          lineAccountId,
+          lineUserId: userId,
+          text: incomingText,
+        });
+        linkStatus = result.status;
+      } catch {
+        // A staff-link lookup is optional. Losing a customer event is not.
+        console.error('[staff-notify] LINE link lookup failed; continuing customer event');
+      }
+      if (linkStatus === 'linked' || linkStatus === 'invalid_code') {
+        const replyText = linkStatus === 'linked'
+          ? 'スタッフ通知の連携が完了しました。'
+          : '連携コードが無効か、期限が切れています。管理画面で新しいコードを発行してください。';
+        try {
+          await lineClient.replyMessage(event.replyToken, [{
+            type: 'text',
+            text: replyText,
+          }]);
+        } catch {
+          console.error('[staff-notify] LINE link result reply failed');
+        }
+        return;
+      }
+    }
+
     const friend = await ensureFriendFromWebhookUser(db, lineClient, userId, lineAccountId);
     if (!friend) return;
 
-    const incomingText = textMessage.text;
     const now = jstNow();
     const logId = crypto.randomUUID();
 
@@ -630,6 +720,26 @@ async function handleEvent(
       )
       .bind(logId, friend.id, incomingText, incomingSource, now)
       .run();
+
+    if (lineAccountId && staffNotifyEnv) {
+      const adminBase = (
+        staffNotifyEnv.ADMIN_PUBLIC_URL
+        || staffNotifyEnv.WORKER_URL
+        || workerUrl
+        || ''
+      ).replace(/\/+$/, '');
+      queueStaffNotification(
+        staffNotifyEnv,
+        queueStaffNotificationWork,
+        {
+          eventType: 'inquiry_received',
+          lineAccountId,
+          name: friend.display_name?.trim() || '名前未設定',
+          excerpt: incomingText,
+          deepLink: `${adminBase}/chats?friend=${encodeURIComponent(friend.id)}`,
+        },
+      );
+    }
 
     if (responseScheduleLoadFailed) {
       await upsertChatOnMessage(db, friend.id);

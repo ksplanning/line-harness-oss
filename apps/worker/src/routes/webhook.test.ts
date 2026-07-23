@@ -7,12 +7,18 @@ const lineClientMocks = vi.hoisted(() => ({
   pushMessage: vi.fn(),
 }));
 
+const staffNotificationMocks = vi.hoisted(() => ({
+  dispatchStaffNotification: vi.fn(),
+  tryLinkStaffLineFromWebhook: vi.fn(),
+}));
+
 // Stub the DB graph — these tests focus on webhook guard behavior and the
 // first-contact friend registration path without touching real D1/LINE.
 vi.mock('@line-crm/db', () => ({
   upsertFriend: vi.fn(),
   updateFriendFollowStatus: vi.fn(),
   getFriendByLineUserId: vi.fn(),
+  getFriendById: vi.fn(),
   getScenarios: vi.fn(),
   enrollFriendInScenario: vi.fn(),
   getScenarioSteps: vi.fn(),
@@ -54,6 +60,14 @@ vi.mock('../services/faq-reply.js', () => ({
   tryFaqReply: vi.fn(),
 }));
 
+vi.mock('../services/staff-notify/router.js', () => ({
+  dispatchStaffNotification: staffNotificationMocks.dispatchStaffNotification,
+}));
+
+vi.mock('../services/staff-notify/line-link.js', () => ({
+  tryLinkStaffLineFromWebhook: staffNotificationMocks.tryLinkStaffLineFromWebhook,
+}));
+
 vi.mock('../services/step-delivery.js', () => ({
   buildMessage: vi.fn(),
   expandVariables: vi.fn(),
@@ -73,6 +87,7 @@ import {
   enrollFriendInScenario,
   getEntryRouteByRefCode,
   getFriendByLineUserId,
+  getFriendById,
   getLineAccounts,
   getMessageTemplateById,
   getScenarioSteps,
@@ -111,6 +126,10 @@ const baseExecutionCtx = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getLineAccounts).mockResolvedValue([]);
+  staffNotificationMocks.dispatchStaffNotification.mockResolvedValue([]);
+  staffNotificationMocks.tryLinkStaffLineFromWebhook.mockResolvedValue({
+    status: 'not_handled',
+  });
 });
 
 describe('POST /webhook — DoS defenses (#104)', () => {
@@ -317,6 +336,278 @@ describe('POST /webhook — first-contact existing friends', () => {
     expect(addTagToFriend).not.toHaveBeenCalled();
     expect(getEntryRouteByRefCode).not.toHaveBeenCalled();
     expect(getMessageTemplateById).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /webhook — isolated staff LINE linkage and inquiry notifications', () => {
+  function account() {
+    vi.mocked(getLineAccounts).mockResolvedValue([{
+      id: 'account-1',
+      is_active: 1,
+      channel_secret: 'env-default-secret',
+      channel_access_token: 'account-token',
+    }] as never);
+  }
+
+  function existingFriend() {
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U-customer',
+      display_name: '顧客兼スタッフ',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: null,
+      line_account_id: 'account-1',
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-07-23T10:00:00+09:00',
+      updated_at: '2026-07-23T10:00:00+09:00',
+    });
+  }
+
+  async function postEvent(
+    event: Record<string, unknown>,
+    options: { awaitProcessing?: boolean } = {},
+  ) {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    const statement = {
+      bind: vi.fn(),
+      run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+      first: vi.fn().mockResolvedValue(null),
+    };
+    statement.bind.mockReturnValue(statement);
+    const db = {
+      prepare: vi.fn().mockReturnValue(statement),
+    } as unknown as D1Database;
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const response = await setupApp().request('/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Line-Signature': 'A'.repeat(43) + '=',
+      },
+      body: JSON.stringify({
+        destination: 'bot',
+        events: [event],
+      }),
+    }, {
+      ...baseEnv,
+      DB: db,
+      ADMIN_PUBLIC_URL: 'https://admin.example.test',
+    }, executionCtx);
+    expect(response.status).toBe(200);
+    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
+    if (options.awaitProcessing !== false) await processing;
+    return { db, processing };
+  }
+
+  test('valid linkage command is consumed before any friends or customer-message mutation', async () => {
+    account();
+    staffNotificationMocks.tryLinkStaffLineFromWebhook.mockResolvedValueOnce({
+      status: 'linked',
+    });
+
+    const { db } = await postEvent({
+      type: 'message',
+      replyToken: 'reply-link',
+      message: { type: 'text', id: 'message-link', text: '通知連携 ABCD2345' },
+      timestamp: Date.now(),
+      source: { type: 'user', userId: 'U-customer' },
+      webhookEventId: 'event-link',
+      deliveryContext: { isRedelivery: false },
+      mode: 'active',
+    });
+
+    expect(staffNotificationMocks.tryLinkStaffLineFromWebhook).toHaveBeenCalledWith(
+      db,
+      {
+        lineAccountId: 'account-1',
+        lineUserId: 'U-customer',
+        text: '通知連携 ABCD2345',
+      },
+    );
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith(
+      'reply-link',
+      [{ type: 'text', text: expect.stringContaining('連携') }],
+    );
+    expect(getFriendByLineUserId).not.toHaveBeenCalled();
+    expect(upsertFriend).not.toHaveBeenCalled();
+    expect(db.prepare).not.toHaveBeenCalled();
+    expect(fireEvent).not.toHaveBeenCalled();
+    expect(staffNotificationMocks.dispatchStaffNotification).not.toHaveBeenCalled();
+  });
+
+  test('link lookup and notification failures fail open without losing the customer message', async () => {
+    account();
+    existingFriend();
+    vi.mocked(upsertChatOnMessage).mockResolvedValue({ id: 'chat-1' } as never);
+    staffNotificationMocks.tryLinkStaffLineFromWebhook.mockRejectedValueOnce(
+      new Error('private lookup detail'),
+    );
+    staffNotificationMocks.dispatchStaffNotification.mockRejectedValueOnce(
+      new Error('provider private detail'),
+    );
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const { db } = await postEvent({
+        type: 'message',
+        replyToken: 'reply-customer',
+        message: { type: 'text', id: 'message-customer', text: '問い合わせ本文' },
+        timestamp: Date.now(),
+        source: { type: 'user', userId: 'U-customer' },
+        webhookEventId: 'event-customer',
+        deliveryContext: { isRedelivery: false },
+        mode: 'active',
+      });
+
+      expect(getFriendByLineUserId).toHaveBeenCalledWith(db, 'U-customer');
+      expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+      expect(fireEvent).toHaveBeenCalledWith(
+        db,
+        'message_received',
+        expect.objectContaining({ friendId: 'friend-1' }),
+        'account-token',
+        'account-1',
+      );
+      expect(staffNotificationMocks.dispatchStaffNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ DB: db }),
+        {
+          eventType: 'inquiry_received',
+          lineAccountId: 'account-1',
+          name: '顧客兼スタッフ',
+          excerpt: '問い合わせ本文',
+          deepLink: 'https://admin.example.test/chats?friend=friend-1',
+        },
+      );
+      expect(JSON.stringify(error.mock.calls)).not.toContain('private lookup detail');
+      expect(JSON.stringify(error.mock.calls)).not.toContain('provider private detail');
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  test('a slow staff provider does not delay the customer message event bus', async () => {
+    account();
+    existingFriend();
+    vi.mocked(upsertChatOnMessage).mockResolvedValue({ id: 'chat-1' } as never);
+    let releaseDispatch!: () => void;
+    staffNotificationMocks.dispatchStaffNotification.mockImplementationOnce(
+      () => new Promise<never[]>((resolve) => {
+        releaseDispatch = () => resolve([]);
+      }),
+    );
+
+    const { db, processing } = await postEvent({
+      type: 'message',
+      replyToken: 'reply-customer',
+      message: { type: 'text', id: 'message-customer', text: '問い合わせ本文' },
+      timestamp: Date.now(),
+      source: { type: 'user', userId: 'U-customer' },
+      webhookEventId: 'event-customer',
+      deliveryContext: { isRedelivery: false },
+      mode: 'active',
+    }, { awaitProcessing: false });
+
+    try {
+      await vi.waitFor(() => {
+        expect(fireEvent).toHaveBeenCalledWith(
+          db,
+          'message_received',
+          expect.objectContaining({ friendId: 'friend-1' }),
+          'account-token',
+          'account-1',
+        );
+      }, { timeout: 100 });
+    } finally {
+      releaseDispatch();
+      await processing;
+    }
+  });
+
+  test('fans out a non-text inquiry with a bounded type label after storing it', async () => {
+    account();
+    existingFriend();
+
+    const { db } = await postEvent({
+      type: 'message',
+      replyToken: 'reply-image',
+      message: { type: 'image', id: 'message-image' },
+      timestamp: Date.now(),
+      source: { type: 'user', userId: 'U-customer' },
+      webhookEventId: 'event-image',
+      deliveryContext: { isRedelivery: false },
+      mode: 'active',
+    });
+
+    expect(staffNotificationMocks.dispatchStaffNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ DB: db }),
+      {
+        eventType: 'inquiry_received',
+        lineAccountId: 'account-1',
+        name: '顧客兼スタッフ',
+        excerpt: '[画像]',
+        deepLink: 'https://admin.example.test/chats?friend=friend-1',
+      },
+    );
+  });
+
+  test('follow never depends on staff-link lookup and keeps the customer follow path', async () => {
+    account();
+    lineClientMocks.getProfile.mockResolvedValue({
+      userId: 'U-customer',
+      displayName: '顧客兼スタッフ',
+    });
+    vi.mocked(upsertFriend).mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U-customer',
+      display_name: '顧客兼スタッフ',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: null,
+      line_account_id: 'account-1',
+      metadata: '{}',
+      first_tracked_link_id: null,
+      ref_code: 'known-ref',
+      created_at: '2026-07-23T10:00:00+09:00',
+      updated_at: '2026-07-23T10:00:00+09:00',
+    } as never);
+    vi.mocked(getFriendById).mockResolvedValue({
+      id: 'friend-1',
+      ref_code: 'known-ref',
+    } as never);
+    vi.mocked(getEntryRouteByRefCode).mockResolvedValue(null);
+    vi.mocked(getScenarios).mockResolvedValue([]);
+
+    const { db } = await postEvent({
+      type: 'follow',
+      replyToken: 'reply-follow',
+      timestamp: Date.now(),
+      source: { type: 'user', userId: 'U-customer' },
+      webhookEventId: 'event-follow',
+      deliveryContext: { isRedelivery: false },
+      mode: 'active',
+    });
+
+    expect(staffNotificationMocks.tryLinkStaffLineFromWebhook).not.toHaveBeenCalled();
+    expect(upsertFriend).toHaveBeenCalledWith(db, expect.objectContaining({
+      lineUserId: 'U-customer',
+    }));
+    expect(fireEvent).toHaveBeenCalledWith(
+      db,
+      'friend_add',
+      expect.objectContaining({ friendId: 'friend-1' }),
+      'account-token',
+      'account-1',
+    );
   });
 });
 

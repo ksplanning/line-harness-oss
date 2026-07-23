@@ -25,6 +25,7 @@ import {
 import { signFriendToken, verifyFriendToken } from '../services/formaloo-friend-token.js';
 import { notifyInternalFormSubmission } from '../services/internal-submission-notifier.js';
 import { syncSheetsAfterFormMutation } from '../services/sheets-sync-jobs.js';
+import { dispatchStaffNotification } from '../services/staff-notify/router.js';
 import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
 import {
   evaluateInternalFormAvailability,
@@ -65,6 +66,62 @@ function queueSheetsSyncAfterSubmission(
     c.executionCtx.waitUntil(work);
   } catch {
     console.error('Immediate Google Sheets sync after form submission failed');
+  }
+}
+
+function answerSummary(
+  definition: InternalFormDefinition,
+  answers: Record<string, unknown>,
+  friendName: string | null | undefined,
+): { name: string; excerpt: string } {
+  const textValue = (fieldId: string): string | null => {
+    const value = answers[fieldId];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (Array.isArray(value)) {
+      const joined = value.filter((item): item is string => typeof item === 'string').join('、').trim();
+      return joined || null;
+    }
+    return null;
+  };
+  const nameField = definition.fields.find((field) => /名前|氏名|name/i.test(field.label));
+  const name = friendName?.trim()
+    || (nameField ? textValue(nameField.id) : null)
+    || '申込者';
+  const safeExcerptTypes = new Set([
+    'text',
+    'textarea',
+    'choice',
+    'dropdown',
+    'multiple_select',
+  ]);
+  const sensitiveLabel = /メール|email|電話|phone|住所|address|署名|signature|ファイル|file|生年月日|誕生日/i;
+  const excerptField = definition.fields.find((field) => (
+    field.id !== nameField?.id
+    && safeExcerptTypes.has(field.type)
+    && !sensitiveLabel.test(field.label)
+    && textValue(field.id)
+  ));
+  return {
+    name,
+    excerpt: (excerptField ? textValue(excerptField.id) : null) || 'フォーム申込み',
+  };
+}
+
+function queueStaffNotification(
+  c: Context<Env>,
+  payload: Parameters<typeof dispatchStaffNotification>[1],
+): void {
+  const work = dispatchStaffNotification(c.env, payload)
+    .catch(() => {
+      console.error('[staff-notify] form dispatch failed');
+    })
+    .then(() => undefined);
+  try {
+    c.executionCtx.waitUntil(work);
+  } catch {
+    // The promise already has a rejection handler. Production Workers always
+    // provide waitUntil; this fallback keeps local/direct invocations fail-safe.
+    console.error('[staff-notify] form dispatch scheduling failed');
   }
 }
 
@@ -1128,6 +1185,26 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         return submissionConflictResponse(c.env.DB, runtime);
       }
       queueSheetsSyncAfterSubmission(c, runtime.form, submission.id);
+
+      if (runtime.form.line_account_id) {
+        const summary = answerSummary(
+          runtime.definition,
+          answers,
+          friend?.display_name,
+        );
+        const adminBase = (
+          c.env.ADMIN_PUBLIC_URL
+          || c.env.WORKER_URL
+          || new URL(c.req.url).origin
+        ).replace(/\/+$/, '');
+        queueStaffNotification(c, {
+          eventType: 'form_submitted',
+          lineAccountId: runtime.form.line_account_id,
+          name: summary.name,
+          excerpt: summary.excerpt,
+          deepLink: `${adminBase}/forms-advanced/data?id=${encodeURIComponent(runtime.form.id)}&rowId=${encodeURIComponent(submission.id)}`,
+        });
+      }
 
       let notification: Awaited<ReturnType<typeof notifyInternalFormSubmission>>;
       try {
