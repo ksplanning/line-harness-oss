@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   pathname: '/broadcasts',
   staffMe: vi.fn(),
   legacyUsage: vi.fn(),
+  unansweredCount: vi.fn(),
+  unansweredTotal: 0,
 }))
 
 vi.mock('next/link', () => ({
@@ -19,7 +21,7 @@ vi.mock('@/lib/api', () => ({
   api: {
     staff: { me: (...args: unknown[]) => mocks.staffMe(...args) },
     forms: { legacyUsage: (...args: unknown[]) => mocks.legacyUsage(...args) },
-    inbox: { unanswered: { count: vi.fn().mockResolvedValue({ success: true, data: { total: 0 } }) } },
+    inbox: { unanswered: { count: (...args: unknown[]) => mocks.unansweredCount(...args) } },
   },
 }))
 
@@ -49,6 +51,12 @@ beforeEach(() => {
     data: { id: 'owner-1', name: 'owner', email: null, role: 'owner', roleId: null, permissions: [] },
   })
   mocks.legacyUsage.mockResolvedValue({ success: true, data: { formCount: 1, submissionCount: 0 } })
+  mocks.unansweredCount.mockReset()
+  mocks.unansweredTotal = 0
+  mocks.unansweredCount.mockImplementation(async () => ({
+    success: true,
+    data: { total: mocks.unansweredTotal },
+  }))
 })
 
 afterEach(() => {
@@ -118,6 +126,33 @@ describe('Sidebar セクション折りたたみ', () => {
     const legacyLinks = screen.getAllByRole('link', { name: '未対応' })
     expect(legacyLinks).toHaveLength(2)
     for (const link of legacyLinks) expect(link.getAttribute('href')).toBe('/notifications')
+  })
+
+  it('画面遷移時に正本 count を再取得し、自動応答後の古い数字を残さない', async () => {
+    mocks.unansweredTotal = 1
+
+    const { rerender } = render(<Sidebar />)
+    await waitFor(() => expect(screen.getAllByText('1')).toHaveLength(2))
+
+    mocks.unansweredTotal = 0
+    mocks.pathname = '/chats'
+    rerender(<Sidebar />)
+
+    await waitFor(() => expect(mocks.unansweredCount).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByText('1')).toBeNull())
+  })
+
+  it('windowへfocusを戻した時も正本 count を再取得する', async () => {
+    mocks.unansweredTotal = 1
+
+    render(<Sidebar />)
+    await waitFor(() => expect(screen.getAllByText('1')).toHaveLength(2))
+
+    mocks.unansweredTotal = 0
+    window.dispatchEvent(new Event('focus'))
+
+    await waitFor(() => expect(mocks.unansweredCount).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByText('1')).toBeNull())
   })
 
   it('見出しごとに独立して開閉し、既知のセクションid配列を保存する', () => {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 const apiMocks = vi.hoisted(() => ({
   listChats: vi.fn(),
@@ -137,6 +137,7 @@ const chat = {
   friendPictureUrl: null,
   operatorId: null,
   status: 'in_progress' as const,
+  isUnanswered: false,
   notes: null,
   lastMessageAt: '2026-07-21T10:00:00+09:00',
   lastMessageContent: '営業時間は？',
@@ -230,6 +231,123 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done })
   return { promise, resolve }
 }
+
+describe('個別チャット一覧の未対応表示', () => {
+  it('keyword自動応答済み・keep_unresponded・人間未対応を正本フラグだけで描き分ける', async () => {
+    apiMocks.listChats.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          ...chat,
+          id: 'auto-replied',
+          friendId: 'auto-replied',
+          friendName: '自動応答済み',
+          status: 'unread',
+          isUnanswered: false,
+        },
+        {
+          ...chat,
+          id: 'keep-unresponded',
+          friendId: 'keep-unresponded',
+          friendName: '確認を残す',
+          status: 'resolved',
+          isUnanswered: true,
+        },
+        {
+          ...chat,
+          id: 'human-unanswered',
+          friendId: 'human-unanswered',
+          friendName: '人間の未対応',
+          status: 'in_progress',
+          isUnanswered: true,
+        },
+      ],
+    })
+
+    render(<ChatsPage />)
+
+    const autoReplied = await screen.findByRole('button', { name: /自動応答済み/ })
+    const keepUnresponded = screen.getByRole('button', { name: /確認を残す/ })
+    const humanUnanswered = screen.getByRole('button', { name: /人間の未対応/ })
+    expect(autoReplied.querySelector('.bg-red-500')).toBeNull()
+    expect(keepUnresponded.querySelector('.bg-red-500')?.getAttribute('aria-label')).toBe('未対応')
+    expect(humanUnanswered.querySelector('.bg-red-500')?.getAttribute('aria-label')).toBe('未対応')
+  })
+
+  it('focusで一覧を再取得し、自動応答完了後の赤丸を消す', async () => {
+    apiMocks.listChats
+      .mockResolvedValueOnce({
+        success: true,
+        data: [{ ...chat, status: 'unread', isUnanswered: true }],
+      })
+      .mockResolvedValue({
+        success: true,
+        data: [{ ...chat, status: 'unread', isUnanswered: false }],
+      })
+
+    render(<ChatsPage />)
+
+    const row = await screen.findByRole('button', { name: /あやこ/ })
+    expect(row.querySelector('.bg-red-500')).toBeTruthy()
+
+    window.dispatchEvent(new Event('focus'))
+
+    await waitFor(() => expect(apiMocks.listChats).toHaveBeenCalledTimes(2))
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /あやこ/ }).querySelector('.bg-red-500')).toBeNull()
+    })
+  })
+
+  it('初回取得中のfocus再取得が先に完了しても一覧のloadingを解除する', async () => {
+    const initial = deferred<{ success: true; data: typeof chat[] }>()
+    apiMocks.listChats
+      .mockReturnValueOnce(initial.promise)
+      .mockResolvedValueOnce({ success: true, data: [chat] })
+
+    const { container } = render(<ChatsPage />)
+    expect(container.querySelectorAll('.animate-pulse')).toHaveLength(5)
+
+    window.dispatchEvent(new Event('focus'))
+    await waitFor(() => expect(apiMocks.listChats).toHaveBeenCalledTimes(2))
+    initial.resolve({ success: true, data: [] })
+
+    expect(await screen.findByRole('button', { name: /あやこ/ })).toBeTruthy()
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+  })
+
+  it('background再取得の一時失敗では既存一覧へエラーを重ねない', async () => {
+    apiMocks.listChats
+      .mockResolvedValueOnce({ success: true, data: [chat] })
+      .mockRejectedValueOnce(new Error('temporary polling failure'))
+
+    render(<ChatsPage />)
+    expect(await screen.findByRole('button', { name: /あやこ/ })).toBeTruthy()
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.listChats).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText('チャットの読み込みに失敗しました。もう一度お試しください。')).toBeNull()
+    expect(screen.getByRole('button', { name: /あやこ/ })).toBeTruthy()
+  })
+
+  it('deep-linkで一覧外の人間未対応を詳細APIの正本フラグ付きで補完する', async () => {
+    window.history.replaceState(null, '', '/chats?friend=friend-1')
+    apiMocks.listChats.mockResolvedValue({ success: true, data: [] })
+    apiMocks.getChat.mockResolvedValue({
+      success: true,
+      data: { ...detail([]), status: 'resolved', isUnanswered: true },
+    })
+
+    render(<ChatsPage />)
+
+    const row = await screen.findByRole('button', { name: /あやこ/ })
+    expect(apiMocks.getChat).toHaveBeenCalledWith('friend-1')
+    expect(row.querySelector('.bg-red-500')?.getAttribute('aria-label')).toBe('未対応')
+  })
+})
 
 describe('個別チャットのインラインAI下書き', () => {
   it('該当質問の直後へ点線枠とAI下書きバッジで表示する', async () => {

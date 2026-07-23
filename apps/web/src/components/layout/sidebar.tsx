@@ -14,6 +14,7 @@ const appCommitSha = process.env.APP_COMMIT_SHA || 'local'
 const appBuildTime = process.env.APP_BUILD_TIME || ''
 const appBuildDate = appBuildTime ? appBuildTime.replace('T', ' ').replace(/\.\d{3}Z$/, 'Z') : ''
 const SIDEBAR_SECTIONS_STORAGE_KEY = 'line-harness:sidebar-expanded-sections'
+const UNANSWERED_POLL_INTERVAL_MS = 30_000
 
 // ─── メニュー定義（ユーザー目線のカテゴリ） ───
 
@@ -310,26 +311,35 @@ export default function Sidebar() {
     return () => { cancelled = true }
   }, [])
 
-  // 未対応件数 polling — メニュー項目にバッジを出す。5 分間隔。
+  // 未対応一覧と同じ30秒周期 + 画面遷移/focusで正本を再取得する。
   const [unansweredCount, setUnansweredCount] = useState<number>(0)
+  const unansweredRequestSequenceRef = useRef(0)
   useEffect(() => {
     let cancelled = false
     const fetchCount = async () => {
+      const sequence = ++unansweredRequestSequenceRef.current
       try {
-        const { api } = await import('@/lib/api')
-        const res = await api.inbox.unanswered.count()
-        if (!cancelled && res.success) setUnansweredCount(res.data.total)
+        const res = await webApi.inbox.unanswered.count()
+        if (
+          !cancelled
+          && sequence === unansweredRequestSequenceRef.current
+          && res.success
+        ) {
+          setUnansweredCount(res.data.total)
+        }
       } catch {
         // サイレント失敗
       }
     }
-    fetchCount()
-    const id = setInterval(fetchCount, 5 * 60_000)
+    void fetchCount()
+    const id = window.setInterval(fetchCount, UNANSWERED_POLL_INTERVAL_MS)
+    window.addEventListener('focus', fetchCount)
     return () => {
       cancelled = true
-      clearInterval(id)
+      window.clearInterval(id)
+      window.removeEventListener('focus', fetchCount)
     }
-  }, [])
+  }, [pathname])
 
   useEffect(() => { setIsOpen(false) }, [pathname])
   useEffect(() => {

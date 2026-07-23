@@ -42,6 +42,7 @@ const chat = {
   friendPictureUrl: null,
   operatorId: null,
   status: 'in_progress' as const,
+  isUnanswered: false,
   notes: null,
   lastMessageAt: '2026-07-19T01:02:00.000Z',
   lastMessageContent: '元の履歴メッセージ',

@@ -25,6 +25,7 @@ interface Chat {
   friendPictureUrl: string | null
   operatorId: string | null
   status: 'unread' | 'in_progress' | 'resolved'
+  isUnanswered: boolean
   notes: string | null
   lastMessageAt: string | null
   lastMessageContent: string | null
@@ -76,6 +77,7 @@ const statusFilters: { key: StatusFilter; label: string }[] = [
 const SHOW_LOADING_PREF_KEY = 'lh_chat_show_loading_indicator'
 const LOADING_SECONDS_PREF_KEY = 'lh_chat_loading_seconds'
 const LOADING_REFRESH_INTERVAL_MS = 4000
+const CHAT_LIST_POLL_INTERVAL_MS = 30_000
 
 function StickerMessageImage({ content }: { content: string }) {
   const [failed, setFailed] = useState(false)
@@ -625,6 +627,7 @@ export default function ChatsPage() {
   const [showImageUploader, setShowImageUploader] = useState(false)
   const [sending, setSending] = useState(false)
   const sendLockRef = useRef(false)
+  const chatListRequestSequenceRef = useRef(0)
   const detailRequestSequenceRef = useRef(0)
   const draftReviewSyncSourceIdRef = useRef(`chats-${Math.random().toString(36).slice(2)}`)
   const [notes, setNotes] = useState('')
@@ -671,22 +674,34 @@ export default function ChatsPage() {
     }
   }, [showLoadingIndicator, loadingSeconds])
 
-  const loadChats = useCallback(async () => {
-    setLoading(true)
-    setError('')
+  const loadChats = useCallback(async (background = false) => {
+    const requestSequence = ++chatListRequestSequenceRef.current
+    if (!background) {
+      setLoading(true)
+      setError('')
+    }
     try {
       const params: { status?: string; accountId?: string; unansweredOnly?: boolean } = {}
       if (statusFilter !== 'all' && !unansweredOnly) params.status = statusFilter
       if (selectedAccountId) params.accountId = selectedAccountId
       if (unansweredOnly) params.unansweredOnly = true
       const chatRes = await api.chats.list(params)
-      if (chatRes.success) {
+      if (requestSequence === chatListRequestSequenceRef.current && chatRes.success) {
         setChats(chatRes.data as unknown as Chat[])
       }
     } catch {
-      setError('チャットの読み込みに失敗しました。もう一度お試しください。')
+      // polling / focus の一時失敗では、取得済み一覧を保ったまま次周期を待つ。
+      // 初回ロードだけは、一覧がないため明示的にエラーを知らせる。
+      if (!background && requestSequence === chatListRequestSequenceRef.current) {
+        setError('チャットの読み込みに失敗しました。もう一度お試しください。')
+      }
     } finally {
-      setLoading(false)
+      // 初回取得より後発の focus / polling が先に完了した場合も、最新取得の
+      // 完了をもって skeleton を解除する。background 側だけが最新になると
+      // 初回 finally は stale 扱いになるため、ここで background を除外しない。
+      if (requestSequence === chatListRequestSequenceRef.current) {
+        setLoading(false)
+      }
     }
   }, [statusFilter, selectedAccountId, unansweredOnly])
 
@@ -744,7 +759,15 @@ export default function ChatsPage() {
   }, [])
 
   useEffect(() => {
-    loadChats()
+    void loadChats()
+    const refresh = () => { void loadChats(true) }
+    const intervalId = window.setInterval(refresh, CHAT_LIST_POLL_INTERVAL_MS)
+    window.addEventListener('focus', refresh)
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', refresh)
+      chatListRequestSequenceRef.current += 1
+    }
   }, [loadChats])
 
   // Deep-link from other pages (e.g. /form-submissions): ?friend=<friendId>
@@ -806,6 +829,7 @@ export default function ChatsPage() {
         friendPictureUrl: chatDetail.friendPictureUrl,
         operatorId: chatDetail.operatorId ?? null,
         status: chatDetail.status,
+        isUnanswered: Boolean(chatDetail.isUnanswered),
         notes: chatDetail.notes ?? null,
         lastMessageAt: chatDetail.lastMessageAt ?? lastMsg?.createdAt ?? null,
         lastMessageContent: chatDetail.lastMessageContent ?? lastMsg?.content ?? null,
@@ -966,6 +990,7 @@ export default function ChatsPage() {
           ...prev,
           lastMessageAt: now,
           status: 'in_progress',
+          isUnanswered: false,
           messages: [
             ...(prev.messages ?? []),
             {
@@ -986,6 +1011,7 @@ export default function ChatsPage() {
             ...c,
             lastMessageAt: now,
             status: 'in_progress' as const,
+            isUnanswered: false,
             lastMessageContent: '[画像]',
             lastMessageDirection: 'outgoing' as const,
             lastMessageType: 'image' as const,
@@ -1013,6 +1039,7 @@ export default function ChatsPage() {
           ...prev,
           lastMessageAt: now,
           status: 'in_progress',
+          isUnanswered: false,
           messages: [
             ...(prev.messages ?? []),
             {
@@ -1034,6 +1061,7 @@ export default function ChatsPage() {
             ...c,
             lastMessageAt: now,
             status: 'in_progress' as const,
+            isUnanswered: false,
             // 一覧の preview も即時更新する。incoming 優先ロジックで上書きされ得るが、
             // 楽観 UI では「operator が今送った文面」が一瞬見えるのが期待動作。
             // 次回 loadChats() で server 側の真の最新 (incoming 優先) に reconcile される。
@@ -1101,6 +1129,7 @@ export default function ChatsPage() {
       setChatDetail((prev) => (prev && prev.friendId === friendId) ? {
         ...prev,
         status: 'in_progress',
+        isUnanswered: false,
         lastMessageAt: message.createdAt,
         lastMessageContent: message.content,
         lastMessageDirection: 'outgoing',
@@ -1113,6 +1142,7 @@ export default function ChatsPage() {
         const updated = prev.map((chat) => chat.friendId === friendId ? {
           ...chat,
           status: 'in_progress' as const,
+          isUnanswered: false,
           lastMessageAt: message.createdAt,
           lastMessageContent: message.content,
           lastMessageDirection: 'outgoing' as const,
@@ -1274,12 +1304,8 @@ export default function ChatsPage() {
               <>
                 {chats.map((chat) => {
                   const isSelected = selectedChatId === chat.id
-                  // 「真の自発（要対応）」= chat.status='unread'。webhook 側で auto_reply に
-                  // マッチしなかった incoming のみ unread に設定される。auto_reply trigger
-                  // (キーワード "コスト比較" 等) は matched 扱いで unread 化しない。
-                  // bold / 🟥 の表示はこの status を使う。direction だけだと button 押下も
-                  // 強調してしまって S/N 比が悪化する。
-                  const needsAttention = chat.status === 'unread'
+                  // 赤丸と強調は unanswered-inbox の正本フラグだけを使う。
+                  const needsAttention = chat.isUnanswered
                   // 最新メッセージの本文 preview。flex/image は文字列で見せても意味が薄いので type 表記に置換。
                   const previewRaw = chat.lastMessageContent ?? ''
                   const preview = (() => {
@@ -1311,8 +1337,8 @@ export default function ChatsPage() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                              {chat.status === 'unread' && (
-                                <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" aria-label="未読" />
+                              {needsAttention && (
+                                <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" aria-label="未対応" />
                               )}
                               <p className="text-sm font-medium text-gray-900 truncate">{chat.friendName}</p>
                             </div>
