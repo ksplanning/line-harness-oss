@@ -1,0 +1,6 @@
+case-scope-echo: caseId=form-input-attachment-ux target_paths=["/root/.openclaw/line-harness-ks/.plans/2026-07-23-form-input-attachment-ux/tasks.md"]
+- D-1: PASS — `pnpm --filter worker exec vitest run src/client/internal-form-logic.wire.test.ts src/routes/internal-forms-public.w2.test.ts src/routes/internal-forms-public.test.ts --reporter=verbose --silent=passed-only` → サムネイル・種別表示・蓄積・個別削除・multipart同期を含む 3 files / 62 tests passed (exit 0)
+- D-2: PASS — `pnpm --filter worker exec vitest run src/client/internal-form-logic.wire.test.ts --reporter=verbose --silent=passed-only` → 個数・サイズ・accept違反の日本語feedbackと拒否後リストを含む 9 tests passed (exit 0)
+- D-3: PASS — `pnpm --filter worker exec vitest run src/client/internal-form-logic.wire.test.ts src/routes/internal-forms-public.w2.test.ts --reporter=verbose --silent=passed-only` → DOM最終リストからmultipart、R2順序、DB answers再取得まで 18 tests passed (exit 0)
+- D-4: PASS — `pnpm --filter worker exec vitest run --reporter=dot --silent=passed-only; pnpm --filter worker typecheck` → worker 282 files / 3461 tests passed、tsc --noEmit passed、migration変更なし (exit 0)
+- D-5: PASS — `rg -n "^# form-input-attachment-ux|サムネイル・削除・蓄積・送信|JavaScript を無効|multipart 送信後" .sola/live-checklist.md` → host closer用の実機確認・JS無効・再取得手順を lines 71,83,96,108 で確認 (exit 0)
