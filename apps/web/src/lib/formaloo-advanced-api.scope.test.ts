@@ -88,6 +88,9 @@ describe('formalooDataApi — external edit review metadata', () => {
     externalEditSource: 'edit_link' as const,
     externalEditedAt: '2026-07-23T10:00:00+09:00',
     externalEditApprovedAt: null,
+    externalEditChanges: [
+      { fieldId: 'name', before: 'before', after: 'after' },
+    ],
   }
 
   it('keeps review metadata on list and detail rows', async () => {
@@ -125,9 +128,11 @@ describe('formalooDataApi — external edit review metadata', () => {
     expect(list.rows[0]?.externalEditSource).toBe('edit_link')
     expect(list.rows[0]?.externalEditedAt).toBe(externalEditMetadata.externalEditedAt)
     expect(list.rows[0]?.externalEditApprovedAt).toBeNull()
+    expect(list.rows[0]?.externalEditChanges).toEqual(externalEditMetadata.externalEditChanges)
     expect(detail.externalEditSource).toBe('edit_link')
     expect(detail.externalEditedAt).toBe(externalEditMetadata.externalEditedAt)
     expect(detail.externalEditApprovedAt).toBeNull()
+    expect(detail.externalEditChanges).toEqual(externalEditMetadata.externalEditChanges)
   })
 
   it('keeps review metadata on edit responses', async () => {
@@ -148,6 +153,7 @@ describe('formalooDataApi — external edit review metadata', () => {
     expect(edited.externalEditSource).toBe('edit_link')
     expect(edited.externalEditedAt).toBe(externalEditMetadata.externalEditedAt)
     expect(edited.externalEditApprovedAt).toBeNull()
+    expect(edited.externalEditChanges).toEqual(externalEditMetadata.externalEditChanges)
   })
 })
 

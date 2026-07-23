@@ -252,6 +252,12 @@ export interface ShareInfo {
 // F-4 データコックピット API (T-D1/T-D2)。回答は TRINA 顧客 PII を含み得る (N-9) — 外部送信しない。
 // =============================================================================
 
+export interface ExternalEditChange {
+  fieldId: string
+  before: unknown
+  after: unknown
+}
+
 export interface SubmissionRow {
   id: string
   friendId: string | null
@@ -261,6 +267,7 @@ export interface SubmissionRow {
   externalEditSource?: 'edit_link' | 'sheet' | null
   externalEditedAt?: string | null
   externalEditApprovedAt?: string | null
+  externalEditChanges?: ExternalEditChange[]
 }
 export interface RowsPage {
   rows: SubmissionRow[]
@@ -283,6 +290,7 @@ export interface RowEditResult {
   externalEditSource?: 'edit_link' | 'sheet' | null
   externalEditedAt?: string | null
   externalEditApprovedAt?: string | null
+  externalEditChanges?: ExternalEditChange[]
   fields?: RowEditFieldMeta[]
   lastEdit: { editorStaffId: string | null; editorName: string | null; editedAt: string } | null
 }
@@ -321,6 +329,7 @@ export interface RowDetail {
   externalEditSource?: 'edit_link' | 'sheet' | null
   externalEditedAt?: string | null
   externalEditApprovedAt?: string | null
+  externalEditChanges?: ExternalEditChange[]
   fields?: RowEditFieldMeta[]
   lastEdit?: { editorStaffId: string | null; editorName: string | null; editedAt: string } | null
 }

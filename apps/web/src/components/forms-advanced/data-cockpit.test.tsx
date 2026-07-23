@@ -139,6 +139,9 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
       externalEditSource: 'edit_link',
       externalEditedAt: '2026-07-23T10:00:00+09:00',
       externalEditApprovedAt: null,
+      externalEditChanges: [
+        { fieldId: 'name', before: '変更前', after: '田中' },
+      ],
     },
     {
       ...ROWS[1],
@@ -157,6 +160,24 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     expect(screen.getAllByText('LINE連携:').length).toBeGreaterThan(0)
     expect(screen.getByText('連携済み')).toBeTruthy()
     expect(screen.getByText('未連携')).toBeTruthy()
+  })
+
+  it('変更フィールドだけを項目名付きの変更前→変更後で表示する', () => {
+    const changedRow: SubmissionRow = {
+      ...externalRows[0],
+      externalEditChanges: [
+        { fieldId: 'name', before: '変更前', after: '変更後' },
+        { fieldId: 'removed', before: '削除前', after: null },
+      ],
+    }
+    render(<DataCockpit {...base({
+      rows: [changedRow],
+      total: 1,
+      fieldLabels: [{ slug: 'name', label: 'お名前' }],
+    })} />)
+
+    expect(screen.getByText('お名前: 変更前 → 変更後')).toBeTruthy()
+    expect(screen.getByText('removed: 削除前 → —')).toBeTruthy()
   })
 
   it('件数付きボタンで未承認だけを絞り込み、検索・ページングにも条件を引き継ぐ', () => {

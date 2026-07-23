@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import type { SubmissionRow, FormStats, SavedFilter, RowsQuery } from '@/lib/formaloo-advanced-api'
+import type { SubmissionRow, FormStats, SavedFilter, RowsQuery, ExternalEditChange } from '@/lib/formaloo-advanced-api'
 import { formatJstMinute } from '@/lib/datetime'
 import { fileAnswerSummary, isFileAnswer } from '@/lib/file-answer'
 
@@ -23,6 +23,7 @@ type ExternalSubmissionRow = SubmissionRow & {
   externalEditSource?: ExternalEditSource | null
   externalEditedAt?: string | null
   externalEditApprovedAt?: string | null
+  externalEditChanges?: ExternalEditChange[]
 }
 type ExternalRowsQuery = RowsQuery & { externalEdit?: 'pending' }
 type ExternalFormStats = FormStats & { externalEditPending?: number }
@@ -382,22 +383,36 @@ export default function DataCockpit(props: DataCockpitProps) {
                 <td className="flex items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">
                   <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">外部編集:</span>
                   {external.externalEditSource ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="inline-flex rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
-                        {external.externalEditSource === 'edit_link' ? '編集URL' : 'シート'}
-                      </span>
-                      {approved ? (
-                        <span className="text-xs text-gray-500">承認済み</span>
-                      ) : (
-                        <button
-                          type="button"
-                          aria-label={`${r.id} の外部編集を承認`}
-                          disabled={approvingExternalEditId !== null}
-                          onClick={() => void approveExternalEdit(external)}
-                          className="min-h-[44px] rounded-lg border border-amber-400 bg-white px-3 text-sm font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
+                          {external.externalEditSource === 'edit_link' ? '編集URL' : 'シート'}
+                        </span>
+                        {approved ? (
+                          <span className="text-xs text-gray-500">承認済み</span>
+                        ) : (
+                          <button
+                            type="button"
+                            aria-label={`${r.id} の外部編集を承認`}
+                            disabled={approvingExternalEditId !== null}
+                            onClick={() => void approveExternalEdit(external)}
+                            className="min-h-[44px] rounded-lg border border-amber-400 bg-white px-3 text-sm font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+                          >
+                            {approvingExternalEditId === r.id ? '承認中…' : '確認して承認'}
+                          </button>
+                        )}
+                      </div>
+                      {(external.externalEditChanges?.length ?? 0) > 0 && (
+                        <ul
+                          aria-label={`${r.id} の変更内容`}
+                          className="space-y-1 text-xs text-gray-700"
                         >
-                          {approvingExternalEditId === r.id ? '承認中…' : '確認して承認'}
-                        </button>
+                          {external.externalEditChanges?.map((change, index) => (
+                            <li key={`${change.fieldId}-${index}`} className="break-words">
+                              {`${labelFor(change.fieldId)}: ${cellText(change.before)} → ${cellText(change.after)}`}
+                            </li>
+                          ))}
+                        </ul>
                       )}
                     </div>
                   ) : (
