@@ -135,6 +135,7 @@ import { richMenuAnalytics } from './routes/rich-menu-analytics.js';
 import { lp } from './routes/lp.js';
 import { postalLookup } from './routes/postal-lookup.js';
 import { sheetsConnections } from './routes/sheets-connections.js';
+import { staffNotificationDestinations } from './routes/staff-notification-destinations.js';
 
 export type Env = {
   Bindings: {
@@ -445,6 +446,7 @@ app.route('/', postalLookup);
 // permissionMiddleware ('analytics') で gate される。
 app.route('/', lp);
 app.route('/', sheetsConnections);
+app.route('/', staffNotificationDestinations);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version

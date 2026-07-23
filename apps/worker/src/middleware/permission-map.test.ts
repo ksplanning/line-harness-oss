@@ -61,6 +61,8 @@ describe('permission-map 個別マッピング (順序 / 代表)', () => {
     expect(mapPathToFeature('/api/message-templates')).toBe('template');
     expect(mapPathToFeature('/api/templates')).toBe('template');
     expect(mapPathToFeature('/api/account-settings/test-recipients')).toBe('broadcast_settings');
+    expect(mapPathToFeature('/api/staff-notification-channels')).toBe('broadcast_settings');
+    expect(mapPathToFeature('/api/staff-notification-destinations/x/test')).toBe('broadcast_settings');
     expect(mapPathToFeature('/api/test-sends/broadcast')).toBe('broadcast');
     expect(mapPathToFeature('/api/test-sends/greeting')).toBe('scenario');
     expect(mapPathToFeature('/api/test-sends/entry_greeting')).toBe('analytics');

@@ -110,6 +110,8 @@ export const PATH_FEATURE_RULES: FeatureRule[] = [
 
   // ── 配信設定 (broadcast_settings) ──
   { test: prefix('account-settings'), feature: 'broadcast_settings' },
+  { test: prefix('staff-notification-channels'), feature: 'broadcast_settings' },
+  { test: prefix('staff-notification-destinations'), feature: 'broadcast_settings' },
 
   // ── 自動応答 (auto_reply) / 高機能フォーム (forms_advanced) / フォーム (form) / FAQ (faq) ──
   // ⚠️ specific-first: forms-advanced を forms より上に置く (Formaloo-backed 高機能フォーム = 別 feature)。
