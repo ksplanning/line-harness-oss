@@ -1,3 +1,86 @@
+# operator-chat-layout — host closer 実測チェック（2026-07-23）
+
+## 目的と安全境界
+
+通常の個別チャット画面だけで履歴を十分に読め、スマホでも入力・添付・定型文・絵文字・送信が画面内に残ることを数値で確認する。lane 内では実際の LINE 送信を行わず、以下は査読済み revision を trusted host の確認環境へ反映した後に host closer が実施する。
+
+- [ ] owner が使用を許可した確認用公式アカウントと架空顧客の既存チャットを使う。実在顧客、未処理の問い合わせ、個人情報を含む履歴で代用しない。
+- [ ] 本チェックでは「送信」を押さず、添付画像の確定・定型文の選択・絵文字の挿入も実送信前で止める。Network で `/api/chats/:id/messages` 等の送信系 POST が0回、LINE着信が0件であることを最後に確認する。
+- [ ] token、cookie、LINE user ID、実在する名前・本文をスクリーンショットや記録へ残さない。安全な架空チャットを用意できなければ `BLOCKED` とする。
+- [ ] 計測前に返信本文を空、⚙設定を閉じた既定状態にする。ブラウザ倍率100%、OS表示倍率は記録し、拡大表示モーダルは閉じる。
+
+## desktop / mobile の数値計測
+
+1. [ ] desktop を 1440 × 900、mobile を 390 × 667 に設定し、それぞれ `/chats` で10件以上の履歴を持つ同じ架空チャットを開く。mobile は一覧から個別チャットへ遷移した後の画面を測る。
+2. [ ] DevTools Console で次を実行し、desktop / mobile の `historyPx`、`viewportPx`、`historyRatio` を記録する。両方で `historyRatio >= 50` を合格とする。
+
+   ```js
+   (() => {
+     const history = document.querySelector('[data-testid="chat-message-history"]');
+     if (!(history instanceof HTMLElement)) throw new Error('chat history not found');
+     const historyPx = Math.round(history.getBoundingClientRect().height);
+     const viewportPx = window.innerHeight;
+     return {
+       historyPx,
+       viewportPx,
+       historyRatio: Number((historyPx / viewportPx * 100).toFixed(1)),
+     };
+   })();
+   ```
+
+3. [ ] mobile で次を実行し、`sendInsideViewport === true`、`composerBottom <= viewportPx`、添付・定型文・絵文字の3ボタンがすべて `top >= 0 && bottom <= viewportPx` であることを確認する。
+
+   ```js
+   (() => {
+     const composer = document.querySelector('[data-testid="chat-composer"]');
+     const send = composer && [...composer.querySelectorAll('button')]
+       .find((button) => button.textContent?.trim() === '送信');
+     const tools = ['画像を添付', '定型文を選ぶ', '絵文字を選ぶ']
+       .map((name) => composer?.querySelector(`button[aria-label="${name}"]`));
+     if (!(composer instanceof HTMLElement) || !(send instanceof HTMLElement)) {
+       throw new Error('composer or send button not found');
+     }
+     const composerRect = composer.getBoundingClientRect();
+     const sendRect = send.getBoundingClientRect();
+     const toolRects = tools.map((tool) => {
+       if (!(tool instanceof HTMLElement)) throw new Error('tool button not found');
+       const rect = tool.getBoundingClientRect();
+       return { name: tool.getAttribute('aria-label'), top: rect.top, bottom: rect.bottom };
+     });
+     return {
+       viewportPx: window.innerHeight,
+       composerBottom: composerRect.bottom,
+       sendTop: sendRect.top,
+       sendBottom: sendRect.bottom,
+       sendInsideViewport: sendRect.top >= 0 && sendRect.bottom <= window.innerHeight,
+       toolRects,
+     };
+   })();
+   ```
+
+4. [ ] mobile で入力欄が約2行（48px）から入力に応じて伸び、5行相当（120px）で止まって内部スクロールになることを確認する。日本語IME確定の Enter では送信されず、選択中の送信キー設定どおりにだけ送信直前動作になることを確認する（送信自体は押さない）。
+5. [ ] ⚙設定は初期状態で閉じ、開くと「入力中ローディング」「秒数」「Enter / Shift+Enter」が読めることを確認する。架空端末で値を変更し、再読込後も同じ値であることを確認してから元の設定へ戻す。
+6. [ ] 添付・定型文・絵文字に可視文字ラベルがあり、本文と入力文字が16pxで読めること、メモ・残り送信数・対応状態・拡大表示モーダルが残っていることを確認する。
+
+## before / after 証跡
+
+- [ ] before は `scratchpad/chat-desktop.png` と `scratchpad/chat-mobile.png` を参照し、after は同じチャット・倍率・viewportで `.sola/evidence/operator-chat-layout/chat-desktop-after.png` と `.sola/evidence/operator-chat-layout/chat-mobile-after.png` に保存する。
+- [ ] after には履歴、1行header、メモ/残数、48px入力欄、添付/定型文/絵文字ラベル、送信ボタンを同時に含める。token・実在名・実在本文は写さない。
+- [ ] desktop / mobile の before→after を並べ、履歴領域が5%前後から50%以上になり、mobile の送信ボタン下端が viewport 内へ入ったことを数値と画像の両方で確認する。
+
+## 実測結果
+
+- 実施日時（JST）:
+- 査読済み revision / deploy revision / trusted host:
+- desktop viewport / history px / ratio:
+- mobile viewport / history px / ratio:
+- mobile composer bottom / send top・bottom / tool button top・bottom:
+- 48px→120px自動伸縮 / 設定保存往復 / 16px本文:
+- before / after screenshot:
+- 送信系POST回数（0）/ LINE着信数（0）:
+- 結果（PASS / FAIL / BLOCKED）と理由:
+
+---
 # broadcast-condition-expand — host closer 実測チェック（2026-07-23）
 
 ## owner 向けの日常語
