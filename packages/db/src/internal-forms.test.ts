@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test } from 'vitest';
 import {
+  approveInternalFormSubmissionExternalEdit,
   beginFormalooDefinitionSave,
+  countPendingInternalFormExternalEdits,
   countInternalFormSubmissionsForForm,
   createInternalFormSubmission,
   createInternalFormSubmissionForPublishedDefinition,
@@ -269,10 +271,17 @@ describe('internal form persistence', () => {
       formId: 'fa_internal', friendId: 'friend-1', submissionId: original.id,
       expectedAnswersJson: original.answers_json, answers: { name: 'シート編集', keep: '保持' }, lease,
     })).resolves.toBe(true);
-    expect(raw.prepare(`SELECT answers_json, submitted_at FROM internal_form_submissions WHERE id=?`)
+    expect(raw.prepare(
+      `SELECT answers_json, submitted_at, external_edit_source,
+              external_edited_at, external_edit_approved_at
+       FROM internal_form_submissions WHERE id=?`,
+    )
       .get(original.id)).toEqual({
       answers_json: '{"name":"シート編集","keep":"保持"}',
       submitted_at: '2026-07-21T10:00:00+09:00',
+      external_edit_source: 'sheet',
+      external_edited_at: expect.any(String),
+      external_edit_approved_at: null,
     });
     expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 1 });
 
@@ -709,6 +718,9 @@ describe('internal form persistence', () => {
         id: created.id,
         answers_json: '{"name":"変更後"}',
         edit_version: 1,
+        external_edit_source: 'edit_link',
+        external_edited_at: expect.any(String),
+        external_edit_approved_at: null,
       },
     });
 
@@ -727,6 +739,91 @@ describe('internal form persistence', () => {
         edit_version: 1,
       },
     });
+
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_approved_at = '2026-07-23T10:00:00+09:00'
+       WHERE id = ?`,
+    ).run(created.id);
+    const editedAgain = await updateInternalFormSubmissionAnswers(DB, {
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 1,
+      expectedEditLinkEpoch: 4,
+      answers: { name: '再編集' },
+    });
+    expect(editedAgain).toMatchObject({
+      status: 'updated',
+      submission: {
+        answers_json: '{"name":"再編集"}',
+        edit_version: 2,
+        external_edit_source: 'edit_link',
+        external_edit_approved_at: null,
+      },
+    });
+  });
+
+  test('filters pending external edits and approval only clears the review queue', async () => {
+    const pending = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '編集URLから変更' },
+    });
+    const approved = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '承認済み' },
+    });
+    const internal = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '管理画面だけ' },
+    });
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-23T10:00:00+09:00'
+       WHERE id = ?`,
+    ).run(pending.id);
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'sheet',
+           external_edited_at = '2026-07-23T10:01:00+09:00',
+           external_edit_approved_at = '2026-07-23T10:02:00+09:00'
+       WHERE id = ?`,
+    ).run(approved.id);
+
+    await expect(listInternalFormSubmissions(DB, 'fa_internal', {
+      limit: 20,
+      offset: 0,
+    })).resolves.toMatchObject({ total: 3 });
+    await expect(listInternalFormSubmissions(DB, 'fa_internal', {
+      limit: 20,
+      offset: 0,
+      externalEditReview: 'pending',
+    })).resolves.toEqual({
+      rows: [expect.objectContaining({ id: pending.id, external_edit_source: 'edit_link' })],
+      total: 1,
+    });
+    await expect(countPendingInternalFormExternalEdits(DB, 'fa_internal')).resolves.toBe(1);
+
+    expect(await approveInternalFormSubmissionExternalEdit(
+      DB,
+      'fa_internal',
+      pending.id,
+      '2026-07-23T10:03:00+09:00',
+    )).toBe(true);
+    await expect(listInternalFormSubmissions(DB, 'fa_internal', {
+      limit: 20,
+      offset: 0,
+      externalEditReview: 'pending',
+    })).resolves.toEqual({ rows: [], total: 0 });
+    expect(raw.prepare(
+      `SELECT answers_json, external_edit_approved_at
+       FROM internal_form_submissions WHERE id = ?`,
+    ).get(pending.id)).toEqual({
+      answers_json: '{"name":"編集URLから変更"}',
+      external_edit_approved_at: '2026-07-23T10:03:00+09:00',
+    });
+    expect(await approveInternalFormSubmissionExternalEdit(DB, 'fa_internal', internal.id))
+      .toBe(false);
   });
 
   test('admin CAS works without edit-link settings and feeds the existing Sheets readers', async () => {
@@ -758,7 +855,13 @@ describe('internal form persistence', () => {
 
     expect(updated).toMatchObject({
       status: 'updated',
-      submission: { answers_json: '{"name":"管理画面で変更","keep":"保持"}', edit_version: 1 },
+      submission: {
+        answers_json: '{"name":"管理画面で変更","keep":"保持"}',
+        edit_version: 1,
+        external_edit_source: null,
+        external_edited_at: null,
+        external_edit_approved_at: null,
+      },
     });
     await expect(listLatestVerifiedInternalFormSubmissions(DB, 'acc-admin', 'fa_internal'))
       .resolves.toEqual([expect.objectContaining({ answers_json: '{"name":"管理画面で変更","keep":"保持"}' })]);

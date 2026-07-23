@@ -3,6 +3,7 @@ import type { SheetsSyncLeaseGuard } from './sheets-connections.js';
 
 export type FormRenderBackend = 'formaloo' | 'internal';
 export type InternalFormOriginChannel = 'line' | 'embed' | 'invalid';
+export type InternalFormExternalEditSource = 'edit_link' | 'sheet';
 
 export interface InternalFormSubmission {
   id: string;
@@ -11,6 +12,9 @@ export interface InternalFormSubmission {
   answers_json: string;
   origin_channel: InternalFormOriginChannel;
   edit_version: number;
+  external_edit_source: InternalFormExternalEditSource | null;
+  external_edited_at: string | null;
+  external_edit_approved_at: string | null;
   deleted_at: string | null;
   submitted_at: string;
   created_at: string;
@@ -440,6 +444,9 @@ export async function createInternalFormSubmissionForPublishedDefinition(
     answers_json: answersJson,
     origin_channel: input.originChannel ?? 'embed',
     edit_version: 0,
+    external_edit_source: null,
+    external_edited_at: null,
+    external_edit_approved_at: null,
     deleted_at: null,
     submitted_at: now,
     created_at: now,
@@ -449,20 +456,28 @@ export async function createInternalFormSubmissionForPublishedDefinition(
 export async function listInternalFormSubmissions(
   db: D1Database,
   formId: string,
-  params: { limit: number; offset: number },
+  params: {
+    limit: number;
+    offset: number;
+    externalEditReview?: 'pending';
+  },
 ): Promise<{ rows: InternalFormSubmission[]; total: number }> {
   const limit = Math.max(1, Math.min(100, Math.trunc(params.limit)));
   const offset = Math.max(0, Math.trunc(params.offset));
+  const reviewWhere = params.externalEditReview === 'pending'
+    ? ' AND external_edit_source IS NOT NULL AND external_edit_approved_at IS NULL'
+    : '';
   const totalRow = await db
     .prepare(
-      'SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = ? AND deleted_at IS NULL',
+      `SELECT COUNT(*) AS n FROM internal_form_submissions
+       WHERE form_id = ? AND deleted_at IS NULL${reviewWhere}`,
     )
     .bind(formId)
     .first<{ n: number }>();
   const rows = await db
     .prepare(
       `SELECT * FROM internal_form_submissions
-       WHERE form_id = ? AND deleted_at IS NULL
+       WHERE form_id = ? AND deleted_at IS NULL${reviewWhere}
        ORDER BY julianday(submitted_at) DESC, rowid DESC
        LIMIT ? OFFSET ?`,
     )
@@ -485,6 +500,8 @@ export async function listLatestVerifiedInternalFormSubmissions(
   const rows = await db.prepare(
     `SELECT submission.id, submission.form_id, submission.friend_id,
             submission.answers_json, submission.origin_channel, submission.edit_version,
+            submission.external_edit_source, submission.external_edited_at,
+            submission.external_edit_approved_at,
             submission.deleted_at, submission.submitted_at, submission.created_at
      FROM internal_form_submissions submission
      LEFT JOIN friends friend
@@ -524,9 +541,13 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
   db: D1Database,
   input: UpdateLatestInternalFormSubmissionAnswersForSheetsInput,
 ): Promise<boolean> {
+  const externalEditedAt = jstNow();
   const result = await db.prepare(
     `UPDATE internal_form_submissions
-     SET answers_json = ?
+     SET answers_json = ?,
+         external_edit_source = 'sheet',
+         external_edited_at = ?,
+         external_edit_approved_at = NULL
      WHERE id = ? AND form_id = ? AND friend_id = ? AND answers_json = ?
        AND deleted_at IS NULL
        AND EXISTS (
@@ -565,6 +586,7 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
        )`,
   ).bind(
     JSON.stringify(input.answers),
+    externalEditedAt,
     input.submissionId,
     input.formId,
     input.friendId,
@@ -595,6 +617,8 @@ export async function listVerifiedInternalFormSubmissionsForSheets(
   const rows = await db.prepare(
     `SELECT submission.id, submission.form_id, submission.friend_id,
             submission.answers_json, submission.origin_channel, submission.edit_version,
+            submission.external_edit_source, submission.external_edited_at,
+            submission.external_edit_approved_at,
             submission.deleted_at, submission.submitted_at, submission.created_at
      FROM internal_form_submissions submission
      LEFT JOIN friends friend
@@ -786,9 +810,13 @@ export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId
   db: D1Database,
   input: UpdateInternalFormSubmissionAnswersForSheetsBySubmissionIdInput,
 ): Promise<boolean> {
+  const externalEditedAt = jstNow();
   const result = await db.prepare(
     `UPDATE internal_form_submissions
-     SET answers_json = ?
+     SET answers_json = ?,
+         external_edit_source = 'sheet',
+         external_edited_at = ?,
+         external_edit_approved_at = NULL
      WHERE id = ? AND form_id = ? AND answers_json = ?
        AND deleted_at IS NULL
        AND (
@@ -817,6 +845,7 @@ export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId
        )`,
   ).bind(
     JSON.stringify(input.answers),
+    externalEditedAt,
     input.submissionId,
     input.formId,
     input.expectedAnswersJson,
@@ -897,7 +926,11 @@ export async function updateInternalFormSubmissionAnswers(
     : await db
         .prepare(
           `UPDATE internal_form_submissions
-           SET answers_json = ?, edit_version = edit_version + 1
+           SET answers_json = ?,
+               edit_version = edit_version + 1,
+               external_edit_source = 'edit_link',
+               external_edited_at = ?,
+               external_edit_approved_at = NULL
            WHERE id = ? AND form_id = ? AND edit_version = ?
              AND deleted_at IS NULL
              AND EXISTS (
@@ -910,6 +943,7 @@ export async function updateInternalFormSubmissionAnswers(
         )
         .bind(
           JSON.stringify(input.answers),
+          jstNow(),
           input.submissionId,
           input.formId,
           input.expectedEditVersion,
@@ -932,6 +966,42 @@ export async function updateInternalFormSubmissionAnswers(
     status: 'conflict',
     submission,
   };
+}
+
+export async function countPendingInternalFormExternalEdits(
+  db: D1Database,
+  formId: string,
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n
+       FROM internal_form_submissions
+       WHERE form_id = ? AND deleted_at IS NULL
+         AND external_edit_source IS NOT NULL
+         AND external_edit_approved_at IS NULL`,
+    )
+    .bind(formId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+export async function approveInternalFormSubmissionExternalEdit(
+  db: D1Database,
+  formId: string,
+  submissionId: string,
+  approvedAt = jstNow(),
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_approved_at = ?
+       WHERE id = ? AND form_id = ? AND deleted_at IS NULL
+         AND external_edit_source IS NOT NULL
+         AND external_edit_approved_at IS NULL`,
+    )
+    .bind(approvedAt, submissionId, formId)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 export async function countInternalFormSubmissionsForForm(

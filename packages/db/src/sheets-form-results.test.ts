@@ -438,6 +438,13 @@ describe('submission-keyed answers write-back', () => {
   });
 
   test('updates an OLDER submission by id — no latest-submission guard', async () => {
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-23T09:00:00+09:00',
+           external_edit_approved_at = '2026-07-23T09:01:00+09:00'
+       WHERE id = 'ifs-old'`,
+    ).run();
     const guard = await lease();
     const updated = await updateInternalFormSubmissionAnswersForSheetsBySubmissionId(db, {
       lineAccountId: 'acc-1',
@@ -450,8 +457,20 @@ describe('submission-keyed answers write-back', () => {
       lease: guard,
     });
     expect(updated).toBe(true);
-    const row = raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?').get('ifs-old') as { answers_json: string };
+    const row = raw.prepare(
+      `SELECT answers_json, external_edit_source, external_edited_at,
+              external_edit_approved_at
+       FROM internal_form_submissions WHERE id = ?`,
+    ).get('ifs-old') as {
+      answers_json: string;
+      external_edit_source: string | null;
+      external_edited_at: string | null;
+      external_edit_approved_at: string | null;
+    };
     expect(JSON.parse(row.answers_json)).toEqual({ q1: 'シートから修正' });
+    expect(row.external_edit_source).toBe('sheet');
+    expect(row.external_edited_at).toEqual(expect.any(String));
+    expect(row.external_edit_approved_at).toBeNull();
     const newer = raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?').get('ifs-new') as { answers_json: string };
     expect(JSON.parse(newer.answers_json)).toEqual({ q1: '新しい回答' });
   });

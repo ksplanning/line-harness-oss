@@ -834,7 +834,11 @@ CREATE TABLE internal_form_submissions (
   deleted_at   TEXT,
   submitted_at TEXT NOT NULL,
   created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, external_edit_source TEXT
+  CHECK (
+    external_edit_source IS NULL
+    OR external_edit_source IN ('edit_link', 'sheet')
+  ), external_edited_at TEXT, external_edit_approved_at TEXT);
 
 CREATE TABLE knowledge_chunks (
   id              TEXT PRIMARY KEY,
@@ -1784,6 +1788,10 @@ CREATE INDEX idx_friends_user_id ON friends (user_id);
 CREATE INDEX idx_health_logs_account ON account_health_logs (line_account_id);
 
 CREATE INDEX idx_idempotency_expires ON booking_idempotency_keys (expires_at);
+
+CREATE INDEX idx_internal_form_submissions_external_edit_review
+  ON internal_form_submissions (form_id, external_edit_source, external_edit_approved_at)
+  WHERE deleted_at IS NULL;
 
 CREATE INDEX idx_internal_form_submissions_form
   ON internal_form_submissions (form_id, submitted_at);
