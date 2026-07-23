@@ -24,8 +24,8 @@ TASKS="$(jq -r '.tasks_ref // empty' "$HANDOFF")"
 if [ "${LANE_GUARD_ACK:-0}" = "1" ]; then
   echo "⚠️ [lane-guard] LANE_GUARD_ACK=1 — ガード迂回 (理由の宣言必須)" >&2
 else
-  # done_conditions 節を抽出 (## done_conditions 見出し以降)
-  DONE_SECTION="$(awk '/^## done_conditions/{f=1} f' "$TASKS")"
+  # done_conditions 節を抽出 (## done_conditions 見出しから次の ## 見出しまで)
+  DONE_SECTION="$(awk '/^## done_conditions/{f=1; next} /^## /{f=0} f' "$TASKS")"
   [ -n "$DONE_SECTION" ] || { echo "❌ [lane-guard] G0: tasks.md に '## done_conditions' 節が無い: $TASKS" >&2; exit 65; }
 
   # G1: 状態を保存する UI/設定系キーワードを含む案件は往復検証必須
