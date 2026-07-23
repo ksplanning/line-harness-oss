@@ -71,7 +71,10 @@ beforeEach(() => {
   listFiltersMock.mockResolvedValue([])
   fetchApiMock.mockResolvedValue({ data: { role: 'owner' } })
 })
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 async function openDetail() {
   render(<DataCockpitClient id="fa1" />)
@@ -157,9 +160,32 @@ describe('T-D2 回答詳細 編集モード', () => {
     expect(screen.getByTestId('edit-input-nameSlug')).toBeTruthy()
   })
 
-  it('internal source も editVersion CAS 付きで編集し、自前配信表示を保つ', async () => {
+  it('internal source は admin-origin URL を発行して同じ /ife/ 編集画面へ遷移する', async () => {
     getMock.mockResolvedValue({ id: 'fa1', title: 'F', lineAccountId: null, renderBackend: 'internal' })
     getRenderBackendMock.mockResolvedValue('internal')
+    rowMock.mockResolvedValue({ ...detailFor(1), source: 'internal' })
+    const editUrl = 'https://api.example.test/ife/admin-origin-token'
+    fetchApiMock.mockImplementation(async (path: string) => (
+      path === '/api/staff/me'
+        ? { data: { role: 'owner' } }
+        : { data: { editUrl } }
+    ))
+    const assign = vi.fn()
+    vi.stubGlobal('location', { assign })
+    await openDetail()
+
+    fireEvent.click(screen.getByTestId('edit-answer'))
+
+    await waitFor(() => expect(fetchApiMock).toHaveBeenCalledWith(
+      '/api/forms-advanced/fa1/rows/row1/admin-edit-url',
+      { method: 'POST' },
+    ))
+    expect(assign).toHaveBeenCalledWith(editUrl)
+    expect(editRowMock).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('edit-input-nameSlug')).toBeNull()
+  })
+
+  it('Formaloo source の旧インライン UI は editVersion CAS 付き編集を保つ', async () => {
     const answerRevision = 'a'.repeat(64)
     const nextRevision = 'b'.repeat(64)
     const finalRevision = 'c'.repeat(64)
@@ -187,12 +213,12 @@ describe('T-D2 回答詳細 編集モード', () => {
       docs: [{ key: 'forms/fa1/row1/docs/file.pdf', name: '申込書.pdf', size: 1234, type: 'application/pdf' }],
     }
     rowMock.mockResolvedValue({
-      ...detailFor(1), source: 'internal', answers: internalAnswers, fields: internalFields,
+      ...detailFor(1), source: 'formaloo', answers: internalAnswers, fields: internalFields,
       editVersion: 7, answerRevision,
     })
     editRowMock
       .mockResolvedValueOnce({
-        id: 'row1', source: 'internal', submittedAt: '2026-07-17T00:00:00+09:00',
+        id: 'row1', source: 'formaloo', submittedAt: '2026-07-17T00:00:00+09:00',
         answers: {
           ...internalAnswers, nameSlug: '内部更新', tags: remainingSelections, company: '株式会社テスト',
         },
@@ -200,7 +226,7 @@ describe('T-D2 回答詳細 編集モード', () => {
         editVersion: 8, answerRevision: nextRevision, lastEdit: null,
       })
       .mockResolvedValueOnce({
-        id: 'row1', source: 'internal', submittedAt: '2026-07-17T00:00:00+09:00',
+        id: 'row1', source: 'formaloo', submittedAt: '2026-07-17T00:00:00+09:00',
         answers: {
           ...internalAnswers, nameSlug: '内部更新', tags: remainingSelections, company: '株式会社テスト',
         },
@@ -209,7 +235,7 @@ describe('T-D2 回答詳細 編集モード', () => {
       })
     await openDetail()
 
-    expect(screen.getByTestId('answer-source').textContent).toContain('自前配信')
+    expect(screen.getByTestId('answer-source').textContent).toContain('Formaloo 最新')
     expect(document.body.textContent).toContain('接客: 良い')
     expect(document.body.textContent).toContain('参加者名: 花子')
     expect(document.body.textContent).toContain('申込書.pdf')
@@ -235,7 +261,7 @@ describe('T-D2 回答詳細 編集モード', () => {
       7,
       answerRevision,
     ))
-    expect(screen.getByTestId('answer-source').textContent).toContain('自前配信')
+    expect(screen.getByTestId('answer-source').textContent).toContain('Formaloo 最新')
     expect(document.body.textContent).toContain('参加者名: 花子')
     expect(document.body.textContent).toContain('申込書.pdf')
     expect(document.body.textContent).not.toContain('[object Object]')

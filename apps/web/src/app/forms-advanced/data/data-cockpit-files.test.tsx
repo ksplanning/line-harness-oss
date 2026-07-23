@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const mockAccount: { selectedAccountId: string | null } = { selectedAccountId: null }
 const getMock = vi.fn()
@@ -68,7 +68,6 @@ const FILE_DETAIL = {
 }
 
 const ANSWER_REVISION = 'a'.repeat(64)
-const NEXT_ANSWER_REVISION = 'b'.repeat(64)
 const MANAGEABLE_FILE_DETAIL = {
   ...FILE_DETAIL,
   allowPostEdit: 1,
@@ -120,6 +119,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   if (originalCreateObjectURL) Object.defineProperty(URL, 'createObjectURL', originalCreateObjectURL)
   else delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL
   if (originalRevokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', originalRevokeObjectURL)
@@ -165,144 +165,26 @@ describe('回答詳細 drawer の file 回答', () => {
     expect(screen.getByText('A、B')).toBeTruthy()
   })
 
-  it('編集モードでも編集不可の file 回答をファイル名で表示する', async () => {
-    rowMock.mockResolvedValue({ ...FILE_DETAIL, allowPostEdit: 1 })
-    await openDetail()
-    fireEvent.click(screen.getByTestId('edit-answer'))
-
-    expect(document.body.textContent).not.toContain('[object Object]')
-    expect(screen.getByText('見積書.pdf, 写真.png')).toBeTruthy()
-  })
-
-  it('管理可能な file 項目は保存済みサムネイル・非画像アイコン・削除・追加入力を表示する', async () => {
+  it('管理可能な添付も旧UIを開かず admin-origin の /ife/ へ移動する', async () => {
     rowMock.mockResolvedValue(MANAGEABLE_FILE_DETAIL)
-    await openDetail()
-
-    fireEvent.click(screen.getByTestId('edit-answer'))
-
-    const savedFiles = await screen.findByRole('list', { name: '保存済みファイル' })
-    expect(within(savedFiles).getByText('見積書.pdf')).toBeTruthy()
-    expect(within(savedFiles).getByText('PDF')).toBeTruthy()
-    expect(within(savedFiles).getByText('写真.png')).toBeTruthy()
-    const savedImage = await within(savedFiles).findByRole('img', { name: '写真.png のプレビュー' })
-    expect(savedImage.getAttribute('src')).toBe('blob:saved-image')
-    expect(fetchAttachmentBlobMock).toHaveBeenCalledWith('fa1', 'row1', 'docs', 1)
-    expect(within(savedFiles).getAllByText('削除する')).toHaveLength(2)
-
-    const input = screen.getByLabelText('添付資料：ファイルを追加') as HTMLInputElement
-    expect(input.type).toBe('file')
-    expect(input.multiple).toBe(true)
-    expect(input.accept).toBe('.pdf,.png')
-    expect(input.dataset.maxSizeKb).toBe('2048')
-    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
-    expect(revokeObjectURLMock).toHaveBeenCalledWith('blob:saved-image')
-  })
-
-  it('追加画像をプレビューし、保存前に追加対象から削除できる', async () => {
-    rowMock.mockResolvedValue(MANAGEABLE_FILE_DETAIL)
-    await openDetail()
-    fireEvent.click(screen.getByTestId('edit-answer'))
-    const input = screen.getByLabelText('添付資料：ファイルを追加') as HTMLInputElement
-    const added = new File(['new-image'], '追加写真.png', { type: 'image/png' })
-
-    fireEvent.change(input, { target: { files: [added] } })
-
-    const preview = await screen.findByRole('img', { name: '追加写真.png のプレビュー' })
-    expect(preview.getAttribute('src')).toBe('blob:追加写真.png')
-    expect(screen.getByText('追加写真.png')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '追加写真.png を削除' }))
-    expect(screen.queryByText('追加写真.png')).toBeNull()
-    expect(revokeObjectURLMock).toHaveBeenCalledWith('blob:追加写真.png')
-  })
-
-  it('既存 index 0 の削除と追加を CAS 付きで保存し、返却された最終一覧を再表示する', async () => {
-    const added = new File(['new-image'], '追加写真.png', { type: 'image/png' })
-    const finalAnswers = {
-      docs: [
-        FILE_DETAIL.answers.docs[1],
-        {
-          key: 'internal-form-submissions/fa1/docs/u3.png',
-          name: added.name,
-          size: added.size,
-          type: added.type,
-        },
-      ],
-    }
-    rowMock.mockResolvedValue(MANAGEABLE_FILE_DETAIL)
-    editRowMock.mockResolvedValue({
-      ...MANAGEABLE_FILE_DETAIL,
-      answers: finalAnswers,
-      editVersion: 8,
-      answerRevision: NEXT_ANSWER_REVISION,
-    })
-    await openDetail()
-    fireEvent.click(screen.getByTestId('edit-answer'))
-
-    fireEvent.click(await screen.findByRole('checkbox', { name: '見積書.pdf を削除する' }))
-    fireEvent.change(screen.getByLabelText('添付資料：ファイルを追加'), { target: { files: [added] } })
-    fireEvent.click(screen.getByTestId('edit-save'))
-
-    await waitFor(() => expect(editRowMock).toHaveBeenCalledWith(
-      'fa1',
-      'row1',
-      {},
-      7,
-      ANSWER_REVISION,
-      {
-        attachments: [{
-          fieldIndex: 0,
-          fieldId: 'docs',
-          removedIndexes: [0],
-          files: [added],
-        }],
-      },
+    const editUrl = 'https://api.example.test/ife/admin-origin-file-token'
+    fetchApiMock.mockImplementation(async (path: string) => (
+      path === '/api/staff/me'
+        ? { data: { role: 'owner' } }
+        : { data: { editUrl } }
     ))
-    await waitFor(() => expect(screen.queryByText('見積書.pdf')).toBeNull())
-    expect(screen.getByText('写真.png')).toBeTruthy()
-    expect(screen.getByText('追加写真.png')).toBeTruthy()
-    expect(rowsMock).toHaveBeenCalledTimes(2)
-  })
-
-  it('単一ファイル項目で選び直したら保存前の追加対象を置き換える', async () => {
-    rowMock.mockResolvedValue({
-      ...MANAGEABLE_FILE_DETAIL,
-      answers: { docs: [] },
-      fields: [{
-        ...MANAGEABLE_FILE_DETAIL.fields[0],
-        attachmentConfig: {
-          ...MANAGEABLE_FILE_DETAIL.fields[0].attachmentConfig,
-          allowMultipleFiles: false,
-        },
-      }],
-    })
+    const assign = vi.fn()
+    vi.stubGlobal('location', { assign })
     await openDetail()
+
     fireEvent.click(screen.getByTestId('edit-answer'))
-    const input = screen.getByLabelText('添付資料：ファイルを追加')
-    const first = new File(['first'], '最初.pdf', { type: 'application/pdf' })
-    const second = new File(['second'], '選び直し.pdf', { type: 'application/pdf' })
 
-    fireEvent.change(input, { target: { files: [first] } })
-    fireEvent.change(input, { target: { files: [second] } })
-
-    expect(screen.queryByText('最初.pdf')).toBeNull()
-    expect(screen.getByText('選び直し.pdf')).toBeTruthy()
-  })
-
-  it('添付変更時に CAS 情報が無ければ保存せず再読み込みを案内する', async () => {
-    rowMock.mockResolvedValue({
-      ...MANAGEABLE_FILE_DETAIL,
-      answers: { docs: [] },
-      editVersion: undefined,
-      answerRevision: undefined,
-    })
-    await openDetail()
-    fireEvent.click(screen.getByTestId('edit-answer'))
-    fireEvent.change(screen.getByLabelText('添付資料：ファイルを追加'), {
-      target: { files: [new File(['new'], '追加.pdf', { type: 'application/pdf' })] },
-    })
-    fireEvent.click(screen.getByTestId('edit-save'))
-
-    expect((await screen.findByRole('alert')).textContent).toContain('再読み込み')
+    await waitFor(() => expect(fetchApiMock).toHaveBeenCalledWith(
+      '/api/forms-advanced/fa1/rows/row1/admin-edit-url',
+      { method: 'POST' },
+    ))
+    expect(assign).toHaveBeenCalledWith(editUrl)
+    expect(screen.queryByLabelText('添付資料：ファイルを追加')).toBeNull()
     expect(editRowMock).not.toHaveBeenCalled()
   })
 })

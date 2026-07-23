@@ -337,9 +337,21 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
       setDeleting(false)
     }
   }
-  // 弾M (T-D2): 編集モードに入る = 編集可能 field の現在値を入力欄に載せる。
-  const startEdit = () => {
+  // internal は共通 /ife/ へ遷移し、旧 inline 編集は外部データ向けに残す。
+  const startEdit = async () => {
     if (!detail) return
+    if (detail.source === 'internal') {
+      try {
+        const response = await fetchApi<{ data: { editUrl: string } }>(
+          `/api/forms-advanced/${encodeURIComponent(id)}/rows/${encodeURIComponent(detail.id)}/admin-edit-url`,
+          { method: 'POST' },
+        )
+        globalThis.location.assign(response.data.editUrl)
+      } catch {
+        setNotice('編集画面を開けませんでした。再読み込みして、もう一度お試しください。')
+      }
+      return
+    }
     const init: Record<string, EditValue> = {}
     const initialAttachments: Record<string, AttachmentEditValue> = {}
     for (const field of detail.fields ?? []) {
@@ -560,7 +572,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
                   <button
                     type="button"
                     data-testid="edit-answer"
-                    onClick={startEdit}
+                    onClick={() => void startEdit()}
                     className="min-h-[40px] rounded-lg bg-gray-900 px-3 text-xs font-medium text-white hover:bg-gray-700"
                   >
                     回答を編集
