@@ -159,8 +159,14 @@ describe('チャット詳細のモバイル配置', () => {
     fireEvent.click(await screen.findByRole('button', { name: /佐藤さん/ }))
     const composer = (await screen.findByRole('textbox', { name: 'メッセージを入力' })).closest('[data-chat-composer]')
     const toolbar = screen.getByRole('group', { name: 'テキスト編集ツール' })
+    const detailPanel = screen.getByTestId('chat-detail-panel')
 
     await waitFor(() => {
+      expect(detailPanel.className).toContain('fixed')
+      expect(detailPanel.className).toContain('inset-0')
+      expect(detailPanel.className).toContain('z-40')
+      expect(detailPanel.className).toContain('lg:static')
+      expect(detailPanel.className).toContain('lg:z-auto')
       expect(composer?.className).toContain('sticky')
       expect(composer?.className).toContain('bottom-0')
       expect(composer?.className).not.toContain('pb-16')

@@ -575,6 +575,8 @@ describe('履歴を主役にする返信コンポーザ', () => {
     expect(textarea.rows).toBe(2)
     expect(textarea.className).toContain('min-h-[48px]')
     expect(textarea.className).toContain('text-base')
+    expect(textarea.className).toContain('py-1')
+    expect(textarea.className).toContain('leading-5')
     expect(textarea.style.height).toBe('48px')
     expect(textarea.style.maxHeight).toBe('120px')
     Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 180 })

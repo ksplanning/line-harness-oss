@@ -1271,7 +1271,7 @@ export default function ChatsPage() {
         {/* Right Panel: Chat Detail */}
         <div
           data-testid="chat-detail-panel"
-          className={`min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}
+          className={`fixed inset-0 z-40 min-h-0 flex-1 flex-col overflow-hidden bg-white pt-[env(safe-area-inset-top)] shadow-sm lg:static lg:z-auto lg:rounded-lg lg:border lg:border-gray-200 lg:pt-0 ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}
         >
           {selectedFriendId && !selectedChatId ? (
             /* Direct message to friend without existing chat */
@@ -1638,7 +1638,7 @@ export default function ChatsPage() {
                     onKeyDown: handleKeyDown,
                   }}
                   placeholder="メッセージを入力..."
-                  className="w-full min-h-[48px] max-h-[120px] resize-none overflow-y-auto rounded-lg border border-gray-300 bg-white px-3 py-2 text-base leading-6 focus:outline-none focus:ring-2 focus:ring-green-500"
+                  className="w-full min-h-[48px] max-h-[120px] resize-none overflow-y-auto rounded-lg border border-gray-300 bg-white px-3 py-1 text-base leading-5 focus:outline-none focus:ring-2 focus:ring-green-500"
                   containerClassName="w-full space-y-2"
                 />
               </div>
