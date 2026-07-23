@@ -258,6 +258,9 @@ export interface SubmissionRow {
   answers: Record<string, unknown>
   submittedAt: string
   verified: boolean
+  externalEditSource?: 'edit_link' | 'sheet' | null
+  externalEditedAt?: string | null
+  externalEditApprovedAt?: string | null
 }
 export interface RowsPage {
   rows: SubmissionRow[]
@@ -277,6 +280,9 @@ export interface RowEditResult {
   allowPostEdit?: number
   editVersion?: number
   answerRevision?: string
+  externalEditSource?: 'edit_link' | 'sheet' | null
+  externalEditedAt?: string | null
+  externalEditApprovedAt?: string | null
   fields?: RowEditFieldMeta[]
   lastEdit: { editorStaffId: string | null; editorName: string | null; editedAt: string } | null
 }
@@ -312,6 +318,9 @@ export interface RowDetail {
   allowPostEdit?: number
   editVersion?: number
   answerRevision?: string
+  externalEditSource?: 'edit_link' | 'sheet' | null
+  externalEditedAt?: string | null
+  externalEditApprovedAt?: string | null
   fields?: RowEditFieldMeta[]
   lastEdit?: { editorStaffId: string | null; editorName: string | null; editedAt: string } | null
 }

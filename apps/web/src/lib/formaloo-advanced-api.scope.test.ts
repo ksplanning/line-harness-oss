@@ -12,7 +12,7 @@ vi.mock('./api', () => ({
   downloadCsv: vi.fn(),
 }))
 
-import { formsAdvancedApi } from './formaloo-advanced-api'
+import { formalooDataApi, formsAdvancedApi } from './formaloo-advanced-api'
 import { formalooAccountBindingsApi } from './formaloo-account-bindings-api'
 
 beforeEach(() => {
@@ -80,6 +80,74 @@ describe('formsAdvancedApi render backend — separate additive endpoint', () =>
     expect(url).toBe('/api/forms-advanced/fa1/render-backend')
     expect((opts as { method: string }).method).toBe('PATCH')
     expect(JSON.parse((opts as { body: string }).body)).toEqual({ renderBackend: 'internal' })
+  })
+})
+
+describe('formalooDataApi — external edit review metadata', () => {
+  const externalEditMetadata = {
+    externalEditSource: 'edit_link' as const,
+    externalEditedAt: '2026-07-23T10:00:00+09:00',
+    externalEditApprovedAt: null,
+  }
+
+  it('keeps review metadata on list and detail rows', async () => {
+    fetchApi
+      .mockResolvedValueOnce({
+        success: true,
+        data: {
+          rows: [{
+            id: 'row-1',
+            friendId: null,
+            answers: { name: 'after' },
+            submittedAt: '2026-07-23T10:00:00+09:00',
+            verified: false,
+            ...externalEditMetadata,
+          }],
+          total: 1,
+          page: 1,
+          pageSize: 25,
+        },
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: {
+          id: 'row-1',
+          answers: { name: 'after' },
+          submittedAt: '2026-07-23T10:00:00+09:00',
+          source: 'internal',
+          ...externalEditMetadata,
+        },
+      })
+
+    const list = await formalooDataApi.rows('form-1')
+    const detail = await formalooDataApi.row('form-1', 'row-1')
+
+    expect(list.rows[0]?.externalEditSource).toBe('edit_link')
+    expect(list.rows[0]?.externalEditedAt).toBe(externalEditMetadata.externalEditedAt)
+    expect(list.rows[0]?.externalEditApprovedAt).toBeNull()
+    expect(detail.externalEditSource).toBe('edit_link')
+    expect(detail.externalEditedAt).toBe(externalEditMetadata.externalEditedAt)
+    expect(detail.externalEditApprovedAt).toBeNull()
+  })
+
+  it('keeps review metadata on edit responses', async () => {
+    fetchApi.mockResolvedValueOnce({
+      success: true,
+      data: {
+        id: 'row-1',
+        answers: { name: 'after' },
+        submittedAt: '2026-07-23T10:00:00+09:00',
+        source: 'internal',
+        lastEdit: null,
+        ...externalEditMetadata,
+      },
+    })
+
+    const edited = await formalooDataApi.editRow('form-1', 'row-1', { name: 'after' })
+
+    expect(edited.externalEditSource).toBe('edit_link')
+    expect(edited.externalEditedAt).toBe(externalEditMetadata.externalEditedAt)
+    expect(edited.externalEditApprovedAt).toBeNull()
   })
 })
 
