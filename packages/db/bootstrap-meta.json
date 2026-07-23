@@ -120,7 +120,8 @@
     "132_sheets_sync_alert_state.sql",
     "133_internal_form_submission_external_edit_review.sql",
     "134_email_sender_settings.sql",
-    "135_internal_form_submission_external_edit_changes.sql"
+    "135_internal_form_submission_external_edit_changes.sql",
+    "136_staff_notification_destinations.sql"
   ],
-  "migrationCount": 121
+  "migrationCount": 122
 }
