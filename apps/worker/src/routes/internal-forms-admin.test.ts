@@ -745,7 +745,7 @@ describe('internal definition save boundary', () => {
     const nextFields = [
       {
         id: 'name', type: 'text', label: '氏名', required: true, position: 0,
-        config: { maxLength: 40, unknownConfig: 'drop-me' },
+        config: { maxLength: 40, editLocked: true, unknownConfig: 'drop-me' },
       },
       { id: 'memo', type: 'textarea', label: '備考', required: false, position: 1, config: {} },
     ];
@@ -768,7 +768,14 @@ describe('internal definition save boundary', () => {
     expect(stored.description).toBeNull();
     expect(JSON.parse(stored.definition_json)).toEqual({
       fields: [
-        { id: 'name', type: 'text', label: '氏名', required: true, position: 0, config: { maxLength: 40 } },
+        {
+          id: 'name',
+          type: 'text',
+          label: '氏名',
+          required: true,
+          position: 0,
+          config: { maxLength: 40, editLocked: true },
+        },
         { id: 'memo', type: 'textarea', label: '備考', required: false, position: 1, config: {} },
       ],
       logic: [],
@@ -782,7 +789,7 @@ describe('internal definition save boundary', () => {
     ).all('internal-form')).toEqual([
       {
         id: 'name', formaloo_field_slug: 'remote-name', field_type: 'text', label: '氏名',
-        position: 0, config_json: '{"maxLength":40}',
+        position: 0, config_json: '{"maxLength":40,"editLocked":true}',
       },
       {
         id: 'memo', formaloo_field_slug: null, field_type: 'textarea', label: '備考',
@@ -1387,6 +1394,38 @@ describe('internal answer admin read path', () => {
     expect(stale.status).toBe(409);
     expect(JSON.parse((raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
       .get('sub-2') as { answers_json: string }).answers_json)).toMatchObject({ name: '更新後' });
+  });
+
+  test('admin PATCH can still change an editLocked field', async () => {
+    const editLockedAdminDefinition = {
+      ...EDITABLE_DEFINITION,
+      fields: EDITABLE_DEFINITION.fields.map((field) => field.id === 'name'
+        ? { ...field, config: { ...field.config, editLocked: true } }
+        : field),
+    };
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(editLockedAdminDefinition), 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ name: '管理画面の変更前', contact: 'two@example.test', kind: '個人' }), 'sub-2');
+
+    const detail = await call('GET', '/api/forms-advanced/internal-form/rows/sub-2');
+    const detailData = (await detail.json() as {
+      data: { fields: Array<{ slug: string; editable: boolean }> };
+    }).data;
+    expect(detailData.fields).toContainEqual(expect.objectContaining({
+      slug: 'name',
+      editable: true,
+    }));
+    const context = await internalEditContext('internal-form', 'sub-2');
+
+    const saved = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers: { name: '管理画面から更新', contact: 'two@example.test', kind: '個人' },
+    });
+
+    expect(saved.status).toBe(200);
+    expect((await saved.json() as { data: { answers: Record<string, unknown> } }).data.answers)
+      .toMatchObject({ name: '管理画面から更新' });
   });
 
   test('multipart PATCH removes and adds attachments through the shared final-list contract, then GET returns the same list', async () => {

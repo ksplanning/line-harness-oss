@@ -137,6 +137,7 @@ function isEditableForBranchPolicy(
   branchSources: ReadonlySet<string>,
   allowBranchEdit: boolean,
 ): boolean {
+  if (field.config.editLocked === true) return false;
   const respondentEditable = isEditableField(field, repeatingTemplates)
     || (field.type === 'file' && !repeatingTemplates.has(field.id));
   return respondentEditable
@@ -231,19 +232,16 @@ function attachmentIcon(name: string, type: string): string {
   return subtype ? subtype.toUpperCase().slice(0, 5) : 'FILE';
 }
 
-function renderAttachmentField(
+function renderSavedAttachmentItems(
   value: ResolvedEdit,
   token: string,
   field: InternalFormField,
-  index: number,
-  current: unknown,
+  entries: unknown[],
+  removalName: string | null,
   initiallyVisible: boolean,
 ): string {
-  const id = `answer-${index}`;
-  const name = `a_${index}`;
-  const entries = Array.isArray(current) ? current : [];
   const prefix = attachmentKeyPrefix(value.form.id, field.id);
-  const saved = entries.map((entry, attachmentIndex) => {
+  return entries.map((entry, attachmentIndex) => {
     const descriptor = parseInternalFormAttachmentDescriptor(entry, prefix);
     const fallback = entry !== null && typeof entry === 'object' && !Array.isArray(entry)
       ? entry as Record<string, unknown>
@@ -261,8 +259,25 @@ function renderAttachmentField(
       ? `<a class="attachment-name" href="${escapeHtml(url)}">${escapeHtml(filename)}</a>`
       : `<span class="attachment-name">${escapeHtml(filename)}</span>`;
     const disabled = initiallyVisible ? '' : ' disabled';
-    return `<li class="attachment-item" data-existing-file-item>${preview}<span class="attachment-details">${displayedName}</span><label class="attachment-delete"><input type="checkbox" name="remove_${name}" value="${attachmentIndex}" data-existing-file-remove data-logic-ignore${disabled}> 削除する</label></li>`;
+    const removal = removalName === null
+      ? ''
+      : `<label class="attachment-delete"><input type="checkbox" name="remove_${removalName}" value="${attachmentIndex}" data-existing-file-remove data-logic-ignore${disabled}> 削除する</label>`;
+    return `<li class="attachment-item" data-existing-file-item>${preview}<span class="attachment-details">${displayedName}</span>${removal}</li>`;
   }).join('');
+}
+
+function renderAttachmentField(
+  value: ResolvedEdit,
+  token: string,
+  field: InternalFormField,
+  index: number,
+  current: unknown,
+  initiallyVisible: boolean,
+): string {
+  const id = `answer-${index}`;
+  const name = `a_${index}`;
+  const entries = Array.isArray(current) ? current : [];
+  const saved = renderSavedAttachmentItems(value, token, field, entries, name, initiallyVisible);
   const extensions = (field.config.allowedExtensions ?? [])
     .map((extension) => extension.replace(/^\./, '').toLowerCase())
     .filter((extension) => /^[a-z0-9]+$/.test(extension));
@@ -275,6 +290,18 @@ function renderAttachmentField(
   const disabled = initiallyVisible ? '' : ' disabled';
   const requiredCopy = field.required ? '<span class="required">必須</span>' : '';
   return `<div class="field attachment-field" data-file-attachment data-edit-file-capacity><span class="label">${escapeHtml(field.label)}${requiredCopy}</span><ul class="attachment-list existing-attachment-list" data-existing-file-list aria-label="保存済みファイル">${saved}</ul><label class="attachment-add-label" for="${id}">ファイルを追加</label><input type="file" id="${id}" name="${name}"${accept}${multiple}${requiredData}${required}${disabled} data-file-input data-logic-ignore data-max-files="${maxFiles}" data-max-size-kb="${maxSizeKb}" data-allowed-extensions="${extensions.join(',')}" aria-describedby="${id}-file-status"><p class="attachment-status" id="${id}-file-status" data-file-status role="alert" aria-live="polite" hidden></p><ul class="attachment-list" data-file-list aria-label="追加するファイル" aria-live="polite"></ul></div>`;
+}
+
+function renderReadOnlyAttachmentField(
+  value: ResolvedEdit,
+  token: string,
+  field: InternalFormField,
+  current: unknown,
+): string {
+  const entries = Array.isArray(current) ? current : [];
+  const saved = renderSavedAttachmentItems(value, token, field, entries, null, true);
+  const empty = entries.length === 0 ? '<pre>（回答なし）</pre>' : '';
+  return `<section class="field attachment-field readonly" data-readonly-file-attachment aria-label="${escapeHtml(field.label)}"><span class="label">${escapeHtml(field.label)}</span><ul class="attachment-list existing-attachment-list" data-existing-file-list aria-label="保存済みファイル">${saved}</ul>${empty}</section>`;
 }
 
 function formatReadOnlyValue(value: unknown): string {
@@ -382,8 +409,10 @@ function renderEditPage(
     const editable = isEditableForBranchPolicy(field, templates, branchSources, allowBranchEdit);
     const current = initiallyVisible ? currentAnswers[field.id] : undefined;
     if (editable && field.type === 'file') hasEditableAttachment = true;
-    const rendered = editable && field.type === 'file'
-      ? renderAttachmentField(value, token, field, index, current, initiallyVisible)
+    const rendered = field.type === 'file' && field.config.editLocked === true
+      ? renderReadOnlyAttachmentField(value, token, field, current)
+      : editable && field.type === 'file'
+        ? renderAttachmentField(value, token, field, index, current, initiallyVisible)
       : editable
         ? renderEditableField(field, index, current, initiallyVisible)
         : renderReadOnlyField(field, current);
@@ -400,7 +429,10 @@ function renderEditPage(
     : '';
   const submitAttribute = allowBranchEdit ? ' data-submit' : '';
   const fixedAnswers = Object.fromEntries(value.definition.fields
-    .filter((field) => field.type !== 'file' && branchSources.has(field.id) && !isEditableField(field, templates))
+    .filter((field) => branchSources.has(field.id) && (
+      field.config.editLocked === true
+      || (field.type !== 'file' && !isEditableField(field, templates))
+    ))
     // 初期状態で非表示の保存値は edit HTML へ出さない。表示中の readonly source だけを
     // client 再評価へ渡し、認可済み画面でも不要な回答値の露出を避ける。
     .filter((field) => visible.has(field.id))
@@ -702,6 +734,19 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
     const storedAnswers = parseAnswers(resolved.value.submission.answers_json);
     const branchSources = branchSourceFieldIds(resolved.value.definition);
     const allowBranchEdit = resolved.value.form.allow_branch_edit === 1;
+    if (resolved.value.definition.fields.some((field, index) => (
+      field.config.editLocked === true
+      && (
+        Object.prototype.hasOwnProperty.call(body, `a_${index}`)
+        || Object.prototype.hasOwnProperty.call(body, `remove_a_${index}`)
+      )
+    ))) {
+      return c.html(
+        renderEditPage(resolved.value, token, '編集不可の項目は変更できません。'),
+        403,
+        PRIVATE_HEADERS,
+      );
+    }
     if (!allowBranchEdit && resolved.value.definition.fields.some((field, index) => (
       branchSources.has(field.id)
       && (
@@ -797,7 +842,7 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
     );
     const merged = Object.assign(Object.create(null) as Record<string, unknown>, storedAnswers);
     for (const field of resolved.value.definition.fields) {
-      if (!visibleFieldIds.has(field.id)) delete merged[field.id];
+      if (!visibleFieldIds.has(field.id) && field.config.editLocked !== true) delete merged[field.id];
     }
     for (const fieldId of validationInput.editableIds) delete merged[fieldId];
     Object.assign(merged, validation.answers);

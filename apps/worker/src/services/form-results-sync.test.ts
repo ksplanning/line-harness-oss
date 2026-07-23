@@ -828,6 +828,24 @@ describe('answer edits (D-1 回答欄)', () => {
     expect(submissionAnswers('ifs-002')).toEqual({ q1: '回答B1', q2: '回答B2' });
   });
 
+  test('imports a sheet edit for an editLocked field because the lock applies only to edit URLs', async () => {
+    const stored = raw.prepare("SELECT definition_json FROM formaloo_forms WHERE id = 'form-1'")
+      .get() as { definition_json: string };
+    const definition = JSON.parse(stored.definition_json) as {
+      fields: Array<{ id: string; config: Record<string, unknown> }>;
+    };
+    definition.fields.find((field) => field.id === 'q1')!.config.editLocked = true;
+    raw.prepare("UPDATE formaloo_forms SET definition_json = ? WHERE id = 'form-1'")
+      .run(JSON.stringify(definition));
+
+    await run();
+    resultsClient.values[1][5] = 'シートから更新';
+    const result = await run();
+
+    expect(result.importedFields).toBe(1);
+    expect(submissionAnswers('ifs-001')).toEqual({ q1: 'シートから更新', q2: '回答A2' });
+  });
+
   test('updates an anonymous answer and restores its personal columns to blank', async () => {
     insertSubmission(
       'ifs-anon',

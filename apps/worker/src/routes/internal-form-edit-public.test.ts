@@ -106,6 +106,39 @@ const attachmentDefinition = {
   logic: [],
 };
 
+const editLockedDefinition = {
+  fields: [
+    {
+      id: 'locked_name',
+      type: 'text',
+      label: '確定済み氏名',
+      required: true,
+      position: 0,
+      config: { editLocked: true },
+    },
+    {
+      id: 'open_note',
+      type: 'text',
+      label: '追記事項',
+      required: false,
+      position: 1,
+      config: {},
+    },
+  ],
+  logic: [],
+};
+
+const editLockedAttachmentDefinition = {
+  fields: [{
+    ...attachmentDefinition.fields[0],
+    config: {
+      ...attachmentDefinition.fields[0].config,
+      editLocked: true,
+    },
+  }],
+  logic: [],
+};
+
 function storedAttachment(
   key: string,
   name: string,
@@ -365,6 +398,42 @@ describe('GET /ife/:token', () => {
     expect(html).not.toContain('<script>');
   });
 
+  test('renders editLocked answers read-only while a legacy field remains editable', async () => {
+    seedForm({ definition: editLockedDefinition });
+    seedSubmission('form-1', { locked_name: '変更前の氏名', open_note: '変更できます' });
+
+    const response = await app().request(`/ife/${await token()}`, {}, bindings());
+    const html = await response.text();
+    const document = new DOMParser().parseFromString(html, 'text/html');
+    const locked = document.querySelector<HTMLElement>('[data-field-id="locked_name"]');
+    const open = document.querySelector<HTMLElement>('[data-field-id="open_note"]');
+
+    expect(response.status).toBe(200);
+    expect(locked?.querySelector('pre')?.textContent).toBe('変更前の氏名');
+    expect(locked?.querySelector('[name="a_0"]')).toBeNull();
+    expect(open?.querySelector<HTMLInputElement>('[name="a_1"]')?.value).toBe('変更できます');
+  });
+
+  test('keeps an editLocked branch source as a safe fixed answer for client-side branching', async () => {
+    const lockedBranchDefinition = {
+      ...conditionalDefinition,
+      fields: conditionalDefinition.fields.map((field) => field.id === 'kind'
+        ? { ...field, config: { ...field.config, editLocked: true } }
+        : field),
+    };
+    seedForm({ definition: lockedBranchDefinition, allowBranchEdit: 1 });
+    seedSubmission('form-1', { kind: '個人', personal: '佐藤' });
+
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    const document = new DOMParser().parseFromString(html, 'text/html');
+    initInternalFormLogic(document);
+
+    expect(document.querySelector('[data-field-id="kind"] input, [data-field-id="kind"] select')).toBeNull();
+    expect(document.querySelector('[data-internal-form-logic-config]')?.textContent).toContain('fixedAnswers');
+    expect(document.querySelector<HTMLElement>('[data-field-id="personal"]')?.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>('[data-field-id="company"]')?.hidden).toBe(true);
+  });
+
   test('renders saved attachments separately from the reused A3 upload block', async () => {
     seedForm({ definition: attachmentDefinition });
     const signed = await token();
@@ -417,6 +486,31 @@ describe('GET /ife/:token', () => {
     expect(html).toContain('.attachment-remove{width:auto');
     expect(html).not.toContain(imageKey);
     expect(html).not.toContain(pdfKey);
+  });
+
+  test('renders an editLocked attachment block with downloads but no add or remove controls', async () => {
+    seedForm({ definition: editLockedAttachmentDefinition });
+    const key = 'internal-form-submissions/form-1/attachment/locked.pdf';
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(key, '確定済み資料.pdf', 'application/pdf')],
+    });
+    const signed = await token();
+
+    const response = await app().request(`/ife/${signed}`, {}, bindings());
+    const html = await response.text();
+    const document = new DOMParser().parseFromString(html, 'text/html');
+    const wrapper = document.querySelector<HTMLElement>('[data-field-id="attachment"]');
+
+    expect(response.status).toBe(200);
+    expect(wrapper?.querySelector('[data-readonly-file-attachment]')).not.toBeNull();
+    expect(wrapper?.querySelector('[data-existing-file-item]')?.textContent).toContain('確定済み資料.pdf');
+    expect(wrapper?.querySelector<HTMLAnchorElement>('.attachment-name')?.getAttribute('href'))
+      .toBe(`/ife/${signed}/attachment/attachment/0`);
+    expect(wrapper?.querySelector('[data-existing-file-remove]')).toBeNull();
+    expect(wrapper?.querySelector('[data-file-input]')).toBeNull();
+    expect(wrapper?.querySelector('.attachment-add-label')).toBeNull();
+    expect(document.querySelector('form')?.hasAttribute('enctype')).toBe(false);
+    expect(html).not.toContain(key);
   });
 
   test('re-enables a full single-file input when the saved file is marked for replacement', async () => {
@@ -787,6 +881,33 @@ describe('GET /ife/:token', () => {
     expect(parsed.querySelector<HTMLElement>('[data-field-id="attachment_note"]')?.hidden).toBe(false);
   });
 
+  test('editLocked file 分岐は安全な固定回答を使い、添付操作なしでも表示状態を保つ', async () => {
+    const lockedFileSourceDefinition = {
+      ...fileSourceDefinition,
+      fields: fileSourceDefinition.fields.map((field) => field.id === 'attachment'
+        ? { ...field, config: { ...field.config, editLocked: true } }
+        : field),
+    };
+    seedForm({ definition: lockedFileSourceDefinition, allowBranchEdit: 1 });
+    const privateKey = 'internal-form-submissions/form-1/attachment/locked-branch.pdf';
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(privateKey, 'locked-branch.pdf', 'application/pdf')],
+      attachment_note: '表示中',
+    });
+
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const logicConfig = parsed.querySelector('[data-internal-form-logic-config]')?.textContent ?? '';
+
+    expect(html).not.toContain(privateKey);
+    expect(logicConfig).toContain('fixedAnswers');
+    expect(logicConfig).not.toContain(privateKey);
+    expect(parsed.querySelector('[data-file-input]')).toBeNull();
+    expect(parsed.querySelector('[data-existing-file-remove]')).toBeNull();
+    initInternalFormLogic(parsed);
+    expect(parsed.querySelector<HTMLElement>('[data-field-id="attachment_note"]')?.hidden).toBe(false);
+  });
+
   test('field type changed after submission still projects a stale attachment descriptor without its R2 key', async () => {
     const changedTypeDefinition = {
       fields: [
@@ -899,6 +1020,116 @@ describe('GET /ife/:token', () => {
 });
 
 describe('POST /ife/:token', () => {
+  test('rejects a forged editLocked field and preserves its stored value and edit version', async () => {
+    seedForm({ definition: editLockedDefinition });
+    seedSubmission('form-1', { locked_name: '変更前の氏名', open_note: '変更前の追記' });
+    const signed = await token();
+
+    const response = await app().request(`/ife/${signed}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        editVersion: '3',
+        a_0: '改ざんされた氏名',
+        a_1: '同時に送った追記',
+      }),
+    }, bindings());
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain('編集不可の項目は変更できません。');
+    const stored = raw.prepare(
+      'SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?',
+    ).get('ifs-1') as { answers_json: string; edit_version: number };
+    expect(stored.edit_version).toBe(3);
+    expect(JSON.parse(stored.answers_json)).toEqual({
+      locked_name: '変更前の氏名',
+      open_note: '変更前の追記',
+    });
+
+    const readback = await app().request(`/ife/${signed}`, {}, bindings());
+    const readbackHtml = await readback.text();
+    expect(readbackHtml).toContain('変更前の氏名');
+    expect(readbackHtml).not.toContain('改ざんされた氏名');
+  });
+
+  test('updates an unlocked legacy field while preserving an omitted editLocked answer', async () => {
+    seedForm({ definition: editLockedDefinition });
+    seedSubmission('form-1', { locked_name: '変更前の氏名', open_note: '変更前の追記' });
+
+    const response = await app().request(`/ife/${await token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ editVersion: '3', a_1: '更新後の追記' }),
+    }, bindings());
+
+    expect(response.status).toBe(200);
+    const stored = raw.prepare(
+      'SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?',
+    ).get('ifs-1') as { answers_json: string; edit_version: number };
+    expect(stored.edit_version).toBe(4);
+    expect(JSON.parse(stored.answers_json)).toEqual({
+      locked_name: '変更前の氏名',
+      open_note: '更新後の追記',
+    });
+  });
+
+  test('rejects forged add and remove controls for an editLocked file before any upload', async () => {
+    seedForm({ definition: editLockedAttachmentDefinition });
+    const key = 'internal-form-submissions/form-1/attachment/locked.pdf';
+    const answers = {
+      attachment: [storedAttachment(key, '確定済み資料.pdf', 'application/pdf')],
+    };
+    seedSubmission('form-1', answers);
+    const r2 = r2Stub();
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'remove_a_0', value: '0' },
+      { name: 'a_0', filename: 'forged.pdf', type: 'application/pdf', content: 'forged' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings(DB, {
+      IMAGES: r2.bucket,
+    }));
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain('編集不可の項目は変更できません。');
+    expect(r2.put).not.toHaveBeenCalled();
+    expect(raw.prepare(
+      'SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?',
+    ).get('ifs-1')).toEqual({
+      answers_json: JSON.stringify(answers),
+      edit_version: 3,
+    });
+  });
+
+  test('does not erase an editLocked answer when another field change hides it', async () => {
+    const lockedTargetDefinition = {
+      fields: conditionalDefinition.fields.map((field) => field.id === 'company'
+        ? { ...field, config: { ...field.config, editLocked: true } }
+        : { ...field, required: false }),
+      logic: conditionalDefinition.logic,
+    };
+    seedForm({ definition: lockedTargetDefinition, allowBranchEdit: 1 });
+    seedSubmission('form-1', { kind: '法人', company: '保存しておく会社名' });
+
+    const response = await app().request(`/ife/${await token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ editVersion: '3', a_0: '個人', a_1: '佐藤' }),
+    }, bindings());
+
+    expect(response.status).toBe(200);
+    const stored = raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+      .get('ifs-1') as { answers_json: string };
+    expect(JSON.parse(stored.answers_json)).toEqual({
+      kind: '個人',
+      personal: '佐藤',
+      company: '保存しておく会社名',
+    });
+    const readbackHtml = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    expect(readbackHtml).not.toContain('保存しておく会社名');
+  });
+
   test('re-evaluates file-source branches from the final retained plus added attachment state', async () => {
     seedForm({ definition: fileSourceDefinition, allowBranchEdit: 1 });
     const existingKey = 'internal-form-submissions/form-1/attachment/existing.pdf';
