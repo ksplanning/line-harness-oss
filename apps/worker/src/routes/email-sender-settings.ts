@@ -88,6 +88,30 @@ function domainMatches(expected: EmailSenderSettings, domain: ResendDomain): boo
   return domain.name === expected.senderDomain.toLowerCase();
 }
 
+function registerDomainErrorMessage(error: string): string {
+  switch (error) {
+    case 'resend_domains_plan_limit':
+      return 'プランの上限です（1ドメインまで）。既存ドメインの削除かプラン変更が必要です。';
+    case 'missing_api_key':
+    case 'resend_domains_auth_error':
+      return 'Resend の認証設定に問題があります。APIキーと権限を確認してください。';
+    case 'resend_domains_invalid_domain':
+      return 'ドメインの形式が正しくありません。差出人メールアドレスのドメインを確認してください。';
+    default: {
+      const safeCode = (
+        /^resend_domains_http_\d{3}$/.test(error)
+        || [
+          'resend_domains_invalid_response',
+          'resend_domains_network_error',
+        ].includes(error)
+      )
+        ? error
+        : 'resend_domains_unknown_error';
+      return `ドメインを登録できませんでした（コード: ${safeCode}）`;
+    }
+  }
+}
+
 emailSenderSettings.get('/api/account-settings/email-sender', async (c) => {
   const accountId = validAccountId(c.req.query('accountId'));
   if (!accountId) return c.json({ success: false, error: 'accountId required' }, 400);
@@ -157,7 +181,10 @@ emailSenderSettings.post('/api/account-settings/email-sender/domain', async (c) 
 
   const registered = await registerResendDomain(c.env, settings.senderDomain);
   if (!registered.ok) {
-    return c.json({ success: false, error: 'ドメインを登録できませんでした' }, 502);
+    return c.json({
+      success: false,
+      error: registerDomainErrorMessage(registered.error),
+    }, 502);
   }
   if (!domainMatches(settings, registered.domain)) {
     return c.json({ success: false, error: '登録先ドメインを確認できませんでした' }, 502);

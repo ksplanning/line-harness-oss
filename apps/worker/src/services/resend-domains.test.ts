@@ -91,6 +91,89 @@ describe('registerResendDomain', () => {
   });
 
   it.each([
+    [
+      'プラン上限',
+      403,
+      {
+        name: 'validation_error',
+        statusCode: 403,
+        message: 'Your plan includes 1 domain. Remove an existing domain or upgrade your plan.',
+      },
+      'resend_domains_plan_limit',
+    ],
+    [
+      '権限不足のAPI key',
+      401,
+      {
+        name: 'restricted_api_key',
+        statusCode: 401,
+        message: 'This API key is restricted to only send emails.',
+      },
+      'resend_domains_auth_error',
+    ],
+    [
+      '無効なAPI key',
+      403,
+      {
+        name: 'invalid_api_key',
+        statusCode: 403,
+        message: 'API key is invalid.',
+      },
+      'resend_domains_auth_error',
+    ],
+    [
+      '不正なドメイン',
+      422,
+      {
+        name: 'validation_error',
+        statusCode: 422,
+        message: 'The `name` field must be a valid domain.',
+      },
+      'resend_domains_invalid_domain',
+    ],
+  ] as const)(
+    'providerの%sは生メッセージではなく安全な内部コードへ分類する',
+    async (_label, status, providerError, error) => {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify(providerError), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      }));
+
+      const result = await registerResendDomain(
+        { RESEND_API_KEY: 'resend-secret' },
+        'brand.example',
+        fetcher,
+      );
+
+      expect(result).toEqual({ ok: false, error });
+      expect(JSON.stringify(result)).not.toContain(providerError.message);
+      expect(JSON.stringify(result)).not.toContain('resend-secret');
+    },
+  );
+
+  it('未知のproviderエラーはHTTP codeだけを残し、生メッセージを漏らさない', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      name: 'unexpected_provider_error',
+      statusCode: 503,
+      message: 'provider-secret resend-secret internal diagnostic',
+    }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    const result = await registerResendDomain(
+      { RESEND_API_KEY: 'resend-secret' },
+      'brand.example',
+      fetcher,
+    );
+
+    expect(result).toEqual({ ok: false, error: 'resend_domains_http_503' });
+    expect(JSON.stringify(result)).not.toContain('provider-secret');
+    expect(JSON.stringify(result)).not.toContain('resend-secret');
+    expect(JSON.stringify(result)).not.toContain('internal diagnostic');
+  });
+
+  it.each([
     [async () => new Response('provider secret body', { status: 422 }), 'resend_domains_http_422'],
     [async () => new Response('{}', { status: 200 }), 'resend_domains_invalid_response'],
     [async () => { throw new Error('resend-secret provider body'); }, 'resend_domains_network_error'],

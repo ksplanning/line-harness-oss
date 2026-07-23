@@ -191,7 +191,7 @@ describe('email sender settings admin route', () => {
     }
   });
 
-  it('保存済みメールのdomainだけを登録しDNS公開情報を保存する', async () => {
+  it('保存済みメールのdomainだけを登録しDNS公開情報を保存する成功経路は不変', async () => {
     stored = view();
     resendMocks.registerResendDomain.mockResolvedValue({
       ok: true,
@@ -222,10 +222,104 @@ describe('email sender settings admin route', () => {
       resendDomainStatus: 'pending',
       dnsRecords: records,
     });
-    expect(await response.json()).toMatchObject({
+    expect(await response.json()).toEqual({
       success: true,
-      data: { domainStatus: 'pending', dnsRecords: records, usingFallback: true },
+      data: {
+        senderEmail: 'notice@brand.example',
+        senderName: 'ブランド受付',
+        senderDomain: 'brand.example',
+        domainStatus: 'pending',
+        dnsRecords: records,
+        usingFallback: true,
+      },
     });
+  });
+
+  it.each([
+    [
+      'プラン上限',
+      'resend_domains_plan_limit',
+      'プランの上限です（1ドメインまで）。既存ドメインの削除かプラン変更が必要です。',
+    ],
+    [
+      'Resend認証エラー',
+      'resend_domains_auth_error',
+      'Resend の認証設定に問題があります。APIキーと権限を確認してください。',
+    ],
+    [
+      'API key未設定',
+      'missing_api_key',
+      'Resend の認証設定に問題があります。APIキーと権限を確認してください。',
+    ],
+    [
+      '不正なドメイン',
+      'resend_domains_invalid_domain',
+      'ドメインの形式が正しくありません。差出人メールアドレスのドメインを確認してください。',
+    ],
+  ] as const)(
+    'ドメイン登録の%sを安全な日本語の理由と次の一手で返す',
+    async (_label, error, expectedMessage) => {
+      stored = view();
+      resendMocks.registerResendDomain.mockResolvedValue({ ok: false, error });
+
+      const response = await request('/api/account-settings/email-sender/domain', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      });
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({
+        success: false,
+        error: expectedMessage,
+      });
+      expect(dbMocks.setEmailSenderDomainState).not.toHaveBeenCalled();
+    },
+  );
+
+  it('未知の登録失敗は汎用文言と安全なHTTP codeを返す', async () => {
+    stored = view();
+    resendMocks.registerResendDomain.mockResolvedValue({
+      ok: false,
+      error: 'resend_domains_http_503',
+    });
+
+    const response = await request('/api/account-settings/email-sender/domain', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'account-1' }),
+    });
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: 'ドメインを登録できませんでした（コード: resend_domains_http_503）',
+    });
+    expect(dbMocks.setEmailSenderDomainState).not.toHaveBeenCalled();
+  });
+
+  it('任意のprovider由来文字列をcodeとして表示せず、秘密値を応答しない', async () => {
+    stored = view();
+    resendMocks.registerResendDomain.mockResolvedValue({
+      ok: false,
+      error: 'resend_domains_http_422 provider-secret resend-secret',
+    });
+
+    const response = await request('/api/account-settings/email-sender/domain', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'account-1' }),
+    });
+    const responseText = await response.text();
+
+    expect(response.status).toBe(502);
+    expect(JSON.parse(responseText)).toEqual({
+      success: false,
+      error: 'ドメインを登録できませんでした（コード: resend_domains_unknown_error）',
+    });
+    expect(responseText).not.toContain('provider-secret');
+    expect(responseText).not.toContain('resend-secret');
+    expect(dbMocks.setEmailSenderDomainState).not.toHaveBeenCalled();
   });
 
   it('確認ボタン相当でpendingをverifiedへ更新しcustom送信状態にする', async () => {

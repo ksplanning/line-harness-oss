@@ -86,8 +86,48 @@ function headers(key: string): HeadersInit {
   };
 }
 
+async function providerErrorCode(response: Response): Promise<string> {
+  const fallback = `resend_domains_http_${response.status}`;
+  const body = objectValue(await response.json().catch(() => null));
+  const name = nonEmptyString(body?.name)?.toLowerCase() ?? '';
+  const message = nonEmptyString(body?.message)?.toLowerCase() ?? '';
+
+  if (
+    response.status === 403
+    && message.includes('plan includes')
+    && message.includes('domain')
+  ) {
+    return 'resend_domains_plan_limit';
+  }
+  if (
+    response.status === 401
+    || (
+      response.status === 403
+      && (
+        ['invalid_api_key', 'missing_api_key', 'restricted_api_key'].includes(name)
+        || (message.includes('api key') && /invalid|restricted|unauthori[sz]ed/.test(message))
+      )
+    )
+  ) {
+    return 'resend_domains_auth_error';
+  }
+  if (
+    [400, 422].includes(response.status)
+    && (
+      message.includes('valid domain')
+      || (
+        message.includes('domain')
+        && /invalid|format|malformed/.test(message)
+      )
+    )
+  ) {
+    return 'resend_domains_invalid_domain';
+  }
+  return fallback;
+}
+
 async function readDomainResponse(response: Response): Promise<ResendDomainResult> {
-  if (!response.ok) return { ok: false, error: `resend_domains_http_${response.status}` };
+  if (!response.ok) return { ok: false, error: await providerErrorCode(response) };
   const body = await response.json().catch(() => null);
   const domain = providerDomain(body);
   return domain
@@ -130,7 +170,7 @@ export async function startResendDomainVerification(
       headers: headers(key),
     });
     if (!response.ok) {
-      return { ok: false, error: `resend_domains_http_${response.status}` };
+      return { ok: false, error: await providerErrorCode(response) };
     }
     return { ok: true };
   } catch {
