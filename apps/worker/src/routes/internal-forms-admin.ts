@@ -1508,6 +1508,7 @@ internalFormsAdmin.get('/api/forms-advanced/:id/stats', async (c, next) => {
       .bind(id)
       .all<{ day: string; count: number }>();
     const { total } = await listInternalFormSubmissions(c.env.DB, id, { limit: 1, offset: 0 });
+    const externalEditPending = await countPendingInternalFormExternalEdits(c.env.DB, id);
 
     return c.json({
       success: true,
@@ -1516,6 +1517,7 @@ internalFormsAdmin.get('/api/forms-advanced/:id/stats', async (c, next) => {
         verified: verifiedRow?.n ?? 0,
         daily: dailyRows.results,
         formaloo: null,
+        externalEditPending,
       },
     });
   } catch (error) {

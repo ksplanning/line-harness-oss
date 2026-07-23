@@ -9,11 +9,14 @@
  *   - 保存フィルタ適用 → onQuery
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react'
 import DataCockpit, { type DataCockpitProps } from './data-cockpit'
 import type { SubmissionRow } from '@/lib/formaloo-advanced-api'
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 const ROWS: SubmissionRow[] = [
   { id: 's1', friendId: 'fr_1', answers: { 名前: '田中', 電話: '090' }, submittedAt: '2026-07-09T10:00:00+09:00', verified: true },
@@ -127,6 +130,91 @@ describe('DataCockpit — 表示 (T-D1)', () => {
   })
 })
 
+describe('DataCockpit — 外部編集レビュー (D-3)', () => {
+  const externalRows = [
+    {
+      ...ROWS[0],
+      formId: 'form-1',
+      externalEditSource: 'edit_link',
+      externalEditedAt: '2026-07-23T10:00:00+09:00',
+      externalEditApprovedAt: null,
+    },
+    {
+      ...ROWS[1],
+      formId: 'form-1',
+      externalEditSource: 'sheet',
+      externalEditedAt: '2026-07-23T10:01:00+09:00',
+      externalEditApprovedAt: null,
+    },
+  ] as SubmissionRow[]
+
+  it('件数付きボタンで未承認だけを絞り込み、検索・ページングにも条件を引き継ぐ', () => {
+    const p = base({
+      rows: externalRows,
+      total: 2,
+      stats: {
+        total: 2,
+        verified: 1,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 2,
+      } as DataCockpitProps['stats'],
+    })
+    render(<DataCockpit {...p} />)
+
+    expect(screen.getByText('編集URL')).toBeTruthy()
+    expect(screen.getByText('シート')).toBeTruthy()
+    const filter = screen.getByRole('button', { name: '外部編集（未承認） 2件' })
+    fireEvent.click(filter)
+    expect(p.onQuery).toHaveBeenLastCalledWith(expect.objectContaining({
+      externalEdit: 'pending',
+      page: 1,
+    }))
+
+    fireEvent.change(screen.getByLabelText('フリーワード検索'), { target: { value: '田中' } })
+    fireEvent.click(screen.getByRole('button', { name: '検索' }))
+    expect(p.onQuery).toHaveBeenLastCalledWith(expect.objectContaining({
+      externalEdit: 'pending',
+      q: '田中',
+      page: 1,
+    }))
+  })
+
+  it('承認 API 成功後、未承認一覧から行と件数を即時に消す', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      data: { id: 's1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const p = base({
+      rows: [externalRows[0]],
+      total: 1,
+      stats: {
+        total: 1,
+        verified: 1,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 1,
+      } as DataCockpitProps['stats'],
+    })
+    render(<DataCockpit {...p} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '外部編集（未承認） 1件' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/forms-advanced/form-1/rows/s1/approve-external-edit',
+      expect.objectContaining({ method: 'POST' }),
+    ))
+    await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
+    expect(screen.getByText('回答がありません')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '外部編集（未承認） 0件' })).toBeTruthy()
+  })
+})
+
 describe('DataCockpit — 列ヘッダー label 化 (T-A2 / form-response-display-fix)', () => {
   // 実 slug キー (owner 実機報告の 9x3BCNZW/N31hP5KP/iAGKWaBX) を answers に持つ行。
   // 既存 fixture は label 風キー (名前/電話) で bug を捕捉できていなかった穴を塞ぐ。
@@ -158,7 +246,7 @@ describe('DataCockpit — 列ヘッダー label 化 (T-A2 / form-response-displa
   it('列順は定義 (fieldLabels) 順優先 + 定義外 answer-slug を末尾に', () => {
     render(<DataCockpit {...base({ rows: SLUG_ROWS, total: 1, fieldLabels: FIELD_LABELS })} />)
     // 回答項目ヘッダーのみ (先頭の選択チェック列・末尾の送信日時/操作列を除く)
-    const labels = screen.getAllByRole('columnheader').map((th) => th.textContent).filter((t) => t && !['詳細', '確認状況', '送信日時', ''].includes(t))
+    const labels = screen.getAllByRole('columnheader').map((th) => th.textContent).filter((t) => t && !['詳細', '外部編集', '確認状況', '送信日時', ''].includes(t))
     // 定義順 (お名前 → メールアドレス) が先、定義外 (unknownSlug) が末尾。iAGKWaBX は answers 不在で列化しない
     expect(labels).toEqual(['お名前', 'メールアドレス', 'unknownSlug'])
   })

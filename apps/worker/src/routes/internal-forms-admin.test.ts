@@ -1213,6 +1213,9 @@ describe('internal answer admin read path', () => {
       externalEditedAt: '2026-07-23T10:00:00+09:00',
       externalEditApprovedAt: null,
     });
+    const pendingStats = await call('GET', '/api/forms-advanced/internal-form/stats');
+    expect((await pendingStats.json() as { data: { externalEditPending: number } }).data)
+      .toMatchObject({ externalEditPending: 1 });
 
     const filtered = await call(
       'GET',
@@ -1263,6 +1266,9 @@ describe('internal answer admin read path', () => {
       total: 0,
       externalEditPendingCount: 0,
     }));
+    const stats = await call('GET', '/api/forms-advanced/internal-form/stats');
+    expect((await stats.json() as { data: { externalEditPending: number } }).data)
+      .toMatchObject({ externalEditPending: 0 });
   });
 
   test('DELETE soft-deletes only the requested form-scoped answer and hides it from admin reads', async () => {
@@ -2122,6 +2128,7 @@ describe('internal answer admin read path', () => {
           { day: '2026-07-02', count: 1 },
         ],
         formaloo: null,
+        externalEditPending: 0,
       },
     });
   });

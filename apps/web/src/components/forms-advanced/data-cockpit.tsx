@@ -6,15 +6,26 @@ import { formatJstMinute } from '@/lib/datetime'
 import { fileAnswerSummary, isFileAnswer } from '@/lib/file-answer'
 
 // =============================================================================
-// DataCockpit (F-4 / T-D1・T-D2) — フォームビルダーの回答データページ本体 (presentational)。
+// DataCockpit (F-4 / T-D1・T-D2) — フォームビルダーの回答データページ本体。
 //   検索/絞り込み/ソート/ページング + 統計カード + CSV 出し入れ + 保存フィルタ + 選択削除。
-//   page.tsx が API を叩いてデータ + コールバックを渡す (テスト容易・fetch 非依存)。
+//   page.tsx が一覧 API のデータ + コールバックを渡す。外部編集の承認だけは、行に含まれる
+//   formId を使ってこの画面から同一 origin の承認 API へ POST する。
 //   owner 向け anti-generic: 既存管理画面トーン (gray 罫線 / rounded-lg / 44px タップ)。破壊操作は
 //   行内確認 (window.confirm 不使用 / M-16)。CSV export/import/一括削除は owner のみ表示 (N-9)。
 // =============================================================================
 
 const LINE_GREEN = '#06C755'
 const LIST_PREVIEW_LIMIT = 3
+
+type ExternalEditSource = 'edit_link' | 'sheet'
+type ExternalSubmissionRow = SubmissionRow & {
+  formId?: string
+  externalEditSource?: ExternalEditSource | null
+  externalEditedAt?: string | null
+  externalEditApprovedAt?: string | null
+}
+type ExternalRowsQuery = RowsQuery & { externalEdit?: 'pending' }
+type ExternalFormStats = FormStats & { externalEditPending?: number }
 
 export interface DataCockpitProps {
   formTitle: string
@@ -57,6 +68,10 @@ export default function DataCockpit(props: DataCockpitProps) {
   const [importText, setImportText] = useState('')
   const [saveName, setSaveName] = useState('')
   const [showSave, setShowSave] = useState(false)
+  const [externalEditOnly, setExternalEditOnly] = useState(false)
+  const [approvedExternalEditIds, setApprovedExternalEditIds] = useState<Set<string>>(new Set())
+  const [approvingExternalEditId, setApprovingExternalEditId] = useState<string | null>(null)
+  const [externalEditError, setExternalEditError] = useState('')
 
   // slug→label 対応 (T-A2)。未指定/未知 slug は slug 自身へ fallback。
   const labelMap = useMemo(() => {
@@ -88,13 +103,33 @@ export default function DataCockpit(props: DataCockpitProps) {
   ]).size
   const hiddenColumnCount = Math.max(0, totalFieldCount - columns.length)
 
-  const currentFilter = (): RowsQuery => ({ q: q || undefined, from: from || undefined, to: to || undefined, sort, page: 1, pageSize })
+  const currentFilter = (externalOnly = externalEditOnly): ExternalRowsQuery => ({
+    q: q || undefined,
+    from: from || undefined,
+    to: to || undefined,
+    sort,
+    page: 1,
+    pageSize,
+    externalEdit: externalOnly ? 'pending' : undefined,
+  })
   const runSearch = () => { setSelected(new Set()); props.onQuery(currentFilter()) }
   const goPage = (p: number) => props.onQuery({ ...currentFilter(), page: p })
 
-  const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1
-  const rangeEnd = Math.min(total, page * pageSize)
+  const visibleRows = externalEditOnly
+    ? rows.filter((row) => !approvedExternalEditIds.has(row.id))
+    : rows
+  const visibleTotal = externalEditOnly
+    ? Math.max(0, total - approvedExternalEditIds.size)
+    : total
+  const serverPendingCount = (stats as ExternalFormStats | null)?.externalEditPending
+    ?? rows.filter((row) => {
+      const external = row as ExternalSubmissionRow
+      return Boolean(external.externalEditSource && !external.externalEditApprovedAt)
+    }).length
+  const externalEditPendingCount = Math.max(0, serverPendingCount - approvedExternalEditIds.size)
+  const totalPages = Math.max(1, Math.ceil(visibleTotal / pageSize))
+  const rangeStart = visibleTotal === 0 ? 0 : (page - 1) * pageSize + 1
+  const rangeEnd = Math.min(visibleTotal, page * pageSize)
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -106,12 +141,38 @@ export default function DataCockpit(props: DataCockpitProps) {
   }
 
   const applySaved = (f: SavedFilter) => {
-    const flt = f.filter as RowsQuery
+    const flt = f.filter as ExternalRowsQuery
     setQ(typeof flt.q === 'string' ? flt.q : '')
     setFrom(typeof flt.from === 'string' ? flt.from : '')
     setTo(typeof flt.to === 'string' ? flt.to : '')
     setSort(flt.sort === 'asc' ? 'asc' : 'desc')
+    setExternalEditOnly(flt.externalEdit === 'pending')
     props.onQuery({ ...flt, page: 1, pageSize })
+  }
+
+  const toggleExternalEditFilter = () => {
+    const next = !externalEditOnly
+    setExternalEditOnly(next)
+    setSelected(new Set())
+    props.onQuery(currentFilter(next))
+  }
+
+  const approveExternalEdit = async (row: ExternalSubmissionRow) => {
+    if (!row.formId || approvingExternalEditId) return
+    setApprovingExternalEditId(row.id)
+    setExternalEditError('')
+    try {
+      const response = await fetch(
+        `/api/forms-advanced/${encodeURIComponent(row.formId)}/rows/${encodeURIComponent(row.id)}/approve-external-edit`,
+        { method: 'POST', headers: { Accept: 'application/json' } },
+      )
+      if (!response.ok) throw new Error('approve_external_edit_failed')
+      setApprovedExternalEditIds((previous) => new Set(previous).add(row.id))
+    } catch {
+      setExternalEditError('承認できませんでした。再読み込みして、もう一度お試しください。')
+    } finally {
+      setApprovingExternalEditId(null)
+    }
   }
 
   return (
@@ -161,6 +222,17 @@ export default function DataCockpit(props: DataCockpitProps) {
             </select>
           </label>
           <button type="button" onClick={runSearch} className="min-h-[44px] rounded-lg px-4 text-sm font-medium text-white" style={{ backgroundColor: LINE_GREEN }}>検索</button>
+          <button
+            type="button"
+            aria-label={`外部編集（未承認） ${externalEditPendingCount}件`}
+            aria-pressed={externalEditOnly}
+            onClick={toggleExternalEditFilter}
+            className={externalEditOnly
+              ? 'min-h-[44px] rounded-lg border border-amber-500 bg-amber-50 px-3 text-sm font-medium text-amber-800'
+              : 'min-h-[44px] rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50'}
+          >
+            外部編集（未承認） <span className="font-bold">{externalEditPendingCount}件</span>
+          </button>
           <button type="button" onClick={() => setShowSave((v) => !v)} className="min-h-[44px] rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50">この条件を保存</button>
         </div>
 
@@ -216,6 +288,11 @@ export default function DataCockpit(props: DataCockpitProps) {
           一覧では先頭{columns.length}項目を表示しています。残り{hiddenColumnCount}項目は「詳細」で確認できます。
         </div>
       )}
+      {externalEditError && (
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {externalEditError}
+        </div>
+      )}
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white sm:overflow-x-auto">
         <table className="block w-full text-sm sm:table sm:min-w-full">
           <thead className="hidden bg-gray-50 text-left text-xs text-gray-500 sm:table-header-group">
@@ -223,15 +300,20 @@ export default function DataCockpit(props: DataCockpitProps) {
               <th className="sticky left-0 z-20 w-[88px] bg-gray-50 px-3 py-2 font-medium">詳細</th>
               {isOwner && <th className="w-10 px-3 py-2" />}
               {columns.map((col) => <th key={col} className="px-3 py-2 font-medium">{labelFor(col)}</th>)}
+              <th className="px-3 py-2 font-medium">外部編集</th>
               <th className="px-3 py-2 font-medium">確認状況</th>
               <th className="px-3 py-2 font-medium">送信日時</th>
             </tr>
           </thead>
           <tbody className="block sm:table-row-group">
-            {rows.length === 0 && (
-              <tr><td colSpan={columns.length + (isOwner ? 4 : 3)} className="block px-3 py-8 text-center text-gray-400 sm:table-cell">回答がありません</td></tr>
+            {visibleRows.length === 0 && (
+              <tr><td colSpan={columns.length + (isOwner ? 5 : 4)} className="block px-3 py-8 text-center text-gray-400 sm:table-cell">回答がありません</td></tr>
             )}
-            {rows.map((r) => (
+            {visibleRows.map((r) => {
+              const external = r as ExternalSubmissionRow
+              const locallyApproved = approvedExternalEditIds.has(r.id)
+              const approved = locallyApproved || Boolean(external.externalEditApprovedAt)
+              return (
               <tr key={r.id} className="block space-y-2 border-t border-gray-100 p-3 sm:table-row sm:space-y-0 sm:p-0">
                 <td className="sticky left-0 z-10 flex bg-white py-1 sm:table-cell sm:w-[88px] sm:px-3 sm:py-2">
                   <button
@@ -256,6 +338,31 @@ export default function DataCockpit(props: DataCockpitProps) {
                   </td>
                 ))}
                 <td className="flex items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">
+                  <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">外部編集:</span>
+                  {external.externalEditSource ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
+                        {external.externalEditSource === 'edit_link' ? '編集URL' : 'シート'}
+                      </span>
+                      {approved ? (
+                        <span className="text-xs text-gray-500">承認済み</span>
+                      ) : (
+                        <button
+                          type="button"
+                          aria-label={`${r.id} の外部編集を承認`}
+                          disabled={approvingExternalEditId !== null}
+                          onClick={() => void approveExternalEdit(external)}
+                          className="min-h-[44px] rounded-lg border border-amber-400 bg-white px-3 text-sm font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+                        >
+                          {approvingExternalEditId === r.id ? '承認中…' : '確認して承認'}
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-gray-400">—</span>
+                  )}
+                </td>
+                <td className="flex items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">
                   <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">確認状況:</span>
                   <span className={r.verified
                     ? 'inline-flex rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700'
@@ -268,14 +375,15 @@ export default function DataCockpit(props: DataCockpitProps) {
                   <span>{formatJstMinute(r.submittedAt)}</span>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>
 
       {/* ページング */}
       <div className="flex items-center justify-between text-sm text-gray-600">
-        <span data-testid="range-label">{total}件中 {rangeStart}–{rangeEnd}</span>
+        <span data-testid="range-label">{visibleTotal}件中 {rangeStart}–{rangeEnd}</span>
         <div className="flex items-center gap-2">
           <button type="button" disabled={page <= 1} onClick={() => goPage(page - 1)} className="min-h-[40px] rounded-lg border border-gray-300 px-3 disabled:opacity-40">前へ</button>
           <span data-testid="page-label">{page} / {totalPages}</span>
