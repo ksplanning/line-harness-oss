@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { readFileSync, readdirSync } from 'node:fs';
+import { File as NodeFile } from 'node:buffer';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
@@ -15,6 +16,7 @@ vi.mock('../services/sheets-sync-jobs.js', async (importOriginal) => ({
   syncSheetsAfterFormMutation: sheetsSyncMocks.syncSheetsAfterFormMutation,
 }));
 import { internalFormEditPublic } from './internal-form-edit-public.js';
+import { internalFormsAdmin } from './internal-forms-admin.js';
 import type { Env } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -92,6 +94,27 @@ const originalAnswers = {
   repeat: [{ repeat_name: '田中', repeat_age: 20 }],
 };
 
+const attachmentDefinition = {
+  fields: [{
+    id: 'attachment', type: 'file', label: '添付資料', required: true, position: 0,
+    config: {
+      allowMultipleFiles: true,
+      allowedExtensions: ['png', 'pdf'],
+      maxSizeKb: 256,
+    },
+  }],
+  logic: [],
+};
+
+function storedAttachment(
+  key: string,
+  name: string,
+  type: string,
+  size = 8,
+): { key: string; name: string; size: number; type: string } {
+  return { key, name, size, type };
+}
+
 const conditionalDefinition = {
   fields: [
     { id: 'kind', type: 'choice', label: '区分', required: true, position: 0, config: { choices: ['個人', '法人'] } },
@@ -102,6 +125,34 @@ const conditionalDefinition = {
     { id: 'show-personal', sourceFieldId: 'kind', operator: 'equals', value: '個人', action: 'show', targetFieldId: 'personal' },
     { id: 'show-company', sourceFieldId: 'kind', operator: 'equals', value: '法人', action: 'show', targetFieldId: 'company' },
   ],
+};
+
+const fileSourceDefinition = {
+  fields: [
+    { ...attachmentDefinition.fields[0], required: false },
+    { id: 'attachment_note', type: 'text', label: '添付後の連絡', required: true, position: 1, config: {} },
+  ],
+  logic: [{
+    id: 'attachment-answered',
+    sourceFieldId: 'attachment',
+    operator: 'equals',
+    value: 'unused',
+    action: 'show',
+    targetFieldId: 'attachment_note',
+    conditionJoin: 'and',
+    conditions: [{ sourceFieldId: 'attachment', operator: 'is_answered', value: '' }],
+  }],
+};
+
+const initiallyHiddenAttachmentDefinition = {
+  fields: [
+    { id: 'gate', type: 'choice', label: '添付の有無', required: true, position: 0, config: { choices: ['隠す', '表示する'] } },
+    { ...attachmentDefinition.fields[0], position: 1 },
+  ],
+  logic: [{
+    id: 'show-attachment', sourceFieldId: 'gate', operator: 'equals', value: '表示する',
+    action: 'show', targetFieldId: 'attachment',
+  }],
 };
 
 let raw: Database.Database;
@@ -128,6 +179,65 @@ function bindings(
   } as Env['Bindings'];
 }
 
+function r2Stub(entries: Record<string, { body: string; type: string }> = {}): {
+  bucket: R2Bucket;
+  get: ReturnType<typeof vi.fn>;
+  put: ReturnType<typeof vi.fn>;
+  del: ReturnType<typeof vi.fn>;
+} {
+  const get = vi.fn(async (key: string) => {
+    const entry = entries[key];
+    if (!entry) return null;
+    return {
+      body: new TextEncoder().encode(entry.body),
+      httpMetadata: { contentType: entry.type },
+    } as unknown as R2ObjectBody;
+  });
+  const put = vi.fn(async () => ({}));
+  const del = vi.fn(async () => undefined);
+  return {
+    bucket: { get, put, delete: del } as unknown as R2Bucket,
+    get,
+    put,
+    del,
+  };
+}
+
+type MultipartTestEntry =
+  | { name: string; value: string }
+  | { name: string; filename: string; type: string; content: string };
+
+function multipartRequest(entries: MultipartTestEntry[]): {
+  headers: Record<string, string>;
+  body: string;
+} {
+  const boundary = '----line-harness-edit-attachment-test';
+  const body = entries.map((entry) => {
+    if ('filename' in entry) {
+      return `--${boundary}\r\nContent-Disposition: form-data; name="${entry.name}"; filename="${entry.filename}"\r\nContent-Type: ${entry.type}\r\n\r\n${entry.content}\r\n`;
+    }
+    return `--${boundary}\r\nContent-Disposition: form-data; name="${entry.name}"\r\n\r\n${entry.value}\r\n`;
+  }).join('') + `--${boundary}--\r\n`;
+  return {
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+    body,
+  };
+}
+
+async function sendMultipart(
+  path: string,
+  request: ReturnType<typeof multipartRequest>,
+  env: Env['Bindings'],
+): Promise<Response> {
+  const browserFile = globalThis.File;
+  Object.defineProperty(globalThis, 'File', { configurable: true, value: NodeFile, writable: true });
+  try {
+    return await app().request(path, { method: 'POST', ...request }, env);
+  } finally {
+    Object.defineProperty(globalThis, 'File', { configurable: true, value: browserFile, writable: true });
+  }
+}
+
 function rotateEpochBeforeSubmissionUpdate(): D1Database {
   let rotated = false;
   return {
@@ -146,6 +256,12 @@ function rotateEpochBeforeSubmissionUpdate(): D1Database {
 function app(): Hono<Env> {
   const hono = new Hono<Env>();
   hono.route('/', internalFormEditPublic);
+  return hono;
+}
+
+function adminApp(): Hono<Env> {
+  const hono = new Hono<Env>();
+  hono.route('/', internalFormsAdmin);
   return hono;
 }
 
@@ -179,14 +295,22 @@ function seedForm(options: {
   return id;
 }
 
-function seedSubmission(formId = 'form-1', answers = originalAnswers, editVersion = 3): string {
-  const id = 'ifs-1';
+function seedSubmissionAs(
+  id: string,
+  formId = 'form-1',
+  answers: unknown = originalAnswers,
+  editVersion = 3,
+): string {
   raw.prepare(
     `INSERT INTO internal_form_submissions
        (id, form_id, friend_id, answers_json, origin_channel, edit_version, submitted_at, created_at)
      VALUES (?, ?, NULL, ?, 'embed', ?, '2026-07-21T00:00:00+09:00', '2026-07-21T00:00:00+09:00')`,
   ).run(id, formId, JSON.stringify(answers), editVersion);
   return id;
+}
+
+function seedSubmission(formId = 'form-1', answers = originalAnswers, editVersion = 3): string {
+  return seedSubmissionAs('ifs-1', formId, answers, editVersion);
 }
 
 async function token(formId = 'form-1', submissionId = 'ifs-1', options: {
@@ -234,11 +358,224 @@ describe('GET /ife/:token', () => {
     expect(html).toContain('申込書.pdf');
     expect(html).toContain('接客');
     expect(html).toContain('田中');
-    expect(html).not.toContain('name="a_2"');
+    expect(html).toContain('type="file" id="answer-2" name="a_2"');
     expect(html).not.toContain('name="a_3"');
     expect(html).not.toContain('name="a_4"');
     expect(html).not.toContain('name="a_7"');
     expect(html).not.toContain('<script>');
+  });
+
+  test('renders saved attachments separately from the reused A3 upload block', async () => {
+    seedForm({ definition: attachmentDefinition });
+    const signed = await token();
+    const imageKey = 'internal-form-submissions/form-1/attachment/existing-image.png';
+    const pdfKey = 'internal-form-submissions/form-1/attachment/existing-document.pdf';
+    seedSubmission('form-1', {
+      attachment: [
+        storedAttachment(imageKey, '会場写真.png', 'image/png', 12),
+        storedAttachment(pdfKey, '申込書<script>.pdf', 'application/pdf', 34),
+      ],
+    });
+
+    const response = await app().request(`/ife/${signed}`, {}, bindings());
+    const html = await response.text();
+    const document = new DOMParser().parseFromString(html, 'text/html');
+    const wrapper = document.querySelector<HTMLElement>('[data-field-id="attachment"]');
+    const input = wrapper?.querySelector<HTMLInputElement>('input[type="file"][data-file-input]');
+    const existing = wrapper?.querySelectorAll<HTMLElement>('[data-existing-file-item]') ?? [];
+    const additions = wrapper?.querySelector<HTMLElement>('[data-file-list]');
+
+    expect(response.status).toBe(200);
+    expect(document.querySelector('form')?.getAttribute('enctype')).toBe('multipart/form-data');
+    expect(wrapper?.querySelector('[data-file-attachment]')).not.toBeNull();
+    expect(wrapper?.querySelector('pre')).toBeNull();
+    expect(existing).toHaveLength(2);
+    expect(existing[0]?.querySelector<HTMLImageElement>('img.attachment-thumbnail')?.getAttribute('src'))
+      .toBe(`/ife/${signed}/attachment/attachment/0`);
+    expect(existing[0]?.querySelector('img')?.getAttribute('alt')).toContain('会場写真.png');
+    expect(existing[1]?.querySelector('.attachment-icon')?.textContent).toBe('PDF');
+    expect(existing[1]?.textContent).toContain('申込書<script>.pdf');
+    expect(existing[1]?.innerHTML).not.toContain('<script>');
+    expect(Array.from(wrapper?.querySelectorAll<HTMLInputElement>('[data-existing-file-remove]') ?? [])
+      .map((control) => ({ name: control.name, value: control.value })))
+      .toEqual([
+        { name: 'remove_a_0', value: '0' },
+        { name: 'remove_a_0', value: '1' },
+      ]);
+    expect(input?.name).toBe('a_0');
+    expect(input?.multiple).toBe(true);
+    expect(input?.accept).toBe('.png,.pdf');
+    expect(input?.dataset.maxFiles).toBe('10');
+    expect(input?.dataset.maxSizeKb).toBe('256');
+    expect(input?.required).toBe(false);
+    expect(wrapper?.querySelectorAll('[data-file-status]')).toHaveLength(1);
+    expect(additions?.children).toHaveLength(0);
+    expect(additions?.querySelector('[data-existing-file-item]')).toBeNull();
+    expect(document.querySelectorAll('script[data-internal-form-logic-client]')).toHaveLength(1);
+    expect(document.querySelector('[data-internal-form-logic-config]')).toBeNull();
+    expect(html).toContain('.attachment-size{margin-top:3px');
+    expect(html).toContain('.attachment-remove{width:auto');
+    expect(html).not.toContain(imageKey);
+    expect(html).not.toContain(pdfKey);
+  });
+
+  test('renders an empty optional attachment input without changing a no-file edit page', async () => {
+    seedForm({
+      definition: {
+        fields: [{
+          ...attachmentDefinition.fields[0],
+          required: false,
+          config: { allowedExtensions: ['pdf'], maxSizeKb: 128 },
+        }],
+        logic: [],
+      },
+    });
+    seedSubmission('form-1', {});
+
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    const document = new DOMParser().parseFromString(html, 'text/html');
+
+    expect(document.querySelectorAll('[data-existing-file-item]')).toHaveLength(0);
+    expect(document.querySelector<HTMLInputElement>('[data-file-input]')?.required).toBe(false);
+    expect(document.querySelector('form')?.getAttribute('enctype')).toBe('multipart/form-data');
+    expect(document.querySelectorAll('script[data-internal-form-logic-client]')).toHaveLength(1);
+  });
+
+  test('serves only the token-bound submission attachment reference', async () => {
+    seedForm({ definition: attachmentDefinition });
+    const firstKey = 'internal-form-submissions/form-1/attachment/first.pdf';
+    const secondKey = 'internal-form-submissions/form-1/attachment/second.pdf';
+    seedSubmissionAs('ifs-1', 'form-1', {
+      attachment: [storedAttachment(firstKey, 'first.pdf', 'application/pdf')],
+    });
+    seedSubmissionAs('ifs-2', 'form-1', {
+      attachment: [
+        storedAttachment(firstKey, 'shared-position.pdf', 'application/pdf'),
+        storedAttachment(secondKey, 'second.pdf', 'application/pdf'),
+      ],
+    });
+    const r2 = r2Stub({
+      [firstKey]: { body: 'FIRST', type: 'application/pdf' },
+      [secondKey]: { body: 'SECOND', type: 'application/pdf' },
+    });
+    const firstToken = await token('form-1', 'ifs-1');
+    const secondToken = await token('form-1', 'ifs-2');
+
+    const own = await app().request(
+      `/ife/${firstToken}/attachment/attachment/0`,
+      {},
+      bindings(DB, { IMAGES: r2.bucket }),
+    );
+    expect(own.status).toBe(200);
+    expect(await own.text()).toBe('FIRST');
+    expect(own.headers.get('Content-Type')).toBe('application/pdf');
+    expect(own.headers.get('Cache-Control')).toMatch(/no-store/);
+    expect(own.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(r2.get).toHaveBeenLastCalledWith(firstKey);
+
+    r2.get.mockClear();
+    const crossSubmission = await app().request(
+      `/ife/${firstToken}/attachment/attachment/1`,
+      {},
+      bindings(DB, { IMAGES: r2.bucket }),
+    );
+    expect(crossSubmission.status).toBe(404);
+    expect(r2.get).not.toHaveBeenCalled();
+
+    const secondOwn = await app().request(
+      `/ife/${secondToken}/attachment/attachment/1`,
+      {},
+      bindings(DB, { IMAGES: r2.bucket }),
+    );
+    expect(secondOwn.status).toBe(200);
+    expect(await secondOwn.text()).toBe('SECOND');
+    expect(r2.get).toHaveBeenLastCalledWith(secondKey);
+  });
+
+  test.each([
+    ['invalid token', 'not-a-token', 'attachment', '0', 403],
+    ['unknown field', null, 'unknown', '0', 404],
+    ['non-numeric index', null, 'attachment', 'nope', 404],
+    ['out-of-range index', null, 'attachment', '9', 404],
+  ])('rejects an %s before reading R2', async (_label, tokenOverride, fieldId, index, status) => {
+    seedForm({ definition: attachmentDefinition });
+    const key = 'internal-form-submissions/form-1/attachment/known.pdf';
+    seedSubmission('form-1', { attachment: [storedAttachment(key, 'known.pdf', 'application/pdf')] });
+    const r2 = r2Stub({ [key]: { body: 'KNOWN', type: 'application/pdf' } });
+    const signed = tokenOverride ?? await token();
+
+    const response = await app().request(
+      `/ife/${signed}/attachment/${fieldId}/${index}`,
+      {},
+      bindings(DB, { IMAGES: r2.bucket }),
+    );
+
+    expect(response.status).toBe(status);
+    expect(r2.get).not.toHaveBeenCalled();
+  });
+
+  test('rejects a stored foreign-prefix key and redacts token and key from R2 errors', async () => {
+    seedForm({ definition: attachmentDefinition });
+    const foreignKey = 'internal-form-submissions/other-form/attachment/secret.pdf';
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(foreignKey, 'secret.pdf', 'application/pdf')],
+    });
+    const foreignR2 = r2Stub();
+    const signed = await token();
+    const foreign = await app().request(
+      `/ife/${signed}/attachment/attachment/0`,
+      {},
+      bindings(DB, { IMAGES: foreignR2.bucket }),
+    );
+    expect(foreign.status).toBe(404);
+    expect(foreignR2.get).not.toHaveBeenCalled();
+
+    const ownKey = 'internal-form-submissions/form-1/attachment/private.pdf';
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ attachment: [storedAttachment(ownKey, 'private.pdf', 'application/pdf')] }), 'ifs-1');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const get = vi.fn(async () => { throw new Error(`${signed} ${ownKey}`); });
+    const failed = await app().request(
+      `/ife/${signed}/attachment/attachment/0`,
+      {},
+      bindings(DB, { IMAGES: { get } as unknown as R2Bucket }),
+    );
+
+    expect(failed.status).toBe(500);
+    expect(JSON.stringify(error.mock.calls)).not.toContain(signed);
+    expect(JSON.stringify(error.mock.calls)).not.toContain(ownKey);
+  });
+
+  test('returns 404 for a missing R2 object and never serves SVG inline', async () => {
+    seedForm({ definition: attachmentDefinition });
+    const missingKey = 'internal-form-submissions/form-1/attachment/missing.pdf';
+    const svgKey = 'internal-form-submissions/form-1/attachment/vector.svg';
+    seedSubmission('form-1', {
+      attachment: [
+        storedAttachment(missingKey, 'missing.pdf', 'application/pdf'),
+        storedAttachment(svgKey, 'vector.svg', 'image/svg+xml'),
+      ],
+    });
+    const r2 = r2Stub({ [svgKey]: { body: '<svg></svg>', type: 'image/svg+xml' } });
+    const signed = await token();
+
+    const missing = await app().request(
+      `/ife/${signed}/attachment/attachment/0`,
+      {},
+      bindings(DB, { IMAGES: r2.bucket }),
+    );
+    expect(missing.status).toBe(404);
+    expect(r2.get).toHaveBeenCalledWith(missingKey);
+
+    const svg = await app().request(
+      `/ife/${signed}/attachment/attachment/1`,
+      {},
+      bindings(DB, { IMAGES: r2.bucket }),
+    );
+    expect(svg.status).toBe(200);
+    expect(svg.headers.get('Content-Type')).toBe('image/svg+xml');
+    expect(svg.headers.get('Content-Disposition')).toMatch(/^attachment;/);
+    expect(svg.headers.get('X-Content-Type-Options')).toBe('nosniff');
   });
 
   test.each([
@@ -285,6 +622,9 @@ describe('GET /ife/:token', () => {
     expect(html).not.toContain('name="a_0"');
     expect(html).toContain('name="a_1"');
     expect(html).not.toContain('data-internal-form-logic-client');
+    expect(html).not.toContain('data-file-attachment');
+    expect(new DOMParser().parseFromString(html, 'text/html').querySelector('form')?.hasAttribute('enctype'))
+      .toBe(false);
   });
 
   test('allow_branch_edit=1 は全分岐候補を安全な DOM に載せ、共有 client が入力時に出し分ける', async () => {
@@ -354,6 +694,97 @@ describe('GET /ife/:token', () => {
     expect(parsed.querySelector('[data-internal-form-logic-config]')?.textContent).toContain('fixedAnswers');
   });
 
+  test('file 分岐の固定回答は R2 key を HTML に出さず回答済み状態だけを client へ渡す', async () => {
+    seedForm({ definition: fileSourceDefinition, allowBranchEdit: 1 });
+    const privateKey = 'internal-form-submissions/form-1/attachment/private.pdf';
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(privateKey, 'branch-source.pdf', 'application/pdf')],
+      attachment_note: '表示中',
+    });
+
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+
+    expect(html).not.toContain(privateKey);
+    expect(parsed.querySelector('[data-internal-form-logic-config]')?.textContent).not.toContain(privateKey);
+    initInternalFormLogic(parsed);
+    expect(parsed.querySelector<HTMLElement>('[data-field-id="attachment_note"]')?.hidden).toBe(false);
+
+    const removal = parsed.querySelector<HTMLInputElement>('[data-existing-file-remove]')!;
+    removal.checked = true;
+    removal.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(parsed.querySelector<HTMLElement>('[data-field-id="attachment_note"]')?.hidden).toBe(true);
+
+    const input = parsed.querySelector<HTMLInputElement>('[data-file-input]')!;
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new File(['new'], 'new.pdf', { type: 'application/pdf' })],
+    });
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(parsed.querySelector<HTMLElement>('[data-field-id="attachment_note"]')?.hidden).toBe(false);
+  });
+
+  test('field type changed after submission still projects a stale attachment descriptor without its R2 key', async () => {
+    const changedTypeDefinition = {
+      fields: [
+        { id: 'attachment', type: 'signature', label: '旧添付欄', required: false, position: 0, config: {} },
+        { id: 'attachment_note', type: 'text', label: '添付後の連絡', required: false, position: 1, config: {} },
+      ],
+      logic: [{
+        id: 'stale-attachment-answered',
+        sourceFieldId: 'attachment',
+        operator: 'equals',
+        value: 'unused',
+        action: 'show',
+        targetFieldId: 'attachment_note',
+        conditionJoin: 'and',
+        conditions: [{ sourceFieldId: 'attachment', operator: 'is_answered', value: '' }],
+      }],
+    };
+    seedForm({ definition: changedTypeDefinition, allowBranchEdit: 1 });
+    const staleKey = 'internal-form-submissions/form-1/attachment/stale.pdf';
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(staleKey, 'stale.pdf', 'application/pdf')],
+      attachment_note: '表示中',
+    });
+
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+
+    expect(html).not.toContain(staleKey);
+    initInternalFormLogic(parsed);
+    expect(parsed.querySelector<HTMLElement>('[data-field-id="attachment_note"]')?.hidden).toBe(false);
+  });
+
+  test('初期非表示の必須 file は保存値を隠し、分岐表示後に required を復元する', async () => {
+    seedForm({ definition: initiallyHiddenAttachmentDefinition, allowBranchEdit: 1 });
+    const hiddenKey = 'internal-form-submissions/form-1/attachment/hidden.pdf';
+    seedSubmission('form-1', {
+      gate: '隠す',
+      attachment: [storedAttachment(hiddenKey, '初期非表示の秘密.pdf', 'application/pdf')],
+    });
+
+    const html = await (await app().request(`/ife/${await token()}`, {}, bindings())).text();
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const wrapper = parsed.querySelector<HTMLElement>('[data-field-id="attachment"]')!;
+    const input = wrapper.querySelector<HTMLInputElement>('[data-file-input]')!;
+
+    expect(html).not.toContain(hiddenKey);
+    expect(html).not.toContain('初期非表示の秘密.pdf');
+    expect(wrapper.hidden).toBe(true);
+    expect(input.dataset.required).toBe('true');
+    expect(input.required).toBe(false);
+
+    initInternalFormLogic(parsed);
+    const gate = parsed.querySelector<HTMLSelectElement>('select[name="a_0"]')!;
+    gate.value = '表示する';
+    gate.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(wrapper.hidden).toBe(false);
+    expect(input.disabled).toBe(false);
+    expect(input.required).toBe(true);
+  });
+
   test('初期状態で非表示の readonly source は保存値を client 設定へ埋め込まない', async () => {
     const hiddenReadonlySourceDefinition = {
       fields: [
@@ -405,6 +836,325 @@ describe('GET /ife/:token', () => {
 });
 
 describe('POST /ife/:token', () => {
+  test('re-evaluates file-source branches from the final retained plus added attachment state', async () => {
+    seedForm({ definition: fileSourceDefinition, allowBranchEdit: 1 });
+    const existingKey = 'internal-form-submissions/form-1/attachment/existing.pdf';
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(existingKey, 'existing.pdf', 'application/pdf')],
+      attachment_note: 'この回答も非表示になれば外れる',
+    });
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'remove_a_0', value: '0' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings());
+
+    expect(response.status).toBe(200);
+    const stored = raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
+      .get('ifs-1') as { answers_json: string; edit_version: number };
+    expect(stored.edit_version).toBe(4);
+    expect(JSON.parse(stored.answers_json)).toEqual({});
+  });
+
+  test('re-renders real stored attachment metadata instead of logic sentinels after validation fails', async () => {
+    seedForm({ definition: fileSourceDefinition, allowBranchEdit: 1 });
+    const existingKey = 'internal-form-submissions/form-1/attachment/existing.pdf';
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(existingKey, 'existing.pdf', 'application/pdf')],
+      attachment_note: '表示中',
+    });
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'remove_a_0', value: '0' },
+      { name: 'a_0', filename: 'blocked.exe', type: 'application/octet-stream', content: 'blocked' },
+      { name: 'a_1', value: '表示中' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings());
+    const html = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(html).toContain('添付資料 の拡張子は許可されていません');
+    expect(html).toContain('existing.pdf');
+    expect(html).not.toContain('添付ファイル 1');
+    expect(html).not.toContain(existingKey);
+  });
+
+  test('does not resurrect an initially hidden stored attachment when its branch becomes visible', async () => {
+    seedForm({ definition: initiallyHiddenAttachmentDefinition, allowBranchEdit: 1 });
+    const hiddenKey = 'internal-form-submissions/form-1/attachment/hidden.pdf';
+    seedSubmission('form-1', {
+      gate: '隠す',
+      attachment: [storedAttachment(hiddenKey, 'hidden.pdf', 'application/pdf')],
+    });
+    const r2 = r2Stub();
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'a_0', value: '表示する' },
+      { name: 'a_1', filename: 'visible.pdf', type: 'application/pdf', content: 'visible' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings(DB, {
+      IMAGES: r2.bucket,
+    }));
+
+    expect(response.status).toBe(200);
+    const addedKey = String(r2.put.mock.calls[0]?.[0]);
+    const stored = raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+      .get('ifs-1') as { answers_json: string };
+    expect(JSON.parse(stored.answers_json)).toEqual({
+      gate: '表示する',
+      attachment: [storedAttachment(addedKey, 'visible.pdf', 'application/pdf', 7)],
+    });
+    expect(r2.del).not.toHaveBeenCalledWith(hiddenKey);
+  });
+
+  test('persists an uploaded file field whose id is __proto__ as an own answer property', async () => {
+    const reservedDefinition = {
+      fields: [{
+        ...attachmentDefinition.fields[0],
+        id: '__proto__',
+        label: '予約名の添付',
+        required: false,
+        config: { allowMultipleFiles: false, allowedExtensions: ['pdf'], maxSizeKb: 256 },
+      }],
+      logic: [],
+    };
+    seedForm({ definition: reservedDefinition });
+    seedSubmission('form-1', {});
+    const r2 = r2Stub();
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'a_0', filename: 'reserved.pdf', type: 'application/pdf', content: 'reserved' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings(DB, {
+      IMAGES: r2.bucket,
+    }));
+
+    expect(response.status).toBe(200);
+    const stored = raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+      .get('ifs-1') as { answers_json: string };
+    const answers = JSON.parse(stored.answers_json) as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(answers, '__proto__')).toBe(true);
+    expect(answers.__proto__).toEqual([
+      storedAttachment(String(r2.put.mock.calls[0]?.[0]), 'reserved.pdf', 'application/pdf', 8),
+    ]);
+  });
+
+  test('allows a single-file field to delete its existing file and add one new file', async () => {
+    const singleDefinition = {
+      fields: [{
+        ...attachmentDefinition.fields[0],
+        config: { allowMultipleFiles: false, allowedExtensions: ['pdf'], maxSizeKb: 256 },
+      }],
+      logic: [],
+    };
+    seedForm({ definition: singleDefinition });
+    const oldKey = 'internal-form-submissions/form-1/attachment/old.pdf';
+    seedSubmission('form-1', {
+      attachment: [storedAttachment(oldKey, 'old.pdf', 'application/pdf')],
+    });
+    const r2 = r2Stub();
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'remove_a_0', value: '0' },
+      { name: 'a_0', filename: 'new.pdf', type: 'application/pdf', content: 'new' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings(DB, {
+      IMAGES: r2.bucket,
+    }));
+
+    expect(response.status).toBe(200);
+    const addedKey = String(r2.put.mock.calls[0]?.[0]);
+    const stored = raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+      .get('ifs-1') as { answers_json: string };
+    expect(JSON.parse(stored.answers_json)).toEqual({
+      attachment: [storedAttachment(addedKey, 'new.pdf', 'application/pdf', 3)],
+    });
+    expect(r2.del).not.toHaveBeenCalledWith(oldKey);
+  });
+
+  test('saves final attachments as kept existing followed by validated additions and round-trips every read path', async () => {
+    seedForm({ definition: attachmentDefinition });
+    const removedKey = 'internal-form-submissions/form-1/attachment/removed.pdf';
+    const keptKey = 'internal-form-submissions/form-1/attachment/kept.png';
+    seedSubmission('form-1', {
+      attachment: [
+        storedAttachment(removedKey, '削除対象.pdf', 'application/pdf', 7),
+        storedAttachment(keptKey, '残す写真.png', 'image/png', 9),
+      ],
+    });
+    const signed = await token();
+    const r2 = r2Stub();
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'remove_a_0', value: '0' },
+      { name: 'a_0', filename: '追加資料.pdf', type: 'application/pdf', content: 'new-pdf' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${signed}`, request, bindings(DB, {
+      IMAGES: r2.bucket,
+    }));
+
+    expect(response.status).toBe(200);
+    expect(r2.put).toHaveBeenCalledTimes(1);
+    const addedKey = String(r2.put.mock.calls[0]?.[0]);
+    expect(addedKey).toMatch(/^internal-form-submissions\/form-1\/attachment\/[0-9a-f-]+\.pdf$/);
+    expect(r2.del).not.toHaveBeenCalledWith(removedKey);
+    expect(r2.del).not.toHaveBeenCalledWith(keptKey);
+
+    const stored = raw.prepare(
+      'SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?',
+    ).get('ifs-1') as { answers_json: string; edit_version: number };
+    const finalAttachments = (JSON.parse(stored.answers_json) as {
+      attachment: Array<{ key: string; name: string; size: number; type: string }>;
+    }).attachment;
+    expect(stored.edit_version).toBe(4);
+    expect(finalAttachments).toEqual([
+      storedAttachment(keptKey, '残す写真.png', 'image/png', 9),
+      storedAttachment(addedKey, '追加資料.pdf', 'application/pdf', 7),
+    ]);
+
+    const editReadback = await app().request(`/ife/${signed}`, {}, bindings(DB, { IMAGES: r2.bucket }));
+    const readbackHtml = await editReadback.text();
+    expect(editReadback.status).toBe(200);
+    expect(readbackHtml).toContain('name="editVersion" value="4"');
+    expect(readbackHtml).toContain('残す写真.png');
+    expect(readbackHtml).toContain('追加資料.pdf');
+    expect(readbackHtml).not.toContain('削除対象.pdf');
+
+    const adminReadback = await adminApp().request(
+      '/api/forms-advanced/form-1/rows/ifs-1',
+      {},
+      bindings(DB, { IMAGES: r2.bucket }),
+    );
+    expect(adminReadback.status).toBe(200);
+    const adminData = (await adminReadback.json() as {
+      data: { answers: { attachment: unknown[] }; fields: Array<{ slug: string; editable: boolean }> };
+    }).data;
+    expect(adminData.answers.attachment).toEqual(finalAttachments);
+    expect(adminData.fields).toContainEqual(expect.objectContaining({ slug: 'attachment', editable: false }));
+  });
+
+  test('rejects deleting the last required attachment without an addition', async () => {
+    seedForm({ definition: attachmentDefinition });
+    const key = 'internal-form-submissions/form-1/attachment/only.pdf';
+    seedSubmission('form-1', { attachment: [storedAttachment(key, 'only.pdf', 'application/pdf')] });
+    const r2 = r2Stub();
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'remove_a_0', value: '0' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings(DB, {
+      IMAGES: r2.bucket,
+    }));
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain('添付資料 は必須項目です');
+    expect(r2.put).not.toHaveBeenCalled();
+    expect(raw.prepare('SELECT edit_version FROM internal_form_submissions WHERE id = ?').get('ifs-1'))
+      .toEqual({ edit_version: 3 });
+  });
+
+  test('rejects a forged attachment removal index without mutating the row', async () => {
+    seedForm({ definition: attachmentDefinition });
+    const key = 'internal-form-submissions/form-1/attachment/only.pdf';
+    seedSubmission('form-1', { attachment: [storedAttachment(key, 'only.pdf', 'application/pdf')] });
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'remove_a_0', value: '999' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings());
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain('添付の削除指定が正しくありません');
+    expect(raw.prepare('SELECT edit_version FROM internal_form_submissions WHERE id = ?').get('ifs-1'))
+      .toEqual({ edit_version: 3 });
+  });
+
+  test('applies the existing total-count limit before uploading additions', async () => {
+    seedForm({ definition: attachmentDefinition });
+    const attachment = Array.from({ length: 10 }, (_, index) => storedAttachment(
+      `internal-form-submissions/form-1/attachment/existing-${index}.pdf`,
+      `existing-${index}.pdf`,
+      'application/pdf',
+    ));
+    seedSubmission('form-1', { attachment });
+    const r2 = r2Stub();
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'a_0', filename: 'extra.pdf', type: 'application/pdf', content: 'extra' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings(DB, {
+      IMAGES: r2.bucket,
+    }));
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain('添付資料 の添付は最大10件です');
+    expect(r2.put).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['extension', 'bad.exe', 'application/octet-stream', 'bad', '添付資料 の拡張子は許可されていません'],
+    ['size', 'large.pdf', 'application/pdf', 'x'.repeat(256 * 1024 + 1), '添付資料 のファイルサイズが上限を超えています'],
+  ])('reuses initial-upload %s validation without writing R2', async (
+    _label,
+    filename,
+    type,
+    content,
+    expectedError,
+  ) => {
+    seedForm({ definition: attachmentDefinition });
+    seedSubmission('form-1', {});
+    const r2 = r2Stub();
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'a_0', filename, type, content },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings(DB, {
+      IMAGES: r2.bucket,
+    }));
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain(expectedError);
+    expect(r2.put).not.toHaveBeenCalled();
+  });
+
+  test('rolls back only the new upload when CAS conflicts', async () => {
+    seedForm({ definition: attachmentDefinition });
+    const existingKey = 'internal-form-submissions/form-1/attachment/existing.pdf';
+    seedSubmission('form-1', { attachment: [storedAttachment(existingKey, 'existing.pdf', 'application/pdf')] }, 4);
+    const r2 = r2Stub();
+    const request = multipartRequest([
+      { name: 'editVersion', value: '3' },
+      { name: 'remove_a_0', value: '0' },
+      { name: 'a_0', filename: 'new.pdf', type: 'application/pdf', content: 'new' },
+    ]);
+
+    const response = await sendMultipart(`/ife/${await token()}`, request, bindings(DB, {
+      IMAGES: r2.bucket,
+    }));
+
+    expect(response.status).toBe(409);
+    expect(r2.put).toHaveBeenCalledTimes(1);
+    const newKey = String(r2.put.mock.calls[0]?.[0]);
+    expect(r2.del).toHaveBeenCalledWith(newKey);
+    expect(r2.del).not.toHaveBeenCalledWith(existingKey);
+    const stored = raw.prepare('SELECT answers_json, edit_version FROM internal_form_submissions WHERE id = ?')
+      .get('ifs-1') as { answers_json: string; edit_version: number };
+    expect(stored.edit_version).toBe(4);
+    expect(JSON.parse(stored.answers_json)).toEqual({
+      attachment: [storedAttachment(existingKey, 'existing.pdf', 'application/pdf')],
+    });
+  });
+
   test('queues an immediate Sheets sync after a respondent edit is read back', async () => {
     seedForm();
     seedSubmission();

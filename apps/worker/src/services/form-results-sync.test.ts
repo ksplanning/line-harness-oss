@@ -726,6 +726,46 @@ describe('form results sheet — one row per submission', () => {
     expect(resultsClient.values[1][7]).toBe(linkedCell);
     expect(submissionAnswers('ifs-001')).toEqual(answers);
   });
+
+  test('updates the file deep-link cell to the final attachment list after an answer edit', async () => {
+    updateForm([
+      { id: 'q1', label: '質問1', position: 1 },
+      { id: 'q2', label: '質問2', position: 2 },
+      { id: 'attachment', label: '添付', type: 'file', position: 3 },
+    ]);
+    const removed = { key: 'private/removed', name: '削除対象.pdf' };
+    const kept = { key: 'private/kept', name: '残す写真.png' };
+    const added = { key: 'private/added', name: '追加資料.pdf' };
+    const initialAnswers = {
+      q1: '回答A1',
+      q2: '回答A2',
+      attachment: [removed, kept],
+    };
+    raw.prepare(`UPDATE internal_form_submissions SET answers_json = ? WHERE id = 'ifs-001'`)
+      .run(JSON.stringify(initialAnswers));
+    const adminOrigin = 'https://admin.example.test/';
+    const rowDeepLink = 'https://admin.example.test/forms-advanced/data?id=form-1&rowId=ifs-001';
+
+    await run('manual', { adminOrigin });
+    expect(resultsClient.values[1][7]).toBe(
+      `削除対象.pdf, 残す写真.png (2件) 回答を開く: ${rowDeepLink}`,
+    );
+
+    const finalAnswers = {
+      q1: '回答A1',
+      q2: '回答A2',
+      attachment: [kept, added],
+    };
+    raw.prepare(`UPDATE internal_form_submissions SET answers_json = ? WHERE id = 'ifs-001'`)
+      .run(JSON.stringify(finalAnswers));
+
+    await run('manual', { adminOrigin });
+
+    const finalCell = resultsClient.values[1][7];
+    expect(finalCell).toBe(`残す写真.png, 追加資料.pdf (2件) 回答を開く: ${rowDeepLink}`);
+    expect(finalCell).not.toContain('削除対象.pdf');
+    expect(submissionAnswers('ifs-001')).toEqual(finalAnswers);
+  });
 });
 
 describe('personal block edits (D-1 個人情報欄)', () => {

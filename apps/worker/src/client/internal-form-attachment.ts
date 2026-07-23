@@ -2,6 +2,7 @@ export interface InternalFormAttachmentLimits {
   accept: string;
   maxFiles: number;
   maxSizeKb?: number;
+  existingFiles?: number;
 }
 
 export interface InternalFormAttachmentUpdate {
@@ -32,6 +33,9 @@ export function addInternalFormAttachmentFiles(
 ): InternalFormAttachmentUpdate {
   const files = [...current];
   const errors: string[] = [];
+  const existingFiles = Number.isSafeInteger(limits.existingFiles) && (limits.existingFiles ?? 0) > 0
+    ? limits.existingFiles ?? 0
+    : 0;
   for (const file of incoming) {
     if (!matchesAccept(file, limits.accept)) {
       errors.push(`${file.name}：追加できる形式は ${acceptLabel(limits.accept)} です`);
@@ -41,7 +45,7 @@ export function addInternalFormAttachmentFiles(
       errors.push(`${file.name}：ファイルサイズは${limits.maxSizeKb}KB以下にしてください`);
       continue;
     }
-    if (files.length >= limits.maxFiles) {
+    if (existingFiles + files.length >= limits.maxFiles) {
       errors.push(`${file.name}：添付できるファイルは最大${limits.maxFiles}件です`);
       continue;
     }
@@ -112,11 +116,18 @@ export function initInternalFormAttachments(root: ParentNode = document): void {
       maxFiles,
       maxSizeKb: Number.isFinite(parsedMaxSize) && parsedMaxSize > 0 ? parsedMaxSize : undefined,
     };
+    const retainedFileCount = (): number => Array.from(
+      wrapper.querySelectorAll<HTMLInputElement>('[data-existing-file-remove]'),
+    ).filter((control) => !control.checked).length;
+    const existingRemovalControls = Array.from(
+      wrapper.querySelectorAll<HTMLInputElement>('[data-existing-file-remove]'),
+    );
     const objectUrls = new Map<File, string>();
     const view = input.ownerDocument.defaultView;
     let handleChange: () => void = () => undefined;
     let handleReset: () => void = () => undefined;
     let handlePageHide: (event: PageTransitionEvent) => void = () => undefined;
+    let handleExistingRemovalChange: () => void = () => undefined;
 
     const releaseFileUrl = (file: File): void => {
       const url = objectUrls.get(file);
@@ -140,6 +151,9 @@ export function initInternalFormAttachments(root: ParentNode = document): void {
       input.removeEventListener('change', handleChange);
       input.form?.removeEventListener('reset', handleReset);
       view?.removeEventListener('pagehide', handlePageHide);
+      existingRemovalControls.forEach((control) => (
+        control.removeEventListener('change', handleExistingRemovalChange)
+      ));
       releaseAllUrls();
       list.replaceChildren();
       showErrors([]);
@@ -210,8 +224,9 @@ export function initInternalFormAttachments(root: ParentNode = document): void {
             return;
           }
           selectedFiles = nextFiles;
-          showErrors([]);
+          handleExistingRemovalChange();
           render();
+          input.dispatchEvent(new Event('input', { bubbles: true }));
           const nextRemove = list.querySelectorAll<HTMLButtonElement>('[data-file-remove]')
             .item(Math.min(index, selectedFiles.length - 1));
           (nextRemove || input).focus();
@@ -226,7 +241,7 @@ export function initInternalFormAttachments(root: ParentNode = document): void {
       const update = addInternalFormAttachmentFiles(
         selectedFiles,
         Array.from(input.files ?? []),
-        limits,
+        { ...limits, existingFiles: retainedFileCount() },
       );
       if (!replaceInputFiles(input, update.files)) {
         fallbackToNative();
@@ -245,7 +260,13 @@ export function initInternalFormAttachments(root: ParentNode = document): void {
         }
         showErrors([]);
         render();
+        input.dispatchEvent(new Event('input', { bubbles: true }));
       }, 0);
+    };
+    handleExistingRemovalChange = () => {
+      showErrors(retainedFileCount() + selectedFiles.length > maxFiles
+        ? [`添付できるファイルは最大${maxFiles}件です`]
+        : []);
     };
     handlePageHide = (event) => {
       if (event.persisted) return;
@@ -254,6 +275,9 @@ export function initInternalFormAttachments(root: ParentNode = document): void {
     };
     input.addEventListener('change', handleChange);
     input.form?.addEventListener('reset', handleReset);
+    existingRemovalControls.forEach((control) => (
+      control.addEventListener('change', handleExistingRemovalChange)
+    ));
     view?.addEventListener('pagehide', handlePageHide);
     render();
   });

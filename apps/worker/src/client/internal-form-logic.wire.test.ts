@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { initInternalFormAttachments } from './internal-form-attachment.js';
+import { initInternalFormLogic } from './internal-form-logic.js';
 
 const clientRoot = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(clientRoot, '../../../..');
@@ -47,6 +48,52 @@ describe('internal form logic import wire', () => {
   });
 });
 
+describe('internal form logic answer wire', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  test('derives file branch state from safe edit controls without a stored descriptor', () => {
+    const config = {
+      fields: [
+        { id: 'attachment', type: 'file', position: 0 },
+        { id: 'attachment-note', type: 'text', position: 1 },
+      ],
+      logic: [{
+        id: 'show-attachment-note',
+        sourceFieldId: 'attachment',
+        operator: 'is_answered',
+        value: '',
+        action: 'show',
+        targetFieldId: 'attachment-note',
+      }],
+    };
+    document.body.innerHTML = `<form data-internal-form data-channel="web" data-form-type="simple">
+      <div data-field-id="attachment">
+        <div data-file-attachment>
+          <input type="checkbox" name="remove_a_0" value="0" data-existing-file-remove data-logic-ignore>
+          <input type="file" name="a_0" data-file-input data-logic-ignore>
+          <p data-file-status hidden></p>
+          <ul data-file-list></ul>
+        </div>
+      </div>
+      <div data-field-id="attachment-note" hidden>
+        <input type="text" name="a_1">
+      </div>
+      <button type="submit" data-submit>Save</button>
+    </form>
+    <script type="application/json" data-internal-form-logic-config>${JSON.stringify(config)}</script>`;
+
+    initInternalFormLogic(document);
+
+    expect(document.querySelector<HTMLElement>('[data-field-id="attachment-note"]')?.hidden).toBe(false);
+    const remove = document.querySelector<HTMLInputElement>('[data-existing-file-remove]')!;
+    remove.checked = true;
+    remove.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(document.querySelector<HTMLElement>('[data-field-id="attachment-note"]')?.hidden).toBe(true);
+  });
+});
+
 class FakeDataTransfer {
   private readonly selected: File[] = [];
 
@@ -85,12 +132,17 @@ function mountAttachment(options: {
   maxFiles?: number;
   maxSizeKb?: number;
   accept?: string;
+  existingFiles?: number;
 } = {}) {
   const maxFiles = options.maxFiles ?? 10;
   const maxSizeKb = options.maxSizeKb ?? 256;
   const accept = options.accept ?? '.png,.pdf';
+  const existing = Array.from({ length: options.existingFiles ?? 0 }, (_, index) => (
+    `<input type="checkbox" value="${index}" data-existing-file-remove data-logic-ignore>`
+  )).join('');
   document.body.innerHTML = `<form>
     <div data-file-attachment>
+      ${existing}
       <input type="file" name="a_0" required multiple accept="${accept}"
         data-file-input data-max-files="${maxFiles}" data-max-size-kb="${maxSizeKb}">
       <p data-file-status aria-live="polite" hidden></p>
@@ -191,6 +243,93 @@ describe('internal form attachment wire', () => {
     expect(status.textContent).toContain('large.pdf：ファイルサイズは1KB以下にしてください');
     expect(status.textContent).toContain('blocked.exe：追加できる形式は .pdf です');
     expect(status.textContent).toContain('third.pdf：添付できるファイルは最大2件です');
+  });
+
+  test('counts retained existing files toward the A3 maximum and releases room after deletion', () => {
+    const { selected, status, wrapper } = mountAttachment({ maxFiles: 10, existingFiles: 9 });
+    const first = new File(['first'], 'first.pdf', { type: 'application/pdf' });
+    const second = new File(['second'], 'second.pdf', { type: 'application/pdf' });
+
+    selected.choose(first, second);
+
+    expect(selected.files().map((file) => file.name)).toEqual(['first.pdf']);
+    expect(status.textContent).toContain('second.pdf：添付できるファイルは最大10件です');
+
+    const removal = wrapper.querySelector<HTMLInputElement>('[data-existing-file-remove]')!;
+    removal.checked = true;
+    removal.dispatchEvent(new Event('change', { bubbles: true }));
+    selected.choose(second);
+
+    expect(selected.files().map((file) => file.name)).toEqual(['first.pdf', 'second.pdf']);
+    expect(status.hidden).toBe(true);
+
+    removal.checked = false;
+    removal.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(status.hidden).toBe(false);
+    expect(status.textContent).toContain('添付できるファイルは最大10件です');
+  });
+
+  test('re-evaluates file branch visibility and required after removing the last A3 addition', () => {
+    const config = {
+      fields: [
+        { id: 'attachment', type: 'file', position: 0 },
+        { id: 'attachment-note', type: 'text', position: 1 },
+      ],
+      logic: [{
+        id: 'show-attachment-note', sourceFieldId: 'attachment', operator: 'is_answered', value: '',
+        action: 'show', targetFieldId: 'attachment-note',
+      }],
+    };
+    document.body.innerHTML = `<form data-internal-form data-channel="web" data-form-type="simple">
+      <div data-field-id="attachment">
+        <div data-file-attachment>
+          <input type="file" name="a_0" data-file-input data-logic-ignore data-required="true"
+            data-max-files="1" data-max-size-kb="256" accept=".pdf">
+          <p data-file-status hidden></p>
+          <ul data-file-list></ul>
+        </div>
+      </div>
+      <div data-field-id="attachment-note" hidden><input type="text" name="a_1"></div>
+      <button type="submit" data-submit>Save</button>
+    </form>
+    <script type="application/json" data-internal-form-logic-config>${JSON.stringify(config)}</script>`;
+    const input = document.querySelector<HTMLInputElement>('[data-file-input]')!;
+    const selected = mutableFileInput(input);
+
+    initInternalFormLogic(document);
+    expect(input.required).toBe(true);
+    expect(document.querySelector<HTMLElement>('[data-field-id="attachment-note"]')?.hidden).toBe(true);
+
+    selected.choose(new File(['new'], 'new.pdf', { type: 'application/pdf' }));
+    expect(input.required).toBe(false);
+    expect(document.querySelector<HTMLElement>('[data-field-id="attachment-note"]')?.hidden).toBe(false);
+
+    document.querySelector<HTMLButtonElement>('[data-file-remove="0"]')!.click();
+    expect(input.required).toBe(true);
+    expect(document.querySelector<HTMLElement>('[data-field-id="attachment-note"]')?.hidden).toBe(true);
+  });
+
+  test('keeps the total-count error while removing one addition still leaves too many files', () => {
+    const { list, selected, status, wrapper } = mountAttachment({ maxFiles: 10, existingFiles: 10 });
+    const removals = wrapper.querySelectorAll<HTMLInputElement>('[data-existing-file-remove]');
+    removals[0]!.checked = true;
+    removals[0]!.dispatchEvent(new Event('change', { bubbles: true }));
+    removals[1]!.checked = true;
+    removals[1]!.dispatchEvent(new Event('change', { bubbles: true }));
+    selected.choose(
+      new File(['one'], 'one.pdf', { type: 'application/pdf' }),
+      new File(['two'], 'two.pdf', { type: 'application/pdf' }),
+    );
+    removals[0]!.checked = false;
+    removals[0]!.dispatchEvent(new Event('change', { bubbles: true }));
+    removals[1]!.checked = false;
+    removals[1]!.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(status.hidden).toBe(false);
+
+    list.querySelector<HTMLButtonElement>('[data-file-remove="0"]')!.click();
+
+    expect(status.hidden).toBe(false);
+    expect(status.textContent).toContain('添付できるファイルは最大10件です');
   });
 
   test('leaves the native file input untouched when DataTransfer is unavailable', () => {

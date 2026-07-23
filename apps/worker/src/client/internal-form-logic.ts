@@ -194,12 +194,31 @@ export function initInternalFormLogic(root: ParentNode = document): void {
     && !['section', 'page_break', 'video', 'image'].includes(fieldType(id) ?? '');
   let currentFieldId: string | null = null;
 
+  const attachmentAnswer = (wrapper: HTMLElement): string[] | null => {
+    const attachment = wrapper.querySelector<HTMLElement>('[data-file-attachment]');
+    if (!attachment) return null;
+    const retainedCount = Array.from(
+      attachment.querySelectorAll<HTMLInputElement>('[data-existing-file-remove]'),
+    ).filter((control) => !control.checked).length;
+    const input = attachment.querySelector<HTMLInputElement>('input[type="file"][data-file-input]');
+    const addedCount = Array.from(input?.files ?? [])
+      .filter((file) => file.name !== '' || file.size > 0).length;
+    return Array(retainedCount + addedCount).fill('attached');
+  };
+
   const answers = (): Record<string, unknown> => {
     const result: Record<string, unknown> = { ...(config.fixedAnswers ?? {}) };
     for (const wrapper of wrappers) {
       const id = wrapper.dataset.fieldId;
       if (!id) continue;
-      const controls = Array.from(wrapper.querySelectorAll<AnswerControl>('input, textarea, select'));
+      const attachment = attachmentAnswer(wrapper);
+      if (attachment) {
+        result[id] = attachment;
+        continue;
+      }
+      const controls = Array.from(wrapper.querySelectorAll<AnswerControl>(
+        'input:not([data-logic-ignore]), textarea:not([data-logic-ignore]), select:not([data-logic-ignore])',
+      ));
       const checks = controls.filter((control): control is HTMLInputElement => (
         control instanceof HTMLInputElement && control.type === 'checkbox'
       ));
@@ -231,9 +250,12 @@ export function initInternalFormLogic(root: ParentNode = document): void {
       const visible = logicVisible.has(id);
       const displayed = formType === 'simple' ? visible : visible && id === currentFieldId;
       wrapper.hidden = !displayed;
+      const attachment = attachmentAnswer(wrapper);
       for (const control of wrapper.querySelectorAll<AnswerControl>('input, textarea, select')) {
         control.disabled = !visible;
-        if (control.dataset.required === 'true') control.required = visible;
+        if (control.dataset.required === 'true') {
+          control.required = visible && (attachment === null || attachment.length === 0);
+        }
       }
       if (wrapper.dataset.requiredGroup === 'true') {
         const first = wrapper.querySelector<HTMLInputElement>('input[type="checkbox"]');
