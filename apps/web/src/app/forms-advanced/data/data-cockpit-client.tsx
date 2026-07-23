@@ -593,11 +593,39 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
                 {detail.source === 'formaloo' ? 'Formaloo 最新' : detail.source === 'internal' ? '自前配信' : 'ミラー'}
               </span>
             </div>
+            {typeof detail.verified === 'boolean' && (
+              <div
+                data-testid="detail-line-linkage"
+                className={detail.verified
+                  ? 'mt-2 inline-flex rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700'
+                  : 'mt-2 inline-flex rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600'}
+              >
+                {`LINE連携: ${detail.verified ? '連携済み' : '未連携'}`}
+              </div>
+            )}
             {/* ④ 最終編集の表示 (誰が いつ) */}
             {detail.lastEdit && (
               <div data-testid="last-edit" className="mt-1 text-xs text-amber-700">
                 最終編集: {detail.lastEdit.editorName ?? '不明'}・{formatJstMinute(detail.lastEdit.editedAt)}
               </div>
+            )}
+            {(detail.externalEditChanges?.length ?? 0) > 0 && (
+              <section
+                data-testid="detail-external-edit-changes"
+                aria-labelledby="detail-external-edit-changes-heading"
+                className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3"
+              >
+                <h3 id="detail-external-edit-changes-heading" className="text-sm font-semibold text-amber-900">
+                  外部編集の変更内容
+                </h3>
+                <ul className="mt-2 space-y-1 text-sm text-gray-700">
+                  {detail.externalEditChanges?.map((change, index) => (
+                    <li key={`${change.fieldId}-${index}`} className="break-words">
+                      {`${labelForSlug(detail, change.fieldId)}: ${readonlyAnswerText(change.before)} → ${readonlyAnswerText(change.after)}`}
+                    </li>
+                  ))}
+                </ul>
+              </section>
             )}
 
             {!editMode ? (

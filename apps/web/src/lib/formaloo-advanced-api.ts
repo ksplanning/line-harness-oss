@@ -323,6 +323,7 @@ export interface RowDetail {
   answers: Record<string, unknown>
   submittedAt: string
   source: string
+  verified?: boolean
   allowPostEdit?: number
   editVersion?: number
   answerRevision?: string

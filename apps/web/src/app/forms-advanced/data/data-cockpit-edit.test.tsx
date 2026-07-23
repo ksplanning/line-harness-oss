@@ -84,6 +84,32 @@ async function openDetail() {
 }
 
 describe('T-D2 回答詳細 編集モード', () => {
+  it('外部編集の差分を詳細ドロワーに項目名つきで表示する', async () => {
+    rowMock.mockResolvedValue({
+      ...detailFor(0),
+      answers: { nameSlug: '佐藤', noteSlug: '旧メモ', pickSlug: 'A' },
+      externalEditChanges: [
+        { fieldId: 'nameSlug', before: '田中', after: '佐藤' },
+      ],
+    })
+
+    await openDetail()
+
+    expect(screen.getByTestId('detail-external-edit-changes').textContent)
+      .toContain('名前: 田中 → 佐藤')
+  })
+
+  it.each([
+    { verified: true, expected: 'LINE連携: 連携済み' },
+    { verified: false, expected: 'LINE連携: 未連携' },
+  ])('詳細ドロワーにLINE連携状態を「$expected」と表示する', async ({ verified, expected }) => {
+    rowMock.mockResolvedValue({ ...detailFor(0), verified })
+
+    await openDetail()
+
+    expect(screen.getByTestId('detail-line-linkage').textContent).toBe(expected)
+  })
+
   it('回答済みをフォーム順で先に並べ、未回答は件数付きで初期状態を閉じる', async () => {
     rowMock.mockResolvedValue({
       ...detailFor(1),
