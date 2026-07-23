@@ -53,18 +53,20 @@ export default function ChatMessageHistory({
   scrollRef,
   expanded = false,
   afterMessage,
+  bodyTextClassName = 'text-sm',
 }: {
   messages: ChatHistoryMessage[]
   friendPictureUrl: string | null
   scrollRef: RefObject<HTMLDivElement | null>
   expanded?: boolean
   afterMessage?: (message: ChatHistoryMessage) => ReactNode
+  bodyTextClassName?: string
 }) {
   return (
     <div
       ref={scrollRef}
       data-testid="chat-message-history"
-      className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4"
+      className="min-h-0 basis-0 flex-1 space-y-2 overflow-y-auto p-4"
       style={{ backgroundColor: '#7494C0' }}
     >
       {messages.length === 0 ? (
@@ -140,7 +142,7 @@ export default function ChatMessageHistory({
                   )}
                   <div
                     data-testid="chat-message-bubble"
-                    className={`${expanded ? 'w-fit max-w-full sm:max-w-3xl' : 'max-w-[320px]'} break-words whitespace-pre-wrap px-3 py-2 text-sm ${
+                    className={`${expanded ? 'w-fit max-w-full sm:max-w-3xl' : 'max-w-[320px]'} break-words whitespace-pre-wrap px-3 py-2 ${bodyTextClassName} ${
                       isOutgoing
                         ? 'rounded-bl-2xl rounded-br-2xl rounded-tl-2xl rounded-tr-md text-white'
                         : 'rounded-bl-2xl rounded-br-2xl rounded-tl-md rounded-tr-2xl bg-white text-gray-900'

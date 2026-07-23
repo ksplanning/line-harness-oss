@@ -109,7 +109,7 @@ async function openExpandedHistory() {
 }
 
 describe('チャット詳細のモバイル配置', () => {
-  it('identity と action を2段に分け、戻る・avatar・長い名前を窮屈にしない', async () => {
+  it('戻る・avatar・長い名前・操作を1行のコンパクトheaderへ収める', async () => {
     const longFriendName = 'まつもとクリニック予約窓口のご担当者さま'
     apiMocks.getChat.mockResolvedValue({
       success: true,
@@ -124,25 +124,31 @@ describe('チャット詳細のモバイル配置', () => {
     await openChatDetail()
     const header = screen.getByTestId('chat-detail-header')
     const identity = within(header).getByTestId('chat-detail-identity')
-    const actions = within(header).getByTestId('chat-detail-actions')
     const backButton = within(identity).getByRole('button', { name: '戻る' })
     const avatar = within(identity).getByTestId('chat-detail-avatar')
     const friendName = within(identity).getByText(longFriendName)
+    const actionButton = within(header).getByRole('button', { name: '対応操作' })
 
-    expect(header.className).toContain('flex-col')
-    expect(header.className).toContain('sm:flex-row')
-    expect(identity.className).toContain('w-full')
+    expect(header.className).toContain('shrink-0')
+    expect(header.className).toContain('items-center')
+    expect(header.className).not.toContain('flex-col')
+    expect(identity.className).toContain('flex-1')
     expect(backButton.className).toContain('h-11')
     expect(backButton.className).toContain('w-11')
     expect(avatar).toBeTruthy()
-    expect(friendName.className).toContain('break-words')
-    expect(friendName.className).toContain('sm:truncate')
-    expect(actions.className).toContain('grid')
-    expect(actions.className).toContain('grid-cols-2')
-    expect(actions.className).toContain('sm:flex')
+    expect(friendName.className).toContain('truncate')
+    expect(actionButton.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByTestId('chat-detail-actions')).toBeNull()
+
+    fireEvent.click(actionButton)
+    const actions = screen.getByTestId('chat-detail-actions')
+    expect(actionButton.getAttribute('aria-expanded')).toBe('true')
+    expect(actions.className).toContain('absolute')
+    expect(within(actions).getByRole('button', { name: '未読に戻す' })).toBeTruthy()
+    expect(within(actions).getByRole('button', { name: '解決済にする' })).toBeTruthy()
   })
 
-  it('composer 表示中だけ mobile FAB を右下端の44pxへ退避し、一覧へ戻ると通常位置へ戻す', async () => {
+  it('composerをmobile下端へ固定し、FABぶんは縦余白でなくtoolbar右側へ退避する', async () => {
     render(<ChatsPage />)
     const ccButton = screen.getByRole('button', { name: 'CCに依頼' })
 
@@ -152,10 +158,14 @@ describe('チャット詳細のモバイル配置', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /佐藤さん/ }))
     const composer = (await screen.findByRole('textbox', { name: 'メッセージを入力' })).closest('[data-chat-composer]')
+    const toolbar = screen.getByRole('group', { name: 'テキスト編集ツール' })
 
     await waitFor(() => {
-      expect(composer?.className).toContain('pb-16')
-      expect(composer?.className).toContain('sm:pb-3')
+      expect(composer?.className).toContain('sticky')
+      expect(composer?.className).toContain('bottom-0')
+      expect(composer?.className).not.toContain('pb-16')
+      expect(toolbar.className).toContain('pr-14')
+      expect(toolbar.className).toContain('sm:pr-0')
       expect(ccButton.className).toContain('bottom-2')
       expect(ccButton.className).toContain('right-2')
       expect(ccButton.className).toContain('h-11')
