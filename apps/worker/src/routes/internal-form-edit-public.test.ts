@@ -1685,4 +1685,74 @@ describe('POST /ife/:token', () => {
     expect(stored.edit_version).toBe(3);
     expect(JSON.parse(stored.answers_json)).toEqual(originalAnswers);
   });
+
+  test('round-trips edit URL save through pending review and approval APIs', async () => {
+    seedForm();
+    seedSubmission();
+    const signed = await token();
+
+    const edited = await app().request(`/ife/${signed}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        editVersion: '3',
+        a_0: '外部編集後',
+        a_1: 'external@example.test',
+      }),
+    }, bindings());
+    expect(edited.status).toBe(200);
+
+    const pending = await adminApp().request(
+      '/api/forms-advanced/form-1/rows?externalEdit=pending&page=1&pageSize=25',
+      {},
+      bindings(),
+    );
+    expect(pending.status).toBe(200);
+    const pendingData = (await pending.json() as {
+      data: {
+        rows: Array<{
+          id: string;
+          externalEditSource: string | null;
+          externalEditApprovedAt: string | null;
+        }>;
+        total: number;
+        externalEditPendingCount: number;
+      };
+    }).data;
+    expect(pendingData).toMatchObject({
+      rows: [{
+        id: 'ifs-1',
+        externalEditSource: 'edit_link',
+        externalEditApprovedAt: null,
+      }],
+      total: 1,
+      externalEditPendingCount: 1,
+    });
+
+    const answersBeforeApproval = (raw.prepare(
+      `SELECT answers_json FROM internal_form_submissions WHERE id = 'ifs-1'`,
+    ).get() as { answers_json: string }).answers_json;
+    const approved = await adminApp().request(
+      '/api/forms-advanced/form-1/rows/ifs-1/approve-external-edit',
+      { method: 'POST' },
+      bindings(),
+    );
+    expect(approved.status).toBe(200);
+    expect((raw.prepare(
+      `SELECT answers_json FROM internal_form_submissions WHERE id = 'ifs-1'`,
+    ).get() as { answers_json: string }).answers_json).toBe(answersBeforeApproval);
+
+    const cleared = await adminApp().request(
+      '/api/forms-advanced/form-1/rows?externalEdit=pending&page=1&pageSize=25',
+      {},
+      bindings(),
+    );
+    expect((await cleared.json() as {
+      data: { rows: unknown[]; total: number; externalEditPendingCount: number };
+    }).data).toEqual(expect.objectContaining({
+      rows: [],
+      total: 0,
+      externalEditPendingCount: 0,
+    }));
+  });
 });

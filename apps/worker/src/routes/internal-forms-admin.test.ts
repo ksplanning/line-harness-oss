@@ -1173,6 +1173,98 @@ describe('internal answer admin read path', () => {
     expect(rangeData.rows.map((row) => row.id)).toEqual(['sub-2', 'sub-3']);
   });
 
+  test('filters and approves pending external edits without changing answers or syncing Sheets', async () => {
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-23T10:00:00+09:00'
+       WHERE id = 'sub-1'`,
+    ).run();
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'sheet',
+           external_edited_at = '2026-07-23T10:01:00+09:00',
+           external_edit_approved_at = '2026-07-23T10:02:00+09:00'
+       WHERE id = 'sub-2'`,
+    ).run();
+
+    const unfiltered = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?page=1&pageSize=25',
+    );
+    const unfilteredData = (await unfiltered.json() as {
+      data: {
+        rows: Array<{
+          id: string;
+          formId: string;
+          externalEditSource: string | null;
+          externalEditedAt: string | null;
+          externalEditApprovedAt: string | null;
+        }>;
+        total: number;
+        externalEditPendingCount: number;
+      };
+    }).data;
+    expect(unfilteredData.total).toBe(3);
+    expect(unfilteredData.externalEditPendingCount).toBe(1);
+    expect(unfilteredData.rows.find((row) => row.id === 'sub-1')).toMatchObject({
+      formId: 'internal-form',
+      externalEditSource: 'edit_link',
+      externalEditedAt: '2026-07-23T10:00:00+09:00',
+      externalEditApprovedAt: null,
+    });
+
+    const filtered = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?externalEdit=pending&page=1&pageSize=25',
+    );
+    const filteredData = (await filtered.json() as {
+      data: {
+        rows: Array<{ id: string }>;
+        total: number;
+        externalEditPendingCount: number;
+      };
+    }).data;
+    expect(filteredData).toMatchObject({
+      rows: [{ id: 'sub-1' }],
+      total: 1,
+      externalEditPendingCount: 1,
+    });
+
+    const answersBefore = (raw.prepare(
+      `SELECT answers_json FROM internal_form_submissions WHERE id = 'sub-1'`,
+    ).get() as { answers_json: string }).answers_json;
+    const approved = await call(
+      'POST',
+      '/api/forms-advanced/internal-form/rows/sub-1/approve-external-edit',
+    );
+    expect(approved.status).toBe(200);
+    expect(await approved.json()).toMatchObject({
+      success: true,
+      data: {
+        id: 'sub-1',
+        externalEditSource: 'edit_link',
+        externalEditApprovedAt: expect.any(String),
+      },
+    });
+    expect((raw.prepare(
+      `SELECT answers_json FROM internal_form_submissions WHERE id = 'sub-1'`,
+    ).get() as { answers_json: string }).answers_json).toBe(answersBefore);
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).not.toHaveBeenCalled();
+
+    const after = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?externalEdit=pending&page=1&pageSize=25',
+    );
+    expect((await after.json() as {
+      data: { rows: unknown[]; total: number; externalEditPendingCount: number };
+    }).data).toEqual(expect.objectContaining({
+      rows: [],
+      total: 0,
+      externalEditPendingCount: 0,
+    }));
+  });
+
   test('DELETE soft-deletes only the requested form-scoped answer and hides it from admin reads', async () => {
     const crossed = await call('DELETE', '/api/forms-advanced/internal-form/rows/not-in-this-form');
     expect(crossed.status).toBe(404);
@@ -1354,8 +1446,14 @@ describe('internal answer admin read path', () => {
       total: 2,
       kind: '個人',
     };
-    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
-      .run(JSON.stringify(original), 'sub-2');
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET answers_json = ?,
+           external_edit_source = 'sheet',
+           external_edited_at = '2026-07-23T09:00:00+09:00',
+           external_edit_approved_at = '2026-07-23T09:01:00+09:00'
+       WHERE id = ?`,
+    ).run(JSON.stringify(original), 'sub-2');
     const context = await internalEditContext('internal-form', 'sub-2');
 
     const saved = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
@@ -1380,11 +1478,18 @@ describe('internal answer admin read path', () => {
         },
       },
     });
-    expect(raw.prepare('SELECT friend_id, submitted_at, edit_version FROM internal_form_submissions WHERE id = ?')
+    expect(raw.prepare(
+      `SELECT friend_id, submitted_at, edit_version, external_edit_source,
+              external_edited_at, external_edit_approved_at
+       FROM internal_form_submissions WHERE id = ?`,
+    )
       .get('sub-2')).toEqual({
         friend_id: 'friend-1',
         submitted_at: '2026-07-01T10:00:00+09:00',
         edit_version: 1,
+        external_edit_source: 'sheet',
+        external_edited_at: '2026-07-23T09:00:00+09:00',
+        external_edit_approved_at: '2026-07-23T09:01:00+09:00',
       });
 
     const stale = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {

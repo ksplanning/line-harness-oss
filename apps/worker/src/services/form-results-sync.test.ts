@@ -821,11 +821,26 @@ describe('personal block edits (D-1 個人情報欄)', () => {
 describe('answer edits (D-1 回答欄)', () => {
   test('applies an answer edit to that exact submission via submission_id — not the latest', async () => {
     await run();
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-23T09:00:00+09:00',
+           external_edit_approved_at = '2026-07-23T09:01:00+09:00'
+       WHERE id = 'ifs-001'`,
+    ).run();
     resultsClient.values[1][5] = '修正済み回答';
     const result = await run();
     expect(result.importedFields).toBe(1);
     expect(submissionAnswers('ifs-001')).toEqual({ q1: '修正済み回答', q2: '回答A2' });
     expect(submissionAnswers('ifs-002')).toEqual({ q1: '回答B1', q2: '回答B2' });
+    expect(raw.prepare(
+      `SELECT external_edit_source, external_edited_at, external_edit_approved_at
+       FROM internal_form_submissions WHERE id = 'ifs-001'`,
+    ).get()).toEqual({
+      external_edit_source: 'sheet',
+      external_edited_at: expect.any(String),
+      external_edit_approved_at: null,
+    });
   });
 
   test('imports a sheet edit for an editLocked field because the lock applies only to edit URLs', async () => {
@@ -1080,6 +1095,14 @@ describe('target isolation (D-2 独立スイッチ)', () => {
     expect(submissionAnswers('ifs-001')).toEqual({
       q1: 'フラグ変更後の回答',
       q2: '回答A2',
+    });
+    expect(raw.prepare(
+      `SELECT external_edit_source, external_edited_at, external_edit_approved_at
+       FROM internal_form_submissions WHERE id = 'ifs-001'`,
+    ).get()).toEqual({
+      external_edit_source: 'sheet',
+      external_edited_at: expect.any(String),
+      external_edit_approved_at: null,
     });
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_jobs').get()).toEqual({ count: 0 });
   });

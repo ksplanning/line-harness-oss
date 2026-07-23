@@ -1,6 +1,8 @@
 import { Hono, type Context, type Next } from 'hono';
 import {
+  approveInternalFormSubmissionExternalEdit,
   countInternalFormSubmissionsForForm,
+  countPendingInternalFormExternalEdits,
   getFormalooFieldMap,
   getFormalooForm,
   getInternalFormSubmission,
@@ -102,6 +104,7 @@ async function queryInternalSubmissions(
     q?: string | null;
     from?: string | null;
     to?: string | null;
+    externalEdit?: 'pending';
     sortDir: 'asc' | 'desc';
     limit: number;
     offset: number;
@@ -121,6 +124,10 @@ async function queryInternalSubmissions(
   if (params.to) {
     where.push('julianday(submitted_at) <= julianday(?)');
     binds.push(params.to);
+  }
+  if (params.externalEdit === 'pending') {
+    where.push('external_edit_source IS NOT NULL');
+    where.push('external_edit_approved_at IS NULL');
   }
 
   const whereSql = where.join(' AND ');
@@ -422,9 +429,13 @@ function internalEditMetadata(
 function serializeRow(row: InternalFormSubmission) {
   return {
     id: row.id,
+    formId: row.form_id,
     friendId: row.friend_id,
     answers: parseAnswers(row.answers_json),
     submittedAt: row.submitted_at,
+    externalEditSource: row.external_edit_source,
+    externalEditedAt: row.external_edited_at,
+    externalEditApprovedAt: row.external_edit_approved_at,
     // A friend id is persisted only after the signed fr_id is verified and the
     // friend exists, so this is the internal equivalent of Formaloo `verified`.
     verified: row.friend_id !== null,
@@ -1104,6 +1115,32 @@ internalFormsAdmin.delete('/api/forms-advanced/:id/rows/:rowId', async (c, next)
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
+internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/approve-external-edit', async (c, next) => {
+  try {
+    const id = c.req.param('id');
+    const form = await getInternalForm(c.env.DB, id);
+    if (!form) return next();
+    const rowId = c.req.param('rowId');
+    const row = await getInternalFormSubmission(c.env.DB, id, rowId);
+    if (!row) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    if (!row.external_edit_source || row.external_edit_approved_at) {
+      return c.json({ success: false, error: '未承認の外部編集ではありません' }, 409);
+    }
+    const approved = await approveInternalFormSubmissionExternalEdit(c.env.DB, id, rowId);
+    if (!approved) {
+      return c.json({
+        success: false,
+        error: '回答の状態が更新されたため、再読み込みしてください',
+      }, 409);
+    }
+    const readback = await getInternalFormSubmission(c.env.DB, id, rowId);
+    if (!readback) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    return c.json({ success: true, data: serializeRow(readback) });
+  } catch (error) {
+    console.error('POST internal approve external edit error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
 internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) => {
   let storedUploads: StoredInternalFormUploads | null = null;
   let mutationCommitted = false;
@@ -1316,16 +1353,25 @@ internalFormsAdmin.get('/api/forms-advanced/:id/rows', async (c, next) => {
       q: c.req.query('q') ?? null,
       from: c.req.query('from') ?? null,
       to: c.req.query('to') ?? null,
+      externalEdit: c.req.query('externalEdit') === 'pending' ? 'pending' : undefined,
       sortDir: c.req.query('sort') === 'asc' ? 'asc' : 'desc',
       limit: pageSize,
       offset: (page - 1) * pageSize,
     });
     const fields = definitionFields(form.definition_json)
       .map((field) => ({ slug: field.id, label: field.label }));
+    const externalEditPendingCount = await countPendingInternalFormExternalEdits(c.env.DB, id);
 
     return c.json({
       success: true,
-      data: { rows: rows.map(serializeRow), total, page, pageSize, fields },
+      data: {
+        rows: rows.map(serializeRow),
+        total,
+        page,
+        pageSize,
+        fields,
+        externalEditPendingCount,
+      },
     });
   } catch (error) {
     console.error('GET internal /api/forms-advanced/:id/rows error:', error);
