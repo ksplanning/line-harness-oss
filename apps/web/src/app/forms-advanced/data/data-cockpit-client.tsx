@@ -18,7 +18,7 @@ import { fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import { csvDateStamp, safeFilenamePart } from '@/lib/download'
 import { formatJstMinute } from '@/lib/datetime'
-import { fileAnswerSummary, fileSizeLabel, isFileAnswer } from '@/lib/file-answer'
+import { fileAnswerSummary, fileSizeLabel, isFileAnswer, type FileAnswerEntry } from '@/lib/file-answer'
 
 const DEFAULT_QUERY: RowsQuery = { sort: 'desc', page: 1, pageSize: 25 }
 type RenderBackendState = 'unknown' | 'formaloo' | 'internal'
@@ -115,6 +115,62 @@ function canEditField(field: RowEditFieldMeta): boolean {
 }
 
 type EditValue = string | string[]
+type AttachmentEditValue = { removedIndexes: number[]; files: File[] }
+
+const INLINE_ATTACHMENT_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'])
+
+function attachmentIcon(name: string, type = ''): string {
+  const extension = name.match(/\.([^.]+)$/)?.[1]
+  if (extension) return extension.toUpperCase().slice(0, 5)
+  return type.split('/')[1]?.toUpperCase().slice(0, 5) || 'FILE'
+}
+
+function ExistingAttachmentThumbnail(props: {
+  formId: string
+  rowId: string
+  fieldId: string
+  index: number
+  name: string
+}) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let active = true
+    let objectUrl: string | null = null
+    void formalooDataApi.fetchAttachmentBlob(props.formId, props.rowId, props.fieldId, props.index)
+      .then((blob) => {
+        if (!active) return
+        objectUrl = URL.createObjectURL(blob)
+        setUrl(objectUrl)
+      })
+      .catch(() => { if (active) setUrl(null) })
+    return () => {
+      active = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [props.fieldId, props.formId, props.index, props.rowId])
+  return url ? (
+    <img src={url} alt={`${props.name} のプレビュー`} className="h-14 w-14 shrink-0 rounded-lg bg-gray-100 object-cover" />
+  ) : (
+    <span className="grid h-14 w-14 shrink-0 place-items-center rounded-lg bg-gray-100 text-[10px] font-bold text-gray-600">画像</span>
+  )
+}
+
+function AddedAttachmentThumbnail({ file }: { file: File }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (!INLINE_ATTACHMENT_IMAGE_TYPES.has(file.type.toLowerCase())) return
+    const objectUrl = URL.createObjectURL(file)
+    setUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [file])
+  return url ? (
+    <img src={url} alt={`${file.name} のプレビュー`} className="h-14 w-14 shrink-0 rounded-lg bg-gray-100 object-cover" />
+  ) : (
+    <span className="grid h-14 w-14 shrink-0 place-items-center rounded-lg bg-gray-100 text-[10px] font-bold text-gray-600">
+      {attachmentIcon(file.name, file.type)}
+    </span>
+  )
+}
 
 function initialEditValue(field: RowEditFieldMeta, value: unknown): EditValue {
   if (field.type === 'yes_no') {
@@ -169,6 +225,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
   // 弾M (form-post-edit / T-D2): ①管理者編集モード。allow_post_edit=1 のときのみ有効。
   const [editMode, setEditMode] = useState(false)
   const [editValues, setEditValues] = useState<Record<string, EditValue>>({})
+  const [attachmentEdits, setAttachmentEdits] = useState<Record<string, AttachmentEditValue>>({})
   const [editError, setEditError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
@@ -236,6 +293,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
     try {
       setDetail(await formalooDataApi.row(id, rowId))
       setEditMode(false)
+      setAttachmentEdits({})
       setEditError(null)
       setConfirmingDelete(false)
       setDeleteError(null)
@@ -258,6 +316,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
   const closeDetail = () => {
     setDetail(null)
     setEditMode(false)
+    setAttachmentEdits({})
     setEditError(null)
     setConfirmingDelete(false)
     setDeleteError(null)
@@ -282,10 +341,14 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
   const startEdit = () => {
     if (!detail) return
     const init: Record<string, EditValue> = {}
+    const initialAttachments: Record<string, AttachmentEditValue> = {}
     for (const field of detail.fields ?? []) {
       if (canEditField(field)) init[field.slug] = initialEditValue(field, detail.answers[field.slug])
+      if (detail.source === 'internal' && field.type === 'file' && field.attachmentManageable) {
+        initialAttachments[field.slug] = { removedIndexes: [], files: [] }
+      }
     }
-    setEditValues(init); setEditError(null); setEditMode(true)
+    setEditValues(init); setAttachmentEdits(initialAttachments); setEditError(null); setEditMode(true)
   }
   const saveEdit = async () => {
     if (!detail) return
@@ -303,17 +366,43 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
         editAnswers[field.slug] = editPayloadValue(field, value)
       }
     }
+    const attachmentChanges = (detail.fields ?? []).flatMap((field, fieldIndex) => {
+      const change = attachmentEdits[field.slug]
+      if (!change || (change.removedIndexes.length === 0 && change.files.length === 0)) return []
+      return [{
+        fieldIndex,
+        fieldId: field.slug,
+        removedIndexes: [...change.removedIndexes],
+        files: [...change.files],
+      }]
+    })
+    if (
+      attachmentChanges.length > 0
+      && (detail.editVersion === undefined || detail.answerRevision === undefined)
+    ) {
+      setEditError('添付を保存するには、回答を再読み込みしてください')
+      return
+    }
     setSaving(true); setEditError(null)
     try {
-      const updated = detail.editVersion === undefined || detail.answerRevision === undefined
-        ? await formalooDataApi.editRow(id, detail.id, editAnswers)
-        : await formalooDataApi.editRow(
+      const updated = attachmentChanges.length > 0
+        ? await formalooDataApi.editRow(
             id,
             detail.id,
             editAnswers,
             detail.editVersion,
             detail.answerRevision,
+            { attachments: attachmentChanges },
           )
+        : detail.editVersion === undefined || detail.answerRevision === undefined
+          ? await formalooDataApi.editRow(id, detail.id, editAnswers)
+          : await formalooDataApi.editRow(
+              id,
+              detail.id,
+              editAnswers,
+              detail.editVersion,
+              detail.answerRevision,
+            )
       // 反映確認済 (worker が persist 保証)。詳細と一覧を更新。
       setDetail({
         ...detail,
@@ -326,6 +415,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
         lastEdit: updated.lastEdit,
       })
       setEditMode(false)
+      setAttachmentEdits({})
       await loadRows(query)
     } catch (e) {
       setEditError((e as { body?: { error?: string } })?.body?.error ?? '保存に失敗しました（反映されていません）')
@@ -565,17 +655,143 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
               </>
             ) : (
               <div className="mt-3 space-y-3">
-                {(detail.fields ?? []).map((f) => {
+                {(detail.fields ?? []).map((f, fieldIndex) => {
                   const fieldCanEdit = canEditField(f)
+                  const attachmentCanEdit = detail.source === 'internal'
+                    && f.type === 'file'
+                    && f.attachmentManageable === true
+                  const savedAnswer = detail.answers[f.slug]
+                  const savedFiles: FileAnswerEntry[] = isFileAnswer(savedAnswer) ? savedAnswer : []
+                  const attachmentValue = attachmentEdits[f.slug] ?? { removedIndexes: [], files: [] }
                   return <div key={f.slug} className="rounded border border-gray-100 p-2">
                     <label className="block text-xs text-gray-500">
                       {f.label}{f.required && <span className="ml-0.5 text-red-500">*</span>}
-                      {!fieldCanEdit && <span className="ml-1 text-[10px] text-gray-400">（この項目は編集できません）</span>}
-                      {fieldCanEdit && f.visible === false && (
+                      {!fieldCanEdit && !attachmentCanEdit && <span className="ml-1 text-[10px] text-gray-400">（この項目は編集できません）</span>}
+                      {(fieldCanEdit || attachmentCanEdit) && f.visible === false && (
                         <span className="ml-1 text-[10px] text-gray-400">（条件を変えたときに入力）</span>
                       )}
                     </label>
-                    {fieldCanEdit ? (
+                    {attachmentCanEdit ? (
+                      <div data-testid={`edit-attachments-${f.slug}`} className="mt-2 space-y-3">
+                        <ul aria-label="保存済みファイル" className="space-y-2">
+                          {savedFiles.map((file, index) => (
+                            <li key={`${file.key}-${index}`} className="flex min-w-0 items-center gap-2 rounded-md bg-gray-50 p-2">
+                              {INLINE_ATTACHMENT_IMAGE_TYPES.has((file.type ?? '').toLowerCase()) ? (
+                                <ExistingAttachmentThumbnail
+                                  formId={id}
+                                  rowId={detail.id}
+                                  fieldId={f.slug}
+                                  index={index}
+                                  name={file.name || '添付ファイル'}
+                                />
+                              ) : (
+                                <span className="grid h-14 w-14 shrink-0 place-items-center rounded-lg bg-gray-100 text-[10px] font-bold text-gray-600">
+                                  {attachmentIcon(file.name, file.type)}
+                                </span>
+                              )}
+                              <span className="min-w-0 flex-1">
+                                <button
+                                  type="button"
+                                  onClick={() => void onDownloadFile(f.slug, index, file.name || '添付ファイル')}
+                                  className="block min-h-[40px] max-w-full break-words text-left text-sm font-medium text-gray-900 underline [overflow-wrap:anywhere]"
+                                >
+                                  {file.name || '添付ファイル'}
+                                </button>
+                                {typeof file.size === 'number' && (
+                                  <span className="block text-xs text-gray-400">{fileSizeLabel(file.size)}</span>
+                                )}
+                              </span>
+                              <label className="flex min-h-[40px] shrink-0 items-center gap-1 text-xs text-red-700">
+                                <input
+                                  type="checkbox"
+                                  aria-label={`${file.name || '添付ファイル'} を削除する`}
+                                  checked={attachmentValue.removedIndexes.includes(index)}
+                                  onChange={(event) => setAttachmentEdits((prev) => {
+                                    const current = prev[f.slug] ?? { removedIndexes: [], files: [] }
+                                    return {
+                                      ...prev,
+                                      [f.slug]: {
+                                        ...current,
+                                        removedIndexes: event.target.checked
+                                          ? Array.from(new Set([...current.removedIndexes, index])).sort((left, right) => left - right)
+                                          : current.removedIndexes.filter((savedIndex) => savedIndex !== index),
+                                      },
+                                    }
+                                  })}
+                                />
+                                削除する
+                              </label>
+                            </li>
+                          ))}
+                          {savedFiles.length === 0 && (
+                            <li className="rounded-md bg-gray-50 p-2 text-xs text-gray-500">保存済みファイルはありません</li>
+                          )}
+                        </ul>
+
+                        <div>
+                          <label htmlFor={`attachment-add-${fieldIndex}`} className="block text-xs font-medium text-gray-700">
+                            ファイルを追加
+                          </label>
+                          <input
+                            id={`attachment-add-${fieldIndex}`}
+                            aria-label={`${f.label}：ファイルを追加`}
+                            type="file"
+                            multiple={f.attachmentConfig?.allowMultipleFiles === true}
+                            accept={(f.attachmentConfig?.allowedExtensions ?? [])
+                              .map((extension) => `.${extension.replace(/^\./, '').toLowerCase()}`)
+                              .join(',') || undefined}
+                            data-max-size-kb={f.attachmentConfig?.maxSizeKb ?? 2048}
+                            onChange={(event) => {
+                              const files = Array.from(event.currentTarget.files ?? [])
+                              if (files.length > 0) {
+                                setAttachmentEdits((prev) => {
+                                  const current = prev[f.slug] ?? { removedIndexes: [], files: [] }
+                                  return {
+                                    ...prev,
+                                    [f.slug]: {
+                                      ...current,
+                                      files: f.attachmentConfig?.allowMultipleFiles === true
+                                        ? [...current.files, ...files]
+                                        : files.slice(-1),
+                                    },
+                                  }
+                                })
+                              }
+                              event.currentTarget.value = ''
+                            }}
+                            className="mt-1 block w-full text-xs text-gray-700 file:mr-2 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-2 file:text-xs file:font-medium file:text-white"
+                          />
+                        </div>
+
+                        {attachmentValue.files.length > 0 && (
+                          <ul aria-label="追加するファイル" className="space-y-2">
+                            {attachmentValue.files.map((file, index) => (
+                              <li key={`${file.name}-${file.lastModified}-${index}`} className="flex min-w-0 items-center gap-2 rounded-md bg-blue-50 p-2">
+                                <AddedAttachmentThumbnail file={file} />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block break-words text-sm font-medium text-gray-900 [overflow-wrap:anywhere]">{file.name}</span>
+                                  <span className="block text-xs text-gray-500">{fileSizeLabel(file.size)}</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  aria-label={`${file.name} を削除`}
+                                  onClick={() => setAttachmentEdits((prev) => {
+                                    const current = prev[f.slug] ?? { removedIndexes: [], files: [] }
+                                    return {
+                                      ...prev,
+                                      [f.slug]: { ...current, files: current.files.filter((_savedFile, savedIndex) => savedIndex !== index) },
+                                    }
+                                  })}
+                                  className="min-h-[40px] shrink-0 rounded-lg border border-red-200 bg-white px-3 text-xs text-red-700 hover:bg-red-50"
+                                >
+                                  削除
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    ) : fieldCanEdit ? (
                       // F-I4: textarea 型は複数行を保つため <textarea> で描画 (input だと改行 flatten = データ毀損)。
                       f.type === 'multiple_select' ? (
                         <fieldset
@@ -643,13 +859,13 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
                     )}
                   </div>
                 })}
-                {editError && <div data-testid="edit-error" className="text-xs text-red-600">{editError}</div>}
+                {editError && <div role="alert" data-testid="edit-error" className="text-xs text-red-600">{editError}</div>}
                 <div className="flex items-center gap-2">
                   <button type="button" data-testid="edit-save" disabled={saving} onClick={saveEdit}
                     className="rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700 disabled:opacity-50">
                     {saving ? '保存中…' : '保存'}
                   </button>
-                  <button type="button" onClick={() => { setEditMode(false); setEditError(null) }}
+                  <button type="button" onClick={() => { setEditMode(false); setAttachmentEdits({}); setEditError(null) }}
                     className="rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50">
                     キャンセル
                   </button>

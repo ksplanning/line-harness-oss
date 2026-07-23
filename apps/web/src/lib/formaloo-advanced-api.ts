@@ -1,4 +1,4 @@
-import { fetchApi, downloadCsv, downloadFile } from './api'
+import { fetchApi, downloadCsv, downloadFile, fetchFileBlob } from './api'
 import type { HarnessField, HarnessLogicRule, FormDesign, FormDesignImages, FormDisplayType, FormCopy, FormRedirect, SuccessPageSpec, FriendMetadataMapping, FormOperationsSettings, FormOperationsSettingsPatch } from '@line-crm/shared'
 
 // =============================================================================
@@ -290,6 +290,18 @@ export interface RowEditFieldMeta {
   editable: boolean
   editableWhenVisible?: boolean
   visible?: boolean
+  attachmentManageable?: boolean
+  attachmentConfig?: {
+    allowMultipleFiles: boolean
+    allowedExtensions: string[]
+    maxSizeKb: number
+  }
+}
+export interface RowAttachmentEdit {
+  fieldIndex: number
+  fieldId: string
+  removedIndexes: number[]
+  files: File[]
 }
 /** 弾M: 回答詳細 (drill-through) + 編集コンテキスト (allowPostEdit / editable fields / ④lastEdit)。 */
 export interface RowDetail {
@@ -355,7 +367,30 @@ export const formalooDataApi = {
     answers: Record<string, unknown>,
     editVersion?: number,
     answerRevision?: string,
+    options?: { attachments: RowAttachmentEdit[] },
   ): Promise<RowEditResult> {
+    if (options?.attachments.length) {
+      if (editVersion === undefined || answerRevision === undefined) {
+        throw new Error('添付を保存するには回答を再読み込みしてください')
+      }
+      const multipart = new FormData()
+      multipart.set('answers', JSON.stringify(answers))
+      multipart.set('editVersion', String(editVersion))
+      multipart.set('answerRevision', answerRevision)
+      for (const attachment of options.attachments) {
+        multipart.set(`attachment_field_${attachment.fieldIndex}`, attachment.fieldId)
+        for (const index of attachment.removedIndexes) {
+          multipart.append(`remove_a_${attachment.fieldIndex}`, String(index))
+        }
+        for (const file of attachment.files) {
+          multipart.append(`a_${attachment.fieldIndex}`, file)
+        }
+      }
+      return (await fetchApi<Envelope<RowEditResult>>(
+        `/api/forms-advanced/${id}/rows/${rowId}`,
+        { method: 'PATCH', body: multipart },
+      )).data
+    }
     const body = {
       answers,
       ...(editVersion === undefined ? {} : { editVersion }),
@@ -383,6 +418,11 @@ export const formalooDataApi = {
     await downloadFile(
       `/api/forms-advanced/${id}/rows/${rowId}/files/${encodeURIComponent(fieldId)}/${index}`,
       filename,
+    )
+  },
+  async fetchAttachmentBlob(id: string, rowId: string, fieldId: string, index: number): Promise<Blob> {
+    return fetchFileBlob(
+      `/api/forms-advanced/${id}/rows/${rowId}/files/${encodeURIComponent(fieldId)}/${index}`,
     )
   },
   async importCsv(id: string, csv: string): Promise<{ parsed: number; pushed: boolean; note: string }> {

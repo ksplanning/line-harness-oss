@@ -35,6 +35,18 @@ async function loadApi() {
 }
 
 describe('formalooDataApi.downloadAttachment', () => {
+  test('認証付き GET で画像表示用 Blob を返し、download は開始しない', async () => {
+    const api = await loadApi()
+
+    const blob = await api.fetchAttachmentBlob('f1', 'r1', 'docs', 1)
+
+    expect(captured).toHaveLength(1)
+    expect(captured[0].url).toBe(`${BASE}/api/forms-advanced/f1/rows/r1/files/docs/1`)
+    expect(captured[0].credentials).toBe('include')
+    expect(await blob.text()).toBe('file-bytes')
+    expect(downloadBlobMock).not.toHaveBeenCalled()
+  })
+
   test('認証付き GET で対象 index を取得し元ファイル名で保存する', async () => {
     const api = await loadApi()
     await api.downloadAttachment('f1', 'r1', 'docs', 2, '見積書.pdf')

@@ -164,6 +164,7 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const method = (options?.method ?? 'GET').toUpperCase()
+  const isMultipart = typeof FormData !== 'undefined' && options?.body instanceof FormData
   const csrfHeaders: Record<string, string> = {}
   if (MUTATING_METHODS.has(method)) {
     const token = getCsrfToken()
@@ -174,7 +175,7 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
     // Send the HttpOnly session cookie with every request.
     credentials: 'include',
     headers: {
-      'Content-Type': 'application/json',
+      ...(isMultipart ? {} : { 'Content-Type': 'application/json' }),
       ...csrfHeaders,
       ...options?.headers,
     },
@@ -255,12 +256,11 @@ export async function downloadCsv(path: string, filename: string): Promise<void>
   await downloadFile(path, filename, 'CSV の出力に失敗しました。もう一度お試しください。')
 }
 
-/** 認証 cookie を付けて binary response を取得し、指定ファイル名で保存する。 */
-export async function downloadFile(
+/** 認証 cookie を付けて binary response を取得する。 */
+export async function fetchFileBlob(
   path: string,
-  filename: string,
   fallbackError = 'ファイルのダウンロードに失敗しました。もう一度お試しください。',
-): Promise<void> {
+): Promise<Blob> {
   const res = await fetch(`${API_URL}${path}`, { credentials: 'include' })
   if (!res.ok) {
     let message = fallbackError
@@ -272,7 +272,16 @@ export async function downloadFile(
     }
     throw new Error(message)
   }
-  const blob = await res.blob()
+  return res.blob()
+}
+
+/** 認証 cookie を付けて binary response を取得し、指定ファイル名で保存する。 */
+export async function downloadFile(
+  path: string,
+  filename: string,
+  fallbackError = 'ファイルのダウンロードに失敗しました。もう一度お試しください。',
+): Promise<void> {
+  const blob = await fetchFileBlob(path, fallbackError)
   downloadBlob(blob, filename)
 }
 
