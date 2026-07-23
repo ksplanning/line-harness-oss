@@ -256,7 +256,7 @@ function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): Unan
  * 4. JS で各 incoming を判定: 将来行は永続 marker、過去行は応答証拠または raw keyword
  *    match を使う。マッチしない最新 incoming を preview にし、全部マッチした thread を除外。
  */
-async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
+export async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
   const candidatesResult = await db.prepare(CANDIDATES_SQL).all<RawCandidateRow>();
   const candidates = candidatesResult.results ?? [];
   if (candidates.length === 0) return [];

@@ -22,6 +22,7 @@ import {
   FaqDraftReviewError,
   listInlineAiFaqDrafts,
 } from '../services/faq-draft-review.js';
+import { getUnansweredFriendIds } from '../services/unanswered-inbox.js';
 
 const chats = new Hono<Env>();
 
@@ -195,10 +196,8 @@ chats.get('/api/chats', async (c) => {
     const unansweredOnly =
       c.req.query('unansweredOnly') === 'true' || c.req.query('unansweredOnly') === '1';
 
-    let unansweredIds: Set<string> | null = null;
+    const unansweredIds = await getUnansweredFriendIds(c.env.DB);
     if (unansweredOnly) {
-      const { getUnansweredFriendIds } = await import('../services/unanswered-inbox.js');
-      unansweredIds = await getUnansweredFriendIds(c.env.DB);
       // 空 Set のとき = 未対応ゼロ。早期 return で空配列を返す。
       if (unansweredIds.size === 0) {
         return c.json({ success: true, data: [] });
@@ -348,6 +347,7 @@ chats.get('/api/chats', async (c) => {
       operatorId: ch.operator_id,
       status: ch.status,
       notes: ch.notes,
+      isUnanswered: unansweredIds.has(ch.friend_id as string),
       lastMessageAt: ch.last_message_at,
       lastMessageContent: ch.last_message_content || null,
       lastMessageDirection: ch.last_message_direction || null,
@@ -356,8 +356,8 @@ chats.get('/api/chats', async (c) => {
       updatedAt: ch.updated_at,
     }));
 
-    if (unansweredIds) {
-      data = data.filter((row) => unansweredIds!.has(row.id));
+    if (unansweredOnly) {
+      data = data.filter((row) => unansweredIds.has(row.friendId as string));
     }
 
     return c.json({ success: true, data });
@@ -418,6 +418,7 @@ chats.get('/api/chats/:id', async (c) => {
       .all();
     messages.results = (messages.results as Record<string, unknown>[]).reverse();
     const pendingDrafts = await listInlineAiFaqDrafts(c.env.DB, resolvedFriendId);
+    const isUnanswered = (await getUnansweredFriendIds(c.env.DB)).has(resolvedFriendId);
 
     return c.json({
       success: true,
@@ -428,6 +429,7 @@ chats.get('/api/chats/:id', async (c) => {
         friendPictureUrl: friend?.picture_url || null,
         operatorId,
         status,
+        isUnanswered,
         notes,
         lastMessageAt,
         createdAt,

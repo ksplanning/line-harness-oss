@@ -99,6 +99,7 @@ beforeEach(() => {
   raw.exec(`
     CREATE TABLE line_accounts (
       id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '公式アカウント',
       channel_access_token TEXT NOT NULL,
       is_active INTEGER NOT NULL DEFAULT 1
     );
@@ -107,7 +108,8 @@ beforeEach(() => {
       line_user_id TEXT NOT NULL,
       display_name TEXT,
       picture_url TEXT,
-      line_account_id TEXT
+      line_account_id TEXT,
+      is_following INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE chats (
       id TEXT PRIMARY KEY,
@@ -151,6 +153,13 @@ beforeEach(() => {
       actor_staff_id TEXT NOT NULL,
       action TEXT NOT NULL,
       created_at TEXT NOT NULL
+    );
+    CREATE TABLE auto_replies (
+      id TEXT PRIMARY KEY,
+      keyword TEXT NOT NULL,
+      match_type TEXT NOT NULL,
+      line_account_id TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1
     );
 
     INSERT INTO line_accounts (id, channel_access_token, is_active) VALUES

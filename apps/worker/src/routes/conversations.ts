@@ -1,16 +1,8 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
-import {
-  AUTO_REPLY_HANDLED_SOURCE,
-  AUTO_REPLY_KEEP_UNRESPONDED_SOURCE,
-  AUTO_REPLY_KEYWORD_SOURCE,
-} from '../services/auto-reply-keyword-match.js';
+import { getAllUnansweredRows } from '../services/unanswered-inbox.js';
 
 const conversations = new Hono<Env>();
-
-function operatorUnreadSourcePredicate(column = 'source'): string {
-  return `(${column} IS NULL OR ${column} NOT IN ('postback', '${AUTO_REPLY_KEYWORD_SOURCE}', '${AUTO_REPLY_HANDLED_SOURCE}', '${AUTO_REPLY_KEEP_UNRESPONDED_SOURCE}'))`;
-}
 
 // GET /api/conversations?lineAccountId=&minHoursSince=&maxHoursSince=&limit=&offset=
 conversations.get('/api/conversations', async (c) => {
@@ -23,108 +15,46 @@ conversations.get('/api/conversations', async (c) => {
     const limit = Math.min(Number(url.searchParams.get('limit') ?? '50'), 200);
     const offset = Number(url.searchParams.get('offset') ?? '0');
 
-    const whereAccount = accountId ? 'AND f.line_account_id = ?' : '';
-    const whereMaxHours =
-      maxHoursSince !== null
-        ? `AND ((strftime('%s', 'now') - strftime('%s', li.at)) / 3600.0) <= ?`
-        : '';
+    const now = Date.now();
+    const filteredRows = (await getAllUnansweredRows(c.env.DB))
+      .filter((row) => !accountId || row.accountId === accountId)
+      .map((row) => ({
+        row,
+        hoursSince: (now - new Date(row.lastIncomingAt).getTime()) / 3_600_000,
+      }))
+      .filter(({ hoursSince }) => (
+        hoursSince >= minHoursSince
+        && (maxHoursSince === null || hoursSince <= maxHoursSince)
+      ))
+      .sort((a, b) => a.row.lastIncomingAt.localeCompare(b.row.lastIncomingAt));
 
-    const sql = `
-      -- conversations queue (要対応の自発メッセージ) は postback と、webhook が
-      -- 受信時点で登録 keyword / 処理済み固定動作と確定した行を除外する。
-      WITH last_incoming AS (
-        SELECT friend_id, MAX(created_at) AS at
-        FROM messages_log
-        WHERE direction = 'incoming'
-          AND ${operatorUnreadSourcePredicate()}
-        GROUP BY friend_id
-      ),
-      last_human AS (
-        SELECT friend_id, MAX(created_at) AS at
-        FROM messages_log
-        WHERE direction = 'outgoing' AND source = 'manual'
-        GROUP BY friend_id
-      ),
-      latest_msg AS (
-        SELECT ml.friend_id, ml.content, ml.message_type
-        FROM messages_log ml
-        INNER JOIN (
-          SELECT friend_id, MAX(created_at) AS mx
-          FROM messages_log
-          WHERE direction = 'incoming'
-            AND ${operatorUnreadSourcePredicate()}
-          GROUP BY friend_id
-        ) lm ON lm.friend_id = ml.friend_id AND lm.mx = ml.created_at
-        WHERE ml.direction = 'incoming'
-          AND ${operatorUnreadSourcePredicate('ml.source')}
-      )
-      SELECT
-        f.id AS friend_id,
-        f.line_user_id,
-        f.display_name,
-        f.line_account_id,
-        la.name AS line_account_name,
-        li.at AS last_incoming_at,
-        (strftime('%s', 'now') - strftime('%s', li.at)) / 3600.0 AS hours_since,
-        substr(lm.content, 1, 80) AS last_incoming_preview,
-        lm.message_type AS last_incoming_type
-      FROM friends f
-      LEFT JOIN line_accounts la ON la.id = f.line_account_id
-      INNER JOIN last_incoming li ON li.friend_id = f.id
-      LEFT JOIN last_human lh ON lh.friend_id = f.id
-      LEFT JOIN latest_msg lm ON lm.friend_id = f.id
-      WHERE f.is_following = 1
-        AND (lh.at IS NULL OR lh.at < li.at)
-        AND ((strftime('%s', 'now') - strftime('%s', li.at)) / 3600.0) >= ?
-        ${whereMaxHours}
-        ${whereAccount}
-      ORDER BY li.at ASC
-      LIMIT ? OFFSET ?
-    `;
+    const total = filteredRows.length;
+    const pageRows = filteredRows.slice(offset, offset + limit);
+    const friendIds = pageRows.map(({ row }) => row.friendId);
 
-    const bindings: (string | number)[] = [minHoursSince];
-    if (maxHoursSince !== null) bindings.push(maxHoursSince);
-    if (accountId) bindings.push(accountId);
-    bindings.push(limit, offset);
-
-    const { results } = await c.env.DB.prepare(sql)
-      .bind(...bindings)
-      .all();
-
-    // total count
-    const countSql = `
-      WITH last_incoming AS (
-        SELECT friend_id, MAX(created_at) AS at FROM messages_log
-        WHERE direction = 'incoming'
-          AND ${operatorUnreadSourcePredicate()}
-        GROUP BY friend_id
-      ),
-      last_human AS (
-        SELECT friend_id, MAX(created_at) AS at FROM messages_log
-        WHERE direction = 'outgoing' AND source = 'manual' GROUP BY friend_id
-      )
-      SELECT COUNT(*) AS total FROM friends f
-      INNER JOIN last_incoming li ON li.friend_id = f.id
-      LEFT JOIN last_human lh ON lh.friend_id = f.id
-      WHERE f.is_following = 1
-        AND (lh.at IS NULL OR lh.at < li.at)
-        AND ((strftime('%s', 'now') - strftime('%s', li.at)) / 3600.0) >= ?
-        ${whereMaxHours}
-        ${whereAccount}
-    `;
-    const countBindings: (string | number)[] = [minHoursSince];
-    if (maxHoursSince !== null) countBindings.push(maxHoursSince);
-    if (accountId) countBindings.push(accountId);
-
-    const countRow = await c.env.DB.prepare(countSql)
-      .bind(...countBindings)
-      .first<{ total: number }>();
-
-    // tags lookup (friend_id -> tag names)
-    const friendIds = results.map((r) => (r as { friend_id: string }).friend_id);
+    const friendMetadata = new Map<string, {
+      line_user_id: string;
+      line_account_name: string | null;
+    }>();
     const tagMap: Record<string, string[]> = {};
     if (friendIds.length > 0) {
       const placeholders = friendIds.map(() => '?').join(',');
+      const friendRows = await c.env.DB.prepare(
+        `SELECT f.id AS friend_id, f.line_user_id, la.name AS line_account_name
+         FROM friends f
+         LEFT JOIN line_accounts la ON la.id = f.line_account_id
+         WHERE f.id IN (${placeholders})`,
+      )
+        .bind(...friendIds)
+        .all<{
+          friend_id: string;
+          line_user_id: string;
+          line_account_name: string | null;
+        }>();
+      for (const row of friendRows.results) {
+        friendMetadata.set(row.friend_id, row);
+      }
+
       const tagRows = await c.env.DB.prepare(
         `SELECT ft.friend_id, t.name FROM friend_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.friend_id IN (${placeholders})`,
       )
@@ -135,33 +65,23 @@ conversations.get('/api/conversations', async (c) => {
       }
     }
 
-    const items = results.map((r) => {
-      const row = r as {
-        friend_id: string;
-        line_user_id: string;
-        display_name: string | null;
-        line_account_id: string | null;
-        line_account_name: string | null;
-        last_incoming_at: string;
-        hours_since: number;
-        last_incoming_preview: string | null;
-        last_incoming_type: string | null;
-      };
+    const items = pageRows.map(({ row, hoursSince }) => {
+      const metadata = friendMetadata.get(row.friendId);
       return {
-        friendId: row.friend_id,
-        lineUserId: row.line_user_id,
-        displayName: row.display_name,
-        lineAccountId: row.line_account_id,
-        lineAccountName: row.line_account_name,
-        lastIncomingAt: row.last_incoming_at,
-        hoursSince: Math.round(row.hours_since * 10) / 10,
-        lastIncomingPreview: row.last_incoming_preview,
-        lastIncomingType: row.last_incoming_type,
-        tags: tagMap[row.friend_id] ?? [],
+        friendId: row.friendId,
+        lineUserId: metadata?.line_user_id ?? '',
+        displayName: row.displayName,
+        lineAccountId: row.accountId,
+        lineAccountName: metadata?.line_account_name ?? null,
+        lastIncomingAt: row.lastIncomingAt,
+        hoursSince: Math.round(hoursSince * 10) / 10,
+        lastIncomingPreview: Array.from(row.lastIncomingContent).slice(0, 80).join(''),
+        lastIncomingType: row.lastIncomingType,
+        tags: tagMap[row.friendId] ?? [],
       };
     });
 
-    return c.json({ success: true, data: { total: countRow?.total ?? 0, items } });
+    return c.json({ success: true, data: { total, items } });
   } catch (err) {
     console.error('GET /api/conversations error:', err);
     return c.json({ success: false, error: String(err) }, 500);
