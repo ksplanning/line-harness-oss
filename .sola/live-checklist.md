@@ -43,6 +43,85 @@
 - 結果（PASS / FAIL / BLOCKED）と理由:
 
 ---
+
+# friend-stats-display — host closer 実機チェック
+
+## 画面の数字が表すもの
+
+- 友だち総数: 対象 LINE アカウントに属する `friends` の全行。
+- ブロック数: この管理画面で現在フォロー解除中と記録された行（`is_following = 0`）。LINE公式側のブロック集計とは反映時刻などで差が出る場合がある。
+- 一斉送信可能数: 現在フォロー中の行（`is_following = 1`）。従来の `friendCount` と同じ配信対象の定義。
+- 友だち登録推移: `friends.created_at` をJSTの日付へそろえた、管理画面への初回登録数。過去の有効友だち総数やLINE上で実際に追加した日の履歴ではない。フォロワー取込分は取込日として数える。
+
+## 実行条件と安全境界
+
+- [ ] 査読済み revision を trusted host の確認環境へ反映し、migration `140_friend_stats_index.sql` が対象 D1 に適用済みであることを確認する。
+- [ ] D1 操作は下記の `SELECT` だけに限定する。`INSERT` / `UPDATE` / `DELETE` や本番データの補正は行わない。
+- [ ] LINE配信、個別返信、シナリオ、テスト送信、友だちの追加・ブロック操作は行わず、LINE送信0件を維持する。
+- [ ] token、key、cookie、完全なLINE user ID、個人名をコマンド出力・スクリーンショット・結果欄へ残さない。
+
+## 3値をD1と照合する
+
+1. [ ] `/accounts` を開き、照合する実テナントの LINE アカウントを1つ選ぶ。秘密値を含まない account ID と表示名だけを控える。
+2. [ ] trusted host から対象 D1 へ、account ID を bind した次の読取専用集計を実行する。
+
+   ```sql
+   SELECT
+     COUNT(*) AS total,
+     COALESCE(SUM(CASE WHEN is_following = 0 THEN 1 ELSE 0 END), 0) AS blocked,
+     COALESCE(SUM(CASE WHEN is_following = 1 THEN 1 ELSE 0 END), 0) AS sendable
+   FROM friends
+   WHERE line_account_id = ?;
+   ```
+
+3. [ ] 画面の「友だち総数 / ブロック数 / 一斉送信可能数」が、D1 の `total / blocked / sendable` と1件単位で一致することを確認する。
+4. [ ] 画面内に「ブロック数は現在フォローしていない友だち」「一斉送信可能数は現在フォロー中」という定義と、LINE公式側とは差が出る場合がある旨が表示されることを確認する。
+5. [ ] 同じカードの「配信中」「今月送信」と「LINE公式の送信数（最大・使用・残り）」が引き続き表示され、取得エラーになっていないことを確認する。
+
+## 登録推移を照合する
+
+1. [ ] 初期表示が「30日」で、当日を含む30本の日次バー、期間の開始日・終了日、期間中の登録合計が表示されることを確認する。
+2. [ ] D1 で対象 account の直近30日を次の読取専用集計で確認し、登録がある日を最低1日選ぶ。明示的なUTC/offset付き日時だけJSTへ変換し、JSTとして保存済みの日時は保存日を使う。
+
+   ```sql
+   WITH normalized AS (
+     SELECT CASE
+       WHEN created_at LIKE '%Z'
+         OR created_at GLOB '*[+-][0-9][0-9]:[0-9][0-9]'
+       THEN date(created_at, '+9 hours')
+       ELSE substr(created_at, 1, 10)
+     END AS day
+     FROM friends
+     WHERE line_account_id = ?
+   )
+   SELECT day, COUNT(*) AS registrations
+   FROM normalized
+   WHERE day BETWEEN date('now', '+9 hours', '-29 days')
+                 AND date('now', '+9 hours')
+   GROUP BY day
+   ORDER BY day;
+   ```
+
+3. [ ] 選んだ日のバーの `title`（またはブラウザ上のツールチップ）が `YYYY-MM-DD: N人登録` となり、D1 の `day / registrations` と一致することを確認する。登録0日のバーも抜けずに並ぶことを確認する。
+4. [ ] 「90日」を押し、`GET /api/line-accounts/{id}/friend-trend?days=90` が200を返し、ボタンが選択状態になり、当日を含む90日表示へ切り替わることを確認する。
+5. [ ] ページを再読込し、3値・30日グラフ・既存の配信数表示が再び表示されることを確認する。表示確認だけでLINE送信が0件のままであることを記録する。
+
+## 実測結果
+
+- 実施日時（JST）:
+- 査読済み revision / deploy revision / trusted host:
+- tenant / LINE account（個人情報を書かない）:
+- migration 140 適用確認:
+- D1 `total / blocked / sendable`:
+- 画面「友だち総数 / ブロック数 / 一斉送信可能数」:
+- 30日照合日と D1 / バーの登録数:
+- 30日バー本数 / 90日バー本数 / API status:
+- 既存「配信中 / 今月送信 / LINE公式の送信数」の表示:
+- LINE送信数（0）/ 本番データ書込数（0）:
+- 証跡（秘密値・個人情報を除いたスクリーンショット名 / request id）:
+- 結果（PASS / FAIL / BLOCKED）と理由:
+
+---
 # inquiry-console — host closer 実測チェック（2026-07-23）
 
 ## 目的と安全境界
