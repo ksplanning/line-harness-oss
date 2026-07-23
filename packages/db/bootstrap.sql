@@ -575,6 +575,14 @@ CREATE TABLE formaloo_forms (
   definition_json       TEXT NOT NULL DEFAULT '{}',
   on_submit_tag_id      TEXT REFERENCES tags (id) ON DELETE SET NULL,
   on_submit_scenario_id TEXT REFERENCES scenarios (id) ON DELETE SET NULL,
+  on_submit_actions_json TEXT DEFAULT NULL
+                         CHECK (
+                           on_submit_actions_json IS NULL
+                           OR (
+                             json_valid(on_submit_actions_json)
+                             AND json_type(on_submit_actions_json) = 'array'
+                           )
+                         ),
   submit_message        TEXT,
   submit_count          INTEGER NOT NULL DEFAULT 0,
   deleted               INTEGER NOT NULL DEFAULT 0,

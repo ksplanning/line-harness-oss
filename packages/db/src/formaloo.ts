@@ -16,6 +16,7 @@ export interface FormalooForm {
   definition_json: string;
   on_submit_tag_id: string | null;
   on_submit_scenario_id: string | null;
+  on_submit_actions_json: string | null;
   submit_message: string | null;
   submit_count: number;
   deleted: number;
@@ -671,6 +672,8 @@ export async function saveFormalooDefinition(
     editMailFieldSlug?: string | null;
     // row-status-friend-sync: canonical JSON array。present-key 更新 (未指定は変えない)。
     friendMetadataMappingsJson?: string;
+    // form-submit-actions: ordered canonical JSON array。NULL は legacy on_submit_tag_id fallback。
+    onSubmitActionsJson?: string | null;
     // internal renderer: definition_json と同じ UPDATE で draft を確定し、公開中の定義差替えを防ぐ。
     builderStatus?: 'draft' | 'in_review' | 'published';
   },
@@ -724,6 +727,10 @@ export async function saveFormalooDefinition(
     sets.push('friend_metadata_mappings_json = ?');
     vals.push(params.friendMetadataMappingsJson);
   }
+  if (params.onSubmitActionsJson !== undefined) {
+    sets.push('on_submit_actions_json = ?');
+    vals.push(params.onSubmitActionsJson);
+  }
   if (params.builderStatus !== undefined) {
     sets.push('builder_status = ?');
     vals.push(params.builderStatus);
@@ -745,6 +752,7 @@ export async function updateFormalooForm(
     allowBranchEdit?: number;
     allowEditMail?: number;
     editMailFieldSlug?: string | null;
+    onSubmitActionsJson?: string | null;
   },
 ): Promise<boolean> {
   const sets = [
@@ -775,6 +783,10 @@ export async function updateFormalooForm(
   if (params.editMailFieldSlug !== undefined) {
     sets.push('edit_mail_field_slug = ?');
     vals.push(params.editMailFieldSlug);
+  }
+  if (params.onSubmitActionsJson !== undefined) {
+    sets.push('on_submit_actions_json = ?');
+    vals.push(params.onSubmitActionsJson);
   }
   const result = await db.prepare(
     `UPDATE formaloo_forms SET ${sets.join(', ')}

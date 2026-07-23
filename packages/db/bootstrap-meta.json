@@ -122,7 +122,8 @@
     "134_email_sender_settings.sql",
     "135_internal_form_submission_external_edit_changes.sql",
     "136_staff_notification_destinations.sql",
-    "137_inquiry_console.sql"
+    "137_inquiry_console.sql",
+    "138_form_submit_actions.sql"
   ],
-  "migrationCount": 123
+  "migrationCount": 124
 }
