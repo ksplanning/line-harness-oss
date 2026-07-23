@@ -671,6 +671,80 @@ describe('Sheets connections DB helper', () => {
     });
   });
 
+  test('preserves the first error time through retries and keeps an alert pending until success is reported', async () => {
+    const created = await createSheetsConnection(db, {
+      lineAccountId: 'acc-1', formId: 'friends-alert', spreadsheetId: 'sheet-alert',
+      sheetName: '障害監視', syncDirection: 'bidirectional',
+    });
+    const startedAt = '2026-07-23T10:00:00.000+09:00';
+    const alertedAt = '2026-07-23T10:15:00.000+09:00';
+    const recoveredAt = '2026-07-23T10:25:00.000+09:00';
+
+    await friendLedgerDb.updateSheetsSyncStatus(db, 'acc-1', created.id, {
+      status: 'error', lastSyncAt: startedAt, warning: '接続に失敗しました', errorCode: 'failed',
+    });
+    await friendLedgerDb.updateSheetsSyncStatus(db, 'acc-1', created.id, {
+      status: 'running', lastSyncAt: '2026-07-23T10:05:00.000+09:00', warning: null, errorCode: null,
+    });
+    await friendLedgerDb.updateSheetsSyncStatus(db, 'acc-1', created.id, {
+      status: 'error', lastSyncAt: '2026-07-23T10:10:00.000+09:00',
+      warning: '接続に失敗しました', errorCode: 'failed',
+    });
+    const alertState = () => raw.prepare(`SELECT sync_error_started_at, sync_alerted_at,
+      sync_alert_claimed_at, sync_recovery_pending_at
+      FROM sheets_connections WHERE id = ?`).get(created.id);
+    expect(alertState()).toEqual({
+      sync_error_started_at: startedAt,
+      sync_alerted_at: null,
+      sync_alert_claimed_at: null,
+      sync_recovery_pending_at: null,
+    });
+
+    raw.prepare('UPDATE sheets_connections SET sync_alerted_at = ? WHERE id = ?')
+      .run(alertedAt, created.id);
+    await friendLedgerDb.updateSheetsSyncStatus(db, 'acc-1', created.id, {
+      status: 'running', lastSyncAt: '2026-07-23T10:20:00.000+09:00', warning: null, errorCode: null,
+    });
+    expect(alertState()).toEqual({
+      sync_error_started_at: startedAt,
+      sync_alerted_at: alertedAt,
+      sync_alert_claimed_at: null,
+      sync_recovery_pending_at: null,
+    });
+
+    await friendLedgerDb.updateSheetsSyncStatus(db, 'acc-1', created.id, {
+      status: 'success', lastSyncAt: recoveredAt, warning: null, errorCode: null,
+    });
+    expect(alertState()).toEqual({
+      sync_error_started_at: null,
+      sync_alerted_at: alertedAt,
+      sync_alert_claimed_at: null,
+      sync_recovery_pending_at: recoveredAt,
+    });
+
+    await friendLedgerDb.updateSheetsSyncStatus(db, 'acc-1', created.id, {
+      status: 'error', lastSyncAt: '2026-07-23T10:30:00.000+09:00',
+      warning: '別の同期失敗です', errorCode: 'failed_again',
+    });
+    expect(alertState()).toEqual({
+      sync_error_started_at: '2026-07-23T10:30:00.000+09:00',
+      sync_alerted_at: null,
+      sync_alert_claimed_at: null,
+      sync_recovery_pending_at: recoveredAt,
+    });
+
+    await friendLedgerDb.updateSheetsSyncStatus(db, 'acc-1', created.id, {
+      status: 'warning', lastSyncAt: '2026-07-23T10:35:00.000+09:00',
+      warning: '一部を同期できませんでした', errorCode: 'partial',
+    });
+    expect(alertState()).toEqual({
+      sync_error_started_at: null,
+      sync_alerted_at: null,
+      sync_alert_claimed_at: null,
+      sync_recovery_pending_at: null,
+    });
+  });
+
   test('lists all active connections across accounts with a hard caller-supplied bound', async () => {
     const first = await createSheetsConnection(db, {
       lineAccountId: 'acc-1', formId: 'friends-a', spreadsheetId: 'sheet-a',

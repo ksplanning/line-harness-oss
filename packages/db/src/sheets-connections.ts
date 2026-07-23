@@ -771,7 +771,27 @@ export async function updateSheetsSyncStatus(
   const result = await db.prepare(
     `UPDATE sheets_connections
      SET last_sync_at = ?, last_sync_status = ?, last_sync_warning = ?,
-         last_sync_error_code = ?
+         last_sync_error_code = ?,
+         sync_error_started_at = CASE
+           WHEN ? = 'error' THEN COALESCE(sync_error_started_at, ?)
+           WHEN ? IN ('idle', 'warning', 'success') THEN NULL
+           ELSE sync_error_started_at
+         END,
+         sync_alerted_at = CASE
+           WHEN ? IN ('idle', 'warning') THEN NULL
+           WHEN ? = 'error' AND sync_recovery_pending_at IS NOT NULL THEN NULL
+           ELSE sync_alerted_at
+         END,
+         sync_alert_claimed_at = CASE
+           WHEN ? IN ('idle', 'warning') THEN NULL
+           ELSE sync_alert_claimed_at
+         END,
+         sync_recovery_pending_at = CASE
+           WHEN ? = 'success' AND sync_alerted_at IS NOT NULL
+             THEN COALESCE(sync_recovery_pending_at, ?)
+           WHEN ? IN ('idle', 'warning') THEN NULL
+           ELSE sync_recovery_pending_at
+         END
      WHERE id = ? AND line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
        AND (
          ? IS NULL OR (
@@ -784,6 +804,15 @@ export async function updateSheetsSyncStatus(
     input.status,
     input.warning,
     input.errorCode,
+    input.status,
+    input.lastSyncAt,
+    input.status,
+    input.status,
+    input.status,
+    input.status,
+    input.status,
+    input.lastSyncAt,
+    input.status,
     id,
     lineAccountId,
     lease?.token ?? null,
