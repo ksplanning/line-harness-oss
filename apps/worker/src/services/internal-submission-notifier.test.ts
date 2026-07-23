@@ -171,6 +171,7 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
       expect.objectContaining({ FORM_EDIT_MAIL_ENABLED: 'true' }),
       expect.objectContaining({
         to: 'hanako@example.test',
+        lineAccountId: 'account-1',
         idempotencyKey: 'internal-form-notification/ifs-1',
       }),
     );
@@ -304,6 +305,7 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
       expect.objectContaining({ FORM_EDIT_MAIL_ENABLED: 'true' }),
       expect.objectContaining({
         to: 'hanako@example.test',
+        lineAccountId: 'account-1',
         subject: '【参加申込】回答内容のご確認',
         text: expect.stringMatching(/山田花子[\s\S]+https:\/\/worker\.example\.test\/ife\//),
         idempotencyKey: 'internal-form-notification/ifs-1',

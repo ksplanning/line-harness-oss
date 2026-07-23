@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildEditMailMessage, sendEditMail } from './edit-mail-sender.js';
 
+const dbMocks = vi.hoisted(() => ({
+  getEmailSenderSettings: vi.fn(),
+}));
+
+vi.mock('@line-crm/db', () => ({
+  getEmailSenderSettings: dbMocks.getEmailSenderSettings,
+}));
+
 describe('sendEditMail', () => {
   const input = {
     to: 'recipient@example.test',
@@ -85,6 +93,122 @@ describe('sendEditMail', () => {
     });
     expect(consoleError).not.toHaveBeenCalled();
     expect(consoleWarn).not.toHaveBeenCalled();
+  });
+
+  it('認証済みドメインならLINEアカウントの差出人名・アドレスを使う', async () => {
+    dbMocks.getEmailSenderSettings.mockResolvedValueOnce({
+      lineAccountId: 'account-1',
+      senderEmail: 'notice@brand.example',
+      senderName: 'ブランド受付',
+      senderDomain: 'brand.example',
+      resendDomainId: 'domain-1',
+      resendDomainStatus: 'verified',
+      dnsRecords: [],
+      domainCheckedAt: '2026-07-23T12:00:00+09:00',
+      createdAt: '2026-07-23T11:00:00+09:00',
+      updatedAt: '2026-07-23T12:00:00+09:00',
+    });
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ id: 'email_custom' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await sendEditMail({
+      DB: {} as D1Database,
+      FORM_EDIT_MAIL_ENABLED: 'true',
+      RESEND_API_KEY: 'resend-secret',
+      FORM_EDIT_MAIL_FROM: '既定 <default@example.test>',
+    }, { ...input, lineAccountId: 'account-1' }, fetcher);
+
+    expect(dbMocks.getEmailSenderSettings).toHaveBeenCalledWith(expect.anything(), 'account-1');
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)).from)
+      .toBe('ブランド受付 <notice@brand.example>');
+  });
+
+  it('認証済みで差出人名が空ならアドレスだけを使う', async () => {
+    dbMocks.getEmailSenderSettings.mockResolvedValueOnce({
+      lineAccountId: 'account-1',
+      senderEmail: 'notice@brand.example',
+      senderName: null,
+      senderDomain: 'brand.example',
+      resendDomainId: 'domain-1',
+      resendDomainStatus: 'verified',
+      dnsRecords: [],
+      domainCheckedAt: null,
+      createdAt: '2026-07-23T11:00:00+09:00',
+      updatedAt: '2026-07-23T11:00:00+09:00',
+    });
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ id: 'email_custom' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await sendEditMail({
+      DB: {} as D1Database,
+      FORM_EDIT_MAIL_ENABLED: 'true',
+      RESEND_API_KEY: 'resend-secret',
+      FORM_EDIT_MAIL_FROM: 'default@example.test',
+    }, { ...input, lineAccountId: 'account-1' }, fetcher);
+
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)).from)
+      .toBe('notice@brand.example');
+  });
+
+  it.each([
+    ['pending', 'brand.example', 'notice@brand.example'],
+    ['failed', 'brand.example', 'notice@brand.example'],
+    ['verified', 'other.example', 'notice@brand.example'],
+    ['verified', 'brand.example', 'invalid-address'],
+  ])(
+    '未認証・ドメイン不一致・不正アドレスは既定差出人へfallbackする (%s)',
+    async (resendDomainStatus, senderDomain, senderEmail) => {
+      dbMocks.getEmailSenderSettings.mockResolvedValueOnce({
+        lineAccountId: 'account-1',
+        senderEmail,
+        senderName: 'ブランド受付',
+        senderDomain,
+        resendDomainId: 'domain-1',
+        resendDomainStatus,
+        dnsRecords: [],
+        domainCheckedAt: null,
+        createdAt: '2026-07-23T11:00:00+09:00',
+        updatedAt: '2026-07-23T11:00:00+09:00',
+      });
+      const fetcher = vi.fn(async () => new Response(JSON.stringify({ id: 'email_fallback' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+
+      await sendEditMail({
+        DB: {} as D1Database,
+        FORM_EDIT_MAIL_ENABLED: 'true',
+        RESEND_API_KEY: 'resend-secret',
+        FORM_EDIT_MAIL_FROM: '既定 <default@example.test>',
+      }, { ...input, lineAccountId: 'account-1' }, fetcher);
+
+      expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)).from)
+        .toBe('既定 <default@example.test>');
+    },
+  );
+
+  it('設定DBの読取失敗でも送信を止めず既定差出人へfallbackする', async () => {
+    dbMocks.getEmailSenderSettings.mockRejectedValueOnce(new Error('secret database detail'));
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ id: 'email_fallback' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await sendEditMail({
+      DB: {} as D1Database,
+      FORM_EDIT_MAIL_ENABLED: 'true',
+      RESEND_API_KEY: 'resend-secret',
+      FORM_EDIT_MAIL_FROM: 'default@example.test',
+    }, { ...input, lineAccountId: 'account-1' }, fetcher);
+
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)).from)
+      .toBe('default@example.test');
+    expect(consoleError).not.toHaveBeenCalled();
   });
 });
 

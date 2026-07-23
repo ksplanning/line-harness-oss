@@ -217,6 +217,7 @@ async function deliverEmail(
   input: {
     formTitle: string;
     submissionId: string;
+    lineAccountId: string | null;
     recipientEmailFieldId: string | null;
     fields: Parameters<typeof getInternalSubmissionNotificationAnswerFields>[0];
     answers: Record<string, unknown>;
@@ -238,6 +239,7 @@ async function deliverEmail(
     subject: `【${input.formTitle}】回答内容のご確認`,
     text: input.text,
     idempotencyKey: `internal-form-notification/${input.submissionId}`,
+    lineAccountId: input.lineAccountId,
   });
   if (result.status === 'sent') return { status: 'sent' };
   if (result.status === 'failed') return { status: 'failed', reason: result.error };
@@ -298,6 +300,7 @@ export async function notifyInternalFormSubmission(
   const email = await deliverEmail(env, {
     formTitle: form.title,
     submissionId: submission.id,
+    lineAccountId: form.line_account_id,
     recipientEmailFieldId: settings.recipientEmailFieldId,
     fields: definition.definition.fields,
     answers,

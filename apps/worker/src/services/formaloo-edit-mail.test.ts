@@ -62,8 +62,9 @@ const env = (patch: Record<string, unknown> = {}) => ({
 async function seed(opts: { explicitSlug?: string | null; fieldType?: string; recipient?: string } = {}) {
   raw.prepare(
     `INSERT INTO formaloo_forms
-       (id, formaloo_slug, title, definition_json, builder_status, allow_post_edit, allow_edit_mail, edit_mail_field_slug)
-     VALUES ('form-1', 'remote-form', '資料請求', '{"fields":[],"logic":[]}', 'published', 1, 1, ?)`,
+       (id, formaloo_slug, title, definition_json, builder_status, line_account_id,
+        allow_post_edit, allow_edit_mail, edit_mail_field_slug)
+     VALUES ('form-1', 'remote-form', '資料請求', '{"fields":[],"logic":[]}', 'published', 'account-1', 1, 1, ?)`,
   ).run(opts.explicitSlug === undefined ? 'mail-slug' : opts.explicitSlug);
   await saveFormalooDefinition(DB, 'form-1', {
     definitionJson: '{"fields":[],"logic":[]}',
@@ -125,6 +126,7 @@ describe('processFormalooEditMail', () => {
     expect(send).toHaveBeenCalledTimes(1);
     const message = send.mock.calls[0][1];
     expect(message.to).toBe('owner@example.test');
+    expect(message.lineAccountId).toBe('account-1');
     expect(message.text).toContain('受付番号: TRACK-1');
     expect(message.text).toContain('お名前: 山田 太郎');
     expect(message.text).toContain('控えPDF: https://files.example.test/receipt.pdf');

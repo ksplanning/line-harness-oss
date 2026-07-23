@@ -254,6 +254,7 @@ export async function processFormalooEditMail(
       subject: message.subject,
       text: message.text,
       idempotencyKey: providerIdempotencyKey,
+      lineAccountId: form.line_account_id,
     });
   } catch {
     result = { status: 'failed', error: 'resend_network_error', providerIdempotencyKey };
