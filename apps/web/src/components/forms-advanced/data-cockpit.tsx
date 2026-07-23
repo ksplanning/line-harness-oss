@@ -225,7 +225,7 @@ export default function DataCockpit(props: DataCockpitProps) {
           <div className="mt-1 text-2xl font-bold text-gray-900" data-testid="stats-total">{stats?.total ?? total}</div>
         </div>
         <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <div className="text-xs text-gray-500">確認済み</div>
+          <div className="text-xs text-gray-500">LINE連携</div>
           <div className="mt-1 text-2xl font-bold" style={{ color: LINE_GREEN }} data-testid="stats-verified">{stats?.verified ?? 0}</div>
         </div>
         <div className="col-span-2 rounded-lg border border-gray-200 bg-white p-4 sm:col-span-1">
@@ -342,7 +342,7 @@ export default function DataCockpit(props: DataCockpitProps) {
               {isOwner && <th className="w-10 px-3 py-2" />}
               {columns.map((col) => <th key={col} className="px-3 py-2 font-medium">{labelFor(col)}</th>)}
               <th className="px-3 py-2 font-medium">外部編集</th>
-              <th className="px-3 py-2 font-medium">確認状況</th>
+              <th className="px-3 py-2 font-medium">LINE連携</th>
               <th className="px-3 py-2 font-medium">送信日時</th>
             </tr>
           </thead>
@@ -405,11 +405,11 @@ export default function DataCockpit(props: DataCockpitProps) {
                   )}
                 </td>
                 <td className="flex items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">
-                  <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">確認状況:</span>
+                  <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">LINE連携:</span>
                   <span className={r.verified
                     ? 'inline-flex rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700'
                     : 'inline-flex rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600'}>
-                    {r.verified ? '確認済み' : '未確認'}
+                    {r.verified ? '連携済み' : '未連携'}
                   </span>
                 </td>
                 <td className="flex items-center gap-2 whitespace-nowrap py-1 text-xs text-gray-500 sm:table-cell sm:px-3 sm:py-2">

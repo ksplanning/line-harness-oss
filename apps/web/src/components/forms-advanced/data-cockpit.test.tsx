@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * DataCockpit (F-4 / T-D1・T-D2) の component test。
- *   - 統計カード (総回答数/確認済み) 表示
+ *   - 統計カード (総回答数/LINE連携) 表示
  *   - 回答テーブル (answer 列 union) 表示 + 詳細ボタン → onOpenRow
  *   - フリーワード検索 → onQuery(q) / 並び順 → onQuery(sort) / ページング → onQuery(page)
  *   - owner のみ CSV エクスポート/インポート/選択削除。非 owner は非表示 (N-9)
@@ -45,10 +45,11 @@ function base(overrides: Partial<DataCockpitProps> = {}): DataCockpitProps {
 }
 
 describe('DataCockpit — 表示 (T-D1)', () => {
-  it('統計カードに総回答数と確認済みを出す', () => {
+  it('統計カードに総回答数とLINE連携数を出す', () => {
     render(<DataCockpit {...base()} />)
     expect(screen.getByTestId('stats-total').textContent).toBe('40')
     expect(screen.getByTestId('stats-verified').textContent).toBe('12')
+    expect(screen.getAllByText('LINE連携').length).toBeGreaterThan(0)
   })
 
   it('回答テーブルに answer 列 (union) と値を出す', () => {
@@ -88,7 +89,7 @@ describe('DataCockpit — 表示 (T-D1)', () => {
     expect(headers).toContain('質問 3')
     expect(headers).not.toContain('質問 4')
     expect(headers).not.toContain('質問 31')
-    expect(headers).toContain('確認状況')
+    expect(headers).toContain('LINE連携')
     expect(screen.getByText(/残り28項目は.*詳細.*で確認/)).toBeTruthy()
   })
 
@@ -131,7 +132,7 @@ describe('DataCockpit — 表示 (T-D1)', () => {
 })
 
 describe('DataCockpit — 外部編集レビュー (D-3)', () => {
-  const externalRows = [
+  const externalRows: SubmissionRow[] = [
     {
       ...ROWS[0],
       formId: 'form-1',
@@ -146,7 +147,17 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
       externalEditedAt: '2026-07-23T10:01:00+09:00',
       externalEditApprovedAt: null,
     },
-  ] as SubmissionRow[]
+  ]
+
+  it('LINE連携の状態名をデスクトップとスマホ表示へ反映する', () => {
+    render(<DataCockpit {...base({ rows: externalRows, total: 2 })} />)
+
+    const headers = screen.getAllByRole('columnheader').map((header) => header.textContent)
+    expect(headers).toContain('LINE連携')
+    expect(screen.getAllByText('LINE連携:').length).toBeGreaterThan(0)
+    expect(screen.getByText('連携済み')).toBeTruthy()
+    expect(screen.getByText('未連携')).toBeTruthy()
+  })
 
   it('件数付きボタンで未承認だけを絞り込み、検索・ページングにも条件を引き継ぐ', () => {
     const p = base({
@@ -379,7 +390,7 @@ describe('DataCockpit — 列ヘッダー label 化 (T-A2 / form-response-displa
   it('列順は定義 (fieldLabels) 順優先 + 定義外 answer-slug を末尾に', () => {
     render(<DataCockpit {...base({ rows: SLUG_ROWS, total: 1, fieldLabels: FIELD_LABELS })} />)
     // 回答項目ヘッダーのみ (先頭の選択チェック列・末尾の送信日時/操作列を除く)
-    const labels = screen.getAllByRole('columnheader').map((th) => th.textContent).filter((t) => t && !['詳細', '外部編集', '確認状況', '送信日時', ''].includes(t))
+    const labels = screen.getAllByRole('columnheader').map((th) => th.textContent).filter((t) => t && !['詳細', '外部編集', 'LINE連携', '送信日時', ''].includes(t))
     // 定義順 (お名前 → メールアドレス) が先、定義外 (unknownSlug) が末尾。iAGKWaBX は answers 不在で列化しない
     expect(labels).toEqual(['お名前', 'メールアドレス', 'unknownSlug'])
   })
