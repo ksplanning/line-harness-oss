@@ -645,6 +645,20 @@ describe('履歴を主役にする返信コンポーザ', () => {
     fireEvent.click(screen.getByRole('button', { name: '解決済にする' }))
     await waitFor(() => expect(apiMocks.updateChat).toHaveBeenCalledWith('chat-row-1', { status: 'resolved' }))
   })
+
+  it('mobile全画面の詳細内で送信失敗を見せ、本文を再送判断のため残す', async () => {
+    apiMocks.sendChat.mockRejectedValueOnce(new Error('send failed'))
+    await openChat()
+
+    const textarea = screen.getByRole('textbox', { name: 'メッセージを入力' }) as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: '失敗する返信' } })
+    fireEvent.click(screen.getByRole('button', { name: '送信' }))
+
+    const detailPanel = screen.getByTestId('chat-detail-panel')
+    const alert = await within(detailPanel).findByRole('alert')
+    expect(alert.textContent).toContain('メッセージの送信に失敗しました。')
+    expect(textarea.value).toBe('失敗する返信')
+  })
 })
 
 describe('チャット詳細の切替競合', () => {
