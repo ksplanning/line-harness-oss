@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import EmailSenderSettingsPanel from './email-sender-settings-panel'
+import StaffNotificationSettingsPanel from './staff-notification-settings-panel'
 
 interface EmailSenderSettingsDialogProps {
   accountId: string
@@ -86,7 +87,7 @@ export default function EmailSenderSettingsDialog({
               id="email-sender-settings-title"
               className="text-lg font-bold text-gray-900"
             >
-              メール差出人設定
+              メール差出人・スタッフ通知設定
             </h2>
             <p className="mt-1 text-sm text-gray-600">
               対象 LINE アカウント: {accountName}
@@ -96,13 +97,14 @@ export default function EmailSenderSettingsDialog({
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label="メール差出人設定を閉じる"
+            aria-label="メール差出人・スタッフ通知設定を閉じる"
             className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
           >
             閉じる
           </button>
         </div>
         <EmailSenderSettingsPanel accountId={accountId} />
+        <StaffNotificationSettingsPanel accountId={accountId} />
       </div>
     </div>
   )

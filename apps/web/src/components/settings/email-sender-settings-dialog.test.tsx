@@ -6,7 +6,14 @@ vi.mock('./email-sender-settings-panel', () => ({
   default: ({ accountId }: { accountId: string }) => (
     <div>
       <input aria-label="差出人メールアドレス" data-account-id={accountId} />
-      <button type="button">パネル末尾</button>
+    </div>
+  ),
+}))
+
+vi.mock('./staff-notification-settings-panel', () => ({
+  default: ({ accountId }: { accountId: string }) => (
+    <div data-testid="staff-notification-dialog-panel" data-account-id={accountId}>
+      <button type="button">スタッフ通知パネル末尾</button>
     </div>
   ),
 }))
@@ -36,11 +43,18 @@ describe('EmailSenderSettingsDialog', () => {
       </>,
     )
 
-    const close = screen.getByRole('button', { name: 'メール差出人設定を閉じる' })
+    expect(screen.getByRole('dialog', {
+      name: 'メール差出人・スタッフ通知設定',
+    })).toBeTruthy()
+    const close = screen.getByRole('button', {
+      name: 'メール差出人・スタッフ通知設定を閉じる',
+    })
     await waitFor(() => expect(document.activeElement).toBe(close))
     expect(document.body.style.overflow).toBe('hidden')
+    expect(screen.getByTestId('staff-notification-dialog-panel').getAttribute('data-account-id'))
+      .toBe('account-1')
 
-    const last = screen.getByRole('button', { name: 'パネル末尾' })
+    const last = screen.getByRole('button', { name: 'スタッフ通知パネル末尾' })
     last.focus()
     fireEvent.keyDown(document, { key: 'Tab' })
     expect(document.activeElement).toBe(close)
