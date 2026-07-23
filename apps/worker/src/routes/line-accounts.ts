@@ -8,6 +8,9 @@ import {
   updateLineAccountFields,
   updateLineAccountOrder,
   deleteLineAccount,
+  getFriendCountSummary,
+  getFriendRegistrationTrend,
+  jstNow,
 } from '@line-crm/db';
 import type { LineAccount as DbLineAccount } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
@@ -71,9 +74,9 @@ lineAccounts.get('/api/line-accounts', async (c) => {
     // Get stats for all accounts in parallel
     const results = await Promise.all(
       items.map(async (item) => {
-        const [profile, friendCount, scenarioCount, msgCount] = await Promise.all([
+        const [profile, friendCounts, scenarioCount, msgCount] = await Promise.all([
           fetchBotProfile(item.channel_access_token),
-          db.prepare(`SELECT COUNT(*) as count FROM friends WHERE is_following = 1 AND line_account_id = ?`).bind(item.id).first<{ count: number }>(),
+          getFriendCountSummary(db, item.id),
           db.prepare(
             `SELECT COUNT(*) as count FROM friend_scenarios fs
              INNER JOIN friends f ON f.id = fs.friend_id
@@ -92,7 +95,12 @@ lineAccounts.get('/api/line-accounts', async (c) => {
           pictureUrl: profile.pictureUrl || null,
           basicId: profile.basicId || null,
           stats: {
-            friendCount: friendCount?.count ?? 0,
+            // Legacy consumers use friendCount as the broadcastable audience.
+            // Keep that contract while exposing explicit labels for the UI.
+            friendCount: friendCounts.sendable,
+            totalFriendCount: friendCounts.total,
+            blockedFriendCount: friendCounts.blocked,
+            sendableFriendCount: friendCounts.sendable,
             activeScenarios: scenarioCount?.count ?? 0,
             messagesThisMonth: msgCount?.count ?? 0,
           },
@@ -182,6 +190,49 @@ lineAccounts.get('/api/line-accounts/:id/quota', async (c) => {
       success: false,
       error: 'LINEの送信数を取得できませんでした。時間をおいてもう一度お試しください。',
     }, 502);
+  }
+});
+
+// GET /api/line-accounts/:id/friend-trend — system registrations by JST day.
+lineAccounts.get('/api/line-accounts/:id/friend-trend', async (c) => {
+  const id = c.req.param('id');
+  const rawDays = c.req.query('days');
+  if (rawDays !== undefined && rawDays !== '30' && rawDays !== '90') {
+    return c.json({ success: false, error: 'days must be 30 or 90' }, 400);
+  }
+  const periodDays = rawDays === '90' ? 90 : 30;
+
+  try {
+    const account = await getLineAccountById(c.env.DB, id);
+    if (!account) {
+      return c.json({ success: false, error: 'LINE account not found' }, 404);
+    }
+
+    const endDate = jstNow().slice(0, 10);
+    const start = new Date(`${endDate}T00:00:00.000Z`);
+    start.setUTCDate(start.getUTCDate() - (periodDays - 1));
+    const startDate = start.toISOString().slice(0, 10);
+    const points = await getFriendRegistrationTrend(
+      c.env.DB,
+      id,
+      startDate,
+      endDate,
+    );
+
+    return c.json({
+      success: true,
+      data: {
+        lineAccountId: id,
+        periodDays,
+        points,
+      },
+    });
+  } catch (err) {
+    console.error(
+      `GET /api/line-accounts/${id}/friend-trend error:`,
+      err instanceof Error ? err.message : 'unknown',
+    );
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 

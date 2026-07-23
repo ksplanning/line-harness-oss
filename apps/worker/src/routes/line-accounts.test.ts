@@ -13,6 +13,12 @@ const dbMocks = {
   updateLineAccountFields: vi.fn(),
   updateLineAccountOrder: vi.fn(),
   deleteLineAccount: vi.fn(),
+  getFriendCountSummary: vi.fn(),
+  getFriendRegistrationTrend: vi.fn(),
+  jstNow: vi.fn(),
+  getTrafficPoolBySlug: vi.fn(),
+  createTrafficPool: vi.fn(),
+  addPoolAccount: vi.fn(),
 };
 vi.mock('@line-crm/db', () => dbMocks);
 
@@ -78,7 +84,116 @@ const fakeAccount = {
 
 beforeEach(() => {
   for (const fn of Object.values(dbMocks)) fn.mockReset();
+  dbMocks.jstNow.mockReturnValue('2026-07-23T12:00:00.000');
+  dbMocks.getTrafficPoolBySlug.mockResolvedValue(null);
+  dbMocks.createTrafficPool.mockResolvedValue({ id: 'pool-main' });
+  dbMocks.addPoolAccount.mockResolvedValue(undefined);
   lineClientMocks.getFollowersInsight.mockReset();
+});
+
+describe('GET /api/line-accounts friend counts', () => {
+  test('keeps legacy friendCount sendable and exposes total, blocked, and sendable counts', async () => {
+    dbMocks.getLineAccounts.mockResolvedValue([fakeAccount]);
+    dbMocks.getFriendCountSummary.mockResolvedValue({
+      total: 12,
+      blocked: 2,
+      sendable: 10,
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({
+        displayName: 'メインアカウント',
+        pictureUrl: 'https://example.com/account.png',
+        basicId: '@main',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+
+    try {
+      const app = setupApp('owner', makeDbStub({ count: 3 }));
+      const res = await app.request('/api/line-accounts');
+
+      expect(res.status).toBe(200);
+      expect(dbMocks.getFriendCountSummary).toHaveBeenCalledWith(
+        expect.anything(),
+        'acc-1',
+      );
+      const body = (await res.json()) as {
+        success: boolean;
+        data: Array<{
+          stats: {
+            friendCount: number;
+            totalFriendCount: number;
+            blockedFriendCount: number;
+            sendableFriendCount: number;
+          };
+        }>;
+      };
+      expect(body.data[0].stats).toMatchObject({
+        friendCount: 10,
+        totalFriendCount: 12,
+        blockedFriendCount: 2,
+        sendableFriendCount: 10,
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
+describe('GET /api/line-accounts/:id/friend-trend', () => {
+  test.each([
+    { query: '', periodDays: 30, startDate: '2026-06-24' },
+    { query: '?days=90', periodDays: 90, startDate: '2026-04-25' },
+  ])('returns an inclusive $periodDays-day JST trend', async ({
+    query,
+    periodDays,
+    startDate,
+  }) => {
+    dbMocks.getLineAccountById.mockResolvedValue(fakeAccount);
+    dbMocks.getFriendRegistrationTrend.mockResolvedValue([
+      { date: '2026-07-22', registrations: 1 },
+      { date: '2026-07-23', registrations: 2 },
+    ]);
+
+    const app = setupApp('owner');
+    const res = await app.request(`/api/line-accounts/acc-1/friend-trend${query}`);
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getFriendRegistrationTrend).toHaveBeenCalledWith(
+      expect.anything(),
+      'acc-1',
+      startDate,
+      '2026-07-23',
+    );
+    await expect(res.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        lineAccountId: 'acc-1',
+        periodDays,
+        points: [
+          { date: '2026-07-22', registrations: 1 },
+          { date: '2026-07-23', registrations: 2 },
+        ],
+      },
+    });
+  });
+
+  test('rejects unsupported periods without querying friends', async () => {
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts/acc-1/friend-trend?days=31');
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.getFriendRegistrationTrend).not.toHaveBeenCalled();
+  });
+
+  test('returns 404 for an unknown LINE account', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(null);
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts/missing/friend-trend');
+
+    expect(res.status).toBe(404);
+    expect(dbMocks.getFriendRegistrationTrend).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET /api/line-accounts/:id/follower-insight', () => {
