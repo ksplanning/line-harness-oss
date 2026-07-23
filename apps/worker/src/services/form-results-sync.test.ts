@@ -282,6 +282,23 @@ describe('form results sheet — one row per submission', () => {
     expect(ledgerKeys).toEqual(['sub:ifs-001', 'sub:ifs-002']);
   });
 
+  test('clears an old branch column after the answer is removed from answers_json', async () => {
+    await run();
+    raw.prepare(`UPDATE internal_form_submissions SET answers_json = ? WHERE id = 'ifs-001'`)
+      .run(JSON.stringify({ q1: '回答A1' }));
+
+    const result = await run();
+    const q1Column = resultsClient.values[0].indexOf('質問1');
+    const oldBranchColumn = resultsClient.values[0].indexOf('質問2');
+    const row = resultsClient.values.find((value) => value[4] === 'ifs-001');
+
+    expect(result.updatedRows).toBe(1);
+    expect(q1Column).toBeGreaterThan(-1);
+    expect(oldBranchColumn).toBeGreaterThan(-1);
+    expect(row?.[q1Column]).toBe('回答A1');
+    expect(row?.[oldBranchColumn]).toBe('');
+  });
+
   test('writes nothing on an identical retry', async () => {
     await run();
     const writesBefore = resultsClient.writes.length;

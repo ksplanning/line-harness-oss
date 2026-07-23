@@ -466,6 +466,9 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
     }
 
     const merged = storedAnswers;
+    for (const field of resolved.value.definition.fields) {
+      if (!visibleFieldIds.has(field.id)) delete merged[field.id];
+    }
     for (const fieldId of validationInput.editableIds) delete merged[fieldId];
     Object.assign(merged, validation.answers);
     const result = await updateInternalFormSubmissionAnswers(c.env.DB, {

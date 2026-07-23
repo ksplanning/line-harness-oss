@@ -459,9 +459,11 @@ describe('POST /ife/:token', () => {
     expect(error).toHaveBeenCalledWith('Immediate Google Sheets sync after respondent edit failed');
   });
 
-  test('edits only the active W3 logic branch and retains the answer from the branch that became hidden', async () => {
+  test('overwrites with the final W3 logic branch, preserves unknown keys, and reads back only the active answer', async () => {
     seedForm({ definition: conditionalDefinition, allowBranchEdit: 1 });
-    seedSubmission('form-1', { kind: '個人', personal: '佐藤', company: '旧会社名' }, 3);
+    seedSubmission('form-1', {
+      kind: '個人', personal: '佐藤', company: '旧会社名', legacy_unknown: { keep: true },
+    }, 3);
     const signed = await token();
 
     const initial = await app().request(`/ife/${signed}`, {}, bindings());
@@ -492,9 +494,21 @@ describe('POST /ife/:token', () => {
       .get('ifs-1') as { answers_json: string };
     expect(JSON.parse(row.answers_json)).toEqual({
       kind: '法人',
-      personal: '佐藤',
       company: '株式会社テスト',
+      legacy_unknown: { keep: true },
     });
+
+    const readback = await app().request(`/ife/${signed}`, {}, bindings());
+    const readbackHtml = await readback.text();
+    const readbackDocument = new DOMParser().parseFromString(readbackHtml, 'text/html');
+    expect(readback.status).toBe(200);
+    expect(readbackDocument.querySelector<HTMLElement>('[data-field-id="personal"]')?.hidden).toBe(true);
+    expect(readbackDocument.querySelector<HTMLElement>('[data-field-id="company"]')?.hidden).toBe(false);
+    expect(readbackHtml).toContain('name="editVersion" value="4"');
+    expect(readbackHtml).toContain('value="株式会社テスト"');
+    expect(readbackHtml).not.toContain('佐藤');
+    expect(readbackHtml).not.toContain('偽造された非表示値');
+    expect(readbackHtml).not.toContain('旧会社名');
   });
 
   test('allow_branch_edit=0 は forged branch POST を 403 で拒否し回答と版を変えない', async () => {
@@ -516,7 +530,7 @@ describe('POST /ife/:token', () => {
 
   test('validates and saves editable answers with CAS, ignores forged fields, preserves complex answers, and reads back the change', async () => {
     seedForm();
-    seedSubmission();
+    seedSubmission('form-1', { ...originalAnswers, legacy_unknown: { keep: true } });
     const signed = await token();
     const body = new URLSearchParams({
       editVersion: '3',
@@ -554,6 +568,7 @@ describe('POST /ife/:token', () => {
     expect(answers.signature).toBe(originalAnswers.signature);
     expect(answers.matrix).toEqual(originalAnswers.matrix);
     expect(answers.repeat).toEqual(originalAnswers.repeat);
+    expect(answers.legacy_unknown).toEqual({ keep: true });
     expect(answers).not.toHaveProperty('fr_id');
     expect(answers).not.toHaveProperty('friend_id');
     expect(answers).not.toHaveProperty('admin');

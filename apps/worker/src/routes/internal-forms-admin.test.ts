@@ -1480,6 +1480,79 @@ describe('internal answer admin read path', () => {
     expect(stored).toMatchObject({ kind: '法人', company: '株式会社テスト' });
   });
 
+  test('PATCH removes read-only definition answers hidden by the final branch and GET returns the overwritten result', async () => {
+    const branchDefinition = {
+      ...EDITABLE_DEFINITION,
+      logic: [
+        ...EDITABLE_DEFINITION.logic,
+        {
+          id: 'show-attachment', sourceFieldId: 'kind', operator: 'equals', value: '法人',
+          action: 'show', targetFieldId: 'attachment',
+        },
+      ],
+    };
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(branchDefinition), 'internal-form');
+    const original = {
+      name: '二郎',
+      contact: 'two@example.test',
+      kind: '法人',
+      company: '旧会社名',
+      attachment: [{ key: 'private/file.pdf', name: '申込書.pdf' }],
+      signature: 'data:image/png;base64,c2ln',
+      matrix: { 接客: '良い' },
+      repeat: [{ repeat_name: '参加者' }],
+      total: 2,
+      legacy_unknown: { keep: true },
+    };
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify(original), 'sub-2');
+    const context = await internalEditContext('internal-form', 'sub-2');
+
+    const response = await call('PATCH', '/api/forms-advanced/internal-form/rows/sub-2', {
+      ...context,
+      answers: { name: '二郎', contact: 'two@example.test', kind: '個人' },
+    });
+
+    expect(response.status).toBe(200);
+    const savedAnswers = (await response.json() as {
+      data: { answers: Record<string, unknown> };
+    }).data.answers;
+    expect(savedAnswers).toMatchObject({
+      name: '二郎',
+      contact: 'two@example.test',
+      kind: '個人',
+      signature: original.signature,
+      matrix: original.matrix,
+      repeat: original.repeat,
+      total: 2,
+      legacy_unknown: { keep: true },
+    });
+    expect(savedAnswers).not.toHaveProperty('company');
+    expect(savedAnswers).not.toHaveProperty('attachment');
+
+    const storedAnswers = JSON.parse((raw.prepare(
+      'SELECT answers_json FROM internal_form_submissions WHERE id = ?',
+    ).get('sub-2') as { answers_json: string }).answers_json) as Record<string, unknown>;
+    expect(storedAnswers).toEqual(savedAnswers);
+
+    const readback = await call('GET', '/api/forms-advanced/internal-form/rows/sub-2');
+    expect(readback.status).toBe(200);
+    const readbackData = (await readback.json() as {
+      data: {
+        answers: Record<string, unknown>;
+        fields: Array<{ slug: string; visible: boolean; editable: boolean }>;
+      };
+    }).data;
+    expect(readbackData.answers).toEqual(savedAnswers);
+    expect(readbackData.answers).not.toHaveProperty('company');
+    expect(readbackData.answers).not.toHaveProperty('attachment');
+    expect(readbackData.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ slug: 'attachment', visible: false, editable: false }),
+      expect.objectContaining({ slug: 'signature', visible: true, editable: false }),
+    ]));
+  });
+
   test('PATCH rejects a field that stays hidden before and after the edit', async () => {
     raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
       .run(JSON.stringify(EDITABLE_DEFINITION), 'internal-form');

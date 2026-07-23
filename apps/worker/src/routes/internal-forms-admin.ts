@@ -1030,6 +1030,9 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) 
     if (!validation.ok) return c.json({ success: false, error: validation.error }, 400);
 
     const merged = Object.assign(Object.create(null) as Record<string, unknown>, storedAnswers);
+    for (const field of parsed.definition.fields) {
+      if (!visibleFieldIds.has(field.id)) delete merged[field.id];
+    }
     for (const fieldId of validationInput.editableIds) delete merged[fieldId];
     Object.assign(merged, validation.answers);
     const updated = await updateInternalFormSubmissionAnswers(c.env.DB, {
