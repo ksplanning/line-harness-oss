@@ -12,6 +12,7 @@ const view: EmailSenderSettingsView = {
   senderEmail: 'notice@example.com',
   senderName: 'お知らせ係',
   senderDomain: 'example.com',
+  resendDomainId: 'domain_pending',
   domainStatus: 'pending',
   dnsRecords: [{
     record: 'SPF',

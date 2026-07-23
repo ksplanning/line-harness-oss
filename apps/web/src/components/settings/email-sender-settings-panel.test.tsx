@@ -24,6 +24,7 @@ const pendingView = {
   senderEmail: 'notice@example.com',
   senderName: 'お知らせ係',
   senderDomain: 'example.com',
+  resendDomainId: 'domain_pending',
   domainStatus: 'pending',
   dnsRecords: [{
     record: 'SPF',
@@ -49,6 +50,7 @@ const emptyView = {
   senderEmail: null,
   senderName: null,
   senderDomain: null,
+  resendDomainId: null,
   domainStatus: 'not_registered',
   dnsRecords: [],
   usingFallback: false,
@@ -183,6 +185,27 @@ describe('EmailSenderSettingsPanel', () => {
     await waitFor(() => expect(mocks.checkDomain).toHaveBeenCalledWith('account-1'))
     expect(screen.getByTestId('email-sender-domain-status').textContent).toContain('認証済み')
     expect(screen.queryByText('未認証のため既定の差出人で送っています')).toBeNull()
+  })
+
+  test('登録直後の not_started でも resendDomainId があれば認証確認できる', async () => {
+    mocks.get.mockResolvedValueOnce({
+      ...pendingView,
+      domainStatus: 'not_started',
+      dnsRecords: [],
+    })
+    mocks.checkDomain.mockResolvedValueOnce({
+      ...pendingView,
+      domainStatus: 'pending',
+    })
+    render(<EmailSenderSettingsPanel accountId="account-1" />)
+
+    expect((await screen.findByTestId('email-sender-domain-status')).textContent)
+      .toContain('認証待ち')
+    const checkButton = screen.getByRole('button', { name: '認証状態を確認' })
+    expect((checkButton as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(checkButton)
+    await waitFor(() => expect(mocks.checkDomain).toHaveBeenCalledWith('account-1'))
   })
 
   test('アカウント変更時に入力をリセットし、古いアカウントの遅い応答を捨てる', async () => {

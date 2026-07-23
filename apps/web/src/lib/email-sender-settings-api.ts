@@ -14,6 +14,7 @@ export interface EmailSenderSettingsView {
   senderEmail: string | null
   senderName: string | null
   senderDomain: string | null
+  resendDomainId: string | null
   domainStatus: string
   dnsRecords: EmailSenderDnsRecord[]
   usingFallback: boolean

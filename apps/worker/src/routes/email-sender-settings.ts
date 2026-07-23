@@ -21,6 +21,7 @@ interface SenderView {
   senderEmail: string | null;
   senderName: string | null;
   senderDomain: string | null;
+  resendDomainId: string | null;
   domainStatus: string;
   dnsRecords: EmailSenderSettings['dnsRecords'];
   usingFallback: boolean;
@@ -47,6 +48,7 @@ function senderView(settings: EmailSenderSettings | null): SenderView {
       senderEmail: null,
       senderName: null,
       senderDomain: null,
+      resendDomainId: null,
       domainStatus: 'not_started',
       dnsRecords: [],
       usingFallback: false,
@@ -59,6 +61,7 @@ function senderView(settings: EmailSenderSettings | null): SenderView {
     senderEmail: settings.senderEmail,
     senderName: settings.senderName,
     senderDomain: settings.senderDomain,
+    resendDomainId: settings.resendDomainId,
     domainStatus: settings.resendDomainStatus,
     dnsRecords: settings.dnsRecords,
     usingFallback: !customReady,

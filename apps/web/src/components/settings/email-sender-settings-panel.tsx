@@ -21,7 +21,7 @@ function errorMessage(error: unknown): string {
   return body?.error || '操作に失敗しました。入力内容を確認して、もう一度お試しください。'
 }
 
-function domainStatusLabel(status: string): string {
+function domainStatusLabel(status: string, registered: boolean): string {
   switch (status) {
     case 'verified':
       return '認証済み'
@@ -29,8 +29,9 @@ function domainStatusLabel(status: string): string {
       return '認証待ち'
     case 'failed':
       return '認証に失敗'
-    case 'not_registered':
     case 'not_started':
+      return registered ? '認証待ち' : 'まだ登録していません'
+    case 'not_registered':
     case 'unregistered':
     case 'none':
       return 'まだ登録していません'
@@ -297,12 +298,7 @@ export default function EmailSenderSettingsPanel({
                 '認証状態を更新しました。',
               )
             }}
-            disabled={
-              busy
-              || !settings?.senderDomain
-              || settings.domainStatus === 'not_started'
-              || settings.domainStatus === 'not_registered'
-            }
+            disabled={busy || !settings?.resendDomainId}
             className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-700 disabled:opacity-50"
           >
             {operation === 'check' ? '確認中...' : '認証状態を確認'}
@@ -315,7 +311,10 @@ export default function EmailSenderSettingsPanel({
         >
           対象ドメイン: {settings?.senderDomain ?? '未設定'}
           {' / '}
-          状態: {domainStatusLabel(settings?.domainStatus ?? '')}
+          状態: {domainStatusLabel(
+            settings?.domainStatus ?? '',
+            Boolean(settings?.resendDomainId),
+          )}
         </div>
 
         {(settings?.dnsRecords.length ?? 0) > 0 && (

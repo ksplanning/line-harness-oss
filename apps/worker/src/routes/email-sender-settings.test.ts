@@ -127,6 +127,7 @@ describe('email sender settings admin route', () => {
         senderEmail: null,
         senderName: null,
         senderDomain: null,
+        resendDomainId: null,
         domainStatus: 'not_started',
         dnsRecords: [],
         usingFallback: false,
@@ -228,6 +229,7 @@ describe('email sender settings admin route', () => {
         senderEmail: 'notice@brand.example',
         senderName: 'ブランド受付',
         senderDomain: 'brand.example',
+        resendDomainId: 'domain_123',
         domainStatus: 'pending',
         dnsRecords: records,
         usingFallback: true,
@@ -386,7 +388,11 @@ describe('email sender settings admin route', () => {
     );
     expect(await response.json()).toMatchObject({
       success: true,
-      data: { domainStatus: 'pending', usingFallback: true },
+      data: {
+        resendDomainId: 'domain_123',
+        domainStatus: 'pending',
+        usingFallback: true,
+      },
     });
   });
 
