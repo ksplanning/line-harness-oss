@@ -55,6 +55,18 @@ describe('isNavVisible', () => {
     })).toBe(false)
   })
 
+  it('/settings は配信設定権限に従う', () => {
+    expect(NAV_FEATURE['/settings']).toBe('broadcast_settings')
+    expect(isNavVisible('/settings', {
+      permissions: ['broadcast_settings'],
+      hasCustomRole: true,
+    })).toBe(true)
+    expect(isNavVisible('/settings', {
+      permissions: ['friend'],
+      hasCustomRole: true,
+    })).toBe(false)
+  })
+
   it('harness-lp-hosting: /lp は analytics 再利用 (T-E2 / permission-map と feature 一致)', () => {
     // 既存 feature_key 'analytics' を再利用 = FEATURE_KEYS 不変。worker permission-map の
     // prefix('lp')→'analytics' と一致させ 2 箇所 drift を防ぐ。

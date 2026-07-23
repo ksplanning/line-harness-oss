@@ -85,6 +85,7 @@ const menuSections = [
     id: 'settings',
     label: '設定',
     items: [
+      { href: '/settings', label: '設定', icon: 'M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z M19.4 15a1.7 1.7 0 00.34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 00-1.88-.34 1.7 1.7 0 00-1.06 1.56V20.3h-3v-.08a1.7 1.7 0 00-1.06-1.56 1.7 1.7 0 00-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 006.6 15a1.7 1.7 0 00-1.56-1.06H5v-3h.04A1.7 1.7 0 006.6 9a1.7 1.7 0 00-.34-1.88l-.06-.06 2.12-2.12.06.06a1.7 1.7 0 001.88.34A1.7 1.7 0 0011.32 3.8V3.7h3v.1a1.7 1.7 0 001.06 1.54 1.7 1.7 0 001.88-.34l.06-.06 2.12 2.12-.06.06A1.7 1.7 0 0019.4 9a1.7 1.7 0 001.56 1.06H21v3h-.04A1.7 1.7 0 0019.4 15z' },
       { href: '/canned-responses', label: 'チャット定型文', icon: 'M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z' },
       { href: '/staff', label: 'スタッフ管理', icon: 'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z' },
       { href: '/settings/formaloo-workspaces', label: 'フォーム連携キー', icon: 'M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z' },
@@ -104,7 +105,9 @@ const COLLAPSIBLE_SECTION_IDS = new Set(
 )
 
 function isNavItemActive(pathname: string, href: string): boolean {
-  return href === '/' ? pathname === '/' : pathname.startsWith(href)
+  return href === '/' || href === '/settings'
+    ? pathname === href
+    : pathname.startsWith(href)
 }
 
 function defaultExpandedSections(pathname: string): Set<string> {

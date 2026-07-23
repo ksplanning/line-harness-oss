@@ -103,6 +103,17 @@ describe('Sidebar セクション折りたたみ', () => {
     expect(screen.queryByRole('link', { name: '一斉配信' })).toBeNull()
   })
 
+  it('/settings では設定セクションを開き、設定ページへのリンクを表示する', () => {
+    mocks.pathname = '/settings'
+
+    render(<Sidebar />)
+
+    expectSectionExpanded('設定', true)
+    const links = screen.getAllByRole('link', { name: '設定' })
+    expect(links).toHaveLength(2)
+    for (const link of links) expect(link.getAttribute('href')).toBe('/settings')
+  })
+
   it('未対応を個別チャット直下に置き、自動化から外して旧URLを維持する', () => {
     mocks.pathname = '/notifications'
 
