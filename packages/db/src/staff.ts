@@ -21,6 +21,8 @@ export interface StaffMember {
   locked_until: string | null;
   // カスタムロール (migration 088 / G64)。NULL = built-in preset (role 列) で従来通り解決。
   role_id: string | null;
+  // 顧客向けテキスト返信の担当者名付与。既定 ON (migration 137)。
+  reply_signature_enabled: number;
 }
 
 export interface CreateStaffInput {
@@ -123,6 +125,23 @@ export async function updateStaffMember(
 
 export async function deleteStaffMember(db: D1Database, id: string): Promise<void> {
   await db.prepare('DELETE FROM staff_members WHERE id = ?').bind(id).run();
+}
+
+export async function setStaffReplySignatureEnabled(
+  db: D1Database,
+  id: string,
+  enabled: boolean,
+): Promise<StaffMember | null> {
+  await db
+    .prepare(
+      `UPDATE staff_members
+          SET reply_signature_enabled = ?,
+              updated_at = ?
+        WHERE id = ?`,
+    )
+    .bind(enabled ? 1 : 0, jstNow(), id)
+    .run();
+  return getStaffById(db, id);
 }
 
 /**

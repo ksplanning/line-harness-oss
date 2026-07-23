@@ -299,7 +299,7 @@ CREATE TABLE chats (
   last_message_at TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, line_account_id TEXT);
+, line_account_id TEXT, assigned_staff_id TEXT, read_at TEXT);
 
 CREATE TABLE conversion_events (
   id                  TEXT PRIMARY KEY,
@@ -962,7 +962,7 @@ CREATE TABLE "messages_log" (
   source              TEXT,
   line_account_id     TEXT,
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, staff_member_id TEXT);
 
 CREATE TABLE notification_rules (
   id           TEXT PRIMARY KEY,
@@ -1461,7 +1461,8 @@ CREATE TABLE staff_members (
   locked_until        TEXT,
   -- カスタムロール (migration 088 / G64)。NULL = built-in preset (role 列) で従来通り解決。
   role_id             TEXT
-);
+, reply_signature_enabled INTEGER NOT NULL DEFAULT 1
+  CHECK (reply_signature_enabled IN (0, 1)));
 
 CREATE TABLE staff_menus (
   staff_id                  TEXT NOT NULL,
@@ -1684,6 +1685,9 @@ CREATE INDEX idx_campaigns_account ON campaigns(account_id);
 
 CREATE INDEX idx_canned_responses_account ON canned_responses(line_account_id);
 
+CREATE INDEX idx_chats_assigned_staff
+  ON chats (assigned_staff_id);
+
 CREATE INDEX idx_chats_friend ON chats (friend_id);
 
 CREATE INDEX idx_chats_operator ON chats (operator_id);
@@ -1873,6 +1877,9 @@ CREATE INDEX idx_messages_log_friend_direction_created ON messages_log (friend_i
 CREATE INDEX idx_messages_log_friend_id ON messages_log (friend_id);
 
 CREATE INDEX idx_messages_log_friend_source ON messages_log (friend_id, source);
+
+CREATE INDEX idx_messages_log_staff_member
+  ON messages_log (staff_member_id);
 
 CREATE INDEX idx_notifications_created ON notifications (created_at);
 

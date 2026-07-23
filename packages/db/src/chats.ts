@@ -15,8 +15,10 @@ export interface ChatRow {
   id: string;
   friend_id: string;
   operator_id: string | null;
+  assigned_staff_id: string | null;
   status: string;
   notes: string | null;
+  read_at: string | null;
   last_message_at: string | null;
   created_at: string;
   updated_at: string;
@@ -110,19 +112,82 @@ export async function createChat(
 export async function updateChat(
   db: D1Database,
   id: string,
-  updates: Partial<{ operatorId: string | null; status: string; notes: string; lastMessageAt: string }>,
+  updates: Partial<{
+    operatorId: string | null;
+    assignedStaffId: string | null;
+    status: string;
+    notes: string;
+    readAt: string | null;
+    lastMessageAt: string;
+  }>,
 ): Promise<void> {
   const sets: string[] = [];
   const values: unknown[] = [];
   if (updates.operatorId !== undefined) { sets.push('operator_id = ?'); values.push(updates.operatorId); }
+  if (updates.assignedStaffId !== undefined) { sets.push('assigned_staff_id = ?'); values.push(updates.assignedStaffId); }
   if (updates.status !== undefined) { sets.push('status = ?'); values.push(updates.status); }
   if (updates.notes !== undefined) { sets.push('notes = ?'); values.push(updates.notes); }
+  if (updates.readAt !== undefined) { sets.push('read_at = ?'); values.push(updates.readAt); }
   if (updates.lastMessageAt !== undefined) { sets.push('last_message_at = ?'); values.push(updates.lastMessageAt); }
   if (sets.length === 0) return;
   sets.push('updated_at = ?');
   values.push(jstNow());
   values.push(id);
   await db.prepare(`UPDATE chats SET ${sets.join(', ')} WHERE id = ?`).bind(...values).run();
+}
+
+/**
+ * The first staff member to open an unread inquiry owns it. Later openers may
+ * mark newly arrived messages as read, but cannot replace that assignee.
+ */
+export async function claimChatForStaff(
+  db: D1Database,
+  chatId: string,
+  staffId: string,
+  openedAt = jstNow(),
+): Promise<ChatRow | null> {
+  await db
+    .prepare(
+      `UPDATE chats
+          SET assigned_staff_id = CASE
+                WHEN status = 'unread' THEN ?
+                ELSE assigned_staff_id
+              END,
+              status = CASE
+                WHEN status = 'unread' THEN 'in_progress'
+                ELSE status
+              END,
+              read_at = CASE
+                WHEN status IN ('unread', 'in_progress') THEN ?
+                ELSE read_at
+              END,
+              updated_at = CASE
+                WHEN status IN ('unread', 'in_progress') THEN ?
+                ELSE updated_at
+              END
+        WHERE id = ?`,
+    )
+    .bind(staffId, openedAt, openedAt, chatId)
+    .run();
+  return getChatById(db, chatId);
+}
+
+export async function completeChat(
+  db: D1Database,
+  chatId: string,
+  completedAt = jstNow(),
+): Promise<ChatRow | null> {
+  await db
+    .prepare(
+      `UPDATE chats
+          SET status = 'resolved',
+              read_at = ?,
+              updated_at = ?
+        WHERE id = ?`,
+    )
+    .bind(completedAt, completedAt, chatId)
+    .run();
+  return getChatById(db, chatId);
 }
 
 /** 友だちからメッセージ受信時にチャットを作成/更新 */
@@ -132,7 +197,12 @@ export async function upsertChatOnMessage(db: D1Database, friendId: string): Pro
   if (existing) {
     // resolvedだった場合はunreadに戻す
     const newStatus = existing.status === 'resolved' ? 'unread' : existing.status;
-    await updateChat(db, existing.id, { status: newStatus, lastMessageAt: now });
+    await updateChat(db, existing.id, {
+      status: newStatus,
+      assignedStaffId: existing.status === 'resolved' ? null : undefined,
+      readAt: existing.status === 'resolved' ? null : undefined,
+      lastMessageAt: now,
+    });
     return (await getChatById(db, existing.id))!;
   }
   return createChat(db, { friendId });
