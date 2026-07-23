@@ -1520,7 +1520,8 @@ CREATE TABLE staff_notification_destinations (
   line_linked_at             TEXT,
   created_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, notify_auto_reply INTEGER NOT NULL DEFAULT 0
+  CHECK (notify_auto_reply IN (0, 1)));
 
 CREATE TABLE staff_shifts (
   id          TEXT PRIMARY KEY,

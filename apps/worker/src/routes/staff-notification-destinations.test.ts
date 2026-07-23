@@ -35,6 +35,7 @@ type Destination = {
   config: Record<string, unknown>;
   notifyInquiry: boolean;
   notifyFormSubmission: boolean;
+  notifyAutoReply: boolean;
   enabled: boolean;
   lineUserId: string | null;
   lineLinkCodeDigest: string | null;
@@ -59,6 +60,7 @@ function destination(overrides: Partial<Destination> = {}): Destination {
     config: { roomId: '12345', apiToken: 'chatwork-secret' },
     notifyInquiry: true,
     notifyFormSubmission: false,
+    notifyAutoReply: false,
     enabled: true,
     lineUserId: null,
     lineLinkCodeDigest: null,
@@ -98,6 +100,7 @@ function chatworkBody(overrides: Record<string, unknown> = {}) {
     channelType: 'chatwork',
     notifyInquiry: true,
     notifyFormSubmission: false,
+    notifyAutoReply: false,
     enabled: true,
     config: { roomId, apiToken },
     ...destinationOverrides,
@@ -111,6 +114,7 @@ function lineBody(overrides: Record<string, unknown> = {}) {
     channelType: 'line',
     notifyInquiry: true,
     notifyFormSubmission: true,
+    notifyAutoReply: false,
     enabled: true,
     config: {},
     ...overrides,
@@ -162,6 +166,7 @@ beforeEach(() => {
       config: input.config,
       notifyInquiry: input.notifyInquiry,
       notifyFormSubmission: input.notifyFormSubmission,
+      notifyAutoReply: input.notifyAutoReply,
       enabled: input.enabled,
       updatedAt: NOW,
     };
@@ -227,6 +232,7 @@ describe('staff notification destination admin CRUD', () => {
         channelType: 'chatwork',
         notifyInquiry: true,
         notifyFormSubmission: false,
+        notifyAutoReply: false,
         enabled: true,
         config: {
           roomId: '12345',
@@ -254,10 +260,13 @@ describe('staff notification destination admin CRUD', () => {
         label: '申込み担当',
         notifyInquiry: false,
         notifyFormSubmission: true,
+        notifyAutoReply: true,
         apiToken: '',
       }),
     );
     expect(updated.status).toBe(200);
+    expect((await updated.clone().json()).data.notifyAutoReply).toBe(true);
+    expect(rows[0].notifyAutoReply).toBe(true);
     expect(rows[0].config).toEqual({
       roomId: '12345',
       apiToken: 'chatwork-secret',
@@ -296,6 +305,7 @@ describe('staff notification destination admin CRUD', () => {
       chatworkBody({ channelType: 'constructor' }),
       chatworkBody({ channelType: 'toString' }),
       chatworkBody({ notifyInquiry: 1 }),
+      chatworkBody({ notifyAutoReply: 1 }),
       chatworkBody({ roomId: 'not-a-room' }),
       chatworkBody({ apiToken: '' }),
     ]) {

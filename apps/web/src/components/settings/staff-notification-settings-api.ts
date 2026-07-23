@@ -29,6 +29,7 @@ export interface StaffNotificationDestinationInput {
   channelType: StaffNotificationChannelType
   notifyInquiry: boolean
   notifyFormSubmission: boolean
+  notifyAutoReply: boolean
   enabled: boolean
   config: Record<string, string>
 }
@@ -39,6 +40,7 @@ export interface StaffNotificationDestinationView {
   channelType: StaffNotificationChannelType
   notifyInquiry: boolean
   notifyFormSubmission: boolean
+  notifyAutoReply: boolean
   enabled: boolean
   config: Record<string, string>
   unsupported: boolean

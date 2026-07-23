@@ -111,9 +111,11 @@ describe('staff notification destination persistence', () => {
       config: { apiToken: 'stored-secret', roomId: '12345' },
       notifyInquiry: true,
       notifyFormSubmission: false,
+      notifyAutoReply: false,
       enabled: true,
     });
 
+    expect(created.notifyAutoReply).toBe(false);
     expect(await getStaffNotificationDestination(DB, 'account-1', created.id)).toEqual(created);
     expect(await listStaffNotificationDestinations(DB, 'account-1')).toEqual([created]);
     expect(await listSubscribedStaffNotificationDestinations(
@@ -135,6 +137,7 @@ describe('staff notification destination persistence', () => {
       config: { apiToken: 'rotated-secret', roomId: '98765' },
       notifyInquiry: false,
       notifyFormSubmission: true,
+      notifyAutoReply: true,
       enabled: false,
     });
     expect(updated).toMatchObject({
@@ -142,6 +145,7 @@ describe('staff notification destination persistence', () => {
       config: { apiToken: 'rotated-secret', roomId: '98765' },
       notifyInquiry: false,
       notifyFormSubmission: true,
+      notifyAutoReply: true,
       enabled: false,
     });
     expect(await getStaffNotificationDestination(DB, 'account-1', created.id)).toEqual(updated);
@@ -164,6 +168,7 @@ describe('staff notification destination persistence', () => {
       config: {},
       notifyInquiry: true,
       notifyFormSubmission: true,
+      notifyAutoReply: false,
       enabled: true,
     });
     const friendsBefore = raw.prepare('SELECT * FROM friends ORDER BY id').all();
@@ -216,6 +221,7 @@ describe('staff notification destination persistence', () => {
       config: { apiToken: 'secret', roomId: '12345' },
       notifyInquiry: true,
       notifyFormSubmission: true,
+      notifyAutoReply: false,
       enabled: true,
     });
 

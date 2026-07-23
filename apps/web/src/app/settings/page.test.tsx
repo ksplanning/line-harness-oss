@@ -128,6 +128,7 @@ let destinationsByAccount: Record<string, Array<{
   channelType: string
   notifyInquiry: boolean
   notifyFormSubmission: boolean
+  notifyAutoReply: boolean
   enabled: boolean
   config: Record<string, string>
   unsupported: boolean
@@ -186,6 +187,7 @@ beforeEach(() => {
     channelType: string
     notifyInquiry: boolean
     notifyFormSubmission: boolean
+    notifyAutoReply: boolean
     enabled: boolean
     config: Record<string, string>
   }) => {
@@ -195,6 +197,7 @@ beforeEach(() => {
       channelType: input.channelType,
       notifyInquiry: input.notifyInquiry,
       notifyFormSubmission: input.notifyFormSubmission,
+      notifyAutoReply: input.notifyAutoReply,
       enabled: input.enabled,
       config: {
         ...input.config,
@@ -254,7 +257,7 @@ describe('設定ページ', () => {
     expect(screen.queryByTestId('email-sender-dns-guide')).toBeNull()
   })
 
-  test('両設定を保存し、閉じて開き直した再取得値と一致する', async () => {
+  test('両設定を保存し、自動応答通知ONを含む再取得値と一致する', async () => {
     render(<SettingsPage />)
 
     const email = await screen.findByLabelText('差出人メールアドレス')
@@ -279,9 +282,26 @@ describe('設定ページ', () => {
     fireEvent.change(screen.getByLabelText('Chatwork APIトークン'), {
       target: { value: 'INPUT_ONLY_TOKEN' },
     })
+    const notifyAutoReply = screen.getByLabelText(
+      '自動応答で処理されたものも通知する',
+    ) as HTMLInputElement
+    expect(notifyAutoReply.checked).toBe(false)
+    fireEvent.click(notifyAutoReply)
     fireEvent.click(screen.getByRole('button', { name: '通知先を追加' }))
 
-    await waitFor(() => expect(mocks.staffCreate).toHaveBeenCalled())
+    await waitFor(() => expect(mocks.staffCreate).toHaveBeenCalledWith({
+      lineAccountId: 'account-1',
+      label: '受付チーム',
+      channelType: 'chatwork',
+      notifyInquiry: true,
+      notifyFormSubmission: true,
+      notifyAutoReply: true,
+      enabled: true,
+      config: {
+        roomId: '12345',
+        apiToken: 'INPUT_ONLY_TOKEN',
+      },
+    }))
     expect(await screen.findByText('受付チーム')).toBeTruthy()
     expect(document.body.textContent).not.toContain('INPUT_ONLY_TOKEN')
 
@@ -293,5 +313,9 @@ describe('設定ページ', () => {
     fireEvent.click(screen.getByRole('button', { name: 'スタッフ通知を開く' }))
     await waitFor(() => expect(mocks.staffList).toHaveBeenCalledTimes(3))
     expect(await screen.findByText('受付チーム')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '受付チームを編集' }))
+    expect((screen.getByLabelText(
+      '自動応答で処理されたものも通知する',
+    ) as HTMLInputElement).checked).toBe(true)
   })
 })

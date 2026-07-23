@@ -61,6 +61,7 @@ export default function StaffNotificationSettingsPanel({
   const [channelType, setChannelType] = useState('')
   const [notifyInquiry, setNotifyInquiry] = useState(true)
   const [notifyFormSubmission, setNotifyFormSubmission] = useState(true)
+  const [notifyAutoReply, setNotifyAutoReply] = useState(false)
   const [enabled, setEnabled] = useState(true)
   const [configValues, setConfigValues] = useState<Record<string, string>>({})
 
@@ -74,6 +75,7 @@ export default function StaffNotificationSettingsPanel({
     setChannelType(availableChannels[0]?.channelType ?? '')
     setNotifyInquiry(true)
     setNotifyFormSubmission(true)
+    setNotifyAutoReply(false)
     setEnabled(true)
     setConfigValues({})
   }
@@ -179,6 +181,7 @@ export default function StaffNotificationSettingsPanel({
       channelType: currentDefinition.channelType,
       notifyInquiry,
       notifyFormSubmission,
+      notifyAutoReply,
       enabled,
       config,
     }
@@ -214,6 +217,7 @@ export default function StaffNotificationSettingsPanel({
     setChannelType(destination.channelType)
     setNotifyInquiry(destination.notifyInquiry)
     setNotifyFormSubmission(destination.notifyFormSubmission)
+    setNotifyAutoReply(destination.notifyAutoReply)
     setEnabled(destination.enabled)
     setConfigValues(Object.fromEntries(definition.configFields.map((field) => [
       field.key,
@@ -394,6 +398,9 @@ export default function StaffNotificationSettingsPanel({
                       </p>
                       <p className="mt-1 text-xs text-gray-600">
                         フォーム申込み: {destination.notifyFormSubmission ? '通知する' : '通知しない'}
+                      </p>
+                      <p className="mt-1 text-xs text-gray-600">
+                        自動応答済み: {destination.notifyAutoReply ? '通知する' : '通知しない'}
                       </p>
 
                       {destination.unsupported ? (
@@ -614,6 +621,14 @@ export default function StaffNotificationSettingsPanel({
               onChange={(event) => setNotifyFormSubmission(event.target.checked)}
             />
             フォーム申込みを通知
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={notifyAutoReply}
+              onChange={(event) => setNotifyAutoReply(event.target.checked)}
+            />
+            自動応答で処理されたものも通知する
           </label>
         </fieldset>
 

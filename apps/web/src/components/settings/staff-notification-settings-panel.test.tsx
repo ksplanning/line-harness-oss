@@ -65,6 +65,7 @@ const chatworkDestination = {
   channelType: 'chatwork' as const,
   notifyInquiry: true,
   notifyFormSubmission: false,
+  notifyAutoReply: false,
   enabled: true,
   config: {
     roomId: '12345',
@@ -80,6 +81,7 @@ const lineDestination = {
   channelType: 'line' as const,
   notifyInquiry: false,
   notifyFormSubmission: true,
+  notifyAutoReply: false,
   enabled: true,
   config: {},
   unsupported: false,
@@ -126,13 +128,14 @@ describe('StaffNotificationSettingsPanel', () => {
     expect(token.value).toBe('')
   })
 
-  test('Chatwork 通知先を作成後に GET し直し、再取得値を表示する', async () => {
+  test('自動応答通知は既定OFFで、ONのChatwork通知先を作成後にGET再取得値を表示する', async () => {
     const created = {
       ...chatworkDestination,
       id: 'destination-created',
       label: '夜間受付',
       notifyInquiry: true,
       notifyFormSubmission: false,
+      notifyAutoReply: true,
       config: {
         roomId: '67890',
         apiToken: '********',
@@ -145,10 +148,15 @@ describe('StaffNotificationSettingsPanel', () => {
     render(<StaffNotificationSettingsPanel accountId="account-1" />)
     await screen.findByTestId('staff-notification-empty')
 
+    const notifyAutoReply = screen.getByLabelText(
+      '自動応答で処理されたものも通知する',
+    ) as HTMLInputElement
+    expect(notifyAutoReply.checked).toBe(false)
     change('通知先名', ' 夜間受付 ')
     change('Chatwork ルームID', ' 67890 ')
     change('Chatwork APIトークン', 'TOKEN_INPUT_ONLY')
     fireEvent.click(screen.getByLabelText('フォーム申込みを通知'))
+    fireEvent.click(notifyAutoReply)
     fireEvent.click(screen.getByRole('button', { name: '通知先を追加' }))
 
     await waitFor(() => expect(mocks.create).toHaveBeenCalledWith({
@@ -157,6 +165,7 @@ describe('StaffNotificationSettingsPanel', () => {
       channelType: 'chatwork',
       notifyInquiry: true,
       notifyFormSubmission: false,
+      notifyAutoReply: true,
       enabled: true,
       config: {
         roomId: '67890',
@@ -167,28 +176,42 @@ describe('StaffNotificationSettingsPanel', () => {
     expect(await screen.findByText('夜間受付')).toBeTruthy()
     expect(document.body.textContent).not.toContain('TOKEN_INPUT_ONLY')
     expect((screen.getByLabelText('Chatwork APIトークン') as HTMLInputElement).value).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: '夜間受付を編集' }))
+    expect((screen.getByLabelText(
+      '自動応答で処理されたものも通知する',
+    ) as HTMLInputElement).checked).toBe(true)
   })
 
-  test('編集は空 token で既存値を維持し、保存後に GET し直す', async () => {
-    const updated = {
+  test('編集で自動応答通知をOFFに戻し、空tokenを維持してGET再取得値を表示する', async () => {
+    const editable = {
       ...chatworkDestination,
+      notifyAutoReply: true,
+    }
+    const updated = {
+      ...editable,
       label: '更新後チーム',
       notifyInquiry: false,
       notifyFormSubmission: true,
+      notifyAutoReply: false,
       enabled: false,
       config: { ...chatworkDestination.config, roomId: '98765' },
     }
     mocks.list
-      .mockResolvedValueOnce([chatworkDestination])
+      .mockResolvedValueOnce([editable])
       .mockResolvedValueOnce([updated])
 
     render(<StaffNotificationSettingsPanel accountId="account-1" />)
     fireEvent.click(await screen.findByRole('button', { name: '受付チームを編集' }))
 
+    const notifyAutoReply = screen.getByLabelText(
+      '自動応答で処理されたものも通知する',
+    ) as HTMLInputElement
+    expect(notifyAutoReply.checked).toBe(true)
     change('通知先名', '更新後チーム')
     change('Chatwork ルームID', '98765')
     fireEvent.click(screen.getByLabelText('問い合わせ受信を通知'))
     fireEvent.click(screen.getByLabelText('フォーム申込みを通知'))
+    fireEvent.click(notifyAutoReply)
     fireEvent.click(screen.getByLabelText('この通知先を有効にする'))
     fireEvent.click(screen.getByRole('button', { name: '変更を保存' }))
 
@@ -200,6 +223,7 @@ describe('StaffNotificationSettingsPanel', () => {
         channelType: 'chatwork',
         notifyInquiry: false,
         notifyFormSubmission: true,
+        notifyAutoReply: false,
         enabled: false,
         config: {
           roomId: '98765',
@@ -212,6 +236,10 @@ describe('StaffNotificationSettingsPanel', () => {
     expect(item.textContent).toContain('更新後チーム')
     expect(item.textContent).toContain('無効')
     expect(item.textContent).toContain('フォーム申込み: 通知する')
+    fireEvent.click(await screen.findByRole('button', { name: '更新後チームを編集' }))
+    expect((screen.getByLabelText(
+      '自動応答で処理されたものも通知する',
+    ) as HTMLInputElement).checked).toBe(false)
   })
 
   test('削除後に GET し直して一覧から消す', async () => {
@@ -314,6 +342,7 @@ describe('StaffNotificationSettingsPanel', () => {
       channelType: 'line',
       notifyInquiry: false,
       notifyFormSubmission: true,
+      notifyAutoReply: false,
       enabled: true,
       config: {},
     }))
@@ -354,6 +383,7 @@ describe('StaffNotificationSettingsPanel', () => {
         channelType: 'slack',
         notifyInquiry: true,
         notifyFormSubmission: true,
+        notifyAutoReply: false,
         enabled: true,
         config: { channelId: 'C012ABC', botToken: '********' },
         unsupported: false,
@@ -374,6 +404,7 @@ describe('StaffNotificationSettingsPanel', () => {
       channelType: 'slack',
       notifyInquiry: true,
       notifyFormSubmission: true,
+      notifyAutoReply: false,
       enabled: true,
       config: {
         channelId: 'C012ABC',

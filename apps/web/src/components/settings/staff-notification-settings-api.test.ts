@@ -18,6 +18,7 @@ const destination: StaffNotificationDestinationView = {
   channelType: 'chatwork',
   notifyInquiry: true,
   notifyFormSubmission: false,
+  notifyAutoReply: false,
   enabled: true,
   config: {
     roomId: 'room-1',
@@ -33,6 +34,7 @@ const input: StaffNotificationDestinationInput = {
   channelType: 'chatwork',
   notifyInquiry: true,
   notifyFormSubmission: false,
+  notifyAutoReply: false,
   enabled: true,
   config: {
     roomId: 'room-1',

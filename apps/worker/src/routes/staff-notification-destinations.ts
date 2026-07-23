@@ -38,6 +38,7 @@ interface DestinationBody {
   config: Record<string, unknown>;
   notifyInquiry: boolean;
   notifyFormSubmission: boolean;
+  notifyAutoReply: boolean;
   enabled: boolean;
 }
 
@@ -89,6 +90,7 @@ function parseDestinationBody(
     || !definition
     || typeof body.notifyInquiry !== 'boolean'
     || typeof body.notifyFormSubmission !== 'boolean'
+    || typeof body.notifyAutoReply !== 'boolean'
     || typeof body.enabled !== 'boolean'
   ) {
     return { ok: false };
@@ -113,6 +115,7 @@ function parseDestinationBody(
       config,
       notifyInquiry: body.notifyInquiry,
       notifyFormSubmission: body.notifyFormSubmission,
+      notifyAutoReply: body.notifyAutoReply,
       enabled: body.enabled,
     },
   };
@@ -126,6 +129,7 @@ function destinationView(destination: StaffNotificationDestination) {
     channelType: destination.channelType,
     notifyInquiry: destination.notifyInquiry,
     notifyFormSubmission: destination.notifyFormSubmission,
+    notifyAutoReply: destination.notifyAutoReply,
     enabled: destination.enabled,
   };
   return {
@@ -204,6 +208,7 @@ staffNotificationDestinations.post(
       config: input.config,
       notifyInquiry: input.notifyInquiry,
       notifyFormSubmission: input.notifyFormSubmission,
+      notifyAutoReply: input.notifyAutoReply,
       enabled: input.enabled,
     });
     return c.json({ success: true, data: destinationView(created) }, 201);
@@ -242,6 +247,7 @@ staffNotificationDestinations.put(
       config: input.config,
       notifyInquiry: input.notifyInquiry,
       notifyFormSubmission: input.notifyFormSubmission,
+      notifyAutoReply: input.notifyAutoReply,
       enabled: input.enabled,
     });
     if (!updated) {

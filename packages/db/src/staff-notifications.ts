@@ -15,6 +15,7 @@ export interface StaffNotificationDestination {
   config: StaffNotificationConfig;
   notifyInquiry: boolean;
   notifyFormSubmission: boolean;
+  notifyAutoReply: boolean;
   enabled: boolean;
   lineUserId: string | null;
   lineLinkCodeDigest: string | null;
@@ -32,6 +33,7 @@ interface StaffNotificationDestinationRow {
   config_json: string;
   notify_inquiry: number;
   notify_form_submission: number;
+  notify_auto_reply: number;
   enabled: number;
   line_user_id: string | null;
   line_link_code_digest: string | null;
@@ -49,6 +51,7 @@ export interface SaveStaffNotificationDestinationInput {
   config: StaffNotificationConfig;
   notifyInquiry: boolean;
   notifyFormSubmission: boolean;
+  notifyAutoReply: boolean;
   enabled: boolean;
 }
 
@@ -63,6 +66,7 @@ function serializeDestination(
     config: JSON.parse(row.config_json) as StaffNotificationConfig,
     notifyInquiry: row.notify_inquiry === 1,
     notifyFormSubmission: row.notify_form_submission === 1,
+    notifyAutoReply: row.notify_auto_reply === 1,
     enabled: row.enabled === 1,
     lineUserId: row.line_user_id,
     lineLinkCodeDigest: row.line_link_code_digest,
@@ -82,8 +86,9 @@ export async function createStaffNotificationDestination(
     .prepare(
       `INSERT INTO staff_notification_destinations
          (id, line_account_id, label, channel_type, config_json,
-          notify_inquiry, notify_form_submission, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          notify_inquiry, notify_form_submission, notify_auto_reply, enabled,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING *`,
     )
     .bind(
@@ -94,6 +99,7 @@ export async function createStaffNotificationDestination(
       JSON.stringify(input.config),
       input.notifyInquiry ? 1 : 0,
       input.notifyFormSubmission ? 1 : 0,
+      input.notifyAutoReply ? 1 : 0,
       input.enabled ? 1 : 0,
       now,
       now,
@@ -146,6 +152,7 @@ export async function updateStaffNotificationDestination(
               config_json = ?,
               notify_inquiry = ?,
               notify_form_submission = ?,
+              notify_auto_reply = ?,
               enabled = ?,
               updated_at = ?
         WHERE line_account_id = ?
@@ -158,6 +165,7 @@ export async function updateStaffNotificationDestination(
       JSON.stringify(input.config),
       input.notifyInquiry ? 1 : 0,
       input.notifyFormSubmission ? 1 : 0,
+      input.notifyAutoReply ? 1 : 0,
       input.enabled ? 1 : 0,
       jstNow(),
       input.lineAccountId,
