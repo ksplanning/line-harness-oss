@@ -255,6 +255,46 @@ describe('T-C1/T-C3 冪等 upsert + LINE 後処理 (published のみ / N-3・N-7
     ).pluck().get() as string)).toMatchObject({ 入金確認: '' });
   });
 
+  test('anonymous answers skip every submit action with a PII-free record', async () => {
+    seedTag('tag1');
+    seedFriend('fr_1');
+    raw.prepare(
+      `INSERT INTO friend_field_definitions (id, name, default_value)
+       VALUES ('field-payment', '入金確認', '未')`,
+    ).run();
+    seedForm('fa-anonymous', 'form_anonymous', 'published', null);
+    raw.prepare(
+      "UPDATE formaloo_forms SET on_submit_actions_json = ? WHERE id = 'fa-anonymous'",
+    ).run(JSON.stringify([
+      { type: 'add_tag', tagId: 'tag1' },
+      { type: 'set_field', fieldId: 'field-payment', value: '秘密の値' },
+    ]));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const response = await postWebhook(
+      TOKEN,
+      payloadFor('sub-anonymous', 'form_anonymous', null),
+      { sign: true },
+    );
+
+    expect(response.status).toBe(200);
+    expect(submitCount('fa-anonymous')).toBe(1);
+    expect(tagCount('fr_1', 'tag1')).toBe(0);
+    expect(raw.prepare("SELECT metadata FROM friends WHERE id = 'fr_1'").pluck().get())
+      .toBe('{}');
+    const actionLogs = log.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.startsWith('[form-submit-action] '));
+    expect(actionLogs).toHaveLength(2);
+    expect(actionLogs.every((line) => (
+      line.includes('"status":"skipped"')
+      && line.includes('"reason":"friend_not_linked"')
+    ))).toBe(true);
+    expect(actionLogs.join(' ')).not.toContain('田中');
+    expect(actionLogs.join(' ')).not.toContain('秘密の値');
+    log.mockRestore();
+  });
+
   test('draft form の回答 → 隔離: tag なし / consume-at-receipt で line_processed=1 (N-7 / R1 F1)', async () => {
     seedTag('tag1');
     seedFriend('fr_1');
