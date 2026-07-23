@@ -1126,7 +1126,13 @@ internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/approve-external-ed
     if (!row.external_edit_source || row.external_edit_approved_at) {
       return c.json({ success: false, error: '未承認の外部編集ではありません' }, 409);
     }
-    const approved = await approveInternalFormSubmissionExternalEdit(c.env.DB, id, rowId);
+    const approved = await approveInternalFormSubmissionExternalEdit(c.env.DB, {
+      formId: id,
+      submissionId: rowId,
+      expectedSource: row.external_edit_source,
+      expectedEditedAt: row.external_edited_at,
+      expectedAnswersJson: row.answers_json,
+    });
     if (!approved) {
       return c.json({
         success: false,

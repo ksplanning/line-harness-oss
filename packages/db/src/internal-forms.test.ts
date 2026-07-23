@@ -806,9 +806,14 @@ describe('internal form persistence', () => {
 
     expect(await approveInternalFormSubmissionExternalEdit(
       DB,
-      'fa_internal',
-      pending.id,
-      '2026-07-23T10:03:00+09:00',
+      {
+        formId: 'fa_internal',
+        submissionId: pending.id,
+        expectedSource: 'edit_link',
+        expectedEditedAt: '2026-07-23T10:00:00+09:00',
+        expectedAnswersJson: pending.answers_json,
+        approvedAt: '2026-07-23T10:03:00+09:00',
+      },
     )).toBe(true);
     await expect(listInternalFormSubmissions(DB, 'fa_internal', {
       limit: 20,
@@ -822,8 +827,62 @@ describe('internal form persistence', () => {
       answers_json: '{"name":"編集URLから変更"}',
       external_edit_approved_at: '2026-07-23T10:03:00+09:00',
     });
-    expect(await approveInternalFormSubmissionExternalEdit(DB, 'fa_internal', internal.id))
+    expect(await approveInternalFormSubmissionExternalEdit(
+      DB,
+      {
+        formId: 'fa_internal',
+        submissionId: internal.id,
+        expectedSource: null,
+        expectedEditedAt: null,
+        expectedAnswersJson: internal.answers_json,
+      },
+    ))
       .toBe(false);
+  });
+
+  test('does not approve an external edit that arrived after the reviewed revision', async () => {
+    const submission = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '確認した回答' },
+    });
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-23T10:00:00+09:00'
+       WHERE id = ?`,
+    ).run(submission.id);
+    const reviewed = await getInternalFormSubmission(DB, 'fa_internal', submission.id);
+
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET answers_json = '{"name":"確認後の再編集"}',
+           external_edit_source = 'sheet',
+           external_edited_at = '2026-07-23T10:01:00+09:00',
+           external_edit_approved_at = NULL
+       WHERE id = ?`,
+    ).run(submission.id);
+
+    expect(await approveInternalFormSubmissionExternalEdit(
+      DB,
+      {
+        formId: 'fa_internal',
+        submissionId: submission.id,
+        expectedSource: reviewed?.external_edit_source ?? null,
+        expectedEditedAt: reviewed?.external_edited_at ?? null,
+        expectedAnswersJson: reviewed?.answers_json ?? '',
+        approvedAt: '2026-07-23T10:02:00+09:00',
+      },
+    )).toBe(false);
+    expect(raw.prepare(
+      `SELECT answers_json, external_edit_source, external_edited_at,
+              external_edit_approved_at
+       FROM internal_form_submissions WHERE id = ?`,
+    ).get(submission.id)).toEqual({
+      answers_json: '{"name":"確認後の再編集"}',
+      external_edit_source: 'sheet',
+      external_edited_at: '2026-07-23T10:01:00+09:00',
+      external_edit_approved_at: null,
+    });
   });
 
   test('admin CAS works without edit-link settings and feeds the existing Sheets readers', async () => {

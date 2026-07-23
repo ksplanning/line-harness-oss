@@ -987,9 +987,14 @@ export async function countPendingInternalFormExternalEdits(
 
 export async function approveInternalFormSubmissionExternalEdit(
   db: D1Database,
-  formId: string,
-  submissionId: string,
-  approvedAt = jstNow(),
+  input: {
+    formId: string;
+    submissionId: string;
+    expectedSource: InternalFormExternalEditSource | null;
+    expectedEditedAt: string | null;
+    expectedAnswersJson: string;
+    approvedAt?: string;
+  },
 ): Promise<boolean> {
   const result = await db
     .prepare(
@@ -997,9 +1002,19 @@ export async function approveInternalFormSubmissionExternalEdit(
        SET external_edit_approved_at = ?
        WHERE id = ? AND form_id = ? AND deleted_at IS NULL
          AND external_edit_source IS NOT NULL
-         AND external_edit_approved_at IS NULL`,
+         AND external_edit_approved_at IS NULL
+         AND external_edit_source IS ?
+         AND external_edited_at IS ?
+         AND answers_json = ?`,
     )
-    .bind(approvedAt, submissionId, formId)
+    .bind(
+      input.approvedAt ?? jstNow(),
+      input.submissionId,
+      input.formId,
+      input.expectedSource,
+      input.expectedEditedAt,
+      input.expectedAnswersJson,
+    )
     .run();
   return (result.meta.changes ?? 0) === 1;
 }

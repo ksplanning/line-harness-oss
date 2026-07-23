@@ -28,6 +28,7 @@ const BENIGN = /duplicate column name|already exists/i;
 type D1MockOptions = {
   maxBindingBytes?: number;
   observedBindingBytes?: number[];
+  beforeRun?: (sql: string) => void;
 };
 
 function bindingByteLength(value: unknown): number {
@@ -55,6 +56,7 @@ function d1(db: Database.Database, options: D1MockOptions = {}): D1Database {
         async first<T>() { return (statement.get(...(params as never[])) as T) ?? null; },
         async all<T>() { return { results: statement.all(...(params as never[])) as T[] }; },
         async run() {
+          options.beforeRun?.(sql);
           const info = statement.run(...(params as never[]));
           return { meta: { changes: info.changes } };
         },
@@ -1269,6 +1271,48 @@ describe('internal answer admin read path', () => {
     const stats = await call('GET', '/api/forms-advanced/internal-form/stats');
     expect((await stats.json() as { data: { externalEditPending: number } }).data)
       .toMatchObject({ externalEditPending: 0 });
+  });
+
+  test('returns 409 instead of approving an external edit that races the review', async () => {
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-23T10:00:00+09:00'
+       WHERE id = 'sub-1'`,
+    ).run();
+    let injectedRace = false;
+    DB = d1(raw, {
+      beforeRun(sql) {
+        if (injectedRace || !sql.includes('SET external_edit_approved_at')) return;
+        injectedRace = true;
+        raw.prepare(
+          `UPDATE internal_form_submissions
+           SET answers_json = '{"name":"承認直前の再編集"}',
+               external_edit_source = 'sheet',
+               external_edited_at = '2026-07-23T10:01:00+09:00',
+               external_edit_approved_at = NULL
+           WHERE id = 'sub-1'`,
+        ).run();
+      },
+    });
+
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/internal-form/rows/sub-1/approve-external-edit',
+    );
+
+    expect(response.status).toBe(409);
+    expect(injectedRace).toBe(true);
+    expect(raw.prepare(
+      `SELECT answers_json, external_edit_source, external_edited_at,
+              external_edit_approved_at
+       FROM internal_form_submissions WHERE id = 'sub-1'`,
+    ).get()).toEqual({
+      answers_json: '{"name":"承認直前の再編集"}',
+      external_edit_source: 'sheet',
+      external_edited_at: '2026-07-23T10:01:00+09:00',
+      external_edit_approved_at: null,
+    });
   });
 
   test('DELETE soft-deletes only the requested form-scoped answer and hides it from admin reads', async () => {
