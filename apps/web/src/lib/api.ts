@@ -52,6 +52,37 @@ export interface MessageBlock {
   altText?: string | null;
 }
 
+/** Segment rules shared by the builder and the broadcast create/update API. */
+export interface SegmentRule {
+  type:
+    | 'tag_exists'
+    | 'tag_not_exists'
+    | 'metadata_equals'
+    | 'metadata_not_equals'
+    | 'metadata_empty'
+    | 'metadata_not_empty'
+    | 'is_following'
+    | 'clicked_link'
+    | 'tapped_menu'
+    | 'opened_form'
+  value:
+    | string
+    | boolean
+    | { key: string; value: string }
+    | { key: string }
+    | {
+        sinceDays?: number
+        trackedLinkId?: string | null
+        groupId?: string
+        formId?: string | null
+      }
+}
+
+export interface SegmentCondition {
+  operator: 'AND' | 'OR'
+  rules: SegmentRule[]
+}
+
 export interface LineQuotaData {
   plan_label: string
   limit: number | null
@@ -111,9 +142,12 @@ export interface FaqPersonalContextSettingsPayload {
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
   targetType: BroadcastTargetType;
+  lineAccountId: string | null;
   accountIds: string[] | null;
   dedupPriority: string[] | null;
   failedAccountIds: string[] | null;
+  /** SQL-resolved audience conditions. Null for legacy all/tag/dedup broadcasts. */
+  segmentConditions: SegmentCondition | null;
   /** combo 配信の順序付きメッセージ列 (最大5)。NULL/未指定=従来 single。 */
   messages?: MessageBlock[] | null;
   /** Legacy single Flex notification text; combo blocks carry their own altText. */
@@ -758,6 +792,7 @@ export const api = {
       senderPresetId?: string | null
       abTestId?: string | null
       abVariant?: string | null
+      segmentConditions?: SegmentCondition | null
     }) =>
       fetchApi<ApiResponse<ApiBroadcast>>('/api/broadcasts', {
         method: 'POST',
@@ -777,6 +812,7 @@ export const api = {
         senderPresetId?: string | null
         abTestId?: string | null
         abVariant?: string | null
+        segmentConditions?: SegmentCondition | null
       }
     ) =>
       fetchApi<ApiResponse<ApiBroadcast>>(`/api/broadcasts/${id}`, {
@@ -864,10 +900,18 @@ export const api = {
   },
 
   segments: {
-    count: (conditions: unknown, accountId?: string) =>
+    count: (
+      conditions: SegmentCondition,
+      accountId?: string,
+      options: { followingOnly?: boolean } = {},
+    ) =>
       fetchApi<{ success: boolean; count?: number; error?: string }>('/api/segments/count', {
         method: 'POST',
-        body: JSON.stringify({ conditions, accountId }),
+        body: JSON.stringify({
+          conditions,
+          accountId,
+          followingOnly: options.followingOnly ?? false,
+        }),
       }),
   },
 

@@ -343,6 +343,8 @@ function BroadcastList() {
                     <td className="px-4 py-3 text-sm text-gray-600">
                       {isDedup ? (
                         <span className="text-purple-700">重複除外{tagName ? `: ${tagName}` : ''}</span>
+                      ) : broadcast.targetType === 'segment' ? (
+                        '詳細条件'
                       ) : broadcast.targetType === 'all' ? (
                         '全員'
                       ) : tagName ? (

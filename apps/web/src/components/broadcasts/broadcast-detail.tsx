@@ -17,6 +17,13 @@ interface BroadcastDetailProps {
   broadcastId: string
 }
 
+function targetLabel(broadcast: ApiBroadcast): string {
+  if (broadcast.targetType === 'all') return '全員'
+  if (broadcast.targetType === 'tag') return `タグ: ${broadcast.targetTagId ?? '-'}`
+  if (broadcast.targetType === 'segment') return '詳細条件'
+  return '複数アカ重複除外'
+}
+
 export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
   const id = broadcastId
   const router = useRouter()
@@ -36,6 +43,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
   const [sending, setSending] = useState(false)
   const [insight, setInsight] = useState<BroadcastInsight | null>(null)
   const [targetCount, setTargetCount] = useState<number | null>(null)
+  const [previewError, setPreviewError] = useState(false)
   const [perAccountBreakdown, setPerAccountBreakdown] = useState<Array<{ accountId: string; sendCount: number }> | null>(null)
   const [perAccountStats, setPerAccountStats] = useState<Array<{
     accountId: string;
@@ -47,6 +55,24 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
   const [tags, setTags] = useState<Tag[]>([])
   const [showSegmentBuilder, setShowSegmentBuilder] = useState(false)
 
+  const loadPreviewCount = useCallback(async () => {
+    const requestId = id
+    setTargetCount(null)
+    setPreviewError(false)
+    try {
+      const result = await api.broadcasts.previewCount(requestId)
+      if (requestId !== latestIdRef.current) return
+      if (result.success && result.data) {
+        setTargetCount(result.data.count)
+        setPerAccountBreakdown(result.data.perAccount ?? null)
+        return
+      }
+      setPreviewError(true)
+    } catch {
+      if (requestId === latestIdRef.current) setPreviewError(true)
+    }
+  }, [id])
+
   const load = useCallback(async () => {
     setLoading(true)
     // SPA routing で別 broadcast を開いた時に前回の breakdown / per-account stats / insight が
@@ -56,6 +82,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
     setPerAccountStats(null)
     setInsight(null)
     setTargetCount(null)
+    setPreviewError(false)
     try {
       const [res, tagsRes] = await Promise.all([
         api.broadcasts.get(id),
@@ -63,20 +90,19 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
       ])
       if (res.success && res.data) {
         setBroadcast(res.data)
-        if (res.data.totalCount > 0) {
+        if (
+          res.data.targetType === 'segment' &&
+          (res.data.status === 'draft' || res.data.status === 'scheduled')
+        ) {
+          // Conditional audiences are evaluated from current tags/fields.
+          // Never reuse an old attempt's total_count for a new confirmation.
+          void loadPreviewCount()
+        } else if (res.data.totalCount > 0) {
           setTargetCount(res.data.totalCount)
         } else if (res.data.status === 'draft' || res.data.status === 'scheduled') {
           // draft 中は totalCount=0 のまま。送信前の対象人数を preview-count API で取りに行く。
           // confirm modal の「対象 X人」表示と「送信ボタンの (X人)」表示で使う。
-          const requestId = id
-          api.broadcasts.previewCount(id).then((r) => {
-            // race guard: 古い id の応答は無視する。
-            if (requestId !== latestIdRef.current) return
-            if (r.success && r.data) {
-              setTargetCount(r.data.count)
-              if (r.data.perAccount) setPerAccountBreakdown(r.data.perAccount)
-            }
-          }).catch(() => {/* ignore — fall back to 0 */})
+          void loadPreviewCount()
         }
       } else {
         setError('配信が見つかりません')
@@ -87,7 +113,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
     } finally {
       setLoading(false)
     }
-  }, [id])
+  }, [id, loadPreviewCount])
 
   useEffect(() => { load() }, [load])
 
@@ -195,8 +221,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
     )
   }
 
-  const raw = broadcast as unknown as Record<string, unknown>
-  const accountId = raw.lineAccountId as string | null
+  const accountId = broadcast.lineAccountId
   const mediaSummary = mediaPreviewSummary(broadcast.messageType, broadcast.messageContent)
   // combo (組み合わせ配信): 先頭ミラーだけを見ると「1通」に見えるため、全 N 通を認識できるよう明示する。
   const comboMessages = broadcast.messages && broadcast.messages.length > 1 ? broadcast.messages : null
@@ -291,7 +316,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
             <div className="flex justify-between">
               <dt className="text-gray-500">対象</dt>
               <dd className="text-gray-900">
-                {broadcast.targetType === 'all' ? '全員' : `タグ: ${broadcast.targetTagId ?? '-'}`}
+                {targetLabel(broadcast)}
                 {targetCount != null && <span className="ml-1 text-gray-500">({targetCount.toLocaleString('ja-JP')}人)</span>}
               </dd>
             </div>
@@ -319,7 +344,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
       </div>
 
       {/* Segment Builder */}
-      {broadcast.status === 'draft' && (
+      {broadcast.status === 'draft' && broadcast.targetType === 'segment' && (
         <div className="mb-4">
           {!showSegmentBuilder ? (
             <button
@@ -332,8 +357,10 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
             <SegmentBuilder
               tags={tags}
               accountId={accountId}
+              initialConditions={broadcast.segmentConditions}
+              followingOnly
               onApply={async (conditions) => {
-                await api.broadcasts.update(id, { segmentConditions: JSON.stringify(conditions) } as unknown as Parameters<typeof api.broadcasts.update>[1])
+                await api.broadcasts.update(id, { segmentConditions: conditions })
                 setShowSegmentBuilder(false)
                 load()
               }}
@@ -514,9 +541,31 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
               今月の上限に達しています（今月{capBlock.count.toLocaleString('ja-JP')}通 / 上限{capBlock.cap.toLocaleString('ja-JP')}通）。上限を変えるか来月までお待ちください。テスト送信も上限の対象です。
             </div>
           )}
+          {broadcast.targetType === 'segment' && targetCount == null && (
+            <div className="mb-2 p-3 rounded-lg text-sm bg-amber-50 text-amber-800">
+              {previewError ? (
+                <>
+                  対象人数を確認できないため、誤配信防止のため送信を停止しています。
+                  <button
+                    type="button"
+                    onClick={() => void loadPreviewCount()}
+                    className="ml-2 underline font-medium"
+                  >
+                    再試行
+                  </button>
+                </>
+              ) : (
+                '対象人数を確認しています。確認が終わるまで送信できません。'
+              )}
+            </div>
+          )}
           <button
             onClick={() => setShowConfirm(true)}
-            disabled={sending || !!capBlock}
+            disabled={
+              sending ||
+              !!capBlock ||
+              (broadcast.targetType === 'segment' && targetCount == null)
+            }
             className="w-full px-4 py-3 min-h-[44px] text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity"
             style={{ backgroundColor: '#06C755' }}
           >

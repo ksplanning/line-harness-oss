@@ -8,8 +8,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 
-const { countMock, linksMock, menusMock, formsMock } = vi.hoisted(() => ({
+const { countMock, fieldDefinitionsMock, linksMock, menusMock, formsMock } = vi.hoisted(() => ({
   countMock: vi.fn(),
+  fieldDefinitionsMock: vi.fn(),
   linksMock: vi.fn(),
   menusMock: vi.fn(),
   formsMock: vi.fn(),
@@ -18,6 +19,7 @@ const { countMock, linksMock, menusMock, formsMock } = vi.hoisted(() => ({
 vi.mock('@/lib/api', () => ({
   api: {
     segments: { count: (...a: unknown[]) => countMock(...a) },
+    friendFieldDefinitions: { list: (...a: unknown[]) => fieldDefinitionsMock(...a) },
     trackedLinks: { list: (...a: unknown[]) => linksMock(...a) },
     richMenuGroups: { list: (...a: unknown[]) => menusMock(...a) },
     forms: { list: (...a: unknown[]) => formsMock(...a) },
@@ -28,6 +30,7 @@ import SegmentBuilder from './segment-builder'
 
 beforeEach(() => {
   countMock.mockResolvedValue({ success: true, count: 3 })
+  fieldDefinitionsMock.mockResolvedValue({ success: true, data: [] })
   linksMock.mockResolvedValue({ success: true, data: [{ id: 'tl-1', name: '春リンク' }] })
   menusMock.mockResolvedValue({ success: true, data: [{ id: 'g-1', name: '春メニュー' }] })
   formsMock.mockResolvedValue({ success: true, data: [{ id: 'form-1', name: '来店予約フォーム' }] })

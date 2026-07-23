@@ -1,8 +1,10 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import type { Tag } from '@line-crm/shared'
-import { api } from '@/lib/api'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import type { FriendFieldDefinition, Tag } from '@line-crm/shared'
+import { api, type SegmentCondition, type SegmentRule } from '@/lib/api'
+
+export type { SegmentCondition, SegmentRule } from '@/lib/api'
 
 // 行動 rule (G11 遡及オーディエンス) の値: 期間 (過去N日) + 任意の対象。
 // worker segment-query.ts / sdk types.ts の SegmentRule と同期 (3 型同期・Codex MEDIUM)。
@@ -13,32 +15,24 @@ interface BehavioralValue {
   formId?: string | null
 }
 
-interface SegmentRule {
-  type:
-    | 'tag_exists' | 'tag_not_exists' | 'metadata_equals' | 'metadata_not_equals' | 'is_following'
-    // G11 行動 rule (F2 batch4)。
-    | 'clicked_link' | 'tapped_menu' | 'opened_form'
-  value: string | boolean | { key: string; value: string } | BehavioralValue
-}
-
-export interface SegmentCondition {
-  operator: 'AND' | 'OR'
-  rules: SegmentRule[]
-}
-
 interface SegmentBuilderProps {
   tags: Tag[]
   accountId: string | null
   initialConditions?: SegmentCondition | null
   onApply: (conditions: SegmentCondition) => void
   onCancel: () => void
+  onCountChange?: (count: number | null) => void
+  onDirty?: () => void
+  followingOnly?: boolean
 }
 
 const ruleTypeLabels: Record<SegmentRule['type'], string> = {
   tag_exists: 'タグあり',
   tag_not_exists: 'タグなし',
-  metadata_equals: 'メタデータ一致',
-  metadata_not_equals: 'メタデータ不一致',
+  metadata_equals: 'カスタムフィールド一致',
+  metadata_not_equals: 'カスタムフィールド不一致',
+  metadata_empty: 'カスタムフィールドが空',
+  metadata_not_empty: 'カスタムフィールドが空でない',
   is_following: 'フォロー中のみ',
   clicked_link: 'リンクをクリックした人',
   tapped_menu: 'メニューをタップした人',
@@ -46,18 +40,68 @@ const ruleTypeLabels: Record<SegmentRule['type'], string> = {
 }
 
 const BEHAVIORAL_TYPES = new Set(['clicked_link', 'tapped_menu', 'opened_form'])
+const METADATA_TYPES = new Set([
+  'metadata_equals',
+  'metadata_not_equals',
+  'metadata_empty',
+  'metadata_not_empty',
+])
+const METADATA_VALUE_TYPES = new Set(['metadata_equals', 'metadata_not_equals'])
 
-export default function SegmentBuilder({ tags, accountId, initialConditions, onApply, onCancel }: SegmentBuilderProps) {
+function isValidRule(rule: SegmentRule): boolean {
+  if (rule.type === 'is_following') return typeof rule.value === 'boolean'
+  if (BEHAVIORAL_TYPES.has(rule.type)) {
+    const value = rule.value as BehavioralValue
+    if (typeof value !== 'object' || value === null) return false
+    if (rule.type === 'tapped_menu' && !value.groupId) return false
+    return typeof value.sinceDays === 'number' && value.sinceDays > 0
+  }
+  if (rule.type === 'tag_exists' || rule.type === 'tag_not_exists') {
+    return typeof rule.value === 'string' && rule.value !== ''
+  }
+  if (METADATA_TYPES.has(rule.type)) {
+    if (typeof rule.value !== 'object' || rule.value === null || !('key' in rule.value)) {
+      return false
+    }
+    if (typeof rule.value.key !== 'string' || rule.value.key === '') return false
+    return !METADATA_VALUE_TYPES.has(rule.type)
+      || ('value' in rule.value && typeof rule.value.value === 'string')
+  }
+  return false
+}
+
+export default function SegmentBuilder({
+  tags,
+  accountId,
+  initialConditions,
+  onApply,
+  onCancel,
+  onCountChange,
+  onDirty,
+  followingOnly = false,
+}: SegmentBuilderProps) {
   const [operator, setOperator] = useState<'AND' | 'OR'>(initialConditions?.operator ?? 'AND')
   const [rules, setRules] = useState<SegmentRule[]>(initialConditions?.rules ?? [{ type: 'tag_exists', value: '' }])
   const [count, setCount] = useState<number | null>(null)
   const [counting, setCounting] = useState(false)
+  const countRequestRef = useRef(0)
+  const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
   // 行動 rule の対象選択用リスト (トラッキングリンク / リッチメニュー / フォーム)。
   const [trackedLinks, setTrackedLinks] = useState<Array<{ id: string; name: string }>>([])
   const [menuGroups, setMenuGroups] = useState<Array<{ id: string; name: string }>>([])
   const [forms, setForms] = useState<Array<{ id: string; name: string }>>([])
 
   useEffect(() => {
+    api.friendFieldDefinitions.list()
+      .then((r) => {
+        if (!r.success || !r.data) return
+        setFieldDefinitions(
+          r.data
+            .filter((definition) => definition.isActive)
+            .sort((a, b) => a.displayOrder - b.displayOrder || a.id.localeCompare(b.id)),
+        )
+      })
+      .catch(() => {})
     api.trackedLinks.list().then(r => { if (r.success && r.data) setTrackedLinks(r.data.map(l => ({ id: l.id, name: l.name }))) }).catch(() => {})
     api.forms.list().then(r => { if (r.success && r.data) setForms(r.data.map(f => ({ id: f.id, name: f.name }))) }).catch(() => {})
   }, [])
@@ -66,29 +110,39 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
     api.richMenuGroups.list(accountId).then(r => { if (r.success && r.data) setMenuGroups(r.data.map(g => ({ id: g.id, name: g.name }))) }).catch(() => {})
   }, [accountId])
 
+  const allRulesValid = rules.length > 0 && rules.every(isValidRule)
+
   const fetchCount = useCallback(async () => {
-    const validRules = rules.filter(r => {
-      if (r.type === 'is_following') return true
-      // 行動 rule: 期間 (sinceDays) があれば有効。tapped_menu は対象メニュー (groupId) 必須。
-      if (BEHAVIORAL_TYPES.has(r.type)) {
-        const v = r.value as BehavioralValue
-        if (typeof v !== 'object' || v === null) return false
-        if (r.type === 'tapped_menu' && !v.groupId) return false
-        return typeof v.sinceDays === 'number' && v.sinceDays > 0
-      }
-      if (typeof r.value === 'string') return r.value !== ''
-      if (typeof r.value === 'object' && r.value !== null) return (r.value as { key: string }).key !== ''
-      return false
-    })
-    if (validRules.length === 0) { setCount(null); return }
+    const requestId = ++countRequestRef.current
+    if (!allRulesValid) {
+      setCounting(false)
+      setCount(null)
+      onCountChange?.(null)
+      return
+    }
 
     setCounting(true)
     try {
-      const res = await api.segments.count({ operator, rules: validRules }, accountId ?? undefined)
-      if (res.success) setCount(res.count ?? 0)
-    } catch { /* ignore */ }
-    finally { setCounting(false) }
-  }, [operator, rules, accountId])
+      const res = await api.segments.count(
+        { operator, rules },
+        accountId ?? undefined,
+        { followingOnly },
+      )
+      if (requestId !== countRequestRef.current) return
+      if (res.success) {
+        const nextCount = res.count ?? 0
+        setCount(nextCount)
+        onCountChange?.(nextCount)
+      }
+    } catch {
+      if (requestId !== countRequestRef.current) return
+      setCount(null)
+      onCountChange?.(null)
+    }
+    finally {
+      if (requestId === countRequestRef.current) setCounting(false)
+    }
+  }, [operator, rules, accountId, allRulesValid, followingOnly, onCountChange])
 
   useEffect(() => {
     const timer = setTimeout(fetchCount, 500)
@@ -96,14 +150,17 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
   }, [fetchCount])
 
   const updateRule = (index: number, updates: Partial<SegmentRule>) => {
+    onDirty?.()
     setRules(prev => prev.map((r, i) => i === index ? { ...r, ...updates } as SegmentRule : r))
   }
 
   const removeRule = (index: number) => {
+    onDirty?.()
     setRules(prev => prev.filter((_, i) => i !== index))
   }
 
   const addRule = () => {
+    onDirty?.()
     setRules(prev => [...prev, { type: 'tag_exists', value: '' }])
   }
 
@@ -112,8 +169,12 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-gray-700">配信対象を絞り込む</h3>
         <select
+          aria-label="条件の結合方法"
           value={operator}
-          onChange={(e) => setOperator(e.target.value as 'AND' | 'OR')}
+          onChange={(e) => {
+            onDirty?.()
+            setOperator(e.target.value as 'AND' | 'OR')
+          }}
           className="text-xs border border-gray-300 rounded px-2 py-1 bg-white"
         >
           <option value="AND">すべて満たす (AND)</option>
@@ -125,11 +186,13 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
         {rules.map((rule, i) => (
           <div key={i} className="flex items-center gap-2 bg-white rounded border border-gray-200 p-2">
             <select
+              aria-label="条件の種類"
               value={rule.type}
               onChange={(e) => {
                 const type = e.target.value as SegmentRule['type']
                 const defaultValue = type === 'is_following' ? true
-                  : (type === 'metadata_equals' || type === 'metadata_not_equals') ? { key: '', value: '' }
+                  : METADATA_VALUE_TYPES.has(type) ? { key: '', value: '' }
+                  : METADATA_TYPES.has(type) ? { key: '' }
                   : BEHAVIORAL_TYPES.has(type) ? { sinceDays: 30 }
                   : ''
                 updateRule(i, { type, value: defaultValue })
@@ -143,6 +206,7 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
 
             {(rule.type === 'tag_exists' || rule.type === 'tag_not_exists') && (
               <select
+                aria-label="タグ"
                 value={typeof rule.value === 'string' ? rule.value : ''}
                 onChange={(e) => updateRule(i, { value: e.target.value })}
                 className="text-xs border border-gray-300 rounded px-2 py-1 bg-white flex-1"
@@ -152,22 +216,45 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
               </select>
             )}
 
-            {(rule.type === 'metadata_equals' || rule.type === 'metadata_not_equals') && (
+            {METADATA_TYPES.has(rule.type) && (
               <>
-                <input
-                  type="text"
-                  placeholder="key"
+                <select
+                  aria-label="カスタムフィールド"
                   value={typeof rule.value === 'object' && rule.value !== null ? (rule.value as { key: string }).key : ''}
-                  onChange={(e) => updateRule(i, { value: { key: e.target.value, value: typeof rule.value === 'object' && rule.value !== null ? (rule.value as { value: string }).value : '' } })}
-                  className="text-xs border border-gray-300 rounded px-2 py-1 w-24"
-                />
-                <input
-                  type="text"
-                  placeholder="value"
-                  value={typeof rule.value === 'object' && rule.value !== null ? (rule.value as { value: string }).value : ''}
-                  onChange={(e) => updateRule(i, { value: { key: typeof rule.value === 'object' && rule.value !== null ? (rule.value as { key: string }).key : '', value: e.target.value } })}
-                  className="text-xs border border-gray-300 rounded px-2 py-1 w-24"
-                />
+                  onChange={(e) => updateRule(i, {
+                    value: METADATA_VALUE_TYPES.has(rule.type)
+                      ? {
+                          key: e.target.value,
+                          value: typeof rule.value === 'object' && rule.value !== null && 'value' in rule.value
+                            ? String(rule.value.value)
+                            : '',
+                        }
+                      : { key: e.target.value },
+                  })}
+                  className="text-xs border border-gray-300 rounded px-2 py-1 bg-white flex-1"
+                >
+                  <option value="">カスタムフィールドを選択...</option>
+                  {fieldDefinitions.map((definition) => (
+                    <option key={definition.id} value={definition.name}>{definition.name}</option>
+                  ))}
+                </select>
+                {METADATA_VALUE_TYPES.has(rule.type) && (
+                  <input
+                    aria-label="値"
+                    type="text"
+                    placeholder="値"
+                    value={typeof rule.value === 'object' && rule.value !== null && 'value' in rule.value ? String(rule.value.value) : ''}
+                    onChange={(e) => updateRule(i, {
+                      value: {
+                        key: typeof rule.value === 'object' && rule.value !== null && 'key' in rule.value
+                          ? String(rule.value.key)
+                          : '',
+                        value: e.target.value,
+                      },
+                    })}
+                    className="text-xs border border-gray-300 rounded px-2 py-1 w-24"
+                  />
+                )}
               </>
             )}
 
@@ -229,7 +316,7 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
       )}
 
       <div className="flex items-center justify-between">
-        <button onClick={addRule} className="text-xs text-blue-500 hover:text-blue-700">+ ルール追加</button>
+        <button aria-label="ルール追加" onClick={addRule} className="text-xs text-blue-500 hover:text-blue-700">+ ルール追加</button>
         <span className="text-xs text-gray-500">
           {counting ? '計算中...' : count != null ? `該当: ${count.toLocaleString('ja-JP')}人` : ''}
         </span>
@@ -237,8 +324,11 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
 
       <div className="flex gap-2 mt-3 pt-3 border-t border-gray-200">
         <button
-          onClick={() => onApply({ operator, rules })}
-          className="px-3 py-1.5 min-h-[44px] text-xs font-medium text-white rounded-md"
+          onClick={() => {
+            if (allRulesValid) onApply({ operator, rules })
+          }}
+          disabled={!allRulesValid}
+          className="px-3 py-1.5 min-h-[44px] text-xs font-medium text-white rounded-md disabled:opacity-50"
           style={{ backgroundColor: '#06C755' }}
         >
           適用

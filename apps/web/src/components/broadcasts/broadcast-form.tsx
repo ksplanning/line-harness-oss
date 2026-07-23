@@ -14,6 +14,7 @@ import { validateFlex } from '@/lib/flex-builder/validate'
 import type { FlexContents } from '@/lib/flex-builder/types'
 import type { FormBubblePatch } from '@/lib/template-packs/pack-insert'
 import { LineQuotaAudienceStatus } from '@/components/shared/line-quota-display'
+import SegmentBuilder, { type SegmentCondition } from './segment-builder'
 
 interface BroadcastFormProps {
   tags: Tag[]
@@ -30,6 +31,7 @@ interface FormState {
   title: string
   targetType: ApiBroadcast['targetType']
   targetTagId: string
+  segmentConditions: SegmentCondition | null
   scheduledAt: string
   sendNow: boolean
   accountIds: string[]
@@ -63,6 +65,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     title: '',
     targetType: 'all',
     targetTagId: '',
+    segmentConditions: null,
     scheduledAt: '',
     sendNow: true,
     accountIds: [],
@@ -72,6 +75,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     abVariant: null,
   })
   const [tagTargetCount, setTagTargetCount] = useState<number | null>(null)
+  const [segmentTargetCount, setSegmentTargetCount] = useState<number | null>(null)
   const [dedupTargetCount, setDedupTargetCount] = useState<number | null>(null)
 
   useEffect(() => {
@@ -96,6 +100,8 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
 
   const targetCount = form.targetType === 'multi-account-dedup'
     ? dedupTargetCount ?? 0
+    : form.targetType === 'segment'
+      ? segmentTargetCount ?? 0
     : form.targetType === 'tag'
       ? tagTargetCount ?? 0
       : selectedAccount?.stats?.friendCount ?? 0
@@ -169,6 +175,10 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
       setError('複数アカ重複除外: 配信先アカウントを 1 つ以上選択してください')
       return
     }
+    if (form.targetType === 'segment' && !form.segmentConditions) {
+      setError('詳細条件を設定して「適用」を押してください')
+      return
+    }
 
     setSaving(true)
     setError('')
@@ -192,6 +202,9 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         lineAccountId: form.targetType === 'multi-account-dedup' ? null : (selectedAccountId || null),
         accountIds: form.targetType === 'multi-account-dedup' ? form.accountIds : undefined,
         dedupPriority: form.targetType === 'multi-account-dedup' ? form.dedupPriority : undefined,
+        ...(form.targetType === 'segment'
+          ? { segmentConditions: form.segmentConditions }
+          : {}),
         senderPresetId: form.senderPresetId,
         // A/B 紐付け: test + 案 (A/B) が両方揃った時だけ送る (片方だけは server が 400)。
         abTestId: form.abTestId && form.abVariant ? form.abTestId : null,
@@ -347,7 +360,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
           <div className="flex flex-wrap gap-2 mb-2">
             <button
               type="button"
-              onClick={() => setForm({ ...form, targetType: 'all', targetTagId: '' })}
+              onClick={() => setForm({ ...form, targetType: 'all', targetTagId: '', segmentConditions: null })}
               className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
                 form.targetType === 'all'
                   ? 'border-green-500 text-green-700 bg-green-50'
@@ -358,7 +371,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             </button>
             <button
               type="button"
-              onClick={() => setForm({ ...form, targetType: 'tag' })}
+              onClick={() => setForm({ ...form, targetType: 'tag', segmentConditions: null })}
               className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
                 form.targetType === 'tag'
                   ? 'border-green-500 text-green-700 bg-green-50'
@@ -369,7 +382,23 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             </button>
             <button
               type="button"
-              onClick={() => setForm({ ...form, targetType: 'multi-account-dedup', targetTagId: '' })}
+              onClick={() => setForm({ ...form, targetType: 'segment', targetTagId: '' })}
+              className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
+                form.targetType === 'segment'
+                  ? 'border-green-500 text-green-700 bg-green-50'
+                  : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
+              }`}
+            >
+              詳細条件
+            </button>
+            <button
+              type="button"
+              onClick={() => setForm({
+                ...form,
+                targetType: 'multi-account-dedup',
+                targetTagId: '',
+                segmentConditions: null,
+              })}
               className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
                 form.targetType === 'multi-account-dedup'
                   ? 'border-green-500 text-green-700 bg-green-50'
@@ -390,6 +419,31 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
                 <option key={tag.id} value={tag.id}>{tag.name}</option>
               ))}
             </select>
+          )}
+          {form.targetType === 'segment' && (
+            <SegmentBuilder
+              tags={tags}
+              accountId={selectedAccountId || null}
+              initialConditions={form.segmentConditions}
+              onApply={(conditions) => setForm((prev) => ({
+                ...prev,
+                segmentConditions: conditions,
+              }))}
+              onDirty={() => setForm((prev) => ({
+                ...prev,
+                segmentConditions: null,
+              }))}
+              onCancel={() => {
+                setSegmentTargetCount(null)
+                setForm((prev) => ({
+                  ...prev,
+                  targetType: 'all',
+                  segmentConditions: null,
+                }))
+              }}
+              onCountChange={setSegmentTargetCount}
+              followingOnly
+            />
           )}
           {form.targetType === 'multi-account-dedup' && (
             <MultiAccountDedupSection
