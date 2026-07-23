@@ -100,7 +100,11 @@ type UpdateInternalFormSubmissionAnswersInput = {
       expectedDefinitionJson: string;
     }
   | {
-      authorization?: 'edit-link' | 'admin-origin';
+      authorization: 'admin-origin';
+      expectedEditLinkEpoch: number;
+    }
+  | {
+      authorization?: 'edit-link';
       expectedEditLinkEpoch: number;
       previousAnswers: Record<string, unknown>;
     }
@@ -950,9 +954,9 @@ export async function updateInternalFormSubmissionAnswers(
   db: D1Database,
   input: UpdateInternalFormSubmissionAnswersInput,
 ): Promise<UpdateInternalFormSubmissionAnswersResult> {
-  const changesJson = input.authorization === 'admin'
-    ? null
-    : externalEditChangesJson(input.previousAnswers, input.answers);
+  const changesJson = input.authorization === undefined || input.authorization === 'edit-link'
+    ? externalEditChangesJson(input.previousAnswers, input.answers)
+    : null;
   const updated = input.authorization === 'admin'
     ? await db
         .prepare(
