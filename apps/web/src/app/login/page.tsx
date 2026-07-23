@@ -13,6 +13,19 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const router = useRouter()
 
+  const loginDestination = () => {
+    if (typeof window === 'undefined') return '/'
+    const candidate = new URLSearchParams(window.location.search).get('returnTo')
+    if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//')) return '/'
+    try {
+      const resolved = new URL(candidate, window.location.origin)
+      if (resolved.origin !== window.location.origin) return '/'
+      return `${resolved.pathname}${resolved.search}${resolved.hash}`
+    } catch {
+      return '/'
+    }
+  }
+
   // 認証成功後の共通処理 (session 情報のキャッシュ + 遷移)。
   const onLoginResponse = async (res: Response) => {
     if (res.ok) {
@@ -27,7 +40,7 @@ export default function LoginPage() {
       } catch {
         // プロフィール/CSRF キャッシュは best-effort。
       }
-      router.push('/')
+      router.push(loginDestination())
       return
     }
     if (res.status === 403) {

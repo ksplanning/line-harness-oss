@@ -30,7 +30,12 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
         if (data.csrfToken) localStorage.setItem('lh_csrf', data.csrfToken)
         if (!cancelled) setChecked(true)
       } catch {
-        if (!cancelled) router.replace('/login')
+        if (!cancelled) {
+          const returnTo = typeof window === 'undefined'
+            ? pathname
+            : `${window.location.pathname}${window.location.search}`
+          router.replace(`/login?returnTo=${encodeURIComponent(returnTo)}`)
+        }
       }
     }
 

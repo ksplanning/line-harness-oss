@@ -13,6 +13,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return <>{children}</>
   }
 
+  if (pathname === '/inquiry-console') {
+    return <AuthGuard>{children}</AuthGuard>
+  }
+
   return (
     <AuthGuard>
       <AccountProvider>
