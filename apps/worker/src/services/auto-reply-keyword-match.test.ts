@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'vitest';
-import { matchesAutoReplyKeyword } from './auto-reply-keyword-match.js';
+import {
+  AUTO_REPLY_HANDLED_SOURCE,
+  AUTO_REPLY_KEEP_UNRESPONDED_SOURCE,
+  AUTO_REPLY_KEYWORD_SOURCE,
+  UNMATCHED_USER_SOURCE,
+  isAutoReplyHandledSource,
+  matchesAutoReplyKeyword,
+} from './auto-reply-keyword-match.js';
 
 const activeGlobal = {
   keyword: '＃予約',
@@ -9,6 +16,15 @@ const activeGlobal = {
 };
 
 describe('matchesAutoReplyKeyword — unread fail-closed matrix', () => {
+  test('staff通知と未対応一覧が同じ永続sourceで自動応答済みを判定する', () => {
+    expect(isAutoReplyHandledSource(AUTO_REPLY_KEYWORD_SOURCE)).toBe(true);
+    expect(isAutoReplyHandledSource(AUTO_REPLY_HANDLED_SOURCE)).toBe(true);
+    expect(isAutoReplyHandledSource(AUTO_REPLY_KEEP_UNRESPONDED_SOURCE)).toBe(false);
+    expect(isAutoReplyHandledSource(UNMATCHED_USER_SOURCE)).toBe(false);
+    expect(isAutoReplyHandledSource('user')).toBe(false);
+    expect(isAutoReplyHandledSource(undefined)).toBe(false);
+  });
+
   test('[a] folds only full-width hash and edge whitespace/newlines', () => {
     expect(matchesAutoReplyKeyword(' \n#予約\r\n', activeGlobal, 'acc-1')).toBe(true);
     expect(matchesAutoReplyKeyword('予約', activeGlobal, 'acc-1')).toBe(false);

@@ -11,6 +11,7 @@ export interface StaffNotificationPayload {
   name: string;
   excerpt: string;
   deepLink: string;
+  source?: string;
 }
 
 export interface StaffNotificationServiceEnv {

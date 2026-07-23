@@ -498,6 +498,7 @@ describe('POST /webhook — isolated staff LINE linkage and inquiry notification
           name: '顧客兼スタッフ',
           excerpt: '問い合わせ本文',
           deepLink: 'https://admin.example.test/inquiry-console?friend=friend-1',
+          source: 'user_unmatched',
         },
       );
       expect(JSON.stringify(error.mock.calls)).not.toContain('private lookup detail');
@@ -568,6 +569,7 @@ describe('POST /webhook — isolated staff LINE linkage and inquiry notification
         name: '顧客兼スタッフ',
         excerpt: '[画像]',
         deepLink: 'https://admin.example.test/inquiry-console?friend=friend-1',
+        source: 'user',
       },
     );
   });
@@ -1162,6 +1164,86 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       expect.any(String),
     );
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('自動応答成功後の確定sourceをスタッフ通知へ渡す', async () => {
+    vi.mocked(getLineAccounts).mockResolvedValue([{
+      id: 'acc-1',
+      is_active: 1,
+      channel_secret: 'env-default-secret',
+      channel_access_token: 'account-token',
+    }] as never);
+    vi.mocked(expandVariables).mockImplementation((content) => content);
+    vi.mocked(buildMessage).mockImplementation(
+      (messageType, content) => ({ messageType, content }) as never,
+    );
+
+    await postTextWebhook(
+      { ADMIN_PUBLIC_URL: 'https://admin.example.test' },
+      '資料',
+      [{
+        id: 'auto-staff-source',
+        keyword: '資料',
+        match_type: 'exact',
+        response_type: 'text',
+        response_content: '資料を送ります',
+        response_messages: null,
+        template_id: null,
+        keep_in_unresponded: 0,
+        is_active: 1,
+        created_at: '2026-07-21T00:00:00+09:00',
+      }],
+    );
+
+    expect(staffNotificationMocks.dispatchStaffNotification).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        eventType: 'inquiry_received',
+        lineAccountId: 'acc-1',
+        source: 'auto_reply_keyword',
+      }),
+    );
+  });
+
+  test('source永続化失敗時は人間対応のsourceでスタッフ通知を維持する', async () => {
+    vi.mocked(getLineAccounts).mockResolvedValue([{
+      id: 'acc-1',
+      is_active: 1,
+      channel_secret: 'env-default-secret',
+      channel_access_token: 'account-token',
+    }] as never);
+    vi.mocked(expandVariables).mockImplementation((content) => content);
+    vi.mocked(buildMessage).mockImplementation(
+      (messageType, content) => ({ messageType, content }) as never,
+    );
+
+    await postTextWebhook(
+      { ADMIN_PUBLIC_URL: 'https://admin.example.test' },
+      '資料',
+      [{
+        id: 'auto-staff-source-failed',
+        keyword: '資料',
+        match_type: 'exact',
+        response_type: 'text',
+        response_content: '資料を送ります',
+        response_messages: null,
+        template_id: null,
+        keep_in_unresponded: 0,
+        is_active: 1,
+        created_at: '2026-07-21T00:00:00+09:00',
+      }],
+      false,
+      true,
+    );
+
+    expect(staffNotificationMocks.dispatchStaffNotification).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        eventType: 'inquiry_received',
+        lineAccountId: 'acc-1',
+        source: 'user_unmatched',
+      }),
+    );
   });
 
   test('silent rule finalizes its handled marker only after a matching automation message is delivered', async () => {

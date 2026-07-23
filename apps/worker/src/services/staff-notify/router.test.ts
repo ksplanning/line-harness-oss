@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { StaffNotificationDestination } from '@line-crm/db';
+import {
+  AUTO_REPLY_HANDLED_SOURCE,
+  AUTO_REPLY_KEEP_UNRESPONDED_SOURCE,
+  AUTO_REPLY_KEYWORD_SOURCE,
+  UNMATCHED_USER_SOURCE,
+} from '../auto-reply-keyword-match.js';
 import type { StaffNotificationAdapterRegistry } from './types.js';
 
 const dbMocks = vi.hoisted(() => ({
@@ -42,6 +48,7 @@ function destination(
       : {},
     notifyInquiry: true,
     notifyFormSubmission: true,
+    notifyAutoReply: false,
     enabled: true,
     lineUserId: channelType === 'line' ? 'U_STAFF' : null,
     lineLinkCodeDigest: null,
@@ -59,6 +66,70 @@ beforeEach(() => {
 });
 
 describe('dispatchStaffNotifications', () => {
+  test.each([
+    AUTO_REPLY_KEYWORD_SOURCE,
+    AUTO_REPLY_HANDLED_SOURCE,
+  ])('%s はチェックONの通知先だけへ送る', async (source) => {
+    dbMocks.listSubscribedStaffNotificationDestinations.mockResolvedValue([
+      destination('default-off', 'line'),
+      destination('opted-in', 'chatwork', { notifyAutoReply: true }),
+    ]);
+    const lineSend = vi.fn(async () => ({ ok: true as const }));
+    const chatworkSend = vi.fn(async () => ({ ok: true as const }));
+
+    await expect(dispatchStaffNotifications(
+      env,
+      { ...payload, source },
+      {
+        line: { channelType: 'line', failureCodes: [], send: lineSend },
+        chatwork: { channelType: 'chatwork', failureCodes: [], send: chatworkSend },
+      },
+    )).resolves.toMatchObject({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      results: [{ destinationId: 'opted-in' }],
+    });
+
+    expect(lineSend).not.toHaveBeenCalled();
+    expect(chatworkSend).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    AUTO_REPLY_KEEP_UNRESPONDED_SOURCE,
+    UNMATCHED_USER_SOURCE,
+  ])('%s は人間対応対象として既定OFFの通知先にも送る', async (source) => {
+    dbMocks.listSubscribedStaffNotificationDestinations.mockResolvedValue([
+      destination('human-target', 'line'),
+    ]);
+    const send = vi.fn(async () => ({ ok: true as const }));
+
+    await expect(dispatchStaffNotifications(
+      env,
+      { ...payload, source },
+      { line: { channelType: 'line', failureCodes: [], send } },
+    )).resolves.toMatchObject({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  test('フォーム申込み通知は自動応答チェックに影響されない', async () => {
+    dbMocks.listSubscribedStaffNotificationDestinations.mockResolvedValue([
+      destination('form-target', 'chatwork', {
+        notifyAutoReply: false,
+        notifyInquiry: false,
+        notifyFormSubmission: true,
+      }),
+    ]);
+    const send = vi.fn(async () => ({ ok: true as const }));
+
+    await expect(dispatchStaffNotifications(
+      env,
+      { ...payload, eventType: 'form_submitted' },
+      { chatwork: { channelType: 'chatwork', failureCodes: [], send } },
+    )).resolves.toMatchObject({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   test('fans out to every subscribed enabled destination and records fixed success/failure results', async () => {
     const line = destination('line-1', 'line');
     const chatwork = destination('chatwork-1', 'chatwork');

@@ -600,6 +600,7 @@ async function handleEvent(
           name: friend.display_name?.trim() || '名前未設定',
           excerpt: notificationExcerpt,
           deepLink: `${adminBase}/inquiry-console?friend=${encodeURIComponent(friend.id)}`,
+          source: 'user',
         },
       );
     }
@@ -715,7 +716,7 @@ async function handleEvent(
       : AUTO_REPLY_HANDLED_SOURCE;
     // direct reply は外部送信完了まで、silent は event-bus dispatch 完了まで
     // fail-closed marker のままにする。silent 自体は送信を必要としない。
-    const incomingSource = UNMATCHED_USER_SOURCE;
+    let incomingSource = UNMATCHED_USER_SOURCE;
 
     // 判定結果を incoming 自身へ保存する。集計画面は今後この marker を読み、
     // ルール編集後に過去の未読判定を遡及変更しない。
@@ -727,7 +728,8 @@ async function handleEvent(
       .bind(logId, friend.id, incomingText, incomingSource, now)
       .run();
 
-    if (lineAccountId && staffNotifyEnv) {
+    const queueTextStaffNotification = (): void => {
+      if (!lineAccountId || !staffNotifyEnv) return;
       const adminBase = (
         staffNotifyEnv.ADMIN_PUBLIC_URL
         || staffNotifyEnv.WORKER_URL
@@ -743,14 +745,16 @@ async function handleEvent(
           name: friend.display_name?.trim() || '名前未設定',
           excerpt: incomingText,
           deepLink: `${adminBase}/inquiry-console?friend=${encodeURIComponent(friend.id)}`,
+          source: incomingSource,
         },
       );
-    }
+    };
 
-    if (responseScheduleLoadFailed) {
-      await upsertChatOnMessage(db, friend.id);
-      return;
-    }
+    try {
+      if (responseScheduleLoadFailed) {
+        await upsertChatOnMessage(db, friend.id);
+        return;
+      }
 
     // Cross-account trigger: send message from another account via UUID.
     // 営業時間内 (businessHoursSuppressed) は自動送信せず未読へ落とす (下の gate 経由)。
@@ -810,6 +814,7 @@ async function handleEvent(
                 .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
                 .bind(completedActionSource, logId)
                 .run();
+              incomingSource = completedActionSource;
             } catch (err) {
               // The external send already succeeded, so do not retry another send path.
               // Leave the provisional source fail-closed and surface it as unread instead.
@@ -865,6 +870,7 @@ async function handleEvent(
                 .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
                 .bind(completedActionSource, logId)
                 .run();
+              incomingSource = completedActionSource;
             }
             matched = true;
           } catch (err) {
@@ -914,6 +920,7 @@ async function handleEvent(
           .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
           .bind(matchedKeywordSource, logId)
           .run();
+        incomingSource = matchedKeywordSource;
         matched = true;
       } catch (err) {
         console.error('Failed to complete auto-reply handling', err);
@@ -967,11 +974,15 @@ async function handleEvent(
           .prepare('UPDATE messages_log SET source = ? WHERE id = ?')
           .bind(matchedKeywordSource, logId)
           .run();
+        incomingSource = matchedKeywordSource;
       } catch (err) {
         // 外部処理は再実行せず、provisional marker のままスタッフへ見せる。
         console.error('Failed to persist silent-rule marker', err);
         await upsertChatOnMessage(db, friend.id);
       }
+    }
+    } finally {
+      queueTextStaffNotification();
     }
 
     return;

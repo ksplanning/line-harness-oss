@@ -1,8 +1,7 @@
 import {
-  AUTO_REPLY_HANDLED_SOURCE,
   AUTO_REPLY_KEEP_UNRESPONDED_SOURCE,
-  AUTO_REPLY_KEYWORD_SOURCE,
   UNMATCHED_USER_SOURCE,
+  isAutoReplyHandledSource,
   matchesAutoReplyKeyword,
 } from './auto-reply-keyword-match.js';
 
@@ -336,10 +335,7 @@ export async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRo
     // 本当の未読まで消す。古い順に割り当てて 1:1 を保つ。
     for (let index = incomings.length - 1; index >= 0; index--) {
       const incoming = incomings[index];
-      if (
-        incoming.source === AUTO_REPLY_KEYWORD_SOURCE
-        || incoming.source === AUTO_REPLY_HANDLED_SOURCE
-      ) {
+      if (isAutoReplyHandledSource(incoming.source)) {
         consumeAutoReplyEvidence(incoming.created_at, remainingOutgoings, 'auto_reply');
       }
     }
@@ -352,10 +348,7 @@ export async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRo
         nonMatching = i;
         break;
       }
-      if (
-        i.source === AUTO_REPLY_KEYWORD_SOURCE
-        || i.source === AUTO_REPLY_HANDLED_SOURCE
-      ) continue;
+      if (isAutoReplyHandledSource(i.source)) continue;
       if (i.source === UNMATCHED_USER_SOURCE) {
         // A future unmatched row must never consume a delayed keyword reply.
         // faq_bot is distinct evidence that this otherwise-unmatched question

@@ -4,6 +4,7 @@ import {
   type StaffNotificationDestination,
   type StaffNotificationEvent,
 } from '@line-crm/db';
+import { isAutoReplyHandledSource } from '../auto-reply-keyword-match.js';
 import { defaultStaffNotificationAdapters } from './registry.js';
 import { renderStaffNotificationText } from './template.js';
 import type {
@@ -59,8 +60,16 @@ async function sendWithTimeout(
 function subscribed(
   destination: StaffNotificationDestination,
   eventType: StaffNotificationEvent,
+  source: string | undefined,
 ): boolean {
   if (!destination.enabled) return false;
+  if (
+    eventType === 'inquiry_received'
+    && isAutoReplyHandledSource(source)
+    && !destination.notifyAutoReply
+  ) {
+    return false;
+  }
   return eventType === 'inquiry_received'
     ? destination.notifyInquiry
     : destination.notifyFormSubmission;
@@ -148,7 +157,7 @@ export async function dispatchStaffNotifications(
 
   const results = await Promise.all(
     destinations
-      .filter((destination) => subscribed(destination, eventType))
+      .filter((destination) => subscribed(destination, eventType, payload.source))
       .map((destination) => deliverOne(env, destination, payload, adapters)),
   );
 
