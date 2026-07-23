@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
   getQuota: vi.fn(),
+  getFriendTrend: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -13,6 +14,7 @@ vi.mock('@/lib/api', () => ({
     lineAccounts: {
       list: apiMocks.list,
       getQuota: apiMocks.getQuota,
+      getFriendTrend: apiMocks.getFriendTrend,
     },
   },
 }))
@@ -55,7 +57,14 @@ beforeEach(() => {
       liffId: null,
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-01T00:00:00.000Z',
-      stats: { friendCount: 10, activeScenarios: 1, messagesThisMonth: 50 },
+      stats: {
+        friendCount: 10,
+        totalFriendCount: 12,
+        blockedFriendCount: 2,
+        sendableFriendCount: 10,
+        activeScenarios: 1,
+        messagesThisMonth: 50,
+      },
     }],
   })
   apiMocks.getQuota.mockResolvedValue({
@@ -68,6 +77,17 @@ beforeEach(() => {
       type: 'limited',
     },
   })
+  apiMocks.getFriendTrend.mockImplementation(async (_id: string, days: 30 | 90) => ({
+    success: true,
+    data: {
+      lineAccountId: 'acc-1',
+      periodDays: days,
+      points: [
+        { date: '2026-07-22', registrations: 1 },
+        { date: '2026-07-23', registrations: 3 },
+      ],
+    },
+  }))
 })
 
 afterEach(() => {
@@ -84,6 +104,41 @@ describe('LINEアカウント管理の公式送信数', () => {
     expect(within(summary).getByText('最大 200通')).toBeTruthy()
     expect(within(summary).getByText('使用 50通')).toBeTruthy()
     expect(within(summary).getByText('残り 150通')).toBeTruthy()
+  })
+})
+
+describe('LINEアカウント管理の友だち統計', () => {
+  it('総数・ブロック数・一斉送信可能数と定義、日次登録数を表示する', async () => {
+    render(<AccountsPage />)
+
+    const summary = await screen.findByRole('region', { name: '友だちの状況' })
+    expect(within(summary).getByText('友だち総数')).toBeTruthy()
+    expect(within(summary).getByText('12人')).toBeTruthy()
+    expect(within(summary).getByText('ブロック数')).toBeTruthy()
+    expect(within(summary).getByText('2人')).toBeTruthy()
+    expect(within(summary).getByText('一斉送信可能数')).toBeTruthy()
+    expect(within(summary).getByText('10人')).toBeTruthy()
+    expect(within(summary).getByText(/ブロック数は、現在フォローしていない友だち/)).toBeTruthy()
+
+    const trend = await screen.findByRole('region', { name: '友だち登録推移' })
+    expect(apiMocks.getFriendTrend).toHaveBeenCalledWith('acc-1', 30)
+    expect(within(trend).getByRole('figure', { name: '30日間の友だち登録推移' })).toBeTruthy()
+    expect(within(trend).getByTitle('2026-07-22: 1人登録')).toBeTruthy()
+    expect(within(trend).getByTitle('2026-07-23: 3人登録')).toBeTruthy()
+    expect(within(trend).getByText(/管理画面に初めて登録された日ごとの人数/)).toBeTruthy()
+  })
+
+  it('90日表示へ切り替えて再取得する', async () => {
+    render(<AccountsPage />)
+
+    const trend = await screen.findByRole('region', { name: '友だち登録推移' })
+    fireEvent.click(within(trend).getByRole('button', { name: '90日' }))
+
+    await waitFor(() => {
+      expect(apiMocks.getFriendTrend).toHaveBeenLastCalledWith('acc-1', 90)
+    })
+    expect(within(trend).getByRole('button', { name: '90日' }).getAttribute('aria-pressed')).toBe('true')
+    expect(within(trend).getByRole('figure', { name: '90日間の友だち登録推移' })).toBeTruthy()
   })
 })
 

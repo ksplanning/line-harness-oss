@@ -93,6 +93,17 @@ export interface LineQuotaData {
   message?: string
 }
 
+export interface FriendRegistrationPoint {
+  date: string
+  registrations: number
+}
+
+export interface FriendTrendData {
+  lineAccountId: string
+  periodDays: 30 | 90
+  points: FriendRegistrationPoint[]
+}
+
 /** 共通送信レンダラが扱える、テンプレパック／自動返信のメッセージ種別。 */
 export type TemplatePackMessageType = BroadcastMessageType
 
@@ -1062,6 +1073,8 @@ export const api = {
       fetchApi<ApiResponse<LineAccount>>(`/api/line-accounts/${id}`),
     getQuota: (id: string) =>
       fetchApi<ApiResponse<LineQuotaData>>(`/api/line-accounts/${id}/quota`),
+    getFriendTrend: (id: string, days: 30 | 90) =>
+      fetchApi<ApiResponse<FriendTrendData>>(`/api/line-accounts/${id}/friend-trend?days=${days}`),
     // G2 配信通数の月次上限。表示 (messagesThisMonth) と gate は同一計測。cap=null=無制限。
     getMonthlyCap: (id: string) =>
       fetchApi<ApiResponse<{ monthlyCap: number | null; messagesThisMonth: number; remaining: number | null }>>(`/api/line-accounts/${id}/monthly-cap`),

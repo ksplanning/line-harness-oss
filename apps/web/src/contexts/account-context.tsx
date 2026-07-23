@@ -20,6 +20,9 @@ export interface AccountWithStats {
   liffId?: string | null
   stats?: {
     friendCount: number
+    totalFriendCount?: number
+    blockedFriendCount?: number
+    sendableFriendCount?: number
     activeScenarios: number
     messagesThisMonth: number
   }

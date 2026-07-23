@@ -18,6 +18,7 @@ import AccountEditModal from '@/components/accounts/account-edit-modal'
 import ResponseScheduleModal from '@/components/accounts/response-schedule-modal'
 import EmailSenderSettingsDialog from '@/components/settings/email-sender-settings-dialog'
 import { LineQuotaSummary } from '@/components/shared/line-quota-display'
+import FriendStatsPanel from '@/components/accounts/friend-stats-panel'
 
 interface LineAccountListItem {
   id: string
@@ -33,6 +34,9 @@ interface LineAccountListItem {
   updatedAt: string
   stats: {
     friendCount: number
+    totalFriendCount: number
+    blockedFriendCount: number
+    sendableFriendCount: number
     activeScenarios: number
     messagesThisMonth: number
   }
@@ -272,11 +276,14 @@ export default function AccountsPage() {
                   {account.isActive ? '有効' : '無効'}
                 </button>
               </div>
-              <div className="grid grid-cols-3 gap-3 mb-4 py-3 border-t border-b border-gray-100">
-                <div className="text-center">
-                  <p className="text-lg font-bold text-gray-900">{account.stats.friendCount}</p>
-                  <p className="text-xs text-gray-400">友だち</p>
-                </div>
+              <FriendStatsPanel
+                accountId={account.id}
+                total={account.stats.totalFriendCount}
+                blocked={account.stats.blockedFriendCount}
+                sendable={account.stats.sendableFriendCount}
+              />
+
+              <div className="grid grid-cols-2 gap-3 mb-4 py-3 border-t border-b border-gray-100">
                 <div className="text-center">
                   <p className="text-lg font-bold text-blue-600">{account.stats.activeScenarios}</p>
                   <p className="text-xs text-gray-400">配信中</p>
