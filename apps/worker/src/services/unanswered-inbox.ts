@@ -111,8 +111,8 @@ const CANDIDATES_SQL = `
     FROM messages_log
     GROUP BY friend_id
   ),
-  latest_chat_read AS (
-    SELECT c.friend_id, c.read_at
+  latest_chat_state AS (
+    SELECT c.friend_id, c.status, c.updated_at
     FROM chats c
     WHERE c.rowid = (
       SELECT MAX(c2.rowid)
@@ -129,19 +129,16 @@ const CANDIDATES_SQL = `
     agg.last_incoming,
     agg.last_manual,
     agg.last_machine,
-    lcr.read_at
+    lcs.status AS chat_status,
+    lcs.updated_at AS chat_updated_at
   FROM friends f
   LEFT JOIN line_accounts la ON la.id = f.line_account_id
   JOIN agg ON agg.friend_id = f.id
-  LEFT JOIN latest_chat_read lcr ON lcr.friend_id = f.id
+  LEFT JOIN latest_chat_state lcs ON lcs.friend_id = f.id
   WHERE f.is_following = 1
     AND (la.id IS NULL OR la.is_active = 1)
     AND agg.last_incoming IS NOT NULL
     AND (agg.last_manual IS NULL OR agg.last_manual < agg.last_incoming)
-    AND (
-      lcr.read_at IS NULL
-      OR julianday(lcr.read_at) < julianday(agg.last_incoming)
-    )
   ORDER BY agg.last_incoming ASC
 `;
 
@@ -232,7 +229,8 @@ interface RawCandidateRow {
   last_incoming: string;
   last_manual: string | null;
   last_machine: string | null;
-  read_at: string | null;
+  chat_status: string | null;
+  chat_updated_at: string | null;
 }
 
 interface RawIncomingRow {
@@ -241,6 +239,18 @@ interface RawIncomingRow {
   content: string;
   created_at: string;
   source: string | null;
+}
+
+// resolved はその状態へ更新した時点までの受信だけを完了扱いにする。
+// keep_unresponded 等で chat 状態を更新しない新着も、完了境界より後なら再表示する。
+function isAfterCompletionBoundary(
+  chatStatus: string | null | undefined,
+  chatUpdatedAt: string | null | undefined,
+  incomingAt: string,
+): boolean {
+  if (chatStatus !== 'resolved') return true;
+  if (chatUpdatedAt == null) return false;
+  return new Date(incomingAt).getTime() > new Date(chatUpdatedAt).getTime();
 }
 
 function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): UnansweredRow[] {
@@ -274,7 +284,13 @@ function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): Unan
  */
 export async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
   const candidatesResult = await db.prepare(CANDIDATES_SQL).all<RawCandidateRow>();
-  const candidates = candidatesResult.results ?? [];
+  const candidates = (candidatesResult.results ?? []).filter((candidate) => (
+    isAfterCompletionBoundary(
+      candidate.chat_status,
+      candidate.chat_updated_at,
+      candidate.last_incoming,
+    )
+  ));
   if (candidates.length === 0) return [];
 
   // 候補 friend のみを残すための Set。後段の JS group で他の friend は無視する。
@@ -308,11 +324,8 @@ export async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRo
 
   const rows: UnansweredRow[] = [];
   for (const c of candidates) {
-    // Older test doubles and pre-migration rows omit the additive column entirely.
-    // Treat both null and undefined as "not read" so the new boundary stays additive.
-    const readAtMs = c.read_at == null ? null : new Date(c.read_at).getTime();
     const incomings = (incomingsByFriend.get(c.friend_id) ?? []).filter((row) => (
-      readAtMs === null || new Date(row.created_at).getTime() > readAtMs
+      isAfterCompletionBoundary(c.chat_status, c.chat_updated_at, row.created_at)
     ));
     // outgoings は consume するのでコピーを作る (元 Map の他参照を破壊しない)。
     // incomings は新しい順に処理し、各 outgoing を 1 incoming にしか割り当てない。

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { Hono } from 'hono';
+import { upsertChatOnMessage } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { chats } from './chats.js';
 import { conversations } from './conversations.js';
@@ -69,7 +70,7 @@ type ConversationListResponse = {
 };
 
 let raw: Database.Database;
-let request: (path: string) => Promise<Response>;
+let request: (path: string, init?: RequestInit) => Promise<Response>;
 
 beforeEach(() => {
   raw = new Database(':memory:');
@@ -152,7 +153,7 @@ beforeEach(() => {
   app.route('/', chats);
   app.route('/', conversations);
   const bindings = { DB: asD1(raw) } as Env['Bindings'];
-  request = (path) => app.request(path, undefined, bindings);
+  request = (path, init) => app.request(path, init, bindings);
 });
 
 function insertFriend(
@@ -230,7 +231,7 @@ describe('unanswered-inbox is the single source for all unanswered indicators', 
   test('keyword auto reply, keep_unresponded, and human unanswered agree across every API', async () => {
     insertFriend('auto-replied', 'unread');
     insertFriend('keep-unresponded', 'resolved');
-    insertFriend('human-unanswered', 'resolved');
+    insertFriend('human-unanswered', 'in_progress');
 
     insertMessage({
       id: 'incoming-auto',
@@ -274,6 +275,12 @@ describe('unanswered-inbox is the single source for all unanswered indicators', 
       source: 'user_unmatched',
       createdAt: '2026-07-23T09:03:00.000Z',
     });
+    raw.prepare(`
+      UPDATE chats
+      SET read_at = '2026-07-23T09:04:00.000Z',
+          updated_at = '2026-07-23T09:04:00.000Z'
+      WHERE friend_id = 'human-unanswered'
+    `).run();
 
     const result = await snapshot();
     const expectedIds = ['human-unanswered', 'keep-unresponded'];
@@ -304,6 +311,72 @@ describe('unanswered-inbox is the single source for all unanswered indicators', 
       'human-unanswered': true,
       'keep-unresponded': true,
     });
+  });
+
+  test('completion removes every indicator and a later incoming restores every indicator', async () => {
+    const db = asD1(raw);
+    insertFriend('status-roundtrip', 'in_progress');
+    insertMessage({
+      id: 'incoming-before-completion',
+      friendId: 'status-roundtrip',
+      direction: 'incoming',
+      content: '担当者に相談です',
+      source: 'user_unmatched',
+      createdAt: '2026-07-23T09:10:00.000Z',
+    });
+    raw.prepare(`
+      UPDATE chats
+      SET read_at = '2026-07-23T09:11:00.000Z',
+          updated_at = '2026-07-23T09:11:00.000Z'
+      WHERE friend_id = 'status-roundtrip'
+    `).run();
+
+    const expectState = async (
+      isUnanswered: boolean,
+      expectedStatus: 'unread' | 'in_progress' | 'resolved',
+    ) => {
+      const result = await snapshot();
+      expect(result.list.data.rows.some((row) => row.friendId === 'status-roundtrip'))
+        .toBe(isUnanswered);
+      expect(result.list.data.total).toBe(isUnanswered ? 1 : 0);
+      expect(result.count.data.total).toBe(isUnanswered ? 1 : 0);
+      expect(result.chats.data.find((row) => row.friendId === 'status-roundtrip'))
+        .toMatchObject({ status: expectedStatus, isUnanswered });
+      expect(result.unansweredChats.data.some((row) => row.friendId === 'status-roundtrip'))
+        .toBe(isUnanswered);
+      expect(result.conversations.data.items.some((row) => row.friendId === 'status-roundtrip'))
+        .toBe(isUnanswered);
+    };
+
+    await expectState(true, 'in_progress');
+
+    raw.prepare(`
+      UPDATE chats
+      SET read_at = NULL
+      WHERE friend_id = 'status-roundtrip'
+    `).run();
+    const completionResponse = await request('/api/chats/status-roundtrip', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'resolved' }),
+    });
+    expect(completionResponse.status).toBe(200);
+    expect(await completionResponse.json()).toMatchObject({
+      success: true,
+      data: { friendId: 'status-roundtrip', status: 'resolved' },
+    });
+    await expectState(false, 'resolved');
+
+    await upsertChatOnMessage(db, 'status-roundtrip');
+    insertMessage({
+      id: 'incoming-after-completion',
+      friendId: 'status-roundtrip',
+      direction: 'incoming',
+      content: '追加で確認したいです',
+      source: 'user_unmatched',
+      createdAt: '2026-07-23T09:20:00.000Z',
+    });
+    await expectState(true, 'unread');
   });
 
   test('receive, auto reply, new human message, and manual reply stay aligned after each refetch', async () => {

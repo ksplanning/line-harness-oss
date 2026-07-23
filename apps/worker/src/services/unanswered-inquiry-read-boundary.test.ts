@@ -70,7 +70,8 @@ describe('unanswered inquiry read boundary', () => {
         id TEXT PRIMARY KEY,
         friend_id TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'unread',
-        read_at TEXT
+        read_at TEXT,
+        updated_at TEXT NOT NULL
       );
 
       INSERT INTO line_accounts (id, name) VALUES ('account-1', 'LINE 公式');
@@ -78,8 +79,14 @@ describe('unanswered inquiry read boundary', () => {
         (id, display_name, picture_url, line_account_id, is_following)
       VALUES
         ('friend-1', '問い合わせ顧客', NULL, 'account-1', 1);
-      INSERT INTO chats (id, friend_id, status, read_at)
-      VALUES ('chat-1', 'friend-1', 'unread', NULL);
+      INSERT INTO chats (id, friend_id, status, read_at, updated_at)
+      VALUES (
+        'chat-1',
+        'friend-1',
+        'unread',
+        NULL,
+        '2026-07-23T09:59:00.000+09:00'
+      );
       INSERT INTO messages_log
         (id, friend_id, direction, message_type, content, source, created_at)
       VALUES
@@ -117,14 +124,33 @@ describe('unanswered inquiry read boundary', () => {
     };
   }
 
-  test('read_at hides only incoming messages at or before the latest read boundary', async () => {
+  test('対応中は残り、完了境界までを隠し、完了後の新規受信は戻る', async () => {
     expect(await readState()).toEqual({
       rows: [{ friendId: 'friend-1', content: '最初の問い合わせ' }],
       count: 1,
     });
 
-    raw.prepare(`UPDATE chats SET read_at = ? WHERE id = 'chat-1'`)
-      .run('2026-07-23T10:01:00.000+09:00');
+    raw.prepare(`
+      UPDATE chats
+      SET status = 'in_progress', read_at = ?, updated_at = ?
+      WHERE id = 'chat-1'
+    `).run(
+      '2026-07-23T10:01:00.000+09:00',
+      '2026-07-23T10:01:00.000+09:00',
+    );
+    expect(await readState()).toEqual({
+      rows: [{ friendId: 'friend-1', content: '最初の問い合わせ' }],
+      count: 1,
+    });
+
+    raw.prepare(`
+      UPDATE chats
+      SET status = 'resolved', read_at = ?, updated_at = ?
+      WHERE id = 'chat-1'
+    `).run(
+      '2026-07-23T10:01:00.000+09:00',
+      '2026-07-23T10:01:00.000+09:00',
+    );
     expect(await readState()).toEqual({ rows: [], count: 0 });
 
     raw.prepare(
@@ -139,8 +165,14 @@ describe('unanswered inquiry read boundary', () => {
       count: 1,
     });
 
-    raw.prepare(`UPDATE chats SET read_at = ? WHERE id = 'chat-1'`)
-      .run('2026-07-23T10:03:00.000+09:00');
+    raw.prepare(`
+      UPDATE chats
+      SET read_at = ?, updated_at = ?
+      WHERE id = 'chat-1'
+    `).run(
+      '2026-07-23T10:03:00.000+09:00',
+      '2026-07-23T10:03:00.000+09:00',
+    );
     expect(await readState()).toEqual({ rows: [], count: 0 });
   });
 });

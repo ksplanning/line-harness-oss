@@ -8,6 +8,9 @@ interface InboxRow {
   picture_url: string | null;
   line_account_id: string;
   account_name: string;
+  chat_status?: string | null;
+  chat_updated_at?: string | null;
+  read_at?: string | null;
   last_incoming: string;
   last_manual: string | null;
   last_machine: string | null;
@@ -145,6 +148,60 @@ describe('computeUnansweredInbox', () => {
     });
     expect(result.page).toBe(1);
     expect(result.pageSize).toBe(50);
+  });
+
+  test('対応状態が完了の thread は read_at が無くても未対応から除外する', async () => {
+    const db = stubDB({
+      rows: [
+        {
+          friend_id: 'resolved-friend',
+          display_name: '完了済み',
+          picture_url: null,
+          line_account_id: 'a1',
+          account_name: 'L ①',
+          chat_status: 'resolved',
+          chat_updated_at: '2026-07-23T10:01:00+09:00',
+          read_at: null,
+          last_incoming: '2026-07-23T10:00:00+09:00',
+          last_manual: null,
+          last_machine: null,
+          last_incoming_type: 'text',
+          last_incoming_content: '返信せず完了',
+        },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+
+    expect(result.total).toBe(0);
+    expect(result.rows).toEqual([]);
+  });
+
+  test('対応中の thread は従来どおり未対応に含める', async () => {
+    const db = stubDB({
+      rows: [
+        {
+          friend_id: 'in-progress-friend',
+          display_name: '対応中',
+          picture_url: null,
+          line_account_id: 'a1',
+          account_name: 'L ①',
+          chat_status: 'in_progress',
+          chat_updated_at: '2026-07-23T10:01:00+09:00',
+          read_at: '2026-07-23T10:01:00+09:00',
+          last_incoming: '2026-07-23T10:00:00+09:00',
+          last_manual: null,
+          last_machine: null,
+          last_incoming_type: 'text',
+          last_incoming_content: '確認中です',
+        },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+
+    expect(result.total).toBe(1);
+    expect(result.rows[0]?.friendId).toBe('in-progress-friend');
   });
 
   test('total と pageSize / page を切り出す', async () => {
