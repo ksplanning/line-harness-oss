@@ -163,13 +163,6 @@ function safeSheetsStack(error: Error): string | null {
   return frames.length > 0 ? frames.join('\n') : null;
 }
 
-function safeUnexpectedErrorMessage(error: Error): string {
-  const message = error.message.trim();
-  return /^(?:sheets_sync|friend_ledger|form_results|stale_sheets)_[a-z0-9_]{1,80}$/.test(message)
-    ? message
-    : UNEXPECTED_ERROR_MESSAGE;
-}
-
 function safeChunkFailure(error: unknown): {
   errorMessage: string;
   diagnostic: {
@@ -189,7 +182,7 @@ function safeChunkFailure(error: unknown): {
       : 0;
     const statusLabel = status > 0 ? `HTTP ${status}` : 'network';
     return {
-      errorMessage: `Google Sheets ${operation} request failed (${statusLabel}).`,
+      errorMessage: `Google スプレッドシートへの書き込みが拒否されました (${operation} / ${statusLabel})。接続設定を確認して、続きから再開してください。`,
       diagnostic: {
         type: 'GoogleSheetsError',
         operation,
@@ -206,7 +199,7 @@ function safeChunkFailure(error: unknown): {
       type: caughtError ? 'Error' : 'UnknownError',
       operation: null,
       status: null,
-      message: caughtError ? safeUnexpectedErrorMessage(caughtError) : UNEXPECTED_ERROR_MESSAGE,
+      message: UNEXPECTED_ERROR_MESSAGE,
       stack: caughtError ? safeSheetsStack(caughtError) : null,
     },
   };

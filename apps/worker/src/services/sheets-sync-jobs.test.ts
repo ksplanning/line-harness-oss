@@ -305,7 +305,7 @@ describe('durable Sheets sync jobs', () => {
         target: 'ledger',
         status: 'error',
         errorCode: 'sheets_sync_chunk_failed',
-        errorMessage: 'Google Sheets update request failed (HTTP 400).',
+        errorMessage: 'Google スプレッドシートへの書き込みが拒否されました (update / HTTP 400)。接続設定を確認して、続きから再開してください。',
       });
       const serializedLog = JSON.stringify(errorLog.mock.calls, (_key, value: unknown) => {
         if (!(value instanceof Error)) return value;
@@ -337,8 +337,13 @@ describe('durable Sheets sync jobs', () => {
   test('logs a safe unexpected-error message and allowlisted stack without raw cause data', async () => {
     insertFriends(1);
     const started = await startSheetsSyncJob({ db, connection, source: 'manual', actor: 'owner-1' });
-    const sentinels = ['UNEXPECTED_TOKEN_SENTINEL', 'UNEXPECTED_KEY_SENTINEL', 'UNEXPECTED_SHEET_SENTINEL'];
-    const cause = new Error(sentinels.join(' '));
+    const sentinels = [
+      'UNEXPECTED_TOKEN_SENTINEL',
+      'UNEXPECTED_KEY_SENTINEL',
+      'UNEXPECTED_SHEET_SENTINEL',
+      'sheets_sync_access_token_private_key_sheet_content',
+    ];
+    const cause = new Error(sentinels.at(-1));
     cause.name = sentinels[1];
     cause.stack = [
       `${sentinels[1]}: ${sentinels.join(' ')}`,
