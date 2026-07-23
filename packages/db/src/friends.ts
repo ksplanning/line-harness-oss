@@ -110,6 +110,59 @@ export async function getFriendById(
     .first<Friend>();
 }
 
+export type MergeFriendMetadataResult =
+  | { status: 'updated'; friend: Friend }
+  | { status: 'not_found' }
+  | { status: 'invalid' }
+  | { status: 'conflict' };
+
+/**
+ * Merge metadata without overwriting concurrent updates.
+ *
+ * The friends API and form submit actions share this path so both preserve
+ * unrelated metadata and use the same bounded compare-and-swap retry.
+ */
+export async function mergeFriendMetadata(
+  db: D1Database,
+  friendId: string,
+  patch: Readonly<Record<string, unknown>>,
+): Promise<MergeFriendMetadataResult> {
+  let friend = await getFriendById(db, friendId);
+  if (!friend) return { status: 'not_found' };
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let existing: unknown;
+    try {
+      existing = JSON.parse(friend.metadata || '{}') as unknown;
+    } catch {
+      return { status: 'invalid' };
+    }
+    if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+      return { status: 'invalid' };
+    }
+
+    const merged = Object.assign(
+      Object.create(null) as Record<string, unknown>,
+      existing,
+      patch,
+    );
+    const result = await db
+      .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ? AND metadata IS ?')
+      .bind(JSON.stringify(merged), jstNow(), friendId, friend.metadata)
+      .run();
+    if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1) {
+      const updated = await getFriendById(db, friendId);
+      return updated ? { status: 'updated', friend: updated } : { status: 'not_found' };
+    }
+
+    const latest = await getFriendById(db, friendId);
+    if (!latest) return { status: 'not_found' };
+    friend = latest;
+  }
+
+  return { status: 'conflict' };
+}
+
 /**
  * Set friend.first_tracked_link_id ONLY if it is currently NULL.
  * Used to authoritatively pin a friend to the campaign they entered through,

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import {
   getFriends,
   getFriendById,
+  mergeFriendMetadata,
   getFriendCount,
   addTagToFriend,
   removeTagFromFriend,
@@ -512,11 +513,6 @@ friends.put('/api/friends/:id/metadata', async (c) => {
     const friendId = c.req.param('id');
     const db = c.env.DB;
 
-    let friend = await getFriendById(db, friendId);
-    if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
-    }
-
     const body = await c.req.json<Record<string, unknown>>();
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return c.json({ success: false, error: 'Metadata must be an object' }, 400);
@@ -525,36 +521,23 @@ friends.put('/api/friends/:id/metadata', async (c) => {
       return c.json({ success: false, error: '予約された個人情報の項目名は更新できません' }, 400);
     }
 
-    // read-modify-write は metadata 全体を巻き戻すため、元 JSON を CAS 条件にして最大2回 retry。
-    // 自動 Formaloo 同期が間に入っても、由来 marker や他キーを消さない。
-    let saved = false;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const existing = JSON.parse(friend.metadata || '{}') as unknown;
-      if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
-        return c.json({ success: false, error: 'Stored metadata is invalid' }, 500);
-      }
-      const merged = Object.assign(Object.create(null) as Record<string, unknown>, existing, body);
-      const result = await db
-        .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ? AND metadata IS ?')
-        .bind(JSON.stringify(merged), jstNow(), friendId, friend.metadata)
-        .run();
-      if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) === 1) {
-        saved = true;
-        break;
-      }
-      const latest = await getFriendById(db, friendId);
-      if (!latest) return c.json({ success: false, error: 'Friend not found' }, 404);
-      friend = latest;
+    const merged = await mergeFriendMetadata(db, friendId, body);
+    if (merged.status === 'not_found') {
+      return c.json({ success: false, error: 'Friend not found' }, 404);
     }
-    if (!saved) return c.json({ success: false, error: 'Metadata was updated concurrently' }, 409);
+    if (merged.status === 'invalid') {
+      return c.json({ success: false, error: 'Stored metadata is invalid' }, 500);
+    }
+    if (merged.status === 'conflict') {
+      return c.json({ success: false, error: 'Metadata was updated concurrently' }, 409);
+    }
 
-    const updated = await getFriendById(db, friendId);
     const tags = await getFriendTags(db, friendId);
 
     return c.json({
       success: true,
       data: {
-        ...serializeFriend(updated!),
+        ...serializeFriend(merged.friend),
         tags: tags.map(serializeTag),
       },
     });
