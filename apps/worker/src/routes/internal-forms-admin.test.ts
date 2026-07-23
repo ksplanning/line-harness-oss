@@ -129,6 +129,20 @@ const EDITABLE_DEFINITION = {
   ],
 };
 
+const ADMIN_ATTACHMENT_DEFINITION = {
+  ...EDITABLE_DEFINITION,
+  fields: EDITABLE_DEFINITION.fields.map((field) => field.id === 'attachment'
+    ? {
+        ...field,
+        config: {
+          allowMultipleFiles: true,
+          allowedExtensions: ['pdf', 'png'],
+          maxSizeKb: 256,
+        },
+      }
+    : field),
+};
+
 const D1_BINDING_LIMIT_BYTES = 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from('\u0089PNG\r\n\u001a\n', 'latin1');
 const TWO_MIB_PNG_DATA_URL = `data:image/png;base64,${Buffer.concat([
@@ -232,6 +246,58 @@ function call(
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   }, env());
+}
+
+function adminEditFormData(
+  context: { editVersion: number; answerRevision: string },
+  answers: Record<string, unknown>,
+  options: {
+    additions?: Record<number, File[]>;
+    fieldIds?: Record<number, string>;
+    removals?: Record<number, string[]>;
+  } = {},
+): FormData {
+  const body = new FormData();
+  body.set('editVersion', String(context.editVersion));
+  body.set('answerRevision', context.answerRevision);
+  body.set('answers', JSON.stringify(answers));
+  for (const [fieldIndex, fieldId] of Object.entries(options.fieldIds ?? {})) {
+    body.set(`attachment_field_${fieldIndex}`, fieldId);
+  }
+  for (const [fieldIndex, indexes] of Object.entries(options.removals ?? {})) {
+    for (const index of indexes) body.append(`remove_a_${fieldIndex}`, index);
+  }
+  for (const [fieldIndex, files] of Object.entries(options.additions ?? {})) {
+    for (const file of files) body.append(`a_${fieldIndex}`, file);
+  }
+  return body;
+}
+
+function callAdminEditFormData(
+  path: string,
+  body: FormData,
+  options: { auth?: string } = {},
+) {
+  const headers: Record<string, string> = {};
+  if (options.auth !== '') headers.Authorization = options.auth ?? OWNER;
+  return app().request(path, { method: 'PATCH', headers, body }, env());
+}
+
+function forceInternalAnswerUpdateConflict(): void {
+  const base = DB;
+  DB = {
+    prepare(sql: string) {
+      const statement = base.prepare(sql);
+      if (!/UPDATE internal_form_submissions[\s\S]*SET answers_json = \?, edit_version = edit_version \+ 1/i.test(sql)) {
+        return statement;
+      }
+      const wrapped = {
+        bind(..._values: unknown[]) { return wrapped; },
+        async first() { return null; },
+      };
+      return wrapped;
+    },
+  } as unknown as D1Database;
 }
 
 async function internalEditContext(formId: string, rowId: string): Promise<{
@@ -1243,7 +1309,12 @@ describe('internal answer admin read path', () => {
     expect(data.fields).toEqual([
       { slug: 'name', label: 'お名前', type: 'text', required: true, editable: true, editableWhenVisible: true, visible: true },
       { slug: 'contact', label: 'メール', type: 'email', required: false, editable: true, editableWhenVisible: true, visible: true },
-      { slug: 'attachment', label: '添付', type: 'file', required: false, editable: false, editableWhenVisible: false, visible: true },
+      {
+        slug: 'attachment', label: '添付', type: 'file', required: false,
+        editable: false, editableWhenVisible: false, visible: true,
+        attachmentManageable: true,
+        attachmentConfig: { allowMultipleFiles: false, allowedExtensions: [], maxSizeKb: 2048 },
+      },
       { slug: 'signature', label: '署名', type: 'signature', required: false, editable: false, editableWhenVisible: false, visible: true },
       { slug: 'matrix', label: '評価', type: 'matrix', required: false, editable: false, editableWhenVisible: false, visible: true },
       { slug: 'repeat_name', label: '参加者名', type: 'text', required: false, editable: false, editableWhenVisible: false, visible: true },
@@ -1316,6 +1387,260 @@ describe('internal answer admin read path', () => {
     expect(stale.status).toBe(409);
     expect(JSON.parse((raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
       .get('sub-2') as { answers_json: string }).answers_json)).toMatchObject({ name: '更新後' });
+  });
+
+  test('multipart PATCH removes and adds attachments through the shared final-list contract, then GET returns the same list', async () => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(ADMIN_ATTACHMENT_DEFINITION), 'internal-form');
+    const removed = {
+      key: 'internal-form-submissions/internal-form/attachment/removed.pdf',
+      name: '削除対象.pdf', size: 12, type: 'application/pdf',
+    };
+    const kept = {
+      key: 'internal-form-submissions/internal-form/attachment/kept.pdf',
+      name: '残す資料.pdf', size: 34, type: 'application/pdf',
+    };
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({
+        name: '二郎', contact: 'two@example.test', attachment: [removed, kept], kind: '個人',
+      }), 'sub-2');
+    const put = vi.fn(async () => ({}));
+    const del = vi.fn(async () => undefined);
+    bindingOverrides = { IMAGES: { put, delete: del } as unknown as R2Bucket };
+    const context = await internalEditContext('internal-form', 'sub-2');
+    const added = new File(['new'], '追加画像.png', { type: 'image/png' });
+
+    const saved = await callAdminEditFormData(
+      '/api/forms-advanced/internal-form/rows/sub-2',
+      adminEditFormData(
+        context,
+        { name: '更新後', contact: 'new@example.test', kind: '法人', company: '株式会社追加' },
+        { fieldIds: { 2: 'attachment' }, removals: { 2: ['0'] }, additions: { 2: [added] } },
+      ),
+    );
+
+    expect(saved.status).toBe(200);
+    const savedData = (await saved.json() as {
+      data: { answers: Record<string, unknown>; editVersion: number; answerRevision: string };
+    }).data;
+    const finalAttachments = savedData.answers.attachment as Array<Record<string, unknown>>;
+    expect(finalAttachments).toHaveLength(2);
+    expect(finalAttachments[0]).toEqual(kept);
+    expect(finalAttachments[1]).toMatchObject({
+      name: '追加画像.png', size: 3, type: 'image/png',
+    });
+    expect(finalAttachments[1]?.key).toMatch(/^internal-form-submissions\/internal-form\/attachment\/[0-9a-f-]+\.png$/);
+    expect(savedData.answers).toMatchObject({
+      name: '更新後', contact: 'new@example.test', kind: '法人', company: '株式会社追加',
+    });
+    expect(savedData.editVersion).toBe(1);
+    expect(savedData.answerRevision).not.toBe(context.answerRevision);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(del).not.toHaveBeenCalledWith(removed.key);
+
+    const readback = await call('GET', '/api/forms-advanced/internal-form/rows/sub-2');
+    expect(readback.status).toBe(200);
+    expect((await readback.json() as { data: { answers: Record<string, unknown> } }).data.answers)
+      .toEqual(savedData.answers);
+  });
+
+  test('multipart PATCH validates fields revealed by the final attachment list in the same save', async () => {
+    const attachmentBranchDefinition = {
+      ...ADMIN_ATTACHMENT_DEFINITION,
+      logic: [{
+        id: 'show-company-from-attachment',
+        sourceFieldId: 'attachment',
+        operator: 'equals',
+        value: 'unused',
+        action: 'show',
+        targetFieldId: 'company',
+        conditionJoin: 'and',
+        conditions: [{ sourceFieldId: 'attachment', operator: 'is_answered', value: '' }],
+      }],
+    };
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(attachmentBranchDefinition), 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ name: '二郎', contact: 'two@example.test', kind: '個人' }), 'sub-2');
+    const put = vi.fn(async () => ({}));
+    bindingOverrides = { IMAGES: { put, delete: vi.fn(async () => undefined) } as unknown as R2Bucket };
+    const context = await internalEditContext('internal-form', 'sub-2');
+
+    const response = await callAdminEditFormData(
+      '/api/forms-advanced/internal-form/rows/sub-2',
+      adminEditFormData(
+        context,
+        { name: '二郎', contact: 'two@example.test', kind: '個人', company: '株式会社追加' },
+        {
+          fieldIds: { 2: 'attachment' },
+          additions: { 2: [new File(['new'], '追加.pdf', { type: 'application/pdf' })] },
+        },
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const savedAnswers = (await response.json() as {
+      data: { answers: Record<string, unknown> };
+    }).data.answers;
+    expect(savedAnswers).toMatchObject({ company: '株式会社追加' });
+    expect(savedAnswers.attachment).toEqual([
+      expect.objectContaining({ name: '追加.pdf', size: 3, type: 'application/pdf' }),
+    ]);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  test('multipart PATCH accepts a file revealed by another file added in the same final list', async () => {
+    const chainedFileDefinition = {
+      ...ADMIN_ATTACHMENT_DEFINITION,
+      fields: [
+        ...ADMIN_ATTACHMENT_DEFINITION.fields,
+        {
+          id: 'supplement', type: 'file', label: '追加資料', required: true, position: 10,
+          config: { allowMultipleFiles: false, allowedExtensions: ['pdf'], maxSizeKb: 256 },
+        },
+      ],
+      logic: [
+        ...ADMIN_ATTACHMENT_DEFINITION.logic,
+        {
+          id: 'show-supplement-from-attachment',
+          sourceFieldId: 'attachment',
+          operator: 'equals',
+          value: 'unused',
+          action: 'show',
+          targetFieldId: 'supplement',
+          conditionJoin: 'and',
+          conditions: [{ sourceFieldId: 'attachment', operator: 'is_answered', value: '' }],
+        },
+      ],
+    };
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(chainedFileDefinition), 'internal-form');
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify({ name: '二郎', contact: 'two@example.test', kind: '個人' }), 'sub-2');
+    const put = vi.fn(async () => ({}));
+    bindingOverrides = { IMAGES: { put, delete: vi.fn(async () => undefined) } as unknown as R2Bucket };
+    const context = await internalEditContext('internal-form', 'sub-2');
+
+    const response = await callAdminEditFormData(
+      '/api/forms-advanced/internal-form/rows/sub-2',
+      adminEditFormData(
+        context,
+        { name: '二郎', contact: 'two@example.test', kind: '個人' },
+        {
+          fieldIds: { 2: 'attachment', 10: 'supplement' },
+          additions: {
+            2: [new File(['source'], '分岐元.pdf', { type: 'application/pdf' })],
+            10: [new File(['target'], '分岐先.pdf', { type: 'application/pdf' })],
+          },
+        },
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const answers = (await response.json() as { data: { answers: Record<string, unknown> } }).data.answers;
+    expect(answers.attachment).toEqual([expect.objectContaining({ name: '分岐元.pdf' })]);
+    expect(answers.supplement).toEqual([expect.objectContaining({ name: '分岐先.pdf' })]);
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  test('multipart PATCH rejects forged removals and the shared count, extension, and size limits without uploading', async () => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(ADMIN_ATTACHMENT_DEFINITION), 'internal-form');
+    const put = vi.fn(async () => ({}));
+    const del = vi.fn(async () => undefined);
+    bindingOverrides = { IMAGES: { put, delete: del } as unknown as R2Bucket };
+    const baseAnswers = { name: '二郎', contact: 'two@example.test', kind: '個人' };
+    const cases = [
+      {
+        label: '存在しない削除 index',
+        existing: [{
+          key: 'internal-form-submissions/internal-form/attachment/one.pdf',
+          name: 'one.pdf', size: 1, type: 'application/pdf',
+        }],
+        removals: ['9'],
+        additions: [] as File[],
+      },
+      {
+        label: '許可外拡張子', existing: [], removals: [],
+        additions: [new File(['bad'], 'bad.exe', { type: 'application/octet-stream' })],
+      },
+      {
+        label: 'サイズ上限', existing: [], removals: [],
+        additions: [new File([new Uint8Array(256 * 1024 + 1)], 'large.pdf', { type: 'application/pdf' })],
+      },
+      {
+        label: '個数上限',
+        existing: Array.from({ length: 10 }, (_, index) => ({
+          key: `internal-form-submissions/internal-form/attachment/${index}.pdf`,
+          name: `${index}.pdf`, size: 1, type: 'application/pdf',
+        })),
+        removals: [],
+        additions: [new File(['one-more'], 'extra.pdf', { type: 'application/pdf' })],
+      },
+      {
+        label: '項目並び替え後の古い field id',
+        existing: [], removals: [],
+        additions: [new File(['stale'], 'stale.pdf', { type: 'application/pdf' })],
+        fieldId: 'different-file-field',
+      },
+    ];
+
+    for (const scenario of cases) {
+      const answers = { ...baseAnswers, attachment: scenario.existing };
+      raw.prepare('UPDATE internal_form_submissions SET answers_json = ?, edit_version = 0 WHERE id = ?')
+        .run(JSON.stringify(answers), 'sub-2');
+      const context = await internalEditContext('internal-form', 'sub-2');
+      put.mockClear();
+      del.mockClear();
+
+      const response = await callAdminEditFormData(
+        '/api/forms-advanced/internal-form/rows/sub-2',
+        adminEditFormData(context, baseAnswers, {
+          fieldIds: { 2: scenario.fieldId ?? 'attachment' },
+          ...(scenario.removals.length > 0 ? { removals: { 2: scenario.removals } } : {}),
+          ...(scenario.additions.length > 0 ? { additions: { 2: scenario.additions } } : {}),
+        }),
+      );
+
+      expect(response.status, scenario.label).toBe(400);
+      expect(JSON.parse((raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+        .get('sub-2') as { answers_json: string }).answers_json), scenario.label).toEqual(answers);
+      expect(put, scenario.label).not.toHaveBeenCalled();
+      expect(del, scenario.label).not.toHaveBeenCalled();
+    }
+  });
+
+  test('multipart PATCH rolls back only the newly uploaded object when the admin CAS loses', async () => {
+    raw.prepare('UPDATE formaloo_forms SET allow_post_edit = 1, definition_json = ? WHERE id = ?')
+      .run(JSON.stringify(ADMIN_ATTACHMENT_DEFINITION), 'internal-form');
+    const existing = {
+      key: 'internal-form-submissions/internal-form/attachment/existing.pdf',
+      name: '既存.pdf', size: 10, type: 'application/pdf',
+    };
+    const answers = { name: '二郎', contact: 'two@example.test', attachment: [existing], kind: '個人' };
+    raw.prepare('UPDATE internal_form_submissions SET answers_json = ? WHERE id = ?')
+      .run(JSON.stringify(answers), 'sub-2');
+    const put = vi.fn(async () => ({}));
+    const del = vi.fn(async () => undefined);
+    bindingOverrides = { IMAGES: { put, delete: del } as unknown as R2Bucket };
+    const context = await internalEditContext('internal-form', 'sub-2');
+    forceInternalAnswerUpdateConflict();
+
+    const response = await callAdminEditFormData(
+      '/api/forms-advanced/internal-form/rows/sub-2',
+      adminEditFormData(context, { name: '二郎', contact: 'two@example.test', kind: '個人' }, {
+        fieldIds: { 2: 'attachment' },
+        additions: { 2: [new File(['new'], 'new.pdf', { type: 'application/pdf' })] },
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(put).toHaveBeenCalledTimes(1);
+    const uploadedKey = String(put.mock.calls[0]?.[0]);
+    expect(del).toHaveBeenCalledWith(uploadedKey);
+    expect(del).not.toHaveBeenCalledWith(existing.key);
+    expect(JSON.parse((raw.prepare('SELECT answers_json FROM internal_form_submissions WHERE id = ?')
+      .get('sub-2') as { answers_json: string }).answers_json)).toEqual(answers);
   });
 
   test('PATCH queues an immediate Sheets sync after an internal admin answer edit', async () => {

@@ -43,6 +43,13 @@ import {
   type InternalFormDefinition,
   type InternalFormField,
 } from '../services/internal-form-runtime.js';
+import {
+  mergeInternalFormAttachments,
+  retainInternalFormAttachments,
+  rollbackInternalFormUploads,
+  storeInternalFormUploads,
+  type StoredInternalFormUploads,
+} from '../services/internal-form-attachments.js';
 import { validateFormRedirectInput } from '../services/formaloo-redirect.js';
 import { isEditableField, repeatingTemplateIds } from './internal-form-edit-public.js';
 import type { Env } from '../index.js';
@@ -207,10 +214,125 @@ function normalizeAdminAnswerValue(
   return { ok: false };
 }
 
+type AdminMultipartBody = Record<string, string | File | (string | File)[]>;
+
+type AdminEditRequest = {
+  answers: Record<string, unknown>;
+  editVersion: unknown;
+  answerRevision: unknown;
+  multipart: AdminMultipartBody | null;
+};
+
+type AdminAttachmentEditState = {
+  additionsByField: Record<string, File[]>;
+  retainedByField: Record<string, unknown[]>;
+  retainedFileCounts: Record<string, number>;
+};
+
+function multipartStrings(value: AdminMultipartBody[string] | undefined): string[] | null {
+  if (value === undefined) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values.every((entry): entry is string => typeof entry === 'string') ? values : null;
+}
+
+function multipartFiles(value: AdminMultipartBody[string] | undefined): File[] | null {
+  if (value === undefined) return [];
+  const values = Array.isArray(value) ? value : [value];
+  if (!values.every((entry): entry is File => typeof entry !== 'string')) return null;
+  return values.filter((file) => file.name !== '' || file.size > 0);
+}
+
+function singleMultipartString(value: AdminMultipartBody[string] | undefined): string | null {
+  const values = multipartStrings(value);
+  return values?.length === 1 ? values[0] : null;
+}
+
+async function parseAdminEditRequest(c: Context<Env>): Promise<AdminEditRequest | null> {
+  if (!(c.req.header('Content-Type') ?? '').toLowerCase().startsWith('multipart/form-data')) {
+    const body = await c.req.json<unknown>().catch(() => null);
+    return isRecord(body) && isRecord(body.answers)
+      ? {
+          answers: body.answers,
+          editVersion: body.editVersion,
+          answerRevision: body.answerRevision,
+          multipart: null,
+        }
+      : null;
+  }
+
+  const body = await c.req.parseBody({ all: true }).catch(() => null) as AdminMultipartBody | null;
+  if (!body) return null;
+  const answersJson = singleMultipartString(body.answers);
+  const rawEditVersion = singleMultipartString(body.editVersion);
+  const answerRevision = singleMultipartString(body.answerRevision);
+  if (answersJson === null || rawEditVersion === null || answerRevision === null || !/^\d+$/.test(rawEditVersion)) {
+    return null;
+  }
+  const editVersion = Number(rawEditVersion);
+  if (!Number.isSafeInteger(editVersion)) return null;
+  try {
+    const answers = JSON.parse(answersJson) as unknown;
+    return isRecord(answers) ? { answers, editVersion, answerRevision, multipart: body } : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildAdminAttachmentEditState(
+  definition: InternalFormDefinition,
+  body: AdminMultipartBody,
+  storedAnswers: Record<string, unknown>,
+  candidateAnswers: Record<string, unknown>,
+  initiallyVisibleFieldIds: ReadonlySet<string>,
+): { ok: true; state: AdminAttachmentEditState; logicAnswers: Record<string, unknown> } | { ok: false } {
+  const allowedKeys = new Set(['answers', 'editVersion', 'answerRevision']);
+  for (const [index, field] of definition.fields.entries()) {
+    if (field.type !== 'file') continue;
+    allowedKeys.add(`attachment_field_${index}`);
+    allowedKeys.add(`a_${index}`);
+    allowedKeys.add(`remove_a_${index}`);
+  }
+  if (Object.keys(body).some((key) => !allowedKeys.has(key))) return { ok: false };
+
+  const additionsByField = Object.create(null) as Record<string, File[]>;
+  const retainedByField = Object.create(null) as Record<string, unknown[]>;
+  const retainedFileCounts = Object.create(null) as Record<string, number>;
+  const logicAnswers = Object.assign(Object.create(null) as Record<string, unknown>, candidateAnswers);
+
+  for (const [index, field] of definition.fields.entries()) {
+    if (field.type !== 'file') continue;
+    const removals = multipartStrings(body[`remove_a_${index}`]);
+    const additions = multipartFiles(body[`a_${index}`]);
+    if (!removals || !additions) return { ok: false };
+    const hasMutation = removals.length > 0 || additions.length > 0;
+    const assertedFieldId = body[`attachment_field_${index}`] === undefined
+      ? null
+      : singleMultipartString(body[`attachment_field_${index}`]);
+    if ((hasMutation && assertedFieldId !== field.id) || (!hasMutation && assertedFieldId !== null)) {
+      return { ok: false };
+    }
+    const existing = initiallyVisibleFieldIds.has(field.id) ? storedAnswers[field.id] : [];
+    const retained = retainInternalFormAttachments(existing, removals);
+    if (!retained.ok) return { ok: false };
+    additionsByField[field.id] = additions;
+    retainedByField[field.id] = retained.retained;
+    retainedFileCounts[field.id] = retained.retained.length;
+    const finalCount = retained.retained.length + additions.length;
+    if (finalCount > 0) logicAnswers[field.id] = Array(finalCount).fill('attached');
+    else delete logicAnswers[field.id];
+  }
+  return {
+    ok: true,
+    state: { additionsByField, retainedByField, retainedFileCounts },
+    logicAnswers,
+  };
+}
+
 function buildAdminValidationInput(
   definition: InternalFormDefinition,
   candidateAnswers: Record<string, unknown>,
   visibleFieldIds: ReadonlySet<string>,
+  attachmentEdits: AdminAttachmentEditState | null = null,
 ):
   | { ok: true; fields: InternalFormField[]; input: InternalAnswerInput; editableIds: string[] }
   | { ok: false; error: string } {
@@ -221,12 +343,18 @@ function buildAdminValidationInput(
 
   for (const field of definition.fields) {
     const editable = isEditableField(field, templates);
+    const attachmentManageable = attachmentEdits !== null && field.type === 'file';
     if (editable) editableIds.push(field.id);
     if (!visibleFieldIds.has(field.id)) continue;
     const formula = field.type === 'variable' && field.config.variableSubType === 'formula';
-    if (!editable && !formula) continue;
+    if (!editable && !formula && !attachmentManageable) continue;
     const validationIndex = fields.length;
     fields.push(field);
+    if (attachmentManageable) {
+      const additions = attachmentEdits.additionsByField[field.id] ?? [];
+      if (additions.length > 0) input[`a_${validationIndex}`] = additions;
+      continue;
+    }
     if (!editable) continue;
     const normalized = normalizeAdminAnswerValue(field, candidateAnswers[field.id]);
     if (!normalized.ok) return { ok: false, error: `${field.label}の値が不正です` };
@@ -264,6 +392,7 @@ function internalEditMetadata(
     fields: definition.fields.map((field) => {
       const visible = visibleFieldIds.has(field.id);
       const editableWhenVisible = allowPostEdit === 1 && isEditableField(field, templates);
+      const attachmentManageable = allowPostEdit === 1 && field.type === 'file';
       return {
         slug: field.id,
         label: field.label,
@@ -271,6 +400,16 @@ function internalEditMetadata(
         required: field.required,
         ...(field.type === 'multiple_select'
           ? { choices: [...(field.config.choices ?? [])] }
+          : {}),
+        ...(field.type === 'file'
+          ? {
+              attachmentManageable,
+              attachmentConfig: {
+                allowMultipleFiles: field.config.allowMultipleFiles === true,
+                allowedExtensions: [...(field.config.allowedExtensions ?? [])],
+                maxSizeKb: field.config.maxSizeKb ?? 2048,
+              },
+            }
           : {}),
         editable: editableWhenVisible && visible,
         editableWhenVisible,
@@ -966,6 +1105,8 @@ internalFormsAdmin.delete('/api/forms-advanced/:id/rows/:rowId', async (c, next)
   }
 });
 internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) => {
+  let storedUploads: StoredInternalFormUploads | null = null;
+  let mutationCommitted = false;
   try {
     const id = c.req.param('id');
     const form = await getInternalForm(c.env.DB, id);
@@ -974,12 +1115,12 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) 
       return c.json({ success: false, error: 'このフォームは回答編集を許可していません' }, 403);
     }
 
-    const body = await c.req.json<unknown>().catch(() => null);
-    if (!isRecord(body) || !isRecord(body.answers)) {
+    const request = await parseAdminEditRequest(c);
+    if (!request) {
       return c.json({ success: false, error: '編集内容が不正です' }, 400);
     }
-    const expectedEditVersion = parseAdminEditVersion(body.editVersion);
-    const expectedAnswerRevision = parseAnswerRevision(body.answerRevision);
+    const expectedEditVersion = parseAdminEditVersion(request.editVersion);
+    const expectedAnswerRevision = parseAnswerRevision(request.answerRevision);
     if (expectedEditVersion === null || expectedAnswerRevision === null) {
       return c.json({ success: false, error: '回答を再読み込みしてから保存してください' }, 400);
     }
@@ -1000,7 +1141,7 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) 
     const editableFieldIds = new Set(parsed.definition.fields
       .filter((field) => isEditableField(field, templates))
       .map((field) => field.id));
-    const rejectedField = Object.keys(body.answers).find((fieldId) => !editableFieldIds.has(fieldId));
+    const rejectedField = Object.keys(request.answers).find((fieldId) => !editableFieldIds.has(fieldId));
     if (rejectedField) {
       return c.json({ success: false, error: '編集できない項目が含まれています' }, 400);
     }
@@ -1008,11 +1149,35 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) 
     const candidateAnswers = Object.assign(
       Object.create(null) as Record<string, unknown>,
       storedAnswers,
-      body.answers,
+      request.answers,
     );
     const originalVisibleFieldIds = visibleInternalFieldIds(parsed.definition, row, storedAnswers);
-    const visibleFieldIds = visibleInternalFieldIds(parsed.definition, row, candidateAnswers);
-    const alwaysHiddenField = Object.keys(body.answers).find((fieldId) => (
+    const candidateVisibleFieldIds = visibleInternalFieldIds(parsed.definition, row, candidateAnswers);
+    let attachmentEdits: AdminAttachmentEditState | null = null;
+    let visibleFieldIds = candidateVisibleFieldIds;
+    if (request.multipart) {
+      const attachments = buildAdminAttachmentEditState(
+        parsed.definition,
+        request.multipart,
+        storedAnswers,
+        candidateAnswers,
+        originalVisibleFieldIds,
+      );
+      if (!attachments.ok) {
+        return c.json({ success: false, error: '添付の変更内容が不正です' }, 400);
+      }
+      visibleFieldIds = visibleInternalFieldIds(parsed.definition, row, attachments.logicAnswers);
+      const hiddenMutation = parsed.definition.fields.find((field, index) => {
+        if (field.type !== 'file' || visibleFieldIds.has(field.id)) return false;
+        return (multipartStrings(request.multipart?.[`remove_a_${index}`])?.length ?? 0) > 0
+          || (multipartFiles(request.multipart?.[`a_${index}`])?.length ?? 0) > 0;
+      });
+      if (hiddenMutation) {
+        return c.json({ success: false, error: '編集できない項目が含まれています' }, 400);
+      }
+      attachmentEdits = attachments.state;
+    }
+    const alwaysHiddenField = Object.keys(request.answers).find((fieldId) => (
       !originalVisibleFieldIds.has(fieldId) && !visibleFieldIds.has(fieldId)
     ));
     if (alwaysHiddenField) {
@@ -1022,12 +1187,19 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) 
       parsed.definition,
       candidateAnswers,
       visibleFieldIds,
+      attachmentEdits,
     );
     if (!validationInput.ok) {
       return c.json({ success: false, error: validationInput.error }, 400);
     }
-    const validation = validateInternalFormAnswers(validationInput.fields, validationInput.input);
+    const validation = validateInternalFormAnswers(validationInput.fields, validationInput.input, {
+      ...(attachmentEdits ? { retainedFileCounts: attachmentEdits.retainedFileCounts } : {}),
+    });
     if (!validation.ok) return c.json({ success: false, error: validation.error }, 400);
+
+    if (attachmentEdits) {
+      storedUploads = await storeInternalFormUploads(c.env.IMAGES, id, validation.pendingUploads);
+    }
 
     const merged = Object.assign(Object.create(null) as Record<string, unknown>, storedAnswers);
     for (const field of parsed.definition.fields) {
@@ -1035,6 +1207,17 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) 
     }
     for (const fieldId of validationInput.editableIds) delete merged[fieldId];
     Object.assign(merged, validation.answers);
+    if (attachmentEdits && storedUploads) {
+      for (const [fieldId, retained] of Object.entries(attachmentEdits.retainedByField)) {
+        if (!visibleFieldIds.has(fieldId)) continue;
+        const finalAttachments = mergeInternalFormAttachments(
+          retained,
+          storedUploads.attachmentsByField[fieldId] ?? [],
+        );
+        if (finalAttachments.length > 0) merged[fieldId] = finalAttachments;
+        else delete merged[fieldId];
+      }
+    }
     const updated = await updateInternalFormSubmissionAnswers(c.env.DB, {
       authorization: 'admin',
       formId: id,
@@ -1045,11 +1228,16 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) 
       answers: merged,
     });
     if (updated.status !== 'updated') {
+      if (storedUploads) {
+        await rollbackInternalFormUploads(c.env.IMAGES, storedUploads.uploadedKeys);
+        storedUploads = null;
+      }
       return c.json({
         success: false,
         error: '回答が先に更新されています。再読み込みしてから保存してください',
       }, 409);
     }
+    mutationCommitted = true;
     queueSheetsSyncAfterAdminEdit(c, form, updated.submission.id);
     const metadata = internalEditMetadata(form, parsed.definition, updated.submission);
     return c.json({
@@ -1064,6 +1252,9 @@ internalFormsAdmin.patch('/api/forms-advanced/:id/rows/:rowId', async (c, next) 
       },
     });
   } catch (error) {
+    if (storedUploads && !mutationCommitted) {
+      await rollbackInternalFormUploads(c.env.IMAGES, storedUploads.uploadedKeys);
+    }
     console.error('PATCH internal /api/forms-advanced/:id/rows/:rowId error:', error);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
