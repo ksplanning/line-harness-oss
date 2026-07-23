@@ -1,13 +1,15 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
 import { api, fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
-import FlexPreviewComponent from '@/components/flex-preview'
 import FriendInfoSidebar from '@/components/chats/friend-info-sidebar'
+import SharedChatMessageHistory, {
+  StickerMessageImage,
+  type ChatHistoryMessage,
+} from '@/components/chats/chat-message-history'
 import ImageUploader, { type ImageUploaderValue } from '@/components/shared/image-uploader'
 import PersonalizedTextEditor from '@/components/shared/personalized-text-editor'
 import CannedResponsePicker from '@/components/chats/canned-response-picker'
@@ -35,14 +37,6 @@ interface Chat {
   updatedAt: string
 }
 
-interface ChatMessage {
-  id: string
-  direction: 'incoming' | 'outgoing'
-  messageType: string
-  content: string
-  createdAt: string
-}
-
 interface InlineAiFaqDraft {
   id: string
   question: string
@@ -55,7 +49,7 @@ interface InlineAiFaqDraft {
 interface ChatDetail extends Chat {
   friendName: string
   friendPictureUrl: string | null
-  messages?: ChatMessage[]
+  messages?: ChatHistoryMessage[]
   pendingDrafts?: InlineAiFaqDraft[]
 }
 
@@ -79,24 +73,6 @@ const LOADING_SECONDS_PREF_KEY = 'lh_chat_loading_seconds'
 const LOADING_REFRESH_INTERVAL_MS = 4000
 const CHAT_LIST_POLL_INTERVAL_MS = 30_000
 
-function StickerMessageImage({ content }: { content: string }) {
-  const [failed, setFailed] = useState(false)
-  const sticker = parseStickerMessageContent(content)
-  const fallback = stickerFallback(content)
-
-  if (!sticker || failed) return <span>{fallback}</span>
-
-  return (
-    <img
-      src={sticker.stickerUrl}
-      alt={fallback}
-      className="max-h-[140px] max-w-[140px] object-contain"
-      loading="lazy"
-      onError={() => setFailed(true)}
-    />
-  )
-}
-
 function formatDatetime(iso: string | null): string {
   if (!iso) return '-'
   return new Date(iso).toLocaleString('ja-JP', {
@@ -106,21 +82,6 @@ function formatDatetime(iso: string | null): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function sameYmd(aIso: string, bIso: string): boolean {
-  const a = new Date(aIso)
-  const b = new Date(bIso)
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  )
-}
-
-function formatYmdSlash(iso: string): string {
-  const d = new Date(iso)
-  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
 }
 
 function InlineAiDraftCard({
@@ -285,7 +246,7 @@ function ChatMessageHistory({
   onDiscardDraft,
   expanded = false,
 }: {
-  messages: ChatMessage[]
+  messages: ChatHistoryMessage[]
   friendPictureUrl: string | null
   scrollRef: React.RefObject<HTMLDivElement | null>
   pendingDrafts?: InlineAiFaqDraft[]
@@ -295,88 +256,17 @@ function ChatMessageHistory({
   expanded?: boolean
 }) {
   return (
-    <div
-      ref={scrollRef}
-      data-testid="chat-message-history"
-      className="min-h-0 flex-1 overflow-y-auto p-4 space-y-2"
-      style={{ backgroundColor: '#7494C0' }}
-    >
-      {messages.length === 0 ? (
-        <div className="text-center py-8">
-          <p className="text-white/60 text-sm">メッセージはまだありません。</p>
-        </div>
-      ) : (
-        messages.map((msg, idx) => {
-          const prevMsg = idx > 0 ? messages[idx - 1] : null
-          const showDateSep = !prevMsg || !sameYmd(prevMsg.createdAt, msg.createdAt)
-          const isOutgoing = msg.direction === 'outgoing'
-          const draftsAfterMessage = pendingDrafts.filter((draft) => draft.questionMessageId === msg.id)
-
-          let bubbleContent: React.ReactNode
-          if (msg.messageType === 'flex') {
-            bubbleContent = (
-              <div
-                data-testid="chat-flex-message"
-                className={expanded ? 'min-w-0 max-w-full' : 'max-w-[300px]'}
-              >
-                <FlexPreviewComponent content={msg.content} maxWidth={280} />
-              </div>
-            )
-          } else if (msg.messageType === 'image') {
-            try {
-              const parsed = JSON.parse(msg.content)
-              bubbleContent = (
-                <img
-                  src={parsed.originalContentUrl || parsed.previewImageUrl}
-                  alt=""
-                  className={`${expanded ? 'max-w-full sm:max-w-lg' : 'max-w-[200px]'} h-auto rounded`}
-                />
-              )
-            } catch {
-              bubbleContent = <span>🖼️ [画像]</span>
-            }
-          } else if (msg.messageType === 'sticker') {
-            bubbleContent = <StickerMessageImage content={msg.content} />
-          } else {
-            bubbleContent = <span>{msg.content}</span>
-          }
-
-          return (
-            <div key={msg.id}>
-              {showDateSep && (
-                <div className="flex justify-center my-3">
-                  <span className="text-[11px] text-white/85 bg-black/20 px-2.5 py-0.5 rounded-full">
-                    {formatYmdSlash(msg.createdAt)}
-                  </span>
-                </div>
-              )}
-              <div className={`flex items-end gap-2 ${isOutgoing ? 'justify-end' : 'justify-start'}`}>
-                {!isOutgoing && (
-                  friendPictureUrl ? (
-                    <img src={friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0 mb-1" />
-                  ) : (
-                    <div className="w-8 h-8 rounded-full bg-gray-300 flex-shrink-0 mb-1" />
-                  )
-                )}
-
-                <div className={`min-w-0 max-w-full flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
-                  <div
-                    data-testid="chat-message-bubble"
-                    className={`${expanded ? 'w-fit max-w-full sm:max-w-3xl' : 'max-w-[320px]'} px-3 py-2 text-sm break-words whitespace-pre-wrap ${
-                      isOutgoing
-                        ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
-                        : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
-                    }`}
-                    style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
-                  >
-                    {bubbleContent}
-                  </div>
-                  <span className="text-xs text-white/50 mt-0.5 px-1">
-                    {new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
-              </div>
-              {onUpdateDraft && onApproveDraft && onDiscardDraft && draftsAfterMessage.map((draft) => (
+    <SharedChatMessageHistory
+      messages={messages}
+      friendPictureUrl={friendPictureUrl}
+      scrollRef={scrollRef}
+      expanded={expanded}
+      afterMessage={(message) => (
+        <>
+          {onUpdateDraft && onApproveDraft && onDiscardDraft
+            && pendingDrafts
+              .filter((draft) => draft.questionMessageId === message.id)
+              .map((draft) => (
                 <InlineAiDraftCard
                   key={`${draft.id}:${draft.draftAnswer}`}
                   draft={draft}
@@ -385,11 +275,9 @@ function ChatMessageHistory({
                   onDiscard={onDiscardDraft}
                 />
               ))}
-            </div>
-          )
-        })
+        </>
       )}
-    </div>
+    />
   )
 }
 

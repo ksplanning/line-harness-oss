@@ -368,7 +368,42 @@ export interface ChatMessageData {
   direction: 'incoming' | 'outgoing'
   messageType: string
   content: string
+  staffMemberId?: string | null
+  staffMemberName?: string | null
   createdAt: string
+}
+
+export interface InquiryChatDetail {
+  id: string
+  friendId: string
+  friendName: string
+  friendPictureUrl: string | null
+  lineAccountId: string | null
+  lineAccountName: string | null
+  operatorId: string | null
+  assignedStaffId: string | null
+  assignedStaffName: string | null
+  status: 'unread' | 'in_progress' | 'resolved'
+  isUnanswered: boolean
+  notes: string | null
+  readAt: string | null
+  lastMessageAt: string | null
+  createdAt: string | null
+  messages: ChatMessageData[]
+  pendingDrafts: InlineAiFaqDraftData[]
+}
+
+export interface InquiryPreferences {
+  staffId: string
+  staffName: string
+  replySignatureEnabled: boolean
+  canUpdate: boolean
+}
+
+export interface InquirySendResult {
+  sent: true
+  messageId: string
+  message: ChatMessageData
 }
 
 export type FriendWithTags = Friend & { tags: Tag[] }
@@ -1444,7 +1479,7 @@ export const api = {
       )
     },
     get: (id: string) =>
-      fetchApi<ApiResponse<Chat & { messages?: { id: string; content: string; senderType: string; createdAt: string }[] }>>(
+      fetchApi<ApiResponse<Chat & { messages?: ChatMessageData[] }>>(
         `/api/chats/${id}`,
       ),
     create: (data: { friendId: string; operatorId?: string | null }) =>
@@ -1457,11 +1492,30 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
+    openInquiry: (id: string) =>
+      fetchApi<ApiResponse<InquiryChatDetail>>(
+        `/api/chats/${encodeURIComponent(id)}/inquiry/open`,
+        { method: 'POST' },
+      ),
+    complete: (id: string) =>
+      fetchApi<ApiResponse<InquiryChatDetail>>(
+        `/api/chats/${encodeURIComponent(id)}/complete`,
+        { method: 'POST' },
+      ),
     send: (id: string, data: { content: string; messageType?: string }) =>
-      fetchApi<ApiResponse<unknown>>(`/api/chats/${id}/send`, {
+      fetchApi<ApiResponse<InquirySendResult>>(`/api/chats/${encodeURIComponent(id)}/send`, {
         method: 'POST',
         body: JSON.stringify(data),
       }),
+    inquiryPreferences: {
+      get: () =>
+        fetchApi<ApiResponse<InquiryPreferences>>('/api/chats/inquiry/preferences'),
+      update: (replySignatureEnabled: boolean) =>
+        fetchApi<ApiResponse<InquiryPreferences>>('/api/chats/inquiry/preferences', {
+          method: 'PATCH',
+          body: JSON.stringify({ replySignatureEnabled }),
+        }),
+    },
     drafts: {
       update: (chatId: string, draftId: string, data: { draftAnswer: string }) =>
         fetchApi<ApiResponse<ReviewedAiFaqDraftData>>(
