@@ -135,6 +135,14 @@ CREATE TABLE IF NOT EXISTS broadcasts (
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_ab_test_id ON broadcasts (ab_test_id);
 
+CREATE TABLE IF NOT EXISTS broadcast_recipient_snapshots (
+  broadcast_id  TEXT NOT NULL REFERENCES broadcasts (id) ON DELETE CASCADE,
+  friend_id     TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
+  line_user_id  TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  PRIMARY KEY (broadcast_id, friend_id)
+);
+
 -- ============================================================
 --- Account Settings
 --- ============================================================

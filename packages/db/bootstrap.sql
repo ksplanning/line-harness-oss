@@ -228,6 +228,14 @@ CREATE TABLE broadcast_insights (
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE broadcast_recipient_snapshots (
+  broadcast_id  TEXT NOT NULL REFERENCES broadcasts (id) ON DELETE CASCADE,
+  friend_id     TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
+  line_user_id  TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  PRIMARY KEY (broadcast_id, friend_id)
+);
+
 CREATE TABLE "broadcasts" (
   id                 TEXT PRIMARY KEY,
   title              TEXT NOT NULL,

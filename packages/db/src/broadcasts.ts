@@ -1,5 +1,7 @@
 import { jstNow } from './utils.js';
-export type BroadcastTargetType = 'all' | 'tag' | 'multi-account-dedup';
+export type BroadcastTargetType = 'all' | 'tag' | 'segment' | 'multi-account-dedup';
+/** SegmentCondition を JSON.stringify した保存形式。DB 層では内容を変換せず往復する。 */
+export type BroadcastSegmentConditions = string;
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent';
 export type BroadcastMessageType =
   | 'text'
@@ -18,6 +20,7 @@ export interface Broadcast {
   message_content: string;
   target_type: BroadcastTargetType;
   target_tag_id: string | null;
+  segment_conditions: BroadcastSegmentConditions | null;
   status: BroadcastStatus;
   scheduled_at: string | null;
   sent_at: string | null;
@@ -103,6 +106,8 @@ export interface CreateBroadcastInput {
   messageContent: string;
   targetType: BroadcastTargetType;
   targetTagId?: string | null;
+  /** SegmentCondition の JSON 文字列。null/未指定は従来の all/tag 配信と同じ。 */
+  segmentConditions?: BroadcastSegmentConditions | null;
   scheduledAt?: string | null;
   accountIds?: string[];
   dedupPriority?: string[];
@@ -128,8 +133,8 @@ export async function createBroadcast(
   await db
     .prepare(
       `INSERT INTO broadcasts
-         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, sender_preset_id, ab_test_id, ab_variant, messages, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, title, message_type, message_content, target_type, target_tag_id, segment_conditions, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, sender_preset_id, ab_test_id, ab_variant, messages, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -138,6 +143,7 @@ export async function createBroadcast(
       input.messageContent,
       input.targetType,
       input.targetTagId ?? null,
+      input.segmentConditions ?? null,
       initialStatus,
       input.scheduledAt ?? null,
       input.accountIds ? JSON.stringify(input.accountIds) : null,
@@ -161,6 +167,7 @@ export type UpdateBroadcastInput = Partial<
     | 'message_content'
     | 'target_type'
     | 'target_tag_id'
+    | 'segment_conditions'
     | 'status'
     | 'scheduled_at'
     | 'sender_preset_id'
@@ -180,6 +187,7 @@ export async function updateBroadcast(
   db: D1Database,
   id: string,
   updates: UpdateBroadcastInput,
+  options: { expectedStatuses?: BroadcastStatus[] } = {},
 ): Promise<Broadcast | null> {
   const fields: string[] = [];
   const values: unknown[] = [];
@@ -203,6 +211,10 @@ export async function updateBroadcast(
   if (updates.target_tag_id !== undefined) {
     fields.push('target_tag_id = ?');
     values.push(updates.target_tag_id);
+  }
+  if (updates.segment_conditions !== undefined) {
+    fields.push('segment_conditions = ?');
+    values.push(updates.segment_conditions);
   }
   if (updates.status !== undefined) {
     fields.push('status = ?');
@@ -236,10 +248,19 @@ export async function updateBroadcast(
 
   if (fields.length > 0) {
     values.push(id);
-    await db
-      .prepare(`UPDATE broadcasts SET ${fields.join(', ')} WHERE id = ?`)
+    const expectedStatuses = options.expectedStatuses ?? [];
+    if (expectedStatuses.length > 0) values.push(...expectedStatuses);
+    const result = await db
+      .prepare(
+        `UPDATE broadcasts SET ${fields.join(', ')} WHERE id = ?${
+          expectedStatuses.length > 0
+            ? ` AND status IN (${expectedStatuses.map(() => '?').join(', ')})`
+            : ''
+        }`,
+      )
       .bind(...values)
       .run();
+    if (expectedStatuses.length > 0 && !result.meta.changes) return null;
   }
 
   return getBroadcastById(db, id);
@@ -426,6 +447,36 @@ export async function getQueuedBroadcasts(db: D1Database): Promise<Broadcast[]> 
  * 30分閾値 = 0.021日 (julianday). Worker の30秒制限を充分超えてから revoke する。
  */
 export async function recoverStalledBroadcasts(db: D1Database): Promise<void> {
+  // 0) Conditional audience construction crashed before publication.
+  //    batch_offset=-2 is never visible to queue readers. Discard any partial
+  //    snapshot and return the broadcast to an editable/retriable state rather
+  //    than publishing an empty or stale recipient set.
+  await db
+    .prepare(
+      `DELETE FROM broadcast_recipient_snapshots
+       WHERE broadcast_id IN (
+         SELECT id FROM broadcasts
+         WHERE status = 'sending' AND batch_offset = -2
+         AND target_type = 'segment' AND sent_at IS NULL
+         AND batch_lock_at IS NOT NULL
+         AND julianday('now', '+9 hours') - julianday(batch_lock_at) > 0.021
+       )`,
+    )
+    .run();
+  await db
+    .prepare(
+      `UPDATE broadcasts
+       SET status = CASE WHEN scheduled_at IS NULL THEN 'draft' ELSE 'scheduled' END,
+           batch_offset = 0,
+           batch_lock_at = NULL,
+           total_count = 0
+       WHERE status = 'sending' AND batch_offset = -2
+       AND target_type = 'segment' AND sent_at IS NULL
+       AND batch_lock_at IS NOT NULL
+       AND julianday('now', '+9 hours') - julianday(batch_lock_at) > 0.021`,
+    )
+    .run();
+
   // 1) 未着手 (segment / dedup どちらも対象)
   //    閾値は batch_lock_at (= ロック取得時刻) のみ。created_at にフォールバック
   //    すると jstNow() の `+09:00` suffix で 9 時間ズレるバグが出るので使わない。
@@ -436,6 +487,22 @@ export async function recoverStalledBroadcasts(db: D1Database): Promise<void> {
        WHERE status = 'sending' AND batch_offset = -1
        AND sent_at IS NULL AND success_count = 0
        AND (segment_conditions IS NOT NULL OR account_ids IS NOT NULL)
+       AND batch_lock_at IS NOT NULL
+       AND julianday('now', '+9 hours') - julianday(batch_lock_at) > 0.021`,
+    )
+    .run();
+
+  // 1b) A conditional snapshot has a stable friend ordering. If one or more
+  //     complete batches were recorded before a hard crash, success_count is
+  //     the exact resume offset. Legacy dynamic tag queues are excluded because
+  //     their recipient set/order can change between attempts.
+  await db
+    .prepare(
+      `UPDATE broadcasts
+       SET batch_offset = success_count, batch_lock_at = NULL
+       WHERE status = 'sending' AND batch_offset = -1
+       AND sent_at IS NULL AND target_type = 'segment'
+       AND success_count > 0
        AND batch_lock_at IS NOT NULL
        AND julianday('now', '+9 hours') - julianday(batch_lock_at) > 0.021`,
     )
