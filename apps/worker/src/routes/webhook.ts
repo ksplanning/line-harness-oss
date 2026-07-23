@@ -551,17 +551,23 @@ async function handleEvent(
       }
     }
     if (msg.type === 'image' && r2 && workerUrl) {
-      const lineMessageId = msg.id;
-      const { fetchAndStoreIncomingImage } = await import('../services/incoming-image.js');
-      const refs = await fetchAndStoreIncomingImage({
-        r2,
-        workerUrl,
-        channelAccessToken: lineAccessToken,
-        accountId: lineAccountId ?? 'unknown',
-        messageId: lineMessageId,
-      });
-      if (refs) {
-        finalContent = JSON.stringify(refs);
+      try {
+        const lineMessageId = msg.id;
+        const { fetchAndStoreIncomingImage } = await import('../services/incoming-image.js');
+        const refs = await fetchAndStoreIncomingImage({
+          r2,
+          workerUrl,
+          channelAccessToken: lineAccessToken,
+          accountId: lineAccountId ?? 'unknown',
+          messageId: lineMessageId,
+        });
+        if (refs) {
+          finalContent = JSON.stringify(refs);
+        }
+      } catch {
+        console.error(
+          '[staff-notify] incoming image storage failed; using type label',
+        );
       }
     }
 

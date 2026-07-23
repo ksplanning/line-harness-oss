@@ -12,6 +12,10 @@ const staffNotificationMocks = vi.hoisted(() => ({
   tryLinkStaffLineFromWebhook: vi.fn(),
 }));
 
+const incomingImageMocks = vi.hoisted(() => ({
+  fetchAndStoreIncomingImage: vi.fn(),
+}));
+
 // Stub the DB graph — these tests focus on webhook guard behavior and the
 // first-contact friend registration path without touching real D1/LINE.
 vi.mock('@line-crm/db', () => ({
@@ -66,6 +70,10 @@ vi.mock('../services/staff-notify/router.js', () => ({
 
 vi.mock('../services/staff-notify/line-link.js', () => ({
   tryLinkStaffLineFromWebhook: staffNotificationMocks.tryLinkStaffLineFromWebhook,
+}));
+
+vi.mock('../services/incoming-image.js', () => ({
+  fetchAndStoreIncomingImage: incomingImageMocks.fetchAndStoreIncomingImage,
 }));
 
 vi.mock('../services/step-delivery.js', () => ({
@@ -130,6 +138,7 @@ beforeEach(() => {
   staffNotificationMocks.tryLinkStaffLineFromWebhook.mockResolvedValue({
     status: 'not_handled',
   });
+  incomingImageMocks.fetchAndStoreIncomingImage.mockResolvedValue(null);
 });
 
 describe('POST /webhook — DoS defenses (#104)', () => {
@@ -368,7 +377,10 @@ describe('POST /webhook — isolated staff LINE linkage and inquiry notification
 
   async function postEvent(
     event: Record<string, unknown>,
-    options: { awaitProcessing?: boolean } = {},
+    options: {
+      awaitProcessing?: boolean;
+      env?: Record<string, unknown>;
+    } = {},
   ) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     const statement = {
@@ -401,6 +413,7 @@ describe('POST /webhook — isolated staff LINE linkage and inquiry notification
       ...baseEnv,
       DB: db,
       ADMIN_PUBLIC_URL: 'https://admin.example.test',
+      ...options.env,
     }, executionCtx);
     expect(response.status).toBe(200);
     const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
@@ -557,6 +570,52 @@ describe('POST /webhook — isolated staff LINE linkage and inquiry notification
         deepLink: 'https://admin.example.test/chats?friend=friend-1',
       },
     );
+  });
+
+  test('falls back to the image label when image storage fails and still stores and notifies', async () => {
+    account();
+    existingFriend();
+    incomingImageMocks.fetchAndStoreIncomingImage.mockRejectedValueOnce(
+      new Error('private image storage failure'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const { db } = await postEvent({
+        type: 'message',
+        replyToken: 'reply-image-fallback',
+        message: { type: 'image', id: 'message-image-fallback' },
+        timestamp: Date.now(),
+        source: { type: 'user', userId: 'U-customer' },
+        webhookEventId: 'event-image-fallback',
+        deliveryContext: { isRedelivery: false },
+        mode: 'active',
+      }, {
+        env: {
+          IMAGES: {} as R2Bucket,
+          WORKER_URL: 'https://worker.example.test',
+        },
+      });
+
+      expect(db.prepare).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO messages_log'),
+      );
+      expect(staffNotificationMocks.dispatchStaffNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ DB: db }),
+        expect.objectContaining({
+          eventType: 'inquiry_received',
+          excerpt: '[画像]',
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[staff-notify] incoming image storage failed; using type label',
+      );
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(
+        'private image storage failure',
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('follow never depends on staff-link lookup and keeps the customer follow path', async () => {
