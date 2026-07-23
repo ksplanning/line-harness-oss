@@ -319,6 +319,23 @@ CREATE TABLE conversion_points (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE email_sender_settings (
+  line_account_id       TEXT NOT NULL PRIMARY KEY REFERENCES line_accounts (id) ON DELETE CASCADE,
+  sender_email          TEXT NOT NULL,
+  sender_name           TEXT,
+  sender_domain         TEXT NOT NULL,
+  resend_domain_id      TEXT,
+  resend_domain_status  TEXT NOT NULL DEFAULT 'not_started',
+  dns_records_json      TEXT NOT NULL DEFAULT '[]'
+                        CHECK (
+                          json_valid(dns_records_json)
+                          AND json_type(dns_records_json) = 'array'
+                        ),
+  domain_checked_at     TEXT,
+  created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE entry_routes (
   id          TEXT PRIMARY KEY,
   ref_code    TEXT UNIQUE NOT NULL,
