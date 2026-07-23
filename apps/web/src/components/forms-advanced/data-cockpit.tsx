@@ -186,7 +186,17 @@ export default function DataCockpit(props: DataCockpitProps) {
     try {
       const response = await fetch(
         `/api/forms-advanced/${encodeURIComponent(row.formId)}/rows/${encodeURIComponent(row.id)}/approve-external-edit`,
-        { method: 'POST', headers: { Accept: 'application/json' } },
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            expectedExternalEditSource: row.externalEditSource,
+            expectedExternalEditedAt: row.externalEditedAt ?? null,
+          }),
+        },
       )
       if (!response.ok) throw new Error('approve_external_edit_failed')
       const revision = pendingExternalEditRevision(row)

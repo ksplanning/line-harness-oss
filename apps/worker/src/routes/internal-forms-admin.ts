@@ -1121,16 +1121,43 @@ internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/approve-external-ed
     const form = await getInternalForm(c.env.DB, id);
     if (!form) return next();
     const rowId = c.req.param('rowId');
+    const body = await c.req.json<{
+      expectedExternalEditSource?: unknown;
+      expectedExternalEditedAt?: unknown;
+    }>().catch(() => null);
+    const expectedSource = body?.expectedExternalEditSource;
+    const hasExpectedEditedAt = body !== null
+      && Object.prototype.hasOwnProperty.call(body, 'expectedExternalEditedAt');
+    const expectedEditedAt = body?.expectedExternalEditedAt;
+    if (
+      (expectedSource !== 'edit_link' && expectedSource !== 'sheet')
+      || !hasExpectedEditedAt
+      || (expectedEditedAt !== null && typeof expectedEditedAt !== 'string')
+    ) {
+      return c.json({
+        success: false,
+        error: '画面を再読み込みしてから承認してください',
+      }, 400);
+    }
     const row = await getInternalFormSubmission(c.env.DB, id, rowId);
     if (!row) return c.json({ success: false, error: '回答が見つかりません' }, 404);
     if (!row.external_edit_source || row.external_edit_approved_at) {
       return c.json({ success: false, error: '未承認の外部編集ではありません' }, 409);
     }
+    if (
+      row.external_edit_source !== expectedSource
+      || row.external_edited_at !== expectedEditedAt
+    ) {
+      return c.json({
+        success: false,
+        error: '回答が更新されたため、内容を確認し直してください',
+      }, 409);
+    }
     const approved = await approveInternalFormSubmissionExternalEdit(c.env.DB, {
       formId: id,
       submissionId: rowId,
-      expectedSource: row.external_edit_source,
-      expectedEditedAt: row.external_edited_at,
+      expectedSource,
+      expectedEditedAt,
       expectedAnswersJson: row.answers_json,
     });
     if (!approved) {

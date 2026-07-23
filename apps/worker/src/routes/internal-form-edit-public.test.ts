@@ -1713,6 +1713,7 @@ describe('POST /ife/:token', () => {
         rows: Array<{
           id: string;
           externalEditSource: string | null;
+          externalEditedAt: string | null;
           externalEditApprovedAt: string | null;
         }>;
         total: number;
@@ -1723,6 +1724,7 @@ describe('POST /ife/:token', () => {
       rows: [{
         id: 'ifs-1',
         externalEditSource: 'edit_link',
+        externalEditedAt: expect.any(String),
         externalEditApprovedAt: null,
       }],
       total: 1,
@@ -1734,7 +1736,14 @@ describe('POST /ife/:token', () => {
     ).get() as { answers_json: string }).answers_json;
     const approved = await adminApp().request(
       '/api/forms-advanced/form-1/rows/ifs-1/approve-external-edit',
-      { method: 'POST' },
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedExternalEditSource: 'edit_link',
+          expectedExternalEditedAt: pendingData.rows[0]?.externalEditedAt,
+        }),
+      },
       bindings(),
     );
     expect(approved.status).toBe(200);

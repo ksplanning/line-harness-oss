@@ -235,7 +235,17 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/forms-advanced/form-1/rows/s1/approve-external-edit',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          expectedExternalEditSource: 'edit_link',
+          expectedExternalEditedAt: '2026-07-23T10:00:00+09:00',
+        }),
+      }),
     ))
     await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
     expect(screen.getByText('回答がありません')).toBeTruthy()

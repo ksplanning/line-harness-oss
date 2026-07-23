@@ -1242,6 +1242,10 @@ describe('internal answer admin read path', () => {
     const approved = await call(
       'POST',
       '/api/forms-advanced/internal-form/rows/sub-1/approve-external-edit',
+      {
+        expectedExternalEditSource: 'edit_link',
+        expectedExternalEditedAt: '2026-07-23T10:00:00+09:00',
+      },
     );
     expect(approved.status).toBe(200);
     expect(await approved.json()).toMatchObject({
@@ -1299,6 +1303,10 @@ describe('internal answer admin read path', () => {
     const response = await call(
       'POST',
       '/api/forms-advanced/internal-form/rows/sub-1/approve-external-edit',
+      {
+        expectedExternalEditSource: 'edit_link',
+        expectedExternalEditedAt: '2026-07-23T10:00:00+09:00',
+      },
     );
 
     expect(response.status).toBe(409);
@@ -1309,6 +1317,45 @@ describe('internal answer admin read path', () => {
        FROM internal_form_submissions WHERE id = 'sub-1'`,
     ).get()).toEqual({
       answers_json: '{"name":"承認直前の再編集"}',
+      external_edit_source: 'sheet',
+      external_edited_at: '2026-07-23T10:01:00+09:00',
+      external_edit_approved_at: null,
+    });
+  });
+
+  test('returns 409 when the browser approves an older displayed external edit', async () => {
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-23T10:00:00+09:00'
+       WHERE id = 'sub-1'`,
+    ).run();
+    const displayed = {
+      expectedExternalEditSource: 'edit_link',
+      expectedExternalEditedAt: '2026-07-23T10:00:00+09:00',
+    };
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET answers_json = '{"name":"画面表示後のシート編集"}',
+           external_edit_source = 'sheet',
+           external_edited_at = '2026-07-23T10:01:00+09:00',
+           external_edit_approved_at = NULL
+       WHERE id = 'sub-1'`,
+    ).run();
+
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/internal-form/rows/sub-1/approve-external-edit',
+      displayed,
+    );
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare(
+      `SELECT answers_json, external_edit_source, external_edited_at,
+              external_edit_approved_at
+       FROM internal_form_submissions WHERE id = 'sub-1'`,
+    ).get()).toEqual({
+      answers_json: '{"name":"画面表示後のシート編集"}',
       external_edit_source: 'sheet',
       external_edited_at: '2026-07-23T10:01:00+09:00',
       external_edit_approved_at: null,
