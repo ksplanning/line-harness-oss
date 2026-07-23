@@ -56,6 +56,10 @@ import {
 } from '../services/internal-form-attachments.js';
 import { validateFormRedirectInput } from '../services/formaloo-redirect.js';
 import { createInternalFormEditUrl } from '../services/internal-form-edit.js';
+import {
+  parseFormSubmitActions,
+  resolveFormSubmitActions,
+} from '../services/form-submit-actions.js';
 import { isEditableField, repeatingTemplateIds } from './internal-form-edit-public.js';
 import type { Env } from '../index.js';
 
@@ -534,6 +538,10 @@ async function serializeInternalForm(c: Context<Env>, form: FormalooForm) {
     submitCount,
     onSubmitTagId: form.on_submit_tag_id,
     onSubmitScenarioId: form.on_submit_scenario_id,
+    submitActions: resolveFormSubmitActions(
+      form.on_submit_actions_json,
+      form.on_submit_tag_id,
+    ),
     submitMessage: form.submit_message,
     allowPostEdit: form.allow_post_edit,
     allowBranchEdit: form.allow_branch_edit,
@@ -887,6 +895,13 @@ internalFormsAdmin.put('/api/forms-advanced/:id', async (c, next) => {
     const allowEditMail = body.allowEditMail === undefined
       ? undefined
       : (body.allowEditMail === 1 || body.allowEditMail === true || body.allowEditMail === '1' ? 1 : 0);
+    const submitActionsProvided = hasOwn(body, 'submitActions');
+    const submitActionsValidation = submitActionsProvided
+      ? parseFormSubmitActions(body.submitActions)
+      : null;
+    if (submitActionsValidation && !submitActionsValidation.ok) {
+      return c.json({ success: false, error: submitActionsValidation.error }, 400);
+    }
     const redirectCheck = validateFormRedirectInput(body.formRedirect);
     if (!redirectCheck.ok) return c.json({ success: false, error: redirectCheck.error }, 400);
 
@@ -989,6 +1004,9 @@ internalFormsAdmin.put('/api/forms-advanced/:id', async (c, next) => {
       allow_branch_edit: allowBranchEdit ?? form.allow_branch_edit,
       allow_edit_mail: allowEditMail ?? form.allow_edit_mail,
       edit_mail_field_slug: editMailFieldId === undefined ? form.edit_mail_field_slug : editMailFieldId,
+      on_submit_actions_json: submitActionsValidation?.ok
+        ? JSON.stringify(submitActionsValidation.actions)
+        : form.on_submit_actions_json,
       updated_at: updatedAt,
     });
     const saved = await updateFormalooForm(c.env.DB, form.id, {
@@ -1000,6 +1018,9 @@ internalFormsAdmin.put('/api/forms-advanced/:id', async (c, next) => {
       allowBranchEdit,
       allowEditMail,
       editMailFieldSlug: editMailFieldId,
+      onSubmitActionsJson: submitActionsValidation?.ok
+        ? JSON.stringify(submitActionsValidation.actions)
+        : undefined,
     });
     if (!saved) {
       return c.json({

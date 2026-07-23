@@ -212,6 +212,49 @@ describe('T-C1/T-C3 冪等 upsert + LINE 後処理 (published のみ / N-3・N-7
     expect(tagCount('fr_1', 'tag1')).toBe(1);
   });
 
+  test('ordered tag/field actions run once behind the existing submission claim', async () => {
+    seedTag('tag1');
+    raw.prepare(
+      `INSERT INTO tags (id, name, color, created_at)
+       VALUES ('tag2', 't2', '#000', '2026-07-10T00:00:00+09:00')`,
+    ).run();
+    seedFriend('fr_1');
+    raw.prepare(
+      `INSERT INTO friend_field_definitions (id, name, default_value)
+       VALUES ('field-payment', '入金確認', '未')`,
+    ).run();
+    seedForm('fa-actions', 'form_actions', 'published', 'tag1');
+    const actions = [
+      { type: 'add_tag', tagId: 'tag1' },
+      { type: 'remove_tag', tagId: 'tag1' },
+      { type: 'add_tag', tagId: 'tag2' },
+      { type: 'set_field', fieldId: 'field-payment', value: '済' },
+      { type: 'clear_field', fieldId: 'field-payment' },
+    ];
+    raw.prepare(
+      "UPDATE formaloo_forms SET on_submit_actions_json = ? WHERE id = 'fa-actions'",
+    ).run(JSON.stringify(actions));
+
+    await postWebhook(
+      TOKEN,
+      payloadFor('sub-actions', 'form_actions', 'fr_1'),
+      { sign: true },
+    );
+    await postWebhook(
+      TOKEN,
+      payloadFor('sub-actions', 'form_actions', 'fr_1'),
+      { sign: true },
+    );
+
+    expect(submitCount('fa-actions')).toBe(1);
+    expect(raw.prepare(
+      "SELECT tag_id FROM friend_tags WHERE friend_id = 'fr_1' ORDER BY tag_id",
+    ).all()).toEqual([{ tag_id: 'tag2' }]);
+    expect(JSON.parse(raw.prepare(
+      "SELECT metadata FROM friends WHERE id = 'fr_1'",
+    ).pluck().get() as string)).toMatchObject({ 入金確認: '' });
+  });
+
   test('draft form の回答 → 隔離: tag なし / consume-at-receipt で line_processed=1 (N-7 / R1 F1)', async () => {
     seedTag('tag1');
     seedFriend('fr_1');

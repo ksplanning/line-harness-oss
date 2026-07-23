@@ -9,7 +9,6 @@ import {
   upsertFormalooSubmission,
   claimFormalooLineProcessing,
   incrementFormalooSubmitCount,
-  addTagToFriend,
   enrollFriendInScenario,
   getFriendById,
   getFriendByLineUserId,
@@ -36,6 +35,10 @@ import {
 import { verifyEditToken, type EditTokenPayload } from '../services/formaloo-edit-token.js';
 import { extractFormalooReceiptMetadata, processFormalooEditMail } from '../services/formaloo-edit-mail.js';
 import { resolveFormalooClient } from '../services/formaloo-client.js';
+import {
+  executeFormSubmitActions,
+  resolveFormSubmitActions,
+} from '../services/form-submit-actions.js';
 import type { Env } from '../index.js';
 
 // 弾M (form-post-edit / T-C1): ②本人再入場 prefill の上限 (URL 長制限対策 / R2)。
@@ -212,8 +215,8 @@ formalooPublic.post('/formaloo/webhook/:token', async (c) => {
 });
 
 /**
- * 回答後の LINE 後処理 (既存 forms.ts ロジック流用): tag 付与 / シナリオ開始 / 任意メッセージ push。
- * friend が解決できない回答は対象外 (誤 tag/誤送信を出さない)。すべて best-effort (fail-soft / N-6)。
+ * 回答後処理: 順序付き action / シナリオ開始 / 任意メッセージ push。
+ * friend が解決できない action は skip として記録し、誤更新・誤送信を出さない。すべて best-effort (fail-soft / N-6)。
  */
 async function fireFormalooSubmitSideEffects(
   c: { env: Env['Bindings'] },
@@ -221,15 +224,21 @@ async function fireFormalooSubmitSideEffects(
   friendId: string | null,
 ): Promise<void> {
   const db = c.env.DB;
-  if (!friendId) return;
 
-  const tasks: Promise<unknown>[] = [];
-  if (form.on_submit_tag_id) tasks.push(addTagToFriend(db, friendId, form.on_submit_tag_id));
-  if (form.on_submit_scenario_id) tasks.push(enrollFriendInScenario(db, friendId, form.on_submit_scenario_id));
-  if (tasks.length > 0) {
-    const results = await Promise.allSettled(tasks);
-    for (const r of results) if (r.status === 'rejected') console.error('formaloo submit side-effect failed:', r.reason);
+  const tasks: Promise<unknown>[] = [
+    executeFormSubmitActions(db, {
+      formId: form.id,
+      friendId,
+      actions: resolveFormSubmitActions(form.on_submit_actions_json, form.on_submit_tag_id),
+    }),
+  ];
+  if (friendId && form.on_submit_scenario_id) {
+    tasks.push(enrollFriendInScenario(db, friendId, form.on_submit_scenario_id));
   }
+  const results = await Promise.allSettled(tasks);
+  for (const r of results) if (r.status === 'rejected') console.error('formaloo submit side-effect failed:', r.reason);
+
+  if (!friendId) return;
 
   // 任意メッセージ push (best-effort): submit_message 設定 + friend の line_user_id が要る。
   // 未設定 / 未解決 (dev/test) は skip = fail-soft。LineClient は動的 import (テストで network を触らない)。

@@ -1,6 +1,5 @@
 import { Hono, type Context, type Next } from 'hono';
 import {
-  addTagToFriend,
   countInternalFormSubmissionsForForm,
   createInternalFormSubmissionForPublishedDefinition,
   enrollFriendInScenario,
@@ -41,6 +40,10 @@ import {
   rollbackInternalFormUploads,
   storeInternalFormUploads,
 } from '../services/internal-form-attachments.js';
+import {
+  executeFormSubmitActions,
+  resolveFormSubmitActions,
+} from '../services/form-submit-actions.js';
 import type { Env } from '../index.js';
 
 export const internalFormsPublic = new Hono<Env>();
@@ -1232,18 +1235,22 @@ internalFormsPublic.post('/f/:formId', async (c) => {
       throw error;
     }
 
-    if (friend) {
-      const effects: Promise<unknown>[] = [];
-      if (runtime.form.on_submit_tag_id) {
-        effects.push(addTagToFriend(c.env.DB, friend.id, runtime.form.on_submit_tag_id));
-      }
-      if (runtime.form.on_submit_scenario_id) {
-        effects.push(enrollFriendInScenario(c.env.DB, friend.id, runtime.form.on_submit_scenario_id));
-      }
-      const settled = await Promise.allSettled(effects);
-      for (const result of settled) {
-        if (result.status === 'rejected') console.error('internal form post-processing failed:', result.reason);
-      }
+    const effects: Promise<unknown>[] = [
+      executeFormSubmitActions(c.env.DB, {
+        formId: runtime.form.id,
+        friendId: friend?.id ?? null,
+        actions: resolveFormSubmitActions(
+          runtime.form.on_submit_actions_json,
+          runtime.form.on_submit_tag_id,
+        ),
+      }),
+    ];
+    if (friend && runtime.form.on_submit_scenario_id) {
+      effects.push(enrollFriendInScenario(c.env.DB, friend.id, runtime.form.on_submit_scenario_id));
+    }
+    const settled = await Promise.allSettled(effects);
+    for (const result of settled) {
+      if (result.status === 'rejected') console.error('internal form post-processing failed:', result.reason);
     }
 
     if (runtime.definition.formRedirect.url) {

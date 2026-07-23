@@ -760,8 +760,52 @@ describe('internal public form POST /f/:formId', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  test('runs ordered tag/field actions after save and continues after one action fails', async () => {
+    seedForm('fa_actions');
+    raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-2', '優先')").run();
+    raw.prepare(
+      `INSERT INTO friend_field_definitions (id, name, default_value)
+       VALUES ('field-payment', '入金確認', '未')`,
+    ).run();
+    const actions = [
+      { type: 'add_tag', tagId: 'missing-tag' },
+      { type: 'add_tag', tagId: 'tag-1' },
+      { type: 'remove_tag', tagId: 'tag-1' },
+      { type: 'add_tag', tagId: 'tag-2' },
+      { type: 'set_field', fieldId: 'field-payment', value: '済' },
+      { type: 'clear_field', fieldId: 'field-payment' },
+      { type: 'set_field', fieldId: 'field-payment', value: '後続成功' },
+    ];
+    raw.prepare(
+      "UPDATE formaloo_forms SET on_submit_actions_json = ? WHERE id = 'fa_actions'",
+    ).run(JSON.stringify(actions));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const token = await signFriendToken('friend-1', FRIEND_SECRET);
+    const body = validBody();
+    body.set('fr_id', token!);
+
+    const response = await postForm('fa_actions', body);
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare(
+      "SELECT tag_id FROM friend_tags WHERE friend_id = 'friend-1' ORDER BY tag_id",
+    ).all()).toEqual([{ tag_id: 'tag-2' }]);
+    expect(JSON.parse(raw.prepare(
+      "SELECT metadata FROM friends WHERE id = 'friend-1'",
+    ).pluck().get() as string)).toMatchObject({ 入金確認: '後続成功' });
+    expect(logSpy.mock.calls.map(([line]) => String(line))
+      .filter((line) => line.startsWith('[form-submit-action] ')))
+      .toEqual([expect.stringContaining('"status":"failed"')]);
+  });
+
   test('keeps an invalid friend token anonymous and ignores unknown answer keys', async () => {
     seedForm('fa_internal');
+    raw.prepare(
+      `UPDATE formaloo_forms
+       SET on_submit_actions_json = '[{"type":"add_tag","tagId":"tag-1"}]'
+       WHERE id = 'fa_internal'`,
+    ).run();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const body = validBody();
     body.set('fr_id', 'friend-1.tampered');
     body.set('admin', 'true');
@@ -783,6 +827,9 @@ describe('internal public form POST /f/:formId', () => {
     expect(row.origin_channel).toBe('invalid');
     expect(JSON.parse(row.answers_json)).not.toHaveProperty('admin');
     expect(raw.prepare('SELECT COUNT(*) AS n FROM friend_tags').get()).toEqual({ n: 0 });
+    expect(logSpy.mock.calls.map(([line]) => String(line))
+      .filter((line) => line.startsWith('[form-submit-action] ')))
+      .toEqual([expect.stringContaining('"reason":"friend_not_linked"')]);
     expect(notificationMocks.notifyInternalFormSubmission).toHaveBeenCalledWith(
       expect.objectContaining({ DB }),
       { formId: 'fa_internal', submissionId: row.id },

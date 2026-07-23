@@ -52,6 +52,10 @@ import {
   friendLinkSecret,
 } from '../services/formaloo-row-edit.js';
 import {
+  parseFormSubmitActions,
+  resolveFormSubmitActions,
+} from '../services/form-submit-actions.js';
+import {
   validateHarnessField,
   isDecorationType,
   toCsv,
@@ -292,6 +296,10 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
     submitCount: submissionCount,
     onSubmitTagId: form.on_submit_tag_id,
     onSubmitScenarioId: form.on_submit_scenario_id,
+    submitActions: resolveFormSubmitActions(
+      form.on_submit_actions_json,
+      form.on_submit_tag_id,
+    ),
     submitMessage: form.submit_message,
     // form-media-limits ③: 回答者後編集の許可フラグ (0|1)。builder 読込用。弾S では inert (実効化は弾M)。
     allowPostEdit: form.allow_post_edit,
@@ -531,8 +539,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
 
     const body = await c.req
-      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowBranchEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown }>()
-      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowBranchEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown });
+      .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowBranchEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown; submitActions?: unknown }>()
+      .catch(() => ({}) as { fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowBranchEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown; submitActions?: unknown });
     if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
       return c.json({ success: false, error: 'フォーム名を入力してください' }, 400);
     }
@@ -562,6 +570,13 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       const validation = validateFriendMetadataMappings(body.friendMetadataMappings);
       if (!validation.ok) return c.json({ success: false, error: validation.error }, 400);
       friendMetadataMappings = validation.mappings;
+    }
+    const submitActionsProvided = Object.prototype.hasOwnProperty.call(body, 'submitActions');
+    const submitActionsValidation = submitActionsProvided
+      ? parseFormSubmitActions(body.submitActions)
+      : null;
+    if (submitActionsValidation && !submitActionsValidation.ok) {
+      return c.json({ success: false, error: submitActionsValidation.error }, 400);
     }
     // route-terminal-phase2 (T-B2 / CI-4/CX-7): redirect URL は Formaloo server が無検証 STORE する (spike M7)
     //   → worker authoritative gate で raw body.formRedirect を厳格検証し、危険 URL/非 string を push 前に 400
@@ -860,6 +875,9 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       allowEditMail,
       friendMetadataMappingsJson: friendMetadataMappingsProvided
         ? JSON.stringify(friendMetadataMappings ?? [])
+        : undefined,
+      onSubmitActionsJson: submitActionsValidation?.ok
+        ? JSON.stringify(submitActionsValidation.actions)
         : undefined,
       // Phase B / G-1: builder 明示 internal id を既知の remote slug に解決。先頭 email fallback は禁止。
       editMailFieldSlug: editMailFieldSlugBeforePush,

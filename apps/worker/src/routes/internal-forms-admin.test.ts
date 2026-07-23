@@ -494,6 +494,31 @@ afterEach(() => {
 });
 
 describe('internal form render backend selector', () => {
+  test('internal PUT/GET round-trips ordered submit actions including explicit empty', async () => {
+    seedForm('internal-actions');
+    const submitActions = [
+      { type: 'add_tag', tagId: 'tag-a' },
+      { type: 'set_field', fieldId: 'field-a', value: '済' },
+      { type: 'clear_field', fieldId: 'field-a' },
+    ];
+
+    const saved = await call('PUT', '/api/forms-advanced/internal-actions', {
+      submitActions,
+    }, { expectedBackend: 'internal' });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({ data: { submitActions } });
+    expect(JSON.parse(raw.prepare(
+      "SELECT on_submit_actions_json FROM formaloo_forms WHERE id = 'internal-actions'",
+    ).pluck().get() as string)).toEqual(submitActions);
+
+    const cleared = await call('PUT', '/api/forms-advanced/internal-actions', {
+      submitActions: [],
+    }, { expectedBackend: 'internal' });
+    expect(cleared.status).toBe(200);
+    const reloaded = await call('GET', '/api/forms-advanced/internal-actions');
+    expect(await reloaded.json()).toMatchObject({ data: { submitActions: [] } });
+  });
+
   test('GET observes the DB default as formaloo and PATCH switches only the local enum', async () => {
     seedForm('default-form', 'db-default');
     const externalFetch = vi.fn(async () => { throw new Error('external fetch must not run'); });
