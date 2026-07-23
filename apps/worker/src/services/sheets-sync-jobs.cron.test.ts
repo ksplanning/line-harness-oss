@@ -9,12 +9,19 @@ const spies = vi.hoisted(() => ({
   batch: vi.fn(async () => ({
     attempted: 0, chunks: 0, hasMore: false, continuationJobId: null, job: null,
   })),
+  alerts: vi.fn(async () => ({
+    scanned: 0, alertsSent: 0, recoveriesSent: 0, failures: 0,
+  })),
 }));
 
 vi.mock('./sheets-sync-jobs.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('./sheets-sync-jobs.js')>(),
   enqueueSheetsSyncPollingJobs: spies.enqueue,
   processSheetsSyncJobBatch: spies.batch,
+}));
+
+vi.mock('./sheets-sync-alert.js', () => ({
+  runSheetsSyncAlerts: spies.alerts,
 }));
 
 import worker from '../index.js';
@@ -110,12 +117,52 @@ beforeEach(() => {
   spies.batch.mockReset().mockResolvedValue({
     attempted: 0, chunks: 0, hasMore: false, continuationJobId: null, job: null,
   });
+  spies.alerts.mockReset().mockResolvedValue({
+    scanned: 0, alertsSent: 0, recoveriesSent: 0, failures: 0,
+  });
   waitUntil.mockClear();
   isolatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
   vi.stubGlobal('fetch', isolatedFetch);
 });
 
 describe('scheduled Sheets sync work', () => {
+  test('does not evaluate alerts or change existing sync work when the webhook is unset', async () => {
+    spies.enqueue.mockResolvedValueOnce({ enqueued: 1, runnable: 1 });
+
+    await worker.scheduled(tick(), env() as never, CTX);
+
+    expect(spies.enqueue).toHaveBeenCalledTimes(1);
+    expect(spies.batch).toHaveBeenCalledTimes(1);
+    expect(spies.alerts).not.toHaveBeenCalled();
+  });
+
+  test('evaluates alerts after the five-minute sync pass when the webhook is configured', async () => {
+    const scheduledTime = Date.parse('2026-07-23T10:15:00.000Z');
+    const bindings = { ...env(), SHEETS_ALERT_WEBHOOK: 'https://discord.example.test/secret' };
+
+    await worker.scheduled(tick(scheduledTime), bindings as never, CTX);
+
+    expect(spies.alerts).toHaveBeenCalledTimes(1);
+    expect(spies.alerts).toHaveBeenCalledWith({
+      db: bindings.DB,
+      webhookUrl: 'https://discord.example.test/secret',
+      now: new Date(scheduledTime),
+    });
+  });
+
+  test('contains alert-service failures without logging the webhook URL', async () => {
+    const webhookUrl = 'https://discord.example.test/do-not-log';
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    spies.alerts.mockRejectedValueOnce(new Error(webhookUrl));
+
+    await expect(worker.scheduled(
+      tick(), { ...env(), SHEETS_ALERT_WEBHOOK: webhookUrl } as never, CTX,
+    )).resolves.toBeUndefined();
+
+    expect(error.mock.calls.flat().join('\n')).toContain('[sheets-sync-alert] worker error');
+    expect(error.mock.calls.flat().join('\n')).not.toContain(webhookUrl);
+  });
+
   test('advances cron work inline when neither SELF nor public self-fetch is usable', async () => {
     const selfFetch = vi.fn(async (input: string | URL | Request) => {
       if (String(input).includes('/internal/sheets-sync-work')) {

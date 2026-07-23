@@ -42,6 +42,7 @@ import {
   SHEETS_SYNC_CHUNK_SIZE,
   SHEETS_SYNC_MAX_INLINE_CHUNKS,
 } from './services/sheets-sync-jobs.js';
+import { runSheetsSyncAlerts } from './services/sheets-sync-alert.js';
 import {
   SHEETS_SYNC_WORK_PATH,
   verifySheetsSyncWork,
@@ -226,6 +227,8 @@ export type Env = {
     //   FORMALOO_WEBHOOK_SECRET : HMAC 署名検証の共有鍵 (N-12)。署名スキームは live 確定 (sidecar 申し送り)。
     FORMALOO_WEBHOOK_TOKEN?: string;
     FORMALOO_WEBHOOK_SECRET?: string;
+    // Discord webhook for 15-minute Sheets sync outage alerts. Secret only; unset is fully silent.
+    SHEETS_ALERT_WEBHOOK?: string;
     // 順方向 fr_id 署名 friend token の専用鍵 (C1 / R-F4 / formaloo-sheets-roundtrip)。
     //   `wrangler secret put FORMALOO_FRIEND_TOKEN_SECRET` で供給 (closer 工程 / repo に生値を置かない / D-2)。
     //   既存 auth API_KEY / FORMALOO_WEBHOOK_SECRET とは別鍵で分離 (fr_id が権限昇格に使えない境界)。
@@ -916,6 +919,18 @@ async function scheduled(
         }
       } catch {
         console.error('[friend-ledger-sync] job enqueue error');
+      }
+    }
+    const sheetsAlertWebhook = env.SHEETS_ALERT_WEBHOOK?.trim();
+    if (sheetsAlertWebhook) {
+      try {
+        await runSheetsSyncAlerts({
+          db: env.DB,
+          webhookUrl: sheetsAlertWebhook,
+          now: scheduledAt,
+        });
+      } catch {
+        console.error('[sheets-sync-alert] worker error');
       }
     }
   }
