@@ -240,6 +240,124 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     expect(screen.queryByLabelText('normal-row の詳細')).toBeNull()
   })
 
+  it('承認ボタンの初回クリックでは API を呼ばず、経路・日時・全差分の確認ポップアップを開く', () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const changedRow: SubmissionRow = {
+      ...externalRows[0],
+      externalEditChanges: [
+        { fieldId: 'name', before: '旧氏名', after: '新氏名' },
+        { fieldId: 'removed', before: '削除前', after: null },
+      ],
+    }
+    render(<DataCockpit {...base({
+      rows: [changedRow],
+      total: 1,
+      fieldLabels: [{ slug: 'name', label: 'お名前' }],
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
+    expect(dialog.getAttribute('data-testid')).toBe('external-edit-approval-dialog')
+    expect(within(dialog).getByText('編集URL')).toBeTruthy()
+    expect(within(dialog).getByText('2026-07-23 10:00')).toBeTruthy()
+    expect(within(dialog).getByText('お名前')).toBeTruthy()
+    expect(within(dialog).getByText('旧氏名')).toBeTruthy()
+    expect(within(dialog).getByText('新氏名')).toBeTruthy()
+    expect(within(dialog).getByText('removed')).toBeTruthy()
+    expect(within(dialog).getByText('削除前')).toBeTruthy()
+    expect(within(dialog).getByText('—')).toBeTruthy()
+  })
+
+  it('確認ポップアップを閉じるだけでは API を呼ばず、未承認の行と件数を保つ', () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    render(<DataCockpit {...base({
+      rows: [externalRows[0]],
+      total: 1,
+      stats: {
+        total: 1,
+        verified: 1,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 1,
+      } as DataCockpitProps['stats'],
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
+    fireEvent.click(within(dialog).getByRole('button', { name: '閉じる' }))
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: '外部編集の差分を確認' })).toBeNull()
+    expect(screen.getByLabelText('s1 の詳細')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '外部編集（未承認） 1件' })).toBeTruthy()
+  })
+
+  it('差分0件の未承認回答も、0件と明示したポップアップから承認できる', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      data: { id: 's1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<DataCockpit {...base({
+      rows: [{ ...externalRows[0], externalEditChanges: [] } as SubmissionRow],
+      total: 1,
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
+    expect(within(dialog).getByText('変更された項目はありません')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: '確認して承認' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+  })
+
+  it('添付差分はファイル名だけを表示し、内部保存キーを表示しない', () => {
+    const privateKey = 'forms/form-1/row-1/private-document.pdf'
+    render(<DataCockpit {...base({
+      rows: [{
+        ...externalRows[0],
+        externalEditChanges: [{
+          fieldId: 'attachment',
+          before: [{ key: privateKey, name: '変更前.pdf', size: 1024, type: 'application/pdf' }],
+          after: [{ key: 'forms/form-1/row-1/new-private.pdf', name: '変更後.pdf', size: 2048, type: 'application/pdf' }],
+        }],
+      } as SubmissionRow],
+      total: 1,
+      fieldLabels: [{ slug: 'attachment', label: '添付資料' }],
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
+    expect(within(dialog).getByText('変更前.pdf')).toBeTruthy()
+    expect(within(dialog).getByText('変更後.pdf')).toBeTruthy()
+    expect(dialog.textContent).not.toContain(privateKey)
+    expect(dialog.textContent).not.toContain('new-private.pdf')
+  })
+
+  it('ポップアップ表示中は背景スクロールを止め、Escapeで閉じた後に入口へフォーカスを戻す', async () => {
+    render(<DataCockpit {...base({ rows: [externalRows[0]], total: 1 })} />)
+    const trigger = screen.getByRole('button', { name: 's1 の外部編集を承認' })
+    const previousOverflow = document.body.style.overflow
+    trigger.focus()
+
+    fireEvent.click(trigger)
+
+    expect(document.body.style.overflow).toBe('hidden')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '確認して承認' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '外部編集の差分を確認' })).toBeNull())
+    expect(document.body.style.overflow).toBe(previousOverflow)
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+  })
+
   it('承認 API 成功後、未承認一覧から行と件数を即時に消す', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       success: true,
@@ -264,6 +382,8 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '外部編集（未承認） 1件' }))
     fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    expect(fetchMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/forms-advanced/form-1/rows/s1/approve-external-edit',
@@ -282,6 +402,37 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
     expect(screen.getByText('回答がありません')).toBeTruthy()
     expect(screen.getByRole('button', { name: '外部編集（未承認） 0件' })).toBeTruthy()
+  })
+
+  it('409 では競合文言をポップアップ内に表示し、未承認の行を残す', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      success: false,
+      error: '回答が更新されたため、内容を確認し直してください',
+    }), {
+      status: 409,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<DataCockpit {...base({
+      rows: [externalRows[0]],
+      total: 1,
+      stats: {
+        total: 1,
+        verified: 1,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 1,
+      } as DataCockpitProps['stats'],
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('回答が更新されたため、内容を確認し直してください')
+    expect(screen.getByRole('dialog', { name: '外部編集の差分を確認' })).toBeTruthy()
+    expect(screen.getByLabelText('s1 の詳細')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '外部編集（未承認） 1件' })).toBeTruthy()
   })
 
   it('選択済み回答を承認したら、非表示行を一括削除の選択にも残さない', async () => {
@@ -309,6 +460,7 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     expect(screen.getByText('選択削除（1）')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
 
     await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
     expect(screen.queryByText('選択削除（1）')).toBeNull()
@@ -336,6 +488,7 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     const view = render(<DataCockpit {...initial} />)
     fireEvent.click(screen.getByRole('button', { name: '外部編集（未承認） 1件' }))
     fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
     await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
 
     const otherPending = {

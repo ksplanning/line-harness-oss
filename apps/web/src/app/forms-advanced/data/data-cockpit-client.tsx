@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import DataCockpit from '@/components/forms-advanced/data-cockpit'
+import ExternalEditApprovalDialog from '@/components/forms-advanced/external-edit-approval-dialog'
 import {
   formsAdvancedApi,
   formalooDataApi,
@@ -231,6 +232,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [reviewingExternalEdit, setReviewingExternalEdit] = useState(false)
 
   const loadRows = useCallback(async (q: RowsQuery) => {
     try {
@@ -297,6 +299,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
       setEditError(null)
       setConfirmingDelete(false)
       setDeleteError(null)
+      setReviewingExternalEdit(false)
     } catch { setNotice('回答の取得に失敗しました') }
   }
   const autoOpenedRef = useRef(false)
@@ -320,6 +323,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
     setEditError(null)
     setConfirmingDelete(false)
     setDeleteError(null)
+    setReviewingExternalEdit(false)
   }
   const deleteAnswer = async () => {
     if (!detail || detail.source !== 'internal') return
@@ -336,6 +340,11 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
     } finally {
       setDeleting(false)
     }
+  }
+  const finishExternalEditApproval = async () => {
+    setReviewingExternalEdit(false)
+    closeDetail()
+    await Promise.all([loadRows(query), refreshStats()])
   }
   // internal は共通 /ife/ へ遷移し、旧 inline 編集は外部データ向けに残す。
   const startEdit = async () => {
@@ -609,7 +618,8 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
                 最終編集: {detail.lastEdit.editorName ?? '不明'}・{formatJstMinute(detail.lastEdit.editedAt)}
               </div>
             )}
-            {(detail.externalEditChanges?.length ?? 0) > 0 && (
+            {((detail.externalEditChanges?.length ?? 0) > 0
+              || Boolean(detail.externalEditSource && !detail.externalEditApprovedAt)) && (
               <section
                 data-testid="detail-external-edit-changes"
                 aria-labelledby="detail-external-edit-changes-heading"
@@ -618,13 +628,30 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
                 <h3 id="detail-external-edit-changes-heading" className="text-sm font-semibold text-amber-900">
                   外部編集の変更内容
                 </h3>
-                <ul className="mt-2 space-y-1 text-sm text-gray-700">
-                  {detail.externalEditChanges?.map((change, index) => (
-                    <li key={`${change.fieldId}-${index}`} className="break-words">
-                      {`${labelForSlug(detail, change.fieldId)}: ${readonlyAnswerText(change.before)} → ${readonlyAnswerText(change.after)}`}
-                    </li>
-                  ))}
-                </ul>
+                {(detail.externalEditChanges?.length ?? 0) > 0 ? (
+                  <ul className="mt-2 space-y-1 text-sm text-gray-700">
+                    {detail.externalEditChanges?.map((change, index) => (
+                      <li key={`${change.fieldId}-${index}`} className="break-words">
+                        {`${labelForSlug(detail, change.fieldId)}: ${readonlyAnswerText(change.before)} → ${readonlyAnswerText(change.after)}`}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-sm text-gray-700">
+                    {detail.externalEditChanges === undefined
+                      ? '変更項目を取得できませんでした。再読み込みしてください。'
+                      : '変更された項目はありません'}
+                  </p>
+                )}
+                {detail.externalEditSource && !detail.externalEditApprovedAt && (
+                  <button
+                    type="button"
+                    onClick={() => setReviewingExternalEdit(true)}
+                    className="mt-3 min-h-[44px] rounded-lg border border-amber-400 bg-white px-3 text-sm font-medium text-amber-800 hover:bg-amber-100"
+                  >
+                    差分を確認して承認
+                  </button>
+                )}
               </section>
             )}
 
@@ -914,6 +941,21 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
             )}
           </div>
         </div>
+      )}
+
+      {detail && reviewingExternalEdit && detail.externalEditSource && (
+        <ExternalEditApprovalDialog
+          formId={id}
+          rowId={detail.id}
+          source={detail.externalEditSource}
+          editedAt={detail.externalEditedAt ?? null}
+          changes={detail.externalEditChanges?.map((change) => ({
+            ...change,
+            label: labelForSlug(detail, change.fieldId),
+          }))}
+          onClose={() => setReviewingExternalEdit(false)}
+          onApproved={finishExternalEditApproval}
+        />
       )}
     </div>
   )

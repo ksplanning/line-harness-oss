@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { SubmissionRow, FormStats, SavedFilter, RowsQuery, ExternalEditChange } from '@/lib/formaloo-advanced-api'
 import { formatJstMinute } from '@/lib/datetime'
 import { fileAnswerSummary, isFileAnswer } from '@/lib/file-answer'
+import ExternalEditApprovalDialog from './external-edit-approval-dialog'
 
 // =============================================================================
 // DataCockpit (F-4 / T-D1・T-D2) — フォームビルダーの回答データページ本体。
@@ -76,8 +77,7 @@ export default function DataCockpit(props: DataCockpitProps) {
   const [showSave, setShowSave] = useState(false)
   const [externalEditOnly, setExternalEditOnly] = useState(false)
   const [approvedExternalEditRevisions, setApprovedExternalEditRevisions] = useState<Set<string>>(new Set())
-  const [approvingExternalEditId, setApprovingExternalEditId] = useState<string | null>(null)
-  const [externalEditError, setExternalEditError] = useState('')
+  const [reviewingExternalEdit, setReviewingExternalEdit] = useState<ExternalSubmissionRow | null>(null)
 
   useEffect(() => {
     const currentPendingRevisions = new Set(rows.flatMap((row) => {
@@ -179,41 +179,18 @@ export default function DataCockpit(props: DataCockpitProps) {
     props.onQuery(currentFilter(next))
   }
 
-  const approveExternalEdit = async (row: ExternalSubmissionRow) => {
-    if (!row.formId || approvingExternalEditId) return
-    setApprovingExternalEditId(row.id)
-    setExternalEditError('')
-    try {
-      const response = await fetch(
-        `/api/forms-advanced/${encodeURIComponent(row.formId)}/rows/${encodeURIComponent(row.id)}/approve-external-edit`,
-        {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            expectedExternalEditSource: row.externalEditSource,
-            expectedExternalEditedAt: row.externalEditedAt ?? null,
-          }),
-        },
-      )
-      if (!response.ok) throw new Error('approve_external_edit_failed')
-      const revision = pendingExternalEditRevision(row)
-      if (revision) {
-        setApprovedExternalEditRevisions((previous) => new Set(previous).add(revision))
-      }
-      setSelected((previous) => {
-        const next = new Set(previous)
-        next.delete(row.id)
-        return next
-      })
-      setConfirmingDelete(false)
-    } catch {
-      setExternalEditError('承認できませんでした。再読み込みして、もう一度お試しください。')
-    } finally {
-      setApprovingExternalEditId(null)
+  const markExternalEditApproved = (row: ExternalSubmissionRow) => {
+    const revision = pendingExternalEditRevision(row)
+    if (revision) {
+      setApprovedExternalEditRevisions((previous) => new Set(previous).add(revision))
     }
+    setSelected((previous) => {
+      const next = new Set(previous)
+      next.delete(row.id)
+      return next
+    })
+    setConfirmingDelete(false)
+    setReviewingExternalEdit(null)
   }
 
   return (
@@ -329,11 +306,6 @@ export default function DataCockpit(props: DataCockpitProps) {
           一覧では先頭{columns.length}項目を表示しています。残り{hiddenColumnCount}項目は「詳細」で確認できます。
         </div>
       )}
-      {externalEditError && (
-        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {externalEditError}
-        </div>
-      )}
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white sm:overflow-x-auto">
         <table className="block w-full text-sm sm:table sm:min-w-full">
           <thead className="hidden bg-gray-50 text-left text-xs text-gray-500 sm:table-header-group">
@@ -393,11 +365,11 @@ export default function DataCockpit(props: DataCockpitProps) {
                           <button
                             type="button"
                             aria-label={`${r.id} の外部編集を承認`}
-                            disabled={approvingExternalEditId !== null}
-                            onClick={() => void approveExternalEdit(external)}
+                            disabled={!external.formId}
+                            onClick={() => setReviewingExternalEdit(external)}
                             className="min-h-[44px] rounded-lg border border-amber-400 bg-white px-3 text-sm font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50"
                           >
-                            {approvingExternalEditId === r.id ? '承認中…' : '確認して承認'}
+                            差分を確認
                           </button>
                         )}
                       </div>
@@ -446,6 +418,21 @@ export default function DataCockpit(props: DataCockpitProps) {
           <button type="button" disabled={page >= totalPages} onClick={() => goPage(page + 1)} className="min-h-[40px] rounded-lg border border-gray-300 px-3 disabled:opacity-40">次へ</button>
         </div>
       </div>
+
+      {reviewingExternalEdit?.formId && reviewingExternalEdit.externalEditSource && (
+        <ExternalEditApprovalDialog
+          formId={reviewingExternalEdit.formId}
+          rowId={reviewingExternalEdit.id}
+          source={reviewingExternalEdit.externalEditSource}
+          editedAt={reviewingExternalEdit.externalEditedAt ?? null}
+          changes={reviewingExternalEdit.externalEditChanges?.map((change) => ({
+            ...change,
+            label: labelFor(change.fieldId),
+          }))}
+          onClose={() => setReviewingExternalEdit(null)}
+          onApproved={() => markExternalEditApproved(reviewingExternalEdit)}
+        />
+      )}
     </div>
   )
 }
