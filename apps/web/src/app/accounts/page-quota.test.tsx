@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 
 const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -25,6 +25,14 @@ vi.mock('@/components/accounts/reorder-mode', () => ({ default: () => null }))
 vi.mock('@/components/accounts/account-setup-urls', () => ({ default: () => null }))
 vi.mock('@/components/accounts/account-edit-modal', () => ({ default: () => null }))
 vi.mock('@/components/accounts/response-schedule-modal', () => ({ default: () => null }))
+vi.mock('@/components/settings/email-sender-settings-dialog', () => ({
+  default: ({ accountId }: { accountId: string }) => (
+    <div
+      data-testid="email-sender-settings-dialog"
+      data-account-id={accountId}
+    />
+  ),
+}))
 vi.mock('@/components/accounts/account-form-fields', () => ({
   AccountFormSections: () => null,
   emptyAccountFormState: {},
@@ -76,5 +84,19 @@ describe('LINEアカウント管理の公式送信数', () => {
     expect(within(summary).getByText('最大 200通')).toBeTruthy()
     expect(within(summary).getByText('使用 50通')).toBeTruthy()
     expect(within(summary).getByText('残り 150通')).toBeTruthy()
+  })
+})
+
+describe('LINEアカウント管理のスタッフ通知設定', () => {
+  it('スタッフ通知(Chatwork/LINE)の明示導線から対象アカウントの設定を開く', async () => {
+    render(<AccountsPage />)
+
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'スタッフ通知(Chatwork/LINE)',
+    }))
+
+    expect(
+      screen.getByTestId('email-sender-settings-dialog').getAttribute('data-account-id'),
+    ).toBe('acc-1')
   })
 })
