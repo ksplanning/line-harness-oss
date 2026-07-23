@@ -599,7 +599,7 @@ async function handleEvent(
           lineAccountId,
           name: friend.display_name?.trim() || '名前未設定',
           excerpt: notificationExcerpt,
-          deepLink: `${adminBase}/chats?friend=${encodeURIComponent(friend.id)}`,
+          deepLink: `${adminBase}/inquiry-console?friend=${encodeURIComponent(friend.id)}`,
         },
       );
     }
@@ -742,7 +742,7 @@ async function handleEvent(
           lineAccountId,
           name: friend.display_name?.trim() || '名前未設定',
           excerpt: incomingText,
-          deepLink: `${adminBase}/chats?friend=${encodeURIComponent(friend.id)}`,
+          deepLink: `${adminBase}/inquiry-console?friend=${encodeURIComponent(friend.id)}`,
         },
       );
     }

@@ -497,7 +497,7 @@ describe('POST /webhook — isolated staff LINE linkage and inquiry notification
           lineAccountId: 'account-1',
           name: '顧客兼スタッフ',
           excerpt: '問い合わせ本文',
-          deepLink: 'https://admin.example.test/chats?friend=friend-1',
+          deepLink: 'https://admin.example.test/inquiry-console?friend=friend-1',
         },
       );
       expect(JSON.stringify(error.mock.calls)).not.toContain('private lookup detail');
@@ -567,7 +567,7 @@ describe('POST /webhook — isolated staff LINE linkage and inquiry notification
         lineAccountId: 'account-1',
         name: '顧客兼スタッフ',
         excerpt: '[画像]',
-        deepLink: 'https://admin.example.test/chats?friend=friend-1',
+        deepLink: 'https://admin.example.test/inquiry-console?friend=friend-1',
       },
     );
   });
