@@ -96,6 +96,45 @@ describe('internal-only form field schema', () => {
     expect(validateHarnessField({ ...base, config: { defaultValues: ['A', 1] } }, { allowInternalOnly: true }).ok).toBe(false);
   });
 
+  test('preserves editLocked only for an explicit internal boolean config', () => {
+    const base = {
+      id: 'name',
+      type: 'text',
+      label: '名前',
+      required: false,
+      position: 0,
+    } as const;
+
+    const locked = validateHarnessField(
+      { ...base, config: { editLocked: true } },
+      { allowInternalOnly: true },
+    );
+    expect(locked).toMatchObject({
+      ok: true,
+      field: { config: { editLocked: true } },
+    });
+
+    const legacy = validateHarnessField(
+      { ...base, config: {} },
+      { allowInternalOnly: true },
+    );
+    expect(legacy).toMatchObject({ ok: true, field: { config: {} } });
+    if (legacy.ok) expect(legacy.field.config.editLocked).toBeUndefined();
+
+    expect(validateHarnessField(
+      { ...base, config: { editLocked: 'yes' } },
+      { allowInternalOnly: true },
+    )).toMatchObject({
+      ok: false,
+      error: 'config.editLocked must be boolean',
+    });
+
+    expect(validateHarnessField({ ...base, config: { editLocked: true } })).toMatchObject({
+      ok: true,
+      field: { config: {} },
+    });
+  });
+
   test('keeps the legacy Formaloo validator byte contract by dropping internal config keys', () => {
     const result = validateHarnessField({
       id: 'choice',

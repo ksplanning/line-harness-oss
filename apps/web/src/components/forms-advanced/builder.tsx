@@ -583,6 +583,22 @@ function SettingsPanel({
   const cfg = field.config
   const set = (patch: Partial<HarnessField>) => onChange({ ...field, ...patch })
   const setCfg = (patch: Partial<HarnessField['config']>) => onChange({ ...field, config: { ...cfg, ...patch } })
+  const editLockSetting = renderBackend === 'internal' ? (
+    <div className="space-y-1 border-t border-gray-100 pt-3" data-testid="field-edit-lock-setting">
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          aria-label="編集URLからの編集を許可しない"
+          checked={cfg.editLocked === true}
+          onChange={(event) => setCfg({ editLocked: event.target.checked || undefined })}
+        />
+        <span>編集URLからの編集を許可しない</span>
+      </label>
+      <p className="text-[10px] leading-snug text-gray-500">
+        チェックすると、編集リンクを開いた人には内容が表示されますが、書き換えや添付の追加・削除はできません。管理画面やスプレッドシートからは今までどおり変更できます。
+      </p>
+    </div>
+  ) : null
   const isBranchTarget = (candidate: HarnessField) => (
     isScalarReferenceType(candidate.type) || (internalRenderer && candidate.type === 'section')
   )
@@ -735,6 +751,7 @@ function SettingsPanel({
             <input aria-label="プレースホルダー" value={cfg.placeholder ?? ''} onChange={(e) => setCfg({ placeholder: e.target.value || undefined })} className="w-full rounded border border-gray-300 px-2 py-1" />
           </div>
         )}
+        {editLockSetting}
       </div>
     )
   }
@@ -922,6 +939,7 @@ function SettingsPanel({
         <input type="checkbox" aria-label="必須" checked={field.required} onChange={(e) => set({ required: e.target.checked })} />
         <span>必須項目にする</span>
       </label>
+      {editLockSetting}
 
       {/* 補足説明 (Help text / 全入力型)。ラベルの下に記入例・注意書きを添える。section 本文(config.text)とは別欄。 */}
       <div>

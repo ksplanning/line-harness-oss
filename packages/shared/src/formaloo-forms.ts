@@ -278,6 +278,8 @@ export interface HarnessFieldConfig {
   defaultValue?: string;
   /** internal renderer の複数選択型に使う既定値。Formaloo payload には送らない。 */
   defaultValues?: string[];
+  /** internal 編集 URL では表示だけ行い、回答者による変更を受け付けない。管理画面・Sheets 同期には影響しない。 */
+  editLocked?: boolean;
   /** 自前 renderer 専用。postal_code（既存互換では text）を元に住所 3 欄を自動補完する。 */
   postalAutofill?: PostalAutofillConfig;
   /**
@@ -692,6 +694,10 @@ export function validateHarnessField(
   // Formaloo validator の既存 byte contract では未知 config は drop する。自前配信を明示した時だけ
   // internal renderer 固有設定を検証・保持し、Formaloo の definition_json / field_map に混ぜない。
   if (options.allowInternalOnly === true) {
+    if (rawCfg.editLocked !== undefined) {
+      if (typeof rawCfg.editLocked !== 'boolean') return { ok: false, error: 'config.editLocked must be boolean' };
+      config.editLocked = rawCfg.editLocked;
+    }
     if (rawCfg.placeholder !== undefined) {
       if (typeof rawCfg.placeholder !== 'string') return { ok: false, error: 'config.placeholder must be string' };
       config.placeholder = rawCfg.placeholder;
