@@ -74,7 +74,7 @@ const SETUP_STEPS = [
   'Apps Script の「プロジェクトの設定」→「スクリプト プロパティ」に、下の5つの名前と値を追加します。',
   'Apps Script のコード欄を空にして、下の「Apps Script 全文をコピー」を押し、貼り付けて保存します。',
   '関数一覧で「installFriendLedgerSync」を選び、「実行」を1回押してアクセスを許可します。',
-  'スプレッドシートへ戻り、友だち台帳のセルを1つ直して、すぐ反映されることを確認します。',
+  'スプレッドシートへ戻り、上に表示された「スクリプトが見張るタブ」のセルを1つ直して、すぐ反映されることを確認します。',
 ] as const
 
 async function loadCanonicalAppsScript(): Promise<string> {
@@ -177,7 +177,21 @@ export default function InternalSheetsSetupPanel({
   const secretToggleRef = useRef<HTMLButtonElement>(null)
 
   const hasSavedConnection = Boolean(connection?.id && connection.lineAccountId)
-  const instantSyncReady = Boolean(hasSavedConnection && connection?.friendLedgerEnabled)
+  const instantSyncReady = Boolean(
+    hasSavedConnection
+    && (
+      connection?.friendLedgerEnabled
+      || (connection?.formResultsEnabled && connection.formResultsSheetName)
+    ),
+  )
+  const watchedTabs = [
+    ...(connection?.friendLedgerEnabled
+      ? [`友だち台帳：「${connection.sheetName}」`]
+      : []),
+    ...(connection?.formResultsEnabled && connection.formResultsSheetName
+      ? [`フォーム回答：「${connection.formResultsSheetName}」`]
+      : []),
+  ]
   const activeWebhookSecret = webhookSecret
     && webhookSecret.connectionId === connection?.id
     && webhookSecret.lineAccountId === connection?.lineAccountId
@@ -276,7 +290,7 @@ export default function InternalSheetsSetupPanel({
     if (
       !connection?.id
       || !connection.lineAccountId
-      || !connection.friendLedgerEnabled
+      || !instantSyncReady
       || webhookSecretStatus === 'loading'
     ) return
     const connectionId = connection.id
@@ -460,7 +474,7 @@ export default function InternalSheetsSetupPanel({
 
   const setupPropertyDisplay = (name: SetupPropertyName): string => {
     if (!hasSavedConnection) return '接続保存後に表示'
-    if (!connection?.friendLedgerEnabled) return '友だち台帳の同期をオンにして保存後に表示'
+    if (!instantSyncReady) return 'フォーム回答シートか友だち台帳をオンにして保存後に表示'
     if (name === 'SHEETS_WEBHOOK_SECRET') {
       if (webhookSecretStatus === 'loading') return '取得中...'
       if (!activeWebhookSecret) return '「署名キーを取得」を押してください'
@@ -688,6 +702,17 @@ export default function InternalSheetsSetupPanel({
                 <h3 id="instant-sheets-steps-title" className="text-base font-bold text-gray-900">
                   全体の流れ（5ステップ）
                 </h3>
+                {instantSyncReady && (
+                  <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-3 text-sm text-gray-800">
+                    <p className="font-bold">スクリプトが見張るタブ</p>
+                    <p className="mt-1 leading-relaxed">
+                      次のタブのセルを直すと、変更がすぐに反映されます。
+                    </p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {watchedTabs.map((tab) => <li key={tab}>{tab}</li>)}
+                    </ul>
+                  </div>
+                )}
                 <ol aria-label="設定手順" className="mt-3 space-y-3">
                   {SETUP_STEPS.map((step, index) => (
                     <li key={step} className="flex gap-3 rounded-lg bg-green-50 px-3 py-3 text-sm leading-relaxed text-gray-800">
@@ -712,9 +737,9 @@ export default function InternalSheetsSetupPanel({
                     先にこの画面を閉じて「シート連携を保存」してください。保存後、この接続専用の値が表示されます。
                   </p>
                 )}
-                {hasSavedConnection && !connection?.friendLedgerEnabled && (
+                {hasSavedConnection && !instantSyncReady && (
                   <p className="mt-2 text-sm leading-relaxed text-gray-700">
-                    先にこの画面を閉じて「友だち台帳も同期する」をオンにし、「シート連携を保存」してください。
+                    先にこの画面を閉じて「フォーム回答シート（別タブ）」か「友だち台帳も同期する」をオンにし、「シート連携を保存」してください。
                   </p>
                 )}
                 <div className="mt-3 overflow-hidden rounded-lg border border-gray-200">
@@ -844,7 +869,7 @@ export default function InternalSheetsSetupPanel({
                   </pre>
                 )}
                 <p className="mt-3 rounded-lg bg-blue-50 px-3 py-3 text-sm leading-relaxed text-blue-900">
-                  貼り付けて保存したら、手順4で installFriendLedgerSync を1回実行します。最後に手順5でセルを1つ直し、すぐ反映されることを確認します。
+                  貼り付けて保存したら、手順4で installFriendLedgerSync を1回実行します。最後に手順5で「スクリプトが見張るタブ」のセルを1つ直し、すぐ反映されることを確認します。
                 </p>
               </section>
 

@@ -261,6 +261,7 @@ describe('InternalSheetsSetupPanel', () => {
       '全体の流れは「Apps Scriptを開く」→「5つの値を入れる」→「コードを貼る」→「1回実行」→「セルで確認」です。',
     )).toBeTruthy()
     expect(within(dialog).getByRole('heading', { name: '全体の流れ（5ステップ）' })).toBeTruthy()
+    expect(within(dialog).queryByText('スクリプトが見張るタブ')).toBeNull()
     expect(within(dialog).getByText('下のコードを Apps Script に貼り付けます')).toBeTruthy()
     expect(within(dialog).getAllByText('接続保存後に表示')).toHaveLength(5)
     expect(within(dialog).queryByRole('button', { name: '署名キーを取得' })).toBeNull()
@@ -275,7 +276,7 @@ describe('InternalSheetsSetupPanel', () => {
     expect(within(propertyRow).getByText('値をコピー')).toBeTruthy()
     expect(within(dialog).getByRole('heading', { name: '手順3：Apps Script をコピーして貼ります' })).toBeTruthy()
     expect(within(dialog).getByText(
-      '貼り付けて保存したら、手順4で installFriendLedgerSync を1回実行します。最後に手順5でセルを1つ直し、すぐ反映されることを確認します。',
+      '貼り付けて保存したら、手順4で installFriendLedgerSync を1回実行します。最後に手順5で「スクリプトが見張るタブ」のセルを1つ直し、すぐ反映されることを確認します。',
     )).toBeTruthy()
     expect(onRequestWebhookSecret).not.toHaveBeenCalled()
 
@@ -287,8 +288,8 @@ describe('InternalSheetsSetupPanel', () => {
     expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Apps Script 全文をコピー' }))
   })
 
-  test('keeps instant-sync values unavailable until friend-ledger sync is enabled and saved', async () => {
-    const onRequestWebhookSecret = vi.fn()
+  test('shows answer-only instant-sync setup without asking to enable the friend ledger', async () => {
+    const onRequestWebhookSecret = vi.fn().mockResolvedValue('a'.repeat(64))
     render(<InternalSheetsSetupPanel {...props({
       connection: {
         id: 'gsc_saved_but_disabled',
@@ -307,16 +308,91 @@ describe('InternalSheetsSetupPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '即時反映の設定を見る' }))
     const dialog = await screen.findByRole('dialog', { name: '即時反映の設定' })
-    expect(within(dialog).getAllByText('友だち台帳の同期をオンにして保存後に表示')).toHaveLength(5)
-    expect(within(dialog).getByText(/「友だち台帳も同期する」をオン/)).toBeTruthy()
-    expect(within(dialog).queryByRole('button', { name: '署名キーを取得' })).toBeNull()
+    expect(within(dialog).getByText('スクリプトが見張るタブ')).toBeTruthy()
+    expect(within(dialog).getByText('フォーム回答：「フォーム回答」')).toBeTruthy()
+    expect(within(dialog).queryByText('友だち台帳：「友だち台帳」')).toBeNull()
+    expect(within(dialog).queryByText(/「友だち台帳も同期する」をオン/)).toBeNull()
+    expect(within(dialog).getByText(
+      'スプレッドシートへ戻り、上に表示された「スクリプトが見張るタブ」のセルを1つ直して、すぐ反映されることを確認します。',
+    )).toBeTruthy()
+    expect(within(dialog).getByText('gsc_saved_but_disabled')).toBeTruthy()
     expect((within(dialog).getByRole('button', {
       name: 'SHEETS_CONNECTION_ID の値をコピー',
-    }) as HTMLButtonElement).disabled).toBe(true)
+    }) as HTMLButtonElement).disabled).toBe(false)
     expect((within(dialog).getByRole('button', {
       name: 'SHEETS_CONNECTION_ID の名前をコピー',
     }) as HTMLButtonElement).disabled).toBe(false)
-    expect(onRequestWebhookSecret).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: '署名キーを取得' }))
+    await waitFor(() => expect(onRequestWebhookSecret).toHaveBeenCalledWith(
+      'acc_owner',
+      'gsc_saved_but_disabled',
+    ))
+  })
+
+  test('shows the friend-ledger tab as the only watched tab for ledger-only setup', async () => {
+    render(<InternalSheetsSetupPanel {...props({
+      connection: {
+        id: 'gsc_ledger_only',
+        lineAccountId: 'acc_owner',
+        spreadsheetId: 'spreadsheet_saved_123',
+        sheetName: '顧客台帳',
+        syncDirection: 'bidirectional',
+        selectedFormFieldIds: ['name'],
+        friendLedgerEnabled: true,
+        formResultsEnabled: false,
+        formResultsSheetName: null,
+      },
+      loadAppsScript: vi.fn().mockResolvedValue(APPS_SCRIPT_FIXTURE),
+      onRequestWebhookSecret: vi.fn(),
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '即時反映の設定を見る' }))
+    const dialog = await screen.findByRole('dialog', { name: '即時反映の設定' })
+    expect(within(dialog).getByText('スクリプトが見張るタブ')).toBeTruthy()
+    expect(within(dialog).getByText('友だち台帳：「顧客台帳」')).toBeTruthy()
+    expect(within(dialog).queryByText(/フォーム回答：/)).toBeNull()
+    expect(within(dialog).getByRole('button', { name: '署名キーを取得' })).toBeTruthy()
+  })
+
+  test('updates the watched-tab guide after saving and receiving the refreshed connection', async () => {
+    const connection = {
+      id: 'gsc_round_trip',
+      lineAccountId: 'acc_owner',
+      spreadsheetId: 'spreadsheet_saved_123',
+      sheetName: '顧客台帳',
+      syncDirection: 'bidirectional' as const,
+      selectedFormFieldIds: ['name'],
+      friendLedgerEnabled: true,
+      formResultsEnabled: true,
+      formResultsSheetName: '2026年回答',
+    }
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    const baseProps = props({
+      connection,
+      loadAppsScript: vi.fn().mockResolvedValue(APPS_SCRIPT_FIXTURE),
+      onRequestWebhookSecret: vi.fn(),
+      onSave,
+    })
+    const { rerender } = render(<InternalSheetsSetupPanel {...baseProps} />)
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '友だち台帳も同期する' }))
+    fireEvent.click(screen.getByRole('button', { name: 'シート連携を保存' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      friendLedgerEnabled: false,
+      formResultsEnabled: true,
+      formResultsSheetName: '2026年回答',
+    })))
+
+    const refreshedConnection = {
+      ...connection,
+      ...onSave.mock.calls[0][0],
+    }
+    rerender(<InternalSheetsSetupPanel {...baseProps} connection={refreshedConnection} />)
+    fireEvent.click(screen.getByRole('button', { name: '即時反映の設定を見る' }))
+
+    const dialog = await screen.findByRole('dialog', { name: '即時反映の設定' })
+    expect(within(dialog).getByText('フォーム回答：「2026年回答」')).toBeTruthy()
+    expect(within(dialog).queryByText(/友だち台帳：/)).toBeNull()
   })
 
   test('copies saved values and the canonical script, and fetches a hidden secret only after a click', async () => {
@@ -351,6 +427,9 @@ describe('InternalSheetsSetupPanel', () => {
     expect(within(dialog).getByText('gsc/instant-1')).toBeTruthy()
     expect(within(dialog).getByText('spreadsheet_saved_123')).toBeTruthy()
     expect(within(dialog).getByText('友だち台帳')).toBeTruthy()
+    expect(within(dialog).getByText('スクリプトが見張るタブ')).toBeTruthy()
+    expect(within(dialog).getByText('友だち台帳：「友だち台帳」')).toBeTruthy()
+    expect(within(dialog).getByText('フォーム回答：「フォーム回答」')).toBeTruthy()
     expect(within(dialog).getByText(/\/api\/integrations\/google-sheets\/friend-ledger\/webhook$/)).toBeTruthy()
     expect(onRequestWebhookSecret).not.toHaveBeenCalled()
     expect(within(dialog).queryByText(webhookSecret)).toBeNull()
