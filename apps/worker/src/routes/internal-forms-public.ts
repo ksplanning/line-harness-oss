@@ -36,6 +36,10 @@ import {
   type InternalFormDefinition,
   type InternalFormField,
 } from '../services/internal-form-runtime.js';
+import {
+  rollbackInternalFormUploads,
+  storeInternalFormUploads,
+} from '../services/internal-form-attachments.js';
 import type { Env } from '../index.js';
 
 export const internalFormsPublic = new Hono<Env>();
@@ -907,15 +911,6 @@ function answerInputs(body: Record<string, string | File | (string | File)[]>): 
   return result;
 }
 
-function uploadExtension(filename: string): string {
-  const match = /\.([a-z0-9]{1,20})$/i.exec(filename);
-  return match ? `.${match[1].toLowerCase()}` : '';
-}
-
-async function rollbackUploads(bucket: R2Bucket, keys: string[]): Promise<void> {
-  await Promise.allSettled(keys.map((key) => bucket.delete(key)));
-}
-
 function logicAnswers(fields: InternalFormField[], input: InternalAnswerInput): InternalFormLogicAnswers {
   const answers: InternalFormLogicAnswers = Object.create(null) as InternalFormLogicAnswers;
   fields.forEach((field, index) => {
@@ -1109,24 +1104,13 @@ internalFormsPublic.post('/f/:formId', async (c) => {
     const uploadedKeys: string[] = [];
     try {
       const answers = validation.answers;
-      for (const upload of validation.pendingUploads) {
-        const metadata: { key: string; name: string; size: number; type: string }[] = [];
-        for (const file of upload.files) {
-          const key = `internal-form-submissions/${encodeURIComponent(runtime.form.id)}/${encodeURIComponent(upload.fieldId)}/${crypto.randomUUID()}${uploadExtension(file.name)}`;
-          // Record the intended key before put so a partial R2 failure is also cleaned up.
-          uploadedKeys.push(key);
-          await c.env.IMAGES.put(key, file.stream(), {
-            httpMetadata: { contentType: file.type || 'application/octet-stream' },
-          });
-          metadata.push({
-            key,
-            name: file.name,
-            size: file.size,
-            type: file.type || 'application/octet-stream',
-          });
-        }
-        answers[upload.fieldId] = metadata;
-      }
+      const storedUploads = await storeInternalFormUploads(
+        c.env.IMAGES,
+        runtime.form.id,
+        validation.pendingUploads,
+      );
+      uploadedKeys.push(...storedUploads.uploadedKeys);
+      Object.assign(answers, storedUploads.attachmentsByField);
 
       const maxSubmissions = runtime.definition.operationsSettings.maxSubmitCount;
       const submission = await createInternalFormSubmissionForPublishedDefinition(c.env.DB, {
@@ -1140,7 +1124,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         submitEndTime: runtime.definition.operationsSettings.submitEndTime ?? null,
       });
       if (!submission) {
-        await rollbackUploads(c.env.IMAGES, uploadedKeys);
+        await rollbackInternalFormUploads(c.env.IMAGES, uploadedKeys);
         return submissionConflictResponse(c.env.DB, runtime);
       }
       queueSheetsSyncAfterSubmission(c, runtime.form, submission.id);
@@ -1167,7 +1151,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         console.error('internal form respondent notification failed:', JSON.stringify(notification));
       }
     } catch (error) {
-      await rollbackUploads(c.env.IMAGES, uploadedKeys);
+      await rollbackInternalFormUploads(c.env.IMAGES, uploadedKeys);
       throw error;
     }
 

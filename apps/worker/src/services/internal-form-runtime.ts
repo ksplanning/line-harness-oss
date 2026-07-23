@@ -855,25 +855,26 @@ function validateFileField(
   input: InternalAnswerInput,
   inputName: string,
   fieldIndex: number,
+  retainedFileCount: number,
 ): { ok: true; pending: PendingInternalUpload | null } | { ok: false; error: string } {
   const values = valuesAt(input, inputName);
   if (values.some((value) => typeof value === 'string' && value !== '')) return invalidFormat(field.label);
-  if (values.some((value) => typeof value === 'string')) {
-    return values.every((value) => value === '')
-      ? field.required
-        ? { ok: false, error: `${field.label} は必須項目です` }
-        : { ok: true, pending: null }
-      : invalidFormat(field.label);
+  const hasStringValue = values.some((value) => typeof value === 'string');
+  if (hasStringValue && !values.every((value) => value === '')) return invalidFormat(field.label);
+  const files = hasStringValue
+    ? []
+    : (values as File[]).filter((file) => file.name !== '' || file.size > 0);
+  const finalFileCount = retainedFileCount + files.length;
+  if (field.required && finalFileCount === 0) {
+    return { ok: false, error: `${field.label} は必須項目です` };
   }
-  const files = (values as File[]).filter((file) => file.name !== '' || file.size > 0);
-  if (field.required && files.length === 0) return { ok: false, error: `${field.label} は必須項目です` };
-  if (files.length === 0) return { ok: true, pending: null };
-  if (field.config.allowMultipleFiles !== true && files.length > 1) {
+  if (field.config.allowMultipleFiles !== true && finalFileCount > 1) {
     return { ok: false, error: `${field.label} は1つのファイルだけ添付できます` };
   }
-  if (files.length > MAX_FILES_PER_FORM_FIELD) {
+  if (finalFileCount > MAX_FILES_PER_FORM_FIELD) {
     return { ok: false, error: `${field.label} の添付は最大${MAX_FILES_PER_FORM_FIELD}件です` };
   }
+  if (files.length === 0) return { ok: true, pending: null };
   const allowed = new Set((field.config.allowedExtensions ?? []).map((value) => value.replace(/^\./, '').toLowerCase()));
   const maxBytes = (field.config.maxSizeKb ?? 2048) * 1024;
   for (const file of files) {
@@ -964,7 +965,10 @@ function roundedFormulaValue(value: number, decimalPlaces: number | undefined): 
 export function validateInternalFormAnswers(
   fields: InternalFormField[],
   input: InternalAnswerInput,
-  options: { visibleFieldIds?: string[] } = {},
+  options: {
+    visibleFieldIds?: string[];
+    retainedFileCounts?: Readonly<Record<string, number>>;
+  } = {},
 ): InternalAnswerValidationResult {
   const answers = Object.create(null) as Record<string, unknown>;
   const pendingUploads: PendingInternalUpload[] = [];
@@ -982,7 +986,14 @@ export function validateInternalFormAnswers(
     if (repeatingTemplates.has(field.id) || isDecorationType(field.type) || field.type === 'variable') continue;
 
     if (field.type === 'file') {
-      const result = validateFileField(field, input, `a_${index}`, index);
+      const rawRetainedFileCount = options.retainedFileCounts
+        && Object.prototype.hasOwnProperty.call(options.retainedFileCounts, field.id)
+        ? options.retainedFileCounts[field.id]
+        : 0;
+      const retainedFileCount = Number.isSafeInteger(rawRetainedFileCount) && rawRetainedFileCount >= 0
+        ? rawRetainedFileCount
+        : 0;
+      const result = validateFileField(field, input, `a_${index}`, index, retainedFileCount);
       if (!result.ok) return result;
       if (result.pending) pendingUploads.push(result.pending);
       continue;

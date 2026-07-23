@@ -456,6 +456,77 @@ describe('file validation and pending upload hand-off', () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.pendingUploads[0]?.files).toHaveLength(10);
   });
+
+  test('counts retained files toward required and single-file validation without re-uploading them', () => {
+    const required = field('attachment', 'file', {}, { required: true }) as InternalFormField;
+    const retainedOnly = validateInternalFormAnswers([required], {}, {
+      retainedFileCounts: { attachment: 1 },
+    });
+
+    expect(retainedOnly.ok).toBe(true);
+    if (retainedOnly.ok) expect(retainedOnly.pendingUploads).toEqual([]);
+    expect(validateInternalFormAnswers([required], {}, {
+      retainedFileCounts: { attachment: 0 },
+    })).toEqual({ ok: false, error: 'attachment は必須項目です' });
+
+    const added = new File(['new'], 'new.pdf', { type: 'application/pdf' });
+    expect(validateInternalFormAnswers([required], { a_0: added }, {
+      retainedFileCounts: { attachment: 1 },
+    })).toEqual({ ok: false, error: 'attachment は1つのファイルだけ添付できます' });
+  });
+
+  test('counts retained files toward the shared maximum while pending only newly added files', () => {
+    const multi = field('attachment', 'file', { allowMultipleFiles: true }) as InternalFormField;
+    const added = new File(['new'], 'new.pdf', { type: 'application/pdf' });
+    const accepted = validateInternalFormAnswers([multi], { a_0: added }, {
+      retainedFileCounts: { attachment: 9 },
+    });
+
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) {
+      expect(accepted.pendingUploads).toEqual([{
+        fieldId: 'attachment', fieldIndex: 0, files: [added],
+      }]);
+    }
+
+    const twoAdded = [
+      new File(['one'], 'one.pdf', { type: 'application/pdf' }),
+      new File(['two'], 'two.pdf', { type: 'application/pdf' }),
+    ];
+    expect(validateInternalFormAnswers([multi], { a_0: twoAdded }, {
+      retainedFileCounts: { attachment: 9 },
+    })).toEqual({ ok: false, error: 'attachment の添付は最大10件です' });
+    expect(validateInternalFormAnswers([multi], { a_0: added }, {
+      retainedFileCounts: { attachment: 10 },
+    })).toEqual({ ok: false, error: 'attachment の添付は最大10件です' });
+  });
+
+  test('still validates extension and size only on newly added files when files are retained', () => {
+    const multi = field('attachment', 'file', {
+      allowMultipleFiles: true,
+      allowedExtensions: ['pdf'],
+      maxSizeKb: 1,
+    }) as InternalFormField;
+
+    expect(validateInternalFormAnswers([multi], {
+      a_0: new File(['bad'], 'bad.exe', { type: 'application/octet-stream' }),
+    }, { retainedFileCounts: { attachment: 1 } }))
+      .toEqual({ ok: false, error: 'attachment の拡張子は許可されていません' });
+    expect(validateInternalFormAnswers([multi], {
+      a_0: new File([new Uint8Array(1025)], 'large.pdf', { type: 'application/pdf' }),
+    }, { retainedFileCounts: { attachment: 1 } }))
+      .toEqual({ ok: false, error: 'attachment のファイルサイズが上限を超えています' });
+  });
+
+  test.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'normalizes unsafe retained file count %s to zero',
+    (retained) => {
+      const required = field('attachment', 'file', {}, { required: true }) as InternalFormField;
+      expect(validateInternalFormAnswers([required], {}, {
+        retainedFileCounts: { attachment: retained },
+      })).toEqual({ ok: false, error: 'attachment は必須項目です' });
+    },
+  );
 });
 
 describe('safe formula parser and server recomputation', () => {
