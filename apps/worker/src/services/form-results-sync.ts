@@ -787,6 +787,25 @@ export async function syncFormResults(
     const headerIsEmpty = values.length === 0 || !effectiveRow(1).some((cell) => normalizeSheetCell(cell));
     const hasEstablishedDataRows = values.slice(1)
       .some((row) => row.some((cell) => normalizeSheetCell(cell)));
+    const existingHeaders = headerIsEmpty ? [] : effectiveRow(1);
+    const configuredCounts = new Map<string, number>();
+    for (const column of columns) {
+      configuredCounts.set(column.header, (configuredCounts.get(column.header) ?? 0) + 1);
+    }
+    const presentHeaders = new Set(existingHeaders.map(normalizeSheetCell));
+    const additions = headerIsEmpty ? [] : columns
+      .filter((column) => (
+        newGeneratedColumnKeys.has(column.key)
+        && (configuredCounts.get(column.header) ?? 0) === 1
+        && !presentHeaders.has(column.header)
+      ))
+      .map((column) => column.header);
+    await renewLease();
+    await client.ensureColumnCapacity(
+      options.connection.spreadsheetId,
+      resultsSheetName,
+      headerIsEmpty ? generatedHeaders.length : existingHeaders.length + additions.length,
+    );
 
     if (headerIsEmpty) {
       await renewLease();
@@ -849,32 +868,18 @@ export async function syncFormResults(
         });
       }
     } else {
-      let headers = effectiveRow(1);
+      let headers = existingHeaders;
       let resolved = resolveFriendLedgerHeaders(headers, columns);
-      if (newGeneratedColumnKeys.size > 0) {
-        const configuredCounts = new Map<string, number>();
-        for (const column of columns) {
-          configuredCounts.set(column.header, (configuredCounts.get(column.header) ?? 0) + 1);
-        }
-        const present = new Set(headers.map(normalizeSheetCell));
-        const additions = columns
-          .filter((column) => (
-            newGeneratedColumnKeys.has(column.key)
-            && (configuredCounts.get(column.header) ?? 0) === 1
-            && !present.has(column.header)
-          ))
-          .map((column) => column.header);
-        if (additions.length > 0) {
-          await renewLease();
-          await client.updateValues(
-            options.connection.spreadsheetId,
-            horizontalRange(resultsSheetName, 1, headers.length, additions.length),
-            [additions],
-          );
-          headers = [...headers, ...additions];
-          values[0] = headers;
-          resolved = resolveFriendLedgerHeaders(headers, columns);
-        }
+      if (additions.length > 0) {
+        await renewLease();
+        await client.updateValues(
+          options.connection.spreadsheetId,
+          horizontalRange(resultsSheetName, 1, headers.length, additions.length),
+          [additions],
+        );
+        headers = [...headers, ...additions];
+        values[0] = headers;
+        resolved = resolveFriendLedgerHeaders(headers, columns);
       }
       await recordResultsHeaders();
       for (const headerWarning of resolved.warnings) {

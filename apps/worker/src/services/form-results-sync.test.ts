@@ -63,6 +63,10 @@ function parseA1(range: string): { row: number; column: number } {
 
 class FakeSheetsClient {
   values: SheetCellValue[][] = [];
+  columnCount = 26;
+  readonly capacityChecks: Array<{ sheetName: string; requiredColumnCount: number }> = [];
+  readonly expansionRequests: Array<{ sheetName: string; appendedColumns: number }> = [];
+  readonly operations: string[] = [];
   readonly writes: Array<{
     kind: 'update' | 'append' | 'batch' | 'delete';
     range?: string;
@@ -87,19 +91,40 @@ class FakeSheetsClient {
     return { majorDimension: 'ROWS' as const, values };
   }
 
+  async ensureColumnCapacity(
+    _spreadsheetId: string,
+    sheetName: string,
+    requiredColumnCount: number,
+  ) {
+    this.capacityChecks.push({ sheetName, requiredColumnCount });
+    this.operations.push('ensure');
+    const appendedColumns = Math.max(0, requiredColumnCount - this.columnCount);
+    if (appendedColumns > 0) {
+      this.columnCount += appendedColumns;
+      this.expansionRequests.push({ sheetName, appendedColumns });
+      this.operations.push('appendDimension');
+    }
+    return { spreadsheetId: 'sheet-1', appendedColumns };
+  }
+
   async updateValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
+    this.assertColumnCapacity(values);
+    this.operations.push('update');
     this.writes.push({ kind: 'update', range, rowCount: values.length });
     this.apply(range, values);
     return { spreadsheetId: 'sheet-1', updatedRows: values.length };
   }
 
   async appendValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
+    this.assertColumnCapacity(values);
+    this.operations.push('append');
     this.writes.push({ kind: 'append', range, rowCount: values.length });
     this.values.push(...values.map((row) => [...row]));
     return { spreadsheetId: 'sheet-1' };
   }
 
   async batchUpdateValues(_spreadsheetId: string, data: SheetsDataUpdate[]) {
+    this.operations.push('batch');
     this.writes.push({ kind: 'batch', rowCount: data.length });
     for (const update of data) this.apply(update.range, update.values);
     return { spreadsheetId: 'sheet-1', totalUpdatedRows: data.length };
@@ -131,6 +156,11 @@ class FakeSheetsClient {
         this.values[rowIndex][start.column + columnOffset] = value;
       });
     });
+  }
+
+  private assertColumnCapacity(values: SheetCellValue[][]): void {
+    const width = Math.max(0, ...values.map((row) => row.length));
+    if (width > this.columnCount) throw new Error('column capacity must be ensured before write');
   }
 }
 
@@ -280,6 +310,8 @@ describe('form results sheet — one row per submission', () => {
     const ledgerKeys = (raw.prepare('SELECT record_key FROM sheets_sync_ledger WHERE connection_id = ? ORDER BY record_key')
       .all(connection.id) as { record_key: string }[]).map((row) => row.record_key);
     expect(ledgerKeys).toEqual(['sub:ifs-001', 'sub:ifs-002']);
+    expect(resultsClient.capacityChecks).toEqual([{ sheetName: '回答', requiredColumnCount: 7 }]);
+    expect(resultsClient.expansionRequests).toEqual([]);
   });
 
   test('clears an old branch column after the answer is removed from answers_json', async () => {
@@ -304,7 +336,58 @@ describe('form results sheet — one row per submission', () => {
     const writesBefore = resultsClient.writes.length;
     const result = await run();
     expect(result.status).toBe('success');
+    expect(result.appendedRows).toBe(0);
     expect(resultsClient.writes.length).toBe(writesBefore);
+    expect(resultsClient.capacityChecks).toEqual([
+      { sheetName: '回答', requiredColumnCount: 7 },
+      { sheetName: '回答', requiredColumnCount: 7 },
+    ]);
+    expect(resultsClient.expansionRequests).toEqual([]);
+  });
+
+  test('expands for the final header width before adding configured columns and stays idempotent', async () => {
+    resultsClient.columnCount = 33;
+    await run();
+    for (const row of resultsClient.values) {
+      while (row.length < 33) row.push(`会社列${row.length + 1}`);
+    }
+    updateForm([
+      { id: 'q1', label: '質問1', position: 1 },
+      { id: 'q2', label: '質問2', position: 2 },
+      { id: 'q3', label: '質問3', position: 3 },
+      { id: 'q4', label: '質問4', position: 4 },
+      { id: 'q5', label: '質問5', position: 5 },
+    ]);
+    insertSubmission(
+      'ifs-003',
+      { q1: '回答C1', q2: '回答C2', q3: '回答C3', q4: '回答C4', q5: '回答C5' },
+      '2026-07-22T10:00:00+09:00',
+    );
+    const writesBeforeExpansion = resultsClient.writes.length;
+    const operationsBeforeExpansion = resultsClient.operations.length;
+
+    const expanded = await run();
+
+    expect(expanded.appendedRows).toBe(1);
+    expect(resultsClient.capacityChecks.at(-1)).toEqual({
+      sheetName: '回答', requiredColumnCount: 36,
+    });
+    expect(resultsClient.expansionRequests).toEqual([{ sheetName: '回答', appendedColumns: 3 }]);
+    expect(resultsClient.operations.slice(operationsBeforeExpansion, operationsBeforeExpansion + 3))
+      .toEqual(['ensure', 'appendDimension', 'update']);
+    expect(resultsClient.values[0]).toHaveLength(36);
+    expect(resultsClient.values[0].slice(-3)).toEqual(['質問3', '質問4', '質問5']);
+
+    const valuesAfterExpansion = resultsClient.values.map((row) => [...row]);
+    const writesAfterExpansion = resultsClient.writes.length;
+    const expansionCount = resultsClient.expansionRequests.length;
+    const retried = await run();
+
+    expect(retried).toMatchObject({ appendedRows: 0, updatedRows: 0 });
+    expect(resultsClient.writes).toHaveLength(writesAfterExpansion);
+    expect(resultsClient.expansionRequests).toHaveLength(expansionCount);
+    expect(resultsClient.values).toEqual(valuesAfterExpansion);
+    expect(resultsClient.writes.length).toBeGreaterThan(writesBeforeExpansion);
   });
 
   test('removes only the exact results row after its Harness submission is soft-deleted', async () => {

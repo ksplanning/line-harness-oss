@@ -259,6 +259,90 @@ describe('GoogleSheetsClient — Sheets API v4 contracts', () => {
     expect(new Headers(apiCalls[0].init.headers).get('authorization')).toBe('Bearer ACCESS-METADATA');
   });
 
+  test('33-column tab expands with appendDimension before a 36-column update and stays idempotent', async () => {
+    let columnCount = 33;
+    const apiCalls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url === TOKEN_URL) {
+        return jsonResponse({ access_token: 'ACCESS-RESIZE', expires_in: 3600 });
+      }
+      apiCalls.push({ url, init });
+      if (init.method === 'GET') {
+        return jsonResponse({
+          sheets: [{ properties: { title: '回答', sheetId: 10, gridProperties: { columnCount } } }],
+        });
+      }
+      if (url.endsWith(':batchUpdate')) {
+        const body = JSON.parse(String(init.body)) as {
+          requests: Array<{ appendDimension: { length: number } }>;
+        };
+        columnCount += body.requests[0].appendDimension.length;
+        return jsonResponse({ spreadsheetId: 'sheet/id', replies: [{}] });
+      }
+      return jsonResponse({ spreadsheetId: 'sheet/id', updatedRange: '回答!A1:AJ1', updatedRows: 1 });
+    }) as unknown as typeof fetch;
+    const client = new GoogleSheetsClient({
+      credentials: parseGoogleServiceAccountCredentials(credentialsJson()),
+      fetchImpl,
+      now: () => FIXED_NOW,
+    });
+    const headers = Array.from({ length: 36 }, (_, index) => `header-${index + 1}`);
+
+    await expect(client.ensureColumnCapacity('sheet/id', '回答', headers.length)).resolves.toEqual({
+      spreadsheetId: 'sheet/id',
+      appendedColumns: 7,
+    });
+    await expect(client.updateValues('sheet/id', '回答!A1:AJ1', [headers])).resolves.toMatchObject({
+      spreadsheetId: 'sheet/id',
+      updatedRows: 1,
+    });
+    await expect(client.ensureColumnCapacity('sheet/id', '回答', headers.length)).resolves.toEqual({
+      spreadsheetId: 'sheet/id',
+      appendedColumns: 0,
+    });
+
+    expect(apiCalls.map((call) => call.init.method)).toEqual(['GET', 'POST', 'PUT', 'GET']);
+    expect(apiCalls[0].url).toBe(
+      'https://sheets.googleapis.com/v4/spreadsheets/sheet%2Fid?fields=sheets.properties(sheetId%2Ctitle%2CgridProperties(columnCount))',
+    );
+    expect(apiCalls.filter((call) => call.url.endsWith(':batchUpdate'))).toHaveLength(1);
+    expect(JSON.parse(String(apiCalls[1].init.body))).toEqual({
+      requests: [{
+        appendDimension: { sheetId: 10, dimension: 'COLUMNS', length: 7 },
+      }],
+    });
+    expect(JSON.stringify(apiCalls[1].init.body)).not.toContain('deleteDimension');
+  });
+
+  test('does not issue an expansion mutation when the tab already has enough columns', async () => {
+    const apiCalls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url === TOKEN_URL) {
+        return jsonResponse({ access_token: 'ACCESS-NO-RESIZE', expires_in: 3600 });
+      }
+      apiCalls.push({ url, init });
+      return jsonResponse({
+        sheets: [{ properties: { title: '回答', sheetId: 10, gridProperties: { columnCount: 40 } } }],
+      });
+    }) as unknown as typeof fetch;
+    const client = new GoogleSheetsClient({
+      credentials: parseGoogleServiceAccountCredentials(credentialsJson()),
+      fetchImpl,
+      now: () => FIXED_NOW,
+    });
+
+    await expect(client.ensureColumnCapacity('sheet/id', '回答', 36)).resolves.toEqual({
+      spreadsheetId: 'sheet/id',
+      appendedColumns: 0,
+    });
+
+    expect(apiCalls).toHaveLength(1);
+    expect(apiCalls[0].init.method).toBe('GET');
+    expect(apiCalls.some((call) => call.url.endsWith(':batchUpdate'))).toBe(false);
+  });
+
   test('batch update preserves unrelated columns by sending only named ranges', async () => {
     const apiCalls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {

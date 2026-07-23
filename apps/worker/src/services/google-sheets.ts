@@ -12,6 +12,7 @@ const JWT_LIFETIME_SECONDS = 3600;
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 const MAX_FETCH_ERROR_DETAIL_LENGTH = 160;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const COLUMN_CAPACITY_HEADROOM = 4;
 
 export interface GoogleServiceAccountCredentials {
   clientEmail: string;
@@ -149,7 +150,11 @@ interface CachedToken {
 
 interface SheetsMetadataResponse {
   sheets?: Array<{
-    properties?: { sheetId?: unknown; title?: unknown };
+    properties?: {
+      sheetId?: unknown;
+      title?: unknown;
+      gridProperties?: { columnCount?: unknown };
+    };
   }>;
 }
 
@@ -161,6 +166,11 @@ interface SheetsBatchUpdateResponse {
 export interface DeleteRowsResponse {
   spreadsheetId: string;
   deletedRows: number;
+}
+
+export interface EnsureColumnCapacityResponse {
+  spreadsheetId: string;
+  appendedColumns: number;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -382,6 +392,51 @@ export class GoogleSheetsClient {
     }
     this.sheetIds.set(cacheKey, sheetId);
     return sheetId;
+  }
+
+  async ensureColumnCapacity(
+    spreadsheetId: string,
+    sheetName: string,
+    requiredColumnCount: number,
+  ): Promise<EnsureColumnCapacityResponse> {
+    if (!Number.isInteger(requiredColumnCount) || requiredColumnCount < 1) {
+      throw new Error('Google Sheets column capacity requires a positive integer');
+    }
+    const metadataUrl = `${GOOGLE_SHEETS_API}/spreadsheets/${encodePathPart(spreadsheetId)}?fields=sheets.properties(sheetId%2Ctitle%2CgridProperties(columnCount))`;
+    const metadata = await this.request<SheetsMetadataResponse>('metadata', metadataUrl, { method: 'GET' });
+    const properties = metadata.sheets?.find((sheet) => sheet.properties?.title === sheetName)
+      ?.properties;
+    const sheetId = properties?.sheetId;
+    const columnCount = properties?.gridProperties?.columnCount;
+    if (
+      typeof sheetId !== 'number'
+      || !Number.isInteger(sheetId)
+      || typeof columnCount !== 'number'
+      || !Number.isInteger(columnCount)
+      || columnCount < 1
+    ) {
+      throw new GoogleSheetsError('metadata', 404, 'sheet_permission');
+    }
+    this.sheetIds.set(`${spreadsheetId}\u0000${sheetName}`, sheetId);
+    if (requiredColumnCount <= columnCount) {
+      return { spreadsheetId, appendedColumns: 0 };
+    }
+
+    const appendedColumns = requiredColumnCount - columnCount + COLUMN_CAPACITY_HEADROOM;
+    const url = `${GOOGLE_SHEETS_API}/spreadsheets/${encodePathPart(spreadsheetId)}:batchUpdate`;
+    await this.request<SheetsBatchUpdateResponse>('batch_update', url, {
+      method: 'POST',
+      body: JSON.stringify({
+        requests: [{
+          appendDimension: {
+            sheetId,
+            dimension: 'COLUMNS',
+            length: appendedColumns,
+          },
+        }],
+      }),
+    });
+    return { spreadsheetId, appendedColumns };
   }
 
   appendValues(spreadsheetId: string, range: string, values: SheetCellValue[][]): Promise<AppendValuesResponse> {

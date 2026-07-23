@@ -156,6 +156,7 @@ describe('target-aware sheets sync jobs', () => {
     raw.prepare('UPDATE sheets_connections SET friend_ledger_enabled = 0 WHERE id = ?').run(connection.id);
     const client = {
       readValues: vi.fn().mockResolvedValue({ majorDimension: 'ROWS', values: [] }),
+      ensureColumnCapacity: vi.fn().mockResolvedValue({ spreadsheetId: 'sheet-1', appendedColumns: 0 }),
       updateValues: vi.fn().mockResolvedValue({ spreadsheetId: 'sheet-1', updatedRows: 1 }),
       appendValues: vi.fn().mockResolvedValue({ spreadsheetId: 'sheet-1' }),
       batchUpdateValues: vi.fn().mockResolvedValue({ spreadsheetId: 'sheet-1', totalUpdatedRows: 0 }),

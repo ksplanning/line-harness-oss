@@ -64,6 +64,10 @@ function parseA1(range: string): { row: number; column: number } {
 
 class FakeSheetsClient {
   values: SheetCellValue[][] = [];
+  columnCount = 26;
+  readonly capacityChecks: Array<{ sheetName: string; requiredColumnCount: number }> = [];
+  readonly expansionRequests: Array<{ sheetName: string; appendedColumns: number }> = [];
+  readonly operations: string[] = [];
   readonly writes: Array<{
     kind: 'update' | 'append' | 'batch';
     range?: string;
@@ -80,7 +84,25 @@ class FakeSheetsClient {
     return response;
   }
 
+  async ensureColumnCapacity(
+    _spreadsheetId: string,
+    sheetName: string,
+    requiredColumnCount: number,
+  ) {
+    this.capacityChecks.push({ sheetName, requiredColumnCount });
+    this.operations.push('ensure');
+    const appendedColumns = Math.max(0, requiredColumnCount - this.columnCount);
+    if (appendedColumns > 0) {
+      this.columnCount += appendedColumns;
+      this.expansionRequests.push({ sheetName, appendedColumns });
+      this.operations.push('appendDimension');
+    }
+    return { spreadsheetId: 'sheet-1', appendedColumns };
+  }
+
   async updateValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
+    this.assertColumnCapacity(values);
+    this.operations.push('update');
     this.writes.push({ kind: 'update', range, rowCount: values.length });
     this.apply(range, values);
     await this.afterWrite?.('update');
@@ -88,6 +110,8 @@ class FakeSheetsClient {
   }
 
   async appendValues(_spreadsheetId: string, range: string, values: SheetCellValue[][]) {
+    this.assertColumnCapacity(values);
+    this.operations.push('append');
     this.writes.push({ kind: 'append', range, rowCount: values.length });
     this.values.push(...values.map((row) => [...row]));
     await this.afterWrite?.('append');
@@ -95,6 +119,7 @@ class FakeSheetsClient {
   }
 
   async batchUpdateValues(_spreadsheetId: string, data: SheetsDataUpdate[]) {
+    this.operations.push('batch');
     this.writes.push({ kind: 'batch', rowCount: data.length });
     for (const update of data) this.apply(update.range, update.values);
     await this.afterWrite?.('batch');
@@ -110,6 +135,11 @@ class FakeSheetsClient {
         this.values[rowIndex][start.column + columnOffset] = value;
       });
     });
+  }
+
+  private assertColumnCapacity(values: SheetCellValue[][]): void {
+    const width = Math.max(0, ...values.map((row) => row.length));
+    if (width > this.columnCount) throw new Error('column capacity must be ensured before write');
   }
 }
 
@@ -350,7 +380,53 @@ describe('friend ledger bidirectional sync', () => {
     const second = await run('polling', 'system_poll');
     expect(second).toMatchObject({ appendedRows: 0, updatedRows: 0, importedFields: 0 });
     expect(client.writes).toHaveLength(writesAfterFirst);
+    expect(client.capacityChecks).toEqual([
+      { sheetName: '友だち台帳', requiredColumnCount: 4 },
+      { sheetName: '友だち台帳', requiredColumnCount: 4 },
+    ]);
+    expect(client.expansionRequests).toEqual([]);
     expect(raw.prepare('SELECT COUNT(*) AS count FROM sheets_sync_ledger').get()).toEqual({ count: 1 });
+  });
+
+  test('expands for company columns plus new answer headers before row writes and does not expand again', async () => {
+    client.columnCount = 33;
+    await run();
+    for (const row of client.values) {
+      while (row.length < 33) row.push(`会社列${row.length + 1}`);
+    }
+    enableInternalAnswerForm([
+      { id: 'q1', label: '質問1', position: 1 },
+      { id: 'q2', label: '質問2', position: 2 },
+      { id: 'q3', label: '質問3', position: 3 },
+    ]);
+    insertInternalAnswer(
+      'ifs-capacity',
+      { q1: '回答1', q2: '回答2', q3: '回答3' },
+      '2026-07-21T11:00:00+09:00',
+    );
+    const operationsBeforeExpansion = client.operations.length;
+
+    const expanded = await run();
+
+    expect(expanded.updatedRows).toBe(1);
+    expect(client.capacityChecks.at(-1)).toEqual({
+      sheetName: '友だち台帳', requiredColumnCount: 36,
+    });
+    expect(client.expansionRequests).toEqual([{ sheetName: '友だち台帳', appendedColumns: 3 }]);
+    expect(client.operations.slice(operationsBeforeExpansion, operationsBeforeExpansion + 3))
+      .toEqual(['ensure', 'appendDimension', 'update']);
+    expect(client.values[0]).toHaveLength(36);
+    expect(client.values[0].slice(-3)).toEqual(['質問1', '質問2', '質問3']);
+
+    const valuesAfterExpansion = client.values.map((row) => [...row]);
+    const writesAfterExpansion = client.writes.length;
+    const expansionCount = client.expansionRequests.length;
+    const retried = await run();
+
+    expect(retried).toMatchObject({ appendedRows: 0, updatedRows: 0 });
+    expect(client.writes).toHaveLength(writesAfterExpansion);
+    expect(client.expansionRequests).toHaveLength(expansionCount);
+    expect(client.values).toEqual(valuesAfterExpansion);
   });
 
   test('finishes 1,450 friends through a stable 250-row cursor window', async () => {
