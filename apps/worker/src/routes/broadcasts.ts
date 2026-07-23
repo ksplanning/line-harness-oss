@@ -12,8 +12,13 @@ import { processBroadcastSend, buildMessage, processQueuedBroadcasts, countBroad
 import { checkMonthlyCap } from '../services/monthly-cap.js';
 import { sendTestMessages, TestSendError } from '../services/test-send.js';
 import { computeDedupBroadcastPreview } from '../services/dedup-broadcast.js';
-import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
+import {
+  countBroadcastAudience,
+  parseSegmentConditions,
+  parseStoredSegmentConditions,
+  queueConditionalBroadcast,
+} from '../services/broadcast-audience.js';
 import { getLineAccountById, getSenderPresetById, resolveSenderForBroadcast, getAbTestById } from '@line-crm/db';
 import { guardFlexContent } from '../utils/flex-persist-guard.js';
 import type { Env } from '../index.js';
@@ -63,6 +68,10 @@ function serializeBroadcast(row: DbBroadcast) {
     altText: (r.alt_text as string | null) ?? null,
     abTestId: (r.ab_test_id as string | null) ?? null,
     abVariant: (r.ab_variant as string | null) ?? null,
+    segmentConditions:
+      row.target_type === 'segment'
+        ? parseStoredSegmentConditions(r.segment_conditions)
+        : null,
     messages: parseMessagesColumn(r.messages),
     createdAt: row.created_at,
   };
@@ -285,6 +294,16 @@ broadcasts.get('/api/broadcasts/:id/preview-count', async (c) => {
       }
       count = active;
       perAccount = breakdown;
+    } else if (broadcast.target_type === 'segment') {
+      const accountId = (raw.line_account_id as string | null) || null;
+      const conditions = parseStoredSegmentConditions(raw.segment_conditions);
+      if (!accountId || !conditions) {
+        return c.json({
+          success: false,
+          error: 'Conditional broadcast requires an account and valid segmentConditions',
+        }, 400);
+      }
+      count = await countBroadcastAudience(c.env.DB, accountId, conditions);
     } else if (broadcast.target_type === 'tag' && broadcast.target_tag_id) {
       // 注: ここは inline send パス (broadcast.ts:61 getFriendsByTag) が
       // line_account_id でフィルタしないので、preview もアカウント横断で数える。
@@ -433,6 +452,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
       senderPresetId?: string | null;
       abTestId?: string | null;
       abVariant?: string | null;
+      segmentConditions?: unknown;
       messages?: MessageBlock[];
     }>();
 
@@ -496,6 +516,30 @@ broadcasts.post('/api/broadcasts', async (c) => {
       );
     }
 
+    let segmentConditions: SegmentCondition | null = null;
+    if (body.segmentConditions !== undefined && body.segmentConditions !== null) {
+      try {
+        segmentConditions = parseSegmentConditions(body.segmentConditions);
+      } catch (error) {
+        return c.json({
+          success: false,
+          error: error instanceof Error ? error.message : 'segmentConditions is invalid',
+        }, 400);
+      }
+    }
+    if (body.targetType === 'segment' && !segmentConditions) {
+      return c.json({
+        success: false,
+        error: 'segmentConditions is required when targetType is "segment"',
+      }, 400);
+    }
+    if (body.targetType !== 'segment' && segmentConditions) {
+      return c.json({
+        success: false,
+        error: 'segmentConditions requires targetType "segment"',
+      }, 400);
+    }
+
     // A/B 紐付け検証 (case account = body.lineAccountId・別 account/不正 variant は 400)。
     const abErr = await validateAbBinding(c.env.DB, body.abTestId, body.abVariant, body.lineAccountId);
     if (abErr) return c.json({ success: false, error: abErr }, 400);
@@ -518,6 +562,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
       messageContent: body.messageContent,
       targetType: body.targetType,
       targetTagId: body.targetTagId ?? null,
+      segmentConditions: segmentConditions ? JSON.stringify(segmentConditions) : null,
       scheduledAt: body.scheduledAt ?? null,
       accountIds: body.accountIds,
       dedupPriority: body.dedupPriority,
@@ -574,6 +619,7 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       senderPresetId?: string | null;
       abTestId?: string | null;
       abVariant?: string | null;
+      segmentConditions?: unknown;
       messages?: MessageBlock[];
     }>();
 
@@ -683,6 +729,60 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       if (abErr) return c.json({ success: false, error: abErr }, 400);
     }
 
+    const existingRawConditions =
+      (existing as unknown as Record<string, unknown>).segment_conditions as string | null;
+    let segmentConditionsUpdate: string | null | undefined;
+    if (body.segmentConditions !== undefined) {
+      if (body.segmentConditions === null) {
+        segmentConditionsUpdate = null;
+      } else {
+        try {
+          segmentConditionsUpdate = JSON.stringify(
+            parseSegmentConditions(body.segmentConditions),
+          );
+        } catch (error) {
+          return c.json({
+            success: false,
+            error: error instanceof Error ? error.message : 'segmentConditions is invalid',
+          }, 400);
+        }
+      }
+    } else if (body.targetType !== undefined && body.targetType !== 'segment') {
+      segmentConditionsUpdate = null;
+    }
+    const effectiveTargetType = body.targetType ?? existing.target_type;
+    let effectiveSegmentConditions =
+      segmentConditionsUpdate !== undefined
+        ? segmentConditionsUpdate
+        : existing.target_type === 'segment'
+          ? existingRawConditions
+          : null;
+    if (
+      effectiveTargetType !== 'segment' &&
+      body.segmentConditions !== undefined &&
+      body.segmentConditions !== null
+    ) {
+      return c.json({
+        success: false,
+        error: 'segmentConditions requires targetType "segment"',
+      }, 400);
+    }
+    if (effectiveTargetType === 'segment') {
+      const parsedEffective = parseStoredSegmentConditions(effectiveSegmentConditions);
+      if (!parsedEffective) {
+        return c.json({
+          success: false,
+          error: 'segmentConditions is required when targetType is "segment"',
+        }, 400);
+      }
+      effectiveSegmentConditions = JSON.stringify(parsedEffective);
+      segmentConditionsUpdate = effectiveSegmentConditions;
+    } else if (existingRawConditions !== null) {
+      // Legacy >500-tag queues use segment_conditions as an internal marker.
+      // It is not a user segment and is regenerated on the next send.
+      segmentConditionsUpdate = null;
+    }
+
     // Keep status in sync with scheduledAt changes
     let statusUpdate: 'draft' | 'scheduled' | undefined;
     if (body.scheduledAt !== undefined) {
@@ -696,6 +796,7 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       message_content: comboUpdate ? comboUpdate.message_content : body.messageContent,
       target_type: body.targetType,
       target_tag_id: body.targetTagId,
+      segment_conditions: segmentConditionsUpdate,
       scheduled_at: body.scheduledAt,
       sender_preset_id: body.senderPresetId,
       ...(comboUpdate ? { messages: comboUpdate.messages, alt_text: comboUpdate.alt_text } : {}),
@@ -703,7 +804,15 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       ...(body.abTestId !== undefined ? { ab_test_id: body.abTestId } : {}),
       ...(body.abVariant !== undefined ? { ab_variant: body.abVariant } : {}),
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
+    }, {
+      expectedStatuses: ['draft', 'scheduled'],
     });
+    if (!updated) {
+      return c.json({
+        success: false,
+        error: 'Broadcast changed or is already sending',
+      }, 409);
+    }
 
     // 失敗 partial dedup broadcast を draft に戻して編集 → 再送するケースで、
     // 残っていた resume 用 state を全部クリアして fresh campaign として送り直せる
@@ -725,14 +834,20 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
          sent_at = NULL,
          aggregation_unit = NULL,
          line_request_id = NULL
-       WHERE id = ?`,
+       WHERE id = ? AND status IN ('draft', 'scheduled')`,
     ).bind(id).run();
 
     // 過去 send の insight 行を削除する。createBroadcastInsight は idempotent で
     // 既存行があれば skip する設計のため、削除しないと再送時に新しい pending
     // insight が作られず getPendingInsights / GET /insight が古い metrics を返し続ける。
     await c.env.DB.prepare(
-      `DELETE FROM broadcast_insights WHERE broadcast_id = ?`,
+      `DELETE FROM broadcast_insights
+       WHERE broadcast_id = ?
+         AND EXISTS (
+           SELECT 1 FROM broadcasts
+           WHERE broadcasts.id = broadcast_insights.broadcast_id
+             AND broadcasts.status IN ('draft', 'scheduled')
+         )`,
     ).bind(id).run();
 
     return c.json({ success: true, data: updated ? serializeBroadcast(updated) : null });
@@ -787,6 +902,38 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
           }, 429);
         }
       }
+    }
+
+    // New conditional audiences are always queued. The recipient IDs and
+    // line_user_ids are frozen here in one INSERT ... SELECT before any
+    // background batch can run.
+    if (existing.target_type === 'segment') {
+      const condition = parseStoredSegmentConditions(
+        (existing as unknown as Record<string, unknown>).segment_conditions,
+      );
+      if (!condition) {
+        return c.json({
+          success: false,
+          error: 'Conditional broadcast requires valid segmentConditions',
+        }, 400);
+      }
+      const queued = await queueConditionalBroadcast(c.env.DB, existing, condition);
+      if (!queued.ok) {
+        return c.json({
+          success: false,
+          error: queued.error,
+          ...(queued.status === 429
+            ? { capBlocked: true, cap: queued.cap }
+            : {}),
+        }, queued.status);
+      }
+      const result = await getBroadcastById(c.env.DB, id);
+      return c.json({
+        success: true,
+        data: result ? serializeBroadcast(result) : null,
+        queued: true,
+        message: 'Broadcast queued with a frozen recipient snapshot',
+      }, 202);
     }
 
     // multi-account-dedup は常にキュー方式 — Worker の30秒制限を超えるため
@@ -935,48 +1082,45 @@ broadcasts.post('/api/broadcasts/:id/send-segment', async (c) => {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
 
-    const body = await c.req.json<{ conditions: SegmentCondition }>();
-
-    if (!body.conditions || !body.conditions.operator || !Array.isArray(body.conditions.rules)) {
-      return c.json(
-        { success: false, error: 'conditions with operator and rules array is required' },
-        400,
-      );
+    const body = await c.req.json<{ conditions?: unknown }>();
+    let condition: SegmentCondition;
+    try {
+      condition = parseSegmentConditions(body.conditions);
+    } catch (error) {
+      return c.json({
+        success: false,
+        error: error instanceof Error
+          ? error.message
+          : 'conditions with operator and rules array is required',
+      }, 400);
+    }
+    if (existing.status !== 'draft' && existing.status !== 'scheduled') {
+      return c.json({
+        success: false,
+        error: 'Broadcast is already sent or sending',
+      }, 409);
     }
 
-    // G2 entry pre-check: segment 送信の予定数 (conditions を account scope と AND した件数) で上限確認。
-    // cap=null は常に通す (誤爆ゼロ)。上限超過なら 429 で止め multicast を叩かない。
-    {
-      const segAccountId = (existing as unknown as Record<string, unknown>).line_account_id as string | null;
-      if (segAccountId) {
-        const { buildSegmentWhere } = await import('../services/segment-query.js');
-        const { clause, bindings } = buildSegmentWhere(body.conditions);
-        const cnt = await c.env.DB.prepare(
-          `SELECT COUNT(*) as c FROM friends f WHERE f.line_account_id = ? AND ${clause}`,
-        ).bind(segAccountId, ...bindings).first<{ c: number }>();
-        const pending = cnt?.c ?? 0;
-        const cap = await checkMonthlyCap(c.env.DB, segAccountId, pending);
-        if (!cap.allowed) {
-          return c.json({
-            success: false,
-            error: `今月の配信上限に達しています (今月${cap.count} / 上限${cap.cap} 通)。上限を変えるか来月までお待ちください。テスト送信も上限の対象です。`,
-            capBlocked: true,
-            cap: { count: cap.count, cap: cap.cap, pending },
-          }, 429);
-        }
-      }
-    }
-
-    // Atomic lock: status='draft'|'scheduled' のときだけ status='sending' に遷移
-    const lockResult = await c.env.DB.prepare(
-      `UPDATE broadcasts SET status = 'sending', batch_offset = 0, segment_conditions = ? WHERE id = ? AND status IN ('draft','scheduled')`
-    ).bind(JSON.stringify(body.conditions), id).run();
-    if (!lockResult.meta.changes) {
-      return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 409);
+    const queued = await queueConditionalBroadcast(c.env.DB, existing, condition, {
+      persistCondition: true,
+    });
+    if (!queued.ok) {
+      return c.json({
+        success: false,
+        error: queued.error,
+        ...(queued.status === 429
+          ? { capBlocked: true, cap: queued.cap }
+          : {}),
+      }, queued.status);
     }
 
     const result = await getBroadcastById(c.env.DB, id);
-    return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
+    return c.json({
+      success: true,
+      data: result ? serializeBroadcast(result) : null,
+      queued: true,
+      message: 'Broadcast queued with a frozen recipient snapshot',
+    }, 202);
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send-segment error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -1270,10 +1414,25 @@ broadcasts.get('/api/broadcasts/:id/progress', async (c) => {
 
 // POST /api/segments/count — count friends matching segment conditions
 broadcasts.post('/api/segments/count', async (c) => {
-  const body = await c.req.json<{ conditions: unknown; accountId?: string }>();
+  const body = await c.req.json<{
+    conditions: unknown;
+    accountId?: string;
+    followingOnly?: boolean;
+  }>();
   try {
+    const conditions = parseSegmentConditions(body.conditions);
+    if (body.followingOnly) {
+      if (!body.accountId) {
+        return c.json({
+          success: false,
+          error: 'accountId is required when followingOnly is true',
+        }, 400);
+      }
+      const count = await countBroadcastAudience(c.env.DB, body.accountId, conditions);
+      return c.json({ success: true, count });
+    }
     const { buildSegmentWhere } = await import('../services/segment-query.js');
-    const { clause, bindings } = buildSegmentWhere(body.conditions as SegmentCondition);
+    const { clause, bindings } = buildSegmentWhere(conditions);
 
     // account 条件を構造的に AND (文字列 replace をやめる)。clause は複数ルールを括弧で
     // 包むので `f.line_account_id = ? AND (A OR B)` となり別アカウントが漏れない (HIGH-2)。

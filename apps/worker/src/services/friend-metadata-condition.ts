@@ -3,7 +3,11 @@ export interface SqlFragment {
   bindings: unknown[];
 }
 
-export type FriendMetadataPredicateOperator = 'equals' | 'not_equals';
+export type FriendMetadataPredicateOperator =
+  | 'equals'
+  | 'not_equals'
+  | 'empty'
+  | 'not_empty';
 
 /**
  * Return the effective value used by friend metadata predicates.
@@ -51,14 +55,31 @@ export function buildEffectiveFriendMetadataExpression(
   };
 }
 
-/** Build an equals/not-equals predicate while evaluating the value once. */
+/**
+ * Build a custom-field predicate while evaluating the effective value once.
+ *
+ * Empty means a missing key, SQL/JSON null, or an empty string. An active
+ * field definition's default is part of the effective value, so a non-empty
+ * default makes a genuinely missing key "not empty". X'00' is the internal
+ * sentinel returned for an explicitly stored JSON null.
+ */
 export function buildFriendMetadataPredicate(
   key: string,
-  value: string,
+  value: string | null,
   operator: FriendMetadataPredicateOperator,
   friendAlias = 'f',
 ): SqlFragment {
   const expression = buildEffectiveFriendMetadataExpression(key, friendAlias);
+  if (operator === 'empty' || operator === 'not_empty') {
+    const emptyExpression = `COALESCE((${expression.sql}), X'00')`;
+    return {
+      sql:
+        operator === 'empty'
+          ? `${emptyExpression} IN ('', X'00')`
+          : `${emptyExpression} NOT IN ('', X'00')`,
+      bindings: expression.bindings,
+    };
+  }
   return {
     sql:
       operator === 'equals'

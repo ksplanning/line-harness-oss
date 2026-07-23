@@ -78,6 +78,43 @@ const spec = {
           createdAt: { type: 'string', format: 'date-time' },
         },
       },
+      SegmentRule: {
+        type: 'object',
+        required: ['type', 'value'],
+        properties: {
+          type: {
+            type: 'string',
+            enum: [
+              'tag_exists',
+              'tag_not_exists',
+              'metadata_equals',
+              'metadata_not_equals',
+              'metadata_empty',
+              'metadata_not_empty',
+              'is_following',
+              'clicked_link',
+              'tapped_menu',
+              'opened_form',
+            ],
+          },
+          value: {
+            description: 'Rule-specific value: tag ID, boolean, custom-field object, or behavior object',
+          },
+        },
+      },
+      SegmentCondition: {
+        type: 'object',
+        required: ['operator', 'rules'],
+        properties: {
+          operator: { type: 'string', enum: ['AND', 'OR'] },
+          rules: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 50,
+            items: { $ref: '#/components/schemas/SegmentRule' },
+          },
+        },
+      },
       Broadcast: {
         type: 'object',
         properties: {
@@ -87,6 +124,12 @@ const spec = {
           messageContent: { type: 'string' },
           targetType: { type: 'string', enum: ['all', 'tag', 'segment', 'multi-account-dedup'] },
           targetTagId: { type: 'string', nullable: true },
+          segmentConditions: {
+            anyOf: [
+              { $ref: '#/components/schemas/SegmentCondition' },
+              { type: 'null' },
+            ],
+          },
           accountIds: { type: 'array', items: { type: 'string' }, nullable: true },
           dedupPriority: { type: 'array', items: { type: 'string' }, nullable: true },
           failedAccountIds: { type: 'array', items: { type: 'string' }, nullable: true },
@@ -309,7 +352,7 @@ const spec = {
       post: {
         tags: ['Broadcasts'],
         summary: '配信作成',
-        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, messageType: { type: 'string' }, messageContent: { type: 'string' }, targetType: { type: 'string' }, targetTagId: { type: 'string' }, accountIds: { type: 'array', items: { type: 'string' } }, dedupPriority: { type: 'array', items: { type: 'string' } }, scheduledAt: { type: 'string' } }, required: ['title', 'messageType', 'messageContent', 'targetType'] } } } },
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, messageType: { type: 'string' }, messageContent: { type: 'string' }, targetType: { type: 'string' }, targetTagId: { type: 'string' }, segmentConditions: { $ref: '#/components/schemas/SegmentCondition' }, accountIds: { type: 'array', items: { type: 'string' } }, dedupPriority: { type: 'array', items: { type: 'string' } }, scheduledAt: { type: 'string' } }, required: ['title', 'messageType', 'messageContent', 'targetType'] } } } },
         responses: { '201': { description: 'Broadcast created' } },
       },
     },

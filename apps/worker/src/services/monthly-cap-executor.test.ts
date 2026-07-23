@@ -11,14 +11,29 @@ import { describe, expect, test, beforeEach, vi } from 'vitest';
 
 // LINE client を mock して multicast/broadcast の呼び出しを捕捉する。
 const multicastCalls: Array<{ to: string[]; unit: unknown }> = [];
+let multicastAttempts = 0;
+let failOnMulticastAttempt: number | null = null;
 vi.mock('@line-crm/line-sdk', () => ({
   LineClient: class {
     constructor(public token: string) {}
-    async multicast(to: string[], _msgs: unknown[], unit: unknown) { multicastCalls.push({ to, unit }); return {}; }
+    async multicast(to: string[], _msgs: unknown[], unit: unknown) {
+      multicastAttempts += 1;
+      if (multicastAttempts === failOnMulticastAttempt) throw new Error('planned multicast failure');
+      multicastCalls.push({ to, unit });
+      return {};
+    }
     async broadcast() { return { requestId: 'r' }; }
     async pushMessage() { return {}; }
   },
 }));
+vi.mock('./stealth.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./stealth.js')>();
+  return {
+    ...original,
+    calculateStaggerDelay: () => 0,
+    sleep: async () => {},
+  };
+});
 
 const { processQueuedBroadcasts } = await import('./broadcast.js');
 
@@ -64,7 +79,11 @@ function seedQueuedSegmentBroadcast(raw: Database.Database, cap: number | null) 
   ).run(seg);
 }
 
-beforeEach(() => { multicastCalls.length = 0; });
+beforeEach(() => {
+  multicastCalls.length = 0;
+  multicastAttempts = 0;
+  failOnMulticastAttempt = null;
+});
 
 describe('processQueuedBroadcasts authoritative cap gate', () => {
   test('cap exceeded → NO multicast, broadcast reset to draft (executor stops send)', async () => {
@@ -95,5 +114,91 @@ describe('processQueuedBroadcasts authoritative cap gate', () => {
     const db = d1(raw);
     await processQueuedBroadcasts(db, new (await import('@line-crm/line-sdk')).LineClient('tok'), undefined);
     expect(multicastCalls.length).toBe(1);
+  });
+
+  test('a partial conditional send pauses at its snapshot offset and resumes without duplicates', async () => {
+    const raw = new Database(':memory:');
+    replayAll(raw);
+    raw.prepare(
+      `INSERT INTO line_accounts
+         (id, channel_id, name, channel_access_token, channel_secret, monthly_cap)
+       VALUES ('acc-1', 'ch', 'a', 'tok', 'sec', NULL)`,
+    ).run();
+    const insertFriend = raw.prepare(
+      `INSERT INTO friends
+         (id, line_user_id, line_account_id, is_following)
+       VALUES (?, ?, 'acc-1', 1)`,
+    );
+    const insertSnapshot = raw.prepare(
+      `INSERT INTO broadcast_recipient_snapshots
+         (broadcast_id, friend_id, line_user_id)
+       VALUES ('conditional-partial', ?, ?)`,
+    );
+    const recipients: Array<[string, string]> = [];
+    for (let index = 0; index < 501; index += 1) {
+      recipients.push([
+        `f${index.toString().padStart(3, '0')}`,
+        `u${index.toString().padStart(3, '0')}`,
+      ]);
+    }
+    raw.transaction(() => {
+      for (const [friendId, lineUserId] of recipients) {
+        insertFriend.run(friendId, lineUserId);
+      }
+      raw.prepare(
+        `INSERT INTO broadcasts
+           (id, title, message_type, message_content, target_type, status,
+            batch_offset, segment_conditions, line_account_id, total_count, success_count)
+         VALUES (
+           'conditional-partial', 'T', 'text', 'hi', 'segment', 'sending',
+           0, '{"operator":"AND","rules":[{"type":"is_following","value":true}]}',
+           'acc-1', 501, 0
+         )`,
+      ).run();
+      for (const [friendId, lineUserId] of recipients) {
+        insertSnapshot.run(friendId, lineUserId);
+      }
+    })();
+    const db = d1(raw);
+
+    failOnMulticastAttempt = 2;
+    await processQueuedBroadcasts(
+      db,
+      new (await import('@line-crm/line-sdk')).LineClient('tok'),
+      undefined,
+    );
+    expect(multicastCalls).toHaveLength(1);
+    expect(multicastCalls[0].to).toHaveLength(500);
+    expect(raw.prepare(
+      `SELECT status, batch_offset, success_count
+       FROM broadcasts WHERE id = 'conditional-partial'`,
+    ).get()).toEqual({ status: 'sending', batch_offset: 500, success_count: 500 });
+
+    failOnMulticastAttempt = null;
+    raw.prepare(`UPDATE line_accounts SET monthly_cap = 500 WHERE id = 'acc-1'`).run();
+    await processQueuedBroadcasts(
+      db,
+      new (await import('@line-crm/line-sdk')).LineClient('tok'),
+      undefined,
+    );
+    expect(multicastCalls).toHaveLength(1);
+    expect(raw.prepare(
+      `SELECT status, batch_offset, success_count
+       FROM broadcasts WHERE id = 'conditional-partial'`,
+    ).get()).toEqual({ status: 'sending', batch_offset: 500, success_count: 500 });
+
+    raw.prepare(`UPDATE line_accounts SET monthly_cap = NULL WHERE id = 'acc-1'`).run();
+    await processQueuedBroadcasts(
+      db,
+      new (await import('@line-crm/line-sdk')).LineClient('tok'),
+      undefined,
+    );
+    expect(multicastCalls).toHaveLength(2);
+    expect(multicastCalls[1].to).toEqual(['u500']);
+    expect(new Set(multicastCalls.flatMap((call) => call.to)).size).toBe(501);
+    expect(raw.prepare(
+      `SELECT status, total_count, success_count
+       FROM broadcasts WHERE id = 'conditional-partial'`,
+    ).get()).toEqual({ status: 'sent', total_count: 501, success_count: 501 });
   });
 });

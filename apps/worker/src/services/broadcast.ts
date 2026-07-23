@@ -17,6 +17,12 @@ import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js'
 import { checkMonthlyCap } from './monthly-cap.js';
 import { renderMessageContent } from './render-message.js';
 import { buildOutboundMessage } from './outbound-message.js';
+import {
+  countBroadcastAudience,
+  listBroadcastRecipientSnapshot,
+  parseStoredSegmentConditions,
+  queueConditionalBroadcast,
+} from './broadcast-audience.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -35,17 +41,28 @@ export async function countBroadcastRecipients(
   const raw = broadcast as unknown as Record<string, unknown>;
   const accountId = raw.line_account_id as string | null;
   if (broadcast.target_type === 'multi-account-dedup') return null;
-  const segStr = raw.segment_conditions as string | null;
-  if (segStr) {
+  if (broadcast.target_type === 'segment') {
+    const conditions = parseStoredSegmentConditions(raw.segment_conditions);
+    if (!accountId || !conditions) return null;
+    return countBroadcastAudience(db, accountId, conditions);
+  }
+  const legacySegmentConditions = raw.segment_conditions as string | null;
+  if (legacySegmentConditions) {
     const { buildSegmentWhere } = await import('./segment-query.js');
-    const { clause, bindings } = buildSegmentWhere(JSON.parse(segStr));
+    const { clause, bindings } = buildSegmentWhere(JSON.parse(legacySegmentConditions));
     const wheres: string[] = [];
-    const binds: unknown[] = [];
-    if (accountId) { wheres.push('f.line_account_id = ?'); binds.push(accountId); }
+    const scopedBindings: unknown[] = [];
+    if (accountId) {
+      wheres.push('f.line_account_id = ?');
+      scopedBindings.push(accountId);
+    }
     wheres.push(clause);
-    binds.push(...bindings);
-    const r = await db.prepare(`SELECT COUNT(*) as c FROM friends f WHERE ${wheres.join(' AND ')}`).bind(...binds).first<{ c: number }>();
-    return r?.c ?? 0;
+    scopedBindings.push(...bindings);
+    const row = await db
+      .prepare(`SELECT COUNT(*) AS c FROM friends f WHERE ${wheres.join(' AND ')}`)
+      .bind(...scopedBindings)
+      .first<{ c: number }>();
+    return row?.c ?? 0;
   }
   if (broadcast.target_type === 'tag' && broadcast.target_tag_id) {
     const tagFriends = await getFriendsByTag(db, broadcast.target_tag_id);
@@ -178,6 +195,8 @@ export async function processBroadcastSend(
         }
       }
       await updateBroadcastLineRequestId(db, broadcast.id, null, unit);
+    } else if (broadcast.target_type === 'segment') {
+      throw new Error('Conditional broadcasts must be queued from a recipient snapshot');
     } else if (broadcast.target_type === 'multi-account-dedup') {
       // Always queued via routes/broadcasts.ts、ただし scheduled 経由でも
       // processBroadcastSend に到達するため両方カバーが必要。dedup 内部で
@@ -219,6 +238,36 @@ export async function processScheduledBroadcasts(
 
   for (const broadcast of scheduled) {
     try {
+      const accountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
+      if (broadcast.target_type === 'segment') {
+        const conditions = parseStoredSegmentConditions(
+          (broadcast as unknown as Record<string, unknown>).segment_conditions,
+        );
+        if (!accountId || !conditions) {
+          console.error(
+            `Scheduled conditional broadcast ${broadcast.id} has invalid conditions; status reset to draft`,
+          );
+          await db
+            .prepare(
+              `UPDATE broadcasts
+               SET status = 'draft', batch_offset = 0, batch_lock_at = NULL
+               WHERE id = ? AND status = 'scheduled'`,
+            )
+            .bind(broadcast.id)
+            .run();
+          continue;
+        }
+        const queued = await queueConditionalBroadcast(db, broadcast, conditions, {
+          capBlockedStatus: 'draft',
+        });
+        if (!queued.ok && queued.status !== 409) {
+          console.warn(
+            `Scheduled conditional broadcast ${broadcast.id} was not queued: ${queued.error}`,
+          );
+        }
+        continue;
+      }
+
       // Optimistic lock: claim this broadcast (scheduled → sending)
       const lockResult = await db
         .prepare(`UPDATE broadcasts SET status = 'sending' WHERE id = ? AND status = 'scheduled'`)
@@ -228,7 +277,6 @@ export async function processScheduledBroadcasts(
 
       // Resolve correct lineClient for this broadcast's account
       let deliveryClient = lineClient;
-      const accountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
       if (accountId) {
         const { getLineAccountById } = await import('@line-crm/db');
         const account = await getLineAccountById(db, accountId);
@@ -393,7 +441,9 @@ async function processQueuedBroadcastBatches(
   // 対象ユーザーリストを取得（アカウントで絞り込む）
   const accountId = raw.line_account_id as string | null;
   let friends: Array<{ id: string; line_user_id: string }>;
-  if (segmentConditionsStr) {
+  if (broadcast.target_type === 'segment') {
+    friends = await listBroadcastRecipientSnapshot(db, broadcast.id);
+  } else if (segmentConditionsStr) {
     const { buildSegmentWhere } = await import('./segment-query.js');
     const condition = JSON.parse(segmentConditionsStr);
     const { clause, bindings } = buildSegmentWhere(condition);
@@ -425,12 +475,24 @@ async function processQueuedBroadcastBatches(
 
   // G2 authoritative gate: 実 multicast 直前に月次上限を確認する (真の送信点・Codex HIGH)。
   // friends.length = 今回予定数 (exact)。cap=null は常に通す (誤爆ゼロ)。上限超過なら送らずに
-  // status→draft + ロック解除して owner が上限を上げるか翌月まで待つ運用にする (batch_offset の
-  // 途中でも残りを送らない = 上限を超えさせない)。
+  // 初回なら status→draft。snapshot 済み条件配信の途中再開なら、既送信者への再送を防ぐため
+  // status='sending' と resume offset を保ち、上限が空いた次の cron で残りだけを送る。
   {
     const remaining = friends.length - batchOffset;
     const capCheck = await checkMonthlyCap(db, accountId, remaining);
     if (accountId && !capCheck.allowed) {
+      if (broadcast.target_type === 'segment' && batchOffset > 0) {
+        console.warn(`[monthly-cap] conditional broadcast ${broadcast.id} paused at offset ${batchOffset}: ${capCheck.count}+${remaining} > ${capCheck.cap}.`);
+        await db
+          .prepare(
+            `UPDATE broadcasts
+             SET batch_offset = ?, batch_lock_at = NULL
+             WHERE id = ? AND status = 'sending' AND batch_offset = -1`,
+          )
+          .bind(batchOffset, broadcast.id)
+          .run();
+        return;
+      }
       console.warn(`[monthly-cap] queued broadcast ${broadcast.id} blocked: ${capCheck.count}+${remaining} > ${capCheck.cap}. 上限まで送らずスキップ (status→draft)。`);
       await db.prepare('UPDATE broadcasts SET batch_offset = 0, batch_lock_at = NULL WHERE id = ?').bind(broadcast.id).run();
       await updateBroadcastStatus(db, broadcast.id, 'draft');

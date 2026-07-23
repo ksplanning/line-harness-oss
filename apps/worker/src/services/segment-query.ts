@@ -28,6 +28,7 @@ export interface OpenedFormValue extends BehavioralPeriod {
 export type SegmentRuleValue =
   | string
   | boolean
+  | { key: string }
   | { key: string; value: string }
   | ClickedLinkValue
   | TappedMenuValue
@@ -39,6 +40,8 @@ export interface SegmentRule {
     | 'tag_not_exists'
     | 'metadata_equals'
     | 'metadata_not_equals'
+    | 'metadata_empty'
+    | 'metadata_not_empty'
     | 'ref_code'
     | 'is_following'
     | 'clicked_link'
@@ -124,8 +127,8 @@ export function buildSegmentWhere(
   for (const rule of condition.rules) {
     switch (rule.type) {
       case 'tag_exists': {
-        if (typeof rule.value !== 'string') {
-          throw new Error('tag_exists rule requires a string tag ID value')
+        if (typeof rule.value !== 'string' || !rule.value) {
+          throw new Error('tag_exists rule requires a non-empty tag ID value')
         }
         clauses.push(
           `EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?)`,
@@ -135,8 +138,8 @@ export function buildSegmentWhere(
       }
 
       case 'tag_not_exists': {
-        if (typeof rule.value !== 'string') {
-          throw new Error('tag_not_exists rule requires a string tag ID value')
+        if (typeof rule.value !== 'string' || !rule.value) {
+          throw new Error('tag_not_exists rule requires a non-empty tag ID value')
         }
         clauses.push(
           `NOT EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?)`,
@@ -150,6 +153,7 @@ export function buildSegmentWhere(
           typeof rule.value !== 'object' ||
           rule.value === null ||
           typeof (rule.value as { key: string; value: string }).key !== 'string' ||
+          !(rule.value as { key: string; value: string }).key ||
           typeof (rule.value as { key: string; value: string }).value !== 'string'
         ) {
           throw new Error('metadata_equals rule requires { key: string; value: string }')
@@ -166,12 +170,33 @@ export function buildSegmentWhere(
           typeof rule.value !== 'object' ||
           rule.value === null ||
           typeof (rule.value as { key: string; value: string }).key !== 'string' ||
+          !(rule.value as { key: string; value: string }).key ||
           typeof (rule.value as { key: string; value: string }).value !== 'string'
         ) {
           throw new Error('metadata_not_equals rule requires { key: string; value: string }')
         }
         const mv = rule.value as { key: string; value: string }
         const predicate = buildFriendMetadataPredicate(mv.key, mv.value, 'not_equals')
+        clauses.push(predicate.sql)
+        bindings.push(...predicate.bindings)
+        break
+      }
+
+      case 'metadata_empty':
+      case 'metadata_not_empty': {
+        if (
+          typeof rule.value !== 'object' ||
+          rule.value === null ||
+          typeof (rule.value as { key: string }).key !== 'string' ||
+          !(rule.value as { key: string }).key
+        ) {
+          throw new Error(`${rule.type} rule requires { key: string }`)
+        }
+        const predicate = buildFriendMetadataPredicate(
+          (rule.value as { key: string }).key,
+          null,
+          rule.type === 'metadata_empty' ? 'empty' : 'not_empty',
+        )
         clauses.push(predicate.sql)
         bindings.push(...predicate.bindings)
         break
