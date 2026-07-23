@@ -41,7 +41,7 @@ export default function SettingsPage() {
   return (
     <div>
       <Header
-        title="設定"
+        title="通知設定"
         description="LINE アカウントごとのメール差出人とスタッフ通知を、ここでまとめて設定できます。"
       />
 

@@ -219,6 +219,13 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('設定ページ', () => {
+  test('ページ見出しを「通知設定」と表示する', () => {
+    render(<SettingsPage />)
+
+    expect(screen.getByRole('heading', { level: 1, name: '通知設定' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { level: 1, name: '設定' })).toBeNull()
+  })
+
   test('アカウントを選び、メールDNS設定とChatwork/LINE通知設定を別内容として開く', async () => {
     const view = render(<SettingsPage />)
 
