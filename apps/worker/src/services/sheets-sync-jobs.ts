@@ -264,7 +264,7 @@ async function snapshotForTarget(
   const snapshot = target === 'form_results'
     ? await db.prepare(
       `SELECT submission.id, submission.submitted_at AS created_at,
-              COUNT(*) OVER () AS total_count
+              COUNT(CASE WHEN submission.deleted_at IS NULL THEN 1 END) OVER () AS total_count
        FROM internal_form_submissions submission
        LEFT JOIN friends friend
          ON friend.id = submission.friend_id AND friend.line_account_id = ?

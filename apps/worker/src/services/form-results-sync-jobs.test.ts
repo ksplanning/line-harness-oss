@@ -706,6 +706,112 @@ describe('target-aware sheets sync jobs', () => {
     expect(ledgerJob.id).not.toBe(job.id);
   });
 
+  test('counts only live submissions and completes without a false change warning', async () => {
+    insertSubmissions(10);
+    raw.prepare(`UPDATE internal_form_submissions
+      SET deleted_at = '2026-07-22T10:00:00+09:00'
+      WHERE form_id = 'form-1' AND id <> 'ifs-0000'`).run();
+    const started = await startSheetsSyncJob({
+      db, connection, source: 'manual', actor: 'owner-1', target: 'form_results',
+    });
+
+    expect(started).toMatchObject({ totalCount: 1, processedCount: 0, warning: null });
+
+    const syncResults = vi.fn().mockResolvedValue({
+      status: 'success', warning: null, warnings: [], busy: false,
+      appendedRows: 1, updatedRows: 0, importedFields: 0, ignoredIdentityEdits: 0,
+      chunk: {
+        processed: 1,
+        hasMore: false,
+        cursor: { submittedAt: '2026-07-21T10:00:00+09:00', submissionId: 'ifs-0000' },
+      },
+    });
+    const completed = await processNextSheetsSyncJob({
+      db,
+      sync: vi.fn(),
+      syncResults,
+      chunkSize: 200,
+    });
+
+    expect(completed.job).toMatchObject({
+      status: 'success', totalCount: 1, processedCount: 1, warning: null,
+    });
+    expect(syncResults).toHaveBeenCalledWith(expect.objectContaining({
+      chunk: expect.objectContaining({
+        through: { submittedAt: '2026-07-21T10:00:09+09:00', submissionId: 'ifs-0009' },
+      }),
+    }));
+  });
+
+  test('keeps the change warning when a live submission disappears after the snapshot', async () => {
+    insertSubmissions(3);
+    await startSheetsSyncJob({
+      db, connection, source: 'manual', actor: 'owner-1', target: 'form_results',
+    });
+    raw.prepare(`UPDATE internal_form_submissions
+      SET deleted_at = '2026-07-22T10:00:00+09:00' WHERE id = 'ifs-0002'`).run();
+
+    const completed = await processNextSheetsSyncJob({
+      db,
+      sync: vi.fn(),
+      syncResults: vi.fn().mockResolvedValue({
+        status: 'success', warning: null, warnings: [], busy: false,
+        appendedRows: 2, updatedRows: 0, importedFields: 0, ignoredIdentityEdits: 0,
+        chunk: {
+          processed: 2,
+          hasMore: false,
+          cursor: { submittedAt: '2026-07-21T10:00:01+09:00', submissionId: 'ifs-0001' },
+        },
+      }),
+      chunkSize: 200,
+    });
+
+    expect(completed.job).toMatchObject({
+      status: 'warning',
+      totalCount: 3,
+      processedCount: 2,
+      warning: expect.stringContaining(
+        '同期中にフォーム回答が変更されたため、2 / 3件を処理して終了しました。',
+      ),
+    });
+  });
+
+  test('repeats the same live-only results sync without a warning', async () => {
+    insertSubmissions(10);
+    raw.prepare(`UPDATE internal_form_submissions
+      SET deleted_at = '2026-07-22T10:00:00+09:00'
+      WHERE form_id = 'form-1' AND id <> 'ifs-0000'`).run();
+    const syncResults = vi.fn().mockResolvedValue({
+      status: 'success', warning: null, warnings: [], busy: false,
+      appendedRows: 1, updatedRows: 0, importedFields: 0, ignoredIdentityEdits: 0,
+      chunk: {
+        processed: 1,
+        hasMore: false,
+        cursor: { submittedAt: '2026-07-21T10:00:00+09:00', submissionId: 'ifs-0000' },
+      },
+    });
+    const fetched = [];
+
+    for (let run = 0; run < 2; run += 1) {
+      await startSheetsSyncJob({
+        db, connection, source: 'manual', actor: 'owner-1', target: 'form_results',
+      });
+      await processNextSheetsSyncJob({ db, sync: vi.fn(), syncResults, chunkSize: 200 });
+      fetched.push(await getLatestSheetsSyncJob(db, 'acc-1', connection.id, 'form_results'));
+      if (run === 0) {
+        raw.prepare(`UPDATE sheets_sync_jobs SET created_at = '2026-07-20T00:00:00+09:00'
+          WHERE id = ?`).run(fetched[0]!.id);
+      }
+    }
+
+    expect(fetched[0]!.id).not.toBe(fetched[1]!.id);
+    expect(fetched).toEqual([
+      expect.objectContaining({ status: 'success', totalCount: 1, processedCount: 1, warning: null }),
+      expect.objectContaining({ status: 'success', totalCount: 1, processedCount: 1, warning: null }),
+    ]);
+    expect(syncResults).toHaveBeenCalledTimes(2);
+  });
+
   test('routes a form_results job to the results engine and advances the submission cursor', async () => {
     insertSubmissions(450);
     await startSheetsSyncJob({
