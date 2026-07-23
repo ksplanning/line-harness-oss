@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { SubmissionRow, FormStats, SavedFilter, RowsQuery } from '@/lib/formaloo-advanced-api'
 import { formatJstMinute } from '@/lib/datetime'
 import { fileAnswerSummary, isFileAnswer } from '@/lib/file-answer'
@@ -26,6 +26,12 @@ type ExternalSubmissionRow = SubmissionRow & {
 }
 type ExternalRowsQuery = RowsQuery & { externalEdit?: 'pending' }
 type ExternalFormStats = FormStats & { externalEditPending?: number }
+
+function pendingExternalEditRevision(row: SubmissionRow): string | null {
+  const external = row as ExternalSubmissionRow
+  if (!external.externalEditSource || external.externalEditApprovedAt) return null
+  return JSON.stringify([row.id, external.externalEditSource, external.externalEditedAt ?? null])
+}
 
 export interface DataCockpitProps {
   formTitle: string
@@ -69,9 +75,20 @@ export default function DataCockpit(props: DataCockpitProps) {
   const [saveName, setSaveName] = useState('')
   const [showSave, setShowSave] = useState(false)
   const [externalEditOnly, setExternalEditOnly] = useState(false)
-  const [approvedExternalEditIds, setApprovedExternalEditIds] = useState<Set<string>>(new Set())
+  const [approvedExternalEditRevisions, setApprovedExternalEditRevisions] = useState<Set<string>>(new Set())
   const [approvingExternalEditId, setApprovingExternalEditId] = useState<string | null>(null)
   const [externalEditError, setExternalEditError] = useState('')
+
+  useEffect(() => {
+    const currentPendingRevisions = new Set(rows.flatMap((row) => {
+      const revision = pendingExternalEditRevision(row)
+      return revision ? [revision] : []
+    }))
+    setApprovedExternalEditRevisions((previous) => {
+      const next = new Set([...previous].filter((revision) => currentPendingRevisions.has(revision)))
+      return next.size === previous.size ? previous : next
+    })
+  }, [rows])
 
   // slug→label 対応 (T-A2)。未指定/未知 slug は slug 自身へ fallback。
   const labelMap = useMemo(() => {
@@ -115,18 +132,23 @@ export default function DataCockpit(props: DataCockpitProps) {
   const runSearch = () => { setSelected(new Set()); props.onQuery(currentFilter()) }
   const goPage = (p: number) => props.onQuery({ ...currentFilter(), page: p })
 
+  const pendingRows = rows.filter((row) => pendingExternalEditRevision(row) !== null)
+  const activeLocallyApprovedCount = pendingRows.filter((row) => {
+    const revision = pendingExternalEditRevision(row)
+    return revision !== null && approvedExternalEditRevisions.has(revision)
+  }).length
+  const serverPendingCount = (stats as ExternalFormStats | null)?.externalEditPending
+    ?? pendingRows.length
+  const externalEditPendingCount = Math.max(0, serverPendingCount - activeLocallyApprovedCount)
   const visibleRows = externalEditOnly
-    ? rows.filter((row) => !approvedExternalEditIds.has(row.id))
+    ? pendingRows.filter((row) => {
+      const revision = pendingExternalEditRevision(row)
+      return revision !== null && !approvedExternalEditRevisions.has(revision)
+    })
     : rows
   const visibleTotal = externalEditOnly
-    ? Math.max(0, total - approvedExternalEditIds.size)
+    ? Math.max(0, Math.min(total, serverPendingCount) - activeLocallyApprovedCount)
     : total
-  const serverPendingCount = (stats as ExternalFormStats | null)?.externalEditPending
-    ?? rows.filter((row) => {
-      const external = row as ExternalSubmissionRow
-      return Boolean(external.externalEditSource && !external.externalEditApprovedAt)
-    }).length
-  const externalEditPendingCount = Math.max(0, serverPendingCount - approvedExternalEditIds.size)
   const totalPages = Math.max(1, Math.ceil(visibleTotal / pageSize))
   const rangeStart = visibleTotal === 0 ? 0 : (page - 1) * pageSize + 1
   const rangeEnd = Math.min(visibleTotal, page * pageSize)
@@ -167,7 +189,16 @@ export default function DataCockpit(props: DataCockpitProps) {
         { method: 'POST', headers: { Accept: 'application/json' } },
       )
       if (!response.ok) throw new Error('approve_external_edit_failed')
-      setApprovedExternalEditIds((previous) => new Set(previous).add(row.id))
+      const revision = pendingExternalEditRevision(row)
+      if (revision) {
+        setApprovedExternalEditRevisions((previous) => new Set(previous).add(revision))
+      }
+      setSelected((previous) => {
+        const next = new Set(previous)
+        next.delete(row.id)
+        return next
+      })
+      setConfirmingDelete(false)
     } catch {
       setExternalEditError('承認できませんでした。再読み込みして、もう一度お試しください。')
     } finally {
@@ -311,7 +342,8 @@ export default function DataCockpit(props: DataCockpitProps) {
             )}
             {visibleRows.map((r) => {
               const external = r as ExternalSubmissionRow
-              const locallyApproved = approvedExternalEditIds.has(r.id)
+              const revision = pendingExternalEditRevision(r)
+              const locallyApproved = revision !== null && approvedExternalEditRevisions.has(revision)
               const approved = locallyApproved || Boolean(external.externalEditApprovedAt)
               return (
               <tr key={r.id} className="block space-y-2 border-t border-gray-100 p-3 sm:table-row sm:space-y-0 sm:p-0">

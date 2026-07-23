@@ -180,6 +180,34 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     }))
   })
 
+  it('絞り込み切替直後も通常回答を一覧へ残さない', () => {
+    const normalRow = {
+      ...ROWS[1],
+      id: 'normal-row',
+      formId: 'form-1',
+      externalEditSource: null,
+      externalEditedAt: null,
+      externalEditApprovedAt: null,
+    } as SubmissionRow
+    const p = base({
+      rows: [externalRows[0], normalRow],
+      total: 2,
+      stats: {
+        total: 2,
+        verified: 1,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 1,
+      } as DataCockpitProps['stats'],
+    })
+    render(<DataCockpit {...p} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '外部編集（未承認） 1件' }))
+
+    expect(screen.getByLabelText('s1 の詳細')).toBeTruthy()
+    expect(screen.queryByLabelText('normal-row の詳細')).toBeNull()
+  })
+
   it('承認 API 成功後、未承認一覧から行と件数を即時に消す', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       success: true,
@@ -212,6 +240,101 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
     expect(screen.getByText('回答がありません')).toBeTruthy()
     expect(screen.getByRole('button', { name: '外部編集（未承認） 0件' })).toBeTruthy()
+  })
+
+  it('選択済み回答を承認したら、非表示行を一括削除の選択にも残さない', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      data: { id: 's1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const p = base({
+      rows: [externalRows[0]],
+      total: 1,
+      stats: {
+        total: 1,
+        verified: 1,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 1,
+      } as DataCockpitProps['stats'],
+    })
+    render(<DataCockpit {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: '外部編集（未承認） 1件' }))
+    fireEvent.click(screen.getByLabelText('s1 を選択'))
+    expect(screen.getByText('選択削除（1）')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+
+    await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
+    expect(screen.queryByText('選択削除（1）')).toBeNull()
+  })
+
+  it('再取得後に件数を二重減算せず、同じ回答の新しい外部編集を再表示する', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      data: { id: 's1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const initial = base({
+      rows: [externalRows[0]],
+      total: 1,
+      stats: {
+        total: 1,
+        verified: 1,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 1,
+      } as DataCockpitProps['stats'],
+    })
+    const view = render(<DataCockpit {...initial} />)
+    fireEvent.click(screen.getByRole('button', { name: '外部編集（未承認） 1件' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
+
+    const otherPending = {
+      ...externalRows[1],
+      id: 's3',
+      externalEditedAt: '2026-07-23T10:03:00+09:00',
+    } as SubmissionRow
+    view.rerender(<DataCockpit {...base({
+      rows: [otherPending],
+      total: 1,
+      stats: {
+        total: 1,
+        verified: 0,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 1,
+      } as DataCockpitProps['stats'],
+    })} />)
+    expect(screen.getByRole('button', { name: '外部編集（未承認） 1件' })).toBeTruthy()
+    expect(screen.getByLabelText('s3 の詳細')).toBeTruthy()
+
+    const reEdited = {
+      ...externalRows[0],
+      externalEditSource: 'sheet',
+      externalEditedAt: '2026-07-23T10:04:00+09:00',
+      externalEditApprovedAt: null,
+    } as SubmissionRow
+    view.rerender(<DataCockpit {...base({
+      rows: [reEdited],
+      total: 1,
+      stats: {
+        total: 1,
+        verified: 1,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 1,
+      } as DataCockpitProps['stats'],
+    })} />)
+    expect(screen.getByRole('button', { name: '外部編集（未承認） 1件' })).toBeTruthy()
+    expect(screen.getByLabelText('s1 の詳細')).toBeTruthy()
+    expect(screen.getByText('シート')).toBeTruthy()
   })
 })
 
