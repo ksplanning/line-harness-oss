@@ -170,6 +170,45 @@ describe('formalooDataApi — external edit review metadata', () => {
   })
 })
 
+describe('formalooDataApi — duplicate review', () => {
+  it('serializes the pending duplicate-review filter for the rows API', async () => {
+    fetchApi.mockResolvedValueOnce({
+      success: true,
+      data: { rows: [], total: 0, page: 1, pageSize: 25 },
+    })
+
+    await formalooDataApi.rows('form-1', { duplicateReview: 'pending' })
+
+    expect(fetchApi).toHaveBeenCalledWith(
+      '/api/forms-advanced/form-1/rows?duplicateReview=pending',
+    )
+  })
+
+  it('posts the displayed group revision when confirming one row', async () => {
+    fetchApi.mockResolvedValueOnce({
+      success: true,
+      data: {
+        id: 'row-1',
+        friendId: 'friend-1',
+        answers: { name: '田中' },
+        submittedAt: '2026-07-24T10:00:00+09:00',
+        verified: true,
+        duplicateReviewedAt: '2026-07-24T10:01:00+09:00',
+      },
+    })
+
+    await formalooDataApi.confirmDuplicate('form/a', 'row/b', 'a'.repeat(64))
+
+    expect(fetchApi).toHaveBeenCalledWith(
+      '/api/forms-advanced/form%2Fa/rows/row%2Fb/confirm-duplicate',
+      {
+        method: 'POST',
+        body: JSON.stringify({ expectedDuplicateReviewRevision: 'a'.repeat(64) }),
+      },
+    )
+  })
+})
+
 describe('formalooAccountBindingsApi', () => {
   it('list → GET /api/formaloo-account-bindings', async () => {
     await formalooAccountBindingsApi.list()

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SubmissionRow, FormStats, SavedFilter, RowsQuery, ExternalEditChange } from '@/lib/formaloo-advanced-api'
 import { formatJstMinute } from '@/lib/datetime'
 import { fileAnswerSummary, isFileAnswer } from '@/lib/file-answer'
@@ -27,11 +27,42 @@ type ExternalSubmissionRow = SubmissionRow & {
   externalEditChanges?: ExternalEditChange[]
 }
 type ExternalFormStats = FormStats & { externalEditPending?: number }
+type DuplicateSubmissionRow = SubmissionRow & {
+  duplicateGroupId?: string | null
+  duplicateGroupSize?: number | null
+  duplicateContentMatch?: 'identical' | 'different' | null
+  duplicateReviewedAt?: string | null
+  duplicateReviewRevision?: string | null
+}
+type DuplicateFormStats = FormStats & { duplicateReviewPending?: number }
 
 function pendingExternalEditRevision(row: SubmissionRow): string | null {
   const external = row as ExternalSubmissionRow
   if (!external.externalEditSource || external.externalEditApprovedAt || (external.externalEditChanges?.length ?? 0) === 0) return null
   return JSON.stringify([row.id, external.externalEditSource, external.externalEditedAt ?? null])
+}
+
+function pendingDuplicateReviewRevision(row: SubmissionRow): string | null {
+  const duplicate = row as DuplicateSubmissionRow
+  if (
+    !duplicate.duplicateGroupId
+    || !duplicate.duplicateReviewRevision
+    || duplicate.duplicateReviewedAt
+    || (duplicate.duplicateGroupSize ?? 0) < 2
+  ) return null
+  return JSON.stringify([row.id, duplicate.duplicateGroupId, duplicate.duplicateReviewRevision])
+}
+
+function groupDuplicateRows(rows: SubmissionRow[]): SubmissionRow[] {
+  const groups = new Map<string, SubmissionRow[]>()
+  for (const row of rows) {
+    const groupId = (row as DuplicateSubmissionRow).duplicateGroupId
+    if (!groupId) continue
+    const group = groups.get(groupId)
+    if (group) group.push(row)
+    else groups.set(groupId, [row])
+  }
+  return [...groups.values()].flat()
 }
 
 export interface DataCockpitProps {
@@ -46,6 +77,7 @@ export interface DataCockpitProps {
   // form-response-display-fix (T-A2): 列ヘッダーを質問名で描画するための slug→label 対応 (/rows の fields)。
   //   未指定 or 未知 slug は slug fallback (後方互換)。列順は定義 (この配列) 順優先 + 定義外 slug を末尾。
   fieldLabels?: Array<{ slug: string; label: string }>
+  duplicateReviewPendingCount?: number
   loading?: boolean
   onQuery: (q: RowsQuery) => void
   onSaveFilter: (name: string, filter: Record<string, unknown>) => void
@@ -54,6 +86,7 @@ export interface DataCockpitProps {
   onImport: (csv: string) => void
   onBulkDelete: (ids: string[]) => void
   onOpenRow: (rowId: string) => void
+  onConfirmDuplicate: (rowId: string, expectedRevision: string) => Promise<void>
 }
 
 function cellText(v: unknown): string {
@@ -76,7 +109,11 @@ export default function DataCockpit(props: DataCockpitProps) {
   const [saveName, setSaveName] = useState('')
   const [showSave, setShowSave] = useState(false)
   const [externalEditOnly, setExternalEditOnly] = useState(false)
+  const [duplicateReviewOnly, setDuplicateReviewOnly] = useState(false)
   const [approvedExternalEditRevisions, setApprovedExternalEditRevisions] = useState<Set<string>>(new Set())
+  const [confirmedDuplicateRevisions, setConfirmedDuplicateRevisions] = useState<Set<string>>(new Set())
+  const [confirmingDuplicateRowId, setConfirmingDuplicateRowId] = useState<string | null>(null)
+  const [duplicateConfirmError, setDuplicateConfirmError] = useState<{ rowId: string; message: string } | null>(null)
   const [reviewingExternalEdit, setReviewingExternalEdit] = useState<ExternalSubmissionRow | null>(null)
 
   useEffect(() => {
@@ -88,6 +125,20 @@ export default function DataCockpit(props: DataCockpitProps) {
       const next = new Set([...previous].filter((revision) => currentPendingRevisions.has(revision)))
       return next.size === previous.size ? previous : next
     })
+  }, [rows])
+
+  useEffect(() => {
+    const currentPendingRevisions = new Set(rows.flatMap((row) => {
+      const revision = pendingDuplicateReviewRevision(row)
+      return revision ? [revision] : []
+    }))
+    setConfirmedDuplicateRevisions((previous) => {
+      const next = new Set([...previous].filter((revision) => currentPendingRevisions.has(revision)))
+      return next.size === previous.size ? previous : next
+    })
+    setDuplicateConfirmError((previous) => (
+      previous && rows.some((row) => row.id === previous.rowId) ? previous : null
+    ))
   }, [rows])
 
   // slug→label 対応 (T-A2)。未指定/未知 slug は slug 自身へ fallback。
@@ -120,7 +171,10 @@ export default function DataCockpit(props: DataCockpitProps) {
   ]).size
   const hiddenColumnCount = Math.max(0, totalFieldCount - columns.length)
 
-  const currentFilter = (externalOnly = externalEditOnly): RowsQuery => ({
+  const currentFilter = (
+    externalOnly = externalEditOnly,
+    duplicateOnly = duplicateReviewOnly,
+  ): RowsQuery => ({
     q: q || undefined,
     from: from || undefined,
     to: to || undefined,
@@ -128,7 +182,10 @@ export default function DataCockpit(props: DataCockpitProps) {
     page: 1,
     pageSize,
     externalEdit: externalOnly ? 'pending' : undefined,
+    duplicateReview: duplicateOnly ? 'pending' : undefined,
   })
+  const latestFilter = useRef<RowsQuery>({})
+  latestFilter.current = currentFilter()
   const runSearch = () => { setSelected(new Set()); props.onQuery(currentFilter()) }
   const goPage = (p: number) => props.onQuery({ ...currentFilter(), page: p })
 
@@ -140,15 +197,36 @@ export default function DataCockpit(props: DataCockpitProps) {
   const serverPendingCount = (stats as ExternalFormStats | null)?.externalEditPending
     ?? pendingRows.length
   const externalEditPendingCount = Math.max(0, serverPendingCount - activeLocallyApprovedCount)
-  const visibleRows = externalEditOnly
-    ? pendingRows.filter((row) => {
+  const duplicatePendingRows = rows.filter((row) => pendingDuplicateReviewRevision(row) !== null)
+  const activeLocallyConfirmedDuplicateCount = duplicatePendingRows.filter((row) => {
+    const revision = pendingDuplicateReviewRevision(row)
+    return revision !== null && confirmedDuplicateRevisions.has(revision)
+  }).length
+  const serverDuplicatePendingCount = props.duplicateReviewPendingCount
+    ?? (stats as DuplicateFormStats | null)?.duplicateReviewPending
+    ?? duplicatePendingRows.length
+  const duplicateReviewPendingCount = Math.max(
+    0,
+    serverDuplicatePendingCount - activeLocallyConfirmedDuplicateCount,
+  )
+  const unconfirmedDuplicateRows = duplicatePendingRows.filter((row) => {
+    const revision = pendingDuplicateReviewRevision(row)
+    return revision !== null && !confirmedDuplicateRevisions.has(revision)
+  })
+  const externalEditVisibleRows = externalEditOnly
+    ? rows.filter((row) => {
       const revision = pendingExternalEditRevision(row)
       return revision !== null && !approvedExternalEditRevisions.has(revision)
     })
     : rows
-  const visibleTotal = externalEditOnly
-    ? Math.max(0, Math.min(total, serverPendingCount) - activeLocallyApprovedCount)
-    : total
+  const visibleRows = duplicateReviewOnly
+    ? groupDuplicateRows(externalEditVisibleRows.filter((row) => unconfirmedDuplicateRows.includes(row)))
+    : externalEditVisibleRows
+  const visibleTotal = duplicateReviewOnly
+    ? Math.max(0, Math.min(total, serverDuplicatePendingCount) - activeLocallyConfirmedDuplicateCount)
+    : externalEditOnly
+      ? Math.max(0, Math.min(total, serverPendingCount) - activeLocallyApprovedCount)
+      : total
   const totalPages = Math.max(1, Math.ceil(visibleTotal / pageSize))
   const rangeStart = visibleTotal === 0 ? 0 : (page - 1) * pageSize + 1
   const rangeEnd = Math.min(visibleTotal, page * pageSize)
@@ -169,14 +247,51 @@ export default function DataCockpit(props: DataCockpitProps) {
     setTo(typeof flt.to === 'string' ? flt.to : '')
     setSort(flt.sort === 'asc' ? 'asc' : 'desc')
     setExternalEditOnly(flt.externalEdit === 'pending')
+    setDuplicateReviewOnly(flt.duplicateReview === 'pending')
     props.onQuery({ ...flt, page: 1, pageSize })
   }
 
   const toggleExternalEditFilter = () => {
     const next = !externalEditOnly
     setExternalEditOnly(next)
+    setDuplicateReviewOnly(false)
     setSelected(new Set())
-    props.onQuery(currentFilter(next))
+    props.onQuery(currentFilter(next, false))
+  }
+
+  const toggleDuplicateReviewFilter = () => {
+    const next = !duplicateReviewOnly
+    setDuplicateReviewOnly(next)
+    setExternalEditOnly(false)
+    setSelected(new Set())
+    props.onQuery(currentFilter(false, next))
+  }
+
+  const confirmDuplicate = async (row: SubmissionRow) => {
+    const duplicate = row as DuplicateSubmissionRow
+    const localRevision = pendingDuplicateReviewRevision(row)
+    if (!duplicate.duplicateReviewRevision || !localRevision || confirmingDuplicateRowId) return
+
+    setConfirmingDuplicateRowId(row.id)
+    setDuplicateConfirmError(null)
+    try {
+      await props.onConfirmDuplicate(row.id, duplicate.duplicateReviewRevision)
+      setConfirmedDuplicateRevisions((previous) => new Set(previous).add(localRevision))
+      setSelected((previous) => {
+        const next = new Set(previous)
+        next.delete(row.id)
+        return next
+      })
+      setConfirmingDelete(false)
+      props.onQuery(latestFilter.current)
+    } catch {
+      setDuplicateConfirmError({
+        rowId: row.id,
+        message: '確認済みにできませんでした。回答を再読み込みして、もう一度お試しください。',
+      })
+    } finally {
+      setConfirmingDuplicateRowId(null)
+    }
   }
 
   const markExternalEditApproved = (row: ExternalSubmissionRow) => {
@@ -252,6 +367,17 @@ export default function DataCockpit(props: DataCockpitProps) {
           >
             外部編集 <span className="font-bold">{externalEditPendingCount}件</span>
           </button>
+          <button
+            type="button"
+            aria-label={`重複確認 ${duplicateReviewPendingCount}件`}
+            aria-pressed={duplicateReviewOnly}
+            onClick={toggleDuplicateReviewFilter}
+            className={duplicateReviewOnly
+              ? 'min-h-[44px] rounded-lg border border-sky-500 bg-sky-50 px-3 text-sm font-medium text-sky-800'
+              : 'min-h-[44px] rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50'}
+          >
+            重複確認 <span className="font-bold">{duplicateReviewPendingCount}件</span>
+          </button>
           <button type="button" onClick={() => setShowSave((v) => !v)} className="min-h-[44px] rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50">この条件を保存</button>
         </div>
 
@@ -314,6 +440,7 @@ export default function DataCockpit(props: DataCockpitProps) {
               <th className="sticky left-0 z-20 w-[88px] bg-gray-50 px-3 py-2 font-medium">詳細</th>
               {isOwner && <th className="w-10 px-3 py-2" />}
               {columns.map((col) => <th key={col} className="px-3 py-2 font-medium">{labelFor(col)}</th>)}
+              <th className="px-3 py-2 font-medium">重複確認</th>
               <th className="px-3 py-2 font-medium">外部編集</th>
               <th className="px-3 py-2 font-medium">LINE連携</th>
               <th className="px-3 py-2 font-medium">送信日時</th>
@@ -321,13 +448,18 @@ export default function DataCockpit(props: DataCockpitProps) {
           </thead>
           <tbody className="block sm:table-row-group">
             {visibleRows.length === 0 && (
-              <tr><td colSpan={columns.length + (isOwner ? 5 : 4)} className="block px-3 py-8 text-center text-gray-400 sm:table-cell">回答がありません</td></tr>
+              <tr><td colSpan={columns.length + (isOwner ? 6 : 5)} className="block px-3 py-8 text-center text-gray-400 sm:table-cell">回答がありません</td></tr>
             )}
             {visibleRows.map((r) => {
               const external = r as ExternalSubmissionRow
+              const duplicate = r as DuplicateSubmissionRow
               const revision = pendingExternalEditRevision(r)
               const locallyApproved = revision !== null && approvedExternalEditRevisions.has(revision)
               const approved = locallyApproved || Boolean(external.externalEditApprovedAt)
+              const duplicateRevision = pendingDuplicateReviewRevision(r)
+              const locallyConfirmedDuplicate = duplicateRevision !== null
+                && confirmedDuplicateRevisions.has(duplicateRevision)
+              const duplicateReviewed = locallyConfirmedDuplicate || Boolean(duplicate.duplicateReviewedAt)
               return (
               <tr key={r.id} className="block space-y-2 border-t border-gray-100 p-3 sm:table-row sm:space-y-0 sm:p-0">
                 <td className="sticky left-0 z-10 flex bg-white py-1 sm:table-cell sm:w-[88px] sm:px-3 sm:py-2">
@@ -352,6 +484,43 @@ export default function DataCockpit(props: DataCockpitProps) {
                     <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{cellText(r.answers[col])}</span>
                   </td>
                 ))}
+                <td className="flex items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">
+                  <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">重複確認:</span>
+                  {duplicate.duplicateGroupId && (duplicate.duplicateGroupSize ?? 0) >= 2 ? (
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-sky-800">
+                        {duplicate.duplicateGroupSize}件の候補
+                      </div>
+                      <div className="text-xs text-gray-600">
+                        {duplicate.duplicateContentMatch === 'identical'
+                          ? '内容完全一致'
+                          : duplicate.duplicateContentMatch === 'different'
+                            ? '内容に差異あり'
+                            : '内容を確認'}
+                      </div>
+                      {duplicateReviewed ? (
+                        <span className="text-xs text-gray-500">確認済み</span>
+                      ) : duplicate.duplicateReviewRevision ? (
+                        <button
+                          type="button"
+                          aria-label={`${r.id} を重複確認済みにする`}
+                          disabled={confirmingDuplicateRowId !== null}
+                          onClick={() => void confirmDuplicate(r)}
+                          className="min-h-[44px] rounded-lg border border-sky-400 bg-white px-3 text-sm font-medium text-sky-800 hover:bg-sky-50 disabled:opacity-50"
+                        >
+                          {confirmingDuplicateRowId === r.id ? '確認中...' : '確認済みにする'}
+                        </button>
+                      ) : null}
+                      {duplicateConfirmError?.rowId === r.id && (
+                        <p role="alert" className="max-w-56 text-xs text-red-600">
+                          {duplicateConfirmError.message}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-gray-400">—</span>
+                  )}
+                </td>
                 <td className="flex items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">
                   <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">外部編集:</span>
                   {external.externalEditSource ? (

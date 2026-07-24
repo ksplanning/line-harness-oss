@@ -291,6 +291,9 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
   const onBulkDelete = async (ids: string[]) => {
     try { const r = await formalooDataApi.bulkDelete(id, ids); setNotice(`${r.deleted}件を削除しました`); await Promise.all([loadRows(query), refreshStats()]) } catch (e) { setNotice((e as { body?: { error?: string } })?.body?.error ?? '削除に失敗しました') }
   }
+  const onConfirmDuplicate = async (rowId: string, expectedDuplicateReviewRevision: string) => {
+    await formalooDataApi.confirmDuplicate(id, rowId, expectedDuplicateReviewRevision)
+  }
   const onOpenRow = async (rowId: string) => {
     try {
       setDetail(await formalooDataApi.row(id, rowId))
@@ -557,6 +560,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
           pageSize={rowsPage.pageSize}
           fieldLabels={rowsPage.fields}
           stats={stats}
+          duplicateReviewPendingCount={rowsPage.duplicateReviewPendingCount ?? stats?.duplicateReviewPending}
           savedFilters={filters}
           isOwner={isOwner && renderBackend === 'formaloo'}
           loading={loading}
@@ -566,6 +570,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
           onExport={onExport}
           onImport={onImport}
           onBulkDelete={onBulkDelete}
+          onConfirmDuplicate={onConfirmDuplicate}
           onOpenRow={onOpenRow}
         />
       )}

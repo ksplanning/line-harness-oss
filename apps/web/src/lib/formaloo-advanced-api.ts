@@ -271,6 +271,8 @@ export interface ExternalEditChange {
   after: unknown
 }
 
+export type DuplicateContentMatch = 'identical' | 'different'
+
 export interface SubmissionRow {
   id: string
   friendId: string | null
@@ -281,6 +283,11 @@ export interface SubmissionRow {
   externalEditedAt?: string | null
   externalEditApprovedAt?: string | null
   externalEditChanges?: ExternalEditChange[]
+  duplicateGroupId?: string | null
+  duplicateGroupSize?: number | null
+  duplicateContentMatch?: DuplicateContentMatch | null
+  duplicateReviewedAt?: string | null
+  duplicateReviewRevision?: string | null
 }
 export interface RowsPage {
   rows: SubmissionRow[]
@@ -290,6 +297,7 @@ export interface RowsPage {
   // form-response-display-fix (T-A1): 列ヘッダーを質問名で描画するための slug→label 対応 (additive・後方互換)。
   //   field_map(formaloo_field_slug) × 定義(label) の join。旧 worker は返さない → optional。
   fields?: Array<{ slug: string; label: string }>
+  duplicateReviewPendingCount?: number
 }
 /** 弾M (form-post-edit): 編集保存レスポンス (merge 後 answers + ④最終編集情報)。 */
 export interface RowEditResult {
@@ -352,6 +360,7 @@ export interface FormStats {
   verified: number
   daily: { day: string; count: number }[]
   formaloo: unknown
+  duplicateReviewPending?: number
 }
 export interface SavedFilter {
   id: string
@@ -366,6 +375,7 @@ export interface RowsQuery {
   page?: number
   pageSize?: number
   externalEdit?: 'pending'
+  duplicateReview?: 'pending'
 }
 
 function toQueryString(q: RowsQuery): string {
@@ -377,6 +387,7 @@ function toQueryString(q: RowsQuery): string {
   if (q.page) p.set('page', String(q.page))
   if (q.pageSize) p.set('pageSize', String(q.pageSize))
   if (q.externalEdit) p.set('externalEdit', q.externalEdit)
+  if (q.duplicateReview) p.set('duplicateReview', q.duplicateReview)
   const s = p.toString()
   return s ? `?${s}` : ''
 }
@@ -390,6 +401,19 @@ export const formalooDataApi = {
   },
   async deleteRow(id: string, rowId: string): Promise<void> {
     await fetchApi<Envelope<null>>(`/api/forms-advanced/${id}/rows/${rowId}`, { method: 'DELETE' })
+  },
+  async confirmDuplicate(
+    id: string,
+    rowId: string,
+    expectedDuplicateReviewRevision: string,
+  ): Promise<SubmissionRow> {
+    return (await fetchApi<Envelope<SubmissionRow>>(
+      `/api/forms-advanced/${encodeURIComponent(id)}/rows/${encodeURIComponent(rowId)}/confirm-duplicate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ expectedDuplicateReviewRevision }),
+      },
+    )).data
   },
   /**
    * 弾M (form-post-edit / T-D1): ①管理者編集の保存。PATCH で編集後 answers を送る。

@@ -44,6 +44,7 @@ function base(overrides: Partial<DataCockpitProps> = {}): DataCockpitProps {
     onImport: vi.fn(),
     onBulkDelete: vi.fn(),
     onOpenRow: vi.fn(),
+    onConfirmDuplicate: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
 }
@@ -606,7 +607,7 @@ describe('DataCockpit — 列ヘッダー label 化 (T-A2 / form-response-displa
   it('列順は定義 (fieldLabels) 順優先 + 定義外 answer-slug を末尾に', () => {
     render(<DataCockpit {...base({ rows: SLUG_ROWS, total: 1, fieldLabels: FIELD_LABELS })} />)
     // 回答項目ヘッダーのみ (先頭の選択チェック列・末尾の送信日時/操作列を除く)
-    const labels = screen.getAllByRole('columnheader').map((th) => th.textContent).filter((t) => t && !['詳細', '外部編集', 'LINE連携', '送信日時', ''].includes(t))
+    const labels = screen.getAllByRole('columnheader').map((th) => th.textContent).filter((t) => t && !['詳細', '重複確認', '外部編集', 'LINE連携', '送信日時', ''].includes(t))
     // 定義順 (お名前 → メールアドレス) が先、定義外 (unknownSlug) が末尾。iAGKWaBX は answers 不在で列化しない
     expect(labels).toEqual(['お名前', 'メールアドレス', 'unknownSlug'])
   })
@@ -724,5 +725,192 @@ describe('DataCockpit — 保存フィルタ (T-D1)', () => {
     fireEvent.change(screen.getByLabelText('保存名'), { target: { value: '重要' } })
     fireEvent.click(screen.getByText('保存'))
     expect(p.onSaveFilter).toHaveBeenCalledWith('重要', expect.objectContaining({ q: 'abc' }))
+  })
+})
+
+describe('DataCockpit — 重複確認 (D-3)', () => {
+  const duplicateRows = [
+    {
+      id: 'a-1',
+      friendId: 'friend-a',
+      answers: { 名前: '田中', 口数: '1' },
+      submittedAt: '2026-07-24T10:00:00+09:00',
+      verified: true,
+      duplicateGroupId: 'group-a',
+      duplicateGroupSize: 2,
+      duplicateContentMatch: 'identical',
+      duplicateReviewedAt: null,
+      duplicateReviewRevision: 'revision-a',
+    },
+    {
+      id: 'b-1',
+      friendId: 'friend-b',
+      answers: { 名前: '鈴木', 口数: '1' },
+      submittedAt: '2026-07-24T10:01:00+09:00',
+      verified: true,
+      duplicateGroupId: 'group-b',
+      duplicateGroupSize: 2,
+      duplicateContentMatch: 'different',
+      duplicateReviewedAt: null,
+      duplicateReviewRevision: 'revision-b',
+    },
+    {
+      id: 'a-2',
+      friendId: 'friend-a',
+      answers: { 名前: '田中', 口数: '1' },
+      submittedAt: '2026-07-24T10:02:00+09:00',
+      verified: true,
+      duplicateGroupId: 'group-a',
+      duplicateGroupSize: 2,
+      duplicateContentMatch: 'identical',
+      duplicateReviewedAt: null,
+      duplicateReviewRevision: 'revision-a',
+    },
+    {
+      id: 'same-friend-without-server-annotation',
+      friendId: 'friend-a',
+      answers: { 名前: '田中' },
+      submittedAt: '2026-07-24T10:03:00+09:00',
+      verified: true,
+    },
+    {
+      id: 'b-2',
+      friendId: 'friend-b',
+      answers: { 名前: '鈴木', 口数: '2' },
+      submittedAt: '2026-07-24T10:04:00+09:00',
+      verified: true,
+      duplicateGroupId: 'group-b',
+      duplicateGroupSize: 2,
+      duplicateContentMatch: 'different',
+      duplicateReviewedAt: null,
+      duplicateReviewRevision: 'revision-b',
+    },
+  ] as SubmissionRow[]
+
+  it('サーバー注釈だけで絞り込み、初期行を同じグループ順に並べて件数と一致させる', () => {
+    const p = base({
+      rows: duplicateRows,
+      total: 5,
+      duplicateReviewPendingCount: 4,
+      stats: {
+        total: 5,
+        verified: 5,
+        daily: [],
+        formaloo: null,
+        duplicateReviewPending: 9,
+      },
+      onConfirmDuplicate: vi.fn(),
+    })
+    render(<DataCockpit {...p} />)
+
+    expect(screen.getByRole('button', { name: '重複確認 4件' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '重複確認 4件' }))
+
+    expect(p.onQuery).toHaveBeenCalledWith(expect.objectContaining({
+      duplicateReview: 'pending',
+      page: 1,
+    }))
+    expect(screen.queryByLabelText('same-friend-without-server-annotation の詳細')).toBeNull()
+    expect(screen.getAllByRole('button', { name: / の詳細$/ }).map((button) => button.getAttribute('aria-label'))).toEqual([
+      'a-1 の詳細',
+      'a-2 の詳細',
+      'b-1 の詳細',
+      'b-2 の詳細',
+    ])
+    expect(screen.getAllByText('内容完全一致').length).toBe(2)
+    expect(screen.getAllByText('内容に差異あり').length).toBe(2)
+  })
+
+  it('確認に成功した行をその場で消し、件数を楽観的に1件減らす', async () => {
+    const onConfirmDuplicate = vi.fn().mockResolvedValue(undefined)
+    const p = base({
+      rows: duplicateRows.slice(0, 3).filter((row) => row.duplicateGroupId === 'group-a'),
+      total: 2,
+      duplicateReviewPendingCount: 2,
+      onConfirmDuplicate,
+    })
+    render(<DataCockpit {...p} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '重複確認 2件' }))
+    fireEvent.click(screen.getByRole('button', { name: 'a-1 を重複確認済みにする' }))
+
+    await waitFor(() => expect(onConfirmDuplicate).toHaveBeenCalledWith('a-1', 'revision-a'))
+    await waitFor(() => expect(screen.queryByLabelText('a-1 の詳細')).toBeNull())
+    expect(screen.getByLabelText('a-2 の詳細')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '重複確認 1件' })).toBeTruthy()
+    expect(p.onQuery).toHaveBeenLastCalledWith(expect.objectContaining({
+      duplicateReview: 'pending',
+      page: 1,
+    }))
+  })
+
+  it('確認APIが競合した行は一覧と件数に残す', async () => {
+    const onConfirmDuplicate = vi.fn().mockRejectedValue(new Error('409 conflict'))
+    const p = base({
+      rows: duplicateRows.slice(0, 3).filter((row) => row.duplicateGroupId === 'group-a'),
+      total: 2,
+      duplicateReviewPendingCount: 2,
+      onConfirmDuplicate,
+    })
+    render(<DataCockpit {...p} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '重複確認 2件' }))
+    fireEvent.click(screen.getByRole('button', { name: 'a-1 を重複確認済みにする' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('再読み込み'))
+    expect(screen.getByLabelText('a-1 の詳細')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '重複確認 2件' })).toBeTruthy()
+    expect(p.onQuery).toHaveBeenCalledTimes(1)
+  })
+
+  it('確認通信中に絞り込みを解除しても、成功後に古い条件へ戻さない', async () => {
+    let resolveConfirmation!: () => void
+    const onConfirmDuplicate = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
+      resolveConfirmation = resolve
+    }))
+    const p = base({
+      rows: duplicateRows.slice(0, 3).filter((row) => row.duplicateGroupId === 'group-a'),
+      total: 2,
+      duplicateReviewPendingCount: 2,
+      onConfirmDuplicate,
+    })
+    render(<DataCockpit {...p} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '重複確認 2件' }))
+    fireEvent.click(screen.getByRole('button', { name: 'a-1 を重複確認済みにする' }))
+    fireEvent.click(screen.getByRole('button', { name: '重複確認 2件' }))
+    resolveConfirmation()
+
+    await waitFor(() => expect(onConfirmDuplicate).toHaveBeenCalledOnce())
+    await waitFor(() => expect(p.onQuery).toHaveBeenCalledTimes(3))
+    expect(p.onQuery).toHaveBeenLastCalledWith(expect.objectContaining({
+      duplicateReview: undefined,
+      page: 1,
+    }))
+  })
+
+  it('確認後の再取得結果を受けても件数を二重に減らさない', async () => {
+    const onConfirmDuplicate = vi.fn().mockResolvedValue(undefined)
+    const initialRows = duplicateRows.slice(0, 3).filter((row) => row.duplicateGroupId === 'group-a')
+    const view = render(<DataCockpit {...base({
+      rows: initialRows,
+      total: 2,
+      duplicateReviewPendingCount: 2,
+      onConfirmDuplicate,
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '重複確認 2件' }))
+    fireEvent.click(screen.getByRole('button', { name: 'a-1 を重複確認済みにする' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '重複確認 1件' })).toBeTruthy())
+
+    view.rerender(<DataCockpit {...base({
+      rows: [initialRows[1]!],
+      total: 1,
+      duplicateReviewPendingCount: 1,
+      onConfirmDuplicate,
+    })} />)
+
+    expect(screen.getByRole('button', { name: '重複確認 1件' })).toBeTruthy()
+    expect(screen.getByLabelText('a-2 の詳細')).toBeTruthy()
   })
 })
