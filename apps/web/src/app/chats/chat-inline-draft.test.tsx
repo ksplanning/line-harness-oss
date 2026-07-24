@@ -668,7 +668,7 @@ describe('個別チャットのインラインAI下書き', () => {
   })
 
   it('FAQ追加のON/OFFを通常・拡大履歴で同期し、ON送信後も次の下書きはOFFに戻す', async () => {
-    apiMocks.getChat.mockResolvedValueOnce({
+    apiMocks.openInquiry.mockResolvedValueOnce({
       success: true,
       data: detail([pendingDraft, nextPendingDraft]),
     })
