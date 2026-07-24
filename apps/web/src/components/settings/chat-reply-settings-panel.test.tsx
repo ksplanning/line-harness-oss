@@ -76,6 +76,33 @@ describe('ChatReplySettingsPanel', () => {
     })
   })
 
+  test('disables the reply name input while save and reload are in flight', async () => {
+    let resolveUpdate!: (value: ReturnType<typeof view>) => void
+    mocks.get
+      .mockResolvedValueOnce(view('変更前'))
+      .mockResolvedValueOnce(view('受付係'))
+    mocks.update.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveUpdate = resolve
+    }))
+    render(<ChatReplySettingsPanel accountId="account-1" />)
+
+    const input = await screen.findByLabelText('既定の返信者名') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '受付係' } })
+    fireEvent.click(screen.getByRole('button', { name: '返信者名を保存' }))
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(
+      'account-1',
+      '受付係',
+    ))
+
+    expect(input.disabled).toBe(true)
+
+    await act(async () => {
+      resolveUpdate(view('受付係'))
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(input.disabled).toBe(false))
+  })
+
   test('loads each selected account independently', async () => {
     mocks.get.mockImplementation(async (accountId: string) => (
       view(accountId === 'account-a' ? 'A受付' : 'B受付')

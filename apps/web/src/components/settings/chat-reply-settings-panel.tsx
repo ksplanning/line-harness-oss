@@ -123,6 +123,7 @@ export default function ChatReplySettingsPanel({
                 id="chat-reply-default-name"
                 type="text"
                 value={defaultReplyName}
+                disabled={saving}
                 onChange={(event) => {
                   setDefaultReplyName(event.target.value)
                   setNotice(null)
