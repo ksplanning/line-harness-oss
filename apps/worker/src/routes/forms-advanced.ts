@@ -1,6 +1,7 @@
 import { Hono, type Context, type Next } from 'hono';
 import {
   beginFormalooDefinitionSave,
+  activateFormalooForm,
   createFormalooChoiceList,
   createFormalooForm,
   listFormalooForms,
@@ -498,6 +499,7 @@ formsAdvanced.post('/api/forms-advanced/:id/duplicate', async (c) => {
       workspaceId,
       definitionJson: serializeDuplicatedDefinition(duplicated),
       renderBackend: source.render_backend,
+      initiallyDeleted: true,
     });
     if (source.folder_id && source.line_account_id === lineAccountId) {
       await setFormalooFormFolder(c.env.DB, created.id, source.folder_id);
@@ -530,9 +532,14 @@ formsAdvanced.post('/api/forms-advanced/:id/duplicate', async (c) => {
     });
 
     const saved = await getFormalooForm(c.env.DB, created.id);
+    if (!saved) throw new Error('duplicated form read failed');
+    const responseData = await serializeForm(c.env.DB, saved, isOwnerCtx(c));
+    if (!(await activateFormalooForm(c.env.DB, created.id))) {
+      throw new Error('duplicated form activation failed');
+    }
     return c.json({
       success: true,
-      data: await serializeForm(c.env.DB, saved!, isOwnerCtx(c)),
+      data: responseData,
     }, 201);
   } catch (err) {
     if (createdFormId) {

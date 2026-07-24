@@ -640,6 +640,27 @@ describe('POST /api/forms-advanced/:id/duplicate', () => {
     expect(await listIds('account-a')).toEqual(['source-cleanup']);
   });
 
+  test('D-1: 途中失敗後の論理削除まで失敗しても部分フォームを一覧へ露出しない', async () => {
+    seedSource('source-hidden-cleanup', 'account-a', 'hidden cleanup test');
+    seedFieldMap('source-hidden-cleanup', SOURCE_DEFINITION);
+    failNextRuns.set('INSERT INTO formaloo_field_map', 1);
+    failNextRuns.set('UPDATE formaloo_forms SET deleted = 1', 1);
+
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/source-hidden-cleanup/duplicate',
+      { lineAccountId: 'account-a' },
+    );
+
+    expect(response.status).toBe(500);
+    const copies = raw.prepare(
+      `SELECT id, deleted FROM formaloo_forms WHERE id <> 'source-hidden-cleanup'`,
+    ).all() as Array<{ id: string; deleted: number }>;
+    expect(copies).toHaveLength(1);
+    expect(copies[0]?.deleted).toBe(1);
+    expect(await listIds('account-a')).toEqual(['source-hidden-cleanup']);
+  });
+
   test('D-1: フォーム内の管理選択肢リストを独立コピーし、元フォームURLへの参照を残さない', async () => {
     const sourceDefinition = structuredClone(SOURCE_DEFINITION) as Record<string, unknown> & {
       fields: Array<Record<string, unknown>>;

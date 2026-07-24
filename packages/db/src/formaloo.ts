@@ -129,6 +129,8 @@ export interface CreateFormalooFormInput {
   // 通常の新規作成は従来どおり design seed を使う。
   definitionJson?: string;
   renderBackend?: FormalooForm['render_backend'];
+  /** 複製の組み立て中など、完成するまで一覧から隠す場合だけ true。 */
+  initiallyDeleted?: boolean;
 }
 
 export async function createFormalooForm(
@@ -150,7 +152,7 @@ export async function createFormalooForm(
          (id, title, description, definition_json, on_submit_tag_id, on_submit_scenario_id,
           on_submit_actions_json, submit_message, submit_count, deleted, builder_status,
           line_account_id, workspace_id, render_backend, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'draft', ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'draft', ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -161,6 +163,7 @@ export async function createFormalooForm(
       input.onSubmitScenarioId ?? null,
       input.onSubmitActionsJson ?? null,
       input.submitMessage ?? null,
+      input.initiallyDeleted ? 1 : 0,
       input.lineAccountId ?? null,
       input.workspaceId ?? null,
       input.renderBackend ?? 'formaloo',
@@ -169,6 +172,15 @@ export async function createFormalooForm(
     )
     .run();
   return (await getFormalooForm(db, id))!;
+}
+
+/** 組み立てが完了した hidden form を最後の1操作で一覧へ公開する。 */
+export async function activateFormalooForm(db: D1Database, id: string): Promise<boolean> {
+  const result = await db
+    .prepare('UPDATE formaloo_forms SET deleted = 0 WHERE id = ? AND deleted = 1')
+    .bind(id)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 // ─── F6-2 作成先 workspace 解決 (server 権威 / account_binding 台帳) ──────────────
