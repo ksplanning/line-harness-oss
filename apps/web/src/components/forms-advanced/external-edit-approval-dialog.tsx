@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { fetchApi } from '@/lib/api'
 import type { ExternalEditChange } from '@/lib/formaloo-advanced-api'
 import { formatJstMinute } from '@/lib/datetime'
 import { fileAnswerSummary, isFileAnswer } from '@/lib/file-answer'
@@ -38,15 +39,15 @@ function changeValueText(value: unknown): string {
   return String(value)
 }
 
-async function approvalError(response: Response): Promise<string> {
-  let serverError = ''
-  try {
-    const body = await response.json() as { error?: unknown }
-    if (typeof body.error === 'string') serverError = body.error
-  } catch {
-    // JSON でない失敗レスポンスには固定文言を使う。
-  }
-  if (response.status === 409) return serverError || CONFLICT_FALLBACK
+function approvalError(error: unknown): string {
+  const apiError = error && typeof error === 'object'
+    ? error as { status?: unknown; body?: unknown }
+    : null
+  const body = apiError?.body && typeof apiError.body === 'object'
+    ? apiError.body as { error?: unknown }
+    : null
+  const serverError = typeof body?.error === 'string' ? body.error : ''
+  if (apiError?.status === 409) return serverError || CONFLICT_FALLBACK
   return APPROVAL_FALLBACK
 }
 
@@ -121,13 +122,12 @@ export default function ExternalEditApprovalDialog({
     setApproving(true)
     setError('')
     try {
-      const response = await fetch(
+      await fetchApi(
         `/api/forms-advanced/${encodeURIComponent(formId)}/rows/${encodeURIComponent(rowId)}/approve-external-edit`,
         {
           method: 'POST',
           headers: {
             Accept: 'application/json',
-            'Content-Type': 'application/json',
           },
           body: JSON.stringify({
             expectedExternalEditSource: source,
@@ -135,13 +135,9 @@ export default function ExternalEditApprovalDialog({
           }),
         },
       )
-      if (!response.ok) {
-        setError(await approvalError(response))
-        return
-      }
       await onApproved()
-    } catch {
-      setError(APPROVAL_FALLBACK)
+    } catch (error) {
+      setError(approvalError(error))
     } finally {
       approvingRef.current = false
       setApproving(false)

@@ -13,8 +13,12 @@ import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-li
 import DataCockpit, { type DataCockpitProps } from './data-cockpit'
 import type { SubmissionRow } from '@/lib/formaloo-advanced-api'
 
+const apiMocks = vi.hoisted(() => ({ fetchApi: vi.fn() }))
+vi.mock('@/lib/api', () => ({ fetchApi: apiMocks.fetchApi }))
+
 afterEach(() => {
   cleanup()
+  apiMocks.fetchApi.mockReset()
   vi.unstubAllGlobals()
 })
 
@@ -241,8 +245,6 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
   })
 
   it('承認ボタンの初回クリックでは API を呼ばず、経路・日時・全差分の確認ポップアップを開く', () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
     const changedRow: SubmissionRow = {
       ...externalRows[0],
       externalEditChanges: [
@@ -258,7 +260,7 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
 
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(apiMocks.fetchApi).not.toHaveBeenCalled()
     const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     expect(dialog.getAttribute('data-testid')).toBe('external-edit-approval-dialog')
     expect(within(dialog).getByText('編集URL')).toBeTruthy()
@@ -272,8 +274,6 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
   })
 
   it('確認ポップアップを閉じるだけでは API を呼ばず、未承認の行と件数を保つ', () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
     render(<DataCockpit {...base({
       rows: [externalRows[0]],
       total: 1,
@@ -290,21 +290,17 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     fireEvent.click(within(dialog).getByRole('button', { name: '閉じる' }))
 
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(apiMocks.fetchApi).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog', { name: '外部編集の差分を確認' })).toBeNull()
     expect(screen.getByLabelText('s1 の詳細')).toBeTruthy()
     expect(screen.getByRole('button', { name: '外部編集（未承認） 1件' })).toBeTruthy()
   })
 
   it('差分0件の未承認回答も、0件と明示したポップアップから承認できる', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    apiMocks.fetchApi.mockResolvedValue({
       success: true,
       data: { id: 's1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }))
-    vi.stubGlobal('fetch', fetchMock)
+    })
     render(<DataCockpit {...base({
       rows: [{ ...externalRows[0], externalEditChanges: [] } as SubmissionRow],
       total: 1,
@@ -315,7 +311,7 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     expect(within(dialog).getByText('変更された項目はありません')).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: '確認して承認' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(apiMocks.fetchApi).toHaveBeenCalledTimes(1))
   })
 
   it('添付差分はファイル名だけを表示し、内部保存キーを表示しない', () => {
@@ -359,14 +355,10 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
   })
 
   it('承認 API 成功後、未承認一覧から行と件数を即時に消す', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    apiMocks.fetchApi.mockResolvedValue({
       success: true,
       data: { id: 's1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }))
-    vi.stubGlobal('fetch', fetchMock)
+    })
     const p = base({
       rows: [externalRows[0]],
       total: 1,
@@ -382,17 +374,13 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '外部編集（未承認） 1件' }))
     fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(apiMocks.fetchApi).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    await waitFor(() => expect(apiMocks.fetchApi).toHaveBeenCalledWith(
       '/api/forms-advanced/form-1/rows/s1/approve-external-edit',
       expect.objectContaining({
         method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({
           expectedExternalEditSource: 'edit_link',
           expectedExternalEditedAt: '2026-07-23T10:00:00+09:00',
@@ -402,17 +390,21 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
     expect(screen.getByText('回答がありません')).toBeTruthy()
     expect(screen.getByRole('button', { name: '外部編集（未承認） 0件' })).toBeTruthy()
+    expect(p.onQuery).toHaveBeenCalledTimes(2)
+    expect(p.onQuery).toHaveBeenLastCalledWith(expect.objectContaining({
+      externalEdit: 'pending',
+      page: 1,
+    }))
   })
 
   it('409 では競合文言をポップアップ内に表示し、未承認の行を残す', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      success: false,
-      error: '回答が更新されたため、内容を確認し直してください',
-    }), {
+    apiMocks.fetchApi.mockRejectedValue(Object.assign(new Error('API error: 409'), {
       status: 409,
-      headers: { 'Content-Type': 'application/json' },
+      body: {
+        success: false,
+        error: '回答が更新されたため、内容を確認し直してください',
+      },
     }))
-    vi.stubGlobal('fetch', fetchMock)
     render(<DataCockpit {...base({
       rows: [externalRows[0]],
       total: 1,
@@ -435,14 +427,35 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     expect(screen.getByRole('button', { name: '外部編集（未承認） 1件' })).toBeTruthy()
   })
 
+  it('409 の本文に競合文言がなければ固定の競合メッセージを表示する', async () => {
+    apiMocks.fetchApi.mockRejectedValue(Object.assign(new Error('API error: 409'), {
+      status: 409,
+      body: { success: false },
+    }))
+    render(<DataCockpit {...base({
+      rows: [externalRows[0]],
+      total: 1,
+      stats: {
+        total: 1,
+        verified: 1,
+        daily: [],
+        formaloo: null,
+        externalEditPending: 1,
+      } as DataCockpitProps['stats'],
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('他の操作で回答の状態が変わりました。再読み込みして、差分を確認し直してください。')
+  })
+
   it('選択済み回答を承認したら、非表示行を一括削除の選択にも残さない', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+    apiMocks.fetchApi.mockResolvedValue({
       success: true,
       data: { id: 's1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })))
+    })
     const p = base({
       rows: [externalRows[0]],
       total: 1,
@@ -467,13 +480,10 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
   })
 
   it('再取得後に件数を二重減算せず、同じ回答の新しい外部編集を再表示する', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+    apiMocks.fetchApi.mockResolvedValue({
       success: true,
       data: { id: 's1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })))
+    })
     const initial = base({
       rows: [externalRows[0]],
       total: 1,

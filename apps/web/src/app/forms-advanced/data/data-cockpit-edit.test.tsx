@@ -100,14 +100,14 @@ describe('T-D2 回答詳細 編集モード', () => {
   })
 
   it('詳細の承認導線も同じ確認ポップアップを使い、閉じる時は無変更・確認後だけ承認する', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      success: true,
-      data: { id: 'row1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }))
-    vi.stubGlobal('fetch', fetchMock)
+    fetchApiMock.mockImplementation(async (path: string) => (
+      path === '/api/staff/me'
+        ? { data: { role: 'owner' } }
+        : {
+            success: true,
+            data: { id: 'row1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
+          }
+    ))
     rowMock.mockResolvedValue({
       ...detailFor(0),
       answers: { nameSlug: '佐藤', noteSlug: null, pickSlug: 'A' },
@@ -121,10 +121,11 @@ describe('T-D2 回答詳細 編集モード', () => {
     })
 
     await openDetail()
+    fetchApiMock.mockClear()
 
     const changes = screen.getByTestId('detail-external-edit-changes')
     fireEvent.click(within(changes).getByRole('button', { name: '差分を確認して承認' }))
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchApiMock).not.toHaveBeenCalled()
     let dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     expect(dialog.getAttribute('data-testid')).toBe('external-edit-approval-dialog')
     expect(within(dialog).getByText('シート')).toBeTruthy()
@@ -134,14 +135,14 @@ describe('T-D2 回答詳細 編集モード', () => {
     expect(within(dialog).getByText('旧メモ')).toBeTruthy()
 
     fireEvent.click(within(dialog).getByRole('button', { name: '閉じる' }))
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchApiMock).not.toHaveBeenCalled()
     expect(screen.getByText('回答の詳細')).toBeTruthy()
 
     fireEvent.click(within(changes).getByRole('button', { name: '差分を確認して承認' }))
     dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     fireEvent.click(within(dialog).getByRole('button', { name: '確認して承認' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    await waitFor(() => expect(fetchApiMock).toHaveBeenCalledWith(
       '/api/forms-advanced/fa1/rows/row1/approve-external-edit',
       expect.objectContaining({
         method: 'POST',
@@ -159,14 +160,14 @@ describe('T-D2 回答詳細 編集モード', () => {
   })
 
   it('差分0件の未承認回答も詳細から確認して承認できる', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      success: true,
-      data: { id: 'row1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }))
-    vi.stubGlobal('fetch', fetchMock)
+    fetchApiMock.mockImplementation(async (path: string) => (
+      path === '/api/staff/me'
+        ? { data: { role: 'owner' } }
+        : {
+            success: true,
+            data: { id: 'row1', externalEditApprovedAt: '2026-07-23T10:02:00+09:00' },
+          }
+    ))
     rowMock.mockResolvedValue({
       ...detailFor(0),
       externalEditSource: 'edit_link',
@@ -176,6 +177,7 @@ describe('T-D2 回答詳細 編集モード', () => {
     })
 
     await openDetail()
+    fetchApiMock.mockClear()
 
     const changes = screen.getByTestId('detail-external-edit-changes')
     fireEvent.click(within(changes).getByRole('button', { name: '差分を確認して承認' }))
@@ -183,7 +185,7 @@ describe('T-D2 回答詳細 編集モード', () => {
     expect(within(dialog).getByText('変更された項目はありません')).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: '確認して承認' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(fetchApiMock).toHaveBeenCalledTimes(1))
   })
 
   it.each([

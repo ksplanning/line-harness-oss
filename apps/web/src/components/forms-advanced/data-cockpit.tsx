@@ -191,6 +191,7 @@ export default function DataCockpit(props: DataCockpitProps) {
     })
     setConfirmingDelete(false)
     setReviewingExternalEdit(null)
+    props.onQuery(currentFilter())
   }
 
   return (

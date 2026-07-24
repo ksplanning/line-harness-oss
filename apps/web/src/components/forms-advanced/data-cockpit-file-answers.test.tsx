@@ -4,6 +4,8 @@ import { cleanup, render, screen } from '@testing-library/react'
 import DataCockpit, { type DataCockpitProps } from './data-cockpit'
 import type { SubmissionRow } from '@/lib/formaloo-advanced-api'
 
+vi.mock('@/lib/api', () => ({ fetchApi: vi.fn() }))
+
 afterEach(() => cleanup())
 
 const ROWS: SubmissionRow[] = [{
