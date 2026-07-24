@@ -13,6 +13,11 @@ import {
   buildFaqPersonalContextBlock,
   type AssembledFaqPersonalContext,
 } from './faq-personal-context.js';
+import {
+  applyReplyGreeting,
+  applyReplyStyleToPrompt,
+  type ReplyStyleSettings,
+} from './reply-style.js';
 
 export type AnswerMode = 'auto' | 'draft';
 
@@ -162,6 +167,8 @@ export interface RunFaqAiInput {
   friendId: string | null;
   /** friend 別 maxRepliesPerDay 超過 (pre-flight OR の片側)。ai_usage_budget 判定は C6 で結線。 */
   overLimit: boolean;
+  /** Account-scoped presentation rules. Omitted/empty preserves the legacy prompt and answer bytes. */
+  replyStyle?: ReplyStyleSettings;
 }
 
 /**
@@ -309,11 +316,14 @@ export async function runFaqAiAnswer(
   }
 
   const faqEvidenceList: FaqEvidence[] = faqOk && evidence ? [{ question: evidence.question, answer: evidence.answer }] : [];
-  const prompt = buildRagPrompt(
-    faqEvidenceList,
-    chunkEvidence.map((c) => ({ content: c.chunk.content })),
-    input.question,
-    personalContext,
+  const prompt = applyReplyStyleToPrompt(
+    buildRagPrompt(
+      faqEvidenceList,
+      chunkEvidence.map((c) => ({ content: c.chunk.content })),
+      input.question,
+      personalContext,
+    ),
+    input.replyStyle,
   );
 
   // [生成] timeout 付き。timeout/例外 → 判別不能=退避 (no-retry / no-send)。
@@ -357,7 +367,7 @@ export async function runFaqAiAnswer(
         lineAccountId: input.lineAccountId,
         friendId: input.friendId,
         question: input.question,
-        draftAnswer: structured.answer,
+        draftAnswer: applyReplyGreeting(structured.answer, input.replyStyle?.greeting),
         evidenceFaqIds: faqOk && evidence ? [evidence.id] : [],
         answerable: false,
       });
@@ -376,7 +386,7 @@ export async function runFaqAiAnswer(
     return { kind: 'escalate', reason: 'ungrounded_contact' };
   }
 
-  const answer = structured.answer;
+  const answer = applyReplyGreeting(structured.answer, input.replyStyle?.greeting);
 
   // [根拠あり] answer_mode 分岐。draft の evidence_faq_ids は faq 根拠のみ (chunk は id 種別が異なるため載せない)。
   if (input.answerMode === 'draft') {

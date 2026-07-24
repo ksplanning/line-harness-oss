@@ -12,6 +12,11 @@ import { matchFaqDetailed, type MatchableFaq } from './faq-match.js';
 import { retrieveAndRankFaq } from './faq-fts.js';
 import { runFaqAiAnswer, type AnswerMode } from './faq-ai.js';
 import { type FaqAiRuntime } from './llm/runtime.js';
+import {
+  EMPTY_REPLY_STYLE,
+  normalizeReplyStyleSettings,
+  type ReplyStyleSettings,
+} from './reply-style.js';
 
 interface FaqBotSettings {
   enabled: boolean;
@@ -20,6 +25,7 @@ interface FaqBotSettings {
   autoReplyNotice: string;
   maxRepliesPerDay: number;
   answerMode: AnswerMode;
+  replyStyle: ReplyStyleSettings;
 }
 
 const DEFAULT_SETTINGS: FaqBotSettings = {
@@ -29,6 +35,7 @@ const DEFAULT_SETTINGS: FaqBotSettings = {
   autoReplyNotice: '',
   maxRepliesPerDay: 5,
   answerMode: 'draft',
+  replyStyle: EMPTY_REPLY_STYLE,
 };
 
 export interface TryFaqReplyOptions {
@@ -60,6 +67,7 @@ function parseSettings(value: string | null | undefined): FaqBotSettings {
       answerMode: parsed.answerMode === 'auto' || parsed.answerMode === 'draft'
         ? parsed.answerMode
         : DEFAULT_SETTINGS.answerMode,
+      replyStyle: normalizeReplyStyleSettings(parsed.replyStyle),
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -159,6 +167,7 @@ export async function tryFaqReply(
         lineAccountId: opts.lineAccountId,
         friendId: opts.friend.id,
         overLimit,
+        replyStyle: settings.replyStyle,
       },
       ai,
     );
