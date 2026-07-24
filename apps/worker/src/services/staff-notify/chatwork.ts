@@ -1,5 +1,5 @@
-import type { StaffNotificationAdapter } from './types.js';
 import type { StaffNotificationChannelDefinition } from './channel-definition.js';
+import type { StaffNotificationAdapter } from './types.js';
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 interface ChatworkConfig {
@@ -74,6 +74,30 @@ export const chatworkStaffNotificationChannel: StaffNotificationChannelDefinitio
       required: true,
       maxLength: 512,
       placeholder: 'Chatwork で発行した API トークン',
+    },
+    {
+      key: 'inquiryRoomId',
+      label: '問い合わせ用ルームID（任意）',
+      inputType: 'text',
+      required: false,
+      maxLength: 20,
+      pattern: '^\\d+$',
+    },
+    {
+      key: 'formSubmissionRoomId',
+      label: 'フォーム用ルームID（任意）',
+      inputType: 'text',
+      required: false,
+      maxLength: 20,
+      pattern: '^\\d+$',
+    },
+    {
+      key: 'autoReplyRoomId',
+      label: '自動応答用ルームID（任意）',
+      inputType: 'text',
+      required: false,
+      maxLength: 20,
+      pattern: '^\\d+$',
     },
   ],
   capabilities: {

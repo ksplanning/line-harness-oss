@@ -92,8 +92,17 @@ function chatworkBody(overrides: Record<string, unknown> = {}) {
   const {
     roomId = '12345',
     apiToken = 'chatwork-secret',
+    inquiryRoomId,
+    formSubmissionRoomId,
+    autoReplyRoomId,
     ...destinationOverrides
   } = overrides;
+  const config: Record<string, unknown> = { roomId, apiToken };
+  if (inquiryRoomId !== undefined) config.inquiryRoomId = inquiryRoomId;
+  if (formSubmissionRoomId !== undefined) {
+    config.formSubmissionRoomId = formSubmissionRoomId;
+  }
+  if (autoReplyRoomId !== undefined) config.autoReplyRoomId = autoReplyRoomId;
   return {
     lineAccountId: 'account-1',
     label: 'Chatwork 受付',
@@ -102,7 +111,7 @@ function chatworkBody(overrides: Record<string, unknown> = {}) {
     notifyFormSubmission: false,
     notifyAutoReply: false,
     enabled: true,
-    config: { roomId, apiToken },
+    config,
     ...destinationOverrides,
   };
 }
@@ -295,6 +304,107 @@ describe('staff notification destination admin CRUD', () => {
     );
     expect(removed.status).toBe(200);
     expect(rows).toEqual([]);
+  });
+
+  test('カテゴリ別ルームIDを保存・再取得でき、LINEアカウントA/Bで分離する', async () => {
+    const accountA = await jsonRequest(
+      '/api/staff-notification-destinations',
+      'POST',
+      chatworkBody({
+        lineAccountId: 'account-a',
+        label: 'A受付',
+        inquiryRoomId: '111111',
+        formSubmissionRoomId: '122222',
+        autoReplyRoomId: '',
+      }),
+    );
+    const accountB = await jsonRequest(
+      '/api/staff-notification-destinations',
+      'POST',
+      chatworkBody({
+        lineAccountId: 'account-b',
+        label: 'B受付',
+        roomId: '200000',
+        inquiryRoomId: '211111',
+        formSubmissionRoomId: '',
+        autoReplyRoomId: '233333',
+      }),
+    );
+    expect(accountA.status).toBe(201);
+    expect(accountB.status).toBe(201);
+
+    const listedA = await jsonRequest(
+      '/api/staff-notification-destinations?lineAccountId=account-a',
+      'GET',
+    );
+    const listedB = await jsonRequest(
+      '/api/staff-notification-destinations?lineAccountId=account-b',
+      'GET',
+    );
+    expect((await listedA.json()).data).toEqual([
+      expect.objectContaining({
+        label: 'A受付',
+        config: {
+          roomId: '12345',
+          apiToken: '********',
+          inquiryRoomId: '111111',
+          formSubmissionRoomId: '122222',
+          autoReplyRoomId: '',
+        },
+      }),
+    ]);
+    expect((await listedB.json()).data).toEqual([
+      expect.objectContaining({
+        label: 'B受付',
+        config: {
+          roomId: '200000',
+          apiToken: '********',
+          inquiryRoomId: '211111',
+          formSubmissionRoomId: '',
+          autoReplyRoomId: '233333',
+        },
+      }),
+    ]);
+    expect(rows.find((row) => row.lineAccountId === 'account-a')?.config)
+      .toMatchObject({
+        inquiryRoomId: '111111',
+        formSubmissionRoomId: '122222',
+      });
+    expect(rows.find((row) => row.lineAccountId === 'account-b')?.config)
+      .toMatchObject({
+        inquiryRoomId: '211111',
+        autoReplyRoomId: '233333',
+      });
+  });
+
+  test.each([
+    'inquiryRoomId',
+    'formSubmissionRoomId',
+    'autoReplyRoomId',
+  ])('%s が数字以外なら日本語エラーで400を返す', async (key) => {
+    const response = await jsonRequest(
+      '/api/staff-notification-destinations',
+      'POST',
+      chatworkBody({ [key]: '12A34' }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: 'カテゴリ別ルームIDは半角数字のみで入力してください。',
+    });
+
+    rows.push(destination());
+    const updateResponse = await jsonRequest(
+      '/api/staff-notification-destinations/destination-1',
+      'PUT',
+      chatworkBody({ [key]: '12A34' }),
+    );
+    expect(updateResponse.status).toBe(400);
+    expect(await updateResponse.json()).toEqual({
+      success: false,
+      error: 'カテゴリ別ルームIDは半角数字のみで入力してください。',
+    });
   });
 
   test('入力を厳格検証し、channel変更と別accountからの操作を拒否する', async () => {

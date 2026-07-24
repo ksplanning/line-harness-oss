@@ -30,6 +30,13 @@ const LINE_LINK_CODE_TTL_MS = 10 * 60_000;
 const LABEL_MAX_LENGTH = 100;
 const ACCOUNT_ID_MAX_LENGTH = 128;
 const CHANNEL_TYPE_MAX_LENGTH = 64;
+const CATEGORY_ROOM_ID_KEYS = [
+  'inquiryRoomId',
+  'formSubmissionRoomId',
+  'autoReplyRoomId',
+] as const;
+const CATEGORY_ROOM_ID_ERROR =
+  'カテゴリ別ルームIDは半角数字のみで入力してください。';
 
 interface DestinationBody {
   lineAccountId: string;
@@ -44,7 +51,7 @@ interface DestinationBody {
 
 type ParsedBody =
   | { ok: true; value: DestinationBody }
-  | { ok: false };
+  | { ok: false; error?: string };
 
 async function jsonObject(c: Context<Env>): Promise<Record<string, unknown> | null> {
   try {
@@ -70,6 +77,18 @@ function nonEmptyString(
 
 function accountId(value: unknown): string | null {
   return nonEmptyString(value, ACCOUNT_ID_MAX_LENGTH);
+}
+
+function hasInvalidCategoryRoomId(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const config = value as Record<string, unknown>;
+  return CATEGORY_ROOM_ID_KEYS.some((key) => {
+    const raw = config[key];
+    if (raw === undefined) return false;
+    if (typeof raw !== 'string') return true;
+    const roomId = raw.trim();
+    return roomId !== '' && !/^\d+$/.test(roomId);
+  });
 }
 
 function parseDestinationBody(
@@ -104,7 +123,14 @@ function parseDestinationBody(
     body.config,
     existing?.config,
   );
-  if (!config) return { ok: false };
+  if (!config) {
+    return {
+      ok: false,
+      ...(channelType === 'chatwork' && hasInvalidCategoryRoomId(body.config)
+        ? { error: CATEGORY_ROOM_ID_ERROR }
+        : {}),
+    };
+  }
 
   return {
     ok: true,
@@ -197,7 +223,10 @@ staffNotificationDestinations.post(
   async (c) => {
     const parsed = parseDestinationBody(await jsonObject(c));
     if (!parsed.ok) {
-      return c.json({ success: false, error: 'Invalid destination input' }, 400);
+      return c.json({
+        success: false,
+        error: parsed.error ?? 'Invalid destination input',
+      }, 400);
     }
     const input = parsed.value;
     const created = await createStaffNotificationDestination(c.env.DB, {
@@ -236,7 +265,10 @@ staffNotificationDestinations.put(
     }
     const parsed = parseDestinationBody(body, existing);
     if (!parsed.ok) {
-      return c.json({ success: false, error: 'Invalid destination input' }, 400);
+      return c.json({
+        success: false,
+        error: parsed.error ?? 'Invalid destination input',
+      }, 400);
     }
     const input = parsed.value;
     const updated = await updateStaffNotificationDestination(c.env.DB, {

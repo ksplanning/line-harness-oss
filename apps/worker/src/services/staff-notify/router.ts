@@ -75,6 +75,30 @@ function subscribed(
     : destination.notifyFormSubmission;
 }
 
+function destinationForPayload(
+  destination: StaffNotificationDestination,
+  payload: StaffNotificationPayload,
+): StaffNotificationDestination {
+  if (destination.channelType !== 'chatwork' || payload.eventType === 'test') {
+    return destination;
+  }
+  const roomIdKey = payload.eventType === 'form_submitted'
+    ? 'formSubmissionRoomId'
+    : isAutoReplyHandledSource(payload.source)
+      ? 'autoReplyRoomId'
+      : 'inquiryRoomId';
+  const configuredRoomId = destination.config[roomIdKey];
+  const roomId = typeof configuredRoomId === 'string'
+    ? configuredRoomId.trim()
+    : '';
+  return roomId
+    ? {
+        ...destination,
+        config: { ...destination.config, roomId },
+      }
+    : destination;
+}
+
 async function recordDeliverySafely(
   env: StaffNotificationServiceEnv,
   destination: StaffNotificationDestination,
@@ -112,7 +136,7 @@ async function deliverOne(
         const adapterResult = await sendWithTimeout(
           adapter.send({
             env,
-            destination,
+            destination: destinationForPayload(destination, payload),
             payload,
             text: renderStaffNotificationText(payload),
           }),

@@ -6,7 +6,10 @@ import {
   AUTO_REPLY_KEYWORD_SOURCE,
   UNMATCHED_USER_SOURCE,
 } from '../auto-reply-keyword-match.js';
-import type { StaffNotificationAdapterRegistry } from './types.js';
+import type {
+  StaffNotificationAdapterRegistry,
+  StaffNotificationPayload,
+} from './types.js';
 
 const dbMocks = vi.hoisted(() => ({
   getLineAccountById: vi.fn(),
@@ -128,6 +131,166 @@ describe('dispatchStaffNotifications', () => {
       { chatwork: { channelType: 'chatwork', failureCodes: [], send } },
     )).resolves.toMatchObject({ attempted: 1, succeeded: 1, failed: 0 });
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  test.each<[string, StaffNotificationPayload, string]>([
+    ['問い合わせ', { ...payload, source: 'user' }, '111111'],
+    ['フォーム', { ...payload, eventType: 'form_submitted' }, '222222'],
+    [
+      '自動応答',
+      { ...payload, source: AUTO_REPLY_HANDLED_SOURCE },
+      '333333',
+    ],
+    [
+      '人間対応に残った自動応答',
+      { ...payload, source: AUTO_REPLY_KEEP_UNRESPONDED_SOURCE },
+      '111111',
+    ],
+  ])('%s はadapter呼び出し前にカテゴリ別roomIdへ解決する', async (
+    _label,
+    notification,
+    expectedRoomId,
+  ) => {
+    const target = destination('chatwork-category', 'chatwork', {
+      config: {
+        roomId: '999999',
+        inquiryRoomId: '111111',
+        formSubmissionRoomId: '222222',
+        autoReplyRoomId: '333333',
+        apiToken: 'token',
+      },
+      notifyAutoReply: true,
+    });
+    dbMocks.listSubscribedStaffNotificationDestinations.mockResolvedValue([target]);
+    const send = vi.fn(async () => ({ ok: true as const }));
+
+    await expect(dispatchStaffNotifications(
+      env,
+      notification,
+      { chatwork: { channelType: 'chatwork', failureCodes: [], send } },
+    )).resolves.toMatchObject({ attempted: 1, succeeded: 1, failed: 0 });
+
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      destination: expect.objectContaining({
+        config: expect.objectContaining({ roomId: expectedRoomId }),
+      }),
+    }));
+    expect(target.config.roomId).toBe('999999');
+  });
+
+  test.each<[string, StaffNotificationPayload]>([
+    ['問い合わせ', { ...payload, source: 'user' }],
+    ['フォーム', { ...payload, eventType: 'form_submitted' }],
+    ['自動応答', { ...payload, source: AUTO_REPLY_HANDLED_SOURCE }],
+  ])('%s のカテゴリ別roomIdが未設定なら共通roomIdを保つ', async (
+    _label,
+    notification,
+  ) => {
+    dbMocks.listSubscribedStaffNotificationDestinations.mockResolvedValue([
+      destination('chatwork-common', 'chatwork', {
+        config: { roomId: '999999', apiToken: 'token' },
+        notifyAutoReply: true,
+      }),
+    ]);
+    const send = vi.fn(async () => ({ ok: true as const }));
+
+    await dispatchStaffNotifications(
+      env,
+      notification,
+      { chatwork: { channelType: 'chatwork', failureCodes: [], send } },
+    );
+
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      destination: expect.objectContaining({
+        config: expect.objectContaining({ roomId: '999999' }),
+      }),
+    }));
+  });
+
+  test('カテゴリ別roomIdへの送信失敗を配送失敗へ閉じ込める', async () => {
+    dbMocks.listSubscribedStaffNotificationDestinations.mockResolvedValue([
+      destination('chatwork-failure', 'chatwork', {
+        config: {
+          roomId: '999999',
+          autoReplyRoomId: '333333',
+          apiToken: 'token',
+        },
+        notifyAutoReply: true,
+      }),
+    ]);
+    const send = vi.fn(async () => ({
+      ok: false as const,
+      errorCode: 'chatwork_http_error',
+    }));
+
+    await expect(dispatchStaffNotifications(
+      env,
+      { ...payload, source: AUTO_REPLY_HANDLED_SOURCE },
+      {
+        chatwork: {
+          channelType: 'chatwork',
+          failureCodes: ['chatwork_http_error'],
+          send,
+        },
+      },
+    )).resolves.toEqual({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      results: [{
+        destinationId: 'chatwork-failure',
+        status: 'failed',
+        errorCode: 'chatwork_http_error',
+      }],
+    });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      destination: expect.objectContaining({
+        config: expect.objectContaining({ roomId: '333333' }),
+      }),
+    }));
+  });
+
+  test('LINEアカウントA/Bごとの問い合わせルームを混ぜずに送る', async () => {
+    dbMocks.listSubscribedStaffNotificationDestinations.mockImplementation(
+      async (_db, lineAccountId: string) => [
+        destination(`${lineAccountId}-chatwork`, 'chatwork', {
+          lineAccountId,
+          config: lineAccountId === 'account-a'
+            ? {
+                roomId: '100000',
+                inquiryRoomId: '111111',
+                apiToken: 'token-a',
+              }
+            : {
+                roomId: '200000',
+                inquiryRoomId: '222222',
+                apiToken: 'token-b',
+              },
+        }),
+      ],
+    );
+    const send = vi.fn(async () => ({ ok: true as const }));
+    const chatwork = { channelType: 'chatwork', failureCodes: [], send };
+
+    await expect(dispatchStaffNotifications(
+      env,
+      { ...payload, lineAccountId: 'account-a' },
+      { chatwork },
+    )).resolves.toMatchObject({ attempted: 1, succeeded: 1, failed: 0 });
+    await expect(dispatchStaffNotifications(
+      env,
+      { ...payload, lineAccountId: 'account-b' },
+      { chatwork },
+    )).resolves.toMatchObject({ attempted: 1, succeeded: 1, failed: 0 });
+
+    expect(dbMocks.listSubscribedStaffNotificationDestinations.mock.calls).toEqual([
+      [DB, 'account-a', 'inquiry_received'],
+      [DB, 'account-b', 'inquiry_received'],
+    ]);
+    expect(send.mock.calls.map(([input]) => input.destination.config.roomId)).toEqual([
+      '111111',
+      '222222',
+    ]);
   });
 
   test('fans out to every subscribed enabled destination and records fixed success/failure results', async () => {
