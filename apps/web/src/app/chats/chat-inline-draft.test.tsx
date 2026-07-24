@@ -837,6 +837,59 @@ describe('履歴を主役にする返信コンポーザ', () => {
     expect(apiMocks.discardDraft).not.toHaveBeenCalled()
   })
 
+  it('sendMode未保存時はShift+Enterを送信キーの既定にする', async () => {
+    expect(window.localStorage.getItem('chat.sendMode')).toBeNull()
+    await openChat()
+
+    const textarea = screen.getByRole('textbox', { name: 'メッセージを入力' })
+    fireEvent.change(textarea, { target: { value: '既定キーで送信' } })
+
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    expect(apiMocks.sendChat).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalledWith(
+      'chat-row-1',
+      { content: '既定キーで送信' },
+    ))
+  })
+
+  it.each([
+    {
+      savedMode: 'enter' as const,
+      noSendShift: true,
+      sendShift: false,
+    },
+    {
+      savedMode: 'shift-enter' as const,
+      noSendShift: false,
+      sendShift: true,
+    },
+  ])('保存済みの$savedMode送信キーを尊重する', async ({
+    savedMode,
+    noSendShift,
+    sendShift,
+  }) => {
+    window.localStorage.setItem('chat.sendMode', savedMode)
+    await openChat()
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem('chat.sendMode')).toBe(savedMode)
+    })
+    const textarea = screen.getByRole('textbox', { name: 'メッセージを入力' })
+    fireEvent.change(textarea, { target: { value: '保存済み設定で送信' } })
+
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: noSendShift })
+    expect(apiMocks.sendChat).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: sendShift })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalledWith(
+      'chat-row-1',
+      { content: '保存済み設定で送信' },
+    ))
+    expect(window.localStorage.getItem('chat.sendMode')).toBe(savedMode)
+  })
+
   it('設定は既定で畳み、変更した3値を再表示後も復元する', async () => {
     await openChat()
 

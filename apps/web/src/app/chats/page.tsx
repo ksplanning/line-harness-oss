@@ -575,7 +575,7 @@ export default function ChatsPage() {
     window.history.replaceState(null, '', url)
   }, [unansweredOnly])
   // Send mode: 'enter' = Enter sends, Shift+Enter = newline; 'shift-enter' = reverse
-  const [sendMode, setSendMode] = useState<'enter' | 'shift-enter'>('enter')
+  const [sendMode, setSendMode] = useState<'enter' | 'shift-enter'>('shift-enter')
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
