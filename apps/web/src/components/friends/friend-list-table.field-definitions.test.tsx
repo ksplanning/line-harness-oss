@@ -48,6 +48,21 @@ const friend: FriendListItem = {
 };
 
 describe('FriendListTable fieldDefinitions default', () => {
+  test('deep-link 対象は既存の友だち詳細を初期展開する', () => {
+    render(
+      <FriendListTable
+        friends={[friend]}
+        allTags={[]}
+        onRefresh={vi.fn()}
+        initialExpandedId={friend.id}
+      />,
+    );
+
+    expect(screen.getByText('LINE ユーザーID')).toBeTruthy();
+    expect(screen.getByText('U1')).toBeTruthy();
+    expect(screen.getByText('metadata editor')).toBeTruthy();
+  });
+
   test('友だち詳細のカスタム欄から全員共通の設定へ移動できる', () => {
     render(<FriendListTable friends={[friend]} allTags={[]} onRefresh={vi.fn()} />);
 

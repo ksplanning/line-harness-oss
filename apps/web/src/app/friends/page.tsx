@@ -40,6 +40,10 @@ type ResponseFilter = 'all' | 'unhandled'
 
 export default function FriendsPage() {
   const { selectedAccountId } = useAccount()
+  const [focusedFriendId] = useState(() => {
+    if (typeof window === 'undefined') return null
+    return new URLSearchParams(window.location.search).get('friend')
+  })
   const [friends, setFriends] = useState<FriendListItem[]>([])
   const [allTags, setAllTags] = useState<Tag[]>([])
   const [total, setTotal] = useState(0)
@@ -90,6 +94,7 @@ export default function FriendsPage() {
         sort: sortMode,
         handled: responseFilter === 'unhandled' ? 'unhandled' : undefined,
         savedSearchId: savedSearchId || undefined,
+        friendId: focusedFriendId || undefined,
       })
       if (requestId !== loadFriendsRequest.current) return
       if (res.success) {
@@ -106,7 +111,7 @@ export default function FriendsPage() {
     } finally {
       if (requestId === loadFriendsRequest.current) setLoading(false)
     }
-  }, [page, selectedTagId, selectedAccountId, searchSubmitted, sortMode, responseFilter, savedSearchId])
+  }, [page, selectedTagId, selectedAccountId, searchSubmitted, sortMode, responseFilter, savedSearchId, focusedFriendId])
 
   useEffect(() => {
     loadTags()
@@ -277,6 +282,7 @@ export default function FriendsPage() {
           allTags={allTags}
           onRefresh={loadFriends}
           fieldDefinitions={fieldDefinitions}
+          initialExpandedId={focusedFriendId}
         />
       )}
 

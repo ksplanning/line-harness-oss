@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 type PendingList = {
   accountId: string | undefined
+  friendId: string | undefined
   resolve: (value: unknown) => void
 }
 
@@ -26,8 +27,16 @@ vi.mock('@/lib/api', () => ({
 }))
 vi.mock('@/components/layout/header', () => ({ default: () => <h1>友だちリスト</h1> }))
 vi.mock('@/components/friends/friend-list-table', () => ({
-  default: ({ friends }: { friends: Array<{ displayName: string }> }) => (
-    <div data-testid="friend-list">{friends.map((friend) => <p key={friend.displayName}>{friend.displayName}</p>)}</div>
+  default: ({
+    friends,
+    initialExpandedId,
+  }: {
+    friends: Array<{ id: string; displayName: string }>
+    initialExpandedId?: string | null
+  }) => (
+    <div data-testid="friend-list" data-expanded-id={initialExpandedId ?? ''}>
+      {friends.map((friend) => <p key={friend.id}>{friend.displayName}</p>)}
+    </div>
   ),
 }))
 vi.mock('@/components/friends/saved-search-panel', () => ({ default: () => null }))
@@ -46,11 +55,11 @@ vi.mock('@/components/friends/followers-import-panel', () => ({
 
 import FriendsPage from './page'
 
-function response(name: string) {
+function response(name: string, id = name) {
   return {
     success: true,
     data: {
-      items: [{ displayName: name }],
+      items: [{ id, displayName: name }],
       total: 1,
       hasNextPage: false,
     },
@@ -58,10 +67,11 @@ function response(name: string) {
 }
 
 beforeEach(() => {
+  window.history.replaceState(null, '', '/friends')
   m.account.selectedAccountId = 'account-a'
   m.pending.length = 0
-  m.list.mockReset().mockImplementation((params: { accountId?: string }) => new Promise((resolve) => {
-    m.pending.push({ accountId: params.accountId, resolve })
+  m.list.mockReset().mockImplementation((params: { accountId?: string; friendId?: string }) => new Promise((resolve) => {
+    m.pending.push({ accountId: params.accountId, friendId: params.friendId, resolve })
   }))
 })
 
@@ -92,6 +102,24 @@ describe('FriendsPage follower-import completion reload', () => {
 })
 
 describe('FriendsPage first-view layout', () => {
+  test('friend deep-link は選択アカウントとIDをAND指定し、既存詳細を初期展開する', async () => {
+    window.history.replaceState(null, '', '/friends?friend=fr%2Ftarget')
+    render(<FriendsPage />)
+
+    await waitFor(() => expect(m.pending).toHaveLength(1))
+    expect(m.pending[0]).toMatchObject({
+      accountId: 'account-a',
+      friendId: 'fr/target',
+    })
+    await act(async () => {
+      m.pending[0].resolve(response('対象の友だち', 'fr/target'))
+    })
+
+    const friendList = await screen.findByTestId('friend-list')
+    expect(friendList.getAttribute('data-expanded-id')).toBe('fr/target')
+    expect(screen.getByText('対象の友だち')).toBeTruthy()
+  })
+
   test('友だち一覧を先に見せ、取り込みとカスタムフィールド設定は初期状態で閉じる', async () => {
     render(<FriendsPage />)
     await waitFor(() => expect(m.pending).toHaveLength(1))

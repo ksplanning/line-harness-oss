@@ -305,6 +305,9 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
       setReviewingExternalEdit(false)
     } catch { setNotice('回答の取得に失敗しました') }
   }
+  const onOpenFriend = (friendId: string) => {
+    globalThis.location.assign(`/friends?friend=${encodeURIComponent(friendId)}`)
+  }
   const autoOpenedRef = useRef(false)
   useEffect(() => {
     if (loading || !initialRowId || autoOpenedRef.current) return
@@ -572,6 +575,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
           onBulkDelete={onBulkDelete}
           onConfirmDuplicate={onConfirmDuplicate}
           onOpenRow={onOpenRow}
+          onOpenFriend={onOpenFriend}
         />
       )}
 

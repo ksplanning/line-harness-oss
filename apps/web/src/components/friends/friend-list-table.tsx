@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import type { FriendFieldDefinition, Tag } from '@line-crm/shared'
 import type { FriendListItem } from '@/lib/api'
@@ -14,6 +14,7 @@ interface Props {
   allTags: Tag[]
   onRefresh: () => void
   fieldDefinitions?: readonly FriendFieldDefinition[]
+  initialExpandedId?: string | null
 }
 
 const EMPTY_FIELD_DEFINITIONS: readonly FriendFieldDefinition[] = []
@@ -23,17 +24,22 @@ export default function FriendListTable({
   allTags,
   onRefresh,
   fieldDefinitions = EMPTY_FIELD_DEFINITIONS,
+  initialExpandedId = null,
 }: Props) {
   // Inline tag-management expander. The row's primary click navigates to
   // /chats; tag editing stays available here as a secondary action because
   // the chats page's FriendInfoSidebar currently only displays tags (no
   // add/remove). Without this expander operators would lose the only path
   // to mutate friend tags from the admin UI.
-  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(initialExpandedId)
   const [addingTagForFriend, setAddingTagForFriend] = useState<string | null>(null)
   const [selectedTagId, setSelectedTagId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (initialExpandedId) setExpandedId(initialExpandedId)
+  }, [initialExpandedId])
 
   const toggleExpand = (id: string) => {
     setExpandedId(expandedId === id ? null : id)

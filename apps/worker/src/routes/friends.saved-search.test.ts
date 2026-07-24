@@ -65,6 +65,13 @@ beforeEach(() => {
 });
 
 describe('GET /api/friends ?savedSearchId=', () => {
+  test('friendId deep-link filter is AND-composed with the account scope', async () => {
+    await setupApp(mockDb(null)).request('/api/friends?lineAccountId=acc-1&friendId=fr%2Ftarget');
+    expect(countSql()).toBe(
+      'SELECT COUNT(*) as count FROM friends f WHERE f.line_account_id = ? AND f.id = ?',
+    );
+  });
+
   test('without savedSearchId the query is byte-identical (no segment clause)', async () => {
     await setupApp(mockDb(null)).request('/api/friends?lineAccountId=acc-1');
     expect(countSql()).toBe('SELECT COUNT(*) as count FROM friends f WHERE f.line_account_id = ?');

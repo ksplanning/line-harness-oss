@@ -88,6 +88,7 @@ friends.get('/api/friends', async (c) => {
     const offset = Number(c.req.query('offset') ?? '0');
     const tagId = c.req.query('tagId');
     const lineAccountId = c.req.query('lineAccountId');
+    const friendId = c.req.query('friendId');
     const search = c.req.query('search');
     // ?includeTags=false skips per-row tag enrichment (N+1 of getFriendTags
     // → ~50 extra D1 reads on a wide list query). The list view needs tags
@@ -124,6 +125,10 @@ friends.get('/api/friends', async (c) => {
     if (lineAccountId) {
       conditions.push('f.line_account_id = ?');
       binds.push(lineAccountId);
+    }
+    if (friendId) {
+      conditions.push('f.id = ?');
+      binds.push(friendId);
     }
     if (search) {
       conditions.push('f.display_name LIKE ?');

@@ -24,7 +24,7 @@ afterEach(() => {
 
 const ROWS: SubmissionRow[] = [
   { id: 's1', friendId: 'fr_1', answers: { 名前: '田中', 電話: '090' }, submittedAt: '2026-07-09T10:00:00+09:00', verified: true },
-  { id: 's2', friendId: 'fr_2', answers: { 名前: '鈴木' }, submittedAt: '2026-07-05T10:00:00+09:00', verified: false },
+  { id: 's2', friendId: null, answers: { 名前: '鈴木' }, submittedAt: '2026-07-05T10:00:00+09:00', verified: false },
 ]
 
 function base(overrides: Partial<DataCockpitProps> = {}): DataCockpitProps {
@@ -44,6 +44,7 @@ function base(overrides: Partial<DataCockpitProps> = {}): DataCockpitProps {
     onImport: vi.fn(),
     onBulkDelete: vi.fn(),
     onOpenRow: vi.fn(),
+    onOpenFriend: vi.fn(),
     onConfirmDuplicate: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
@@ -133,6 +134,38 @@ describe('DataCockpit — 表示 (T-D1)', () => {
 
     fireEvent.click(detailButton)
     expect(p.onOpenRow).toHaveBeenCalledWith('s1')
+  })
+
+  it('詳細の右隣に友だちボタンを置き、連携済みなら既存の友だち詳細へ遷移する', () => {
+    const p = base()
+    render(<DataCockpit {...p} />)
+
+    const row = screen.getByLabelText('s1 の詳細').closest('tr')
+    expect(row).toBeTruthy()
+    const actionCell = within(row as HTMLTableRowElement).getAllByRole('cell')[0]!
+    const actionButtons = within(actionCell).getAllByRole('button')
+    expect(actionButtons.map((button) => button.textContent)).toEqual(['詳細', '友だち'])
+
+    const friendButton = screen.getByRole('button', { name: 's1 の友だち詳細' })
+    expect(friendButton.className).toContain('min-h-[44px]')
+    fireEvent.click(friendButton)
+
+    expect(p.onOpenFriend).toHaveBeenCalledWith('fr_1')
+    expect(p.onOpenRow).not.toHaveBeenCalled()
+  })
+
+  it('LINE未連携行の友だちボタンは理由を示して非活性にし、回答詳細は従来どおり開ける', () => {
+    const p = base()
+    render(<DataCockpit {...p} />)
+
+    const friendButton = screen.getByRole('button', { name: 's2 の友だち詳細' }) as HTMLButtonElement
+    expect(friendButton.disabled).toBe(true)
+    expect(friendButton.getAttribute('title')).toBe('LINE未連携')
+    fireEvent.click(friendButton)
+    expect(p.onOpenFriend).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 's2 の詳細' }))
+    expect(p.onOpenRow).toHaveBeenCalledWith('s2')
   })
 })
 

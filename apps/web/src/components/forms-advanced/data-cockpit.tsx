@@ -86,6 +86,7 @@ export interface DataCockpitProps {
   onImport: (csv: string) => void
   onBulkDelete: (ids: string[]) => void
   onOpenRow: (rowId: string) => void
+  onOpenFriend: (friendId: string) => void
   onConfirmDuplicate: (rowId: string, expectedRevision: string) => Promise<void>
 }
 
@@ -437,7 +438,7 @@ export default function DataCockpit(props: DataCockpitProps) {
         <table className="block w-full text-sm sm:table sm:min-w-full">
           <thead className="hidden bg-gray-50 text-left text-xs text-gray-500 sm:table-header-group">
             <tr>
-              <th className="sticky left-0 z-20 w-[88px] bg-gray-50 px-3 py-2 font-medium">詳細</th>
+              <th className="sticky left-0 z-20 w-[156px] bg-gray-50 px-3 py-2 font-medium">詳細</th>
               {isOwner && <th className="w-10 px-3 py-2" />}
               {columns.map((col) => <th key={col} className="px-3 py-2 font-medium">{labelFor(col)}</th>)}
               <th className="px-3 py-2 font-medium">重複確認</th>
@@ -462,15 +463,29 @@ export default function DataCockpit(props: DataCockpitProps) {
               const duplicateReviewed = locallyConfirmedDuplicate || Boolean(duplicate.duplicateReviewedAt)
               return (
               <tr key={r.id} className="block space-y-2 border-t border-gray-100 p-3 sm:table-row sm:space-y-0 sm:p-0">
-                <td className="sticky left-0 z-10 flex bg-white py-1 sm:table-cell sm:w-[88px] sm:px-3 sm:py-2">
-                  <button
-                    type="button"
-                    aria-label={`${r.id} の詳細`}
-                    onClick={() => props.onOpenRow(r.id)}
-                    className="min-h-[44px] min-w-[72px] rounded-lg border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                  >
-                    詳細
-                  </button>
+                <td className="sticky left-0 z-10 flex bg-white py-1 sm:table-cell sm:w-[156px] sm:px-3 sm:py-2">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      aria-label={`${r.id} の詳細`}
+                      onClick={() => props.onOpenRow(r.id)}
+                      className="min-h-[44px] min-w-[72px] rounded-lg border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                      詳細
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`${r.id} の友だち詳細`}
+                      title={r.friendId ? '友だち詳細を開く' : 'LINE未連携'}
+                      disabled={!r.friendId}
+                      onClick={() => {
+                        if (r.friendId) props.onOpenFriend(r.friendId)
+                      }}
+                      className="min-h-[44px] min-w-[64px] rounded-lg border border-emerald-300 bg-white px-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+                    >
+                      友だち
+                    </button>
+                  </div>
                 </td>
                 {isOwner && (
                   <td className="flex min-h-[32px] items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">

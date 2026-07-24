@@ -345,6 +345,7 @@ export type FriendListParams = {
   limit?: string | number
   tagId?: string
   accountId?: string
+  friendId?: string
   search?: string
   /**
    * `false` でタグ enrich をスキップ。autocomplete 等で displayName/picture
@@ -612,6 +613,7 @@ export const api = {
       if (params?.limit) query.limit = String(params.limit)
       if (params?.tagId) query.tagId = params.tagId
       if (params?.accountId) query.lineAccountId = params.accountId
+      if (params?.friendId) query.friendId = params.friendId
       if (params?.search) query.search = params.search
       if (params?.includeTags === false) query.includeTags = 'false'
       if (params?.includeChatStatus) query.includeChatStatus = 'true'
