@@ -46,10 +46,20 @@ const mocks = vi.hoisted(() => ({
   staffSendTest: vi.fn(),
   staffIssueLineLinkCode: vi.fn(),
   staffUnlinkLine: vi.fn(),
+  chatReplyGet: vi.fn(),
+  chatReplyUpdate: vi.fn(),
 }))
 
 vi.mock('@/contexts/account-context', () => ({
   useAccount: () => mocks.account,
+}))
+vi.mock('@/lib/api', () => ({
+  api: {
+    accountSettings: {
+      getChatReplySettings: (...args: unknown[]) => mocks.chatReplyGet(...args),
+      updateChatReplySettings: (...args: unknown[]) => mocks.chatReplyUpdate(...args),
+    },
+  },
 }))
 vi.mock('@/components/layout/header', () => ({
   default: ({ title, description }: { title: string; description: string }) => (
@@ -140,6 +150,7 @@ let destinationsByAccount: Record<string, Array<{
   unsupported: boolean
   setupState: null
 }>>
+let chatReplyNamesByAccount: Record<string, string>
 
 beforeEach(() => {
   mocks.account.selectedAccountId = 'account-1'
@@ -157,6 +168,10 @@ beforeEach(() => {
   destinationsByAccount = {
     'account-1': [],
     'account-2': [],
+  }
+  chatReplyNamesByAccount = {
+    'account-1': 'メイン受付',
+    'account-2': 'サブ受付',
   }
 
   mocks.emailGet.mockReset().mockImplementation(async (accountId: string) => ({
@@ -236,6 +251,20 @@ beforeEach(() => {
     expiresAt: '2026-07-23T12:00:00.000Z',
   })
   mocks.staffUnlinkLine.mockReset().mockResolvedValue(undefined)
+  mocks.chatReplyGet.mockReset().mockImplementation(async (accountId: string) => ({
+    success: true,
+    data: { defaultReplyName: chatReplyNamesByAccount[accountId] ?? '' },
+  }))
+  mocks.chatReplyUpdate.mockReset().mockImplementation(async (
+    accountId: string,
+    defaultReplyName: string,
+  ) => {
+    chatReplyNamesByAccount[accountId] = defaultReplyName
+    return {
+      success: true,
+      data: { defaultReplyName },
+    }
+  })
 })
 
 afterEach(() => cleanup())
@@ -246,6 +275,36 @@ describe('設定ページ', () => {
 
     expect(screen.getByRole('heading', { level: 1, name: '通知設定' })).toBeTruthy()
     expect(screen.queryByRole('heading', { level: 1, name: '設定' })).toBeNull()
+  })
+
+  test('チャット返信の名乗りは左上で選択中のアカウントだけを読み書きする', async () => {
+    const view = render(<SettingsPage />)
+
+    expect(screen.queryByLabelText('設定する LINE アカウント')).toBeNull()
+    expect(mocks.account.setSelectedAccountId).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', {
+      name: 'チャット返信の名乗りを開く',
+    }))
+
+    await waitFor(() => expect(mocks.chatReplyGet).toHaveBeenCalledWith('account-1'))
+    expect((screen.getByLabelText('既定の返信者名') as HTMLInputElement).value)
+      .toBe('メイン受付')
+    fireEvent.change(screen.getByLabelText('既定の返信者名'), {
+      target: { value: '保存後メイン受付' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '返信者名を保存' }))
+    await waitFor(() => expect(mocks.chatReplyUpdate).toHaveBeenCalledWith(
+      'account-1',
+      '保存後メイン受付',
+    ))
+
+    mocks.account.selectedAccountId = 'account-2'
+    view.rerender(<SettingsPage />)
+    await waitFor(() => expect(mocks.chatReplyGet).toHaveBeenCalledWith('account-2'))
+    await waitFor(() => {
+      expect((screen.getByLabelText('既定の返信者名') as HTMLInputElement).value)
+        .toBe('サブ受付')
+    })
   })
 
   test('独自のアカウント選択を出さず、左上の選択中アカウントに両設定が追随する', async () => {

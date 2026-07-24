@@ -2,11 +2,12 @@
 
 import { useState } from 'react'
 import Header from '@/components/layout/header'
+import ChatReplySettingsPanel from '@/components/settings/chat-reply-settings-panel'
 import EmailSenderSettingsPanel from '@/components/settings/email-sender-settings-panel'
 import StaffNotificationSettingsPanel from '@/components/settings/staff-notification-settings-panel'
 import { useAccount } from '@/contexts/account-context'
 
-type SettingsSection = 'email-sender' | 'staff-notification'
+type SettingsSection = 'email-sender' | 'staff-notification' | 'chat-reply'
 
 const settingsSections: Array<{
   id: SettingsSection
@@ -23,6 +24,11 @@ const settingsSections: Array<{
     label: 'スタッフ通知',
     description: '問い合わせや申込みを Chatwork・LINE へ通知します。',
   },
+  {
+    id: 'chat-reply',
+    label: 'チャット返信の名乗り',
+    description: '返信文の先頭に付ける既定の返信者名を設定します。',
+  },
 ]
 
 export default function SettingsPage() {
@@ -37,13 +43,13 @@ export default function SettingsPage() {
     <div>
       <Header
         title="通知設定"
-        description="左上で選択中の LINE アカウントについて、メール差出人とスタッフ通知を設定します。"
+        description="左上で選択中の LINE アカウントについて、メール差出人・スタッフ通知・チャット返信を設定します。"
       />
 
       <div
         role="group"
         aria-label="設定項目"
-        className="mb-6 grid gap-3 sm:grid-cols-2"
+        className="mb-6 grid gap-3 sm:grid-cols-3"
       >
         {settingsSections.map((section) => {
           const active = section.id === activeSection
@@ -79,8 +85,10 @@ export default function SettingsPage() {
       >
         {activeSection === 'email-sender' ? (
           <EmailSenderSettingsPanel accountId={selectedAccountId} />
-        ) : (
+        ) : activeSection === 'staff-notification' ? (
           <StaffNotificationSettingsPanel accountId={selectedAccountId} />
+        ) : (
+          <ChatReplySettingsPanel accountId={selectedAccountId} />
         )}
       </section>
     </div>

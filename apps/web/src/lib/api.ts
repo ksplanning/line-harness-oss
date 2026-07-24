@@ -133,6 +133,10 @@ export interface TestRecipient {
   pictureUrl: string | null
 }
 
+export interface ChatReplySettings {
+  defaultReplyName: string
+}
+
 export interface TestSendResult {
   success: boolean
   sent?: number
@@ -941,6 +945,15 @@ export const api = {
   },
 
   accountSettings: {
+    getChatReplySettings: (accountId: string) =>
+      fetchApi<ApiResponse<ChatReplySettings>>(
+        `/api/account-settings/chat-reply?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    updateChatReplySettings: (accountId: string, defaultReplyName: string) =>
+      fetchApi<ApiResponse<ChatReplySettings>>('/api/account-settings/chat-reply', {
+        method: 'PUT',
+        body: JSON.stringify({ accountId, defaultReplyName }),
+      }),
     getTestRecipients: (accountId: string) =>
       fetchApi<ApiResponse<TestRecipient[]>>(
         `/api/account-settings/test-recipients?accountId=${encodeURIComponent(accountId)}`,
