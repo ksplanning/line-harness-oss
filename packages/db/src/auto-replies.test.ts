@@ -133,3 +133,41 @@ describe('auto-replies response_messages additive persistence', () => {
     }));
   });
 });
+
+describe('auto-replies ordered reply actions persistence', () => {
+  const actionsJson = JSON.stringify([
+    { type: 'add_tag', tagId: 'tag-new' },
+    { type: 'remove_tag', tagId: 'tag-old' },
+    { type: 'set_field', fieldId: 'field-status', value: '済' },
+    { type: 'clear_field', fieldId: 'field-note' },
+  ]);
+
+  test('create/read preserves order, unrelated updates preserve the value, and explicit [] clears it', async () => {
+    const created = await createAutoReply(db, {
+      keyword: '申込',
+      responseType: 'text',
+      responseContent: '受け付けました',
+      onReplyActionsJson: actionsJson,
+    } as CreateAutoReplyInput & { onReplyActionsJson: string });
+
+    expect((await getAutoReplyById(db, created.id))?.on_reply_actions_json).toBe(actionsJson);
+
+    await updateAutoReply(db, created.id, { keyword: '申込完了' });
+    expect((await getAutoReplyById(db, created.id))?.on_reply_actions_json).toBe(actionsJson);
+
+    await updateAutoReply(db, created.id, {
+      onReplyActionsJson: '[]',
+    } as UpdateAutoReplyInput & { onReplyActionsJson: string });
+    expect((await getAutoReplyById(db, created.id))?.on_reply_actions_json).toBe('[]');
+  });
+
+  test('omitted reply actions remain NULL for legacy-compatible rules', async () => {
+    const created = await createAutoReply(db, {
+      keyword: '従来ルール',
+      responseType: 'text',
+      responseContent: '従来本文',
+    });
+
+    expect((await getAutoReplyById(db, created.id))?.on_reply_actions_json).toBeNull();
+  });
+});

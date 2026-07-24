@@ -10,6 +10,7 @@ export interface AutoReply {
   response_type: string;
   response_content: string;
   response_messages: string | null;
+  on_reply_actions_json: string | null;
   template_id: string | null;
   line_account_id: string | null;
   keep_in_unresponded: number;
@@ -57,6 +58,7 @@ export interface CreateAutoReplyInput {
   responseType?: string;
   responseContent: string;
   responseMessages?: AutoReplyResponseMessage[] | null;
+  onReplyActionsJson?: string | null;
   templateId?: string | null;
   lineAccountId?: string | null;
   keepInUnresponded?: boolean;
@@ -74,8 +76,8 @@ export async function createAutoReply(
     .prepare(
       `INSERT INTO auto_replies
          (id, keyword, match_type, response_type, response_content, response_messages,
-          template_id, line_account_id, keep_in_unresponded, is_active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+          on_reply_actions_json, template_id, line_account_id, keep_in_unresponded, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     )
     .bind(
       id,
@@ -86,6 +88,7 @@ export async function createAutoReply(
       input.responseMessages === undefined || input.responseMessages === null
         ? null
         : JSON.stringify(input.responseMessages),
+      input.onReplyActionsJson ?? null,
       firstMessage ? null : (input.templateId ?? null),
       input.lineAccountId ?? null,
       input.keepInUnresponded ? 1 : 0,
@@ -102,6 +105,7 @@ export interface UpdateAutoReplyInput {
   responseType?: string;
   responseContent?: string;
   responseMessages?: AutoReplyResponseMessage[] | null;
+  onReplyActionsJson?: string | null;
   templateId?: string | null;
   lineAccountId?: string | null;
   keepInUnresponded?: boolean;
@@ -130,6 +134,7 @@ export async function updateAutoReply(
            response_type = ?,
            response_content = ?,
            response_messages = ?,
+           on_reply_actions_json = ?,
            template_id = ?,
            line_account_id = ?,
            keep_in_unresponded = ?,
@@ -143,6 +148,9 @@ export async function updateAutoReply(
       firstMessage?.messageType ?? input.responseType ?? existing.response_type,
       firstMessage?.messageContent ?? input.responseContent ?? existing.response_content,
       responseMessages,
+      'onReplyActionsJson' in input
+        ? (input.onReplyActionsJson ?? null)
+        : existing.on_reply_actions_json,
       firstMessage ? null : ('templateId' in input ? (input.templateId ?? null) : existing.template_id),
       'lineAccountId' in input ? (input.lineAccountId ?? null) : existing.line_account_id,
       'keepInUnresponded' in input

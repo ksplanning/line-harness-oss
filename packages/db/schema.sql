@@ -229,6 +229,14 @@ CREATE TABLE IF NOT EXISTS auto_replies (
   response_type    TEXT NOT NULL DEFAULT 'text',
   response_content TEXT NOT NULL,
   response_messages TEXT,
+  on_reply_actions_json TEXT DEFAULT NULL
+                        CHECK (
+                          on_reply_actions_json IS NULL
+                          OR (
+                            json_valid(on_reply_actions_json)
+                            AND json_type(on_reply_actions_json) = 'array'
+                          )
+                        ),
   template_id      TEXT REFERENCES templates(id) ON DELETE SET NULL,
   line_account_id  TEXT DEFAULT NULL,
   keep_in_unresponded INTEGER NOT NULL DEFAULT 0,
