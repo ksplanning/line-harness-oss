@@ -1,12 +1,15 @@
 import {
+  claimInternalFormExternalEditNotification,
   getFormalooForm,
   getFriendById,
   getInternalFormNotificationSettings,
   getInternalFormSubmission,
   getLineAccountById,
   jstNow,
+  type InternalFormExternalEditChange,
 } from '@line-crm/db';
 import {
+  formatInternalSubmissionNotificationAnswer,
   getInternalSubmissionNotificationAnswerFields,
   renderInternalSubmissionNotification,
 } from '@line-crm/shared';
@@ -161,6 +164,10 @@ type LineTarget =
   | { ok: true; friend: ResolvedFriend }
   | { ok: false; reason: string };
 
+type LineAccessToken =
+  | { ok: true; accessToken: string }
+  | { ok: false; reason: 'missing_line_account' };
+
 async function resolveLineTarget(
   env: InternalSubmissionNotificationEnv,
   form: { line_account_id: string | null },
@@ -181,24 +188,31 @@ async function resolveLineTarget(
   return { ok: true, friend };
 }
 
+async function resolveLineAccessToken(
+  env: InternalSubmissionNotificationEnv,
+  friend: ResolvedFriend,
+): Promise<LineAccessToken> {
+  if (!friend.line_account_id) return { ok: true, accessToken: env.LINE_CHANNEL_ACCESS_TOKEN };
+
+  const account = await getLineAccountById(env.DB, friend.line_account_id);
+  if (!account || account.is_active !== 1 || !account.channel_access_token) {
+    return { ok: false, reason: 'missing_line_account' };
+  }
+  return { ok: true, accessToken: account.channel_access_token };
+}
+
 async function deliverLine(
   env: InternalSubmissionNotificationEnv,
   friend: ResolvedFriend,
   text: string,
   editUrl: string,
 ): Promise<InternalSubmissionChannelResult> {
-  let accessToken = env.LINE_CHANNEL_ACCESS_TOKEN;
-  if (friend.line_account_id) {
-    const account = await getLineAccountById(env.DB, friend.line_account_id);
-    if (!account || account.is_active !== 1 || !account.channel_access_token) {
-      return { status: 'skipped', reason: 'missing_line_account' };
-    }
-    accessToken = account.channel_access_token;
-  }
+  const token = await resolveLineAccessToken(env, friend);
+  if (!token.ok) return { status: 'skipped', reason: token.reason };
 
   const messages = splitLineText(text, editUrl);
   try {
-    await new LineClient(accessToken).pushMessage(friend.line_user_id, messages);
+    await new LineClient(token.accessToken).pushMessage(friend.line_user_id, messages);
   } catch {
     return { status: 'failed', reason: 'line_push_failed' };
   }
@@ -308,4 +322,171 @@ export async function notifyInternalFormSubmission(
   });
 
   return { line, email };
+}
+
+export type InternalFormExternalEditNotificationResult =
+  | { status: 'sent'; channel: 'line' | 'email' }
+  | { status: 'failed'; channel: 'line' | 'email'; reason: string }
+  | { status: 'skipped'; reason: string };
+
+const EXTERNAL_EDIT_MAX_CHANGES = 12;
+const EXTERNAL_EDIT_MAX_LABEL_CODE_UNITS = 60;
+const EXTERNAL_EDIT_MAX_VALUE_CODE_UNITS = 120;
+
+function parseExternalEditChanges(value: string | null): InternalFormExternalEditChange[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((change): change is InternalFormExternalEditChange => {
+      if (!change || typeof change !== 'object' || Array.isArray(change)) return false;
+      const record = change as Record<string, unknown>;
+      return typeof record.fieldId === 'string'
+        && record.fieldId.length > 0
+        && Object.prototype.hasOwnProperty.call(record, 'before')
+        && Object.prototype.hasOwnProperty.call(record, 'after');
+    });
+  } catch {
+    return [];
+  }
+}
+
+function truncateExternalEditText(value: string, maxCodeUnits: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxCodeUnits) return normalized;
+  return `${normalized.slice(0, chunkEnd(normalized, 0, maxCodeUnits - 1))}…`;
+}
+
+function renderExternalEditSummary(
+  changes: readonly InternalFormExternalEditChange[],
+  definition: ReturnType<typeof parseInternalFormDefinition> & { ok: true },
+): string | null {
+  const fields = new Map(
+    getInternalSubmissionNotificationAnswerFields(definition.definition.fields)
+      .map((field) => [field.id, field]),
+  );
+  const eligibleChanges = changes.flatMap((change) => {
+    const field = fields.get(change.fieldId);
+    return field ? [{ change, field }] : [];
+  });
+  if (eligibleChanges.length === 0) return null;
+
+  const displayed = eligibleChanges.slice(0, EXTERNAL_EDIT_MAX_CHANGES);
+  const lines = displayed.map(({ change, field }) => {
+    const label = truncateExternalEditText(
+      field.label.trim() || field.id,
+      EXTERNAL_EDIT_MAX_LABEL_CODE_UNITS,
+    );
+    const before = truncateExternalEditText(
+      formatInternalSubmissionNotificationAnswer(change.before, field),
+      EXTERNAL_EDIT_MAX_VALUE_CODE_UNITS,
+    );
+    const after = truncateExternalEditText(
+      formatInternalSubmissionNotificationAnswer(change.after, field),
+      EXTERNAL_EDIT_MAX_VALUE_CODE_UNITS,
+    );
+    return `・${label}:「${before}」→「${after}」`;
+  });
+  if (eligibleChanges.length > displayed.length) {
+    lines.push(`・ほか${eligibleChanges.length - displayed.length}件の変更`);
+  }
+  return [
+    'ご回答の編集を受け付けました。',
+    ...lines,
+    '以上の内容で更新済みです。',
+  ].join('\n');
+}
+
+export async function notifyInternalFormExternalEdit(
+  env: InternalSubmissionNotificationEnv,
+  input: {
+    formId: string;
+    submissionId: string;
+    externalEditedAt: string;
+    expectedEditVersion: number;
+  },
+): Promise<InternalFormExternalEditNotificationResult> {
+  const [form, submission, settings] = await Promise.all([
+    getFormalooForm(env.DB, input.formId),
+    getInternalFormSubmission(env.DB, input.formId, input.submissionId),
+    getInternalFormNotificationSettings(env.DB, input.formId),
+  ]);
+  if (
+    !form
+    || !submission
+    || submission.form_id !== form.id
+    || form.deleted === 1
+    || form.render_backend !== 'internal'
+    || form.builder_status !== 'published'
+    || submission.external_edit_source !== 'edit_link'
+    || submission.external_edited_at !== input.externalEditedAt
+    || submission.edit_version !== input.expectedEditVersion
+  ) {
+    return { status: 'skipped', reason: 'ineligible_edit' };
+  }
+
+  const changes = parseExternalEditChanges(submission.external_edit_changes_json);
+  if (changes.length === 0) return { status: 'skipped', reason: 'no_changes' };
+  const definition = parseInternalFormDefinition(form.definition_json);
+  if (!definition.ok) return { status: 'skipped', reason: 'invalid_definition' };
+
+  const lineTarget = await resolveLineTarget(env, form, submission);
+  const text = renderExternalEditSummary(changes, definition);
+  if (!text) return { status: 'skipped', reason: 'no_changes' };
+  if (lineTarget.ok) {
+    const token = await resolveLineAccessToken(env, lineTarget.friend);
+    if (!token.ok) return { status: 'skipped', reason: token.reason };
+    const claimed = await claimInternalFormExternalEditNotification(env.DB, {
+      ...input,
+    });
+    if (!claimed) return { status: 'skipped', reason: 'duplicate' };
+
+    try {
+      await new LineClient(token.accessToken).pushTextMessage(
+        lineTarget.friend.line_user_id,
+        text,
+      );
+      return { status: 'sent', channel: 'line' };
+    } catch {
+      console.error('internal form edit LINE notification failed');
+      return { status: 'failed', channel: 'line', reason: 'line_push_failed' };
+    }
+  }
+
+  if (!settings?.recipientEmailFieldId) {
+    return { status: 'skipped', reason: 'no_email_field' };
+  }
+  const recipientField = getInternalSubmissionNotificationAnswerFields(
+    definition.definition.fields,
+  ).find((field) => field.id === settings.recipientEmailFieldId && field.type === 'email');
+  if (!recipientField) return { status: 'skipped', reason: 'invalid_recipient_field' };
+  const answers = parseAnswers(submission.answers_json);
+  if (!answers) return { status: 'skipped', reason: 'invalid_answers' };
+  const recipient = respondentEmail(answers[recipientField.id]);
+  if (!recipient) return { status: 'skipped', reason: 'invalid_recipient' };
+
+  const claimed = await claimInternalFormExternalEditNotification(env.DB, {
+    ...input,
+  });
+  if (!claimed) return { status: 'skipped', reason: 'duplicate' };
+  let result: Awaited<ReturnType<typeof sendEditMail>>;
+  try {
+    result = await sendEditMail(env, {
+      to: recipient,
+      subject: `【${form.title}】回答の編集を受け付けました`,
+      text,
+      idempotencyKey:
+        `internal-form-external-edit/${submission.id}/${input.externalEditedAt}/${input.expectedEditVersion}`,
+      lineAccountId: form.line_account_id,
+    });
+  } catch {
+    console.error('internal form edit email notification failed');
+    return { status: 'failed', channel: 'email', reason: 'email_send_failed' };
+  }
+  if (result.status === 'sent') return { status: 'sent', channel: 'email' };
+  if (result.status === 'failed') {
+    console.error('internal form edit email notification failed');
+    return { status: 'failed', channel: 'email', reason: result.error };
+  }
+  return { status: 'skipped', reason: result.reason };
 }

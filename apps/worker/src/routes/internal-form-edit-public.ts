@@ -21,6 +21,7 @@ import {
   type InternalFormEditTokenBinding,
 } from '../services/internal-form-edit.js';
 import { syncSheetsAfterFormMutation } from '../services/sheets-sync-jobs.js';
+import { notifyInternalFormExternalEdit } from '../services/internal-submission-notifier.js';
 import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
 import {
   JAPAN_PREFECTURES,
@@ -42,6 +43,34 @@ import { renderInternalFormSubmitLock } from '../lib/internal-form-submit-lock.j
 import type { Env } from '../index.js';
 
 export const internalFormEditPublic = new Hono<Env>();
+
+function queueExternalEditNotification(
+  c: Context<Env>,
+  input: {
+    formId: string;
+    submissionId: string;
+    externalEditedAt: string;
+    expectedEditVersion: number;
+  },
+): void {
+  let work: Promise<unknown>;
+  try {
+    work = notifyInternalFormExternalEdit(c.env, input).catch(() => {
+      console.error('internal form external edit notification failed');
+    });
+  } catch {
+    console.error('internal form external edit notification failed');
+    return;
+  }
+
+  try {
+    c.executionCtx.waitUntil(work);
+  } catch {
+    // Direct Hono invocation can omit ExecutionContext. The promise already
+    // has a rejection handler and can still finish without blocking.
+    void work;
+  }
+}
 
 function queueSheetsSyncAfterRespondentEdit(
   c: Context<Env>,
@@ -676,7 +705,17 @@ function parseEditVersion(value: EditBody[string] | undefined): number | null {
 }
 
 function jsonEqual(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  const fieldIds = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const fieldId of fieldIds) {
+    if (
+      !Object.prototype.hasOwnProperty.call(left, fieldId)
+      || !Object.prototype.hasOwnProperty.call(right, fieldId)
+      || JSON.stringify(left[fieldId]) !== JSON.stringify(right[fieldId])
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 const SAFE_ATTACHMENT_MIME = /^[a-zA-Z0-9][a-zA-Z0-9!#$&^_.+-]{0,126}\/[a-zA-Z0-9][a-zA-Z0-9!#$&^_.+-]{0,126}$/;
@@ -938,6 +977,14 @@ internalFormEditPublic.post('/ife/:token', async (c) => {
       || !jsonEqual(parseAnswers(readback.answers_json), merged)
     ) {
       throw new Error('internal form edit read-back mismatch');
+    }
+    if (!adminOrigin && !jsonEqual(storedAnswers, merged) && readback.external_edited_at) {
+      queueExternalEditNotification(c, {
+        formId: resolved.value.payload.formId,
+        submissionId: readback.id,
+        externalEditedAt: readback.external_edited_at,
+        expectedEditVersion: readback.edit_version,
+      });
     }
     queueSheetsSyncAfterRespondentEdit(c, resolved.value.form, readback.id);
     return c.html(renderSuccessPage(), 200, PRIVATE_HEADERS);

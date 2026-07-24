@@ -6,6 +6,7 @@ const dbMocks = vi.hoisted(() => ({
   getLineAccountById: vi.fn(),
   getInternalFormSubmission: vi.fn(),
   getInternalFormNotificationSettings: vi.fn(),
+  claimInternalFormExternalEditNotification: vi.fn(),
 }));
 
 vi.mock('@line-crm/db', async () => {
@@ -13,9 +14,15 @@ vi.mock('@line-crm/db', async () => {
   return { ...actual, ...dbMocks };
 });
 
-const lineMocks = vi.hoisted(() => ({ pushMessage: vi.fn() }));
+const lineMocks = vi.hoisted(() => ({
+  pushMessage: vi.fn(),
+  pushTextMessage: vi.fn(),
+}));
 vi.mock('@line-crm/line-sdk', () => ({
-  LineClient: vi.fn().mockImplementation(() => ({ pushMessage: lineMocks.pushMessage })),
+  LineClient: vi.fn().mockImplementation(() => ({
+    pushMessage: lineMocks.pushMessage,
+    pushTextMessage: lineMocks.pushTextMessage,
+  })),
 }));
 
 const mailMocks = vi.hoisted(() => ({ sendEditMail: vi.fn() }));
@@ -26,6 +33,7 @@ vi.mock('./edit-mail-sender.js', async () => {
 
 import { LineClient } from '@line-crm/line-sdk';
 import { notifyInternalFormSubmission } from './internal-submission-notifier.js';
+import * as notifierModule from './internal-submission-notifier.js';
 
 const dbStatement = {
   bind: vi.fn().mockReturnThis(),
@@ -122,7 +130,9 @@ beforeEach(() => {
   dbMocks.getInternalFormNotificationSettings.mockResolvedValue(settings);
   dbMocks.getFriendById.mockResolvedValue(null);
   dbMocks.getLineAccountById.mockResolvedValue(null);
+  dbMocks.claimInternalFormExternalEditNotification.mockResolvedValue(true);
   lineMocks.pushMessage.mockResolvedValue(undefined);
+  lineMocks.pushTextMessage.mockResolvedValue(undefined);
   mailMocks.sendEditMail.mockResolvedValue({
     status: 'sent',
     providerMessageId: 'mail-1',
@@ -467,5 +477,396 @@ describe('notifyInternalFormSubmission channel and recipient boundary', () => {
         email: { status: 'skipped', reason: 'invalid_recipient' },
       });
     expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+  });
+});
+
+describe('notifyInternalFormExternalEdit', () => {
+  function externalEditSubmission(
+    externalEditedAt: string,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      ...baseSubmission,
+      external_edit_source: 'edit_link',
+      external_edited_at: externalEditedAt,
+      external_edit_changes_json: JSON.stringify([
+        { fieldId: 'name', before: '以前の名前', after: '新しい名前' },
+      ]),
+      ...overrides,
+    };
+  }
+
+  function mockExternalEditLineTarget(lineAccountId: string | null = 'account-1'): void {
+    dbMocks.getFriendById.mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U_RESPONDENT',
+      display_name: '山田花子',
+      line_account_id: lineAccountId,
+      is_following: 1,
+    });
+    if (lineAccountId) {
+      dbMocks.getLineAccountById.mockResolvedValue({
+        id: lineAccountId,
+        channel_access_token: `${lineAccountId}-token`,
+        is_active: 1,
+      });
+    }
+  }
+
+  test('LINE連携済みの回答者へアカウントAのtokenで変更サマリを1通だけ送る', async () => {
+    type NotifyExternalEdit = (
+      value: ReturnType<typeof env>,
+      input: {
+        formId: string;
+        submissionId: string;
+        externalEditedAt: string;
+        expectedEditVersion: number;
+      },
+    ) => Promise<unknown>;
+    const notify = (notifierModule as unknown as {
+      notifyInternalFormExternalEdit?: NotifyExternalEdit;
+    }).notifyInternalFormExternalEdit;
+    expect(notify).toEqual(expect.any(Function));
+    if (!notify) return;
+
+    const externalEditedAt = '2026-07-24T13:00:00.001+09:00';
+    dbMocks.getInternalFormSubmission.mockResolvedValue({
+      ...baseSubmission,
+      origin_channel: 'line',
+      friend_id: 'friend-1',
+      answers_json: JSON.stringify({
+        name: '新しい名前',
+        email: 'hanako@example.test',
+      }),
+      external_edit_source: 'edit_link',
+      external_edited_at: externalEditedAt,
+      external_edit_changes_json: JSON.stringify([
+        { fieldId: 'name', before: '以前の名前', after: '新しい名前' },
+      ]),
+    });
+    dbMocks.getFriendById.mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U_RESPONDENT',
+      display_name: '山田花子',
+      line_account_id: 'account-1',
+      is_following: 1,
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({
+      id: 'account-1',
+      channel_access_token: 'account-a-token',
+      is_active: 1,
+    });
+
+    await expect(notify(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'sent', channel: 'line' });
+    expect(dbMocks.claimInternalFormExternalEditNotification).toHaveBeenCalledWith(DB, {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    });
+    expect(LineClient).toHaveBeenCalledWith('account-a-token');
+    expect(lineMocks.pushTextMessage).toHaveBeenCalledTimes(1);
+    expect(lineMocks.pushTextMessage).toHaveBeenCalledWith(
+      'U_RESPONDENT',
+      expect.stringMatching(
+        /ご回答の編集を受け付けました。[\s\S]+・お名前:「以前の名前」→「新しい名前」[\s\S]+以上の内容で更新済みです。/,
+      ),
+    );
+    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+  });
+
+  test('LINE未連携で設定済みメールがある回答者へ変更サマリを1通だけ送る', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.002+09:00';
+    dbMocks.getInternalFormSubmission.mockResolvedValue({
+      ...baseSubmission,
+      answers_json: JSON.stringify({
+        name: '新しい名前',
+        email: 'updated@example.test',
+        other_email: 'third-party@example.test',
+      }),
+      external_edit_source: 'edit_link',
+      external_edited_at: externalEditedAt,
+      external_edit_changes_json: JSON.stringify([
+        { fieldId: 'name', before: '以前の名前', after: '新しい名前' },
+      ]),
+    });
+    const notify = (notifierModule as typeof notifierModule & {
+      notifyInternalFormExternalEdit: (
+        value: ReturnType<typeof env>,
+        input: {
+          formId: string;
+          submissionId: string;
+          externalEditedAt: string;
+          expectedEditVersion: number;
+        },
+      ) => Promise<unknown>;
+    }).notifyInternalFormExternalEdit;
+
+    await expect(notify(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'sent', channel: 'email' });
+    expect(lineMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).toHaveBeenCalledTimes(1);
+    expect(mailMocks.sendEditMail).toHaveBeenCalledWith(
+      expect.objectContaining({ FORM_EDIT_MAIL_ENABLED: 'true' }),
+      {
+        to: 'updated@example.test',
+        subject: '【参加申込】回答の編集を受け付けました',
+        text: expect.stringMatching(
+          /ご回答の編集を受け付けました。[\s\S]+・お名前:「以前の名前」→「新しい名前」[\s\S]+以上の内容で更新済みです。/,
+        ),
+        idempotencyKey: `internal-form-external-edit/ifs-1/${externalEditedAt}/0`,
+        lineAccountId: 'account-1',
+      },
+    );
+    expect(JSON.stringify(mailMocks.sendEditMail.mock.calls)).not.toContain('third-party@example.test');
+  });
+
+  test('メール送信がthrowしても通知処理はrejectせず失敗結果だけを返す', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.003+09:00';
+    dbMocks.getInternalFormSubmission.mockResolvedValue({
+      ...baseSubmission,
+      external_edit_source: 'edit_link',
+      external_edited_at: externalEditedAt,
+      external_edit_changes_json: JSON.stringify([
+        { fieldId: 'name', before: '以前の名前', after: '新しい名前' },
+      ]),
+    });
+    mailMocks.sendEditMail.mockRejectedValueOnce(new Error('provider down'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({
+      status: 'failed',
+      channel: 'email',
+      reason: 'email_send_failed',
+    });
+    expect(error).toHaveBeenCalledWith('internal form edit email notification failed');
+    expect(lineMocks.pushTextMessage).not.toHaveBeenCalled();
+  });
+
+  test('変更値は既存の安全な表示形式で整形し、定義外項目と長文を通知へ漏らさない', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.004+09:00';
+    dbMocks.getFormalooForm.mockResolvedValue({
+      ...form,
+      definition_json: JSON.stringify({
+        fields: [
+          { id: 'attachment', type: 'file', label: '添付', required: false, position: 0, config: {} },
+          { id: 'signature', type: 'signature', label: '署名', required: false, position: 1, config: {} },
+          { id: 'note', type: 'textarea', label: '備考', required: false, position: 2, config: {} },
+        ],
+        logic: [],
+      }),
+    });
+    dbMocks.getInternalFormSubmission.mockResolvedValue({
+      ...baseSubmission,
+      friend_id: 'friend-1',
+      origin_channel: 'line',
+      external_edit_source: 'edit_link',
+      external_edited_at: externalEditedAt,
+      external_edit_changes_json: JSON.stringify([
+        {
+          fieldId: 'attachment',
+          before: [{ name: 'old.pdf', key: 'private/old-key' }],
+          after: [{ name: 'new.pdf', key: 'private/new-key' }],
+        },
+        {
+          fieldId: 'signature',
+          before: 'data:image/png;base64,old-secret',
+          after: 'data:image/png;base64,new-secret',
+        },
+        { fieldId: 'note', before: '短い備考', after: 'あ'.repeat(6_000) },
+        { fieldId: 'removed-field', before: 'hidden-before', after: 'hidden-after' },
+      ]),
+    });
+    dbMocks.getFriendById.mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U_RESPONDENT',
+      display_name: '山田花子',
+      line_account_id: 'account-1',
+      is_following: 1,
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({
+      id: 'account-1',
+      channel_access_token: 'account-a-token',
+      is_active: 1,
+    });
+
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'sent', channel: 'line' });
+
+    const text = lineMocks.pushTextMessage.mock.calls[0]?.[1] as string;
+    expect(text).toContain('old.pdf');
+    expect(text).toContain('new.pdf');
+    expect(text).toContain('署名:「署名済み」→「署名済み」');
+    expect(text).toContain('…');
+    expect(text.length).toBeLessThanOrEqual(5_000);
+    expect(text).not.toContain('private/');
+    expect(text).not.toContain('data:image');
+    expect(text).not.toContain('hidden-before');
+    expect(text).not.toContain('hidden-after');
+  });
+
+  test('変更ゼロならclaimも外部送信も行わない', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.005+09:00';
+    dbMocks.getInternalFormSubmission.mockResolvedValue(externalEditSubmission(
+      externalEditedAt,
+      { external_edit_changes_json: '[]' },
+    ));
+
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'skipped', reason: 'no_changes' });
+    expect(dbMocks.claimInternalFormExternalEditNotification).not.toHaveBeenCalled();
+    expect(lineMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+  });
+
+  test('LINEも本人メールもない場合は保存済み編集を通知せず終了する', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.006+09:00';
+    dbMocks.getInternalFormSubmission.mockResolvedValue(externalEditSubmission(
+      externalEditedAt,
+      { answers_json: JSON.stringify({ name: '新しい名前', email: '' }) },
+    ));
+
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'skipped', reason: 'invalid_recipient' });
+    expect(dbMocks.claimInternalFormExternalEditNotification).not.toHaveBeenCalled();
+    expect(lineMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+  });
+
+  test('同じexternal_edited_atを二度処理してもatomic claimによりLINEは合計1通だけ送る', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.007+09:00';
+    dbMocks.getInternalFormSubmission.mockResolvedValue(externalEditSubmission(
+      externalEditedAt,
+      { origin_channel: 'line', friend_id: 'friend-1' },
+    ));
+    mockExternalEditLineTarget();
+    dbMocks.claimInternalFormExternalEditNotification
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'sent', channel: 'line' });
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'skipped', reason: 'duplicate' });
+    expect(dbMocks.claimInternalFormExternalEditNotification).toHaveBeenCalledTimes(2);
+    expect(lineMocks.pushTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('保存時に固定したedit_versionより新しい行を旧通知ジョブがclaimしない', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.007+09:00';
+    dbMocks.getInternalFormSubmission.mockResolvedValue(externalEditSubmission(
+      externalEditedAt,
+      { edit_version: 1 },
+    ));
+
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'skipped', reason: 'ineligible_edit' });
+    expect(dbMocks.claimInternalFormExternalEditNotification).not.toHaveBeenCalled();
+    expect(lineMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+  });
+
+  test('LINE送信失敗はメールへ重複フォールバックせず失敗結果だけを返す', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.008+09:00';
+    dbMocks.getInternalFormSubmission.mockResolvedValue(externalEditSubmission(
+      externalEditedAt,
+      { origin_channel: 'line', friend_id: 'friend-1' },
+    ));
+    mockExternalEditLineTarget();
+    lineMocks.pushTextMessage.mockRejectedValueOnce(new Error('LINE down'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({
+      status: 'failed',
+      channel: 'line',
+      reason: 'line_push_failed',
+    });
+    expect(error).toHaveBeenCalledWith('internal form edit LINE notification failed');
+    expect(mailMocks.sendEditMail).not.toHaveBeenCalled();
+  });
+
+  test('アカウントBのfriendをAのformへ流用せず、Aの差出人設定でメールだけ送る', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.009+09:00';
+    dbMocks.getInternalFormSubmission.mockResolvedValue(externalEditSubmission(
+      externalEditedAt,
+      { origin_channel: 'line', friend_id: 'friend-b' },
+    ));
+    mockExternalEditLineTarget('account-b');
+
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'sent', channel: 'email' });
+    expect(LineClient).not.toHaveBeenCalled();
+    expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
+    expect(mailMocks.sendEditMail).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ lineAccountId: 'account-1' }),
+    );
+  });
+
+  test('legacy/default account同士なら既存fallback tokenでLINEへ送る', async () => {
+    const externalEditedAt = '2026-07-24T13:00:00.010+09:00';
+    dbMocks.getFormalooForm.mockResolvedValue({ ...form, line_account_id: null });
+    dbMocks.getInternalFormSubmission.mockResolvedValue(externalEditSubmission(
+      externalEditedAt,
+      { origin_channel: 'line', friend_id: 'friend-legacy' },
+    ));
+    mockExternalEditLineTarget(null);
+
+    await expect(notifierModule.notifyInternalFormExternalEdit(env(), {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt,
+      expectedEditVersion: 0,
+    })).resolves.toEqual({ status: 'sent', channel: 'line' });
+    expect(LineClient).toHaveBeenCalledWith('fallback-token');
+    expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
+    expect(lineMocks.pushTextMessage).toHaveBeenCalledTimes(1);
   });
 });

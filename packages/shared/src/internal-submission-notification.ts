@@ -246,6 +246,14 @@ function formatAnswer(
   return formatObjectEntries(record);
 }
 
+/** Format a persisted answer for respondent-facing internal-form notifications. */
+export function formatInternalSubmissionNotificationAnswer(
+  value: unknown,
+  field?: InternalSubmissionNotificationField,
+): string {
+  return formatAnswer(value, field);
+}
+
 function defaultNotificationText(input: RenderInternalSubmissionNotificationInput): string {
   const displayName = input.displayName?.trim() ?? '';
   const formTitle = input.formTitle.trim();

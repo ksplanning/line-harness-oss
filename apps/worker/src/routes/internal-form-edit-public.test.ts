@@ -12,9 +12,16 @@ import { initInternalFormLogic } from '../client/internal-form-logic.js';
 const sheetsSyncMocks = vi.hoisted(() => ({
   syncSheetsAfterFormMutation: vi.fn(),
 }));
+const editNotificationMocks = vi.hoisted(() => ({
+  notifyInternalFormExternalEdit: vi.fn(),
+}));
 vi.mock('../services/sheets-sync-jobs.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/sheets-sync-jobs.js')>(),
   syncSheetsAfterFormMutation: sheetsSyncMocks.syncSheetsAfterFormMutation,
+}));
+vi.mock('../services/internal-submission-notifier.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/internal-submission-notifier.js')>(),
+  notifyInternalFormExternalEdit: editNotificationMocks.notifyInternalFormExternalEdit,
 }));
 import { internalFormEditPublic } from './internal-form-edit-public.js';
 import { internalFormsAdmin } from './internal-forms-admin.js';
@@ -379,6 +386,10 @@ async function adminToken(formId = 'form-1', submissionId = 'ifs-1'): Promise<st
 
 beforeEach(() => {
   sheetsSyncMocks.syncSheetsAfterFormMutation.mockReset().mockResolvedValue(undefined);
+  editNotificationMocks.notifyInternalFormExternalEdit.mockReset().mockResolvedValue({
+    status: 'sent',
+    channel: 'email',
+  });
   raw = new Database(':memory:');
   replayAll(raw);
   DB = d1(raw);
@@ -1090,6 +1101,99 @@ describe('GET /ife/:token', () => {
 });
 
 describe('POST /ife/:token', () => {
+  test('回答者の変更保存をread-backした後、そのexternal_edited_atで通知を1回起動する', async () => {
+    seedForm();
+    seedSubmission();
+    const editEnv = bindings();
+
+    const response = await app().request(`/ife/${await token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        editVersion: '3',
+        a_0: '通知後の氏名',
+        a_1: 'notified@example.test',
+      }),
+    }, editEnv);
+
+    expect(response.status).toBe(200);
+    const stored = raw.prepare(
+      `SELECT edit_version, external_edited_at
+       FROM internal_form_submissions WHERE id = 'ifs-1'`,
+    ).get() as { edit_version: number; external_edited_at: string };
+    expect(stored.edit_version).toBe(4);
+    expect(stored.external_edited_at).toEqual(expect.any(String));
+    expect(editNotificationMocks.notifyInternalFormExternalEdit).toHaveBeenCalledTimes(1);
+    expect(editNotificationMocks.notifyInternalFormExternalEdit).toHaveBeenCalledWith(editEnv, {
+      formId: 'form-1',
+      submissionId: 'ifs-1',
+      externalEditedAt: stored.external_edited_at,
+      expectedEditVersion: stored.edit_version,
+    });
+  });
+
+  test('通知処理がrejectしても回答編集の200応答と保存結果を維持する', async () => {
+    seedForm();
+    seedSubmission();
+    editNotificationMocks.notifyInternalFormExternalEdit
+      .mockRejectedValueOnce(new Error('claim unavailable'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const response = await app().request(`/ife/${await token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        editVersion: '3',
+        a_0: '通知失敗後の氏名',
+        a_1: 'saved@example.test',
+      }),
+    }, bindings());
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare(
+      'SELECT edit_version FROM internal_form_submissions WHERE id = ?',
+    ).get('ifs-1')).toEqual({ edit_version: 4 });
+    expect(editNotificationMocks.notifyInternalFormExternalEdit).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith('internal form external edit notification failed');
+  });
+
+  test('通知providerが完了しなくても保存成功の200応答を先に返す', async () => {
+    seedForm();
+    seedSubmission();
+    let finishNotification!: () => void;
+    editNotificationMocks.notifyInternalFormExternalEdit.mockReturnValueOnce(new Promise(
+      (resolve) => {
+        finishNotification = () => resolve({ status: 'sent', channel: 'email' });
+      },
+    ));
+    const background: Promise<unknown>[] = [];
+    const waitUntil = vi.fn((work: Promise<unknown>) => background.push(work));
+
+    const responsePromise = app().fetch(new Request(
+      `https://worker.example.test/ife/${await token()}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          editVersion: '3',
+          a_0: '遅い通知でも保存済み',
+          a_1: 'slow@example.test',
+        }),
+      },
+    ), bindings(), { waitUntil } as unknown as ExecutionContext);
+    const outcome = await Promise.race([
+      responsePromise.then(() => 'response' as const),
+      new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 50)),
+    ]);
+    finishNotification();
+    const response = await responsePromise;
+    await Promise.all(background);
+
+    expect(outcome).toBe('response');
+    expect(response.status).toBe(200);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+  });
+
   test('rejects a forged editLocked field and preserves its stored value and edit version', async () => {
     seedForm({ definition: editLockedDefinition });
     seedSubmission('form-1', { locked_name: '変更前の氏名', open_note: '変更前の追記' });
@@ -1157,6 +1261,7 @@ describe('POST /ife/:token', () => {
       }),
     }, bindings());
     expect(saved.status).toBe(200);
+    expect(editNotificationMocks.notifyInternalFormExternalEdit).not.toHaveBeenCalled();
 
     expect(raw.prepare(
       `SELECT answers_json, edit_version, external_edit_source,
@@ -1626,8 +1731,9 @@ describe('POST /ife/:token', () => {
     }), bindings(DB, { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), executionCtx);
 
     expect(response.status).toBe(200);
-    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(waitUntil).toHaveBeenCalledTimes(2);
     await Promise.all(pending);
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).toHaveBeenCalledTimes(1);
     expect(sheetsSyncMocks.syncSheetsAfterFormMutation).toHaveBeenCalledWith(expect.objectContaining({
       db: DB,
       lineAccountId: 'acc-1',
@@ -1654,9 +1760,14 @@ describe('POST /ife/:token', () => {
     }), bindings(DB, { GOOGLE_SERVICE_ACCOUNT_JSON: '{}' }), { waitUntil } as unknown as ExecutionContext);
 
     expect(response.status).toBe(200);
-    await expect(Promise.all(pending)).resolves.toEqual([undefined]);
+    expect(pending).toHaveLength(2);
+    await expect(Promise.all(pending)).resolves.toEqual([
+      { status: 'sent', channel: 'email' },
+      undefined,
+    ]);
     expect(raw.prepare('SELECT edit_version FROM internal_form_submissions WHERE id = ?').get('ifs-1'))
       .toEqual({ edit_version: 4 });
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).toHaveBeenCalledTimes(1);
     expect(error).toHaveBeenCalledWith('Immediate Google Sheets sync after respondent edit failed');
   });
 
@@ -1892,6 +2003,41 @@ describe('POST /ife/:token', () => {
       total: 0,
       externalEditPendingCount: 0,
     });
+    expect(editNotificationMocks.notifyInternalFormExternalEdit).not.toHaveBeenCalled();
+  });
+
+  test('過去の外部編集metadataが残るno-op保存では通知を再起動しない', async () => {
+    seedForm();
+    seedSubmission();
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-24T12:00:00.000+09:00',
+           external_edit_changes_json = ?
+       WHERE id = 'ifs-1'`,
+    ).run(JSON.stringify([
+      { fieldId: 'name', before: '過去の氏名', after: originalAnswers.name },
+    ]));
+
+    const saved = await app().request(`/ife/${await token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        editVersion: '3',
+        a_0: originalAnswers.name,
+        a_1: originalAnswers.email,
+      }),
+    }, bindings());
+
+    expect(saved.status).toBe(200);
+    expect(raw.prepare(
+      `SELECT edit_version, external_edited_at
+       FROM internal_form_submissions WHERE id = 'ifs-1'`,
+    ).get()).toEqual({
+      edit_version: 4,
+      external_edited_at: '2026-07-24T12:00:00.000+09:00',
+    });
+    expect(editNotificationMocks.notifyInternalFormExternalEdit).not.toHaveBeenCalled();
   });
 
   test('round-trips edit URL save through pending review and approval APIs', async () => {
