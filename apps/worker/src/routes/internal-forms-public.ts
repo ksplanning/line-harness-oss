@@ -1,6 +1,7 @@
 import { Hono, type Context, type Next } from 'hono';
 import {
   countInternalFormSubmissionsForForm,
+  createInternalFormSubmissionForPublishedDefinitionDeduplicated,
   createInternalFormSubmissionForPublishedDefinition,
   enrollFriendInScenario,
   getFormalooForm,
@@ -995,6 +996,20 @@ function availabilityResponse(runtime: RuntimeForm): Response | null {
   });
 }
 
+function successfulSubmissionResponse(
+  c: Context<Env>,
+  runtime: RuntimeForm,
+  completionPageId: string | null,
+): Response {
+  if (runtime.definition.formRedirect.url) {
+    return c.redirect(buildRedirectTargetUrl(
+      runtime.definition.formRedirect.url,
+      runtime.definition.formRedirect.openExternalBrowser,
+    ), 303);
+  }
+  return c.html(renderCompletion(runtime.form, runtime.definition, completionPageId));
+}
+
 async function submissionConflictResponse(db: D1Database, previous: RuntimeForm): Promise<Response> {
   const latest = await loadRuntimeForm(db, previous.form.id);
   if (!latest.ok) return renderUnavailable(latest.status, latest.message);
@@ -1130,7 +1145,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
     const runtime = await loadRuntimeForm(c.env.DB, c.req.param('formId'));
     if (!runtime.ok) return renderUnavailable(runtime.status, runtime.message);
     const unavailable = availabilityResponse(runtime);
-    if (unavailable) return unavailable;
+    if (unavailable && runtime.availability.status !== 'limit_reached') return unavailable;
 
     const parsedBody = await c.req.parseBody({ all: true }).catch(() => ({}));
     const body = answerInputs(parsedBody);
@@ -1175,7 +1190,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
       Object.assign(answers, storedUploads.attachmentsByField);
 
       const maxSubmissions = runtime.definition.operationsSettings.maxSubmitCount;
-      const submission = await createInternalFormSubmissionForPublishedDefinition(c.env.DB, {
+      const submissionInput = {
         formId: runtime.form.id,
         definitionJson: runtime.form.definition_json,
         friendId: friend?.id ?? null,
@@ -1184,10 +1199,31 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         maxSubmissions,
         submitStartTime: runtime.definition.operationsSettings.submitStartTime ?? null,
         submitEndTime: runtime.definition.operationsSettings.submitEndTime ?? null,
-      });
-      if (!submission) {
+      };
+      let submissionResult: Awaited<
+        ReturnType<typeof createInternalFormSubmissionForPublishedDefinitionDeduplicated>
+      >;
+      try {
+        submissionResult = await createInternalFormSubmissionForPublishedDefinitionDeduplicated(
+          c.env.DB,
+          { ...submissionInput, deduplicateWithinSeconds: 10 },
+        );
+      } catch {
+        console.error('internal form rapid duplicate guard failed; continuing without deduplication');
+        const fallback = await createInternalFormSubmissionForPublishedDefinition(
+          c.env.DB,
+          submissionInput,
+        );
+        submissionResult = fallback ? { status: 'created' as const, submission: fallback } : null;
+      }
+      if (!submissionResult) {
         await rollbackInternalFormUploads(c.env.IMAGES, uploadedKeys);
         return submissionConflictResponse(c.env.DB, runtime);
+      }
+      const submission = submissionResult.submission;
+      if (submissionResult.status === 'deduplicated') {
+        await rollbackInternalFormUploads(c.env.IMAGES, uploadedKeys);
+        return successfulSubmissionResponse(c, runtime, logicState.completionPageId);
       }
       queueSheetsSyncAfterSubmission(c, runtime.form, submission.id);
 
@@ -1255,13 +1291,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
       if (result.status === 'rejected') console.error('internal form post-processing failed:', result.reason);
     }
 
-    if (runtime.definition.formRedirect.url) {
-      return c.redirect(buildRedirectTargetUrl(
-        runtime.definition.formRedirect.url,
-        runtime.definition.formRedirect.openExternalBrowser,
-      ), 303);
-    }
-    return c.html(renderCompletion(runtime.form, runtime.definition, logicState.completionPageId));
+    return successfulSubmissionResponse(c, runtime, logicState.completionPageId);
   } catch (error) {
     console.error('POST /f/:formId error:', error);
     return renderUnavailable(500, '送信に失敗しました');

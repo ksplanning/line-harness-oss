@@ -9,6 +9,7 @@ import {
   countPendingInternalFormExternalEdits,
   countInternalFormSubmissionsForForm,
   createInternalFormSubmission,
+  createInternalFormSubmissionForPublishedDefinitionDeduplicated,
   createInternalFormSubmissionForPublishedDefinition,
   createInternalFormSubmissionWithinLimit,
   getInternalFormSubmission,
@@ -365,6 +366,45 @@ describe('internal form persistence', () => {
     expect(changed).toBeNull();
     expect(await listInternalFormSubmissions(DB, 'fa_internal', { limit: 20, offset: 0 }))
       .toMatchObject({ total: 1 });
+  });
+
+  test('atomically deduplicates the same friend and answers only inside the inclusive time window', async () => {
+    raw.prepare(
+      "UPDATE formaloo_forms SET render_backend = 'internal', builder_status = 'published' WHERE id = 'fa_internal'",
+    ).run();
+    const definitionJson = (await getFormalooForm(DB, 'fa_internal'))!.definition_json;
+    const create = (
+      friendId: string | null,
+      answers: Record<string, unknown>,
+      submittedAt: string,
+    ) => createInternalFormSubmissionForPublishedDefinitionDeduplicated(DB, {
+      formId: 'fa_internal',
+      definitionJson,
+      friendId,
+      answers,
+      submitStartTime: null,
+      submitEndTime: null,
+      submittedAt,
+      deduplicateWithinSeconds: 10,
+    });
+
+    const first = await create('friend-1', { name: '佐藤' }, '2026-07-24T10:00:00.000+09:00');
+    const boundary = await create('friend-1', { name: '佐藤' }, '2026-07-24T10:00:10.000+09:00');
+    const outside = await create('friend-1', { name: '佐藤' }, '2026-07-24T10:00:10.001+09:00');
+    const changed = await create('friend-1', { name: '田中' }, '2026-07-24T10:00:10.001+09:00');
+    const anonymousFirst = await create(null, { name: '匿名' }, '2026-07-24T10:00:11.000+09:00');
+    const anonymousSecond = await create(null, { name: '匿名' }, '2026-07-24T10:00:11.000+09:00');
+
+    expect(first).toMatchObject({ status: 'created' });
+    expect(boundary).toMatchObject({
+      status: 'deduplicated',
+      submission: { id: first?.submission.id },
+    });
+    expect(outside).toMatchObject({ status: 'created' });
+    expect(changed).toMatchObject({ status: 'created' });
+    expect(anonymousFirst).toMatchObject({ status: 'created' });
+    expect(anonymousSecond).toMatchObject({ status: 'created' });
+    expect(await countInternalFormSubmissionsForForm(DB, 'fa_internal')).toBe(5);
   });
 
   test('atomically rejects answers outside the saved reception window', async () => {

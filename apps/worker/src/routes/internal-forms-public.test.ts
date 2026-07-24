@@ -760,6 +760,106 @@ describe('internal public form POST /f/:formId', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  test('deduplicates rapid identical friend submissions without collapsing intentional repeats', async () => {
+    seedForm('fa_rapid_dedup');
+    raw.prepare(
+      "INSERT INTO friends (id, line_user_id, display_name) VALUES ('friend-2', 'U2', '田中')",
+    ).run();
+    const friendToken = await signFriendToken('friend-1', FRIEND_SECRET);
+    const friendTwoToken = await signFriendToken('friend-2', FRIEND_SECRET);
+    const signedBody = (signed: string, note = 'よろしくお願いします') => {
+      const body = validBody();
+      body.set('fr_id', signed);
+      body.set('a_1', note);
+      return body;
+    };
+
+    const [first, duplicate] = await Promise.all([
+      postForm('fa_rapid_dedup', signedBody(friendToken!)),
+      postForm('fa_rapid_dedup', signedBody(friendToken!)),
+    ]);
+
+    expect(first.status).toBe(200);
+    expect(duplicate.status).toBe(200);
+    expect(raw.prepare(
+      "SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = 'fa_rapid_dedup'",
+    ).get()).toEqual({ n: 1 });
+    expect(notificationMocks.notifyInternalFormSubmission).toHaveBeenCalledTimes(1);
+
+    raw.prepare(
+      "UPDATE internal_form_submissions SET submitted_at = ? WHERE form_id = 'fa_rapid_dedup'",
+    ).run(new Date(Date.now() - 11_000).toISOString());
+    expect((await postForm('fa_rapid_dedup', signedBody(friendToken!))).status).toBe(200);
+    expect((await postForm(
+      'fa_rapid_dedup',
+      signedBody(friendToken!, '回答内容を変更しました'),
+    )).status).toBe(200);
+    expect((await postForm('fa_rapid_dedup', signedBody(friendTwoToken!))).status).toBe(200);
+    expect((await postForm('fa_rapid_dedup', validBody())).status).toBe(200);
+    expect((await postForm('fa_rapid_dedup', validBody())).status).toBe(200);
+
+    expect(raw.prepare(
+      "SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = 'fa_rapid_dedup'",
+    ).get()).toEqual({ n: 6 });
+  });
+
+  test('returns the existing success after an identical retry reaches the response limit', async () => {
+    seedForm('fa_rapid_limit', {
+      definition: {
+        fields,
+        logic: [],
+        operationsSettings: { maxSubmitCount: 1 },
+      },
+    });
+    const signed = await signFriendToken('friend-1', FRIEND_SECRET);
+    const body = () => {
+      const value = validBody();
+      value.set('fr_id', signed!);
+      return value;
+    };
+
+    const first = await postForm('fa_rapid_limit', body());
+    const duplicate = await postForm('fa_rapid_limit', body());
+
+    expect(first.status).toBe(200);
+    expect(duplicate.status).toBe(200);
+    expect(await duplicate.text()).toContain('受付完了');
+    expect(raw.prepare(
+      "SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = 'fa_rapid_limit'",
+    ).get()).toEqual({ n: 1 });
+    expect(notificationMocks.notifyInternalFormSubmission).toHaveBeenCalledTimes(1);
+  });
+
+  test('fails open to a normal insert when the rapid duplicate guard cannot run', async () => {
+    seedForm('fa_rapid_fail_open');
+    const base = DB;
+    let guardAttempts = 0;
+    DB = {
+      prepare(sql: string) {
+        if (sql.includes('rapid-submit-dedup')) {
+          guardAttempts += 1;
+          throw new Error('dedup lookup unavailable');
+        }
+        return base.prepare(sql);
+      },
+    } as unknown as D1Database;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const signed = await signFriendToken('friend-1', FRIEND_SECRET);
+    const body = validBody();
+    body.set('fr_id', signed!);
+
+    const response = await postForm('fa_rapid_fail_open', body);
+
+    expect(response.status).toBe(200);
+    expect(guardAttempts).toBe(1);
+    expect(raw.prepare(
+      "SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = 'fa_rapid_fail_open'",
+    ).get()).toEqual({ n: 1 });
+    expect(error).toHaveBeenCalledWith(
+      'internal form rapid duplicate guard failed; continuing without deduplication',
+    );
+  });
+
   test('runs ordered tag/field actions after save and continues after one action fails', async () => {
     seedForm('fa_actions');
     raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-2', '優先')").run();

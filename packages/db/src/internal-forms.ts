@@ -418,24 +418,54 @@ export async function createInternalFormSubmissionWithinLimit(
   return getInternalFormSubmission(db, input.formId, id);
 }
 
+type PublishedInternalFormSubmissionInput = {
+  formId: string;
+  definitionJson: string;
+  friendId?: string | null;
+  answers: Record<string, unknown>;
+  originChannel?: InternalFormOriginChannel;
+  maxSubmissions?: number;
+  submitStartTime: string | null;
+  submitEndTime: string | null;
+  submittedAt?: string;
+};
+
+export type DeduplicatedInternalFormSubmissionResult =
+  | { status: 'created'; submission: InternalFormSubmission }
+  | { status: 'deduplicated'; submission: InternalFormSubmission };
+
+function insertedInternalFormSubmission(
+  input: PublishedInternalFormSubmissionInput,
+  id: string,
+  answersJson: string,
+  now: string,
+): InternalFormSubmission {
+  return {
+    id,
+    form_id: input.formId,
+    friend_id: input.friendId ?? null,
+    answers_json: answersJson,
+    origin_channel: input.originChannel ?? 'embed',
+    edit_version: 0,
+    external_edit_source: null,
+    external_edited_at: null,
+    external_edit_approved_at: null,
+    external_edit_changes_json: null,
+    deleted_at: null,
+    submitted_at: now,
+    created_at: now,
+  };
+}
+
 /**
  * Public-form insert gate. The definition and publish state are checked in the
  * same SQL statement as the INSERT, so an unpublish or edit that wins the race
  * cannot receive an answer rendered from an older definition.
  */
-export async function createInternalFormSubmissionForPublishedDefinition(
+async function insertInternalFormSubmissionForPublishedDefinition(
   db: D1Database,
-  input: {
-    formId: string;
-    definitionJson: string;
-    friendId?: string | null;
-    answers: Record<string, unknown>;
-    originChannel?: InternalFormOriginChannel;
-    maxSubmissions?: number;
-    submitStartTime: string | null;
-    submitEndTime: string | null;
-    submittedAt?: string;
-  },
+  input: PublishedInternalFormSubmissionInput,
+  deduplicateWithinSeconds = 0,
 ): Promise<InternalFormSubmission | null> {
   const id = `ifs_${crypto.randomUUID()}`;
   const now = input.submittedAt ?? jstNow();
@@ -443,6 +473,25 @@ export async function createInternalFormSubmissionForPublishedDefinition(
   const limit = input.maxSubmissions === undefined
     ? null
     : Math.max(1, Math.trunc(input.maxSubmissions));
+  const duplicateWindow = Number.isFinite(deduplicateWithinSeconds)
+    ? Math.max(0, deduplicateWithinSeconds)
+    : 0;
+  const deduplicateFriendId = duplicateWindow > 0 ? input.friendId ?? null : null;
+  const rapidDuplicateClause = deduplicateFriendId === null
+    ? ''
+    : ` AND NOT EXISTS ( /* rapid-submit-dedup */
+         SELECT 1
+         FROM internal_form_submissions recent
+         WHERE recent.form_id = ?
+           AND recent.friend_id = ?
+           AND recent.answers_json = ?
+           AND recent.deleted_at IS NULL
+           AND julianday(recent.submitted_at) >= julianday(?, '-' || ? || ' seconds')
+           AND julianday(recent.submitted_at) <= julianday(?)
+       )`;
+  const rapidDuplicateBindings = deduplicateFriendId === null
+    ? []
+    : [input.formId, deduplicateFriendId, answersJson, now, duplicateWindow, now];
   const result = await db
     .prepare(
       `INSERT INTO internal_form_submissions
@@ -458,7 +507,8 @@ export async function createInternalFormSubmissionForPublishedDefinition(
          WHERE form_id = ? AND deleted_at IS NULL
        ) < ?)
        AND (? IS NULL OR julianday(?) >= julianday(?))
-       AND (? IS NULL OR julianday(?) < julianday(?))`,
+       AND (? IS NULL OR julianday(?) < julianday(?))
+       ${rapidDuplicateClause}`,
     )
     .bind(
       id,
@@ -479,24 +529,62 @@ export async function createInternalFormSubmissionForPublishedDefinition(
       input.submitEndTime,
       now,
       input.submitEndTime,
+      ...rapidDuplicateBindings,
     )
     .run();
   if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) !== 1) return null;
-  return {
-    id,
-    form_id: input.formId,
-    friend_id: input.friendId ?? null,
-    answers_json: answersJson,
-    origin_channel: input.originChannel ?? 'embed',
-    edit_version: 0,
-    external_edit_source: null,
-    external_edited_at: null,
-    external_edit_approved_at: null,
-    external_edit_changes_json: null,
-    deleted_at: null,
-    submitted_at: now,
-    created_at: now,
-  };
+  return insertedInternalFormSubmission(input, id, answersJson, now);
+}
+
+export function createInternalFormSubmissionForPublishedDefinition(
+  db: D1Database,
+  input: PublishedInternalFormSubmissionInput,
+): Promise<InternalFormSubmission | null> {
+  return insertInternalFormSubmissionForPublishedDefinition(db, input);
+}
+
+/**
+ * Atomically suppress a rapid retry for a verified friend while preserving
+ * anonymous submissions, changed answers, and retries outside the time window.
+ */
+export async function createInternalFormSubmissionForPublishedDefinitionDeduplicated(
+  db: D1Database,
+  input: PublishedInternalFormSubmissionInput & { deduplicateWithinSeconds: number },
+): Promise<DeduplicatedInternalFormSubmissionResult | null> {
+  const now = input.submittedAt ?? jstNow();
+  const normalizedInput = { ...input, submittedAt: now };
+  const created = await insertInternalFormSubmissionForPublishedDefinition(
+    db,
+    normalizedInput,
+    input.deduplicateWithinSeconds,
+  );
+  if (created) return { status: 'created', submission: created };
+
+  const friendId = input.friendId ?? null;
+  const duplicateWindow = Number.isFinite(input.deduplicateWithinSeconds)
+    ? Math.max(0, input.deduplicateWithinSeconds)
+    : 0;
+  if (!friendId || duplicateWindow === 0) return null;
+  const duplicate = await db.prepare(
+    `SELECT *
+     FROM internal_form_submissions
+     WHERE form_id = ?
+       AND friend_id = ?
+       AND answers_json = ?
+       AND deleted_at IS NULL
+       AND julianday(submitted_at) >= julianday(?, '-' || ? || ' seconds')
+       AND julianday(submitted_at) <= julianday(?)
+     ORDER BY julianday(submitted_at) DESC, rowid DESC
+     LIMIT 1`,
+  ).bind(
+    input.formId,
+    friendId,
+    JSON.stringify(input.answers),
+    now,
+    duplicateWindow,
+    now,
+  ).first<InternalFormSubmission>();
+  return duplicate ? { status: 'deduplicated', submission: duplicate } : null;
 }
 
 export async function listInternalFormSubmissions(
