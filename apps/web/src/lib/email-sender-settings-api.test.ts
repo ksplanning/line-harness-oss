@@ -87,7 +87,7 @@ describe('emailSenderSettingsApi', () => {
     )
   })
 
-  test('Resend APIキーの保存・削除とテスト送信は選択中accountIdだけを送る', async () => {
+  test('Resend APIキーの保存・削除とテスト送信は選択中accountIdと宛先を送る', async () => {
     fetchApiMock
       .mockResolvedValueOnce({
         success: true,
@@ -129,7 +129,9 @@ describe('emailSenderSettingsApi', () => {
       },
     )
 
-    await expect(emailSenderSettingsApi.testSend('account/1')).resolves.toEqual({
+    await expect(
+      emailSenderSettingsApi.testSend('account/1', 'recipient@example.net'),
+    ).resolves.toEqual({
       message: 'テストメールを送信しました。',
     })
     expect(fetchApiMock).toHaveBeenNthCalledWith(
@@ -137,7 +139,10 @@ describe('emailSenderSettingsApi', () => {
       '/api/account-settings/email-sender/test',
       {
         method: 'POST',
-        body: JSON.stringify({ accountId: 'account/1' }),
+        body: JSON.stringify({
+          accountId: 'account/1',
+          recipientEmail: 'recipient@example.net',
+        }),
       },
     )
   })

@@ -85,11 +85,11 @@ export const emailSenderSettingsApi = {
     ).data
   },
 
-  async testSend(accountId: string): Promise<{ message: string }> {
+  async testSend(accountId: string, recipientEmail: string): Promise<{ message: string }> {
     return (
       await fetchApi<Envelope<{ message: string }>>(`${BASE_PATH}/test`, {
         method: 'POST',
-        body: JSON.stringify({ accountId }),
+        body: JSON.stringify({ accountId, recipientEmail }),
       })
     ).data
   },

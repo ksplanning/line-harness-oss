@@ -112,6 +112,8 @@ describe('EmailSenderSettingsPanel', () => {
         .toBe('support@example.com')
       expect((screen.getByLabelText('差出人名（任意）') as HTMLInputElement).value)
         .toBe('受付係')
+      expect((screen.getByLabelText('宛先メールアドレス') as HTMLInputElement).value)
+        .toBe('support@example.com')
     })
     expect(screen.getByRole('status').textContent).toContain('保存しました')
   })
@@ -150,7 +152,8 @@ describe('EmailSenderSettingsPanel', () => {
       usingFallback: false,
     })
     render(<EmailSenderSettingsPanel accountId="account-1" />)
-    await screen.findByDisplayValue('notice@example.com')
+    expect((await screen.findByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+      .toBe('notice@example.com')
 
     fireEvent.click(screen.getByRole('button', {
       name: 'ドメインを登録してDNS設定を表示',
@@ -233,7 +236,8 @@ describe('EmailSenderSettingsPanel', () => {
 
   test('Resend作成手順をポップアップで無料登録から貼付まで説明する', async () => {
     render(<EmailSenderSettingsPanel accountId="account-1" />)
-    await screen.findByDisplayValue('notice@example.com')
+    expect((await screen.findByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+      .toBe('notice@example.com')
 
     fireEvent.click(screen.getByRole('button', {
       name: 'Resendアカウント作成手順を開く',
@@ -248,25 +252,45 @@ describe('EmailSenderSettingsPanel', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  test('保存済み差出人へのテスト送信結果を成功・失敗理由で表示する', async () => {
+  test('テスト送信先を保存済み差出人で初期化し、変更した宛先をAPIへ渡す', async () => {
     render(<EmailSenderSettingsPanel accountId="account-1" />)
-    await screen.findByDisplayValue('notice@example.com')
+    const recipient = await screen.findByLabelText('宛先メールアドレス')
+    expect((recipient as HTMLInputElement).value).toBe('notice@example.com')
+    expect(screen.getByText('下の宛先アドレスに確認メールを1通送ります。')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '自分宛にテスト送信' }))
-    await waitFor(() => expect(mocks.testSend).toHaveBeenCalledWith('account-1'))
+    fireEvent.change(recipient, { target: { value: ' delivery@example.net ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'テスト送信' }))
+    await waitFor(() => expect(mocks.testSend).toHaveBeenCalledWith(
+      'account-1',
+      'delivery@example.net',
+    ))
     expect(screen.getByRole('status').textContent).toContain('テストメールを送信しました')
 
     mocks.testSend.mockRejectedValueOnce({
       body: { error: 'テストメールを送信できませんでした（理由: resend_http_422）' },
     })
-    fireEvent.click(screen.getByRole('button', { name: '自分宛にテスト送信' }))
+    fireEvent.click(screen.getByRole('button', { name: 'テスト送信' }))
     const failure = await screen.findByText(/resend_http_422/)
     expect(failure.getAttribute('role')).toBe('alert')
   })
 
+  test('テスト送信先が空またはメール形式不正なら送信ボタンを無効にする', async () => {
+    render(<EmailSenderSettingsPanel accountId="account-1" />)
+    const recipient = await screen.findByLabelText('宛先メールアドレス')
+    const button = screen.getByRole('button', { name: 'テスト送信' }) as HTMLButtonElement
+
+    fireEvent.change(recipient, { target: { value: '' } })
+    expect(button.disabled).toBe(true)
+    fireEvent.change(recipient, { target: { value: 'not-an-email' } })
+    expect(button.disabled).toBe(true)
+    fireEvent.change(recipient, { target: { value: 'valid@example.net' } })
+    expect(button.disabled).toBe(false)
+  })
+
   test('番号つき日本語手順に貼り付け先と反映待ちを説明する', async () => {
     render(<EmailSenderSettingsPanel accountId="account-1" />)
-    await screen.findByDisplayValue('notice@example.com')
+    expect((await screen.findByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+      .toBe('notice@example.com')
 
     const guide = screen.getByTestId('email-sender-dns-guide')
     expect(guide.textContent).toContain('1.')
@@ -329,11 +353,16 @@ describe('EmailSenderSettingsPanel', () => {
     const view = render(<EmailSenderSettingsPanel accountId="account-old" />)
     view.rerender(<EmailSenderSettingsPanel accountId="account-new" />)
 
-    expect(await screen.findByDisplayValue('new@example.net')).toBeTruthy()
+    expect((await screen.findByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+      .toBe('new@example.net')
+    expect((screen.getByLabelText('宛先メールアドレス') as HTMLInputElement).value)
+      .toBe('new@example.net')
     resolveOld(pendingView)
     await Promise.resolve()
-    expect(screen.queryByDisplayValue('notice@example.com')).toBeNull()
-    expect(screen.getByDisplayValue('new@example.net')).toBeTruthy()
+    expect((screen.getByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+      .toBe('new@example.net')
+    expect((screen.getByLabelText('宛先メールアドレス') as HTMLInputElement).value)
+      .toBe('new@example.net')
   })
 
   test('A→B→A切替後に返った古いAの保存応答を現在のAへ適用しない', async () => {
@@ -349,21 +378,30 @@ describe('EmailSenderSettingsPanel', () => {
     mocks.save.mockImplementationOnce(() => oldSave)
 
     const view = render(<EmailSenderSettingsPanel accountId="account-a" />)
-    const email = await screen.findByDisplayValue('current-a@example.com')
+    const email = await screen.findByLabelText('差出人メールアドレス')
+    expect((email as HTMLInputElement).value).toBe('current-a@example.com')
     fireEvent.change(email, { target: { value: 'stale-a@example.com' } })
     fireEvent.click(screen.getByRole('button', { name: '差出人を保存' }))
     await waitFor(() => expect(mocks.save).toHaveBeenCalled())
 
     view.rerender(<EmailSenderSettingsPanel accountId="account-b" />)
-    expect(await screen.findByDisplayValue('b@example.net')).toBeTruthy()
+    await waitFor(() => {
+      expect((screen.getByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+        .toBe('b@example.net')
+    })
     view.rerender(<EmailSenderSettingsPanel accountId="account-a" />)
-    expect(await screen.findByDisplayValue('current-a@example.com')).toBeTruthy()
+    await waitFor(() => {
+      expect((screen.getByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+        .toBe('current-a@example.com')
+    })
 
     await act(async () => {
       resolveOldSave({ ...pendingView, senderEmail: 'stale-a@example.com' })
       await oldSave
     })
-    expect(screen.queryByDisplayValue('stale-a@example.com')).toBeNull()
-    expect(screen.getByDisplayValue('current-a@example.com')).toBeTruthy()
+    expect((screen.getByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+      .toBe('current-a@example.com')
+    expect((screen.getByLabelText('宛先メールアドレス') as HTMLInputElement).value)
+      .toBe('current-a@example.com')
   })
 })

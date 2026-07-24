@@ -264,7 +264,10 @@ describe('設定ページ', () => {
     mocks.account.selectedAccountId = 'account-2'
     view.rerender(<SettingsPage />)
     await waitFor(() => expect(mocks.emailGet).toHaveBeenCalledWith('account-2'))
-    expect(await screen.findByDisplayValue('sub@example.net')).toBeTruthy()
+    await waitFor(() => {
+      expect((screen.getByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+        .toBe('sub@example.net')
+    })
 
     fireEvent.click(screen.getByRole('button', { name: 'スタッフ通知を開く' }))
 
@@ -289,7 +292,11 @@ describe('設定ページ', () => {
 
     mocks.account.selectedAccountId = 'account-2'
     view.rerender(<SettingsPage />)
-    const accountTwoEmail = await screen.findByDisplayValue('sub@example.net')
+    await waitFor(() => {
+      expect((screen.getByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+        .toBe('sub@example.net')
+    })
+    const accountTwoEmail = screen.getByLabelText('差出人メールアドレス')
     fireEvent.change(accountTwoEmail, { target: { value: 'saved-two@example.net' } })
     fireEvent.click(screen.getByRole('button', { name: '差出人を保存' }))
     await waitFor(() => expect(mocks.emailSave).toHaveBeenCalledWith('account-2', {
@@ -299,13 +306,21 @@ describe('設定ページ', () => {
 
     mocks.account.selectedAccountId = 'account-1'
     view.rerender(<SettingsPage />)
-    expect(await screen.findByDisplayValue('saved-one@example.com')).toBeTruthy()
-    expect(screen.queryByDisplayValue('saved-two@example.net')).toBeNull()
+    await waitFor(() => {
+      expect((screen.getByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+        .toBe('saved-one@example.com')
+    })
+    expect((screen.getByLabelText('宛先メールアドレス') as HTMLInputElement).value)
+      .toBe('saved-one@example.com')
 
     mocks.account.selectedAccountId = 'account-2'
     view.rerender(<SettingsPage />)
-    expect(await screen.findByDisplayValue('saved-two@example.net')).toBeTruthy()
-    expect(screen.queryByDisplayValue('saved-one@example.com')).toBeNull()
+    await waitFor(() => {
+      expect((screen.getByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+        .toBe('saved-two@example.net')
+    })
+    expect((screen.getByLabelText('宛先メールアドレス') as HTMLInputElement).value)
+      .toBe('saved-two@example.net')
   })
 
   test('Resend APIキーのマスク表示も左上のA/B切替で混線しない', async () => {
@@ -381,7 +396,10 @@ describe('設定ページ', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'メール差出人を開く' }))
     await waitFor(() => expect(mocks.emailGet).toHaveBeenCalledTimes(2))
-    expect(await screen.findByDisplayValue('saved@example.com')).toBeTruthy()
+    await waitFor(() => {
+      expect((screen.getByLabelText('差出人メールアドレス') as HTMLInputElement).value)
+        .toBe('saved@example.com')
+    })
     expect(screen.getByDisplayValue('保存後担当')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'スタッフ通知を開く' }))

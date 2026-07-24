@@ -78,6 +78,7 @@ export default function EmailSenderSettingsPanel({
   const [settings, setSettings] = useState<EmailSenderSettingsView | null>(null)
   const [senderEmail, setSenderEmail] = useState('')
   const [senderName, setSenderName] = useState('')
+  const [recipientEmail, setRecipientEmail] = useState('')
   const [resendApiKey, setResendApiKey] = useState('')
   const [showResendGuide, setShowResendGuide] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -92,6 +93,7 @@ export default function EmailSenderSettingsPanel({
     setSettings(view)
     setSenderEmail(view.senderEmail ?? '')
     setSenderName(view.senderName ?? '')
+    setRecipientEmail(view.senderEmail ?? '')
     setResendApiKey('')
   }
 
@@ -100,6 +102,7 @@ export default function EmailSenderSettingsPanel({
     setSettings(null)
     setSenderEmail('')
     setSenderName('')
+    setRecipientEmail('')
     setResendApiKey('')
     setShowResendGuide(false)
     setError(null)
@@ -130,8 +133,13 @@ export default function EmailSenderSettingsPanel({
 
   const trimmedEmail = senderEmail.trim()
   const trimmedName = senderName.trim()
+  const trimmedRecipientEmail = recipientEmail.trim()
   const trimmedResendApiKey = resendApiKey.trim()
   const invalidEmail = trimmedEmail !== '' && !isEmail(trimmedEmail)
+  const invalidRecipientEmail = (
+    trimmedRecipientEmail !== ''
+    && !isEmail(trimmedRecipientEmail)
+  )
   const busy = loading || operation !== null
   const savedEmailMatches = Boolean(
     settings?.senderEmail
@@ -207,13 +215,21 @@ export default function EmailSenderSettingsPanel({
 
   const sendTest = async () => {
     const currentAccountId = accountId
-    if (!currentAccountId || busy || !savedEmailMatches) return
+    if (
+      !currentAccountId
+      || busy
+      || !settings?.senderEmail
+      || !isEmail(trimmedRecipientEmail)
+    ) return
     const version = requestVersion.current
     setOperation('test')
     setError(null)
     setNotice(null)
     try {
-      const result = await emailSenderSettingsApi.testSend(currentAccountId)
+      const result = await emailSenderSettingsApi.testSend(
+        currentAccountId,
+        trimmedRecipientEmail,
+      )
       if (
         requestVersion.current !== version
         || activeAccount.current !== currentAccountId
@@ -412,16 +428,44 @@ export default function EmailSenderSettingsPanel({
 
         <div className="mt-4 border-t border-gray-200 pt-4">
           <p className="text-sm text-gray-600">
-            現在保存されている差出人メールアドレス宛にだけ、確認メールを1通送ります。
+            下の宛先アドレスに確認メールを1通送ります。
           </p>
-          <button
-            type="button"
-            onClick={() => { void sendTest() }}
-            disabled={busy || !settings?.senderEmail || !savedEmailMatches}
-            className="mt-2 rounded border border-[#087A39] px-3 py-2 text-sm font-medium text-[#087A39] disabled:opacity-50"
-          >
-            {operation === 'test' ? '送信中...' : '自分宛にテスト送信'}
-          </button>
+          <div className="mt-2 flex items-end gap-2">
+            <div className="min-w-0 flex-1">
+              <label
+                htmlFor="email-sender-test-recipient"
+                className="mb-1 block text-sm font-medium text-gray-700"
+              >
+                宛先メールアドレス
+              </label>
+              <input
+                id="email-sender-test-recipient"
+                type="email"
+                value={recipientEmail}
+                onChange={(event) => {
+                  setRecipientEmail(event.target.value)
+                  setNotice(null)
+                }}
+                placeholder="例：recipient@example.com"
+                autoComplete="email"
+                aria-invalid={invalidRecipientEmail}
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => { void sendTest() }}
+              disabled={
+                busy
+                || !settings?.senderEmail
+                || trimmedRecipientEmail === ''
+                || invalidRecipientEmail
+              }
+              className="shrink-0 rounded border border-[#087A39] px-3 py-2 text-sm font-medium text-[#087A39] disabled:opacity-50"
+            >
+              {operation === 'test' ? '送信中...' : 'テスト送信'}
+            </button>
+          </div>
         </div>
       </section>
 
