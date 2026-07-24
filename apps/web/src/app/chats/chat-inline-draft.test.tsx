@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 const apiMocks = vi.hoisted(() => ({
   listChats: vi.fn(),
   getChat: vi.fn(),
+  openInquiry: vi.fn(),
   listFriends: vi.fn(),
   sendChat: vi.fn(),
   updateChat: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('@/lib/api', () => ({
     chats: {
       list: apiMocks.listChats,
       get: apiMocks.getChat,
+      openInquiry: apiMocks.openInquiry,
       send: apiMocks.sendChat,
       update: apiMocks.updateChat,
       drafts: {
@@ -205,6 +207,7 @@ beforeEach(() => {
   apiMocks.listChats.mockResolvedValue({ success: true, data: [chat] })
   apiMocks.listFriends.mockResolvedValue({ success: true, data: { items: [] } })
   apiMocks.getChat.mockResolvedValue({ success: true, data: detail() })
+  apiMocks.openInquiry.mockResolvedValue({ success: true, data: detail() })
   apiMocks.sendChat.mockResolvedValue({ success: true })
   apiMocks.updateChat.mockResolvedValue({ success: true })
   apiMocks.updateDraft.mockImplementation(async (_chatId: string, _draftId: string, body: { draftAnswer: string }) => ({
@@ -245,7 +248,9 @@ async function openChat() {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
   return { promise, resolve }
 }
 
@@ -353,7 +358,7 @@ describe('個別チャット一覧の未対応表示', () => {
   it('deep-linkで一覧外の人間未対応を詳細APIの正本フラグ付きで補完する', async () => {
     window.history.replaceState(null, '', '/chats?friend=friend-1')
     apiMocks.listChats.mockResolvedValue({ success: true, data: [] })
-    apiMocks.getChat.mockResolvedValue({
+    apiMocks.openInquiry.mockResolvedValue({
       success: true,
       data: { ...detail([]), status: 'resolved', isUnanswered: true },
     })
@@ -361,8 +366,179 @@ describe('個別チャット一覧の未対応表示', () => {
     render(<ChatsPage />)
 
     const row = await screen.findByRole('button', { name: /あやこ/ })
-    expect(apiMocks.getChat).toHaveBeenCalledWith('friend-1')
+    expect(apiMocks.openInquiry).toHaveBeenCalledWith('friend-1')
     expect(row.querySelector('.bg-red-500')?.getAttribute('aria-label')).toBe('未対応')
+  })
+})
+
+describe('チャット一覧の絞り込み反映', () => {
+  it.each([
+    {
+      filterName: '未対応のみ',
+      status: 'in_progress' as const,
+      isUnanswered: true,
+    },
+    {
+      filterName: '未読',
+      status: 'unread' as const,
+      isUnanswered: true,
+    },
+    {
+      filterName: '対応中',
+      status: 'in_progress' as const,
+      isUnanswered: false,
+    },
+  ])('$filterName では解決済み操作直後に行を外す', async ({
+    filterName,
+    status,
+    isUnanswered,
+  }) => {
+    const filteredChat = { ...chat, status, isUnanswered }
+    const filteredDetail = { ...detail([]), status, isUnanswered }
+    const update = deferred<{
+      success: true
+      data: typeof filteredDetail & { status: 'resolved'; isUnanswered: false }
+    }>()
+    apiMocks.listChats.mockResolvedValue({ success: true, data: [filteredChat] })
+    apiMocks.getChat.mockResolvedValue({ success: true, data: filteredDetail })
+    apiMocks.openInquiry.mockResolvedValue({ success: true, data: filteredDetail })
+    apiMocks.updateChat.mockReturnValueOnce(update.promise)
+
+    render(<ChatsPage />)
+    if (filterName === '未対応のみ') {
+      fireEvent.click(screen.getByRole('checkbox', { name: /未対応のみ/ }))
+      await waitFor(() => expect(apiMocks.listChats).toHaveBeenLastCalledWith(
+        expect.objectContaining({ unansweredOnly: true }),
+      ))
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: filterName }))
+      await waitFor(() => expect(apiMocks.listChats).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status }),
+      ))
+    }
+
+    fireEvent.click(await screen.findByRole('button', { name: /あやこ/ }))
+    await screen.findByTestId('chat-message-history')
+    fireEvent.click(screen.getByRole('button', { name: '対応操作' }))
+    fireEvent.click(screen.getByRole('button', { name: '解決済にする' }))
+
+    expect(screen.queryAllByRole('button', { name: /あやこ/ })).toHaveLength(0)
+
+    apiMocks.listChats.mockResolvedValue({ success: true, data: [] })
+    update.resolve({
+      success: true,
+      data: { ...filteredDetail, status: 'resolved', isUnanswered: false },
+    })
+    await waitFor(() => expect(apiMocks.updateChat).toHaveBeenCalledWith(
+      'chat-row-1',
+      { status: 'resolved' },
+    ))
+  })
+
+  it('未読を開くと一覧から外し、未読に戻す操作直後に再表示する', async () => {
+    const unreadChat = {
+      ...chat,
+      status: 'unread' as const,
+      isUnanswered: true,
+    }
+    const openedDetail = {
+      ...detail([]),
+      status: 'in_progress' as const,
+      isUnanswered: false,
+    }
+    const update = deferred<{
+      success: true
+      data: typeof openedDetail & { status: 'unread' }
+    }>()
+    apiMocks.listChats.mockResolvedValue({ success: true, data: [unreadChat] })
+    apiMocks.openInquiry.mockResolvedValue({ success: true, data: openedDetail })
+    apiMocks.updateChat.mockReturnValueOnce(update.promise)
+
+    render(<ChatsPage />)
+    fireEvent.click(screen.getByRole('button', { name: '未読' }))
+    await waitFor(() => expect(apiMocks.listChats).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'unread' }),
+    ))
+    fireEvent.click(await screen.findByRole('button', { name: /あやこ/ }))
+
+    expect(await screen.findByText('対応中')).toBeTruthy()
+    expect(apiMocks.openInquiry).toHaveBeenCalledWith('chat-row-1')
+    expect(screen.queryAllByRole('button', { name: /あやこ/ })).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: '対応操作' }))
+    fireEvent.click(screen.getByRole('button', { name: '未読に戻す' }))
+
+    expect(screen.getAllByRole('button', { name: /あやこ/ })).toHaveLength(1)
+
+    apiMocks.listChats.mockResolvedValue({
+      success: true,
+      data: [{ ...unreadChat, isUnanswered: false }],
+    })
+    update.resolve({
+      success: true,
+      data: { ...openedDetail, status: 'unread' },
+    })
+    await waitFor(() => expect(apiMocks.updateChat).toHaveBeenCalledWith(
+      'chat-row-1',
+      { status: 'unread' },
+    ))
+  })
+
+  it('ステータス更新APIが失敗したら、絞り込みから外した行をロールバックする', async () => {
+    const update = deferred<{ success: false; error: string }>()
+    apiMocks.updateChat.mockReturnValueOnce(update.promise)
+
+    render(<ChatsPage />)
+    fireEvent.click(screen.getByRole('button', { name: '対応中' }))
+    await waitFor(() => expect(apiMocks.listChats).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'in_progress' }),
+    ))
+    fireEvent.click(await screen.findByRole('button', { name: /あやこ/ }))
+    await screen.findByTestId('chat-message-history')
+    fireEvent.click(screen.getByRole('button', { name: '対応操作' }))
+    fireEvent.click(screen.getByRole('button', { name: '解決済にする' }))
+
+    expect(screen.queryAllByRole('button', { name: /あやこ/ })).toHaveLength(0)
+
+    update.resolve({ success: false, error: 'update failed' })
+    expect(await screen.findByText('ステータスの更新に失敗しました。')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /あやこ/ })).toHaveLength(1)
+    expect(within(screen.getByTestId('chat-detail-header')).getByText('対応中')).toBeTruthy()
+  })
+
+  it('楽観更新後の再取得でもサーバーの解決済み状態と一覧が一致する', async () => {
+    const update = deferred<{
+      success: true
+      data: ReturnType<typeof detail> & { status: 'resolved'; isUnanswered: false }
+    }>()
+    apiMocks.updateChat.mockReturnValueOnce(update.promise)
+
+    render(<ChatsPage />)
+    fireEvent.click(screen.getByRole('button', { name: '対応中' }))
+    await waitFor(() => expect(apiMocks.listChats).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'in_progress' }),
+    ))
+    fireEvent.click(await screen.findByRole('button', { name: /あやこ/ }))
+    await screen.findByTestId('chat-message-history')
+    fireEvent.click(screen.getByRole('button', { name: '対応操作' }))
+    fireEvent.click(screen.getByRole('button', { name: '解決済にする' }))
+    expect(screen.queryAllByRole('button', { name: /あやこ/ })).toHaveLength(0)
+
+    apiMocks.listChats.mockResolvedValue({ success: true, data: [] })
+    apiMocks.getChat.mockResolvedValue({
+      success: true,
+      data: { ...detail([]), status: 'resolved', isUnanswered: false },
+    })
+    update.resolve({
+      success: true,
+      data: { ...detail([]), status: 'resolved', isUnanswered: false },
+    })
+
+    await waitFor(() => expect(apiMocks.listChats).toHaveBeenCalledTimes(3))
+    window.dispatchEvent(new Event('focus'))
+    await waitFor(() => expect(apiMocks.listChats).toHaveBeenCalledTimes(4))
+    expect(screen.queryAllByRole('button', { name: /あやこ/ })).toHaveLength(0)
+    expect(within(screen.getByTestId('chat-detail-header')).getByText('解決済')).toBeTruthy()
   })
 })
 
@@ -381,12 +557,12 @@ describe('個別チャットのインラインAI下書き', () => {
   })
 
   it('pendingDrafts 欠落と空配列では既存タイムラインDOMが同一', async () => {
-    apiMocks.getChat.mockResolvedValueOnce({ success: true, data: detail(undefined) })
+    apiMocks.openInquiry.mockResolvedValueOnce({ success: true, data: detail(undefined) })
     const withoutField = await openChat()
     const baseline = withoutField.innerHTML
     cleanup()
 
-    apiMocks.getChat.mockResolvedValueOnce({ success: true, data: detail([]) })
+    apiMocks.openInquiry.mockResolvedValueOnce({ success: true, data: detail([]) })
     const emptyList = await openChat()
     expect(emptyList.innerHTML).toBe(baseline)
     expect(screen.queryByText('AI下書き')).toBeNull()
@@ -514,7 +690,8 @@ describe('個別チャットのインラインAI下書き', () => {
 
     listener({ accountId: 'account-1', draftId: 'draft-1', sourceId: 'central-other-tab' })
 
-    await waitFor(() => expect(apiMocks.getChat).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(apiMocks.openInquiry).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(apiMocks.getChat).toHaveBeenCalledTimes(1))
     expect(apiMocks.getChat).toHaveBeenLastCalledWith('chat-row-1')
   })
 })
@@ -668,7 +845,7 @@ describe('チャット詳細の切替競合', () => {
     const firstResponse = deferred<{ success: true; data: ReturnType<typeof detail> }>()
     const secondResponse = deferred<{ success: true; data: ReturnType<typeof detail> }>()
     apiMocks.listChats.mockResolvedValue({ success: true, data: [firstChat, secondChat] })
-    apiMocks.getChat.mockImplementation((id: string) => (
+    apiMocks.openInquiry.mockImplementation((id: string) => (
       id === 'friend-a' ? firstResponse.promise : secondResponse.promise
     ))
 

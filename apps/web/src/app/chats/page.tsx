@@ -75,6 +75,41 @@ const CHAT_LIST_POLL_INTERVAL_MS = 30_000
 const CHAT_COMPOSER_MIN_HEIGHT_PX = 48
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 120
 
+function reconcileChatList(
+  current: Chat[],
+  chatId: string,
+  patch: Partial<Chat>,
+  fallback: Chat | null,
+  statusFilter: StatusFilter,
+  unansweredOnly: boolean,
+): Chat[] {
+  const friendId = patch.friendId ?? fallback?.friendId
+  const isTarget = (chat: Chat) => (
+    chat.id === chatId
+    || (friendId ? chat.friendId === friendId : false)
+  )
+  const existing = current.find(isTarget)
+  const base = existing ?? fallback
+  if (!base) return current
+
+  const updated: Chat = {
+    ...base,
+    ...patch,
+    id: existing?.id ?? chatId,
+  }
+  const remaining = current.filter((chat) => !isTarget(chat))
+  const visible = unansweredOnly
+    ? updated.isUnanswered
+    : statusFilter === 'all' || updated.status === statusFilter
+  if (!visible) return remaining
+
+  return [...remaining, updated].sort((a, b) => {
+    const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
+    const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
+    return bt - at
+  })
+}
+
 function formatDatetime(iso: string | null): string {
   if (!iso) return '-'
   return new Date(iso).toLocaleString('ja-JP', {
@@ -618,6 +653,26 @@ export default function ChatsPage() {
   useEffect(() => { statusFilterRef.current = statusFilter }, [statusFilter])
   useEffect(() => { unansweredOnlyRef.current = unansweredOnly }, [unansweredOnly])
 
+  const reconcileChatListEntry = useCallback((
+    chatId: string,
+    patch: Partial<Chat>,
+    fallback: Chat | null = null,
+    invalidatePendingRequests = true,
+  ) => {
+    if (invalidatePendingRequests) {
+      // Ignore any list request that started before this local state transition.
+      chatListRequestSequenceRef.current += 1
+    }
+    setChats((current) => reconcileChatList(
+      current,
+      chatId,
+      patch,
+      fallback,
+      statusFilterRef.current,
+      unansweredOnlyRef.current,
+    ))
+  }, [])
+
   // Load/save sendMode preference (guarded — privacy-restricted browsers throw)
   useEffect(() => {
     try {
@@ -629,16 +684,20 @@ export default function ChatsPage() {
     try { localStorage.setItem('chat.sendMode', sendMode) } catch { /* ignore */ }
   }, [sendMode])
 
-  const loadChatDetail = useCallback(async (chatId: string) => {
+  const loadChatDetail = useCallback(async (chatId: string, markOpened = false) => {
     const requestSequence = ++detailRequestSequenceRef.current
     setDetailLoading(true)
     setError('')
     try {
-      const res = await api.chats.get(chatId)
+      const res = markOpened
+        ? await api.chats.openInquiry(chatId)
+        : await api.chats.get(chatId)
       if (requestSequence !== detailRequestSequenceRef.current) return
       if (res.success) {
-        setChatDetail(res.data as unknown as ChatDetail)
-        setNotes((res.data as unknown as ChatDetail).notes || '')
+        const nextDetail = res.data as unknown as ChatDetail
+        setChatDetail(nextDetail)
+        setNotes(nextDetail.notes || '')
+        reconcileChatListEntry(chatId, nextDetail, nextDetail, markOpened)
       } else {
         // API は 200 で success:false を返す可能性 (例: 404 lookup)。詳細を画面に出す。
         const errMsg = (res as { error?: string }).error ?? '不明なエラー'
@@ -652,7 +711,7 @@ export default function ChatsPage() {
     } finally {
       if (requestSequence === detailRequestSequenceRef.current) setDetailLoading(false)
     }
-  }, [])
+  }, [reconcileChatListEntry])
 
   useEffect(() => {
     void loadChats()
@@ -679,7 +738,7 @@ export default function ChatsPage() {
 
   useEffect(() => {
     if (selectedChatId) {
-      loadChatDetail(selectedChatId)
+      loadChatDetail(selectedChatId, true)
     } else {
       detailRequestSequenceRef.current += 1
       setDetailLoading(false)
@@ -702,41 +761,6 @@ export default function ChatsPage() {
       window.removeEventListener('focus', reload)
     }
   }, [loadChatDetail, selectedAccountId, selectedChatId])
-
-  // Surface deep-linked chats in the sidebar even when the current account
-  // filter or status filter would exclude them — otherwise the user replies
-  // and the conversation stays invisible until they refresh.
-  // Re-runs when `chats` changes (e.g. after loadChats refetches on filter
-  // change) so the synthetic entry is re-injected if the next API result
-  // does not include it. Returning `prev` unchanged when already present
-  // avoids any update loop.
-  useEffect(() => {
-    if (!chatDetail) return
-    setChats((prev) => {
-      if (prev.some((c) => c.id === chatDetail.id)) return prev
-      // /api/chats/:id may not populate the lastMessage* fields; derive
-      // from the messages array as a fallback so the sidebar preview is
-      // not stuck on "(まだメッセージなし)".
-      const lastMsg = chatDetail.messages?.[chatDetail.messages.length - 1]
-      const entry: Chat = {
-        id: chatDetail.id,
-        friendId: chatDetail.friendId,
-        friendName: chatDetail.friendName,
-        friendPictureUrl: chatDetail.friendPictureUrl,
-        operatorId: chatDetail.operatorId ?? null,
-        status: chatDetail.status,
-        isUnanswered: Boolean(chatDetail.isUnanswered),
-        notes: chatDetail.notes ?? null,
-        lastMessageAt: chatDetail.lastMessageAt ?? lastMsg?.createdAt ?? null,
-        lastMessageContent: chatDetail.lastMessageContent ?? lastMsg?.content ?? null,
-        lastMessageDirection: chatDetail.lastMessageDirection ?? lastMsg?.direction ?? null,
-        lastMessageType: chatDetail.lastMessageType ?? lastMsg?.messageType ?? null,
-        createdAt: chatDetail.createdAt,
-        updatedAt: chatDetail.updatedAt,
-      }
-      return [entry, ...prev]
-    })
-  }, [chatDetail, chats])
 
   // 詳細が新しくロードされたら最下部（＝最新メッセージ）までスクロールする。
   // そこから上にスクロールすれば過去のメッセージを辿れる（LINE受信画面と同じUX）。
@@ -903,31 +927,14 @@ export default function ChatsPage() {
             },
           ],
         } : prev)
-        setChats((prev) => {
-          const exists = prev.some((c) => c.id === sendingChatId)
-          if (!exists) return prev
-          const currentFilter = statusFilterRef.current
-          const currentUnansweredOnly = unansweredOnlyRef.current
-          const updated = prev.map((c) => c.id === sendingChatId ? {
-            ...c,
-            lastMessageAt: now,
-            status: 'in_progress' as const,
-            isUnanswered: false,
-            lastMessageContent: '[画像]',
-            lastMessageDirection: 'outgoing' as const,
-            lastMessageType: 'image' as const,
-          } : c)
-          let filtered = currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter)
-          if (currentUnansweredOnly) {
-            // 未対応モードでは、自分が返信したばかりの chat はもう未対応ではないのでリストから除外
-            filtered = filtered.filter((c) => c.id !== sendingChatId)
-          }
-          return [...filtered].sort((a, b) => {
-            const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
-            const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
-            return bt - at
-          })
-        })
+        reconcileChatListEntry(sendingChatId, {
+          lastMessageAt: now,
+          status: 'in_progress',
+          isUnanswered: false,
+          lastMessageContent: '[画像]',
+          lastMessageDirection: 'outgoing',
+          lastMessageType: 'image',
+        }, chatDetail)
       }
       // --- Text send path (runs independently — both paths execute when both image and text are present) ---
       if (messageContent.trim()) {
@@ -952,36 +959,17 @@ export default function ChatsPage() {
             },
           ],
         } : prev)
-        setChats((prev) => {
-          // Skip reconciliation if the list no longer contains this chat (e.g. tab changed mid-send)
-          const exists = prev.some((c) => c.id === sendingChatId)
-          if (!exists) return prev
-          const currentFilter = statusFilterRef.current
-          const currentUnansweredOnly = unansweredOnlyRef.current
-          const updated = prev.map((c) => c.id === sendingChatId ? {
-            ...c,
-            lastMessageAt: now,
-            status: 'in_progress' as const,
-            isUnanswered: false,
-            // 一覧の preview も即時更新する。incoming 優先ロジックで上書きされ得るが、
-            // 楽観 UI では「operator が今送った文面」が一瞬見えるのが期待動作。
-            // 次回 loadChats() で server 側の真の最新 (incoming 優先) に reconcile される。
-            lastMessageContent: content,
-            lastMessageDirection: 'outgoing' as const,
-            lastMessageType: 'text' as const,
-          } : c)
-          // Drop rows that no longer match the current tab (e.g. replying from 未読 moves chat to in_progress)
-          let filtered = currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter)
-          if (currentUnansweredOnly) {
-            // 未対応モードでは、自分が返信したばかりの chat はもう未対応ではないのでリストから除外
-            filtered = filtered.filter((c) => c.id !== sendingChatId)
-          }
-          return [...filtered].sort((a, b) => {
-            const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
-            const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
-            return bt - at
-          })
-        })
+        reconcileChatListEntry(sendingChatId, {
+          lastMessageAt: now,
+          status: 'in_progress',
+          isUnanswered: false,
+          // 一覧の preview も即時更新する。incoming 優先ロジックで上書きされ得るが、
+          // 楽観 UI では「operator が今送った文面」が一瞬見えるのが期待動作。
+          // 次回 loadChats() で server 側の真の最新 (incoming 優先) に reconcile される。
+          lastMessageContent: content,
+          lastMessageDirection: 'outgoing',
+          lastMessageType: 'text',
+        }, chatDetail)
       }
     } catch {
       setError('メッセージの送信に失敗しました。')
@@ -1038,31 +1026,15 @@ export default function ChatsPage() {
         pendingDrafts: (prev.pendingDrafts ?? []).filter((draft) => draft.id !== draftId),
         messages: [...(prev.messages ?? []), message],
       } : prev)
-      setChats((prev) => {
-        if (!prev.some((chat) => chat.friendId === friendId)) return prev
-        const updated = prev.map((chat) => chat.friendId === friendId ? {
-          ...chat,
-          status: 'in_progress' as const,
-          isUnanswered: false,
-          lastMessageAt: message.createdAt,
-          lastMessageContent: message.content,
-          lastMessageDirection: 'outgoing' as const,
-          lastMessageType: message.messageType,
-        } : chat)
-        const currentFilter = statusFilterRef.current
-        const currentUnansweredOnly = unansweredOnlyRef.current
-        let filtered = currentFilter === 'all'
-          ? updated
-          : updated.filter((chat) => chat.status === currentFilter)
-        if (currentUnansweredOnly) {
-          filtered = filtered.filter((chat) => chat.friendId !== friendId)
-        }
-        return [...filtered].sort((a, b) => {
-          const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
-          const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
-          return bt - at
-        })
-      })
+      reconcileChatListEntry(selectedChatId, {
+        friendId,
+        status: 'in_progress',
+        isUnanswered: false,
+        lastMessageAt: message.createdAt,
+        lastMessageContent: message.content,
+        lastMessageDirection: 'outgoing',
+        lastMessageType: message.messageType,
+      }, chatDetail)
       if (accountId) {
         notifyFaqDraftReviewChanged({
           accountId,
@@ -1102,11 +1074,49 @@ export default function ChatsPage() {
 
   const handleStatusUpdate = async (newStatus: Chat['status']) => {
     if (!selectedChatId) return
+    const updatingChatId = selectedChatId
+    const previousDetail = chatDetail
+    const previousListChat = chats.find((chat) => (
+      chat.id === updatingChatId
+      || (previousDetail ? chat.friendId === previousDetail.friendId : false)
+    )) ?? null
+    const optimisticPatch: Partial<Chat> = {
+      status: newStatus,
+      ...(newStatus === 'resolved' ? { isUnanswered: false } : {}),
+    }
+
+    setError('')
+    setChatDetail((current) => current ? { ...current, ...optimisticPatch } : current)
+    reconcileChatListEntry(
+      updatingChatId,
+      optimisticPatch,
+      previousListChat ?? previousDetail,
+    )
     try {
-      await api.chats.update(selectedChatId, { status: newStatus })
-      loadChatDetail(selectedChatId)
-      loadChats()
+      const response = await api.chats.update(updatingChatId, { status: newStatus })
+      if (!response.success) throw new Error(response.error)
+      const serverChat = response.data as unknown as Chat | undefined
+      if (serverChat) {
+        setChatDetail((current) => (
+          current && (!previousDetail || current.friendId === previousDetail.friendId)
+            ? { ...current, ...serverChat }
+            : current
+        ))
+        reconcileChatListEntry(updatingChatId, serverChat, previousListChat ?? previousDetail)
+      }
+      void loadChats(true)
     } catch {
+      if (previousDetail) {
+        setChatDetail((current) => (
+          current && current.friendId === previousDetail.friendId
+            ? previousDetail
+            : current
+        ))
+      }
+      const rollbackChat = previousListChat ?? previousDetail
+      if (rollbackChat) {
+        reconcileChatListEntry(updatingChatId, rollbackChat, rollbackChat)
+      }
       setError('ステータスの更新に失敗しました。')
     }
   }

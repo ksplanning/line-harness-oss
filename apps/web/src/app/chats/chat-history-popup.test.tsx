@@ -16,6 +16,7 @@ vi.mock('@/lib/api', () => ({
     chats: {
       list: apiMocks.listChats,
       get: apiMocks.getChat,
+      openInquiry: apiMocks.getChat,
       send: apiMocks.sendChat,
       update: apiMocks.updateChat,
     },
