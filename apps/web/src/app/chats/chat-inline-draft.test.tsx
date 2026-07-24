@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { StrictMode } from 'react'
 
 const apiMocks = vi.hoisted(() => ({
   listChats: vi.fn(),
@@ -888,6 +889,29 @@ describe('履歴を主役にする返信コンポーザ', () => {
       { content: '保存済み設定で送信' },
     ))
     expect(window.localStorage.getItem('chat.sendMode')).toBe(savedMode)
+  })
+
+  it('StrictModeでも保存済みのEnter送信を既定値で上書きしない', async () => {
+    window.localStorage.setItem('chat.sendMode', 'enter')
+    render(
+      <StrictMode>
+        <ChatsPage />
+      </StrictMode>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /あやこ/ }))
+    await screen.findByTestId('chat-message-history')
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem('chat.sendMode')).toBe('enter')
+    })
+    const textarea = screen.getByRole('textbox', { name: 'メッセージを入力' })
+    fireEvent.change(textarea, { target: { value: '保存済みEnterで送信' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalledWith(
+      'chat-row-1',
+      { content: '保存済みEnterで送信' },
+    ))
   })
 
   it('設定は既定で畳み、変更した3値を再表示後も復元する', async () => {

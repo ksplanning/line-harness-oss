@@ -576,6 +576,7 @@ export default function ChatsPage() {
   }, [unansweredOnly])
   // Send mode: 'enter' = Enter sends, Shift+Enter = newline; 'shift-enter' = reverse
   const [sendMode, setSendMode] = useState<'enter' | 'shift-enter'>('shift-enter')
+  const [sendModeLoaded, setSendModeLoaded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
@@ -707,10 +708,12 @@ export default function ChatsPage() {
       const saved = localStorage.getItem('chat.sendMode')
       if (saved === 'enter' || saved === 'shift-enter') setSendMode(saved)
     } catch { /* localStorage unavailable */ }
+    finally { setSendModeLoaded(true) }
   }, [])
   useEffect(() => {
+    if (!sendModeLoaded) return
     try { localStorage.setItem('chat.sendMode', sendMode) } catch { /* ignore */ }
-  }, [sendMode])
+  }, [sendMode, sendModeLoaded])
 
   const loadChatDetail = useCallback(async (chatId: string, markOpened = false) => {
     const requestSequence = ++detailRequestSequenceRef.current
