@@ -128,7 +128,8 @@
     "140_friend_stats_index.sql",
     "141_staff_notification_auto_reply.sql",
     "142_email_sender_settings_resend_api_key.sql",
-    "143_auto_reply_actions.sql"
+    "143_auto_reply_actions.sql",
+    "144_ai_reply_style_defaults.sql"
   ],
-  "migrationCount": 129
+  "migrationCount": 130
 }

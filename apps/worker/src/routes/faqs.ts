@@ -30,11 +30,16 @@ const DEFAULT_FAQ_BOT_SETTINGS = {
   maxRepliesPerDay: 5,
   // AI 回答モード。'auto'=送信 / 'draft'=草案保存。安全側の既定は 'draft'。
   answerMode: 'draft' as 'auto' | 'draft',
+  replyStyle: {
+    instructions: '',
+    greeting: '',
+  },
   personalContext: DEFAULT_FAQ_PERSONAL_CONTEXT_SETTINGS,
 };
 
-type FaqBotSettingsInput = Partial<Omit<typeof DEFAULT_FAQ_BOT_SETTINGS, 'personalContext'>> & {
+type FaqBotSettingsInput = Partial<Omit<typeof DEFAULT_FAQ_BOT_SETTINGS, 'personalContext' | 'replyStyle'>> & {
   personalContext?: unknown;
+  replyStyle?: unknown;
 };
 
 function parseVariants(raw: string): string[] {
@@ -72,6 +77,17 @@ function serializeUnmatched(row: DbUnmatchedQuestion) {
   };
 }
 
+function normalizeReplyStyle(input: unknown) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return DEFAULT_FAQ_BOT_SETTINGS.replyStyle;
+  }
+  const value = input as Record<string, unknown>;
+  return {
+    instructions: typeof value.instructions === 'string' ? value.instructions : '',
+    greeting: typeof value.greeting === 'string' ? value.greeting : '',
+  };
+}
+
 function normalizeSettings(input: FaqBotSettingsInput) {
   return {
     enabled: input.enabled === true,
@@ -82,6 +98,7 @@ function normalizeSettings(input: FaqBotSettingsInput) {
     answerMode: input.answerMode === 'auto' || input.answerMode === 'draft'
       ? input.answerMode
       : DEFAULT_FAQ_BOT_SETTINGS.answerMode,
+    replyStyle: normalizeReplyStyle(input.replyStyle),
     personalContext: normalizeFaqPersonalContextSettings(input.personalContext),
   };
 }
@@ -506,6 +523,11 @@ faqs.put('/api/account-settings/faq-bot', async (c) => {
   const existing = parseStoredSettings(existingRow?.value);
   const value = normalizeSettings({
     ...body,
+    // Additive setting: older clients send a full FAQ settings object without
+    // replyStyle. Preserve the saved account-specific value in that case.
+    replyStyle: Object.prototype.hasOwnProperty.call(body, 'replyStyle')
+      ? body.replyStyle
+      : existing.replyStyle,
     // Old clients know nothing about this additive setting. Omission must keep
     // an administrator's saved choice instead of silently restoring default ON.
     personalContext: Object.prototype.hasOwnProperty.call(body, 'personalContext')
