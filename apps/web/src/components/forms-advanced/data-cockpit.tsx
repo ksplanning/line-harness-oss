@@ -30,7 +30,7 @@ type ExternalFormStats = FormStats & { externalEditPending?: number }
 
 function pendingExternalEditRevision(row: SubmissionRow): string | null {
   const external = row as ExternalSubmissionRow
-  if (!external.externalEditSource || external.externalEditApprovedAt) return null
+  if (!external.externalEditSource || external.externalEditApprovedAt || (external.externalEditChanges?.length ?? 0) === 0) return null
   return JSON.stringify([row.id, external.externalEditSource, external.externalEditedAt ?? null])
 }
 

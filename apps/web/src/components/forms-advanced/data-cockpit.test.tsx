@@ -153,6 +153,9 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
       externalEditSource: 'sheet',
       externalEditedAt: '2026-07-23T10:01:00+09:00',
       externalEditApprovedAt: null,
+      externalEditChanges: [
+        { fieldId: 'name', before: '変更前', after: '鈴木' },
+      ],
     },
   ]
 
@@ -242,6 +245,31 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
 
     expect(screen.getByLabelText('s1 の詳細')).toBeTruthy()
     expect(screen.queryByLabelText('normal-row の詳細')).toBeNull()
+  })
+
+  it('サーバー応答前の絞り込み切替直後から差分0件を件数と一覧から除外し、差分ありは残す', () => {
+    const zeroChangeRow = {
+      ...externalRows[1],
+      id: 'zero-change-row',
+      externalEditChanges: [],
+    } as SubmissionRow
+    const p = base({
+      rows: [externalRows[0], zeroChangeRow],
+      total: 2,
+    })
+    render(<DataCockpit {...p} />)
+
+    expect(screen.getByLabelText('zero-change-row の詳細')).toBeTruthy()
+    const filter = screen.getByRole('button', { name: /外部編集（未承認）/ })
+    fireEvent.click(filter)
+
+    expect(p.onQuery).toHaveBeenLastCalledWith(expect.objectContaining({
+      externalEdit: 'pending',
+      page: 1,
+    }))
+    expect(screen.getByLabelText('s1 の詳細')).toBeTruthy()
+    expect(screen.queryByLabelText('zero-change-row の詳細')).toBeNull()
+    expect(screen.getByRole('button', { name: '外部編集（未承認） 1件' })).toBeTruthy()
   })
 
   it('確認ボタンの初回クリックでは API を呼ばず、反映済みの説明と経路・日時・全差分を表示する', () => {
