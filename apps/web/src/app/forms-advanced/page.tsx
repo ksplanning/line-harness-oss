@@ -17,6 +17,12 @@ const LINE_GREEN = '#06C755'
 // フォルダ絞り: null=すべて / 'none'=未分類 (sentinel = §3.3b) / それ以外=フォルダ id。
 type FolderFilter = string | null
 
+type LoadResult = 'loaded' | 'failed' | 'stale'
+
+function duplicateOperationKey(accountId: string, formId: string): string {
+  return `${accountId}\u0000${formId}`
+}
+
 function statusBadge(form: Pick<AdvancedForm, 'builderStatus' | 'internalAvailability'>) {
   const status = form.builderStatus
   if (status === 'published' && form.internalAvailability) {
@@ -43,7 +49,8 @@ export default function FormsAdvancedListPage() {
   const [forms, setForms] = useState<AdvancedForm[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
-  const [duplicatingIds, setDuplicatingIds] = useState<Set<string>>(() => new Set())
+  const [duplicatingKeys, setDuplicatingKeys] = useState<Set<string>>(() => new Set())
+  const duplicatingKeysRef = useRef<Set<string>>(new Set())
   const [duplicateError, setDuplicateError] = useState<string | null>(null)
   const [isOwner, setIsOwner] = useState(false)
   const [workspaces, setWorkspaces] = useState<FormalooWorkspace[]>([])
@@ -66,13 +73,22 @@ export default function FormsAdvancedListPage() {
   // reqToken guard は各 reload の「自分の stale 応答」は捨てられるが、CRUD 完了後に旧 account の reload を
   // "新規に発行" してしまう経路 (= 最新 token を握って勝つ) を塞げないため、account 同一性で発行自体を止める。
   const accountRef = useRef(selectedAccountId)
-  useEffect(() => {
+  const accountEpochRef = useRef(0)
+  if (accountRef.current !== selectedAccountId) {
     accountRef.current = selectedAccountId
-    setDuplicatingIds(new Set())
+    accountEpochRef.current += 1
+  }
+  useEffect(() => {
     setDuplicateError(null)
   }, [selectedAccountId])
+  const selectedFolderRef = useRef<FolderFilter>(selectedFolderId)
+  selectedFolderRef.current = selectedFolderId
 
-  const load = useCallback(async (accountId: string, folderFilter?: string) => {
+  const load = useCallback(async (
+    accountId: string,
+    folderFilter?: string,
+    options: { preserveOnError?: boolean } = {},
+  ): Promise<LoadResult> => {
     const token = ++reqToken.current
     setLoading(true)
     try {
@@ -81,11 +97,13 @@ export default function FormsAdvancedListPage() {
         folderFilter === undefined
           ? await formsAdvancedApi.list(accountId)
           : await formsAdvancedApi.list(accountId, folderFilter)
-      if (token !== reqToken.current) return // stale 応答は破棄
+      if (token !== reqToken.current) return 'stale' // stale 応答は破棄
       setForms(data)
+      return 'loaded'
     } catch {
-      if (token !== reqToken.current) return
-      setForms([])
+      if (token !== reqToken.current) return 'stale'
+      if (!options.preserveOnError) setForms([])
+      return 'failed'
     } finally {
       if (token === reqToken.current) setLoading(false)
     }
@@ -192,27 +210,42 @@ export default function FormsAdvancedListPage() {
   }, [selectedAccountId, selectedFolderId, load])
 
   const handleDuplicate = async (formId: string) => {
-    if (!selectedAccountId || duplicatingIds.has(formId)) return
+    if (!selectedAccountId) return
     const acct = selectedAccountId
-    const folderFilter = selectedFolderId === null ? undefined : selectedFolderId
+    const operationKey = duplicateOperationKey(acct, formId)
+    if (duplicatingKeysRef.current.has(operationKey)) return
+    const accountEpoch = accountEpochRef.current
+    const isCurrentAccountContext = () =>
+      accountRef.current === acct && accountEpochRef.current === accountEpoch
+
+    duplicatingKeysRef.current.add(operationKey)
     setDuplicateError(null)
-    setDuplicatingIds((current) => new Set(current).add(formId))
+    setDuplicatingKeys((current) => new Set(current).add(operationKey))
     try {
       await formsAdvancedApi.duplicate(formId, acct)
-      if (accountRef.current !== acct) return
-      await load(acct, folderFilter)
+      if (!isCurrentAccountContext()) return
+      const currentFolder = selectedFolderRef.current
+      const result = await load(
+        acct,
+        currentFolder === null ? undefined : currentFolder,
+        { preserveOnError: true },
+      )
+      if (result === 'failed' && isCurrentAccountContext()) {
+        setDuplicateError(
+          'フォームは複製されましたが、一覧の再取得に失敗しました。時間をおいて、もう一度お試しください。',
+        )
+      }
     } catch {
-      if (accountRef.current === acct) {
+      if (isCurrentAccountContext()) {
         setDuplicateError('フォームの複製に失敗しました。時間をおいて、もう一度お試しください。')
       }
     } finally {
-      if (accountRef.current === acct) {
-        setDuplicatingIds((current) => {
-          const next = new Set(current)
-          next.delete(formId)
-          return next
-        })
-      }
+      duplicatingKeysRef.current.delete(operationKey)
+      setDuplicatingKeys((current) => {
+        const next = new Set(current)
+        next.delete(operationKey)
+        return next
+      })
     }
   }
 
@@ -390,6 +423,9 @@ export default function FormsAdvancedListPage() {
             {forms.map((form) => {
               const badge = statusBadge(form)
               const syncBadge = formSyncBadge(form)
+              const isDuplicating = selectedAccountId
+                ? duplicatingKeys.has(duplicateOperationKey(selectedAccountId, form.id))
+                : false
               return (
                 <div key={form.id} data-testid={`form-card-${form.id}`} className="bg-white rounded-lg border border-gray-200 p-4">
                   <div className="flex items-center gap-2 mb-2">
@@ -421,10 +457,10 @@ export default function FormsAdvancedListPage() {
                       type="button"
                       data-testid={`duplicate-${form.id}`}
                       onClick={() => void handleDuplicate(form.id)}
-                      disabled={duplicatingIds.has(form.id)}
+                      disabled={isDuplicating}
                       className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50"
                     >
-                      {duplicatingIds.has(form.id) ? '複製中...' : '複製'}
+                      {isDuplicating ? '複製中...' : '複製'}
                     </button>
                     <Link href={`/forms-advanced/detail?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">編集</Link>
                     <Link href={`/forms-advanced/data?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">データ</Link>

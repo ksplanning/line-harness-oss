@@ -47,7 +47,12 @@ vi.mock('@/lib/api', () => ({ fetchApi: (...args: unknown[]) => fetchApiMock(...
 
 import Page from './page'
 
-function form(id: string, title: string, lineAccountId = 'account-a') {
+function form(
+  id: string,
+  title: string,
+  lineAccountId = 'account-a',
+  folderId: string | null = null,
+) {
   return {
     id,
     title,
@@ -64,8 +69,18 @@ function form(id: string, title: string, lineAccountId = 'account-a') {
     syncStatus: 'idle',
     syncError: null,
     lineAccountId,
-    folderId: null,
+    folderId,
     updatedAt: '2026-07-24T12:00:00+09:00',
+  }
+}
+
+function folder(id: string, name: string) {
+  return {
+    id,
+    lineAccountId: 'account-a',
+    name,
+    parentId: null,
+    position: 0,
   }
 }
 
@@ -161,5 +176,119 @@ describe('フォーム一覧の複製操作', () => {
     expect(screen.queryByTestId('form-card-copy-a')).toBeNull()
     expect(screen.getByTestId('form-card-source-b')).toBeTruthy()
     expect(listMock.mock.calls.filter(([accountId]) => accountId === 'account-a')).toHaveLength(1)
+  })
+
+  it('特定フォルダで複製すると同じフォルダを再取得してコピーを表示する', async () => {
+    let duplicated = false
+    foldersListMock.mockResolvedValue([folder('folder-a', 'イベント')])
+    duplicateMock.mockImplementation(async () => {
+      duplicated = true
+      return form('copy-a', '夢花火2026申し込み のコピー', 'account-a', 'folder-a')
+    })
+    listMock.mockImplementation((_accountId: string, folderId?: string) => Promise.resolve(
+      folderId === 'folder-a'
+        ? duplicated
+          ? [
+              form('copy-a', '夢花火2026申し込み のコピー', 'account-a', 'folder-a'),
+              form('source-a', '夢花火2026申し込み', 'account-a', 'folder-a'),
+            ]
+          : [form('source-a', '夢花火2026申し込み', 'account-a', 'folder-a')]
+        : [form('source-a', '夢花火2026申し込み', 'account-a', 'folder-a')],
+    ))
+    render(<Page />)
+    await screen.findByTestId('folder-item-folder-a')
+    fireEvent.click(screen.getByTestId('folder-item-folder-a'))
+    await screen.findByTestId('form-card-source-a')
+
+    fireEvent.click(screen.getByTestId('duplicate-source-a'))
+
+    await screen.findByTestId('form-card-copy-a')
+    expect(listMock).toHaveBeenLastCalledWith('account-a', 'folder-a')
+  })
+
+  it('複製待ち中にフォルダを変えても、古い絞り結果で現在の一覧を上書きしない', async () => {
+    let resolveDuplicate!: (value: unknown) => void
+    duplicateMock.mockImplementation(() => new Promise((resolve) => {
+      resolveDuplicate = resolve
+    }))
+    foldersListMock.mockResolvedValue([
+      folder('folder-source', '申込'),
+      folder('folder-other', 'アンケート'),
+    ])
+    listMock.mockImplementation((_accountId: string, folderId?: string) => Promise.resolve(
+      folderId === 'folder-other'
+        ? [form('other-a', '別フォーム', 'account-a', 'folder-other')]
+        : [form('source-a', '申込フォーム', 'account-a', 'folder-source')],
+    ))
+    render(<Page />)
+    await screen.findByTestId('folder-item-folder-source')
+    fireEvent.click(screen.getByTestId('folder-item-folder-source'))
+    await screen.findByTestId('form-card-source-a')
+    fireEvent.click(screen.getByTestId('duplicate-source-a'))
+
+    fireEvent.click(screen.getByTestId('folder-item-folder-other'))
+    await screen.findByTestId('form-card-other-a')
+    await act(async () => {
+      resolveDuplicate(form('copy-a', '申込フォーム のコピー', 'account-a', 'folder-source'))
+    })
+
+    await waitFor(() => {
+      expect(listMock).toHaveBeenLastCalledWith('account-a', 'folder-other')
+      expect(screen.getByTestId('form-card-other-a')).toBeTruthy()
+      expect(screen.queryByTestId('form-card-source-a')).toBeNull()
+    })
+  })
+
+  it('A→B→A の往復中も最初の A 複製を二重実行せず、古い完了で再取得しない', async () => {
+    let resolveDuplicate!: (value: unknown) => void
+    duplicateMock.mockImplementation(() => new Promise((resolve) => {
+      resolveDuplicate = resolve
+    }))
+    listMock.mockImplementation((accountId: string) => Promise.resolve(
+      accountId === 'account-a'
+        ? [form('source-a', 'A社フォーム', 'account-a')]
+        : [form('source-b', 'B社フォーム', 'account-b')],
+    ))
+    const { rerender } = render(<Page />)
+    await screen.findByTestId('form-card-source-a')
+    fireEvent.click(screen.getByTestId('duplicate-source-a'))
+
+    mockAccount.selectedAccountId = 'account-b'
+    rerender(<Page />)
+    await screen.findByTestId('form-card-source-b')
+    mockAccount.selectedAccountId = 'account-a'
+    rerender(<Page />)
+    await screen.findByTestId('form-card-source-a')
+
+    expect((screen.getByTestId('duplicate-source-a') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByTestId('duplicate-source-a'))
+    expect(duplicateMock).toHaveBeenCalledTimes(1)
+    const accountACallsBeforeOldCompletion = listMock.mock.calls
+      .filter(([accountId]) => accountId === 'account-a').length
+
+    await act(async () => {
+      resolveDuplicate(form('copy-a', 'A社フォーム のコピー', 'account-a'))
+    })
+    await act(async () => { await Promise.resolve() })
+
+    expect(listMock.mock.calls.filter(([accountId]) => accountId === 'account-a'))
+      .toHaveLength(accountACallsBeforeOldCompletion)
+    expect(screen.getByTestId('form-card-source-a')).toBeTruthy()
+  })
+
+  it('複製成功後の一覧再取得に失敗しても元一覧を保ち、日本語で再取得失敗を表示する', async () => {
+    listMock
+      .mockResolvedValueOnce([form('source-a', '夢花火2026申し込み')])
+      .mockRejectedValueOnce(new Error('list failed'))
+    duplicateMock.mockResolvedValue(form('copy-a', '夢花火2026申し込み のコピー'))
+    render(<Page />)
+    await screen.findByTestId('form-card-source-a')
+
+    fireEvent.click(screen.getByTestId('duplicate-source-a'))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('一覧の再取得に失敗しました')
+    expect(screen.getByTestId('form-card-source-a')).toBeTruthy()
+    expect((screen.getByTestId('duplicate-source-a') as HTMLButtonElement).disabled).toBe(false)
   })
 })
