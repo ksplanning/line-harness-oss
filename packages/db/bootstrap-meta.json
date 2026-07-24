@@ -129,7 +129,8 @@
     "141_staff_notification_auto_reply.sql",
     "142_email_sender_settings_resend_api_key.sql",
     "143_auto_reply_actions.sql",
-    "144_ai_reply_style_defaults.sql"
+    "144_ai_reply_style_defaults.sql",
+    "145_internal_form_external_edit_notification_claim.sql"
   ],
-  "migrationCount": 130
+  "migrationCount": 131
 }

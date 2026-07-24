@@ -22,6 +22,8 @@ export interface InternalFormSubmission {
   external_edited_at: string | null;
   external_edit_approved_at: string | null;
   external_edit_changes_json: string | null;
+  external_edit_notification_claimed_for_at: string | null;
+  external_edit_notification_claimed_for_version: number | null;
   deleted_at: string | null;
   submitted_at: string;
   created_at: string;
@@ -489,6 +491,8 @@ function insertedInternalFormSubmission(
     external_edited_at: null,
     external_edit_approved_at: null,
     external_edit_changes_json: null,
+    external_edit_notification_claimed_for_at: null,
+    external_edit_notification_claimed_for_version: null,
     deleted_at: null,
     submitted_at: now,
     created_at: now,
@@ -1244,6 +1248,47 @@ export async function updateInternalFormSubmissionAnswers(
     status: 'conflict',
     submission,
   };
+}
+
+export async function claimInternalFormExternalEditNotification(
+  db: D1Database,
+  input: {
+    formId: string;
+    submissionId: string;
+    externalEditedAt: string;
+    expectedEditVersion: number;
+  },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_notification_claimed_for_at = ?,
+           external_edit_notification_claimed_for_version = ?
+       WHERE id = ? AND form_id = ? AND deleted_at IS NULL
+         AND external_edit_source = 'edit_link'
+         AND external_edited_at = ?
+         AND edit_version = ?
+         AND (
+           external_edit_notification_claimed_for_at IS NOT ?
+           OR external_edit_notification_claimed_for_version IS NOT ?
+         )
+         AND COALESCE(json_array_length(
+           CASE WHEN json_valid(external_edit_changes_json)
+             THEN external_edit_changes_json ELSE '[]' END
+         ), 0) > 0`,
+    )
+    .bind(
+      input.externalEditedAt,
+      input.expectedEditVersion,
+      input.submissionId,
+      input.formId,
+      input.externalEditedAt,
+      input.expectedEditVersion,
+      input.externalEditedAt,
+      input.expectedEditVersion,
+    )
+    .run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 export async function countPendingInternalFormExternalEdits(

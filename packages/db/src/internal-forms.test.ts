@@ -25,6 +25,7 @@ import {
   updateLatestInternalFormSubmissionAnswersForSheets,
   updateInternalFormSubmissionAnswers,
 } from './internal-forms.js';
+import * as internalForms from './internal-forms.js';
 import {
   acquireFormalooFormOperationLock,
   getFormalooForm,
@@ -83,6 +84,25 @@ beforeEach(() => {
 });
 
 describe('internal form persistence', () => {
+  test('adds nullable per-edit notification claim columns', () => {
+    const columns = raw.pragma('table_info(internal_form_submissions)') as Array<{
+      name: string;
+      notnull: number;
+      dflt_value: unknown;
+    }>;
+
+    expect(columns).toContainEqual(expect.objectContaining({
+      name: 'external_edit_notification_claimed_for_at',
+      notnull: 0,
+      dflt_value: null,
+    }));
+    expect(columns).toContainEqual(expect.objectContaining({
+      name: 'external_edit_notification_claimed_for_version',
+      notnull: 0,
+      dflt_value: null,
+    }));
+  });
+
   test('switches a single form without changing the formaloo default', async () => {
     expect((await getFormalooForm(DB, 'fa_internal'))?.render_backend).toBe('formaloo');
 
@@ -872,6 +892,111 @@ describe('internal form persistence', () => {
         external_edit_changes_json:
           '[{"fieldId":"name","before":"変更後","after":"再編集"}]',
       },
+    });
+  });
+
+  test('atomically claims each non-empty edit-link revision at most once', async () => {
+    type ClaimExternalEditNotification = (
+      db: D1Database,
+      input: {
+        formId: string;
+        submissionId: string;
+        externalEditedAt: string;
+        expectedEditVersion: number;
+      },
+    ) => Promise<boolean>;
+    const claim = (internalForms as unknown as {
+      claimInternalFormExternalEditNotification?: ClaimExternalEditNotification;
+    }).claimInternalFormExternalEditNotification;
+    expect(claim).toEqual(expect.any(Function));
+    if (!claim) return;
+
+    const created = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '変更前' },
+    });
+    const updated = await updateInternalFormSubmissionAnswers(DB, {
+      formId: 'fa_internal',
+      submissionId: created.id,
+      expectedEditVersion: 0,
+      expectedEditLinkEpoch: 4,
+      previousAnswers: { name: '変更前' },
+      answers: { name: '変更後' },
+    });
+    expect(updated.status).toBe('updated');
+    if (updated.status !== 'updated' || !updated.submission.external_edited_at) return;
+    const firstEditedAt = updated.submission.external_edited_at;
+    const claimInput = {
+      formId: 'fa_internal',
+      submissionId: created.id,
+      externalEditedAt: firstEditedAt,
+      expectedEditVersion: 1,
+    };
+
+    await expect(claim(DB, claimInput)).resolves.toBe(true);
+    await expect(claim(DB, claimInput)).resolves.toBe(false);
+    expect(await getInternalFormSubmission(DB, 'fa_internal', created.id)).toMatchObject({
+      external_edit_notification_claimed_for_at: firstEditedAt,
+      external_edit_notification_claimed_for_version: 1,
+      external_edit_approved_at: null,
+    });
+
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET edit_version = 2,
+           external_edit_changes_json = ?
+       WHERE id = ?`,
+    ).run(
+      '[{"fieldId":"name","before":"変更後","after":"同一時刻の再変更"}]',
+      created.id,
+    );
+    await expect(claim(DB, {
+      ...claimInput,
+      expectedEditVersion: 1,
+    })).resolves.toBe(false);
+    await expect(claim(DB, {
+      ...claimInput,
+      expectedEditVersion: 2,
+    })).resolves.toBe(true);
+    await expect(claim(DB, {
+      ...claimInput,
+      expectedEditVersion: 2,
+    })).resolves.toBe(false);
+
+    const nextEditedAt = '2026-07-24T13:00:00.001+09:00';
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET edit_version = 3,
+           external_edited_at = ?,
+           external_edit_changes_json = ?
+       WHERE id = ?`,
+    ).run(
+      nextEditedAt,
+      '[{"fieldId":"name","before":"変更後","after":"再変更"}]',
+      created.id,
+    );
+    await expect(claim(DB, {
+      ...claimInput,
+      externalEditedAt: nextEditedAt,
+      expectedEditVersion: 3,
+    })).resolves.toBe(true);
+
+    const emptyEditedAt = '2026-07-24T13:00:00.002+09:00';
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET edit_version = 4,
+           external_edited_at = ?,
+           external_edit_changes_json = '[]'
+       WHERE id = ?`,
+    ).run(emptyEditedAt, created.id);
+    await expect(claim(DB, {
+      ...claimInput,
+      externalEditedAt: emptyEditedAt,
+      expectedEditVersion: 4,
+    })).resolves.toBe(false);
+    expect(await getInternalFormSubmission(DB, 'fa_internal', created.id)).toMatchObject({
+      external_edit_notification_claimed_for_at: nextEditedAt,
+      external_edit_notification_claimed_for_version: 3,
     });
   });
 

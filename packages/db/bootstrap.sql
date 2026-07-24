@@ -879,7 +879,7 @@ CREATE TABLE internal_form_submissions (
   CHECK (
     external_edit_source IS NULL
     OR external_edit_source IN ('edit_link', 'sheet')
-  ), external_edited_at TEXT, external_edit_approved_at TEXT, external_edit_changes_json TEXT);
+  ), external_edited_at TEXT, external_edit_approved_at TEXT, external_edit_changes_json TEXT, external_edit_notification_claimed_for_at TEXT, external_edit_notification_claimed_for_version INTEGER);
 
 CREATE TABLE knowledge_chunks (
   id              TEXT PRIMARY KEY,
