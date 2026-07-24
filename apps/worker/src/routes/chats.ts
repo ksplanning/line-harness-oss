@@ -660,6 +660,19 @@ chats.delete('/api/chats/:id/drafts/:draftId', async (c) => {
 chats.post('/api/chats/:id/drafts/:draftId/approve', async (c) => {
   const actor = c.get('staff');
   if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
+  let addToFaq = false;
+  const rawBody = await c.req.text();
+  if (rawBody) {
+    try {
+      const body = JSON.parse(rawBody) as { addToFaq?: unknown };
+      if (body.addToFaq !== undefined && typeof body.addToFaq !== 'boolean') {
+        return c.json({ success: false, error: 'addToFaq must be a boolean' }, 400);
+      }
+      addToFaq = body.addToFaq === true;
+    } catch {
+      return c.json({ success: false, error: 'JSON body required' }, 400);
+    }
+  }
   try {
     const friendId = await resolveDraftReviewFriendId(c.env.DB, c.req.param('id'));
     if (!friendId) return c.json({ success: false, error: 'Chat not found' }, 404);
@@ -668,6 +681,7 @@ chats.post('/api/chats/:id/drafts/:draftId/approve', async (c) => {
       draftId: c.req.param('draftId'),
       friendId,
       actorStaffId: actor.id,
+      addToFaq,
     });
     return c.json({ success: true, data });
   } catch (error) {

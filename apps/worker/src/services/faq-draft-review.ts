@@ -1,5 +1,6 @@
-import { jstNow } from '@line-crm/db';
+import { createFaq, jstNow } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
+import { buildFaqSearchText } from './faq-fts.js';
 
 export interface InlineAiFaqDraft {
   id: string;
@@ -472,6 +473,7 @@ export async function approveAiFaqDraft(input: {
   friendId: string;
   actorStaffId: string;
   expectedLineAccountId?: string;
+  addToFaq?: boolean;
 }): Promise<{ draft: ReviewedDraft; message: {
   id: string;
   direction: 'outgoing';
@@ -554,6 +556,25 @@ export async function approveAiFaqDraft(input: {
     ).bind(sentAt, sentAt, claimed.friend_id),
     auditStatement(input.db, claimed, input.actorStaffId, 'approved', sentAt),
   ]);
+
+  if (input.addToFaq === true) {
+    try {
+      await createFaq(input.db, {
+        question: claimed.question,
+        variants: [],
+        answer: claimed.draft_answer,
+        lineAccountId: claimed.friend_account_id,
+        isActive: false,
+        searchText: buildFaqSearchText(claimed.question, []),
+      });
+    } catch (error) {
+      // LINE送信と承認台帳は確定済み。FAQ下書きの失敗で再送可能な応答へ戻さない。
+      console.error(
+        'FAQ registration after draft approval failed:',
+        error instanceof Error ? error.name : 'unknown',
+      );
+    }
+  }
 
   return {
     draft: {

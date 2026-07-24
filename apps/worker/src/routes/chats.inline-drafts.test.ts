@@ -21,6 +21,7 @@ vi.mock('@line-crm/line-sdk', () => ({
 
 const { chats } = await import('./chats.js');
 const { faqDraftReviews } = await import('./faq-draft-reviews.js');
+const { faqs } = await import('./faqs.js');
 const {
   approveAiFaqDraft,
   discardAiFaqDraft,
@@ -80,6 +81,7 @@ function createApp(raw: Database.Database, options: { withStaff?: boolean } = {}
   }
   app.route('/', chats);
   app.route('/', faqDraftReviews);
+  app.route('/', faqs);
   const bindings = {
     DB: asD1(raw),
     LINE_CHANNEL_ACCESS_TOKEN: 'unsafe-default-token',
@@ -167,6 +169,18 @@ beforeEach(() => {
       match_type TEXT NOT NULL,
       line_account_id TEXT,
       is_active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE faqs (
+      id TEXT PRIMARY KEY,
+      line_account_id TEXT,
+      question TEXT NOT NULL,
+      variants TEXT NOT NULL DEFAULT '[]',
+      answer TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      hit_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      search_text TEXT NOT NULL DEFAULT ''
     );
 
     INSERT INTO line_accounts (id, channel_access_token, is_active) VALUES
@@ -335,6 +349,80 @@ describe('inline draft review mutations', () => {
     });
     expect(raw.prepare(`SELECT action FROM ai_faq_draft_audit_log`).get())
       .toEqual({ action: 'approved' });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM faqs`).get()).toEqual({ count: 0 });
+  });
+
+  test('adds the sent answer to this account as an inactive editable FAQ and round-trips through the FAQ list', async () => {
+    seedDraft({ question: '営業時間は？', answer: '編集後は11時からです' });
+
+    const response = await mutate(
+      '/api/chats/friend-1/drafts/draft-1/approve',
+      'POST',
+      { addToFaq: true },
+    );
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare(
+      `SELECT line_account_id, question, variants, answer, is_active
+         FROM faqs`,
+    ).get()).toEqual({
+      line_account_id: 'acc-1',
+      question: '営業時間は？',
+      variants: '[]',
+      answer: '編集後は11時からです',
+      is_active: 0,
+    });
+
+    const ownList = await app.request('/api/faqs?accountId=acc-1');
+    const ownBody = await ownList.json() as {
+      data: Array<{
+        lineAccountId: string | null;
+        question: string;
+        answer: string;
+        isActive: boolean;
+      }>;
+    };
+    expect(ownBody.data).toEqual([expect.objectContaining({
+      lineAccountId: 'acc-1',
+      question: '営業時間は？',
+      answer: '編集後は11時からです',
+      isActive: false,
+    })]);
+    expect(JSON.stringify(ownBody.data)).not.toContain('あやこ');
+
+    const otherList = await app.request('/api/faqs?accountId=acc-2');
+    const otherBody = await otherList.json() as { data: unknown[] };
+    expect(otherBody.data).toEqual([]);
+  });
+
+  test('keeps the approved send successful when selected FAQ registration fails', async () => {
+    seedDraft({});
+    raw.exec(`
+      CREATE TRIGGER fail_faq_insert
+      BEFORE INSERT ON faqs
+      BEGIN SELECT RAISE(ABORT, 'forced FAQ failure'); END;
+    `);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const response = await mutate(
+        '/api/chats/friend-1/drafts/draft-1/approve',
+        'POST',
+        { addToFaq: true },
+      );
+
+      expect(response.status).toBe(200);
+      expect(raw.prepare(`SELECT status FROM ai_faq_drafts WHERE id='draft-1'`).get())
+        .toEqual({ status: 'approved' });
+      expect(raw.prepare(`SELECT COUNT(*) AS count FROM messages_log`).get()).toEqual({ count: 1 });
+      expect(raw.prepare(`SELECT COUNT(*) AS count FROM faqs`).get()).toEqual({ count: 0 });
+      expect(errorSpy).toHaveBeenCalledWith(
+        'FAQ registration after draft approval failed:',
+        expect.any(String),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('fails closed on account mismatch before LINE and keeps the draft pending', async () => {
@@ -384,7 +472,7 @@ describe('inline draft review mutations', () => {
     seedDraft({});
     lineState.fail = true;
     const path = '/api/chats/friend-1/drafts/draft-1/approve';
-    const first = await mutate(path, 'POST');
+    const first = await mutate(path, 'POST', { addToFaq: true });
     const retry = await mutate(path, 'POST');
 
     expect(first.status).toBe(502);
@@ -395,6 +483,7 @@ describe('inline draft review mutations', () => {
     expect(raw.prepare(`SELECT COUNT(*) AS count FROM messages_log`).get()).toEqual({ count: 0 });
     expect(raw.prepare(`SELECT action FROM ai_faq_draft_audit_log`).get())
       .toEqual({ action: 'send_failed' });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM faqs`).get()).toEqual({ count: 0 });
   });
 });
 
@@ -469,6 +558,26 @@ describe('central FAQ draft inbox review mutations', () => {
     expect(raw.prepare(`SELECT COUNT(*) AS count FROM messages_log`).get()).toEqual({ count: 1 });
     expect(raw.prepare(`SELECT COUNT(*) AS count FROM ai_faq_draft_audit_log WHERE action='approved'`).get())
       .toEqual({ count: 1 });
+  });
+
+  test('central approval forwards the FAQ choice through the same account-scoped hook', async () => {
+    seedDraft({ question: '中央の質問', answer: '中央の回答' });
+
+    const response = await mutate(
+      inboxPath('draft-1', '/approve'),
+      'POST',
+      { accountId: 'acc-1', addToFaq: true },
+    );
+
+    expect(response.status).toBe(200);
+    expect(raw.prepare(
+      `SELECT line_account_id, question, answer, is_active FROM faqs`,
+    ).get()).toEqual({
+      line_account_id: 'acc-1',
+      question: '中央の質問',
+      answer: '中央の回答',
+      is_active: 0,
+    });
   });
 
   test('records the actual friend account in audit for a legacy null-account draft', async () => {

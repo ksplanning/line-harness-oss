@@ -104,7 +104,7 @@ faqDraftReviews.delete('/api/faq-draft-reviews/:draftId', async (c) => {
 faqDraftReviews.post('/api/faq-draft-reviews/:draftId/approve', async (c) => {
   const actor = c.get('staff');
   if (!actor) return c.json({ success: false, error: 'Authentication required' }, 401);
-  let body: { accountId?: unknown };
+  let body: { accountId?: unknown; addToFaq?: unknown };
   try {
     body = await c.req.json();
   } catch {
@@ -112,6 +112,9 @@ faqDraftReviews.post('/api/faq-draft-reviews/:draftId/approve', async (c) => {
   }
   const accountId = accountIdFromBody(body);
   if (!accountId) return c.json({ success: false, error: 'accountId is required' }, 400);
+  if (body.addToFaq !== undefined && typeof body.addToFaq !== 'boolean') {
+    return c.json({ success: false, error: 'addToFaq must be a boolean' }, 400);
+  }
   try {
     const draftId = c.req.param('draftId');
     const friendId = await resolveAiFaqDraftReviewFriend(c.env.DB, draftId, accountId);
@@ -121,6 +124,7 @@ faqDraftReviews.post('/api/faq-draft-reviews/:draftId/approve', async (c) => {
       friendId,
       actorStaffId: actor.id,
       expectedLineAccountId: accountId,
+      addToFaq: body.addToFaq === true,
     });
     return c.json({
       success: true,
