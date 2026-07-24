@@ -10,7 +10,7 @@ export interface EmailSenderSettingsPanelProps {
   accountId: string | null
 }
 
-type Operation = 'save' | 'register' | 'check'
+type Operation = 'save' | 'key' | 'register' | 'check' | 'test'
 
 function isEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
@@ -40,12 +40,46 @@ function domainStatusLabel(status: string, registered: boolean): string {
   }
 }
 
+async function writeClipboard(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value)
+      return
+    } catch {
+      // Clipboard API can be unavailable even when the property exists.
+    }
+  }
+
+  const textarea = document.createElement('textarea')
+  const previouslyFocused = document.activeElement as HTMLElement | null
+  textarea.value = value
+  textarea.setAttribute('aria-hidden', 'true')
+  textarea.tabIndex = -1
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+
+  try {
+    textarea.focus()
+    textarea.select()
+    if (typeof document.execCommand !== 'function' || !document.execCommand('copy')) {
+      throw new Error('clipboard_copy_failed')
+    }
+  } finally {
+    textarea.remove()
+    previouslyFocused?.focus()
+  }
+}
+
 export default function EmailSenderSettingsPanel({
   accountId,
 }: EmailSenderSettingsPanelProps) {
   const [settings, setSettings] = useState<EmailSenderSettingsView | null>(null)
   const [senderEmail, setSenderEmail] = useState('')
   const [senderName, setSenderName] = useState('')
+  const [resendApiKey, setResendApiKey] = useState('')
+  const [showResendGuide, setShowResendGuide] = useState(false)
   const [loading, setLoading] = useState(false)
   const [operation, setOperation] = useState<Operation | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -58,6 +92,7 @@ export default function EmailSenderSettingsPanel({
     setSettings(view)
     setSenderEmail(view.senderEmail ?? '')
     setSenderName(view.senderName ?? '')
+    setResendApiKey('')
   }
 
   useEffect(() => {
@@ -65,6 +100,8 @@ export default function EmailSenderSettingsPanel({
     setSettings(null)
     setSenderEmail('')
     setSenderName('')
+    setResendApiKey('')
+    setShowResendGuide(false)
     setError(null)
     setNotice(null)
     setOperation(null)
@@ -93,6 +130,7 @@ export default function EmailSenderSettingsPanel({
 
   const trimmedEmail = senderEmail.trim()
   const trimmedName = senderName.trim()
+  const trimmedResendApiKey = resendApiKey.trim()
   const invalidEmail = trimmedEmail !== '' && !isEmail(trimmedEmail)
   const busy = loading || operation !== null
   const savedEmailMatches = Boolean(
@@ -144,11 +182,61 @@ export default function EmailSenderSettingsPanel({
     )
   }
 
+  const saveResendApiKey = () => {
+    if (!trimmedResendApiKey) return
+    void runOperation(
+      'key',
+      (currentAccountId) => emailSenderSettingsApi.setResendApiKey(
+        currentAccountId,
+        trimmedResendApiKey,
+      ),
+      'Resend APIキーを保存しました。',
+    )
+  }
+
+  const deleteResendApiKey = () => {
+    void runOperation(
+      'key',
+      (currentAccountId) => emailSenderSettingsApi.setResendApiKey(
+        currentAccountId,
+        null,
+      ),
+      '保存済みのResend APIキーを削除しました。共通キーを使用します。',
+    )
+  }
+
+  const sendTest = async () => {
+    const currentAccountId = accountId
+    if (!currentAccountId || busy || !savedEmailMatches) return
+    const version = requestVersion.current
+    setOperation('test')
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await emailSenderSettingsApi.testSend(currentAccountId)
+      if (
+        requestVersion.current !== version
+        || activeAccount.current !== currentAccountId
+      ) return
+      setNotice(result.message)
+    } catch (cause) {
+      if (
+        requestVersion.current === version
+        && activeAccount.current === currentAccountId
+      ) setError(errorMessage(cause))
+    } finally {
+      if (
+        requestVersion.current === version
+        && activeAccount.current === currentAccountId
+      ) setOperation(null)
+    }
+  }
+
   const copy = async (label: string, value: string) => {
     setError(null)
     setNotice(null)
     try {
-      await navigator.clipboard.writeText(value)
+      await writeClipboard(value)
       setNotice(`${label}をコピーしました。`)
     } catch {
       setError('コピーできませんでした。文字を選んでコピーしてください。')
@@ -244,6 +332,97 @@ export default function EmailSenderSettingsPanel({
             未認証のため既定の差出人で送っています
           </p>
         )}
+      </section>
+
+      <section className="rounded-lg border border-gray-200 bg-white p-4">
+        <h2 className="text-base font-semibold text-gray-900">
+          送信サービス（Resend）の接続
+        </h2>
+        <p className="mt-1 text-sm text-gray-600">
+          このLINEアカウント専用のResend APIキーを設定できます。
+          キーを設定しない場合は、これまでどおり共通の送信設定を使います。
+        </p>
+
+        <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
+          {settings?.resendApiKeyMasked ? (
+            <p className="text-sm text-gray-700">
+              保存済みAPIキー: <code>********</code>
+            </p>
+          ) : (
+            <p className="text-sm text-gray-700">未設定（共通キーを使用します）</p>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <label
+            htmlFor="email-sender-resend-api-key"
+            className="mb-1 block text-sm font-medium text-gray-700"
+          >
+            Resend APIキー
+          </label>
+          <input
+            id="email-sender-resend-api-key"
+            type="password"
+            value={resendApiKey}
+            onChange={(event) => {
+              setResendApiKey(event.target.value)
+              setNotice(null)
+            }}
+            placeholder="re_..."
+            autoComplete="new-password"
+            autoCapitalize="none"
+            spellCheck={false}
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            保存後はマスクだけを表示し、入力したキーは画面に残しません。
+          </p>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={saveResendApiKey}
+            disabled={busy || trimmedResendApiKey === ''}
+            className="rounded-lg bg-[#06C755] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {operation === 'key' && trimmedResendApiKey !== ''
+              ? '保存中...'
+              : 'APIキーを保存'}
+          </button>
+          {settings?.resendApiKeyMasked && (
+            <button
+              type="button"
+              onClick={deleteResendApiKey}
+              disabled={busy}
+              className="rounded border border-red-300 px-3 py-2 text-sm text-red-700 disabled:opacity-50"
+            >
+              保存済みAPIキーを削除
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowResendGuide(true)}
+            disabled={busy}
+            className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-700 disabled:opacity-50"
+          >
+            Resendアカウント作成手順を開く
+          </button>
+        </div>
+
+        <div className="mt-4 border-t border-gray-200 pt-4">
+          <p className="text-sm text-gray-600">
+            現在保存されている差出人メールアドレス宛にだけ、確認メールを1通送ります。
+          </p>
+          <button
+            type="button"
+            onClick={() => { void sendTest() }}
+            disabled={busy || !settings?.senderEmail || !savedEmailMatches}
+            className="mt-2 rounded border border-[#087A39] px-3 py-2 text-sm font-medium text-[#087A39] disabled:opacity-50"
+          >
+            {operation === 'test' ? '送信中...' : '自分宛にテスト送信'}
+          </button>
+        </div>
       </section>
 
       <section className="rounded-lg border border-gray-200 bg-white p-4">
@@ -409,6 +588,45 @@ export default function EmailSenderSettingsPanel({
           </div>
         )}
       </section>
+
+      {showResendGuide && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowResendGuide(false)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="resend-account-guide-title"
+            className="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl"
+          >
+            <h2
+              id="resend-account-guide-title"
+              className="text-lg font-semibold text-gray-900"
+            >
+              Resendアカウント作成手順
+            </h2>
+            <ol className="mt-4 space-y-3 text-sm text-gray-700">
+              <li>1. Resendの公式サイトで無料登録し、メール認証を完了します。</li>
+              <li>2. 管理画面の「API Keys」からAPIキーを発行します。</li>
+              <li>3. 権限は「Full access」を選び、発行されたキーを一度だけ控えます。</li>
+              <li>4. この画面の「Resend APIキー」欄へ貼り付けて保存します。</li>
+            </ol>
+            <p className="mt-4 text-xs text-amber-800">
+              APIキーは第三者へ送らず、チャットや作業記録にも貼り付けないでください。
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowResendGuide(false)}
+              className="mt-5 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white"
+            >
+              手順を閉じる
+            </button>
+          </div>
+        </div>
+      )}
 
       {notice && <p role="status" className="text-sm text-green-700">{notice}</p>}
       {error && <p role="alert" className="text-sm text-red-600">{error}</p>}

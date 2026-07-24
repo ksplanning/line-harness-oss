@@ -14,6 +14,7 @@ export interface EmailSenderSettingsView {
   senderEmail: string | null
   senderName: string | null
   senderDomain: string | null
+  resendApiKeyMasked: string | null
   resendDomainId: string | null
   domainStatus: string
   dnsRecords: EmailSenderDnsRecord[]
@@ -54,6 +55,18 @@ export const emailSenderSettingsApi = {
     ).data
   },
 
+  async setResendApiKey(
+    accountId: string,
+    resendApiKey: string | null,
+  ): Promise<EmailSenderSettingsView> {
+    return (
+      await fetchApi<Envelope<EmailSenderSettingsView>>(`${BASE_PATH}/resend-key`, {
+        method: 'PUT',
+        body: JSON.stringify({ accountId, resendApiKey }),
+      })
+    ).data
+  },
+
   async registerDomain(accountId: string): Promise<EmailSenderSettingsView> {
     return (
       await fetchApi<Envelope<EmailSenderSettingsView>>(`${BASE_PATH}/domain`, {
@@ -66,6 +79,15 @@ export const emailSenderSettingsApi = {
   async checkDomain(accountId: string): Promise<EmailSenderSettingsView> {
     return (
       await fetchApi<Envelope<EmailSenderSettingsView>>(`${BASE_PATH}/domain/check`, {
+        method: 'POST',
+        body: JSON.stringify({ accountId }),
+      })
+    ).data
+  },
+
+  async testSend(accountId: string): Promise<{ message: string }> {
+    return (
+      await fetchApi<Envelope<{ message: string }>>(`${BASE_PATH}/test`, {
         method: 'POST',
         body: JSON.stringify({ accountId }),
       })

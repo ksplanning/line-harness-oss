@@ -34,8 +34,10 @@ const mocks = vi.hoisted(() => ({
   },
   emailGet: vi.fn(),
   emailSave: vi.fn(),
+  emailSetResendApiKey: vi.fn(),
   emailRegisterDomain: vi.fn(),
   emailCheckDomain: vi.fn(),
+  emailTestSend: vi.fn(),
   staffListChannels: vi.fn(),
   staffList: vi.fn(),
   staffCreate: vi.fn(),
@@ -61,8 +63,10 @@ vi.mock('@/lib/email-sender-settings-api', () => ({
   emailSenderSettingsApi: {
     get: (...args: unknown[]) => mocks.emailGet(...args),
     save: (...args: unknown[]) => mocks.emailSave(...args),
+    setResendApiKey: (...args: unknown[]) => mocks.emailSetResendApiKey(...args),
     registerDomain: (...args: unknown[]) => mocks.emailRegisterDomain(...args),
     checkDomain: (...args: unknown[]) => mocks.emailCheckDomain(...args),
+    testSend: (...args: unknown[]) => mocks.emailTestSend(...args),
   },
 }))
 vi.mock('@/components/settings/staff-notification-settings-api', () => ({
@@ -84,6 +88,8 @@ const emptyEmailSettings = {
   senderEmail: 'before@example.com',
   senderName: '変更前',
   senderDomain: 'example.com',
+  resendApiKeyMasked: null as string | null,
+  resendDomainId: null,
   domainStatus: 'pending',
   dnsRecords: [],
   usingFallback: false,
@@ -167,12 +173,25 @@ beforeEach(() => {
     } as typeof emptyEmailSettings
     return { ...emailSettingsByAccount[accountId] }
   })
+  mocks.emailSetResendApiKey.mockReset().mockImplementation(async (
+    accountId: string,
+    resendApiKey: string | null,
+  ) => {
+    emailSettingsByAccount[accountId] = {
+      ...emailSettingsByAccount[accountId],
+      resendApiKeyMasked: resendApiKey ? '********' : null,
+    }
+    return { ...emailSettingsByAccount[accountId] }
+  })
   mocks.emailRegisterDomain.mockReset().mockImplementation(async (accountId: string) => ({
     ...emailSettingsByAccount[accountId],
   }))
   mocks.emailCheckDomain.mockReset().mockImplementation(async (accountId: string) => ({
     ...emailSettingsByAccount[accountId],
   }))
+  mocks.emailTestSend.mockReset().mockResolvedValue({
+    message: 'テストメールを送信しました。',
+  })
 
   mocks.staffListChannels.mockReset().mockResolvedValue(channels)
   mocks.staffList.mockReset().mockImplementation(async (accountId: string) => (
@@ -287,6 +306,29 @@ describe('設定ページ', () => {
     view.rerender(<SettingsPage />)
     expect(await screen.findByDisplayValue('saved-two@example.net')).toBeTruthy()
     expect(screen.queryByDisplayValue('saved-one@example.com')).toBeNull()
+  })
+
+  test('Resend APIキーのマスク表示も左上のA/B切替で混線しない', async () => {
+    const view = render(<SettingsPage />)
+    const keyInput = await screen.findByLabelText('Resend APIキー')
+    fireEvent.change(keyInput, { target: { value: 're_account_one' } })
+    fireEvent.click(screen.getByRole('button', { name: 'APIキーを保存' }))
+    await waitFor(() => expect(mocks.emailSetResendApiKey).toHaveBeenCalledWith(
+      'account-1',
+      're_account_one',
+    ))
+    expect(screen.getByText('********')).toBeTruthy()
+
+    mocks.account.selectedAccountId = 'account-2'
+    view.rerender(<SettingsPage />)
+    await waitFor(() => expect(mocks.emailGet).toHaveBeenCalledWith('account-2'))
+    expect(await screen.findByText(/未設定.*共通キー/)).toBeTruthy()
+    expect(screen.queryByText('********')).toBeNull()
+
+    mocks.account.selectedAccountId = 'account-1'
+    view.rerender(<SettingsPage />)
+    await waitFor(() => expect(mocks.emailGet).toHaveBeenCalledWith('account-1'))
+    expect(await screen.findByText('********')).toBeTruthy()
   })
 
   test('両設定を保存し、自動応答通知ONを含む再取得値と一致する', async () => {

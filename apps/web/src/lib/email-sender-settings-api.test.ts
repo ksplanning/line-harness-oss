@@ -12,6 +12,7 @@ const view: EmailSenderSettingsView = {
   senderEmail: 'notice@example.com',
   senderName: 'お知らせ係',
   senderDomain: 'example.com',
+  resendApiKeyMasked: null,
   resendDomainId: 'domain_pending',
   domainStatus: 'pending',
   dnsRecords: [{
@@ -79,6 +80,61 @@ describe('emailSenderSettingsApi', () => {
     expect(fetchApiMock).toHaveBeenNthCalledWith(
       2,
       '/api/account-settings/email-sender/domain/check',
+      {
+        method: 'POST',
+        body: JSON.stringify({ accountId: 'account/1' }),
+      },
+    )
+  })
+
+  test('Resend APIキーの保存・削除とテスト送信は選択中accountIdだけを送る', async () => {
+    fetchApiMock
+      .mockResolvedValueOnce({
+        success: true,
+        data: { ...view, resendApiKeyMasked: '********' },
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: { ...view, resendApiKeyMasked: null },
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: { message: 'テストメールを送信しました。' },
+      })
+
+    await expect(
+      emailSenderSettingsApi.setResendApiKey('account/1', 're_account_secret'),
+    ).resolves.toMatchObject({ resendApiKeyMasked: '********' })
+    expect(fetchApiMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/account-settings/email-sender/resend-key',
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          accountId: 'account/1',
+          resendApiKey: 're_account_secret',
+        }),
+      },
+    )
+
+    await expect(
+      emailSenderSettingsApi.setResendApiKey('account/1', null),
+    ).resolves.toMatchObject({ resendApiKeyMasked: null })
+    expect(fetchApiMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/account-settings/email-sender/resend-key',
+      {
+        method: 'PUT',
+        body: JSON.stringify({ accountId: 'account/1', resendApiKey: null }),
+      },
+    )
+
+    await expect(emailSenderSettingsApi.testSend('account/1')).resolves.toEqual({
+      message: 'テストメールを送信しました。',
+    })
+    expect(fetchApiMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/account-settings/email-sender/test',
       {
         method: 'POST',
         body: JSON.stringify({ accountId: 'account/1' }),
