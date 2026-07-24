@@ -348,13 +348,25 @@ emailSenderSettings.post('/api/account-settings/email-sender/test', async (c) =>
     return c.json({ success: false, error: 'LINE account not found' }, 404);
   }
 
+  let recipientEmail: string | null = null;
+  if (body.recipientEmail !== undefined) {
+    if (typeof body.recipientEmail !== 'string') {
+      return c.json({ success: false, error: '宛先メールアドレスの形式が正しくありません' }, 400);
+    }
+    const recipientIdentity = emailIdentity(body.recipientEmail);
+    if (!recipientIdentity) {
+      return c.json({ success: false, error: '宛先メールアドレスの形式が正しくありません' }, 400);
+    }
+    recipientEmail = recipientIdentity.email;
+  }
+
   const settings = await getEmailSenderSettings(c.env.DB, accountId);
   if (!settings) {
     return c.json({ success: false, error: '先に差出人メールアドレスを保存してください' }, 409);
   }
 
   const result = await sendEditMail(c.env, {
-    to: settings.senderEmail,
+    to: recipientEmail ?? settings.senderEmail,
     subject: '【テスト送信】メール送信設定の確認',
     text: 'このメールは、通知設定画面から送信したテストメールです。',
     idempotencyKey: `email-sender-test/${accountId}/${crypto.randomUUID()}`,

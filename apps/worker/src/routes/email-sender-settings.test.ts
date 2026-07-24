@@ -498,7 +498,7 @@ describe('email sender settings admin route', () => {
     });
   });
 
-  it('テスト送信は保存済み差出人だけを宛先にし、成功理由を返す', async () => {
+  it('テスト送信はrecipientEmail省略時に保存済み差出人を宛先にする', async () => {
     stored = view({
       resendApiKey: 're_account_secret',
       resendDomainId: 'domain_123',
@@ -532,6 +532,59 @@ describe('email sender settings admin route', () => {
       to: ['notice@brand.example'],
     });
     expect(JSON.stringify(fetcher.mock.calls)).not.toContain('attacker@example.test');
+  });
+
+  it('テスト送信は指定したrecipientEmailをtrimして1通だけ送る', async () => {
+    stored = view({
+      resendApiKey: 're_account_secret',
+      resendDomainId: 'domain_123',
+      resendDomainStatus: 'verified',
+    });
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ id: 'email_test_1' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetcher);
+
+    const response = await request('/api/account-settings/email-sender/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accountId: 'account-1',
+        recipientEmail: '  recipient@example.test  ',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const [, init] = fetcher.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      from: 'ブランド受付 <notice@brand.example>',
+      to: ['recipient@example.test'],
+    });
+  });
+
+  it.each([
+    ['空文字', '  '],
+    ['メール形式不正', 'not-an-email'],
+    ['文字列以外', null],
+  ])('テスト送信はrecipientEmailが%sなら400を返す', async (_case, recipientEmail) => {
+    stored = view({ resendApiKey: 're_account_secret' });
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+
+    const response = await request('/api/account-settings/email-sender/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'account-1', recipientEmail }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: '宛先メールアドレスの形式が正しくありません',
+    });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it('テスト送信のprovider失敗は秘密値を含まない固定理由を返す', async () => {
