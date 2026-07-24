@@ -26,6 +26,7 @@ import { notifyInternalFormSubmission } from '../services/internal-submission-no
 import { syncSheetsAfterFormMutation } from '../services/sheets-sync-jobs.js';
 import { dispatchStaffNotification } from '../services/staff-notify/router.js';
 import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
+import { renderInternalFormSubmitLock } from '../lib/internal-form-submit-lock.js';
 import {
   evaluateInternalFormAvailability,
   JAPAN_PREFECTURES,
@@ -261,7 +262,7 @@ function shell(title: string, content: string, design: FormDesign = {}): string 
       min-height: 52px; border: 0; border-radius: 12px; background: var(--form-button);
       color: var(--form-submit-text); font-weight: 800; cursor: pointer;
     }
-    button:disabled { cursor: wait; opacity: .65; }
+    button:disabled { background: #AEB5BF; color: #FFFFFF; cursor: wait; opacity: 1; }
     .postal-lookup { width: auto; min-width: 9em; min-height: 48px; margin-top: 8px; padding-inline: 18px; }
     .postal-status { min-height: 1.5em; margin: 7px 0 0; font-size: .9rem; }
     .errors { margin: 0 0 20px; padding: 12px 14px; border-radius: 10px; background: #FEF3F2; color: #B42318; }
@@ -899,7 +900,8 @@ function renderFormPage(
       </form>
     </div>
     ${runtimeScript()}
-    ${usesLogicRuntime || hasPostal || hasAddress || hasFile ? logicClientMarkup(definition) : ''}`, definition.design);
+    ${usesLogicRuntime || hasPostal || hasAddress || hasFile ? logicClientMarkup(definition) : ''}
+    ${renderInternalFormSubmitLock('送信中...')}`, definition.design);
 }
 
 function renderCompletion(

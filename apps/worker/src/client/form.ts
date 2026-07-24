@@ -77,6 +77,29 @@ const state: FormState = {
   refTrackedLinkId: null,
 };
 
+function acquireSubmitLock(
+  button: HTMLButtonElement | null,
+  pendingLabel: string,
+): (() => void) | null {
+  if (state.submitting) return null;
+  state.submitting = true;
+  const originalLabel = button?.textContent ?? '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = pendingLabel;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    state.submitting = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  };
+}
+
 // Replier pool loading state (shared between renderFormPage and attachXAutocomplete)
 let _replierPoolReady = false;
 
@@ -421,75 +444,77 @@ function render(): void {
     // Page 1 → Page 2 transition
     document.getElementById('survey-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
-
-      // Validate survey fields
-      for (const field of surveyFields) {
-        if (!field.required) continue;
-        if (field.type === 'checkbox') {
-          const checked = document.querySelectorAll<HTMLInputElement>(`input[name="${field.name}"]:checked`);
-          if (checked.length === 0) {
-            showFieldError(`${field.label} は必須項目です`);
-            return;
-          }
-        } else if (field.type === 'radio') {
-          const checked = document.querySelector<HTMLInputElement>(`input[name="${field.name}"]:checked`);
-          if (!checked) {
-            showFieldError(`${field.label} は必須項目です`);
-            return;
-          }
-        } else {
-          const el = document.querySelector<HTMLInputElement>(`[name="${field.name}"]`);
-          if (!el || !el.value.trim()) {
-            showFieldError(`${field.label} は必須項目です`);
-            return;
-          }
-        }
-      }
-
-      // Save survey data (partial submit)
-      const nextBtn = document.getElementById('nextBtn') as HTMLButtonElement;
-      nextBtn.disabled = true;
-      nextBtn.textContent = '保存中...';
-
-      const surveyData: Record<string, unknown> = {};
-      for (const field of surveyFields) {
-        if (field.type === 'checkbox') {
-          surveyData[field.name] = Array.from(document.querySelectorAll<HTMLInputElement>(`input[name="${field.name}"]:checked`)).map((el) => el.value);
-        } else if (field.type === 'radio') {
-          surveyData[field.name] = document.querySelector<HTMLInputElement>(`input[name="${field.name}"]:checked`)?.value ?? '';
-        } else {
-          surveyData[field.name] = (document.querySelector<HTMLInputElement>(`[name="${field.name}"]`)?.value ?? '').trim();
-        }
-      }
+      const nextBtn = document.getElementById('nextBtn') as HTMLButtonElement | null;
+      const releaseSubmitLock = acquireSubmitLock(nextBtn, '保存中...');
+      if (!releaseSubmitLock) return;
 
       try {
-        await apiCall(`/api/forms/${formDef.id}/partial`, {
-          method: 'POST',
-          body: JSON.stringify({
-            lineUserId: state.profile?.userId,
-            friendId: state.friendId,
-            data: surveyData,
-          }),
-        });
-      } catch { /* non-blocking */ }
-
-      // Transition to page 2
-      document.getElementById('form-page-1')!.hidden = true;
-      document.getElementById('form-page-2')!.hidden = false;
-      window.scrollTo(0, 0);
-
-      // Show loading overlay if replier pool is still loading
-      if (!_replierPoolReady) {
-        const xInput = document.querySelector<HTMLInputElement>('.x-autocomplete-input');
-        if (xInput) xInput.disabled = true;
-        const wrap = document.querySelector('.x-autocomplete-wrap');
-        if (wrap) {
-          const overlay = document.createElement('div');
-          overlay.id = 'x-loading-overlay';
-          overlay.innerHTML = '<div class="x-loading-spinner"></div><p>X連携データを読み込み中...</p>';
-          overlay.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;padding:24px 0;color:#888;font-size:14px;';
-          wrap.parentElement?.insertBefore(overlay, wrap);
+        // Validate survey fields
+        for (const field of surveyFields) {
+          if (!field.required) continue;
+          if (field.type === 'checkbox') {
+            const checked = document.querySelectorAll<HTMLInputElement>(`input[name="${field.name}"]:checked`);
+            if (checked.length === 0) {
+              showFieldError(`${field.label} は必須項目です`);
+              return;
+            }
+          } else if (field.type === 'radio') {
+            const checked = document.querySelector<HTMLInputElement>(`input[name="${field.name}"]:checked`);
+            if (!checked) {
+              showFieldError(`${field.label} は必須項目です`);
+              return;
+            }
+          } else {
+            const el = document.querySelector<HTMLInputElement>(`[name="${field.name}"]`);
+            if (!el || !el.value.trim()) {
+              showFieldError(`${field.label} は必須項目です`);
+              return;
+            }
+          }
         }
+
+        const surveyData: Record<string, unknown> = {};
+        for (const field of surveyFields) {
+          if (field.type === 'checkbox') {
+            surveyData[field.name] = Array.from(document.querySelectorAll<HTMLInputElement>(`input[name="${field.name}"]:checked`)).map((el) => el.value);
+          } else if (field.type === 'radio') {
+            surveyData[field.name] = document.querySelector<HTMLInputElement>(`input[name="${field.name}"]:checked`)?.value ?? '';
+          } else {
+            surveyData[field.name] = (document.querySelector<HTMLInputElement>(`[name="${field.name}"]`)?.value ?? '').trim();
+          }
+        }
+
+        try {
+          await apiCall(`/api/forms/${formDef.id}/partial`, {
+            method: 'POST',
+            body: JSON.stringify({
+              lineUserId: state.profile?.userId,
+              friendId: state.friendId,
+              data: surveyData,
+            }),
+          });
+        } catch { /* non-blocking */ }
+
+        // Transition to page 2
+        document.getElementById('form-page-1')!.hidden = true;
+        document.getElementById('form-page-2')!.hidden = false;
+        window.scrollTo(0, 0);
+
+        // Show loading overlay if replier pool is still loading
+        if (!_replierPoolReady) {
+          const xInput = document.querySelector<HTMLInputElement>('.x-autocomplete-input');
+          if (xInput) xInput.disabled = true;
+          const wrap = document.querySelector('.x-autocomplete-wrap');
+          if (wrap) {
+            const overlay = document.createElement('div');
+            overlay.id = 'x-loading-overlay';
+            overlay.innerHTML = '<div class="x-loading-spinner"></div><p>X連携データを読み込み中...</p>';
+            overlay.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;padding:24px 0;color:#888;font-size:14px;';
+            wrap.parentElement?.insertBefore(overlay, wrap);
+          }
+        }
+      } finally {
+        releaseSubmitLock();
       }
     });
 
@@ -714,10 +739,14 @@ function validateForm(): string | null {
 }
 
 async function submitForm(): Promise<void> {
-  if (state.submitting || !state.formDef) return;
+  if (!state.formDef) return;
+  const submitBtn = document.getElementById('submitBtn') as HTMLButtonElement | null;
+  const releaseSubmitLock = acquireSubmitLock(submitBtn, '送信中...');
+  if (!releaseSubmitLock) return;
 
   const validationError = validateForm();
   if (validationError) {
+    releaseSubmitLock();
     const existing = getApp().querySelector('.form-error-msg');
     if (existing) existing.remove();
     const errEl = document.createElement('p');
@@ -729,13 +758,6 @@ async function submitForm(): Promise<void> {
     return;
   }
 
-  state.submitting = true;
-  const submitBtn = document.getElementById('submitBtn') as HTMLButtonElement | null;
-  if (submitBtn) {
-    submitBtn.disabled = true;
-    submitBtn.textContent = '送信中...';
-  }
-
   try {
     const data = collectFormData();
     console.log('Form data collected:', JSON.stringify(data));
@@ -745,8 +767,7 @@ async function submitForm(): Promise<void> {
       // Check that user was selected from pre-verified repliers list
       const xField = ((data.x_username as string) ?? '').trim().replace(/^@/, '');
       if (!xField || xField !== state.verifiedXUsername) {
-        state.submitting = false;
-        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '送信する'; }
+        releaseSubmitLock();
         const existing = getApp().querySelector('.form-error-msg');
         if (existing) existing.remove();
         const errEl = document.createElement('p');
@@ -819,11 +840,7 @@ async function submitForm(): Promise<void> {
 
     renderSuccess();
   } catch (err) {
-    state.submitting = false;
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = '送信する';
-    }
+    releaseSubmitLock();
     const existing = getApp().querySelector('.form-error-msg');
     if (existing) existing.remove();
     const errEl = document.createElement('p');
@@ -1259,4 +1276,3 @@ export async function initForm(formId: string | null): Promise<void> {
     renderFormError(err instanceof Error ? err.message : 'エラーが発生しました');
   }
 }
-

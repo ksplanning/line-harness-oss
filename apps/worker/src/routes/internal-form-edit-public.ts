@@ -38,6 +38,7 @@ import {
   storeInternalFormUploads,
   type StoredInternalFormUploads,
 } from '../services/internal-form-attachments.js';
+import { renderInternalFormSubmitLock } from '../lib/internal-form-submit-lock.js';
 import type { Env } from '../index.js';
 
 export const internalFormEditPublic = new Hono<Env>();
@@ -344,7 +345,7 @@ function renderDocument(title: string, content: string): string {
     input,textarea,select,button{width:100%;font:inherit}input,textarea,select{min-height:46px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:9px;background:#fff}textarea{min-height:120px;resize:vertical}
     .choice{display:flex;align-items:center;gap:8px;margin:8px 0}.choice input{width:20px;min-height:20px}.readonly pre{margin:0;padding:10px 12px;white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f4f7;border-radius:9px;font:inherit;color:#52606d}
     .attachment-list{display:grid;gap:10px;margin:12px 0;padding:0;list-style:none}.attachment-list:empty{display:none}.attachment-item{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid #cbd5e1;border-radius:10px}.attachment-thumbnail,.attachment-icon{width:56px;height:56px;flex:0 0 56px;border-radius:8px}.attachment-thumbnail{display:block;object-fit:cover;background:#eef2f6}.attachment-icon{display:grid;place-items:center;background:#eef2f6;color:#344054;font-size:.75rem;font-weight:800}.attachment-details{min-width:0;flex:1}.attachment-name,.attachment-size{display:block}.attachment-name{overflow-wrap:anywhere;color:inherit;font-weight:700}.attachment-size{margin-top:3px;color:#667085;font-size:.82rem}.attachment-remove{width:auto;min-height:38px;padding:7px 11px;border:1px solid #fda29b;background:#fff;color:#b42318;font-size:.85rem}.attachment-delete{display:flex;align-items:center;gap:6px;color:#b42318;font-size:.85rem;white-space:nowrap}.attachment-delete input{width:20px;min-height:20px}.attachment-add-label{display:block;margin-top:12px;font-weight:700}.attachment-status{margin:8px 0 0;color:#b42318;font-size:.9rem}
-    button{min-height:50px;border:0;border-radius:10px;background:#06c755;color:#fff;font-weight:800;cursor:pointer}.result{text-align:center;padding:36px 0}.result p{color:#52606d}
+    button{min-height:50px;border:0;border-radius:10px;background:#06c755;color:#fff;font-weight:800;cursor:pointer}button:disabled{background:#aeb5bf;color:#fff;cursor:wait}.result{text-align:center;padding:36px 0}.result p{color:#52606d}
   </style>
 </head>
 <body><main>${content}</main></body>
@@ -468,7 +469,7 @@ function renderEditPage(
     ? `<script type="module" data-edit-attachment-capacity-client>${EDIT_ATTACHMENT_CAPACITY_CLIENT}</script>`
     : '';
   const enctype = hasEditableAttachment ? ' enctype="multipart/form-data"' : '';
-  return renderDocument('回答の編集', `<h1>回答の編集</h1><p class="intro">${escapeHtml(value.form.title)}</p>${errorHtml}<form method="post"${enctype}${dynamicAttributes}><input type="hidden" name="editVersion" value="${value.submission.edit_version}">${rows}<button type="submit"${submitAttribute}>保存する</button></form>${logicConfig}${clientAsset}${attachmentCapacityClient}`);
+  return renderDocument('回答の編集', `<h1>回答の編集</h1><p class="intro">${escapeHtml(value.form.title)}</p>${errorHtml}<form method="post"${enctype}${dynamicAttributes}><input type="hidden" name="editVersion" value="${value.submission.edit_version}">${rows}<button type="submit"${submitAttribute}>保存する</button></form>${logicConfig}${clientAsset}${attachmentCapacityClient}${renderInternalFormSubmitLock('保存中...')}`);
 }
 
 function renderSuccessPage(): string {

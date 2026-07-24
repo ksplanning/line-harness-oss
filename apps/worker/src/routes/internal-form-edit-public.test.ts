@@ -390,6 +390,32 @@ afterEach(() => {
 });
 
 describe('GET /ife/:token', () => {
+  test('locks the save button synchronously and rejects a second submit', async () => {
+    seedForm({ definition: editLockedDefinition });
+    seedSubmission('form-1', { locked_name: '確定済み', open_note: '変更できます' });
+
+    const response = await app().request(`/ife/${await token()}`, {}, bindings());
+    const html = await response.text();
+    const page = new DOMParser().parseFromString(html, 'text/html');
+    const lockClient = page.querySelector<HTMLScriptElement>(
+      'script[data-internal-form-submit-lock]',
+    );
+
+    expect(response.status).toBe(200);
+    expect(lockClient).not.toBeNull();
+    expect(html).toMatch(/button:disabled\s*\{[^}]*background:\s*#[0-9a-f]{6}/i);
+    new Function('document', lockClient?.textContent ?? '')(page);
+    const form = page.querySelector<HTMLFormElement>('form')!;
+    const button = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    const first = new Event('submit', { bubbles: true, cancelable: true });
+    const second = new Event('submit', { bubbles: true, cancelable: true });
+
+    expect(form.dispatchEvent(first)).toBe(true);
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe('保存中...');
+    expect(form.dispatchEvent(second)).toBe(false);
+  });
+
   test('prefills current editable answers, exposes a hidden CAS version, and renders complex answers read-only', async () => {
     seedForm();
     seedSubmission();
@@ -871,7 +897,7 @@ describe('GET /ife/:token', () => {
 
     expect(html).not.toContain(attack);
     expect(html).toContain('\\u003c/script\\u003e');
-    expect(new DOMParser().parseFromString(html, 'text/html').querySelectorAll('script')).toHaveLength(2);
+    expect(new DOMParser().parseFromString(html, 'text/html').querySelectorAll('script')).toHaveLength(3);
   });
 
   test('control を持たない既存 readonly source も固定回答で client 評価を維持する', async () => {
