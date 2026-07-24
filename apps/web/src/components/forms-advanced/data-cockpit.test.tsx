@@ -18,6 +18,7 @@ vi.mock('@/lib/api', () => ({ fetchApi: apiMocks.fetchApi }))
 
 afterEach(() => {
   cleanup()
+  localStorage.clear()
   apiMocks.fetchApi.mockReset()
   vi.unstubAllGlobals()
 })
@@ -29,6 +30,7 @@ const ROWS: SubmissionRow[] = [
 
 function base(overrides: Partial<DataCockpitProps> = {}): DataCockpitProps {
   return {
+    formId: 'form-default',
     formTitle: 'お問い合わせ',
     rows: ROWS,
     total: 40,
@@ -166,6 +168,137 @@ describe('DataCockpit — 表示 (T-D1)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 's2 の詳細' }))
     expect(p.onOpenRow).toHaveBeenCalledWith('s2')
+  })
+})
+
+describe('DataCockpit — 表示列の選択 (D-2 / D-3)', () => {
+  const fieldLabels = [
+    { slug: 'field-1', label: '質問 1' },
+    { slug: 'field-2', label: '質問 2' },
+    { slug: 'field-3', label: '質問 3' },
+    { slug: 'field-4', label: '質問 4' },
+  ]
+  const rows: SubmissionRow[] = [{
+    id: 'column-row',
+    friendId: 'friend-column',
+    answers: {
+      'field-1': '回答 1',
+      'field-2': '回答 2',
+      'field-3': '回答 3',
+      'field-4': '回答 4',
+    },
+    submittedAt: '2026-07-24T10:00:00+09:00',
+    verified: true,
+  }]
+  const friendData = {
+    'friend-column': {
+      tags: [{ id: 'tag-vip', name: 'VIP', color: '#06C755' }],
+      metadata: { '会員ランク': 'ゴールド' },
+    },
+  }
+  const friendFields = [{
+    id: 'friend-field-rank',
+    name: '会員ランク',
+    defaultValue: '未設定',
+  }]
+
+  function renderColumns(formId = 'form-columns') {
+    return render(<DataCockpit {...base({
+      formId,
+      rows,
+      total: 1,
+      fieldLabels,
+      friendData,
+      friendFields,
+    })} />)
+  }
+
+  function columnHeaders() {
+    return screen.getAllByRole('columnheader').map((header) => header.textContent)
+  }
+
+  function openColumnPicker() {
+    fireEvent.click(screen.getByRole('button', { name: '表示列を選択' }))
+    return screen.getByRole('dialog', { name: '表示列を選択' })
+  }
+
+  it('保存なしは現行どおり回答上位3列で、チェックにより回答・タグ・カスタムフィールドを切り替える', () => {
+    renderColumns()
+
+    expect(columnHeaders()).toEqual(expect.arrayContaining(['質問 1', '質問 2', '質問 3']))
+    expect(columnHeaders()).not.toContain('質問 4')
+    expect(columnHeaders()).not.toContain('タグ')
+    expect(columnHeaders()).not.toContain('会員ランク')
+
+    const picker = openColumnPicker()
+    fireEvent.click(within(picker).getByRole('checkbox', { name: '質問 4' }))
+    fireEvent.click(within(picker).getByRole('checkbox', { name: '質問 1' }))
+    fireEvent.click(within(picker).getByRole('checkbox', { name: 'タグ' }))
+    fireEvent.click(within(picker).getByRole('checkbox', { name: '会員ランク' }))
+
+    expect(columnHeaders()).not.toContain('質問 1')
+    expect(columnHeaders()).toEqual(expect.arrayContaining(['質問 2', '質問 3', '質問 4', 'タグ', '会員ランク']))
+    expect(screen.getByText('回答 4')).toBeTruthy()
+    expect(screen.getByText('VIP')).toBeTruthy()
+    expect(screen.getByText('ゴールド')).toBeTruthy()
+  })
+
+  it('固定管理列を選択肢に出さず、全動的列を隠しても常に表示する', () => {
+    renderColumns()
+    const picker = openColumnPicker()
+
+    for (const fixed of ['詳細', '重複確認', '外部編集', 'LINE連携', '送信日時']) {
+      expect(within(picker).queryByRole('checkbox', { name: fixed })).toBeNull()
+    }
+    for (const answer of ['質問 1', '質問 2', '質問 3']) {
+      fireEvent.click(within(picker).getByRole('checkbox', { name: answer }))
+    }
+
+    expect(columnHeaders()).toEqual(expect.arrayContaining(['詳細', '重複確認', '外部編集', 'LINE連携', '送信日時']))
+    expect(columnHeaders()).not.toEqual(expect.arrayContaining(['質問 1', '質問 2', '質問 3']))
+    expect(screen.getByRole('button', { name: 'column-row の詳細' })).toBeTruthy()
+
+    fireEvent.click(within(picker).getByRole('checkbox', { name: '質問 4' }))
+    expect(columnHeaders().indexOf('送信日時')).toBeLessThan(columnHeaders().indexOf('質問 4'))
+  })
+
+  it('選択をフォーム別localStorageへ保存し、同フォーム再マウントで復元・別フォームでは既定へ戻す', () => {
+    const first = renderColumns('form-a')
+    const picker = openColumnPicker()
+    fireEvent.click(within(picker).getByRole('checkbox', { name: '質問 1' }))
+    fireEvent.click(within(picker).getByRole('checkbox', { name: '質問 4' }))
+
+    expect(localStorage.getItem('line-harness:data-cockpit-columns:v1:form-a')).toBe(
+      JSON.stringify(['answer:field-2', 'answer:field-3', 'answer:field-4']),
+    )
+    first.unmount()
+
+    const restored = renderColumns('form-a')
+    expect(columnHeaders()).not.toContain('質問 1')
+    expect(columnHeaders()).toEqual(expect.arrayContaining(['質問 2', '質問 3', '質問 4']))
+    restored.unmount()
+
+    renderColumns('form-b')
+    expect(columnHeaders()).toEqual(expect.arrayContaining(['質問 1', '質問 2', '質問 3']))
+    expect(columnHeaders()).not.toContain('質問 4')
+  })
+
+  it('保存済みの空配列も有効な選択として往復し、横スクロール用コンテナを維持する', () => {
+    localStorage.setItem('line-harness:data-cockpit-columns:v1:form-empty', '[]')
+    const first = renderColumns('form-empty')
+
+    for (const answer of ['質問 1', '質問 2', '質問 3', '質問 4']) {
+      expect(columnHeaders()).not.toContain(answer)
+    }
+    const table = screen.getByRole('table')
+    expect(table.parentElement?.className).toContain('sm:overflow-x-auto')
+    first.unmount()
+
+    renderColumns('form-empty')
+    for (const answer of ['質問 1', '質問 2', '質問 3', '質問 4']) {
+      expect(columnHeaders()).not.toContain(answer)
+    }
+    expect(screen.getByRole('button', { name: 'column-row の詳細' })).toBeTruthy()
   })
 })
 

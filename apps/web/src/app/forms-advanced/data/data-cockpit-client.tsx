@@ -558,12 +558,15 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
         <div className="text-sm text-gray-400">読み込み中...</div>
       ) : (
         <DataCockpit
+          formId={id}
           formTitle={title}
           rows={rowsPage.rows}
           total={rowsPage.total}
           page={rowsPage.page}
           pageSize={rowsPage.pageSize}
           fieldLabels={rowsPage.fields}
+          friendData={rowsPage.friendData}
+          friendFields={rowsPage.friendFields}
           stats={stats}
           duplicateReviewPendingCount={rowsPage.duplicateReviewPendingCount ?? stats?.duplicateReviewPending}
           savedFilters={filters}

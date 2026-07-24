@@ -1,7 +1,15 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SubmissionRow, FormStats, SavedFilter, RowsQuery, ExternalEditChange } from '@/lib/formaloo-advanced-api'
+import type {
+  SubmissionRow,
+  FormStats,
+  SavedFilter,
+  RowsQuery,
+  ExternalEditChange,
+  FriendColumnData,
+  FriendColumnField,
+} from '@/lib/formaloo-advanced-api'
 import { formatJstMinute } from '@/lib/datetime'
 import { fileAnswerSummary, isFileAnswer } from '@/lib/file-answer'
 import ExternalEditApprovalDialog from './external-edit-approval-dialog'
@@ -17,6 +25,20 @@ import ExternalEditApprovalDialog from './external-edit-approval-dialog'
 
 const LINE_GREEN = '#06C755'
 const LIST_PREVIEW_LIMIT = 3
+const COLUMN_STORAGE_PREFIX = 'line-harness:data-cockpit-columns:v1:'
+const EMPTY_FRIEND_DATA: Record<string, FriendColumnData> = {}
+const EMPTY_FRIEND_FIELDS: FriendColumnField[] = []
+
+type SelectableColumn =
+  | { id: `answer:${string}`; kind: 'answer'; answerKey: string; label: string }
+  | { id: 'friend:tags'; kind: 'tags'; label: string }
+  | {
+      id: `friend-field:${string}`
+      kind: 'friend-field'
+      metadataKey: string
+      defaultValue: string
+      label: string
+    }
 
 type ExternalEditSource = 'edit_link' | 'sheet'
 type ExternalSubmissionRow = SubmissionRow & {
@@ -66,6 +88,7 @@ function groupDuplicateRows(rows: SubmissionRow[]): SubmissionRow[] {
 }
 
 export interface DataCockpitProps {
+  formId: string
   formTitle: string
   rows: SubmissionRow[]
   total: number
@@ -77,6 +100,8 @@ export interface DataCockpitProps {
   // form-response-display-fix (T-A2): 列ヘッダーを質問名で描画するための slug→label 対応 (/rows の fields)。
   //   未指定 or 未知 slug は slug fallback (後方互換)。列順は定義 (この配列) 順優先 + 定義外 slug を末尾。
   fieldLabels?: Array<{ slug: string; label: string }>
+  friendData?: Record<string, FriendColumnData>
+  friendFields?: FriendColumnField[]
   duplicateReviewPendingCount?: number
   loading?: boolean
   onQuery: (q: RowsQuery) => void
@@ -97,8 +122,51 @@ function cellText(v: unknown): string {
   return String(v)
 }
 
+function readStoredColumnIds(formId: string): string[] | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(`${COLUMN_STORAGE_PREFIX}${formId}`)
+    if (raw === null) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed) || !parsed.every((id) => typeof id === 'string')) return null
+    return Array.from(new Set(parsed))
+  } catch {
+    return null
+  }
+}
+
+function selectableColumnValue(
+  column: SelectableColumn,
+  row: SubmissionRow,
+  friendData: Record<string, FriendColumnData>,
+): unknown {
+  if (column.kind === 'answer') return row.answers[column.answerKey]
+  if (!row.friendId) return undefined
+  const friend = friendData[row.friendId]
+  if (!friend) return undefined
+  if (column.kind === 'tags') {
+    return friend.tags.length > 0 ? friend.tags.map((tag) => tag.name) : undefined
+  }
+  if (Object.prototype.hasOwnProperty.call(friend.metadata, column.metadataKey)) {
+    return friend.metadata[column.metadataKey]
+  }
+  return column.defaultValue || undefined
+}
+
 export default function DataCockpit(props: DataCockpitProps) {
-  const { rows, total, page, pageSize, stats, savedFilters, isOwner, fieldLabels } = props
+  const {
+    formId,
+    rows,
+    total,
+    page,
+    pageSize,
+    stats,
+    savedFilters,
+    isOwner,
+    fieldLabels,
+    friendData = EMPTY_FRIEND_DATA,
+    friendFields = EMPTY_FRIEND_FIELDS,
+  } = props
   const [q, setQ] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -116,6 +184,30 @@ export default function DataCockpit(props: DataCockpitProps) {
   const [confirmingDuplicateRowId, setConfirmingDuplicateRowId] = useState<string | null>(null)
   const [duplicateConfirmError, setDuplicateConfirmError] = useState<{ rowId: string; message: string } | null>(null)
   const [reviewingExternalEdit, setReviewingExternalEdit] = useState<ExternalSubmissionRow | null>(null)
+  const [showColumnPicker, setShowColumnPicker] = useState(false)
+  const [storedColumnIds, setStoredColumnIds] = useState<string[] | null>(null)
+  const columnPickerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setStoredColumnIds(readStoredColumnIds(formId))
+    setShowColumnPicker(false)
+  }, [formId])
+
+  useEffect(() => {
+    if (!showColumnPicker) return
+    const closeOnPointerDown = (event: MouseEvent) => {
+      if (!columnPickerRef.current?.contains(event.target as Node)) setShowColumnPicker(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowColumnPicker(false)
+    }
+    document.addEventListener('mousedown', closeOnPointerDown)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnPointerDown)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [showColumnPicker])
 
   useEffect(() => {
     const currentPendingRevisions = new Set(rows.flatMap((row) => {
@@ -165,12 +257,76 @@ export default function DataCockpit(props: DataCockpitProps) {
     }
     return ordered
   }, [rows, fieldLabels])
-  const columns = allColumns.slice(0, LIST_PREVIEW_LIMIT)
-  const totalFieldCount = new Set([
-    ...(fieldLabels ?? []).map((field) => field.slug),
-    ...allColumns,
-  ]).size
-  const hiddenColumnCount = Math.max(0, totalFieldCount - columns.length)
+
+  const answerColumns = useMemo<Array<Extract<SelectableColumn, { kind: 'answer' }>>>(() => {
+    const selectable: Array<Extract<SelectableColumn, { kind: 'answer' }>> = []
+    const seen = new Set<string>()
+    for (const field of fieldLabels ?? []) {
+      if (seen.has(field.slug)) continue
+      seen.add(field.slug)
+      selectable.push({
+        id: `answer:${field.slug}`,
+        kind: 'answer',
+        answerKey: field.slug,
+        label: field.label,
+      })
+    }
+    for (const answerKey of allColumns) {
+      if (seen.has(answerKey)) continue
+      seen.add(answerKey)
+      selectable.push({
+        id: `answer:${answerKey}`,
+        kind: 'answer',
+        answerKey,
+        label: labelMap.get(answerKey) ?? answerKey,
+      })
+    }
+    return selectable
+  }, [allColumns, fieldLabels, labelMap])
+  const selectableColumns = useMemo<SelectableColumn[]>(() => [
+    ...answerColumns,
+    { id: 'friend:tags', kind: 'tags', label: 'タグ' },
+    ...friendFields.map((field): SelectableColumn => ({
+      id: `friend-field:${field.id}`,
+      kind: 'friend-field',
+      metadataKey: field.name,
+      defaultValue: field.defaultValue,
+      label: field.name,
+    })),
+  ], [answerColumns, friendFields])
+  const defaultColumnIds = allColumns
+    .slice(0, LIST_PREVIEW_LIMIT)
+    .map((answerKey) => `answer:${answerKey}`)
+  const selectedColumnIds = storedColumnIds ?? defaultColumnIds
+  const selectedColumnIdSet = new Set(selectedColumnIds)
+  const visibleColumns = selectableColumns.filter((column) => selectedColumnIdSet.has(column.id))
+  const selectedAnswerCount = visibleColumns.filter((column) => column.kind === 'answer').length
+  const hiddenAnswerCount = Math.max(0, answerColumns.length - selectedAnswerCount)
+
+  const toggleVisibleColumn = (columnId: string) => {
+    const currentIds = storedColumnIds ?? defaultColumnIds
+    const nextIds = new Set(currentIds)
+    if (nextIds.has(columnId)) nextIds.delete(columnId)
+    else nextIds.add(columnId)
+
+    const catalogIds = new Set<string>(selectableColumns.map((column) => column.id))
+    const orderedKnownIds = selectableColumns
+      .filter((column) => nextIds.has(column.id))
+      .map((column) => column.id)
+    const preservedUnknownIds = currentIds.filter((id) => (
+      id !== columnId && !catalogIds.has(id) && nextIds.has(id)
+    ))
+    const nextSelection = [...orderedKnownIds, ...preservedUnknownIds]
+    setStoredColumnIds(nextSelection)
+    try {
+      window.localStorage.setItem(
+        `${COLUMN_STORAGE_PREFIX}${formId}`,
+        JSON.stringify(nextSelection),
+      )
+    } catch {
+      // ブラウザ保存が使えなくても、現在の表示切替は維持する。
+    }
+  }
 
   const currentFilter = (
     externalOnly = externalEditOnly,
@@ -428,28 +584,102 @@ export default function DataCockpit(props: DataCockpitProps) {
         </div>
       )}
 
-      {/* 回答テーブル: 多項目フォームでも一覧は先頭3項目に絞り、全回答は詳細で確認する。 */}
-      {hiddenColumnCount > 0 && (
+      {/* 固定の管理列は常時表示し、その右側に置く回答・友だち情報だけをフォーム単位で選ぶ。 */}
+      <div ref={columnPickerRef} className="relative flex justify-end">
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={showColumnPicker}
+          onClick={() => setShowColumnPicker((visible) => !visible)}
+          className="min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+        >
+          表示列を選択
+        </button>
+        {showColumnPicker && (
+          <div
+            role="dialog"
+            aria-label="表示列を選択"
+            className="absolute right-0 top-full z-30 mt-2 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-gray-200 bg-white p-3 shadow-lg"
+          >
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="text-sm font-bold text-gray-900">表示列を選択</p>
+              <button
+                type="button"
+                aria-label="表示列の選択を閉じる"
+                onClick={() => setShowColumnPicker(false)}
+                className="min-h-[40px] rounded-lg px-2 text-xs text-gray-500 hover:bg-gray-100"
+              >
+                閉じる
+              </button>
+            </div>
+            <div className="max-h-80 space-y-3 overflow-y-auto pr-1">
+              <fieldset>
+                <legend className="mb-1 text-xs font-bold text-gray-500">フォーム回答</legend>
+                <div className="space-y-1">
+                  {answerColumns.map((column) => (
+                    <label
+                      key={column.id}
+                      className="flex min-h-[40px] cursor-pointer items-center gap-2 rounded-md px-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedColumnIdSet.has(column.id)}
+                        onChange={() => toggleVisibleColumn(column.id)}
+                        className="h-4 w-4"
+                      />
+                      <span>{column.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend className="mb-1 text-xs font-bold text-gray-500">友だち情報</legend>
+                <div className="space-y-1">
+                  {selectableColumns.filter((column) => column.kind !== 'answer').map((column) => (
+                    <label
+                      key={column.id}
+                      className="flex min-h-[40px] cursor-pointer items-center gap-2 rounded-md px-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedColumnIdSet.has(column.id)}
+                        onChange={() => toggleVisibleColumn(column.id)}
+                        className="h-4 w-4"
+                      />
+                      <span>{column.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            </div>
+          </div>
+        )}
+      </div>
+      {hiddenAnswerCount > 0 && (
         <div data-testid="column-summary" className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm text-gray-700">
-          一覧では先頭{columns.length}項目を表示しています。残り{hiddenColumnCount}項目は「詳細」で確認できます。
+          一覧では{selectedAnswerCount}項目を表示しています。残り{hiddenAnswerCount}項目は「表示列を選択」で追加でき、「詳細」で確認できます。
         </div>
       )}
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white sm:overflow-x-auto">
         <table className="block w-full text-sm sm:table sm:min-w-full">
           <thead className="hidden bg-gray-50 text-left text-xs text-gray-500 sm:table-header-group">
             <tr>
-              <th className="sticky left-0 z-20 w-[156px] bg-gray-50 px-3 py-2 font-medium">詳細</th>
+              <th className="sticky left-0 z-20 w-[164px] bg-gray-50 px-3 py-2 font-medium">詳細</th>
               {isOwner && <th className="w-10 px-3 py-2" />}
-              {columns.map((col) => <th key={col} className="px-3 py-2 font-medium">{labelFor(col)}</th>)}
-              <th className="px-3 py-2 font-medium">重複確認</th>
-              <th className="px-3 py-2 font-medium">外部編集</th>
-              <th className="px-3 py-2 font-medium">LINE連携</th>
-              <th className="px-3 py-2 font-medium">送信日時</th>
+              <th className="whitespace-nowrap px-3 py-2 font-medium">重複確認</th>
+              <th className="whitespace-nowrap px-3 py-2 font-medium">外部編集</th>
+              <th className="whitespace-nowrap px-3 py-2 font-medium">LINE連携</th>
+              <th className="whitespace-nowrap px-3 py-2 font-medium">送信日時</th>
+              {visibleColumns.map((column) => (
+                <th key={column.id} className="whitespace-nowrap px-3 py-2 font-medium sm:min-w-[10rem]">
+                  {column.label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody className="block sm:table-row-group">
             {visibleRows.length === 0 && (
-              <tr><td colSpan={columns.length + (isOwner ? 6 : 5)} className="block px-3 py-8 text-center text-gray-400 sm:table-cell">回答がありません</td></tr>
+              <tr><td colSpan={visibleColumns.length + (isOwner ? 6 : 5)} className="block px-3 py-8 text-center text-gray-400 sm:table-cell">回答がありません</td></tr>
             )}
             {visibleRows.map((r) => {
               const external = r as ExternalSubmissionRow
@@ -463,7 +693,7 @@ export default function DataCockpit(props: DataCockpitProps) {
               const duplicateReviewed = locallyConfirmedDuplicate || Boolean(duplicate.duplicateReviewedAt)
               return (
               <tr key={r.id} className="block space-y-2 border-t border-gray-100 p-3 sm:table-row sm:space-y-0 sm:p-0">
-                <td className="sticky left-0 z-10 flex bg-white py-1 sm:table-cell sm:w-[156px] sm:px-3 sm:py-2">
+                <td className="sticky left-0 z-10 flex bg-white py-1 sm:table-cell sm:w-[164px] sm:px-3 sm:py-2">
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
@@ -493,12 +723,6 @@ export default function DataCockpit(props: DataCockpitProps) {
                     <input type="checkbox" aria-label={`${r.id} を選択`} checked={selected.has(r.id)} onChange={() => toggle(r.id)} className="h-4 w-4" />
                   </td>
                 )}
-                {columns.map((col) => (
-                  <td key={col} className="flex min-w-0 gap-2 py-1 text-gray-800 sm:table-cell sm:max-w-[18rem] sm:px-3 sm:py-2">
-                    <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">{labelFor(col)}:</span>
-                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{cellText(r.answers[col])}</span>
-                  </td>
-                ))}
                 <td className="flex items-center gap-2 py-1 sm:table-cell sm:px-3 sm:py-2">
                   <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">重複確認:</span>
                   {duplicate.duplicateGroupId && (duplicate.duplicateGroupSize ?? 0) >= 2 ? (
@@ -587,6 +811,14 @@ export default function DataCockpit(props: DataCockpitProps) {
                   <span className="w-24 shrink-0 sm:hidden">送信日時:</span>
                   <span>{formatJstMinute(r.submittedAt)}</span>
                 </td>
+                {visibleColumns.map((column) => (
+                  <td key={column.id} className="flex min-w-0 gap-2 py-1 text-gray-800 sm:table-cell sm:min-w-[10rem] sm:max-w-[18rem] sm:px-3 sm:py-2">
+                    <span className="w-24 shrink-0 text-xs text-gray-500 sm:hidden">{column.label}:</span>
+                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                      {cellText(selectableColumnValue(column, r, friendData))}
+                    </span>
+                  </td>
+                ))}
               </tr>
               )
             })}

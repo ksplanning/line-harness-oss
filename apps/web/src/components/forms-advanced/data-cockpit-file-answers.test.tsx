@@ -24,6 +24,7 @@ const ROWS: SubmissionRow[] = [{
 
 function props(): DataCockpitProps {
   return {
+    formId: 'file-answer-form',
     formTitle: '添付テスト',
     rows: ROWS,
     total: 1,
@@ -39,6 +40,8 @@ function props(): DataCockpitProps {
     onImport: vi.fn(),
     onBulkDelete: vi.fn(),
     onOpenRow: vi.fn(),
+    onOpenFriend: vi.fn(),
+    onConfirmDuplicate: vi.fn().mockResolvedValue(undefined),
   }
 }
 
