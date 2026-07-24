@@ -34,9 +34,38 @@ import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { createFaqAiRuntime, type FaqAiRuntime } from '../services/llm/runtime.js';
 import { tryLinkStaffLineFromWebhook } from '../services/staff-notify/line-link.js';
 import { dispatchStaffNotification } from '../services/staff-notify/router.js';
+import {
+  executeFormSubmitActions,
+  resolveFormSubmitActions,
+} from '../services/form-submit-actions.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
+
+async function executeAutoReplyActionsAfterSend(
+  db: D1Database,
+  input: {
+    ruleId: string;
+    friendId: string | null;
+    actionsJson: string | null | undefined;
+  },
+): Promise<void> {
+  if (typeof input.actionsJson !== 'string') return;
+  try {
+    await executeFormSubmitActions(db, {
+      formId: `auto-reply:${input.ruleId}`,
+      friendId: input.friendId,
+      actions: resolveFormSubmitActions(input.actionsJson, null),
+    });
+  } catch {
+    // LINE返信はすでに成功している。予期しないエンジン障害でも返信後処理を継続する。
+    console.error(`[auto-reply-action] ${JSON.stringify({
+      ruleId: input.ruleId,
+      status: 'failed',
+      reason: 'execution_failed',
+    })}`);
+  }
+}
 
 function queueStaffNotification(
   env: Env['Bindings'],
@@ -449,6 +478,7 @@ async function handleEvent(
         response_type: string;
         response_content: string;
         response_messages: string | null;
+        on_reply_actions_json: string | null;
         template_id: string | null;
         line_account_id: string | null;
         is_active: number;
@@ -488,6 +518,11 @@ async function handleEvent(
             return buildMessage(resolved.messageType, expandedContent);
           });
           await lineClient.replyMessage(event.replyToken, replyMessages);
+          await executeAutoReplyActionsAfterSend(db, {
+            ruleId: rule.id,
+            friendId: friend.id,
+            actionsJson: rule.on_reply_actions_json,
+          });
 
           // 送信ログ — Rich Menu 経由の Flex 応答もチャット詳細に残るようにする。
           // テキスト auto_reply (line ~390) と同じパターン。
@@ -661,6 +696,7 @@ async function handleEvent(
       response_type: string;
       response_content: string;
       response_messages: string | null;
+      on_reply_actions_json: string | null;
       template_id: string | null;
       line_account_id: string | null;
       keep_in_unresponded: number;
@@ -901,6 +937,11 @@ async function handleEvent(
         });
         await lineClient.replyMessage(event.replyToken, replyMessages);
         replyTokenConsumed = true;
+        await executeAutoReplyActionsAfterSend(db, {
+          ruleId: matchedRule.id,
+          friendId: friend.id,
+          actionsJson: matchedRule.on_reply_actions_json,
+        });
 
         // 送信ログ（replyMessage = 無料）— derive content from the built
         // reply message so any cleanEmptyNodes / parse-failure fallback is

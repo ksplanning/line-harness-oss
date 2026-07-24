@@ -16,6 +16,11 @@ const incomingImageMocks = vi.hoisted(() => ({
   fetchAndStoreIncomingImage: vi.fn(),
 }));
 
+const formSubmitActionMocks = vi.hoisted(() => ({
+  resolveFormSubmitActions: vi.fn(),
+  executeFormSubmitActions: vi.fn(),
+}));
+
 // Stub the DB graph — these tests focus on webhook guard behavior and the
 // first-contact friend registration path without touching real D1/LINE.
 vi.mock('@line-crm/db', () => ({
@@ -74,6 +79,11 @@ vi.mock('../services/staff-notify/line-link.js', () => ({
 
 vi.mock('../services/incoming-image.js', () => ({
   fetchAndStoreIncomingImage: incomingImageMocks.fetchAndStoreIncomingImage,
+}));
+
+vi.mock('../services/form-submit-actions.js', () => ({
+  resolveFormSubmitActions: formSubmitActionMocks.resolveFormSubmitActions,
+  executeFormSubmitActions: formSubmitActionMocks.executeFormSubmitActions,
 }));
 
 vi.mock('../services/step-delivery.js', () => ({
@@ -139,6 +149,10 @@ beforeEach(() => {
     status: 'not_handled',
   });
   incomingImageMocks.fetchAndStoreIncomingImage.mockResolvedValue(null);
+  formSubmitActionMocks.resolveFormSubmitActions.mockImplementation((actionsJson: string) => (
+    JSON.parse(actionsJson) as unknown[]
+  ));
+  formSubmitActionMocks.executeFormSubmitActions.mockResolvedValue([]);
 });
 
 describe('POST /webhook — DoS defenses (#104)', () => {
@@ -731,7 +745,11 @@ describe('POST /webhook — multi-bubble postback auto-reply', () => {
   }
 
   test('[c matched] exact postback data fires the rule and remains out of unread', async () => {
-    const { prepare } = await postPostback({ data: 'plan=gold' }, [{
+    const replyActions = [
+      { type: 'add_tag', tagId: 'tag-vip' },
+      { type: 'set_field', fieldId: 'field-status', value: '申込済' },
+    ];
+    const { db, prepare } = await postPostback({ data: 'plan=gold' }, [{
       id: 'postback-multi',
       keyword: 'plan=gold',
       match_type: 'exact',
@@ -741,6 +759,7 @@ describe('POST /webhook — multi-bubble postback auto-reply', () => {
         { messageType: 'text', messageContent: '申込を受け付けました' },
         { messageType: 'flex', messageContent: '{"type":"bubble"}' },
       ]),
+      on_reply_actions_json: JSON.stringify(replyActions),
       template_id: null,
       line_account_id: null,
       is_active: 1,
@@ -750,6 +769,17 @@ describe('POST /webhook — multi-bubble postback auto-reply', () => {
       { messageType: 'text', content: '申込を受け付けました' },
       { messageType: 'flex', content: '{"type":"bubble"}' },
     ]);
+    expect(formSubmitActionMocks.resolveFormSubmitActions).toHaveBeenCalledWith(
+      JSON.stringify(replyActions),
+      null,
+    );
+    expect(formSubmitActionMocks.executeFormSubmitActions).toHaveBeenCalledWith(db, {
+      formId: 'auto-reply:postback-multi',
+      friendId: 'friend-1',
+      actions: replyActions,
+    });
+    expect(lineClientMocks.replyMessage.mock.invocationCallOrder[0])
+      .toBeLessThan(formSubmitActionMocks.executeFormSubmitActions.mock.invocationCallOrder[0]);
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
     const incomingSql = prepare.mock.calls
       .map(([sql]) => String(sql))
@@ -804,6 +834,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     response_type: string;
     response_content: string;
     response_messages: string | null;
+    on_reply_actions_json?: string | null;
     template_id: string | null;
     keep_in_unresponded?: number;
     is_active: number;
@@ -1085,6 +1116,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
         response_type: 'silent',
         response_content: '',
         response_messages: null,
+        on_reply_actions_json: JSON.stringify([{ type: 'add_tag', tagId: 'tag-vip' }]),
         template_id: null,
         is_active: 1,
         created_at: '2026-07-02T00:00:00+09:00',
@@ -1092,6 +1124,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     );
 
     expect(tryFaqReply).not.toHaveBeenCalled();
+    expect(formSubmitActionMocks.executeFormSubmitActions).not.toHaveBeenCalled();
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
@@ -1099,7 +1132,11 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     vi.mocked(expandVariables).mockImplementation((content) => `展開:${content}`);
     vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
 
-    const { incomingStatement, preparedStatements } = await postTextWebhook({}, '資料', [{
+    const replyActions = [
+      { type: 'add_tag', tagId: 'tag-vip' },
+      { type: 'clear_field', fieldId: 'field-note' },
+    ];
+    const { db, incomingStatement, preparedStatements } = await postTextWebhook({}, '資料', [{
       id: 'auto-multi',
       keyword: '資料',
       match_type: 'exact',
@@ -1110,6 +1147,7 @@ describe('POST /webhook — FAQ bot flag gate', () => {
         { messageType: 'flex', messageContent: '{"type":"bubble"}' },
         { messageType: 'text', messageContent: 'B' },
       ]),
+      on_reply_actions_json: JSON.stringify(replyActions),
       template_id: null,
       is_active: 1,
       created_at: '2026-07-21T00:00:00+09:00',
@@ -1121,6 +1159,13 @@ describe('POST /webhook — FAQ bot flag gate', () => {
       { messageType: 'flex', content: '展開:{"type":"bubble"}' },
       { messageType: 'text', content: '展開:B' },
     ]);
+    expect(formSubmitActionMocks.executeFormSubmitActions).toHaveBeenCalledWith(db, {
+      formId: 'auto-reply:auto-multi',
+      friendId: 'friend-1',
+      actions: replyActions,
+    });
+    expect(lineClientMocks.replyMessage.mock.invocationCallOrder[0])
+      .toBeLessThan(formSubmitActionMocks.executeFormSubmitActions.mock.invocationCallOrder[0]);
     expect(incomingStatement?.bind).toHaveBeenCalledWith(
       expect.any(String),
       'friend-1',
@@ -1397,6 +1442,60 @@ describe('POST /webhook — FAQ bot flag gate', () => {
     expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [
       { messageType: 'text', content: '10時からです' },
     ]);
+    expect(formSubmitActionMocks.executeFormSubmitActions).not.toHaveBeenCalled();
+  });
+
+  test('reply送信失敗時は応答後アクションを実行しない', async () => {
+    vi.mocked(expandVariables).mockImplementation((content) => content);
+    vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
+    lineClientMocks.replyMessage.mockRejectedValueOnce(new Error('LINE reply failed'));
+
+    await postTextWebhook({}, '資料', [{
+      id: 'auto-send-failed',
+      keyword: '資料',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: '資料を送ります',
+      response_messages: null,
+      on_reply_actions_json: JSON.stringify([{ type: 'add_tag', tagId: 'tag-vip' }]),
+      template_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    }]);
+
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(formSubmitActionMocks.executeFormSubmitActions).not.toHaveBeenCalled();
+  });
+
+  test('P1アクションエンジンの予期しない失敗でも送信済み返信とhandled確定を維持する', async () => {
+    vi.mocked(expandVariables).mockImplementation((content) => content);
+    vi.mocked(buildMessage).mockImplementation((messageType, content) => ({ messageType, content }) as never);
+    formSubmitActionMocks.executeFormSubmitActions.mockRejectedValueOnce(new Error('unexpected action failure'));
+
+    const { preparedStatements } = await postTextWebhook({}, '資料', [{
+      id: 'auto-action-failed',
+      keyword: '資料',
+      match_type: 'exact',
+      response_type: 'text',
+      response_content: '資料を送ります',
+      response_messages: null,
+      on_reply_actions_json: JSON.stringify([{ type: 'add_tag', tagId: 'tag-vip' }]),
+      template_id: null,
+      is_active: 1,
+      created_at: '2026-07-21T00:00:00+09:00',
+    }]);
+
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [
+      { messageType: 'text', content: '資料を送ります' },
+    ]);
+    expect(formSubmitActionMocks.executeFormSubmitActions).toHaveBeenCalledTimes(1);
+    const sourceUpdate = preparedStatements.find(({ sql }) =>
+      sql.includes('UPDATE messages_log SET source = ? WHERE id = ?'),
+    );
+    expect(sourceUpdate?.statement.bind).toHaveBeenCalledWith(
+      'auto_reply_keyword',
+      expect.any(String),
+    );
   });
 
   test('malformed non-null response_messages never falls back and leaves the message unread', async () => {
