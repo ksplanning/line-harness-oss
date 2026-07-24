@@ -20,7 +20,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_ROOT = join(__dirname, '../../../../packages/db');
 const BENIGN = /duplicate column name|already exists/i;
 
-function d1(db: Database.Database): D1Database {
+function d1(
+  db: Database.Database,
+  options: { beforeRun?: (sql: string) => void } = {},
+): D1Database {
   return {
     prepare(sql: string) {
       const s = db.prepare(sql);
@@ -29,7 +32,11 @@ function d1(db: Database.Database): D1Database {
         bind(...args: unknown[]) { params = args; return api; },
         async first<T>() { return (s.get(...(params as never[])) as T) ?? null; },
         async all<T>() { return { results: s.all(...(params as never[])) as T[] }; },
-        async run() { const info = s.run(...(params as never[])); return { meta: { changes: info.changes } }; },
+        async run() {
+          options.beforeRun?.(sql);
+          const info = s.run(...(params as never[]));
+          return { meta: { changes: info.changes } };
+        },
       };
       return api;
     },
@@ -256,6 +263,42 @@ describe('duplicate-review — Formaloo mirror rows', () => {
       total: 0,
       duplicateReviewPendingCount: 0,
     });
+  });
+
+  test('atomically rejects a sibling change between group validation and marking', async () => {
+    const listed = await call(
+      'GET',
+      '/api/forms-advanced/fa1/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    const displayed = (await listed.json() as {
+      data: { rows: Array<{ id: string; duplicateReviewRevision: string }> };
+    }).data.rows.find((row) => row.id === 'duplicate-2');
+    expect(displayed).toBeTruthy();
+
+    let raced = false;
+    DB = d1(raw, {
+      beforeRun(sql) {
+        if (raced || !/UPDATE formaloo_submissions[\s\S]*SET duplicate_reviewed_at/i.test(sql)) return;
+        raced = true;
+        raw.prepare(
+          `UPDATE formaloo_submissions
+           SET answers_json = '{"email":"ask@example.com","plan":"並行更新"}'
+           WHERE id = 'duplicate-1'`,
+        ).run();
+      },
+    });
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/fa1/rows/duplicate-2/confirm-duplicate',
+      { expectedDuplicateReviewRevision: displayed!.duplicateReviewRevision },
+    );
+
+    expect(raced).toBe(true);
+    expect(response.status).toBe(409);
+    expect(raw.prepare(
+      `SELECT duplicate_reviewed_at
+       FROM formaloo_submissions WHERE id = 'duplicate-2'`,
+    ).get()).toEqual({ duplicate_reviewed_at: null });
   });
 });
 

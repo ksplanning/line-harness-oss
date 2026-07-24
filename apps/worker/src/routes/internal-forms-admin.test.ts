@@ -1537,6 +1537,55 @@ describe('internal answer admin read path', () => {
     });
   });
 
+  test('uses field position, not JSON array order, for the first email identity', async () => {
+    raw.prepare(
+      `UPDATE formaloo_forms SET definition_json = ? WHERE id = 'internal-form'`,
+    ).run(JSON.stringify({
+      fields: [
+        {
+          id: 'secondaryEmail',
+          type: 'email',
+          label: '予備メール',
+          required: false,
+          position: 20,
+          config: {},
+        },
+        {
+          id: 'primaryEmail',
+          type: 'email',
+          label: '主メール',
+          required: false,
+          position: 10,
+          config: {},
+        },
+      ],
+      logic: [],
+    }));
+    seedInternalSubmission(
+      'position-1',
+      'internal-form',
+      { primaryEmail: 'same@example.test', secondaryEmail: 'first@example.test' },
+      '2026-07-10T09:00:00+09:00',
+    );
+    seedInternalSubmission(
+      'position-2',
+      'internal-form',
+      { primaryEmail: ' SAME@example.test ', secondaryEmail: 'second@example.test' },
+      '2026-07-10T10:00:00+09:00',
+    );
+
+    const response = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    expect(response.status).toBe(200);
+    const data = (await response.json() as {
+      data: { rows: Array<{ id: string }>; duplicateReviewPendingCount: number };
+    }).data;
+    expect(data.duplicateReviewPendingCount).toBe(2);
+    expect(data.rows.map((row) => row.id)).toEqual(['position-2', 'position-1']);
+  });
+
   test('returns 409 instead of confirming a duplicate group that changed after display', async () => {
     seedInternalSubmission(
       'sub-4',
@@ -1565,6 +1614,49 @@ describe('internal answer admin read path', () => {
       { expectedDuplicateReviewRevision: displayed!.duplicateReviewRevision },
     );
 
+    expect(response.status).toBe(409);
+    expect(raw.prepare(
+      `SELECT duplicate_reviewed_at
+       FROM internal_form_submissions WHERE id = 'sub-4'`,
+    ).get()).toEqual({ duplicate_reviewed_at: null });
+  });
+
+  test('atomically rejects a sibling change between group validation and marking', async () => {
+    seedInternalSubmission(
+      'sub-4',
+      'internal-form',
+      { name: '二郎（再送）', contact: 'two@example.test' },
+      '2026-07-03T09:00:00+09:00',
+      'friend-1',
+    );
+    const listed = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    const displayed = (await listed.json() as {
+      data: { rows: Array<{ id: string; duplicateReviewRevision: string }> };
+    }).data.rows.find((row) => row.id === 'sub-4');
+    expect(displayed).toBeTruthy();
+
+    let raced = false;
+    DB = d1(raw, {
+      beforeRun(sql) {
+        if (raced || !/UPDATE internal_form_submissions[\s\S]*SET duplicate_reviewed_at/i.test(sql)) return;
+        raced = true;
+        raw.prepare(
+          `UPDATE internal_form_submissions
+           SET answers_json = '{"name":"並行更新","contact":"two@example.test"}'
+           WHERE id = 'sub-2'`,
+        ).run();
+      },
+    });
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/internal-form/rows/sub-4/confirm-duplicate',
+      { expectedDuplicateReviewRevision: displayed!.duplicateReviewRevision },
+    );
+
+    expect(raced).toBe(true);
     expect(response.status).toBe(409);
     expect(raw.prepare(
       `SELECT duplicate_reviewed_at

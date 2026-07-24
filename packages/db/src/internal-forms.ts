@@ -417,7 +417,7 @@ export async function createInternalFormSubmissionWithinLimit(
       limit,
     )
     .run();
-  if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) !== 1) return null;
+  if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) < 1) return null;
   return getInternalFormSubmission(db, input.formId, id);
 }
 
@@ -580,7 +580,7 @@ async function insertInternalFormSubmissionForPublishedDefinition(
       ...rapidDuplicateBindings,
     )
     .run();
-  if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) !== 1) return null;
+  if (((result as { meta?: { changes?: number } }).meta?.changes ?? 0) < 1) return null;
   return insertedInternalFormSubmission(input, id, answersJson, now);
 }
 
@@ -858,7 +858,7 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
     input.lease.token,
     input.lease.now,
   ).run();
-  return (result.meta.changes ?? 0) === 1;
+  return (result.meta.changes ?? 0) >= 1;
 }
 
 /**
@@ -1125,7 +1125,7 @@ export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId
     input.lease.token,
     input.lease.now,
   ).run();
-  return (result.meta.changes ?? 0) === 1;
+  return (result.meta.changes ?? 0) >= 1;
 }
 
 export async function getInternalFormSubmission(
@@ -1157,7 +1157,7 @@ export async function softDeleteInternalFormSubmission(
            AND form.deleted = 0 AND form.render_backend = 'internal'
        )`,
   ).bind(deletedAt, submissionId, formId).run();
-  return (result.meta.changes ?? 0) === 1;
+  return (result.meta.changes ?? 0) >= 1;
 }
 
 export async function updateInternalFormSubmissionAnswers(
@@ -1370,6 +1370,8 @@ export async function markInternalFormSubmissionDuplicateReviewed(
     submissionId: string;
     expectedFriendId: string | null;
     expectedAnswersJson: string;
+    expectedGeneration: number;
+    expectedDefinitionJson: string;
     reviewedAt?: string;
   },
 ): Promise<boolean> {
@@ -1380,7 +1382,15 @@ export async function markInternalFormSubmissionDuplicateReviewed(
        WHERE id = ? AND form_id = ? AND deleted_at IS NULL
          AND duplicate_reviewed_at IS NULL
          AND friend_id IS ?
-         AND answers_json = ?`,
+         AND answers_json = ?
+         AND EXISTS (
+           SELECT 1 FROM formaloo_forms form
+           WHERE form.id = ?
+             AND form.deleted = 0
+             AND form.render_backend = 'internal'
+             AND form.submission_duplicate_review_generation = ?
+             AND form.definition_json = ?
+         )`,
     )
     .bind(
       input.reviewedAt ?? jstNow(),
@@ -1388,6 +1398,9 @@ export async function markInternalFormSubmissionDuplicateReviewed(
       input.formId,
       input.expectedFriendId,
       input.expectedAnswersJson,
+      input.formId,
+      input.expectedGeneration,
+      input.expectedDefinitionJson,
     )
     .run();
   return (result.meta.changes ?? 0) === 1;

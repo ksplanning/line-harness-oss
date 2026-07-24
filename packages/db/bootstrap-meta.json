@@ -131,7 +131,8 @@
     "143_auto_reply_actions.sql",
     "144_ai_reply_style_defaults.sql",
     "145_internal_form_external_edit_notification_claim.sql",
-    "146_form_submission_duplicate_review.sql"
+    "146_form_submission_duplicate_review.sql",
+    "147_form_submission_duplicate_review_generation.sql"
   ],
-  "migrationCount": 132
+  "migrationCount": 133
 }

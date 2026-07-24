@@ -1506,11 +1506,16 @@ function formalooDuplicateFields(
   ));
 }
 
-async function formalooDuplicateReview(
+type FormalooDuplicateReviewSnapshot = {
+  review: FormSubmissionDuplicateReview;
+  rows: FormalooSubmissionRow[];
+};
+
+async function formalooDuplicateReviewSnapshot(
   db: D1Database,
   formId: string,
   fields: DuplicateReviewField[],
-): Promise<FormSubmissionDuplicateReview> {
+): Promise<FormalooDuplicateReviewSnapshot | null> {
   try {
     const { rows } = await queryFormalooSubmissions(db, {
       formId,
@@ -1518,7 +1523,7 @@ async function formalooDuplicateReview(
       limit: -1,
       offset: 0,
     });
-    return await buildFormSubmissionDuplicateReview(
+    const review = await buildFormSubmissionDuplicateReview(
       rows.map((row) => ({
         id: row.id,
         formId: row.form_id,
@@ -1529,10 +1534,20 @@ async function formalooDuplicateReview(
       })),
       fields,
     );
+    return { review, rows };
   } catch (error) {
     console.error('Formaloo duplicate review calculation failed (fail-soft):', error);
-    return { byRowId: new Map(), pendingCount: 0 };
+    return null;
   }
+}
+
+async function formalooDuplicateReview(
+  db: D1Database,
+  formId: string,
+  fields: DuplicateReviewField[],
+): Promise<FormSubmissionDuplicateReview> {
+  const snapshot = await formalooDuplicateReviewSnapshot(db, formId, fields);
+  return snapshot?.review ?? { byRowId: new Map(), pendingCount: 0 };
 }
 
 function parseIntSafe(v: string | undefined, fallback: number): number {
@@ -1682,16 +1697,23 @@ formsAdvanced.post('/api/forms-advanced/:id/rows/:rowId/confirm-duplicate', asyn
       }, 400);
     }
 
-    const row = await getFormalooSubmission(c.env.DB, rowId);
-    if (!row || row.form_id !== id) {
-      return c.json({ success: false, error: '回答が見つかりません' }, 404);
-    }
     const fieldMap = await getFormalooFieldMap(c.env.DB, id).catch(() => []);
-    const review = await formalooDuplicateReview(
+    const snapshot = await formalooDuplicateReviewSnapshot(
       c.env.DB,
       id,
       formalooDuplicateFields(fieldMap),
     );
+    if (!snapshot) {
+      return c.json({
+        success: false,
+        error: '回答の状態が更新されたため、再読み込みしてください',
+      }, 409);
+    }
+    const { review, rows } = snapshot;
+    const row = rows.find((candidate) => candidate.id === rowId);
+    if (!row) {
+      return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    }
     const duplicate = review.byRowId.get(rowId);
     if (!duplicate || duplicate.reviewedAt !== null) {
       return c.json({ success: false, error: '未確認の重複候補ではありません' }, 409);
@@ -1708,6 +1730,7 @@ formsAdvanced.post('/api/forms-advanced/:id/rows/:rowId/confirm-duplicate', asyn
       submissionId: rowId,
       expectedFriendId: row.friend_id,
       expectedAnswersJson: row.answers_json,
+      expectedGeneration: form.submission_duplicate_review_generation,
     });
     if (!marked) {
       return c.json({

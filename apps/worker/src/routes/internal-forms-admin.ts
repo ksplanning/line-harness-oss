@@ -105,6 +105,7 @@ type DefinitionField = {
   label: string;
   type: string;
   required: boolean;
+  position: number;
 };
 
 function parseIntSafe(value: string | undefined, fallback: number): number {
@@ -192,7 +193,7 @@ function definitionFields(definitionJson: string): DefinitionField[] {
   try {
     const definition = JSON.parse(definitionJson) as { fields?: unknown };
     if (!Array.isArray(definition.fields)) return [];
-    return definition.fields.flatMap((candidate) => {
+    return definition.fields.flatMap((candidate, index) => {
       if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
       const field = candidate as Record<string, unknown>;
       if (typeof field.id !== 'string' || !field.id) return [];
@@ -201,21 +202,29 @@ function definitionFields(definitionJson: string): DefinitionField[] {
         label: typeof field.label === 'string' && field.label ? field.label : field.id,
         type: typeof field.type === 'string' ? field.type : 'text',
         required: field.required === true,
+        position: typeof field.position === 'number' && Number.isFinite(field.position)
+          ? field.position
+          : index,
       }];
-    });
+    }).sort((left, right) => left.position - right.position);
   } catch {
     return [];
   }
 }
 
-async function internalDuplicateReview(
+type InternalDuplicateReviewSnapshot = {
+  review: FormSubmissionDuplicateReview;
+  rows: InternalFormSubmission[];
+};
+
+async function internalDuplicateReviewSnapshot(
   db: D1Database,
   formId: string,
   fields: DefinitionField[],
-): Promise<FormSubmissionDuplicateReview> {
+): Promise<InternalDuplicateReviewSnapshot | null> {
   try {
     const rows = await listInternalFormSubmissionsForDuplicateReview(db, formId);
-    return await buildFormSubmissionDuplicateReview(
+    const review = await buildFormSubmissionDuplicateReview(
       rows.map((row) => ({
         id: row.id,
         formId: row.form_id,
@@ -230,10 +239,20 @@ async function internalDuplicateReview(
         label: field.label,
       })),
     );
+    return { review, rows };
   } catch (error) {
     console.error('Internal form duplicate review calculation failed (fail-soft):', error);
-    return { byRowId: new Map(), pendingCount: 0 };
+    return null;
   }
+}
+
+async function internalDuplicateReview(
+  db: D1Database,
+  formId: string,
+  fields: DefinitionField[],
+): Promise<FormSubmissionDuplicateReview> {
+  const snapshot = await internalDuplicateReviewSnapshot(db, formId, fields);
+  return snapshot?.review ?? { byRowId: new Map(), pendingCount: 0 };
 }
 
 function parseAnswers(answersJson: string): unknown {
@@ -1312,8 +1331,14 @@ internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/confirm-duplicate',
     }
 
     const fields = definitionFields(form.definition_json);
-    const review = await internalDuplicateReview(c.env.DB, id, fields);
-    const rows = await listInternalFormSubmissionsForDuplicateReview(c.env.DB, id);
+    const snapshot = await internalDuplicateReviewSnapshot(c.env.DB, id, fields);
+    if (!snapshot) {
+      return c.json({
+        success: false,
+        error: '回答の状態が更新されたため、再読み込みしてください',
+      }, 409);
+    }
+    const { review, rows } = snapshot;
     const row = rows.find((candidate) => candidate.id === rowId);
     if (!row) return c.json({ success: false, error: '回答が見つかりません' }, 404);
     const duplicate = review.byRowId.get(rowId);
@@ -1332,6 +1357,8 @@ internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/confirm-duplicate',
       submissionId: rowId,
       expectedFriendId: row.friend_id,
       expectedAnswersJson: row.answers_json,
+      expectedGeneration: form.submission_duplicate_review_generation,
+      expectedDefinitionJson: form.definition_json,
     });
     if (!marked) {
       return c.json({

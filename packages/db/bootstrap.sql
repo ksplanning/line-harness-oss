@@ -614,7 +614,7 @@ CREATE TABLE formaloo_forms (
                         CHECK (render_backend IN ('formaloo', 'internal')),
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, allow_post_edit INTEGER NOT NULL DEFAULT 0, allow_edit_mail INTEGER NOT NULL DEFAULT 0, edit_mail_field_slug TEXT, edit_link_epoch INTEGER NOT NULL DEFAULT 0, formaloo_webhook_enabled INTEGER NOT NULL DEFAULT 0, formaloo_webhook_id TEXT, formaloo_webhook_secret TEXT, formaloo_webhook_url TEXT, formaloo_webhook_lock_token TEXT, formaloo_webhook_lock_until INTEGER, formaloo_webhook_pull_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_processed_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_lock_token TEXT, formaloo_webhook_pull_lock_until INTEGER, formaloo_webhook_pull_not_before INTEGER NOT NULL DEFAULT 0, allow_branch_edit INTEGER NOT NULL DEFAULT 0);
+, allow_post_edit INTEGER NOT NULL DEFAULT 0, allow_edit_mail INTEGER NOT NULL DEFAULT 0, edit_mail_field_slug TEXT, edit_link_epoch INTEGER NOT NULL DEFAULT 0, formaloo_webhook_enabled INTEGER NOT NULL DEFAULT 0, formaloo_webhook_id TEXT, formaloo_webhook_secret TEXT, formaloo_webhook_url TEXT, formaloo_webhook_lock_token TEXT, formaloo_webhook_lock_until INTEGER, formaloo_webhook_pull_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_processed_generation INTEGER NOT NULL DEFAULT 0, formaloo_webhook_pull_lock_token TEXT, formaloo_webhook_pull_lock_until INTEGER, formaloo_webhook_pull_not_before INTEGER NOT NULL DEFAULT 0, allow_branch_edit INTEGER NOT NULL DEFAULT 0, submission_duplicate_review_generation INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE formaloo_recurring_submissions (
   id                   TEXT PRIMARY KEY,
@@ -2099,9 +2099,27 @@ CREATE TRIGGER trg_faq_personal_context_audit_no_update
 BEFORE UPDATE ON faq_personal_context_audit_log
 BEGIN SELECT RAISE(ABORT, 'faq_personal_context_audit_log is append-only'); END;
 
+CREATE TRIGGER trg_formaloo_field_duplicate_review_generation_delete AFTER DELETE ON formaloo_field_map BEGIN UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = OLD.form_id; END;
+
+CREATE TRIGGER trg_formaloo_field_duplicate_review_generation_insert AFTER INSERT ON formaloo_field_map BEGIN UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = NEW.form_id; END;
+
+CREATE TRIGGER trg_formaloo_field_duplicate_review_generation_update AFTER UPDATE OF form_id, formaloo_field_slug, field_type, label, position ON formaloo_field_map WHEN OLD.form_id IS NOT NEW.form_id OR OLD.formaloo_field_slug IS NOT NEW.formaloo_field_slug OR OLD.field_type IS NOT NEW.field_type OR OLD.label IS NOT NEW.label OR OLD.position IS NOT NEW.position BEGIN UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = OLD.form_id; UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = NEW.form_id AND NEW.form_id IS NOT OLD.form_id; END;
+
+CREATE TRIGGER trg_formaloo_submission_duplicate_review_generation_delete AFTER DELETE ON formaloo_submissions BEGIN UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = OLD.form_id; END;
+
+CREATE TRIGGER trg_formaloo_submission_duplicate_review_generation_insert AFTER INSERT ON formaloo_submissions BEGIN UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = NEW.form_id; END;
+
+CREATE TRIGGER trg_formaloo_submission_duplicate_review_generation_update AFTER UPDATE OF form_id, friend_id, answers_json ON formaloo_submissions WHEN OLD.form_id IS NOT NEW.form_id OR OLD.friend_id IS NOT NEW.friend_id OR OLD.answers_json IS NOT NEW.answers_json BEGIN UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = OLD.form_id; UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = NEW.form_id AND NEW.form_id IS NOT OLD.form_id; END;
+
 CREATE TRIGGER trg_friend_import_audit_no_delete BEFORE DELETE ON friend_import_audit_log BEGIN SELECT RAISE(ABORT, 'friend_import_audit_log is append-only'); END;
 
 CREATE TRIGGER trg_friend_import_audit_no_update BEFORE UPDATE ON friend_import_audit_log BEGIN SELECT RAISE(ABORT, 'friend_import_audit_log is append-only'); END;
+
+CREATE TRIGGER trg_internal_submission_duplicate_review_generation_delete AFTER DELETE ON internal_form_submissions BEGIN UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = OLD.form_id; END;
+
+CREATE TRIGGER trg_internal_submission_duplicate_review_generation_insert AFTER INSERT ON internal_form_submissions BEGIN UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = NEW.form_id; END;
+
+CREATE TRIGGER trg_internal_submission_duplicate_review_generation_update AFTER UPDATE OF form_id, friend_id, answers_json, deleted_at ON internal_form_submissions WHEN OLD.form_id IS NOT NEW.form_id OR OLD.friend_id IS NOT NEW.friend_id OR OLD.answers_json IS NOT NEW.answers_json OR OLD.deleted_at IS NOT NEW.deleted_at BEGIN UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = OLD.form_id; UPDATE formaloo_forms SET submission_duplicate_review_generation = submission_duplicate_review_generation + 1 WHERE id = NEW.form_id AND NEW.form_id IS NOT OLD.form_id; END;
 
 CREATE TRIGGER trg_rich_menu_rule_account_reactivate AFTER UPDATE OF is_active ON line_accounts WHEN OLD.is_active IS NOT 1 AND NEW.is_active = 1 BEGIN INSERT INTO rich_menu_rule_evaluation_queue (friend_id, attempts, available_at, last_error, lease_token, revision, updated_at) SELECT f.id, 0, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'), NULL, NULL, 1, strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') FROM friends f WHERE f.line_account_id = NEW.id AND f.is_following = 1 AND (EXISTS (SELECT 1 FROM rich_menu_display_rules r WHERE r.account_id = NEW.id AND r.is_active = 1) OR EXISTS (SELECT 1 FROM rich_menu_friend_assignments a WHERE a.friend_id = f.id)) ON CONFLICT(friend_id) DO UPDATE SET attempts = 0, available_at = CASE WHEN rich_menu_rule_evaluation_queue.lease_token IS NULL THEN excluded.available_at ELSE rich_menu_rule_evaluation_queue.available_at END, last_error = NULL, revision = rich_menu_rule_evaluation_queue.revision + 1, updated_at = excluded.updated_at; END;
 

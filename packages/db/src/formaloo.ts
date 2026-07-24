@@ -56,6 +56,8 @@ export interface FormalooForm {
   formaloo_webhook_pull_lock_token: string | null;
   formaloo_webhook_pull_lock_until: number | null;
   formaloo_webhook_pull_not_before: number;
+  // migration 147: 回答グループの楽観ロック世代。関連する回答 mutation の trigger が bump。
+  submission_duplicate_review_generation: number;
   // migration 113: hosted renderer selector. Existing rows default to Formaloo.
   render_backend: 'formaloo' | 'internal';
   created_at: string;
@@ -1623,6 +1625,7 @@ export async function markFormalooSubmissionDuplicateReviewed(
     submissionId: string;
     expectedFriendId: string | null;
     expectedAnswersJson: string;
+    expectedGeneration: number;
     reviewedAt?: string;
   },
 ): Promise<boolean> {
@@ -1633,7 +1636,14 @@ export async function markFormalooSubmissionDuplicateReviewed(
        WHERE id = ? AND form_id = ?
          AND duplicate_reviewed_at IS NULL
          AND friend_id IS ?
-         AND answers_json = ?`,
+         AND answers_json = ?
+         AND EXISTS (
+           SELECT 1 FROM formaloo_forms form
+           WHERE form.id = ?
+             AND form.deleted = 0
+             AND form.render_backend = 'formaloo'
+             AND form.submission_duplicate_review_generation = ?
+         )`,
     )
     .bind(
       input.reviewedAt ?? jstNow(),
@@ -1641,6 +1651,8 @@ export async function markFormalooSubmissionDuplicateReviewed(
       input.formId,
       input.expectedFriendId,
       input.expectedAnswersJson,
+      input.formId,
+      input.expectedGeneration,
     )
     .run();
   return (result.meta.changes ?? 0) === 1;
@@ -1667,10 +1679,14 @@ export async function bulkDeleteFormalooSubmissions(db: D1Database, formId: stri
   if (ids.length === 0) return 0;
   const placeholders = ids.map(() => '?').join(',');
   const res = await db
-    .prepare(`DELETE FROM formaloo_submissions WHERE form_id = ? AND id IN (${placeholders})`)
+    .prepare(
+      `DELETE FROM formaloo_submissions
+       WHERE form_id = ? AND id IN (${placeholders})
+       RETURNING id`,
+    )
     .bind(formId, ...ids)
-    .run();
-  return (res as { meta?: { changes?: number } }).meta?.changes ?? 0;
+    .all<{ id: string }>();
+  return res.results.length;
 }
 
 /**
