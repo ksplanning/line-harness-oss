@@ -145,6 +145,7 @@ import type { Env } from '../index.js';
 export const formsAdvanced = new Hono<Env>();
 
 const FORMALOO_MUTATION_LOCK_LEASE_MS = 120_000;
+const INITIAL_FORMALOO_SYNC_PENDING_PREFIX = '初回同期未完了: ';
 
 function withFormalooMutationLock(method: 'PATCH' | 'POST') {
   return async (c: Context<Env>, next: Next) => {
@@ -607,7 +608,7 @@ formsAdvanced.post('/api/forms-advanced/:id/reapply-hosted', async (c) => {
     // 完了扱いにすると未同期の分岐・設定を置き去りにする。通常保存による初回同期を先に完了させる。
     if (
       !form.formaloo_slug
-      || (currentSync?.sync_status === 'out_of_sync' && currentSync.last_pushed_at == null)
+      || currentSync?.last_error?.startsWith(INITIAL_FORMALOO_SYNC_PENDING_PREFIX)
     ) {
       return c.json({ success: false, error: 'Formaloo への初回同期が完了していません' }, 409);
     }
@@ -684,6 +685,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
   const id = c.req.param('id')!;
   let syncStarted = false;
   let syncSettled = false;
+  let formatSyncError = (message: string): string => message;
   try {
     const form = await getFormalooForm(c.env.DB, id);
     if (!form || form.deleted) return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
@@ -693,10 +695,16 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const previousSync = isFirstFormalooPush
       ? null
       : await getFormalooSyncState(c.env.DB, id);
-    // 初回 core/meta 同期が完了する前に失敗した場合は、作成済み provider identity を再利用しつつ
-    // D1 の設定 seed も再試行する。last_pushed_at がある通常フォームの absent-key 契約は変えない。
+    // 初回 core/meta 同期が完了する前に失敗した場合だけ、同期 state の error prefix を durable marker
+    // として作成済み provider identity を再利用しつつ D1 の設定 seed も再試行する。通常フォームの
+    // 一般的な out_of_sync は対象外にし、既存 present-key update 契約を変えない。
     const shouldSeedStoredSettings = isFirstFormalooPush
-      || (previousSync?.sync_status === 'out_of_sync' && previousSync.last_pushed_at == null);
+      || previousSync?.last_error?.startsWith(INITIAL_FORMALOO_SYNC_PENDING_PREFIX) === true;
+    formatSyncError = (message: string): string => (
+      shouldSeedStoredSettings && !message.startsWith(INITIAL_FORMALOO_SYNC_PENDING_PREFIX)
+        ? `${INITIAL_FORMALOO_SYNC_PENDING_PREFIX}${message}`
+        : message
+    );
 
     const body = await c.req
       .json<{ fields?: unknown[]; logic?: unknown[]; rawLogic?: unknown; logicFingerprint?: string; title?: unknown; description?: unknown; design?: unknown; designImages?: unknown; formType?: unknown; formCopy?: unknown; localizationJa?: unknown; formRedirect?: unknown; successPages?: unknown; operationsSettings?: unknown; allowPostEdit?: unknown; allowBranchEdit?: unknown; allowEditMail?: unknown; friendMetadataMappings?: unknown; editMailFieldId?: unknown; submitActions?: unknown }>()
@@ -1092,7 +1100,10 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     // 登録 active → 暗号文鍵 / 未登録・無効化・復号失敗 → null (env silent fallback しない = 誤送信防止)。fail-soft 契約不変。
     const client = await resolveFormalooClient(c.env, effectiveWorkspaceId);
     if (!client) {
-      await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: 'Formaloo credentials 未設定 (S-1 待ち)' });
+      await setFormalooSyncState(c.env.DB, id, {
+        syncStatus: 'out_of_sync',
+        lastError: formatSyncError('Formaloo credentials 未設定 (S-1 待ち)'),
+      });
       syncSettled = true;
     } else {
       // legacy backfill (R6): 未編集 かつ preserve 元 raw 未取得 かつ formaloo_slug あり → push 前に re-pull で
@@ -1301,7 +1312,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         }
         if (!metaRes.ok) {
           await setFormalooSyncState(c.env.DB, id, {
-            syncStatus: 'out_of_sync', lastError: 'フォーム情報の同期に失敗しました',
+            syncStatus: 'out_of_sync',
+            lastError: formatSyncError('フォーム情報の同期に失敗しました'),
           });
           syncSettled = true;
         // push 成功で Formaloo 側 = harness が今送った内容 → 旧 baseline は stale。
@@ -1310,7 +1322,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         // compound を builder 編集した場合は push 成功でも未同期 + 明示警告 (複合は簡略化せず Formaloo に残す)。
         } else if (compoundEditWarning) {
           await setFormalooSyncState(c.env.DB, id, {
-            syncStatus: 'out_of_sync', lastError: compoundEditWarning,
+            syncStatus: 'out_of_sync', lastError: formatSyncError(compoundEditWarning),
             remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
           });
           syncSettled = true;
@@ -1318,47 +1330,47 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           // F1: 色/フィールドは同期したが画像 upload/削除が失敗 → out_of_sync で owner に surface
           //     (meta PATCH 失敗と同じ経路)。owner が「ロゴ設定済」と誤認しないための honest state。
           await setFormalooSyncState(c.env.DB, id, {
-            syncStatus: 'out_of_sync', lastError: imageSyncError,
+            syncStatus: 'out_of_sync', lastError: formatSyncError(imageSyncError),
           });
           syncSettled = true;
         } else if (backgroundReflectError) {
           // bg-fullpage-render-fix (R4): 画像 upload は 200 だが背景/ロゴが hosted に永続していない (soft-200)
           //   → out_of_sync。「保存済に見えて背景が出ない」failure_observable を honest surface する。
           await setFormalooSyncState(c.env.DB, id, {
-            syncStatus: 'out_of_sync', lastError: backgroundReflectError,
+            syncStatus: 'out_of_sync', lastError: formatSyncError(backgroundReflectError),
           });
           syncSettled = true;
         } else if (designReflectError) {
           // T-B2: meta PATCH は 200 だが送った色が hosted に反映されなかった (soft-200 無言無視) → out_of_sync。
           //   「保存されるが公開ページに配色が出ない」failure_observable を honest に surface する。
           await setFormalooSyncState(c.env.DB, id, {
-            syncStatus: 'out_of_sync', lastError: designReflectError,
+            syncStatus: 'out_of_sync', lastError: formatSyncError(designReflectError),
           });
           syncSettled = true;
         } else if (formCopyReflectError) {
           // form-jp-localization: meta PATCH は 200 だが送った文言が hosted に反映されなかった (soft-200) → out_of_sync。
           //   「設定は保存されるが hosted に反映されない」failure_observable を honest に surface する。
           await setFormalooSyncState(c.env.DB, id, {
-            syncStatus: 'out_of_sync', lastError: formCopyReflectError,
+            syncStatus: 'out_of_sync', lastError: formatSyncError(formCopyReflectError),
           });
           syncSettled = true;
         } else if (localizedContentReflectError) {
           // localized_content の soft-200 / GET 失敗を idle にしない。foreign key は helper の比較対象外。
           await setFormalooSyncState(c.env.DB, id, {
-            syncStatus: 'out_of_sync', lastError: localizedContentReflectError,
+            syncStatus: 'out_of_sync', lastError: formatSyncError(localizedContentReflectError),
           });
           syncSettled = true;
         } else if (redirectReflectError) {
           // route-terminal-phase2: meta PATCH は 200 だが送った redirect URL が hosted に反映されなかった (soft-200)
           //   → out_of_sync。「保存されるが送信後に飛ばない」failure_observable を honest に surface する。
           await setFormalooSyncState(c.env.DB, id, {
-            syncStatus: 'out_of_sync', lastError: redirectReflectError,
+            syncStatus: 'out_of_sync', lastError: formatSyncError(redirectReflectError),
           });
           syncSettled = true;
         } else if (operationsReflectError) {
           // treasure B2: API 200 だけでは完了扱いにせず、GET read-back 不一致を honest に surface する。
           await setFormalooSyncState(c.env.DB, id, {
-            syncStatus: 'out_of_sync', lastError: operationsReflectError,
+            syncStatus: 'out_of_sync', lastError: formatSyncError(operationsReflectError),
           });
           syncSettled = true;
         } else if (pushed.systemFieldsOutOfSync) {
@@ -1382,9 +1394,11 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
             : 'friend 識別用フィールド (fr_id/fr_name) の同期に失敗しました。再保存で自動復旧します。';
           await setFormalooSyncState(c.env.DB, id, {
             syncStatus: 'out_of_sync',
-            lastError: logicConflict
-              ? 'Formaloo の「回答されたら送信」は、トリガー位置以降の回答を保存しません。friend 識別フィールド (fr_id) がトリガーより後ろにある場合だけ再入場 prefill に影響します。fr_id を先頭 (position 0) に固定すれば logic と共存できます。'
-              : systemFieldError,
+            lastError: formatSyncError(
+              logicConflict
+                ? 'Formaloo の「回答されたら送信」は、トリガー位置以降の回答を保存しません。friend 識別フィールド (fr_id) がトリガーより後ろにある場合だけ再入場 prefill に影響します。fr_id を先頭 (position 0) に固定すれば logic と共存できます。'
+                : systemFieldError,
+            ),
             remoteDefinitionHash: null, pendingRemoteHash: null, driftStatus: 'none', driftDetectedAt: null,
           });
           syncSettled = true;
@@ -1412,7 +1426,10 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
             editMailFieldSlug: editMailFieldId === undefined ? undefined : editMailFieldSlugAfterPush,
           });
         }
-        await setFormalooSyncState(c.env.DB, id, { syncStatus: 'out_of_sync', lastError: pushed.error ?? 'push failed' });
+        await setFormalooSyncState(c.env.DB, id, {
+          syncStatus: 'out_of_sync',
+          lastError: formatSyncError(pushed.error ?? 'push failed'),
+        });
         syncSettled = true;
       }
     }
@@ -1424,7 +1441,8 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     if (syncStarted && !syncSettled) {
       try {
         await setFormalooSyncState(c.env.DB, id, {
-          syncStatus: 'out_of_sync', lastError: 'フォームの保存処理に失敗しました',
+          syncStatus: 'out_of_sync',
+          lastError: formatSyncError('フォームの保存処理に失敗しました'),
         });
       } catch {
         // D1 自体が利用不能な場合は outer 500 に任せる。
