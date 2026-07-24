@@ -191,6 +191,16 @@ const pendingDraft = {
   questionMessageId: 'message-2',
 }
 
+const nextPendingDraft = {
+  ...pendingDraft,
+  id: 'draft-2',
+  question: '最初の質問',
+  draftAnswer: '最初の回答',
+  createdAt: '2026-07-21T09:01:00.000',
+  updatedAt: '2026-07-21T09:01:00.000',
+  questionMessageId: 'message-1',
+}
+
 function detail(...args: [pendingDrafts?: typeof pendingDraft[]]) {
   const pendingDrafts = args.length === 0 ? [pendingDraft] : args[0]
   return {
@@ -629,11 +639,25 @@ describe('個別チャットのインラインAI下書き', () => {
       .toBe('確定した新しい本文')
   })
 
-  it('承認送信後は下書きを消し、同じ内容を通常の送信メッセージとして残す', async () => {
+  it('FAQ追加は注意書きつきで既定OFFになり、OFFのまま承認するとfalseを送る', async () => {
     const history = await openChat()
+    const draftCard = within(history).getByTestId('inline-ai-draft')
+    const addToFaq = within(draftCard).getByRole('checkbox', { name: 'よくある質問に追加' }) as HTMLInputElement
+
+    expect(addToFaq.checked).toBe(false)
+    expect(within(draftCard).getByText(
+      /チェックすると、このやり取りが今後の自動応答の参考.*よくある質問.*登録されます/,
+    )).toBeTruthy()
+    expect(within(draftCard).getByText(
+      /よくある質問.*一覧で編集し、個人情報が含まれていないか確認してください/,
+    )).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '承認して送信' }))
 
-    await waitFor(() => expect(apiMocks.approveDraft).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(apiMocks.approveDraft).toHaveBeenCalledWith(
+      'friend-1',
+      'draft-1',
+      { addToFaq: false },
+    ))
     await waitFor(() => expect(screen.queryByText('AI下書き')).toBeNull())
     expect(within(history).getByText('10時からです').closest('[data-testid="chat-message-bubble"]')).toBeTruthy()
     expect(reviewSyncMocks.notify).toHaveBeenCalledWith(expect.objectContaining({
@@ -641,6 +665,51 @@ describe('個別チャットのインラインAI下書き', () => {
       draftId: 'draft-1',
       sourceId: expect.any(String),
     }))
+  })
+
+  it('FAQ追加のON/OFFを通常・拡大履歴で同期し、ON送信後も次の下書きはOFFに戻す', async () => {
+    apiMocks.getChat.mockResolvedValueOnce({
+      success: true,
+      data: detail([pendingDraft, nextPendingDraft]),
+    })
+    const history = await openChat()
+    fireEvent.click(screen.getByRole('button', { name: 'チャット履歴を拡大表示' }))
+    const dialog = screen.getByRole('dialog')
+    const normalDraft = within(history).getAllByTestId('inline-ai-draft')
+      .find((card) => within(card).queryByText('10時からです')) as HTMLElement
+    const expandedDraft = within(dialog).getAllByTestId('inline-ai-draft')
+      .find((card) => within(card).queryByText('10時からです')) as HTMLElement
+    const normalAddToFaq = within(normalDraft).getByRole('checkbox', {
+      name: 'よくある質問に追加',
+    }) as HTMLInputElement
+    const expandedAddToFaq = within(expandedDraft).getByRole('checkbox', {
+      name: 'よくある質問に追加',
+    }) as HTMLInputElement
+
+    expect(normalAddToFaq.checked).toBe(false)
+    expect(expandedAddToFaq.checked).toBe(false)
+    fireEvent.click(normalAddToFaq)
+    expect(normalAddToFaq.checked).toBe(true)
+    expect(expandedAddToFaq.checked).toBe(true)
+    fireEvent.click(expandedAddToFaq)
+    expect(normalAddToFaq.checked).toBe(false)
+    expect(expandedAddToFaq.checked).toBe(false)
+    fireEvent.click(expandedAddToFaq)
+
+    fireEvent.click(within(expandedDraft).getByRole('button', { name: '承認して送信' }))
+    await waitFor(() => expect(apiMocks.approveDraft).toHaveBeenCalledWith(
+      'friend-1',
+      'draft-1',
+      { addToFaq: true },
+    ))
+
+    await waitFor(() => expect(within(history).getAllByTestId('inline-ai-draft')).toHaveLength(1))
+    expect((within(history).getByRole('checkbox', {
+      name: 'よくある質問に追加',
+    }) as HTMLInputElement).checked).toBe(false)
+    expect((within(dialog).getByRole('checkbox', {
+      name: 'よくある質問に追加',
+    }) as HTMLInputElement).checked).toBe(false)
   })
 
   it('承認結果が不明なときはカード内でも再送しないよう案内する', async () => {

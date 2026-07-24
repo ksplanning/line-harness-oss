@@ -1481,7 +1481,7 @@ export const api = {
         `/api/faq-draft-reviews/${encodeURIComponent(draftId)}`,
         { method: 'PATCH', body: JSON.stringify(data) },
       ),
-    approve: (draftId: string, data: { accountId: string }) =>
+    approve: (draftId: string, data: { accountId: string; addToFaq: boolean }) =>
       fetchApi<ApiResponse<{ draft: ReviewedAiFaqDraftData }>>(
         `/api/faq-draft-reviews/${encodeURIComponent(draftId)}/approve`,
         { method: 'POST', body: JSON.stringify(data) },
@@ -1579,10 +1579,10 @@ export const api = {
           `/api/chats/${encodeURIComponent(chatId)}/drafts/${encodeURIComponent(draftId)}`,
           { method: 'PATCH', body: JSON.stringify(data) },
         ),
-      approve: (chatId: string, draftId: string) =>
+      approve: (chatId: string, draftId: string, data: { addToFaq: boolean }) =>
         fetchApi<ApiResponse<{ draft: ReviewedAiFaqDraftData; message: ChatMessageData }>>(
           `/api/chats/${encodeURIComponent(chatId)}/drafts/${encodeURIComponent(draftId)}/approve`,
-          { method: 'POST' },
+          { method: 'POST', body: JSON.stringify(data) },
         ),
       discard: (chatId: string, draftId: string) =>
         fetchApi<ApiResponse<ReviewedAiFaqDraftData>>(

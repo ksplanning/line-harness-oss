@@ -66,11 +66,12 @@ function CentralDraftReviewCard({
 }: {
   draft: FaqDraftReviewListItem
   onUpdate: (draftId: string, draftAnswer: string) => Promise<void>
-  onApprove: (draftId: string) => Promise<void>
+  onApprove: (draftId: string, addToFaq: boolean) => Promise<void>
   onDiscard: (draftId: string) => Promise<void>
 }) {
   const [editing, setEditing] = useState(false)
   const [answer, setAnswer] = useState(draft.draftAnswer)
+  const [addToFaq, setAddToFaq] = useState(false)
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
   const [busy, setBusy] = useState<'edit' | 'approve' | 'discard' | null>(null)
   const [actionError, setActionError] = useState('')
@@ -132,6 +133,23 @@ function CentralDraftReviewCard({
 
       {actionError && <p role="alert" className="mt-2 text-xs text-red-700">{actionError}</p>}
 
+      <div className="mt-3 rounded-md border border-amber-200 bg-white/70 p-2">
+        <label className="flex items-start gap-2 text-xs font-medium text-gray-800">
+          <input
+            type="checkbox"
+            checked={addToFaq}
+            disabled={busy !== null || approvalUncertain}
+            onChange={(event) => setAddToFaq(event.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+          />
+          <span>よくある質問に追加</span>
+        </label>
+        <p className="mt-1 text-[11px] leading-relaxed text-gray-600">
+          チェックすると、このやり取りが今後の自動応答の参考（よくある質問）に編集可能な下書きとして登録されます。
+          登録後に「よくある質問」一覧で編集し、個人情報が含まれていないか確認してください。
+        </p>
+      </div>
+
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {editing ? (
           <>
@@ -188,7 +206,10 @@ function CentralDraftReviewCard({
             <button
               type="button"
               disabled={busy !== null || approvalUncertain}
-              onClick={() => void run('approve', () => onApprove(draft.id))}
+              onClick={() => void run('approve', async () => {
+                await onApprove(draft.id, addToFaq)
+                setAddToFaq(false)
+              })}
               className="min-h-[44px] rounded-md bg-green-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
             >
               {busy === 'approve' ? '送信中...' : '承認して送信'}
@@ -348,10 +369,10 @@ export default function KnowledgePage() {
     })
   }
 
-  const approvePendingReviewDraft = async (draftId: string) => {
+  const approvePendingReviewDraft = async (draftId: string, addToFaq: boolean) => {
     if (!selectedAccountId) throw new Error('LINEアカウントを選択してください')
     const accountId = selectedAccountId
-    const res = await api.faqDraftReviews.approve(draftId, { accountId })
+    const res = await api.faqDraftReviews.approve(draftId, { accountId, addToFaq })
     if (!res.success) throw new Error(res.error)
     if (reviewAccountIdRef.current === accountId) {
       setPendingReviewDrafts((current) => current.filter((draft) => draft.id !== draftId))

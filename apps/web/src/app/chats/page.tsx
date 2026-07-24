@@ -123,11 +123,15 @@ function formatDatetime(iso: string | null): string {
 
 function InlineAiDraftCard({
   draft,
+  addToFaq,
+  onAddToFaqChange,
   onUpdate,
   onApprove,
   onDiscard,
 }: {
   draft: InlineAiFaqDraft
+  addToFaq: boolean
+  onAddToFaqChange: (draftId: string, checked: boolean) => void
   onUpdate: (draftId: string, draftAnswer: string) => Promise<void>
   onApprove: (draftId: string) => Promise<void>
   onDiscard: (draftId: string) => Promise<void>
@@ -193,6 +197,23 @@ function InlineAiDraftCard({
       {actionError && (
         <p role="alert" className="mt-2 text-xs text-red-700">{actionError}</p>
       )}
+
+      <div className="mt-3 rounded-md border border-amber-200 bg-white/70 p-2">
+        <label className="flex items-start gap-2 text-xs font-medium text-gray-800">
+          <input
+            type="checkbox"
+            checked={addToFaq}
+            disabled={controlsDisabled}
+            onChange={(event) => onAddToFaqChange(draft.id, event.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+          />
+          <span>よくある質問に追加</span>
+        </label>
+        <p className="mt-1 text-[11px] leading-relaxed text-gray-600">
+          チェックすると、このやり取りが今後の自動応答の参考（よくある質問）に編集可能な下書きとして登録されます。
+          登録後に「よくある質問」一覧で編集し、個人情報が含まれていないか確認してください。
+        </p>
+      </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {isEditing ? (
@@ -278,6 +299,8 @@ function ChatMessageHistory({
   friendPictureUrl,
   scrollRef,
   pendingDrafts = [],
+  addToFaqByDraftId,
+  onAddToFaqChange,
   onUpdateDraft,
   onApproveDraft,
   onDiscardDraft,
@@ -287,6 +310,8 @@ function ChatMessageHistory({
   friendPictureUrl: string | null
   scrollRef: React.RefObject<HTMLDivElement | null>
   pendingDrafts?: InlineAiFaqDraft[]
+  addToFaqByDraftId?: Record<string, boolean>
+  onAddToFaqChange?: (draftId: string, checked: boolean) => void
   onUpdateDraft?: (draftId: string, draftAnswer: string) => Promise<void>
   onApproveDraft?: (draftId: string) => Promise<void>
   onDiscardDraft?: (draftId: string) => Promise<void>
@@ -301,13 +326,15 @@ function ChatMessageHistory({
       bodyTextClassName="text-base"
       afterMessage={(message) => (
         <>
-          {onUpdateDraft && onApproveDraft && onDiscardDraft
+          {onAddToFaqChange && onUpdateDraft && onApproveDraft && onDiscardDraft
             && pendingDrafts
               .filter((draft) => draft.questionMessageId === message.id)
               .map((draft) => (
                 <InlineAiDraftCard
                   key={`${draft.id}:${draft.draftAnswer}`}
                   draft={draft}
+                  addToFaq={addToFaqByDraftId?.[draft.id] ?? false}
+                  onAddToFaqChange={onAddToFaqChange}
                   onUpdate={onUpdateDraft}
                   onApprove={onApproveDraft}
                   onDiscard={onDiscardDraft}
@@ -528,6 +555,7 @@ export default function ChatsPage() {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
   const [selectedFriendId, setSelectedFriendId] = useState<string | null>(null)
   const [chatDetail, setChatDetail] = useState<ChatDetail | null>(null)
+  const [addToFaqByDraftId, setAddToFaqByDraftId] = useState<Record<string, boolean>>({})
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const statusFilterRef = useRef<StatusFilter>('all')
   const unansweredOnlyRef = useRef(false)
@@ -745,6 +773,10 @@ export default function ChatsPage() {
       setChatDetail(null)
     }
   }, [selectedChatId, loadChatDetail])
+
+  useEffect(() => {
+    setAddToFaqByDraftId({})
+  }, [selectedAccountId, selectedChatId])
 
   useEffect(() => {
     if (!selectedChatId || !selectedAccountId) return
@@ -1007,12 +1039,26 @@ export default function ChatsPage() {
     }
   }
 
+  const handleAddToFaqChange = (draftId: string, checked: boolean) => {
+    setAddToFaqByDraftId((current) => ({ ...current, [draftId]: checked }))
+  }
+
+  const resetAddToFaqDraft = (draftId: string) => {
+    setAddToFaqByDraftId((current) => {
+      if (!(draftId in current)) return current
+      const next = { ...current }
+      delete next[draftId]
+      return next
+    })
+  }
+
   const handleApproveInlineDraft = async (draftId: string) => {
     if (!selectedChatId || !chatDetail) throw new Error('チャットが選択されていません')
     const friendId = chatDetail.friendId
     const accountId = selectedAccountId
+    const addToFaq = addToFaqByDraftId[draftId] ?? false
     try {
-      const res = await api.chats.drafts.approve(friendId, draftId)
+      const res = await api.chats.drafts.approve(friendId, draftId, { addToFaq })
       if (!res.success) throw new Error(res.error)
       const { message } = res.data
       setChatDetail((prev) => (prev && prev.friendId === friendId) ? {
@@ -1035,6 +1081,7 @@ export default function ChatsPage() {
         lastMessageDirection: 'outgoing',
         lastMessageType: message.messageType,
       }, chatDetail)
+      resetAddToFaqDraft(draftId)
       if (accountId) {
         notifyFaqDraftReviewChanged({
           accountId,
@@ -1059,6 +1106,7 @@ export default function ChatsPage() {
         ...prev,
         pendingDrafts: (prev.pendingDrafts ?? []).filter((draft) => draft.id !== draftId),
       } : prev)
+      resetAddToFaqDraft(draftId)
       if (accountId) {
         notifyFaqDraftReviewChanged({
           accountId,
@@ -1454,6 +1502,8 @@ export default function ChatsPage() {
                 friendPictureUrl={chatDetail.friendPictureUrl}
                 scrollRef={messagesScrollRef}
                 pendingDrafts={chatDetail.pendingDrafts}
+                addToFaqByDraftId={addToFaqByDraftId}
+                onAddToFaqChange={handleAddToFaqChange}
                 onUpdateDraft={handleUpdateInlineDraft}
                 onApproveDraft={handleApproveInlineDraft}
                 onDiscardDraft={handleDiscardInlineDraft}
@@ -1722,6 +1772,8 @@ export default function ChatsPage() {
               friendPictureUrl={chatDetail.friendPictureUrl}
               scrollRef={expandedMessagesScrollRef}
               pendingDrafts={chatDetail.pendingDrafts}
+              addToFaqByDraftId={addToFaqByDraftId}
+              onAddToFaqChange={handleAddToFaqChange}
               onUpdateDraft={handleUpdateInlineDraft}
               onApproveDraft={handleApproveInlineDraft}
               onDiscardDraft={handleDiscardInlineDraft}

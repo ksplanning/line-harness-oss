@@ -49,6 +49,16 @@ const reviewDraft = {
   updatedAt: '2026-07-21T10:01:00+09:00',
 }
 
+const nextReviewDraft = {
+  ...reviewDraft,
+  id: 'draft-2',
+  friendName: 'けんじ',
+  question: '予約できますか？',
+  draftAnswer: '予約できます',
+  createdAt: '2026-07-21T10:02:00+09:00',
+  updatedAt: '2026-07-21T10:02:00+09:00',
+}
+
 function renderCentralInbox() {
   return render(
     <AutoReplyCenterEmbed hideHeader knowledgeInitialTab="ai" knowledgeTabs={['ai']}>
@@ -155,13 +165,51 @@ describe('/knowledge page — AI ログ・コストタブ', () => {
     expect(await within(card).findByText('11時から営業します')).toBeTruthy()
   })
 
-  it('中央で承認送信すると1回だけAPIを呼び、pending一覧から即時に消す', async () => {
+  it('中央のFAQ追加は注意書きつきで既定OFFになり、OFF承認ではfalseを送る', async () => {
     renderCentralInbox()
     const card = await screen.findByTestId('central-ai-draft-draft-1')
+    const addToFaq = within(card).getByRole('checkbox', { name: 'よくある質問に追加' }) as HTMLInputElement
+
+    expect(addToFaq.checked).toBe(false)
+    expect(within(card).getByText(
+      /チェックすると、このやり取りが今後の自動応答の参考.*よくある質問.*登録されます/,
+    )).toBeTruthy()
+    expect(within(card).getByText(
+      /よくある質問.*一覧で編集し、個人情報が含まれていないか確認してください/,
+    )).toBeTruthy()
     fireEvent.click(within(card).getByRole('button', { name: '承認して送信' }))
 
-    await waitFor(() => expect(m.reviewApprove).toHaveBeenCalledWith('draft-1', { accountId: 'acc-1' }))
+    await waitFor(() => expect(m.reviewApprove).toHaveBeenCalledWith('draft-1', {
+      accountId: 'acc-1',
+      addToFaq: false,
+    }))
     await waitFor(() => expect(screen.queryByTestId('central-ai-draft-draft-1')).toBeNull())
+  })
+
+  it('中央でFAQ追加をON送信しても次の下書きは既定OFFに戻る', async () => {
+    m.reviewList.mockResolvedValueOnce({ success: true, data: [reviewDraft, nextReviewDraft] })
+    renderCentralInbox()
+    const firstCard = await screen.findByTestId('central-ai-draft-draft-1')
+    const nextCard = screen.getByTestId('central-ai-draft-draft-2')
+    const firstAddToFaq = within(firstCard).getByRole('checkbox', {
+      name: 'よくある質問に追加',
+    }) as HTMLInputElement
+
+    expect(firstAddToFaq.checked).toBe(false)
+    expect((within(nextCard).getByRole('checkbox', {
+      name: 'よくある質問に追加',
+    }) as HTMLInputElement).checked).toBe(false)
+    fireEvent.click(firstAddToFaq)
+    fireEvent.click(within(firstCard).getByRole('button', { name: '承認して送信' }))
+
+    await waitFor(() => expect(m.reviewApprove).toHaveBeenCalledWith('draft-1', {
+      accountId: 'acc-1',
+      addToFaq: true,
+    }))
+    await waitFor(() => expect(screen.queryByTestId('central-ai-draft-draft-1')).toBeNull())
+    expect((within(screen.getByTestId('central-ai-draft-draft-2')).getByRole('checkbox', {
+      name: 'よくある質問に追加',
+    }) as HTMLInputElement).checked).toBe(false)
   })
 
   it('中央の承認結果が曖昧な失敗なら再送ボタンを再有効化しない', async () => {
