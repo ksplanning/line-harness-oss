@@ -664,7 +664,7 @@ CREATE TABLE formaloo_submissions (
   synced_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   line_processed INTEGER NOT NULL DEFAULT 0,   -- migration 081: LINE 後処理発火済 claim (再送二重発火防止 / N-3)
   verified       INTEGER NOT NULL DEFAULT 0    -- migration 081: 署名 or pull-verify 済 (未署名隔離 / N-12)
-, formaloo_row_slug TEXT, tracking_code TEXT, submit_number TEXT, pdf_link TEXT);
+, formaloo_row_slug TEXT, tracking_code TEXT, submit_number TEXT, pdf_link TEXT, duplicate_reviewed_at TEXT);
 
 CREATE TABLE formaloo_sync_state (
   form_id        TEXT PRIMARY KEY,
@@ -879,7 +879,7 @@ CREATE TABLE internal_form_submissions (
   CHECK (
     external_edit_source IS NULL
     OR external_edit_source IN ('edit_link', 'sheet')
-  ), external_edited_at TEXT, external_edit_approved_at TEXT, external_edit_changes_json TEXT, external_edit_notification_claimed_for_at TEXT, external_edit_notification_claimed_for_version INTEGER);
+  ), external_edited_at TEXT, external_edit_approved_at TEXT, external_edit_changes_json TEXT, external_edit_notification_claimed_for_at TEXT, external_edit_notification_claimed_for_version INTEGER, duplicate_reviewed_at TEXT);
 
 CREATE TABLE knowledge_chunks (
   id              TEXT PRIMARY KEY,
