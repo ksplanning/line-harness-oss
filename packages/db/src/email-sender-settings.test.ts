@@ -7,6 +7,7 @@ import {
   deleteEmailSenderSettings,
   getEmailSenderSettings,
   saveEmailSenderSettings,
+  setEmailSenderResendApiKey,
   setEmailSenderDomainState,
   type EmailSenderDnsRecord,
 } from './email-sender-settings.js';
@@ -253,5 +254,47 @@ describe('email sender settings persistence', () => {
 
     await deleteEmailSenderSettings(DB, 'account-1');
     expect(await getEmailSenderSettings(DB, 'account-1')).toBeNull();
+  });
+
+  test('round-trips and deletes Resend API keys without crossing LINE account boundaries', async () => {
+    for (const accountId of ['account-1', 'account-2']) {
+      await saveEmailSenderSettings(DB, {
+        lineAccountId: accountId,
+        senderEmail: `notice@${accountId}.example`,
+        senderName: null,
+        senderDomain: `${accountId}.example`,
+      });
+    }
+    await setEmailSenderDomainState(DB, {
+      lineAccountId: 'account-1',
+      expectedSenderDomain: 'account-1.example',
+      expectedResendDomainId: null,
+      resendDomainId: 'domain_from_old_resend_account',
+      resendDomainStatus: 'verified',
+      dnsRecords: DNS_RECORDS,
+    });
+
+    await setEmailSenderResendApiKey(DB, 'account-1', 're_account_one');
+    await setEmailSenderResendApiKey(DB, 'account-2', 're_account_two');
+
+    expect(await getEmailSenderSettings(DB, 'account-1')).toMatchObject({
+      lineAccountId: 'account-1',
+      resendApiKey: 're_account_one',
+      resendDomainId: null,
+      resendDomainStatus: 'not_started',
+      dnsRecords: [],
+    });
+    expect(await getEmailSenderSettings(DB, 'account-2')).toMatchObject({
+      lineAccountId: 'account-2',
+      resendApiKey: 're_account_two',
+    });
+
+    await setEmailSenderResendApiKey(DB, 'account-1', null);
+    expect(await getEmailSenderSettings(DB, 'account-1')).toMatchObject({
+      resendApiKey: null,
+    });
+    expect(await getEmailSenderSettings(DB, 'account-2')).toMatchObject({
+      resendApiKey: 're_account_two',
+    });
   });
 });

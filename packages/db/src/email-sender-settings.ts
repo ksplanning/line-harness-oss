@@ -15,6 +15,7 @@ export interface EmailSenderSettings {
   senderEmail: string;
   senderName: string | null;
   senderDomain: string;
+  resendApiKey: string | null;
   resendDomainId: string | null;
   resendDomainStatus: string;
   dnsRecords: EmailSenderDnsRecord[];
@@ -28,6 +29,7 @@ interface EmailSenderSettingsRow {
   sender_email: string;
   sender_name: string | null;
   sender_domain: string;
+  resend_api_key: string | null;
   resend_domain_id: string | null;
   resend_domain_status: string;
   dns_records_json: string;
@@ -60,6 +62,7 @@ function serializeSettings(
     senderEmail: row.sender_email,
     senderName: row.sender_name,
     senderDomain: row.sender_domain,
+    resendApiKey: row.resend_api_key,
     resendDomainId: row.resend_domain_id,
     resendDomainStatus: row.resend_domain_status,
     dnsRecords: JSON.parse(row.dns_records_json) as EmailSenderDnsRecord[],
@@ -167,6 +170,29 @@ export async function setEmailSenderDomainState(
       input.expectedResendDomainId,
       input.expectedResendDomainId,
     )
+    .first<EmailSenderSettingsRow>();
+  return row ? serializeSettings(row) : null;
+}
+
+export async function setEmailSenderResendApiKey(
+  db: D1Database,
+  lineAccountId: string,
+  resendApiKey: string | null,
+): Promise<EmailSenderSettings | null> {
+  const now = jstNow();
+  const row = await db
+    .prepare(
+      `UPDATE email_sender_settings
+          SET resend_api_key = ?,
+              resend_domain_id = NULL,
+              resend_domain_status = 'not_started',
+              dns_records_json = '[]',
+              domain_checked_at = NULL,
+              updated_at = ?
+        WHERE line_account_id = ?
+       RETURNING *`,
+    )
+    .bind(resendApiKey, now, lineAccountId)
     .first<EmailSenderSettingsRow>();
   return row ? serializeSettings(row) : null;
 }

@@ -342,7 +342,7 @@ CREATE TABLE email_sender_settings (
   domain_checked_at     TEXT,
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, resend_api_key TEXT);
 
 CREATE TABLE entry_routes (
   id          TEXT PRIMARY KEY,

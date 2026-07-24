@@ -126,7 +126,8 @@
     "138_form_submit_actions.sql",
     "139_broadcast_recipient_snapshots.sql",
     "140_friend_stats_index.sql",
-    "141_staff_notification_auto_reply.sql"
+    "141_staff_notification_auto_reply.sql",
+    "142_email_sender_settings_resend_api_key.sql"
   ],
-  "migrationCount": 127
+  "migrationCount": 128
 }
