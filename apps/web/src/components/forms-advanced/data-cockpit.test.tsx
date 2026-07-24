@@ -248,6 +248,17 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     expect(screen.queryByLabelText('normal-row の詳細')).toBeNull()
   })
 
+  it('外部編集の絞り込み表示でも詳細ボタンで onOpenRow(rowId)', () => {
+    const p = base({ rows: externalRows, total: 2 })
+    render(<DataCockpit {...p} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '外部編集 2件' }))
+    expect(screen.getByRole('button', { name: '外部編集 2件' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 's1 の詳細' }))
+
+    expect(p.onOpenRow).toHaveBeenCalledWith('s1')
+  })
+
   it('サーバー応答前の絞り込み切替直後から差分0件を件数と一覧から除外し、差分ありは残す', () => {
     const zeroChangeRow = {
       ...externalRows[1],
@@ -819,6 +830,21 @@ describe('DataCockpit — 重複確認 (D-3)', () => {
     ])
     expect(screen.getAllByText('内容完全一致').length).toBe(2)
     expect(screen.getAllByText('内容に差異あり').length).toBe(2)
+  })
+
+  it('重複確認の絞り込み表示でも詳細ボタンで onOpenRow(rowId)', () => {
+    const p = base({
+      rows: duplicateRows,
+      total: 5,
+      duplicateReviewPendingCount: 4,
+    })
+    render(<DataCockpit {...p} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '重複確認 4件' }))
+    expect(screen.getByRole('button', { name: '重複確認 4件' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'a-1 の詳細' }))
+
+    expect(p.onOpenRow).toHaveBeenCalledWith('a-1')
   })
 
   it('確認に成功した行をその場で消し、件数を楽観的に1件減らす', async () => {
