@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from '../index.js';
 
 const accountSettings = new Hono<Env>();
+const CHAT_REPLY_SENDER_NAME_KEY = 'chat_reply_sender_name';
 
 function parseStoredFriendIds(value: string | null | undefined): string[] {
   if (!value) return [];
@@ -13,6 +14,67 @@ function parseStoredFriendIds(value: string | null | undefined): string[] {
     return [];
   }
 }
+
+export async function loadDefaultReplyName(
+  db: D1Database,
+  accountId: string,
+): Promise<string> {
+  const row = await db.prepare(
+    `SELECT value FROM account_settings WHERE line_account_id = ? AND key = ?`,
+  ).bind(accountId, CHAT_REPLY_SENDER_NAME_KEY).first<{ value: string }>();
+  return row?.value ?? '';
+}
+
+// GET /api/account-settings/chat-reply?accountId=xxx
+accountSettings.get('/api/account-settings/chat-reply', async (c) => {
+  const accountId = c.req.query('accountId');
+  if (!accountId) return c.json({ success: false, error: 'accountId required' }, 400);
+
+  const defaultReplyName = await loadDefaultReplyName(c.env.DB, accountId);
+  return c.json({ success: true, data: { defaultReplyName } });
+});
+
+// PUT /api/account-settings/chat-reply
+accountSettings.put('/api/account-settings/chat-reply', async (c) => {
+  let body: { accountId?: unknown; defaultReplyName?: unknown };
+  try {
+    body = await c.req.json<{
+      accountId?: unknown;
+      defaultReplyName?: unknown;
+    }>();
+  } catch {
+    return c.json({ success: false, error: 'JSON body required' }, 400);
+  }
+  if (typeof body.accountId !== 'string' || body.accountId.length === 0) {
+    return c.json({ success: false, error: 'accountId required' }, 400);
+  }
+  if (typeof body.defaultReplyName !== 'string') {
+    return c.json({ success: false, error: 'defaultReplyName must be a string' }, 400);
+  }
+
+  const id = crypto.randomUUID();
+  const now = new Date(Date.now() + 9 * 60 * 60_000).toISOString().replace('Z', '+09:00');
+
+  await c.env.DB.prepare(
+    `INSERT INTO account_settings (id, line_account_id, key, value, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (line_account_id, key) DO UPDATE SET value = ?, updated_at = ?`,
+  ).bind(
+    id,
+    body.accountId,
+    CHAT_REPLY_SENDER_NAME_KEY,
+    body.defaultReplyName,
+    now,
+    now,
+    body.defaultReplyName,
+    now,
+  ).run();
+
+  return c.json({
+    success: true,
+    data: { defaultReplyName: body.defaultReplyName },
+  });
+});
 
 // GET /api/account-settings/test-recipients?accountId=xxx
 accountSettings.get('/api/account-settings/test-recipients', async (c) => {

@@ -42,6 +42,14 @@ function put(app: ReturnType<typeof createApp>, body: unknown) {
   });
 }
 
+function putChatReplySettings(app: ReturnType<typeof createApp>, body: unknown) {
+  return app.request('/api/account-settings/chat-reply', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 let raw: Database.Database;
 let app: ReturnType<typeof createApp>;
 
@@ -113,5 +121,91 @@ describe('test recipient settings', () => {
     const got = await app.request('/api/account-settings/test-recipients?accountId=acc-1');
     expect((await got.json() as { data: Array<{ id: string }> }).data.map((friend) => friend.id))
       .toEqual(['friend-a']);
+  });
+});
+
+describe('chat reply settings', () => {
+  test('returns an empty default reply name when the account has no saved setting', async () => {
+    const response = await app.request('/api/account-settings/chat-reply?accountId=acc-1');
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      data: { defaultReplyName: '' },
+    });
+  });
+
+  test('saves the default reply name and returns the exact persisted value on GET', async () => {
+    const saved = await putChatReplySettings(app, {
+      accountId: 'acc-1',
+      defaultReplyName: '受付係',
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({
+      success: true,
+      data: { defaultReplyName: '受付係' },
+    });
+
+    const reloaded = await app.request('/api/account-settings/chat-reply?accountId=acc-1');
+    expect(await reloaded.json()).toEqual({
+      success: true,
+      data: { defaultReplyName: '受付係' },
+    });
+  });
+
+  test('keeps account A and B settings isolated', async () => {
+    expect((await putChatReplySettings(app, {
+      accountId: 'acc-1',
+      defaultReplyName: 'A受付',
+    })).status).toBe(200);
+
+    const accountBBefore = await app.request(
+      '/api/account-settings/chat-reply?accountId=acc-2',
+    );
+    expect(await accountBBefore.json()).toEqual({
+      success: true,
+      data: { defaultReplyName: '' },
+    });
+
+    expect((await putChatReplySettings(app, {
+      accountId: 'acc-2',
+      defaultReplyName: 'B受付',
+    })).status).toBe(200);
+
+    const [accountA, accountB] = await Promise.all([
+      app.request('/api/account-settings/chat-reply?accountId=acc-1'),
+      app.request('/api/account-settings/chat-reply?accountId=acc-2'),
+    ]);
+    expect((await accountA.json() as { data: { defaultReplyName: string } }).data)
+      .toEqual({ defaultReplyName: 'A受付' });
+    expect((await accountB.json() as { data: { defaultReplyName: string } }).data)
+      .toEqual({ defaultReplyName: 'B受付' });
+  });
+
+  test('can save an empty reply name to disable the prefix', async () => {
+    await putChatReplySettings(app, {
+      accountId: 'acc-1',
+      defaultReplyName: '受付係',
+    });
+
+    const cleared = await putChatReplySettings(app, {
+      accountId: 'acc-1',
+      defaultReplyName: '',
+    });
+    expect(cleared.status).toBe(200);
+
+    const reloaded = await app.request('/api/account-settings/chat-reply?accountId=acc-1');
+    expect((await reloaded.json() as { data: { defaultReplyName: string } }).data)
+      .toEqual({ defaultReplyName: '' });
+  });
+
+  test.each([
+    {},
+    { accountId: '', defaultReplyName: '受付係' },
+    { accountId: 'acc-1' },
+    { accountId: 'acc-1', defaultReplyName: null },
+    { accountId: 'acc-1', defaultReplyName: 123 },
+  ])('rejects malformed settings: %j', async (body) => {
+    expect((await putChatReplySettings(app, body)).status).toBe(400);
   });
 });
