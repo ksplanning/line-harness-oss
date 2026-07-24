@@ -243,14 +243,14 @@ export default function DataCockpit(props: DataCockpitProps) {
           <button type="button" onClick={runSearch} className="min-h-[44px] rounded-lg px-4 text-sm font-medium text-white" style={{ backgroundColor: LINE_GREEN }}>検索</button>
           <button
             type="button"
-            aria-label={`外部編集（未承認） ${externalEditPendingCount}件`}
+            aria-label={`外部編集 ${externalEditPendingCount}件`}
             aria-pressed={externalEditOnly}
             onClick={toggleExternalEditFilter}
             className={externalEditOnly
               ? 'min-h-[44px] rounded-lg border border-amber-500 bg-amber-50 px-3 text-sm font-medium text-amber-800'
               : 'min-h-[44px] rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50'}
           >
-            外部編集（未承認） <span className="font-bold">{externalEditPendingCount}件</span>
+            外部編集 <span className="font-bold">{externalEditPendingCount}件</span>
           </button>
           <button type="button" onClick={() => setShowSave((v) => !v)} className="min-h-[44px] rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50">この条件を保存</button>
         </div>
