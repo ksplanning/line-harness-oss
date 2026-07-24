@@ -75,6 +75,8 @@ const SOURCE_DEFINITION = {
   logicFingerprint: 'source-provider-fingerprint',
 };
 
+const failNextRuns = new Map<string, number>();
+
 function d1(db: Database.Database): D1Database {
   return {
     prepare(sql: string) {
@@ -92,6 +94,12 @@ function d1(db: Database.Database): D1Database {
           return { results: statement.all(...(params as never[])) as T[] };
         },
         async run() {
+          for (const [fragment, remaining] of failNextRuns) {
+            if (remaining > 0 && sql.includes(fragment)) {
+              failNextRuns.set(fragment, remaining - 1);
+              throw new Error(`forced D1 failure: ${fragment}`);
+            }
+          }
           const info = statement.run(...(params as never[]));
           return { meta: { changes: info.changes } };
         },
@@ -203,7 +211,18 @@ function seedSource(
   );
 }
 
-function seedFieldMap(formId: string, definition: typeof SOURCE_DEFINITION) {
+function seedFieldMap(
+  formId: string,
+  definition: {
+    fields: Array<{
+      id: string;
+      type: string;
+      label: string;
+      position: number;
+      config: Record<string, unknown>;
+    }>;
+  },
+) {
   for (const field of definition.fields) {
     raw.prepare(
       `INSERT INTO formaloo_field_map
@@ -317,6 +336,7 @@ beforeEach(() => {
   raw = new Database(':memory:');
   replayAll(raw);
   DB = d1(raw);
+  failNextRuns.clear();
 });
 
 afterEach(() => {
@@ -460,6 +480,164 @@ describe('POST /api/forms-advanced/:id/duplicate', () => {
     );
     expect(crossAccount.status).toBe(404);
     expect((raw.prepare('SELECT COUNT(*) AS count FROM formaloo_forms').get() as { count: number }).count).toBe(countBefore);
+  });
+
+  test('D-2: フォルダ内のフォームは同じ account の同じフォルダへ複製され、その一覧に現れる', async () => {
+    raw.prepare(
+      `INSERT INTO formaloo_folders
+         (id, line_account_id, name, parent_id, position, created_at, updated_at)
+       VALUES ('folder-a', 'account-a', 'イベント', NULL, 0, '2026-07-24', '2026-07-24')`,
+    ).run();
+    seedSource('source-folder', 'account-a', 'フォルダ内フォーム');
+    raw.prepare(`UPDATE formaloo_forms SET folder_id = 'folder-a' WHERE id = 'source-folder'`).run();
+
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/source-folder/duplicate',
+      { lineAccountId: 'account-a' },
+    );
+
+    expect(response.status).toBe(201);
+    const created = (await response.json() as { data: { id: string; folderId: string | null } }).data;
+    expect(created.folderId).toBe('folder-a');
+    expect(readForm(created.id).folder_id).toBe('folder-a');
+
+    const list = await call(
+      'GET',
+      '/api/forms-advanced?lineAccountId=account-a&folderId=folder-a',
+    );
+    const listed = (await list.json() as { data: Array<{ id: string }> }).data;
+    expect(listed.map((form) => form.id)).toContain(created.id);
+  });
+
+  test('D-1: provider choice slug・複合 raw logic・matrix identity を新フォームへ持ち込まず意味を保つ', async () => {
+    const complexDefinition = structuredClone(SOURCE_DEFINITION) as Record<string, unknown> & {
+      fields: Array<Record<string, unknown> & {
+        id: string;
+        type: string;
+        label: string;
+        position: number;
+        config: Record<string, unknown>;
+      }>;
+      logic: Array<Record<string, unknown>>;
+      rawLogic: unknown[];
+    };
+    complexDefinition.fields[1]!.config.choiceItems = [
+      { title: '昼', slug: 'remote-day' },
+      { title: '夜', slug: 'remote-night' },
+    ];
+    complexDefinition.fields.push({
+      id: 'matrix',
+      type: 'matrix',
+      label: '満足度',
+      required: false,
+      position: 2,
+      config: {
+        matrixChoiceItems: {
+          quality: { title: '良い', slug: 'REMOTE_MATRIX_CHOICE' },
+        },
+        matrixChoiceGroups: [
+          { refId: 'REMOTE_ROW_REF', slug: 'REMOTE_ROW_SLUG', title: '接客', jsonKey: 'remote_row_key' },
+        ],
+      },
+    });
+    const rawLogicItem = {
+      type: 'field',
+      identifier: 'remote-plan',
+      actions: [{
+        action: 'show',
+        args: [{ type: 'field', identifier: 'remote-name' }],
+        when: {
+          operation: 'and',
+          args: [
+            {
+              operation: 'is',
+              args: [
+                { type: 'field', value: 'remote-plan' },
+                { type: 'choice', value: 'remote-night' },
+              ],
+            },
+            {
+              operation: 'is_answered',
+              args: [{ type: 'field', value: 'remote-name' }],
+            },
+          ],
+        },
+      }],
+    };
+    complexDefinition.logic = [{
+      id: 'complex-logic',
+      sourceFieldId: 'plan',
+      operator: 'equals',
+      value: 'remote-night',
+      action: 'show',
+      targetFieldId: 'name',
+      conditions: [
+        { sourceFieldId: 'plan', operator: 'is', value: 'remote-night' },
+        { sourceFieldId: 'name', operator: 'is_answered', value: '' },
+      ],
+      conditionJoin: 'and',
+      actions: [{ action: 'show', targetFieldId: 'name' }],
+      raw: rawLogicItem,
+    }];
+    complexDefinition.rawLogic = [rawLogicItem];
+    complexDefinition.logicFingerprint = 'source-complex-fingerprint';
+
+    seedSource('source-complex', 'account-a', '複合フォーム', complexDefinition);
+    seedFieldMap('source-complex', complexDefinition);
+
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/source-complex/duplicate',
+      { lineAccountId: 'account-a' },
+    );
+
+    expect(response.status).toBe(201);
+    const created = (await response.json() as { data: { id: string } }).data;
+    const definition = JSON.parse(String(readForm(created.id).definition_json)) as {
+      fields: Array<{ id: string; label: string; config: Record<string, unknown> }>;
+      logic: Array<Record<string, unknown>>;
+      rawLogic?: unknown;
+      rawLogicTemplate?: unknown;
+      logicFingerprint?: string;
+    };
+    const choice = definition.fields.find((field) => field.label === '参加プラン');
+    const matrix = definition.fields.find((field) => field.label === '満足度');
+    expect(choice?.config).not.toHaveProperty('choiceItems');
+    expect(definition.logic[0]?.value).toBe('夜');
+    expect((definition.logic[0]?.conditions as Array<Record<string, unknown>>)[0]?.value).toBe('夜');
+    expect(definition.logic[0]).not.toHaveProperty('raw');
+    expect(definition.rawLogic).toBeUndefined();
+    expect(Array.isArray(definition.rawLogicTemplate)).toBe(true);
+    expect(definition.logicFingerprint).toBeTruthy();
+    expect(JSON.stringify(definition.rawLogicTemplate)).toContain('"夜"');
+    expect(JSON.stringify(definition.rawLogicTemplate)).toContain('__harnessChoiceFieldId');
+    expect(JSON.stringify(definition)).not.toMatch(
+      /remote-plan|remote-name|remote-night|REMOTE_MATRIX_CHOICE|REMOTE_ROW_REF|REMOTE_ROW_SLUG|remote_row_key/,
+    );
+    expect(matrix?.config.matrixChoiceGroups).toEqual([{ title: '接客' }]);
+    expect(matrix?.config.matrixChoiceItems).toEqual({ column_1: { title: '良い' } });
+  });
+
+  test('D-1: 途中失敗と子行 cleanup 失敗が重なっても部分フォームを一覧へ残さない', async () => {
+    seedSource('source-cleanup', 'account-a', 'cleanup test');
+    seedFieldMap('source-cleanup', SOURCE_DEFINITION);
+    failNextRuns.set('INSERT INTO formaloo_field_map', 1);
+    failNextRuns.set('DELETE FROM formaloo_choice_lists WHERE form_id = ?', 1);
+
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/source-cleanup/duplicate',
+      { lineAccountId: 'account-a' },
+    );
+
+    expect(response.status).toBe(500);
+    const copies = raw.prepare(
+      `SELECT id, deleted FROM formaloo_forms WHERE id <> 'source-cleanup'`,
+    ).all() as Array<{ id: string; deleted: number }>;
+    expect(copies).toHaveLength(1);
+    expect(copies[0]?.deleted).toBe(1);
+    expect(await listIds('account-a')).toEqual(['source-cleanup']);
   });
 
   test('D-1: フォーム内の管理選択肢リストを独立コピーし、元フォームURLへの参照を残さない', async () => {

@@ -196,6 +196,9 @@ interface StoredDefinition {
   // rawLogic = 最後に pull した Formaloo `.data.form.logic` bare array の逐語 (未編集 push 時に PATCH で再送)。
   //   表示用キャッシュ (SoT は Formaloo)。migration 不要 (既存 TEXT の additive JSON key)。
   rawLogic?: unknown;
+  // 複製元 raw logic の provider identity を copied-form internal ID へ置換した初回 push 用 template。
+  // 新 provider slug へ解決できるまで server-side にだけ保持する。
+  rawLogicTemplate?: unknown;
   // logicFingerprint = pull 時の射影 logic の canonical hash。save 時に受領 logic と突合して未編集を判定 (R7)。
   logicFingerprint?: string | null;
   // form-design (Batch D): 色/画像テーマ (additive JSON key / migration 不要)。design 無しフォームは undefined。
@@ -222,6 +225,7 @@ function parseDefinition(json: string): StoredDefinition {
       logic: Array.isArray(d.logic) ? d.logic : [],
       formalooAddress: typeof d.formalooAddress === 'string' ? d.formalooAddress : null,
       rawLogic: 'rawLogic' in d ? d.rawLogic : null,
+      rawLogicTemplate: 'rawLogicTemplate' in d ? d.rawLogicTemplate : null,
       logicFingerprint: typeof d.logicFingerprint === 'string' ? d.logicFingerprint : null,
       // whitelist 正規化 (M-21)。design が無ければ undefined = 後方互換。
       design: d.design && typeof d.design === 'object' && !Array.isArray(d.design)
@@ -251,7 +255,7 @@ function parseDefinition(json: string): StoredDefinition {
         : undefined,
     };
   } catch {
-    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined, localizationJa: undefined, formRedirect: undefined, successPages: undefined, operationsSettings: undefined };
+    return { fields: [], logic: [], formalooAddress: null, rawLogic: null, rawLogicTemplate: null, logicFingerprint: null, design: undefined, formType: undefined, formCopy: undefined, localizationJa: undefined, formRedirect: undefined, successPages: undefined, operationsSettings: undefined };
   }
 }
 
@@ -473,9 +477,17 @@ formsAdvanced.post('/api/forms-advanced/:id/duplicate', async (c) => {
       return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
     }
 
-    const duplicated = duplicateFormDefinition(source.definition_json);
+    const sourceFieldMap = await getFormalooFieldMap(c.env.DB, source.id);
+    const sourceFieldSlugsById = new Map(
+      sourceFieldMap.flatMap((row) => (
+        row.formaloo_field_slug ? [[row.id, row.formaloo_field_slug] as const] : []
+      )),
+    );
+    const duplicated = duplicateFormDefinition(source.definition_json, sourceFieldSlugsById);
     const workspaceId = await resolveImplicitCreateWorkspace(c.env.DB, lineAccountId);
+    createdFormId = `fa_${crypto.randomUUID()}`;
     const created = await createFormalooForm(c.env.DB, {
+      id: createdFormId,
       title: `${source.title} のコピー`,
       description: source.description,
       onSubmitTagId: source.on_submit_tag_id,
@@ -487,7 +499,9 @@ formsAdvanced.post('/api/forms-advanced/:id/duplicate', async (c) => {
       definitionJson: serializeDuplicatedDefinition(duplicated),
       renderBackend: source.render_backend,
     });
-    createdFormId = created.id;
+    if (source.folder_id && source.line_account_id === lineAccountId) {
+      await setFormalooFormFolder(c.env.DB, created.id, source.folder_id);
+    }
 
     const origin = c.env.WORKER_URL?.trim().replace(/\/+$/, '') || new URL(c.req.url).origin;
     const choiceListTargets = new Map<string, { id: string; sourceUrl: string }>();
@@ -523,13 +537,26 @@ formsAdvanced.post('/api/forms-advanced/:id/duplicate', async (c) => {
   } catch (err) {
     if (createdFormId) {
       try {
+        // 一覧から隠す処理を最優先にし、子行 cleanup の失敗で部分フォームが露出しないようにする。
+        await softDeleteFormalooForm(c.env.DB, createdFormId);
+      } catch {
+        console.error('POST /api/forms-advanced/:id/duplicate soft-delete cleanup failed');
+      }
+      try {
         await c.env.DB
           .prepare('DELETE FROM formaloo_choice_lists WHERE form_id = ?')
           .bind(createdFormId)
           .run();
-        await softDeleteFormalooForm(c.env.DB, createdFormId);
       } catch {
-        console.error('POST /api/forms-advanced/:id/duplicate cleanup failed');
+        console.error('POST /api/forms-advanced/:id/duplicate choice-list cleanup failed');
+      }
+      try {
+        await c.env.DB
+          .prepare('DELETE FROM formaloo_field_map WHERE form_id = ?')
+          .bind(createdFormId)
+          .run();
+      } catch {
+        console.error('POST /api/forms-advanced/:id/duplicate field-map cleanup failed');
       }
     }
     console.error('POST /api/forms-advanced/:id/duplicate error:', err);
@@ -792,12 +819,19 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     const logicUnedited = incomingFingerprint != null && incomingFingerprint === currentFingerprint;
     // preserve 元 raw: fresh pull carry (body.rawLogic) 優先、無ければ D1 の前回 rawLogic (reload carry)。
     const carriedRawLogic = body.rawLogic != null ? body.rawLogic : prevDef.rawLogic;
-    const hadRawLogic = body.rawLogic != null || prevDef.rawLogic != null;
+    // 複製 template は fresh pull raw が無い間だけ carry。両方ある場合は provider 実値 raw を優先する。
+    const carriedRawLogicTemplate = carriedRawLogic == null ? prevDef.rawLogicTemplate : null;
+    const hadRawLogic =
+      body.rawLogic != null
+      || prevDef.rawLogic != null
+      || carriedRawLogicTemplate != null;
 
     // preserve / 従来 / compound-edit の分岐。
     let logicToPush: HarnessLogicRule[] = logic; // Formaloo へ送る harness logic (compound-edit 時は空)
     let preserveRawLogic: unknown = undefined; // 未編集時に PATCH で verbatim 再送する bare array
     let persistRawLogic: unknown = undefined; // definition_json に保存する rawLogic
+    let preserveRawLogicTemplate: unknown = undefined; // 複製初回 push で新 provider slug へ解決する template
+    let persistRawLogicTemplate: unknown = undefined; // 解決成功まで definition_json に保持する template
     let compoundEditWarning: string | null = null;
     // route-terminal-submit (T-C5): 編集で logic が空になったら remote logic を明示クリア (最後の submit 削除で
     //   Formaloo 側の早期送信が残らないように PATCH {logic:[]} を送る)。preserve / compound-refuse では立てない。
@@ -805,15 +839,23 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
     //   のみ save (元々 logic 無し) では立てない。fresh pull(body.rawLogic)→submit 削除の経路も carriedArray で拾う。
     const prevRawArr = serializeRawLogicForPush(prevDef.rawLogic);
     const carriedArray = serializeRawLogicForPush(carriedRawLogic);
+    const prevTemplateArr = serializeRawLogicForPush(prevDef.rawLogicTemplate);
+    const carriedTemplateArray = serializeRawLogicForPush(carriedRawLogicTemplate);
+    const carriedComplexArray = carriedArray ?? carriedTemplateArray;
     const prevHadLogic =
       (Array.isArray(prevDef.logic) && prevDef.logic.length > 0) ||
       (prevRawArr != null && prevRawArr.length > 0) ||
-      (carriedArray != null && carriedArray.length > 0);
+      (carriedArray != null && carriedArray.length > 0) ||
+      (prevTemplateArr != null && prevTemplateArr.length > 0) ||
+      (carriedTemplateArray != null && carriedTemplateArray.length > 0);
     let clearRemoteLogicIfEmpty = false;
     if (logicUnedited) {
       if (carriedRawLogic != null) {
         preserveRawLogic = carriedRawLogic;
         persistRawLogic = carriedRawLogic;
+      } else if (carriedRawLogicTemplate != null) {
+        preserveRawLogicTemplate = carriedRawLogicTemplate;
+        persistRawLogicTemplate = carriedRawLogicTemplate;
       }
       // carriedRawLogic 無し (レガシー) は下の client ブロックで re-pull backfill (R6)。
     } else if (hadRawLogic) {
@@ -824,10 +866,12 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       //   → 判定を **display 完全性** (全 item が isExpandableMultiJumpItem||isExpandableTerminalItem) へ是正。
       //   1 件でも非 expandable (show/hide/standalone jsp/always submit/AND-OR compound) があれば refuse (remote 保持)。
       const terminalOnly =
-        carriedArray != null && carriedArray.every((it) => isExpandableMultiJumpItem(it) || isExpandableTerminalItem(it));
+        carriedComplexArray != null
+        && carriedComplexArray.every((it) => isExpandableMultiJumpItem(it) || isExpandableTerminalItem(it));
       if (terminalOnly) {
         logicToPush = logic; // 編集後 harness logic を再生成 push
         persistRawLogic = undefined; // raw は再生成 logic に置き換え (次回 reload は re-pull backfill)
+        persistRawLogicTemplate = undefined;
         if (logic.length === 0 && prevHadLogic) clearRemoteLogicIfEmpty = true; // 全 submit/jump 削除 → remote 空へ
       } else {
         // 複合ロジック (Formaloo 由来 raw あり) を builder で編集 → Batch 1 は merge 不可 (Batch 2)。
@@ -835,6 +879,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         // failure_observable「保持はするが push で落とす」を防ぐ)。複合編集は Formaloo 側で行う導線を提示。
         logicToPush = [];
         persistRawLogic = undefined; // stale raw は破棄 (次回 reload は re-pull backfill 経路)
+        persistRawLogicTemplate = undefined;
         compoundEditWarning =
           '複合ロジックを編集したため未同期です。複合条件（AND/OR・複数アクション・計算）は Formaloo 側で編集してください（この画面での複合編集は今後対応）。';
       }
@@ -950,6 +995,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         logic,
         formalooAddress: address,
         ...(persistRawLogic != null ? { rawLogic: persistRawLogic } : {}),
+        ...(persistRawLogicTemplate != null ? { rawLogicTemplate: persistRawLogicTemplate } : {}),
         logicFingerprint: currentFingerprint,
         // form-design: design が非空のときだけ載せる (未設定フォームは従来と byte 一致 = 後方互換)。
         ...(designToPersist && Object.keys(designToPersist).length ? { design: designToPersist } : {}),
@@ -1012,7 +1058,12 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
       // legacy backfill (R6): 未編集 かつ preserve 元 raw 未取得 かつ formaloo_slug あり → push 前に re-pull で
       // 現行 Formaloo raw を取得し、射影 fingerprint が未編集 logic と一致すれば preserve 経路へ。
       // re-pull 不能 / divergent は preserve せず従来 push (silent 消失なし)。
-      if (logicUnedited && preserveRawLogic === undefined && form.formaloo_slug) {
+      if (
+        logicUnedited
+        && preserveRawLogic === undefined
+        && preserveRawLogicTemplate === undefined
+        && form.formaloo_slug
+      ) {
         const bySlug = new Map<string, string>();
         for (const row of existingMap) if (row.formaloo_field_slug) bySlug.set(row.formaloo_field_slug, row.id);
         const repull = await pullDefinitionFromFormaloo(client, {
@@ -1032,6 +1083,7 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
         logic: logicToPush,
         existingFieldSlugs,
         preserveRawLogic,
+        rawLogicTemplate: preserveRawLogicTemplate,
         // route-terminal-submit (T-C5): 編集で logic 空になった時 remote logic を明示クリア (PATCH {logic:[]})。
         clearLogicIfEmpty: clearRemoteLogicIfEmpty,
         // form-route-branching R2: baseline 差分時のみ form_type PATCH (勝手に変えない)。
@@ -1060,6 +1112,10 @@ formsAdvanced.put('/api/forms-advanced/:id', async (c) => {
           ? null
           : pushed.fieldSlugs?.[editMailFieldId] ?? existingFieldSlugs[editMailFieldId] ?? null;
       if (pushed.ok) {
+        if (pushed.resolvedRawLogic !== undefined) {
+          persistRawLogic = pushed.resolvedRawLogic;
+          persistRawLogicTemplate = undefined;
+        }
         // slug + address + (backfill 後の) rawLogic + design(色) を反映
         await saveFormalooDefinition(c.env.DB, id, {
           definitionJson: buildDefinitionJson(pushed.publicAddress ?? prevDef.formalooAddress ?? null),

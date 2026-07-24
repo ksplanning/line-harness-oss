@@ -94,4 +94,139 @@ describe('pushDefinitionToFormaloo — preserve-raw (D-5 push)', () => {
     expect((fieldPatch!.body as Record<string, unknown>).choice_items).toBeUndefined(); // choice_items 除外 (B6 不変)
     expect(calls.some((c) => c.method === 'POST' && c.path === '/v3.0/fields/')).toBe(false); // 重複作成しない
   });
+
+  test('複製用 raw template は新 field/choice slug へ解決してから複合 logic を欠けなく送る', async () => {
+    const choiceField: HarnessField = {
+      id: 'choice-copy',
+      type: 'choice',
+      label: '参加プラン',
+      required: true,
+      position: 0,
+      config: { choices: ['昼', '夜'] },
+    };
+    const targetField: HarnessField = {
+      id: 'target-copy',
+      type: 'text',
+      label: '氏名',
+      required: true,
+      position: 1,
+      config: {},
+    };
+    const rawLogicTemplate = [{
+      type: 'field',
+      identifier: 'choice-copy',
+      actions: [{
+        action: 'show',
+        args: [{ type: 'field', identifier: 'target-copy' }],
+        when: {
+          operation: 'and',
+          args: [
+            {
+              operation: 'is',
+              args: [
+                { type: 'field', value: 'choice-copy' },
+                { type: 'choice', value: '夜', __harnessChoiceFieldId: 'choice-copy' },
+              ],
+            },
+            {
+              operation: 'is_answered',
+              args: [{ type: 'field', value: 'target-copy' }],
+            },
+          ],
+        },
+      }],
+    }];
+    const { client, calls } = mock(({ method, path, body }) => {
+      if (method === 'POST' && path === '/v3.0/forms/') {
+        return { ok: true, status: 201, data: { data: { form: { slug: 'FORM_NEW' } } } };
+      }
+      if (method === 'POST' && path === '/v3.0/fields/') {
+        const title = (body as { title?: string })?.title;
+        return {
+          ok: true,
+          status: 201,
+          data: { data: { field: { slug: title === '参加プラン' ? 'CHOICE_NEW' : 'TARGET_NEW' } } },
+        };
+      }
+      if (method === 'GET' && path === '/v3.0/fields/CHOICE_NEW/') {
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            data: {
+              field: {
+                choice_items: [
+                  { title: '昼', slug: 'DAY_NEW' },
+                  { title: '夜', slug: 'NIGHT_NEW' },
+                ],
+              },
+            },
+          },
+        };
+      }
+      return { ok: true, status: 200, data: {} };
+    });
+
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: null,
+      title: '複製フォーム',
+      fields: [choiceField, targetField],
+      logic: [],
+      rawLogicTemplate,
+    });
+
+    expect(result.ok).toBe(true);
+    const logicCall = calls.find(
+      (call) => call.method === 'PATCH' && call.path === '/v3.0/forms/FORM_NEW/',
+    );
+    expect((logicCall?.body as { logic: unknown[] }).logic).toEqual([{
+      type: 'field',
+      identifier: 'CHOICE_NEW',
+      actions: [{
+        action: 'show',
+        args: [{ type: 'field', identifier: 'TARGET_NEW' }],
+        when: {
+          operation: 'and',
+          args: [
+            {
+              operation: 'is',
+              args: [
+                { type: 'field', value: 'CHOICE_NEW' },
+                { type: 'choice', value: 'NIGHT_NEW' },
+              ],
+            },
+            {
+              operation: 'is_answered',
+              args: [{ type: 'field', value: 'TARGET_NEW' }],
+            },
+          ],
+        },
+      }],
+    }]);
+    expect(result.resolvedRawLogic).toEqual(
+      (logicCall?.body as { logic: unknown[] }).logic,
+    );
+  });
+
+  test('複製用 raw template に未解決 provider 参照があれば元 slug を送らず fail-closed にする', async () => {
+    const { client, calls } = mock(() => ({ ok: true, status: 200, data: {} }));
+
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'FORM_NEW',
+      title: '複製フォーム',
+      fields: [],
+      logic: [],
+      rawLogicTemplate: [{
+        type: 'field',
+        identifier: 'SOURCE_PROVIDER_FIELD',
+        actions: [],
+      }],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('raw logic field reference unresolved');
+    expect(calls.some(
+      (call) => call.method === 'PATCH' && call.path === '/v3.0/forms/FORM_NEW/',
+    )).toBe(false);
+  });
 });

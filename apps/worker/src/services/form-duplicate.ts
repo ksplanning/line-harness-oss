@@ -1,4 +1,8 @@
-import type { HarnessField, HarnessLogicRule } from '@line-crm/shared';
+import {
+  logicFingerprint,
+  type HarnessField,
+  type HarnessLogicRule,
+} from '@line-crm/shared';
 
 type JsonObject = Record<string, unknown>;
 
@@ -57,11 +61,137 @@ function remapReference(value: unknown, ids: Map<string, string>): unknown {
   return typeof value === 'string' ? (ids.get(value) ?? value) : value;
 }
 
+function choiceTitles(config: JsonObject): Map<string, string> {
+  const titles = new Map<string, string>();
+  if (!Array.isArray(config.choiceItems)) return titles;
+  for (const item of config.choiceItems) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const choice = item as JsonObject;
+    if (typeof choice.slug === 'string' && typeof choice.title === 'string') {
+      titles.set(choice.slug, choice.title);
+    }
+  }
+  return titles;
+}
+
+function sanitizeMatrixIdentity(config: JsonObject): void {
+  if (Array.isArray(config.matrixChoiceGroups)) {
+    config.matrixChoiceGroups = config.matrixChoiceGroups.map((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      const title = (value as JsonObject).title;
+      return typeof title === 'string' ? { title } : {};
+    });
+  }
+  const items = config.matrixChoiceItems;
+  if (!items || typeof items !== 'object' || Array.isArray(items)) return;
+  const sanitized: JsonObject = {};
+  let index = 0;
+  for (const value of Object.values(items as JsonObject)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const title = (value as JsonObject).title;
+    sanitized[`column_${++index}`] = typeof title === 'string' ? { title } : {};
+  }
+  config.matrixChoiceItems = sanitized;
+}
+
+interface RawTemplateResult {
+  value: unknown;
+  mappedCount: number;
+}
+
+/**
+ * Provider raw logic is richer than the builder projection. Convert provider
+ * identities to copied-form internal IDs, then resolve those IDs on first push.
+ */
+function buildRawLogicTemplate(
+  value: unknown,
+  referenceIds: ReadonlyMap<string, string>,
+  choiceTitlesByFieldRef: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): RawTemplateResult {
+  if (Array.isArray(value)) {
+    const mapped = value.map((item) => buildRawLogicTemplate(item, referenceIds, choiceTitlesByFieldRef));
+    return {
+      value: mapped.map((item) => item.value),
+      mappedCount: mapped.reduce((total, item) => total + item.mappedCount, 0),
+    };
+  }
+  if (!value || typeof value !== 'object') return { value, mappedCount: 0 };
+
+  const source = value as JsonObject;
+  const result: JsonObject = {};
+  let mappedCount = 0;
+
+  let choiceFieldRef: string | null = null;
+  if (Array.isArray(source.args)) {
+    for (const arg of source.args) {
+      if (!arg || typeof arg !== 'object' || Array.isArray(arg)) continue;
+      const operand = arg as JsonObject;
+      if (operand.type === 'field' && typeof operand.value === 'string') {
+        choiceFieldRef = operand.value;
+        break;
+      }
+    }
+  }
+
+  for (const [key, child] of Object.entries(source)) {
+    if (key === 'identifier' && typeof child === 'string' && referenceIds.has(child)) {
+      result[key] = referenceIds.get(child);
+      mappedCount++;
+      continue;
+    }
+    if (
+      key === 'value'
+      && source.type === 'field'
+      && typeof child === 'string'
+      && referenceIds.has(child)
+    ) {
+      result[key] = referenceIds.get(child);
+      mappedCount++;
+      continue;
+    }
+    if (key === 'args' && Array.isArray(child) && choiceFieldRef) {
+      const titles = choiceTitlesByFieldRef.get(choiceFieldRef);
+      const targetFieldId = referenceIds.get(choiceFieldRef);
+      const mappedArgs = child.map((arg) => {
+        if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
+          const operand = arg as JsonObject;
+          if (
+            operand.type === 'choice'
+            && typeof operand.value === 'string'
+            && titles?.has(operand.value)
+            && targetFieldId
+          ) {
+            mappedCount++;
+            return {
+              ...operand,
+              value: titles.get(operand.value),
+              __harnessChoiceFieldId: targetFieldId,
+            };
+          }
+        }
+        const mapped = buildRawLogicTemplate(arg, referenceIds, choiceTitlesByFieldRef);
+        mappedCount += mapped.mappedCount;
+        return mapped.value;
+      });
+      result[key] = mappedArgs;
+      continue;
+    }
+    const mapped = buildRawLogicTemplate(child, referenceIds, choiceTitlesByFieldRef);
+    result[key] = mapped.value;
+    mappedCount += mapped.mappedCount;
+  }
+
+  return { value: result, mappedCount };
+}
+
 /**
  * Copy the user-owned form definition while replacing every internal identity.
  * Provider identities and external choice URLs are intentionally removed.
  */
-export function duplicateFormDefinition(definitionJson: string): DuplicatedFormDefinition {
+export function duplicateFormDefinition(
+  definitionJson: string,
+  sourceFieldSlugsById: ReadonlyMap<string, string> = new Map(),
+): DuplicatedFormDefinition {
   let source: JsonObject;
   try {
     const parsed = JSON.parse(definitionJson) as unknown;
@@ -97,6 +227,15 @@ export function duplicateFormDefinition(definitionJson: string): DuplicatedFormD
     if (typeof page.id === 'string' && page.id) ids.set(page.id, newInternalId('success'));
   }
 
+  const sourceChoiceTitlesById = new Map<string, Map<string, string>>();
+  for (const sourceField of sourceFields) {
+    if (typeof sourceField.id !== 'string') continue;
+    const config = sourceField.config && typeof sourceField.config === 'object' && !Array.isArray(sourceField.config)
+      ? sourceField.config as JsonObject
+      : {};
+    sourceChoiceTitlesById.set(sourceField.id, choiceTitles(config));
+  }
+
   const choiceListRefs: DuplicatedFormDefinition['choiceListRefs'] = [];
   const fields = sourceFields.map((sourceField) => {
     const field = cloneJson(sourceField);
@@ -112,6 +251,7 @@ export function duplicateFormDefinition(definitionJson: string): DuplicatedFormD
     }
     mapPostalReferences(config, ids);
     mapRepeatingReferences(config, ids);
+    sanitizeMatrixIdentity(config);
 
     // These slugs belong to the original provider resources.
     delete config.choiceItems;
@@ -129,12 +269,20 @@ export function duplicateFormDefinition(definitionJson: string): DuplicatedFormD
   const logic = sourceLogic.map((sourceRule) => {
     const rule = cloneJson(sourceRule);
     rule.id = newInternalId('logic');
+    const sourceFieldId = typeof sourceRule.sourceFieldId === 'string' ? sourceRule.sourceFieldId : '';
+    if (typeof rule.value === 'string') {
+      rule.value = sourceChoiceTitlesById.get(sourceFieldId)?.get(rule.value) ?? rule.value;
+    }
     rule.sourceFieldId = remapReference(rule.sourceFieldId, ids);
     rule.targetFieldId = remapReference(rule.targetFieldId, ids);
     if (Array.isArray(rule.conditions)) {
       rule.conditions = rule.conditions.map((value) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
         const condition = { ...(value as JsonObject) };
+        const conditionSourceId = typeof condition.sourceFieldId === 'string' ? condition.sourceFieldId : '';
+        if (typeof condition.value === 'string') {
+          condition.value = sourceChoiceTitlesById.get(conditionSourceId)?.get(condition.value) ?? condition.value;
+        }
         condition.sourceFieldId = remapReference(condition.sourceFieldId, ids);
         return condition;
       });
@@ -162,10 +310,40 @@ export function duplicateFormDefinition(definitionJson: string): DuplicatedFormD
   definition.fields = fields;
   definition.logic = logic;
   if (sourcePages.length > 0) definition.successPages = successPages;
-  // All three values bind the cache to the source provider form.
+  // Provider raw logic can be retained only as an internal-ID template. It is
+  // rehydrated with the copied form's new field/choice slugs on first push.
+  const referenceIds = new Map<string, string>();
+  const choiceTitlesByFieldRef = new Map<string, ReadonlyMap<string, string>>();
+  for (const [sourceId, targetId] of ids) {
+    referenceIds.set(sourceId, targetId);
+    const remoteSlug = sourceFieldSlugsById.get(sourceId);
+    if (remoteSlug) referenceIds.set(remoteSlug, targetId);
+    const titles = sourceChoiceTitlesById.get(sourceId);
+    if (titles) {
+      choiceTitlesByFieldRef.set(sourceId, titles);
+      if (remoteSlug) choiceTitlesByFieldRef.set(remoteSlug, titles);
+    }
+  }
+  for (const sourcePage of sourcePages) {
+    if (
+      typeof sourcePage.slug === 'string'
+      && typeof sourcePage.id === 'string'
+      && ids.has(sourcePage.id)
+    ) {
+      referenceIds.set(sourcePage.slug, ids.get(sourcePage.id)!);
+    }
+  }
+  const rawTemplate = buildRawLogicTemplate(source.rawLogic, referenceIds, choiceTitlesByFieldRef);
+
+  // These values bind the cache to the source provider form.
   delete definition.formalooAddress;
   delete definition.rawLogic;
   delete definition.logicFingerprint;
+  delete definition.rawLogicTemplate;
+  if (Array.isArray(rawTemplate.value) && rawTemplate.mappedCount > 0) {
+    definition.rawLogicTemplate = rawTemplate.value;
+    definition.logicFingerprint = logicFingerprint(logic);
+  }
 
   return { definition, fields, logic, choiceListRefs };
 }

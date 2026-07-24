@@ -35,6 +35,8 @@ export interface PushResult {
   successPages?: SuccessPageSpec[];
   /** route-terminal-phase2 (Track 2): harness SP id → Formaloo slug (logic resolver で使った写像)。 */
   successPageSlugs?: Record<string, string>;
+  /** 複製 template を新 provider identity へ解決して実際に送った raw logic。 */
+  resolvedRawLogic?: unknown[];
   /**
    * fr-id-capture-fix (T-C3): friend system hidden field (fr_id/fr_name) の冪等 ensure 結果。
    *   ensureSystemFields=true を渡した時のみ載る。回答導線 (publish 本体) は落とさず、system field の
@@ -55,6 +57,44 @@ interface FieldCreateResp {
   data?: { field?: { slug?: string }; slug?: string };
   /** type-specific OpenAPI create endpoints return the field schema directly. */
   slug?: string;
+}
+
+type JsonObject = Record<string, unknown>;
+
+function collectChoiceTemplateFieldIds(value: unknown, ids: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectChoiceTemplateFieldIds(item, ids);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  const record = value as JsonObject;
+  if (typeof record.__harnessChoiceFieldId === 'string') {
+    ids.add(record.__harnessChoiceFieldId);
+  }
+  for (const child of Object.values(record)) collectChoiceTemplateFieldIds(child, ids);
+}
+
+function extractChoiceItems(value: unknown): Array<{ title: string; slug: string }> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const root = value as JsonObject;
+  const nestedData = root.data && typeof root.data === 'object' && !Array.isArray(root.data)
+    ? root.data as JsonObject
+    : undefined;
+  const field = (
+    nestedData?.field && typeof nestedData.field === 'object' && !Array.isArray(nestedData.field)
+      ? nestedData.field
+      : root.field && typeof root.field === 'object' && !Array.isArray(root.field)
+        ? root.field
+        : root
+  ) as JsonObject;
+  if (!Array.isArray(field.choice_items)) return [];
+  return field.choice_items.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const choice = item as JsonObject;
+    return typeof choice.title === 'string' && typeof choice.slug === 'string'
+      ? [{ title: choice.title, slug: choice.slug }]
+      : [];
+  });
 }
 
 /**
@@ -82,6 +122,11 @@ export async function pushDefinitionToFormaloo(
      * 未渡し (default) は従来の PUT {logic:{rules}} へ縮退 (ハーネス発案 logic / byte 不変)。
      */
     preserveRawLogic?: unknown;
+    /**
+     * 複製元 provider identity を内部 ID/選択肢 title に置換した raw logic。
+     * field upsert 後に新 slug へ解決してから送るため、元フォームの slug は再利用しない。
+     */
+    rawLogicTemplate?: unknown;
     /**
      * form-route-branching (R2): フォーム表示形式。pull baseline (prevFormType) から変化した時のみ
      * `PATCH /v3.0/forms/{slug}/ {form_type}` を送る (未変化 / 未渡しは送らない = 既存フォームを勝手に変えない)。
@@ -309,12 +354,111 @@ export async function pushDefinitionToFormaloo(
     if (!spRes.ok) return { ok: false, formalooSlug: slug, fieldSlugs, successPages: reconciledSuccessPages, successPageSlugs: spSlugById, error: spRes.error };
   }
 
+  // 複製された raw template は、field upsert で採番された新 slug と、新 choice slug を使って
+  // 初回 push の直前に rehydrate する。解決不能なら元 provider slug を送らず fail-safe で止める。
+  let resolvedRawLogic: unknown[] | undefined;
+  const templateArray = serializeRawLogicForPush(params.rawLogicTemplate);
+  if (templateArray) {
+    const choiceFieldIds = new Set<string>();
+    collectChoiceTemplateFieldIds(templateArray, choiceFieldIds);
+    const choiceSlugsByFieldId = new Map<string, Map<string, string>>();
+    for (const fieldId of choiceFieldIds) {
+      const fieldSlug = resolveFieldSlug(fieldId);
+      if (!fieldSlug) {
+        return {
+          ok: false,
+          formalooSlug: slug,
+          fieldSlugs,
+          error: `raw logic choice field unresolved: ${fieldId}`,
+        };
+      }
+      const fetched = await client.request('GET', `/v3.0/fields/${fieldSlug}/`);
+      if (!fetched.ok) {
+        return {
+          ok: false,
+          formalooSlug: slug,
+          fieldSlugs,
+          error: `raw logic choice fetch failed (${fieldId}): HTTP ${fetched.status}`,
+        };
+      }
+      const choices = extractChoiceItems(fetched.data);
+      choiceSlugsByFieldId.set(
+        fieldId,
+        new Map(choices.map((choice) => [choice.title, choice.slug])),
+      );
+    }
+
+    const resolveReference = (value: string): string | undefined =>
+      resolveFieldSlug(value) ?? spSlugById[value];
+    const resolveNode = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(resolveNode);
+      if (!value || typeof value !== 'object') return value;
+      const source = value as JsonObject;
+      const result: JsonObject = {};
+      for (const [key, child] of Object.entries(source)) {
+        if (key === '__harnessChoiceFieldId') continue;
+        if (key === 'identifier' && typeof child === 'string') {
+          const resolved = resolveReference(child);
+          if (!resolved) {
+            throw new Error(`raw logic field reference unresolved: ${child}`);
+          }
+          result[key] = resolved;
+          continue;
+        }
+        if (
+          key === 'value'
+          && source.type === 'field'
+          && typeof child === 'string'
+        ) {
+          const resolved = resolveReference(child);
+          if (!resolved) {
+            throw new Error(`raw logic field reference unresolved: ${child}`);
+          }
+          result[key] = resolved;
+          continue;
+        }
+        if (
+          key === 'value'
+          && source.type === 'choice'
+          && typeof child === 'string'
+        ) {
+          if (typeof source.__harnessChoiceFieldId !== 'string') {
+            throw new Error(`raw logic choice field marker missing: ${child}`);
+          }
+          const choiceSlug = choiceSlugsByFieldId
+            .get(source.__harnessChoiceFieldId)
+            ?.get(child);
+          if (!choiceSlug) {
+            throw new Error(
+              `raw logic choice unresolved: ${source.__harnessChoiceFieldId}/${child}`,
+            );
+          }
+          result[key] = choiceSlug;
+          continue;
+        }
+        result[key] = resolveNode(child);
+      }
+      return result;
+    };
+
+    try {
+      resolvedRawLogic = resolveNode(templateArray) as unknown[];
+    } catch (error) {
+      return {
+        ok: false,
+        formalooSlug: slug,
+        fieldSlugs,
+        error: error instanceof Error ? error.message : 'raw logic template resolve failed',
+      };
+    }
+  }
+
   // 3) logic を保存。field upsert (step1-2) は不可侵 (冪等 push / L-1)。ここだけ logic 経路。
   //    (a) preserve-raw (未編集の実 Formaloo logic) あり → R0 実測の PATCH で bare array を verbatim 再送
   //        (compound/calc/variable/jump を欠けなく保持。往復不変の芯)。
   //    (b) 無し + ハーネス発案/編集 logic あり → form-route-branching T-C1: R0 bare-array を PATCH で送る
   //        (旧 PUT {logic:{rules}} は spike T-A0 実測で本番 500 = latent-500。jump 有効化の前提)。
-  const preserveArray = serializeRawLogicForPush(params.preserveRawLogic);
+  const preserveArray = resolvedRawLogic ?? serializeRawLogicForPush(params.preserveRawLogic);
   if (preserveArray) {
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: preserveArray });
     if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic push failed: HTTP ${res.status}` };
@@ -360,6 +504,7 @@ export async function pushDefinitionToFormaloo(
     publicAddress,
     successPages: reconciledSuccessPages,
     successPageSlugs: spSlugById,
+    ...(resolvedRawLogic !== undefined ? { resolvedRawLogic } : {}),
     ...(systemFields
       ? { systemFields, systemFieldsOk: systemFields.ok, systemFieldsOutOfSync: systemFields.outOfSync }
       : {}),

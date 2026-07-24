@@ -107,6 +107,8 @@ export interface FormalooDriftEventRow {
 }
 
 export interface CreateFormalooFormInput {
+  /** 複製など、呼び出し側が失敗時 cleanup 対象を INSERT 前から確定する場合だけ指定する。 */
+  id?: string;
   title: string;
   description?: string | null;
   onSubmitTagId?: string | null;
@@ -133,7 +135,7 @@ export async function createFormalooForm(
   db: D1Database,
   input: CreateFormalooFormInput,
 ): Promise<FormalooForm> {
-  const id = `fa_${crypto.randomUUID()}`;
+  const id = input.id ?? `fa_${crypto.randomUUID()}`;
   const now = jstNow();
   // design が非空のときだけ definition に seed する。未指定 / 空 object は旧リテラルと byte 完全一致
   // (既存 caller = POST route + db test 群は無改変で従来挙動 / 既存 design=null フォーム不可触)。
