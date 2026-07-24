@@ -21,6 +21,7 @@ interface AutoReply {
   responseType: string
   responseContent: string
   responseMessages: AutoReplyDraft['responseMessages']
+  replyActions: AutoReplyDraft['replyActions']
   templateId: string | null
   lineAccountId: string | null
   keepInUnresponded: boolean
@@ -159,6 +160,7 @@ export default function AutoRepliesPage() {
         matchType: 'exact',
         responseType: 'text',
         responseContent: '',
+        replyActions: [],
         templateId: null,
         lineAccountId: selectedAccountId,
         keepInUnresponded: false,
@@ -243,6 +245,7 @@ export default function AutoRepliesPage() {
                           responseType: r.responseType,
                           responseContent: r.responseContent,
                           responseMessages: r.responseMessages,
+                          replyActions: r.replyActions,
                           templateId: r.templateId,
                           lineAccountId: r.lineAccountId,
                           keepInUnresponded: r.keepInUnresponded,

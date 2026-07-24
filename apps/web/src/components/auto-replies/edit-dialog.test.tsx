@@ -8,6 +8,8 @@ const m = vi.hoisted(() => ({
   update: vi.fn(),
   packList: vi.fn(),
   packGet: vi.fn(),
+  tagsList: vi.fn(),
+  fieldDefinitionsList: vi.fn(),
   flexToModel: vi.fn(),
   builderProps: null as null | { initialModel?: unknown; onSave: (json: string) => void; onClose: () => void },
 }))
@@ -20,6 +22,12 @@ vi.mock('@/lib/api', () => ({ api: {
   templatePacks: {
     list: (...args: unknown[]) => m.packList(...args),
     get: (...args: unknown[]) => m.packGet(...args),
+  },
+  tags: {
+    list: (...args: unknown[]) => m.tagsList(...args),
+  },
+  friendFieldDefinitions: {
+    list: (...args: unknown[]) => m.fieldDefinitionsList(...args),
   },
 } }))
 vi.mock('@/lib/flex-builder/from-flex', () => ({ flexToModel: (...args: unknown[]) => m.flexToModel(...args) }))
@@ -68,6 +76,30 @@ beforeEach(() => {
   m.update.mockResolvedValue({ success: true, data: { id: 'rule-1' } })
   m.packList.mockResolvedValue({ success: true, data: [] })
   m.packGet.mockResolvedValue({ success: true, data: { items: [] } })
+  m.tagsList.mockResolvedValue({ success: true, data: [
+    { id: 'tag-vip', name: 'VIP', color: '#06C755', createdAt: '2026-07-24' },
+    { id: 'tag-old', name: '旧会員', color: '#999999', createdAt: '2026-07-24' },
+  ] })
+  m.fieldDefinitionsList.mockResolvedValue({ success: true, data: [
+    {
+      id: 'field-status',
+      name: '入金確認',
+      defaultValue: '未',
+      displayOrder: 0,
+      isActive: true,
+      createdAt: '2026-07-24',
+      updatedAt: '2026-07-24',
+    },
+    {
+      id: 'field-note',
+      name: 'メモ',
+      defaultValue: '',
+      displayOrder: 1,
+      isActive: true,
+      createdAt: '2026-07-24',
+      updatedAt: '2026-07-24',
+    },
+  ] })
   m.flexToModel.mockReturnValue({ cards: [{ id: 'card-1' }] })
 })
 
@@ -115,6 +147,34 @@ describe('自動返信ルール編集 — 日本語ラベル', () => {
 
     await waitFor(() => expect(m.update).toHaveBeenCalledWith('rule-1', expect.objectContaining({
       keepInUnresponded: false,
+    })))
+  })
+})
+
+describe('自動返信ルール編集 — 応答後アクション', () => {
+  it('保存済みの複数アクションを同じ順序で表示し、APIへround-tripする', async () => {
+    const replyActions = [
+      { type: 'add_tag', tagId: 'tag-vip' },
+      { type: 'remove_tag', tagId: 'tag-old' },
+      { type: 'set_field', fieldId: 'field-status', value: '済' },
+      { type: 'clear_field', fieldId: 'field-note' },
+    ] as const
+    render(<EditDialog
+      draft={draft({ replyActions })}
+      templates={templates}
+      onClose={vi.fn()}
+      onSaved={vi.fn()}
+    />)
+
+    expect(await screen.findByText('応答後にやること')).toBeTruthy()
+    expect(screen.getByLabelText('アクション 1の種類')).toHaveProperty('value', 'add_tag')
+    expect(screen.getByLabelText('アクション 2の種類')).toHaveProperty('value', 'remove_tag')
+    expect(screen.getByLabelText('アクション 3の値')).toHaveProperty('value', '済')
+    expect(screen.getByLabelText('アクション 4の種類')).toHaveProperty('value', 'clear_field')
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(m.update).toHaveBeenCalledWith('rule-1', expect.objectContaining({
+      replyActions,
     })))
   })
 })

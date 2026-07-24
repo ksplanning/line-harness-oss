@@ -11,6 +11,9 @@ import PersonalizedTextEditor from '@/components/shared/personalized-text-editor
 import BroadcastMediaInputs from '@/components/broadcasts/broadcast-media-inputs'
 import type { MediaMessageType } from '@/lib/broadcast-media'
 import { messageTypeLabels } from '@/lib/broadcast-labels'
+import FriendActionsEditor, { validateFriendActions } from '@/components/shared/friend-actions-editor'
+import type { FormSubmitAction } from '@/lib/formaloo-advanced-api'
+import type { FriendFieldDefinition, Tag } from '@line-crm/shared'
 
 export type AutoReplyMessageType = TemplatePackMessageType
 
@@ -31,6 +34,7 @@ export interface AutoReplyDraft {
   responseType: string
   responseContent: string
   responseMessages?: AutoReplyResponseMessage[]
+  replyActions: FormSubmitAction[]
   templateId: string | null
   lineAccountId: string | null
   keepInUnresponded: boolean
@@ -180,6 +184,12 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
   const [builderIndex, setBuilderIndex] = useState<number | null>(null)
   const [builderInitial, setBuilderInitial] = useState<BuilderModel | undefined>()
   const [advancedJsonIndex, setAdvancedJsonIndex] = useState<number | null>(null)
+  const [replyActions, setReplyActions] = useState<FormSubmitAction[]>(() => (
+    (draft.replyActions ?? []).map((action) => ({ ...action }))
+  ))
+  const [replyActionsError, setReplyActionsError] = useState<string | null>(null)
+  const [tags, setTags] = useState<Tag[]>([])
+  const [fieldDefinitions, setFieldDefinitions] = useState<FriendFieldDefinition[]>([])
   const [keepInUnresponded, setKeepInUnresponded] = useState(draft.keepInUnresponded)
   const [isActive, setIsActive] = useState(draft.isActive)
   const [saving, setSaving] = useState(false)
@@ -201,6 +211,23 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
       })
     return () => { cancelled = true }
   }, [resolvedPackAccountId])
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      api.tags.list(),
+      api.friendFieldDefinitions.list(),
+    ])
+      .then(([tagResult, fieldResult]) => {
+        if (cancelled) return
+        if (tagResult.success) setTags(tagResult.data)
+        if (fieldResult.success) setFieldDefinitions(fieldResult.data)
+      })
+      .catch(() => {
+        // 一覧の取得失敗だけで既存ルールの編集を阻害しない。保存済みIDは共通UIが表示する。
+      })
+    return () => { cancelled = true }
+  }, [])
 
   const replaceMessages = (next: AutoReplyUiMessage[]) => {
     messagesRef.current = next
@@ -311,6 +338,12 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
       if (messages.length < 1 || messages.length > MAX_MESSAGES) { setError('吹き出しは1〜5件で指定してください'); return }
       if (messages.some((message) => !message.messageContent.trim())) { setError('空の吹き出しがあります'); return }
     }
+    const actionValidationError = validateFriendActions(replyActions)
+    if (actionValidationError) {
+      setReplyActionsError(actionValidationError)
+      return
+    }
+    setReplyActionsError(null)
     setError('')
     setSaving(true)
     try {
@@ -323,6 +356,7 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
         responseType: first?.messageType ?? 'silent',
         responseContent: first?.messageContent ?? '',
         responseMessages: preserveTemplateReference || replyMode === 'silent' ? null : payloadMessages,
+        replyActions,
         templateId: preserveTemplateReference ? sourceTemplateId : null,
         lineAccountId: draft.lineAccountId,
         keepInUnresponded,
@@ -452,6 +486,22 @@ export default function EditDialog({ draft, packAccountId, templates, onClose, o
               </div>
             </>
           )}
+
+          <FriendActionsEditor
+            actions={replyActions}
+            onChange={(next) => {
+              setReplyActions(next)
+              setReplyActionsError(null)
+            }}
+            tags={tags}
+            fieldDefinitions={fieldDefinitions}
+            title="応答後にやること"
+            description="返信が送れた友だちに対して、上から順番に実行します。必要なものをいくつでも追加できます。"
+            footnote="※ 返信できなかった場合や友だちを確認できない場合は実行しません。アクションが失敗しても、送信済みの返信には影響しません。"
+            error={replyActionsError}
+            settingId="reply-actions"
+            testId="reply-actions-section"
+          />
 
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
             <label htmlFor="auto-reply-keep-in-unresponded" className="inline-flex items-center gap-2 cursor-pointer">

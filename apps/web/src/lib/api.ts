@@ -40,6 +40,7 @@ import type {
   BroadcastMessageType,
 } from '@line-crm/shared'
 import { downloadBlob } from './download'
+import type { FormSubmitAction } from './formaloo-advanced-api'
 
 /**
  * 1 配信に束ねる 1 メッセージ (combo messages / broadcast-combo-messages Batch 2)。
@@ -1234,6 +1235,7 @@ export const api = {
         responseType: string;
         responseContent: string;
         responseMessages: AutoReplyResponseMessage[];
+        replyActions: FormSubmitAction[];
         templateId: string | null;
         lineAccountId: string | null;
         keepInUnresponded: boolean;
@@ -1255,6 +1257,7 @@ export const api = {
         responseType: string;
         responseContent: string;
         responseMessages: AutoReplyResponseMessage[];
+        replyActions: FormSubmitAction[];
         templateId: string | null;
         lineAccountId: string | null;
         keepInUnresponded: boolean;
@@ -1267,6 +1270,7 @@ export const api = {
       responseType?: string;
       responseContent?: string;
       responseMessages?: AutoReplyResponseMessage[] | null;
+      replyActions?: FormSubmitAction[];
       templateId?: string | null;
       lineAccountId?: string | null;
       keepInUnresponded?: boolean;
@@ -1281,6 +1285,7 @@ export const api = {
       responseType?: string;
       responseContent?: string;
       responseMessages?: AutoReplyResponseMessage[] | null;
+      replyActions?: FormSubmitAction[];
       templateId?: string | null;
       lineAccountId?: string | null;
       keepInUnresponded?: boolean;

@@ -121,14 +121,19 @@ describe('/auto-replies center埋め込み', () => {
     await waitFor(() => expect(screen.getByText('自動返信ルールがありません')).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: '+ 新規ルール' }))
     expect(screen.getByTestId('auto-reply-edit-dialog')).toBeTruthy()
+    expect(m.editDraft?.replyActions).toEqual([])
     expect(screen.queryByTestId('legacy-page-header')).toBeNull()
   })
 
-  it('一覧APIの複数吹き出しを欠落させず編集画面へ渡す', async () => {
+  it('一覧APIの複数吹き出しと応答後アクションを欠落させず編集画面へ渡す', async () => {
     const responseMessages = [
       { messageType: 'text', messageContent: 'A' },
       { messageType: 'flex', messageContent: '{"type":"bubble"}' },
       { messageType: 'text', messageContent: 'B' },
+    ]
+    const replyActions = [
+      { type: 'add_tag', tagId: 'tag-vip' },
+      { type: 'set_field', fieldId: 'field-status', value: '済' },
     ]
     m.list.mockResolvedValue({ success: true, data: [{
       id: 'rule-1',
@@ -137,6 +142,7 @@ describe('/auto-replies center埋め込み', () => {
       responseType: 'text',
       responseContent: 'A',
       responseMessages,
+      replyActions,
       templateId: null,
       lineAccountId: 'acc-1',
       keepInUnresponded: true,
@@ -149,6 +155,7 @@ describe('/auto-replies center埋め込み', () => {
     fireEvent.click(await screen.findByRole('button', { name: '編集' }))
 
     expect(m.editDraft?.responseMessages).toEqual(responseMessages)
+    expect(m.editDraft?.replyActions).toEqual(replyActions)
     expect(m.editDraft?.keepInUnresponded).toBe(true)
   })
 })
