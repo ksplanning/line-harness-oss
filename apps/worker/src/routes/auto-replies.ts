@@ -9,6 +9,11 @@ import {
 import type { AutoReply as DbAutoReply } from '@line-crm/db';
 import type { AutoReplyResponseMessage } from '@line-crm/db';
 import type { Env } from '../index.js';
+import {
+  parseFormSubmitActions,
+  resolveFormSubmitActions,
+  type FormSubmitAction,
+} from '../services/form-submit-actions.js';
 import { buildOutboundMessage, OUTBOUND_MESSAGE_TYPES } from '../services/outbound-message.js';
 import { guardFlexContent } from '../utils/flex-persist-guard.js';
 
@@ -28,6 +33,7 @@ interface SerializedAutoReply {
   responseType: string;
   responseContent: string;
   responseMessages: AutoReplyResponseMessage[];
+  replyActions: FormSubmitAction[];
   templateId: string | null;
   lineAccountId: string | null;
   keepInUnresponded: boolean;
@@ -116,6 +122,7 @@ function serializeAutoReply(row: DbAutoReply): SerializedAutoReply {
     responseType: row.response_type,
     responseContent: row.response_content,
     responseMessages: responseMessagesFor(row),
+    replyActions: resolveFormSubmitActions(row.on_reply_actions_json, null),
     templateId: row.template_id,
     lineAccountId: row.line_account_id,
     keepInUnresponded: Boolean(row.keep_in_unresponded),
@@ -235,6 +242,7 @@ autoReplies.post('/api/auto-replies', async (c) => {
       responseType?: string;
       responseContent?: string;
       responseMessages?: unknown;
+      replyActions?: unknown;
       templateId?: string | null;
       lineAccountId?: string | null;
       keepInUnresponded?: boolean;
@@ -248,6 +256,12 @@ autoReplies.post('/api/auto-replies', async (c) => {
       : validateResponseMessages(body.responseMessages);
     if (responseMessagesError) {
       return c.json({ success: false, error: responseMessagesError }, 400);
+    }
+    const replyActionsValidation = body.replyActions === undefined
+      ? null
+      : parseFormSubmitActions(body.replyActions);
+    if (replyActionsValidation && !replyActionsValidation.ok) {
+      return c.json({ success: false, error: replyActionsValidation.error }, 400);
     }
     const responseMessages = Array.isArray(body.responseMessages)
       ? body.responseMessages as AutoReplyResponseMessage[]
@@ -289,6 +303,9 @@ autoReplies.post('/api/auto-replies', async (c) => {
       responseType: resolvedResponseType,
       responseContent: resolvedResponseContent,
       responseMessages,
+      ...(replyActionsValidation?.ok
+        ? { onReplyActionsJson: JSON.stringify(replyActionsValidation.actions) }
+        : {}),
       templateId: body.templateId ?? null,
       lineAccountId: body.lineAccountId ?? null,
       keepInUnresponded: body.keepInUnresponded ?? false,
@@ -311,6 +328,7 @@ autoReplies.put('/api/auto-replies/:id', async (c) => {
       responseType?: string;
       responseContent?: string;
       responseMessages?: unknown;
+      replyActions?: unknown;
       templateId?: string | null;
       lineAccountId?: string | null;
       keepInUnresponded?: boolean;
@@ -328,6 +346,13 @@ autoReplies.put('/api/auto-replies/:id', async (c) => {
         if (responseMessagesError) return c.json({ success: false, error: responseMessagesError }, 400);
       }
       input.responseMessages = body.responseMessages;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'replyActions')) {
+      const replyActionsValidation = parseFormSubmitActions(body.replyActions);
+      if (!replyActionsValidation.ok) {
+        return c.json({ success: false, error: replyActionsValidation.error }, 400);
+      }
+      input.onReplyActionsJson = JSON.stringify(replyActionsValidation.actions);
     }
     if ('templateId' in body) input.templateId = body.templateId;
     if ('lineAccountId' in body) input.lineAccountId = body.lineAccountId;

@@ -19,6 +19,7 @@ vi.mock('@line-crm/db', () => ({
       response_type: input.responseType ?? 'text',
       response_content: input.responseContent ?? '',
       response_messages: input.responseMessages ? JSON.stringify(input.responseMessages) : null,
+      on_reply_actions_json: input.onReplyActionsJson ?? null,
       template_id: input.templateId ?? null,
       line_account_id: input.lineAccountId ?? null,
       keep_in_unresponded: input.keepInUnresponded ? 1 : 0,
@@ -29,10 +30,20 @@ vi.mock('@line-crm/db', () => ({
   }),
   updateAutoReply: vi.fn(async (_db: unknown, _id: string, input: Record<string, unknown>) => {
     state.updateInput = input;
+    if (state.row && Object.prototype.hasOwnProperty.call(input, 'onReplyActionsJson')) {
+      state.row = {
+        ...state.row,
+        on_reply_actions_json: input.onReplyActionsJson,
+      };
+    }
     return state.row;
   }),
   deleteAutoReply: vi.fn(async () => undefined),
   getTemplateById: vi.fn(async () => null),
+  addTagToFriend: vi.fn(),
+  removeTagFromFriend: vi.fn(),
+  getFriendFieldDefinition: vi.fn(),
+  mergeFriendMetadata: vi.fn(),
 }));
 
 import { autoReplies } from './auto-replies.js';
@@ -61,6 +72,13 @@ const responseMessages = [
   { messageType: 'text', messageContent: 'A' },
   { messageType: 'flex', messageContent: '{"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"Flex"}]}}' },
   { messageType: 'text', messageContent: 'B' },
+];
+
+const replyActions = [
+  { type: 'add_tag', tagId: 'tag-new' },
+  { type: 'remove_tag', tagId: 'tag-old' },
+  { type: 'set_field', fieldId: 'field-status', value: '済' },
+  { type: 'clear_field', fieldId: 'field-note' },
 ];
 
 const mediaResponseMessages = [
@@ -95,6 +113,82 @@ beforeEach(() => {
 });
 
 describe('auto-replies API responseMessages contract', () => {
+  test('POST saves and returns ordered replyActions through the P1 action contract', async () => {
+    const result = await request('/api/auto-replies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keyword: '申込',
+        responseType: 'text',
+        responseContent: '受け付けました',
+        replyActions,
+      }),
+    });
+    const body = await result.json<{ data: { replyActions: unknown[] } }>();
+
+    expect(result.status).toBe(201);
+    expect(JSON.parse(String(state.createInput?.onReplyActionsJson))).toEqual(replyActions);
+    expect(body.data.replyActions).toEqual(replyActions);
+  });
+
+  test('PUT round-trips explicit [] while an omitted replyActions key stays omitted', async () => {
+    state.row = {
+      id: 'rule-1', keyword: '申込', match_type: 'exact', response_type: 'text', response_content: '受け付けました',
+      response_messages: null, on_reply_actions_json: JSON.stringify(replyActions), template_id: null,
+      line_account_id: null, keep_in_unresponded: 0, is_active: 1, created_at: 'now',
+    };
+
+    const unrelated = await request('/api/auto-replies/rule-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword: '申込完了' }),
+    });
+    expect(unrelated.status).toBe(200);
+    expect(state.updateInput).not.toHaveProperty('onReplyActionsJson');
+
+    const cleared = await request('/api/auto-replies/rule-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replyActions: [] }),
+    });
+    const body = await cleared.json<{ data: { replyActions: unknown[] } }>();
+
+    expect(cleared.status).toBe(200);
+    expect(state.updateInput?.onReplyActionsJson).toBe('[]');
+    expect(body.data.replyActions).toEqual([]);
+  });
+
+  test('legacy NULL returns [] and invalid replyActions never reaches persistence', async () => {
+    state.row = {
+      id: 'legacy', keyword: '従来', match_type: 'exact', response_type: 'text', response_content: '従来本文',
+      response_messages: null, on_reply_actions_json: null, template_id: null,
+      line_account_id: null, keep_in_unresponded: 0, is_active: 1, created_at: 'now',
+    };
+    const legacy = await request('/api/auto-replies/legacy');
+    expect((await legacy.json<{ data: { replyActions: unknown[] } }>()).data.replyActions).toEqual([]);
+
+    for (const invalid of [
+      {},
+      [{ type: 'add_tag', tagId: '' }],
+      [{ type: 'set_field', fieldId: 'field-status' }],
+      [{ type: 'unknown' }],
+    ]) {
+      state.createInput = null;
+      const result = await request('/api/auto-replies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keyword: '不正',
+          responseType: 'text',
+          responseContent: '本文',
+          replyActions: invalid,
+        }),
+      });
+      expect(result.status).toBe(400);
+      expect(state.createInput).toBeNull();
+    }
+  });
+
   test('POST forwards and serializes keepInUnresponded opt-in', async () => {
     const result = await request('/api/auto-replies', {
       method: 'POST',
