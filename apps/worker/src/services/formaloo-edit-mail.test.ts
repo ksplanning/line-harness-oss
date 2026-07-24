@@ -142,6 +142,50 @@ describe('processFormalooEditMail', () => {
     });
   });
 
+  it('共通キーなしでもLINEアカウント専用キーで初回送信とretryを完走する', async () => {
+    await seed();
+    raw.prepare(
+      `INSERT INTO line_accounts
+         (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('account-1', 'channel-1', 'Account 1', 'line-token', 'line-secret');
+    raw.prepare(
+      `INSERT INTO email_sender_settings
+         (line_account_id, sender_email, sender_domain, resend_api_key)
+       VALUES (?, ?, ?, ?)`,
+    ).run(
+      'account-1',
+      'notice@brand.example',
+      'brand.example',
+      're_account_key',
+    );
+    const requests: string[] = [];
+    const send = vi.fn(async (_senderEnv, input) => {
+      requests.push(input.idempotencyKey);
+      return requests.length === 1
+        ? {
+            status: 'failed' as const,
+            error: 'resend_http_500',
+            providerIdempotencyKey: input.idempotencyKey,
+          }
+        : {
+            status: 'sent' as const,
+            providerMessageId: 'resend-message-account',
+            providerIdempotencyKey: input.idempotencyKey,
+          };
+    });
+    const accountOnlyEnv = env({ RESEND_API_KEY: undefined });
+
+    await expect(processFormalooEditMail(
+      accountOnlyEnv,
+      { submissionId: 'submission-1', mode: 'initial' },
+      { send },
+    )).resolves.toEqual({ status: 'failed', reason: 'resend_http_500' });
+    await expect(runFormalooEditMailOutbox(accountOnlyEnv, { send }))
+      .resolves.toEqual({ attempted: 1, sent: 1, failed: 0, skipped: 0 });
+    expect(requests[1]).toBe(requests[0]);
+  });
+
   it.each([
     [{ explicitSlug: null }, 'missing_recipient_slug'],
     [{ explicitSlug: 'mail-slug', fieldType: 'text' }, 'invalid_recipient_slug'],

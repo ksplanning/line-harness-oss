@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildEditMailMessage, sendEditMail } from './edit-mail-sender.js';
 
 const dbMocks = vi.hoisted(() => ({
@@ -8,6 +8,10 @@ const dbMocks = vi.hoisted(() => ({
 vi.mock('@line-crm/db', () => ({
   getEmailSenderSettings: dbMocks.getEmailSenderSettings,
 }));
+
+beforeEach(() => {
+  dbMocks.getEmailSenderSettings.mockReset();
+});
 
 describe('sendEditMail', () => {
   const input = {
@@ -58,6 +62,67 @@ describe('sendEditMail', () => {
       subject: '回答の控え',
       text: '本文',
     });
+  });
+
+  it('LINEアカウント専用キーを共通キーより優先し、共通キーなしでも送信する', async () => {
+    dbMocks.getEmailSenderSettings.mockResolvedValueOnce({
+      lineAccountId: 'account-1',
+      senderEmail: 'notice@brand.example',
+      senderName: 'ブランド受付',
+      senderDomain: 'brand.example',
+      resendApiKey: ' re_account_key ',
+      resendDomainId: 'domain-1',
+      resendDomainStatus: 'verified',
+      dnsRecords: [],
+      domainCheckedAt: null,
+      createdAt: '2026-07-23T11:00:00+09:00',
+      updatedAt: '2026-07-23T11:00:00+09:00',
+    });
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ id: 'email_account' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await expect(sendEditMail({
+      DB: {} as D1Database,
+      FORM_EDIT_MAIL_ENABLED: 'true',
+      FORM_EDIT_MAIL_FROM: 'default@example.test',
+    }, { ...input, lineAccountId: 'account-1' }, fetcher)).resolves.toMatchObject({
+      status: 'sent',
+    });
+
+    expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get('Authorization'))
+      .toBe('Bearer re_account_key');
+  });
+
+  it('LINEアカウント専用キーが未設定なら共通キーの送信経路を変えない', async () => {
+    dbMocks.getEmailSenderSettings.mockResolvedValueOnce({
+      lineAccountId: 'account-1',
+      senderEmail: 'notice@brand.example',
+      senderName: null,
+      senderDomain: 'brand.example',
+      resendApiKey: null,
+      resendDomainId: 'domain-1',
+      resendDomainStatus: 'verified',
+      dnsRecords: [],
+      domainCheckedAt: null,
+      createdAt: '2026-07-23T11:00:00+09:00',
+      updatedAt: '2026-07-23T11:00:00+09:00',
+    });
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ id: 'email_shared' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await sendEditMail({
+      DB: {} as D1Database,
+      FORM_EDIT_MAIL_ENABLED: 'true',
+      RESEND_API_KEY: 'shared-key',
+      FORM_EDIT_MAIL_FROM: 'default@example.test',
+    }, { ...input, lineAccountId: 'account-1' }, fetcher);
+
+    expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get('Authorization'))
+      .toBe('Bearer shared-key');
   });
 
   it.each([

@@ -2,6 +2,7 @@ import {
   claimEditMailAttempt,
   claimEditMailSend,
   getEditMailSend,
+  getEmailSenderSettings,
   getFormalooFieldMap,
   getFormalooForm,
   getFormalooSubmission,
@@ -17,6 +18,7 @@ import {
   type SendEditMailResult,
 } from './edit-mail-sender.js';
 import { editTokenExp, signEditToken } from './formaloo-edit-token.js';
+import { resolveResendApiKey } from './resend-domains.js';
 
 const MAX_ATTEMPTS = 3;
 const SWEEP_LIMIT = 20;
@@ -78,7 +80,6 @@ function configuredPublicBase(env: FormalooEditMailEnv):
   | { ok: true; base: string }
   | { ok: false; reason: string } {
   if (env.FORM_EDIT_MAIL_ENABLED !== 'true') return { ok: false, reason: 'disabled' };
-  if (!env.RESEND_API_KEY?.trim()) return { ok: false, reason: 'missing_api_key' };
   if (!env.FORM_EDIT_MAIL_FROM?.trim()) return { ok: false, reason: 'missing_from' };
   if (!env.FORMALOO_EDIT_TOKEN_SECRET?.trim()) return { ok: false, reason: 'missing_edit_secret' };
   const configured = env.WORKER_PUBLIC_URL?.trim();
@@ -90,6 +91,21 @@ function configuredPublicBase(env: FormalooEditMailEnv):
   } catch {
     return { ok: false, reason: 'invalid_public_url' };
   }
+}
+
+async function hasResendApiKey(
+  env: FormalooEditMailEnv,
+  lineAccountId: string | null,
+): Promise<boolean> {
+  let accountApiKey: string | null = null;
+  if (lineAccountId) {
+    try {
+      accountApiKey = (await getEmailSenderSettings(env.DB, lineAccountId))?.resendApiKey ?? null;
+    } catch {
+      accountApiKey = null;
+    }
+  }
+  return resolveResendApiKey(env, accountApiKey) !== null;
 }
 
 function parseAnswers(json: string): Record<string, unknown> | null {
@@ -158,6 +174,9 @@ export async function processFormalooEditMail(
   if (!submission) return finishPreSendSkip(env.DB, input, 'missing_submission');
   const form = await getFormalooForm(env.DB, submission.form_id);
   if (!form) return finishPreSendSkip(env.DB, input, 'missing_form');
+  if (!await hasResendApiKey(env, form.line_account_id)) {
+    return finishPreSendSkip(env.DB, input, 'missing_api_key');
+  }
   if (submission.verified !== 1 || form.builder_status !== 'published') {
     return finishPreSendSkip(env.DB, input, 'ineligible_submission');
   }

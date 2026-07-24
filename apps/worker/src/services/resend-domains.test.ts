@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   getResendDomain,
   registerResendDomain,
+  resolveResendApiKey,
   startResendDomainVerification,
 } from './resend-domains.js';
 
@@ -32,6 +33,20 @@ const providerDomain = {
     },
   ],
 };
+
+describe('resolveResendApiKey', () => {
+  it('uses the LINE-account key first and falls back to the unchanged shared key', () => {
+    expect(resolveResendApiKey(
+      { RESEND_API_KEY: ' shared-key ' },
+      ' account-key ',
+    )).toBe('account-key');
+    expect(resolveResendApiKey(
+      { RESEND_API_KEY: ' shared-key ' },
+      null,
+    )).toBe('shared-key');
+    expect(resolveResendApiKey({}, null)).toBeNull();
+  });
+});
 
 describe('registerResendDomain', () => {
   it('保存メールから決めたドメインを登録し、公開DNS項目だけを返す', async () => {

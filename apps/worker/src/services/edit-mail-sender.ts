@@ -1,4 +1,8 @@
-import { getEmailSenderSettings } from '@line-crm/db';
+import {
+  getEmailSenderSettings,
+  type EmailSenderSettings,
+} from '@line-crm/db';
+import { resolveResendApiKey } from './resend-domains.js';
 
 export interface EditMailSenderEnv {
   DB?: D1Database;
@@ -38,25 +42,30 @@ function safeSenderName(value: string | null): string | null {
   return name && name.length <= 100 && !/[\r\n<>]/.test(name) ? name : null;
 }
 
-async function resolveFrom(
+async function readAccountSettings(
   env: EditMailSenderEnv,
   lineAccountId: string | null | undefined,
-  fallback: string,
-): Promise<string> {
-  if (!env.DB || !lineAccountId) return fallback;
+): Promise<EmailSenderSettings | null> {
+  if (!env.DB || !lineAccountId) return null;
 
   try {
-    const settings = await getEmailSenderSettings(env.DB, lineAccountId);
-    if (!settings || settings.resendDomainStatus !== 'verified') return fallback;
-
-    const sender = validatedSenderEmail(settings.senderEmail);
-    if (!sender || sender.domain !== settings.senderDomain.toLowerCase()) return fallback;
-
-    const name = safeSenderName(settings.senderName);
-    return name ? `${name} <${sender.email}>` : sender.email;
+    return await getEmailSenderSettings(env.DB, lineAccountId);
   } catch {
-    return fallback;
+    return null;
   }
+}
+
+function resolveFrom(
+  settings: EmailSenderSettings | null,
+  fallback: string,
+): string {
+  if (!settings || settings.resendDomainStatus !== 'verified') return fallback;
+
+  const sender = validatedSenderEmail(settings.senderEmail);
+  if (!sender || sender.domain !== settings.senderDomain.toLowerCase()) return fallback;
+
+  const name = safeSenderName(settings.senderName);
+  return name ? `${name} <${sender.email}>` : sender.email;
 }
 
 export async function sendEditMail(
@@ -65,11 +74,12 @@ export async function sendEditMail(
   fetcher: typeof fetch = fetch,
 ): Promise<SendEditMailResult> {
   if (env.FORM_EDIT_MAIL_ENABLED !== 'true') return { status: 'skipped', reason: 'disabled' };
-  const apiKey = env.RESEND_API_KEY?.trim();
+  const settings = await readAccountSettings(env, input.lineAccountId);
+  const apiKey = resolveResendApiKey(env, settings?.resendApiKey);
   if (!apiKey) return { status: 'skipped', reason: 'missing_api_key' };
   const fallbackFrom = env.FORM_EDIT_MAIL_FROM?.trim();
   if (!fallbackFrom) return { status: 'skipped', reason: 'missing_from' };
-  const from = await resolveFrom(env, input.lineAccountId, fallbackFrom);
+  const from = resolveFrom(settings, fallbackFrom);
 
   try {
     const response = await fetcher('https://api.resend.com/emails', {

@@ -21,6 +21,13 @@ export type ResendDomainActionResult =
   | { ok: true }
   | { ok: false; error: string };
 
+export function resolveResendApiKey(
+  env: ResendDomainsEnv,
+  accountApiKey: string | null | undefined,
+): string | null {
+  return accountApiKey?.trim() || env.RESEND_API_KEY?.trim() || null;
+}
+
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -76,7 +83,7 @@ function providerDomain(value: unknown): ResendDomain | null {
 }
 
 function apiKey(env: ResendDomainsEnv): string | null {
-  return env.RESEND_API_KEY?.trim() || null;
+  return resolveResendApiKey(env, null);
 }
 
 function headers(key: string): HeadersInit {
