@@ -43,6 +43,8 @@ export default function FormsAdvancedListPage() {
   const [forms, setForms] = useState<AdvancedForm[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
+  const [duplicatingIds, setDuplicatingIds] = useState<Set<string>>(() => new Set())
+  const [duplicateError, setDuplicateError] = useState<string | null>(null)
   const [isOwner, setIsOwner] = useState(false)
   const [workspaces, setWorkspaces] = useState<FormalooWorkspace[]>([])
   // '' = 既定 (アカウント設定 binding / env)。owner が明示選択したときだけ workspaceId を送る。
@@ -66,6 +68,8 @@ export default function FormsAdvancedListPage() {
   const accountRef = useRef(selectedAccountId)
   useEffect(() => {
     accountRef.current = selectedAccountId
+    setDuplicatingIds(new Set())
+    setDuplicateError(null)
   }, [selectedAccountId])
 
   const load = useCallback(async (accountId: string, folderFilter?: string) => {
@@ -186,6 +190,31 @@ export default function FormsAdvancedListPage() {
     if (!selectedAccountId) return
     void load(selectedAccountId, selectedFolderId === null ? undefined : selectedFolderId)
   }, [selectedAccountId, selectedFolderId, load])
+
+  const handleDuplicate = async (formId: string) => {
+    if (!selectedAccountId || duplicatingIds.has(formId)) return
+    const acct = selectedAccountId
+    const folderFilter = selectedFolderId === null ? undefined : selectedFolderId
+    setDuplicateError(null)
+    setDuplicatingIds((current) => new Set(current).add(formId))
+    try {
+      await formsAdvancedApi.duplicate(formId, acct)
+      if (accountRef.current !== acct) return
+      await load(acct, folderFilter)
+    } catch {
+      if (accountRef.current === acct) {
+        setDuplicateError('フォームの複製に失敗しました。時間をおいて、もう一度お試しください。')
+      }
+    } finally {
+      if (accountRef.current === acct) {
+        setDuplicatingIds((current) => {
+          const next = new Set(current)
+          next.delete(formId)
+          return next
+        })
+      }
+    }
+  }
 
   const handleCreateFolder = async () => {
     if (!selectedAccountId) return
@@ -339,6 +368,12 @@ export default function FormsAdvancedListPage() {
         </p>
       </section>
 
+      {duplicateError && (
+        <p role="alert" className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {duplicateError}
+        </p>
+      )}
+
       <section>
         {showLoading ? (
           <div className="text-sm text-gray-400">読み込み中...</div>
@@ -382,6 +417,15 @@ export default function FormsAdvancedListPage() {
                     </select>
                   </div>
                   <div className="flex flex-wrap gap-2 text-xs">
+                    <button
+                      type="button"
+                      data-testid={`duplicate-${form.id}`}
+                      onClick={() => void handleDuplicate(form.id)}
+                      disabled={duplicatingIds.has(form.id)}
+                      className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50"
+                    >
+                      {duplicatingIds.has(form.id) ? '複製中...' : '複製'}
+                    </button>
                     <Link href={`/forms-advanced/detail?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">編集</Link>
                     <Link href={`/forms-advanced/data?id=${form.id}`} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">データ</Link>
                     {form.renderBackend !== 'internal' && (

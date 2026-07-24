@@ -41,6 +41,20 @@ describe('formsAdvancedApi.create — payload', () => {
   })
 })
 
+describe('formsAdvancedApi.duplicate — account-scoped payload', () => {
+  it('form id を URL encode し、操作中 account を POST body に載せる', async () => {
+    const duplicated = { id: 'copy-1', title: '申込 のコピー' }
+    fetchApi.mockResolvedValue({ success: true, data: duplicated })
+
+    await expect(formsAdvancedApi.duplicate('form/a', 'acc_A')).resolves.toEqual(duplicated)
+
+    expect(fetchApi).toHaveBeenCalledWith('/api/forms-advanced/form%2Fa/duplicate', {
+      method: 'POST',
+      body: JSON.stringify({ lineAccountId: 'acc_A' }),
+    })
+  })
+})
+
 describe('formsAdvancedApi.saveDefinition — metadata payload', () => {
   it('title と空 description を PUT body にそのまま載せる', async () => {
     fetchApi.mockResolvedValue({ success: true, data: { id: 'fa1' } })

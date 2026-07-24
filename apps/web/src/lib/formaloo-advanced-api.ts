@@ -186,6 +186,17 @@ export const formsAdvancedApi = {
       })
     ).data
   },
+  async duplicate(id: string, lineAccountId: string): Promise<AdvancedForm> {
+    return (
+      await fetchApi<Envelope<AdvancedForm>>(
+        `/api/forms-advanced/${encodeURIComponent(id)}/duplicate`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ lineAccountId }),
+        },
+      )
+    ).data
+  },
   async saveDefinition(id: string, def: SaveDefinitionBody, expectedRenderBackend?: RenderBackend): Promise<AdvancedForm> {
     const env = await fetchApi<Envelope<AdvancedForm>>(`/api/forms-advanced/${id}`, {
       method: 'PUT',
