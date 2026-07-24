@@ -860,6 +860,37 @@ describe('internal public form POST /f/:formId', () => {
     );
   });
 
+  test('does not retry an atomic insert after the write itself fails', async () => {
+    seedForm('fa_rapid_write_failure');
+    const base = DB;
+    let insertAttempts = 0;
+    DB = {
+      prepare(sql: string) {
+        if (!sql.includes('INSERT INTO internal_form_submissions')) return base.prepare(sql);
+        const statement = {
+          bind() { return statement; },
+          async run() {
+            insertAttempts += 1;
+            throw new Error('ambiguous insert failure');
+          },
+        };
+        return statement;
+      },
+    } as unknown as D1Database;
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const signed = await signFriendToken('friend-1', FRIEND_SECRET);
+    const body = validBody();
+    body.set('fr_id', signed!);
+
+    const response = await postForm('fa_rapid_write_failure', body);
+
+    expect(response.status).toBe(500);
+    expect(insertAttempts).toBe(1);
+    expect(raw.prepare(
+      "SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = 'fa_rapid_write_failure'",
+    ).get()).toEqual({ n: 0 });
+  });
+
   test('runs ordered tag/field actions after save and continues after one action fails', async () => {
     seedForm('fa_actions');
     raw.prepare("INSERT INTO tags (id, name) VALUES ('tag-2', '優先')").run();
@@ -1067,6 +1098,23 @@ describe('internal public form POST /f/:formId', () => {
     expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 1 });
   });
 
+  test('keeps the response-limit page for an invalid anonymous retry', async () => {
+    seedForm('fa_limited_invalid', { definition: {
+      fields: [fields[0]], logic: [], operationsSettings: { maxSubmitCount: 1 },
+    } });
+    expect((await postForm(
+      'fa_limited_invalid',
+      new URLSearchParams({ a_0: '佐藤' }),
+    )).status).toBe(200);
+
+    const response = await postForm('fa_limited_invalid', new URLSearchParams());
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('回答上限に達したため受付を終了しました');
+    expect(html).not.toContain('入力してください');
+  });
+
   test.each([
     ['unpublished', "builder_status = 'draft'"],
     ['renderer changed', "render_backend = 'formaloo'"],
@@ -1102,6 +1150,27 @@ describe('internal public form POST /f/:formId', () => {
     expect(html).toContain('ページを読み直し');
     expect(html).not.toContain('回答上限に達したため');
     expect(raw.prepare('SELECT COUNT(*) AS n FROM internal_form_submissions').get()).toEqual({ n: 0 });
+  });
+
+  test('does not turn a signed duplicate into success when the form is unpublished before insert', async () => {
+    seedForm('fa_signed_state_race', { definition: { fields: [fields[0]], logic: [] } });
+    const token = await signFriendToken('friend-1', FRIEND_SECRET);
+    const body = () => new URLSearchParams({ a_0: '佐藤', fr_id: token! });
+    expect((await postForm('fa_signed_state_race', body())).status).toBe(200);
+    beforeAtomicSubmission(() => {
+      raw.prepare(
+        "UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'fa_signed_state_race'",
+      ).run();
+    });
+
+    const response = await postForm('fa_signed_state_race', body());
+    const html = await response.text();
+
+    expect(html).toContain('このフォームは現在ご利用いただけません');
+    expect(html).not.toContain('受付完了');
+    expect(raw.prepare(
+      "SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = 'fa_signed_state_race'",
+    ).get()).toEqual({ n: 1 });
   });
 
   test('uses verified LINE channel logic, drops hidden answers, and selects the server-side route completion', async () => {

@@ -396,15 +396,62 @@ describe('internal form persistence', () => {
     const anonymousSecond = await create(null, { name: '匿名' }, '2026-07-24T10:00:11.000+09:00');
 
     expect(first).toMatchObject({ status: 'created' });
+    if (first?.status !== 'created') throw new Error('expected the first submission to be created');
     expect(boundary).toMatchObject({
       status: 'deduplicated',
-      submission: { id: first?.submission.id },
+      submission: { id: first.submission.id },
     });
     expect(outside).toMatchObject({ status: 'created' });
     expect(changed).toMatchObject({ status: 'created' });
     expect(anonymousFirst).toMatchObject({ status: 'created' });
     expect(anonymousSecond).toMatchObject({ status: 'created' });
     expect(await countInternalFormSubmissionsForForm(DB, 'fa_internal')).toBe(5);
+  });
+
+  test('does not report a duplicate when publication or reception state rejects the retry', async () => {
+    raw.prepare(
+      "UPDATE formaloo_forms SET render_backend = 'internal', builder_status = 'published' WHERE id = 'fa_internal'",
+    ).run();
+    const definitionJson = (await getFormalooForm(DB, 'fa_internal'))!.definition_json;
+    const create = (
+      answers: Record<string, unknown>,
+      submittedAt: string,
+      submitEndTime: string | null = null,
+    ) => createInternalFormSubmissionForPublishedDefinitionDeduplicated(DB, {
+      formId: 'fa_internal',
+      definitionJson,
+      friendId: 'friend-1',
+      answers,
+      submitStartTime: null,
+      submitEndTime,
+      submittedAt,
+      deduplicateWithinSeconds: 10,
+    });
+
+    await expect(create({ name: '公開状態' }, '2026-07-24T10:00:00.000+09:00'))
+      .resolves.toMatchObject({ status: 'created' });
+    raw.prepare("UPDATE formaloo_forms SET builder_status = 'draft' WHERE id = 'fa_internal'").run();
+    await expect(create({ name: '公開状態' }, '2026-07-24T10:00:01.000+09:00'))
+      .resolves.toBeNull();
+
+    raw.prepare(
+      "UPDATE formaloo_forms SET builder_status = 'published', definition_json = '{\"fields\":[1]}' WHERE id = 'fa_internal'",
+    ).run();
+    await expect(create({ name: '公開状態' }, '2026-07-24T10:00:02.000+09:00'))
+      .resolves.toBeNull();
+
+    raw.prepare('UPDATE formaloo_forms SET definition_json = ? WHERE id = ?')
+      .run(definitionJson, 'fa_internal');
+    await expect(create(
+      { name: '受付時間' },
+      '2026-07-24T10:00:03.000+09:00',
+      '2026-07-24T10:00:05.000+09:00',
+    )).resolves.toMatchObject({ status: 'created' });
+    await expect(create(
+      { name: '受付時間' },
+      '2026-07-24T10:00:06.000+09:00',
+      '2026-07-24T10:00:05.000+09:00',
+    )).resolves.toBeNull();
   });
 
   test('atomically rejects answers outside the saved reception window', async () => {

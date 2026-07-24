@@ -1150,7 +1150,9 @@ internalFormsPublic.post('/f/:formId', async (c) => {
     const parsedBody = await c.req.parseBody({ all: true }).catch(() => ({}));
     const body = answerInputs(parsedBody);
     const rawToken = typeof body.fr_id === 'string' ? body.fr_id : null;
+    if (unavailable && rawToken === null) return unavailable;
     const friend = await verifiedFriend(c, rawToken, runtime.form.line_account_id);
+    if (unavailable && !friend) return unavailable;
     const channel: InternalFormChannel = friend ? 'line' : 'web';
     const originChannel: InternalFormOriginChannel = friend
       ? 'line'
@@ -1167,6 +1169,7 @@ internalFormsPublic.post('/f/:formId', async (c) => {
     });
 
     if (!validation.ok) {
+      if (unavailable) return unavailable;
       return c.html(renderFormPage(
         runtime.form,
         runtime.definition,
@@ -1199,22 +1202,25 @@ internalFormsPublic.post('/f/:formId', async (c) => {
         maxSubmissions,
         submitStartTime: runtime.definition.operationsSettings.submitStartTime ?? null,
         submitEndTime: runtime.definition.operationsSettings.submitEndTime ?? null,
+        deduplicationVolatileAnswerFragments: storedUploads.deduplicationVolatileFragments,
       };
-      let submissionResult: Awaited<
-        ReturnType<typeof createInternalFormSubmissionForPublishedDefinitionDeduplicated>
+      const guardedResult = await createInternalFormSubmissionForPublishedDefinitionDeduplicated(
+        c.env.DB,
+        { ...submissionInput, deduplicateWithinSeconds: 10 },
+      );
+      let submissionResult: Exclude<
+        Awaited<ReturnType<typeof createInternalFormSubmissionForPublishedDefinitionDeduplicated>>,
+        { status: 'guard_unavailable' }
       >;
-      try {
-        submissionResult = await createInternalFormSubmissionForPublishedDefinitionDeduplicated(
-          c.env.DB,
-          { ...submissionInput, deduplicateWithinSeconds: 10 },
-        );
-      } catch {
+      if (guardedResult?.status === 'guard_unavailable') {
         console.error('internal form rapid duplicate guard failed; continuing without deduplication');
         const fallback = await createInternalFormSubmissionForPublishedDefinition(
           c.env.DB,
           submissionInput,
         );
         submissionResult = fallback ? { status: 'created' as const, submission: fallback } : null;
+      } else {
+        submissionResult = guardedResult;
       }
       if (!submissionResult) {
         await rollbackInternalFormUploads(c.env.IMAGES, uploadedKeys);

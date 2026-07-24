@@ -18,6 +18,7 @@ export type InternalFormAttachmentRetentionResult =
 export interface StoredInternalFormUploads {
   attachmentsByField: Record<string, InternalFormAttachmentDescriptor[]>;
   uploadedKeys: string[];
+  deduplicationVolatileFragments: string[];
 }
 
 const REMOVAL_INDEX_PATTERN = /^(?:0|[1-9]\d*)$/;
@@ -94,6 +95,13 @@ function uploadExtension(filename: string): string {
   return match ? `.${match[1].toLowerCase()}` : '';
 }
 
+async function fileSha256(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 /** Best-effort cleanup for new objects which never became a committed answer. */
 export async function rollbackInternalFormUploads(
   bucket: R2Bucket,
@@ -113,6 +121,7 @@ export async function storeInternalFormUploads(
   uploads: readonly PendingInternalUpload[],
 ): Promise<StoredInternalFormUploads> {
   const uploadedKeys: string[] = [];
+  const deduplicationVolatileFragments: string[] = [];
   const attachmentsByField = Object.create(null) as Record<string, InternalFormAttachmentDescriptor[]>;
   try {
     for (const upload of uploads) {
@@ -126,9 +135,12 @@ export async function storeInternalFormUploads(
         });
       }
       for (const file of upload.files) {
-        const key = `internal-form-submissions/${encodeURIComponent(formId)}/${encodeURIComponent(upload.fieldId)}/${crypto.randomUUID()}${uploadExtension(file.name)}`;
+        const contentHash = await fileSha256(file);
+        const volatileFragment = crypto.randomUUID();
+        const key = `internal-form-submissions/${encodeURIComponent(formId)}/${encodeURIComponent(upload.fieldId)}/${contentHash}-${volatileFragment}${uploadExtension(file.name)}`;
         const contentType = file.type || 'application/octet-stream';
         uploadedKeys.push(key);
+        deduplicationVolatileFragments.push(volatileFragment);
         await bucket.put(key, file.stream(), {
           httpMetadata: { contentType },
         });
@@ -140,7 +152,7 @@ export async function storeInternalFormUploads(
         });
       }
     }
-    return { attachmentsByField, uploadedKeys };
+    return { attachmentsByField, uploadedKeys, deduplicationVolatileFragments };
   } catch (error) {
     await rollbackInternalFormUploads(bucket, uploadedKeys);
     throw error;

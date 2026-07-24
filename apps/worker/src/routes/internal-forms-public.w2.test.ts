@@ -8,6 +8,7 @@ import {
   addInternalFormAttachmentFiles,
   removeInternalFormAttachmentFile,
 } from '../client/internal-form-attachment.js';
+import { signFriendToken } from '../services/formaloo-friend-token.js';
 import { internalFormsPublic } from './internal-forms-public.js';
 import type { Env } from '../index.js';
 
@@ -367,6 +368,49 @@ describe('internal public form W2 multipart persistence', () => {
     ).get() as { answers_json: string };
     expect((JSON.parse(row.answers_json) as { file: Array<{ name: string }> }).file)
       .toMatchObject([{ name: 'native.pdf' }]);
+  });
+
+  test('deduplicates the same uploaded bytes but preserves a different file as a new answer', async () => {
+    seedForm('fa_file_dedup', [{
+      id: 'file', type: 'file', label: '資料', required: true, position: 0,
+      config: { allowedExtensions: ['pdf'], maxSizeKb: 256 },
+    }] as typeof fields);
+    raw.prepare(
+      "INSERT INTO friends (id, line_user_id, display_name) VALUES ('friend-1', 'U1', '佐藤')",
+    ).run();
+    const token = await signFriendToken('friend-1', 'secret');
+    const body = (contents: string) => {
+      const value = new FormData();
+      value.append('fr_id', token!);
+      value.append('a_0', new File([contents], 'answer.pdf', { type: 'application/pdf' }));
+      return value;
+    };
+    const r2 = r2Stub();
+
+    expect((await app().request(
+      '/f/fa_file_dedup',
+      { method: 'POST', body: body('%PDF-same') },
+      env(r2.bucket),
+    )).status).toBe(200);
+    expect((await app().request(
+      '/f/fa_file_dedup',
+      { method: 'POST', body: body('%PDF-same') },
+      env(r2.bucket),
+    )).status).toBe(200);
+    expect(raw.prepare(
+      "SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = 'fa_file_dedup'",
+    ).get()).toEqual({ n: 1 });
+
+    expect((await app().request(
+      '/f/fa_file_dedup',
+      { method: 'POST', body: body('%PDF-different') },
+      env(r2.bucket),
+    )).status).toBe(200);
+    expect(raw.prepare(
+      "SELECT COUNT(*) AS n FROM internal_form_submissions WHERE form_id = 'fa_file_dedup'",
+    ).get()).toEqual({ n: 2 });
+    expect(r2.put).toHaveBeenCalledTimes(3);
+    expect(r2.del).toHaveBeenCalledTimes(1);
   });
 
   test('deletes uploaded objects when database persistence fails', async () => {

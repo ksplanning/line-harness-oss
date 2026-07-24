@@ -428,11 +428,49 @@ type PublishedInternalFormSubmissionInput = {
   submitStartTime: string | null;
   submitEndTime: string | null;
   submittedAt?: string;
+  deduplicationVolatileAnswerFragments?: readonly string[];
 };
 
 export type DeduplicatedInternalFormSubmissionResult =
   | { status: 'created'; submission: InternalFormSubmission }
-  | { status: 'deduplicated'; submission: InternalFormSubmission };
+  | { status: 'deduplicated'; submission: InternalFormSubmission }
+  | { status: 'guard_unavailable' };
+
+type RapidDuplicateAnswerMatch = {
+  sql: string;
+  binding: string;
+};
+
+function utf8Hex(value: string): string {
+  return [...new TextEncoder().encode(value)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase();
+}
+
+function rapidDuplicateAnswerMatch(
+  answersJson: string,
+  volatileFragments: readonly string[] | undefined,
+): RapidDuplicateAnswerMatch {
+  if (!volatileFragments?.length) {
+    return { sql: 'recent.answers_json = ?', binding: answersJson };
+  }
+  let cursor = 0;
+  let hexGlob = '';
+  for (const fragment of volatileFragments) {
+    if (fragment.length === 0) {
+      return { sql: 'recent.answers_json = ?', binding: answersJson };
+    }
+    const index = answersJson.indexOf(fragment, cursor);
+    if (index < 0) {
+      return { sql: 'recent.answers_json = ?', binding: answersJson };
+    }
+    hexGlob += `${utf8Hex(answersJson.slice(cursor, index))}*`;
+    cursor = index + fragment.length;
+  }
+  hexGlob += utf8Hex(answersJson.slice(cursor));
+  return { sql: 'hex(recent.answers_json) GLOB ?', binding: hexGlob };
+}
 
 function insertedInternalFormSubmission(
   input: PublishedInternalFormSubmissionInput,
@@ -477,6 +515,10 @@ async function insertInternalFormSubmissionForPublishedDefinition(
     ? Math.max(0, deduplicateWithinSeconds)
     : 0;
   const deduplicateFriendId = duplicateWindow > 0 ? input.friendId ?? null : null;
+  const answerMatch = rapidDuplicateAnswerMatch(
+    answersJson,
+    input.deduplicationVolatileAnswerFragments,
+  );
   const rapidDuplicateClause = deduplicateFriendId === null
     ? ''
     : ` AND NOT EXISTS ( /* rapid-submit-dedup */
@@ -484,14 +526,14 @@ async function insertInternalFormSubmissionForPublishedDefinition(
          FROM internal_form_submissions recent
          WHERE recent.form_id = ?
            AND recent.friend_id = ?
-           AND recent.answers_json = ?
+           AND ${answerMatch.sql}
            AND recent.deleted_at IS NULL
            AND julianday(recent.submitted_at) >= julianday(?, '-' || ? || ' seconds')
            AND julianday(recent.submitted_at) <= julianday(?)
        )`;
   const rapidDuplicateBindings = deduplicateFriendId === null
     ? []
-    : [input.formId, deduplicateFriendId, answersJson, now, duplicateWindow, now];
+    : [input.formId, deduplicateFriendId, answerMatch.binding, now, duplicateWindow, now];
   const result = await db
     .prepare(
       `INSERT INTO internal_form_submissions
@@ -543,6 +585,55 @@ export function createInternalFormSubmissionForPublishedDefinition(
   return insertInternalFormSubmissionForPublishedDefinition(db, input);
 }
 
+async function findRapidDuplicateForPublishedDefinition(
+  db: D1Database,
+  input: PublishedInternalFormSubmissionInput,
+  now: string,
+  duplicateWindow: number,
+): Promise<InternalFormSubmission | null> {
+  const friendId = input.friendId ?? null;
+  if (!friendId || duplicateWindow === 0) return null;
+  const answersJson = JSON.stringify(input.answers);
+  const answerMatch = rapidDuplicateAnswerMatch(
+    answersJson,
+    input.deduplicationVolatileAnswerFragments,
+  );
+  return db.prepare(
+    `SELECT recent.*
+     FROM internal_form_submissions recent
+     WHERE recent.form_id = ?
+       AND recent.friend_id = ?
+       AND ${answerMatch.sql} /* rapid-submit-dedup-probe */
+       AND recent.deleted_at IS NULL
+       AND julianday(recent.submitted_at) >= julianday(?, '-' || ? || ' seconds')
+       AND julianday(recent.submitted_at) <= julianday(?)
+       AND EXISTS (
+         SELECT 1 FROM formaloo_forms
+         WHERE id = ? AND deleted = 0 AND render_backend = 'internal'
+           AND builder_status = 'published' AND definition_json = ?
+       )
+       AND (? IS NULL OR julianday(?) >= julianday(?))
+       AND (? IS NULL OR julianday(?) < julianday(?))
+     ORDER BY julianday(recent.submitted_at) DESC, recent.rowid DESC
+     LIMIT 1`,
+  ).bind(
+    input.formId,
+    friendId,
+    answerMatch.binding,
+    now,
+    duplicateWindow,
+    now,
+    input.formId,
+    input.definitionJson,
+    input.submitStartTime,
+    now,
+    input.submitStartTime,
+    input.submitEndTime,
+    now,
+    input.submitEndTime,
+  ).first<InternalFormSubmission>();
+}
+
 /**
  * Atomically suppress a rapid retry for a verified friend while preserving
  * anonymous submissions, changed answers, and retries outside the time window.
@@ -553,6 +644,22 @@ export async function createInternalFormSubmissionForPublishedDefinitionDeduplic
 ): Promise<DeduplicatedInternalFormSubmissionResult | null> {
   const now = input.submittedAt ?? jstNow();
   const normalizedInput = { ...input, submittedAt: now };
+  const friendId = input.friendId ?? null;
+  const duplicateWindow = Number.isFinite(input.deduplicateWithinSeconds)
+    ? Math.max(0, input.deduplicateWithinSeconds)
+    : 0;
+  if (friendId && duplicateWindow > 0) {
+    try {
+      await findRapidDuplicateForPublishedDefinition(
+        db,
+        normalizedInput,
+        now,
+        duplicateWindow,
+      );
+    } catch {
+      return { status: 'guard_unavailable' };
+    }
+  }
   const created = await insertInternalFormSubmissionForPublishedDefinition(
     db,
     normalizedInput,
@@ -560,30 +667,13 @@ export async function createInternalFormSubmissionForPublishedDefinitionDeduplic
   );
   if (created) return { status: 'created', submission: created };
 
-  const friendId = input.friendId ?? null;
-  const duplicateWindow = Number.isFinite(input.deduplicateWithinSeconds)
-    ? Math.max(0, input.deduplicateWithinSeconds)
-    : 0;
   if (!friendId || duplicateWindow === 0) return null;
-  const duplicate = await db.prepare(
-    `SELECT *
-     FROM internal_form_submissions
-     WHERE form_id = ?
-       AND friend_id = ?
-       AND answers_json = ?
-       AND deleted_at IS NULL
-       AND julianday(submitted_at) >= julianday(?, '-' || ? || ' seconds')
-       AND julianday(submitted_at) <= julianday(?)
-     ORDER BY julianday(submitted_at) DESC, rowid DESC
-     LIMIT 1`,
-  ).bind(
-    input.formId,
-    friendId,
-    JSON.stringify(input.answers),
+  const duplicate = await findRapidDuplicateForPublishedDefinition(
+    db,
+    normalizedInput,
     now,
     duplicateWindow,
-    now,
-  ).first<InternalFormSubmission>();
+  );
   return duplicate ? { status: 'deduplicated', submission: duplicate } : null;
 }
 
