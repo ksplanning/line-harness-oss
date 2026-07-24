@@ -16,6 +16,24 @@ export interface StaffNotificationSettingsPanelProps {
 type TestState = 'testing' | 'ok' | 'ng'
 
 const GENERIC_ERROR = '操作に失敗しました。設定内容を確認して、もう一度お試しください。'
+const ROOM_ID_FORMAT_ERROR = 'ルームIDは半角数字のみで入力してください。'
+const CHATWORK_CATEGORY_ROOM_FIELD_KEYS = new Set([
+  'inquiryRoomId',
+  'formSubmissionRoomId',
+  'autoReplyRoomId',
+])
+
+function fieldPatternIsValid(
+  field: StaffNotificationChannelDefinition['configFields'][number],
+  value: string,
+): boolean {
+  if (!field.pattern) return true
+  try {
+    return new RegExp(field.pattern).test(value)
+  } catch {
+    return false
+  }
+}
 
 function fieldValueIsValid(
   definition: StaffNotificationChannelDefinition,
@@ -29,12 +47,7 @@ function fieldValueIsValid(
     if (field.required && !value && !existingSecret) return false
     if (!value) return true
     if (value.length > field.maxLength) return false
-    if (!field.pattern) return true
-    try {
-      return new RegExp(field.pattern).test(value)
-    } catch {
-      return false
-    }
+    return fieldPatternIsValid(field, value)
   })
 }
 
@@ -142,6 +155,51 @@ export default function StaffNotificationSettingsPanel({
       currentDefinition
       && fieldValueIsValid(currentDefinition, configValues, currentEditing),
     )
+  const renderCategoryRoomInput = (key: string) => {
+    if (currentDefinition?.channelType !== 'chatwork') return null
+    const field = currentDefinition.configFields.find(
+      (candidate) => candidate.key === key,
+    )
+    if (!field) return null
+    const id = `staff-notification-config-${field.key}`
+    const value = configValues[field.key] ?? ''
+    const invalid = value.trim() !== ''
+      && (
+        value.trim().length > field.maxLength
+        || !fieldPatternIsValid(field, value.trim())
+      )
+    const errorId = `${id}-error`
+    return (
+      <div className="min-w-[240px] flex-1">
+        <div className="flex items-center gap-2">
+          <label htmlFor={id} className="shrink-0 text-xs text-gray-600">
+            ルームID（任意）
+          </label>
+          <input
+            id={id}
+            type="text"
+            inputMode="numeric"
+            aria-label={field.label}
+            aria-invalid={invalid}
+            aria-describedby={invalid ? errorId : undefined}
+            value={value}
+            maxLength={field.maxLength}
+            pattern={field.pattern}
+            onChange={(event) => setConfigValues((current) => ({
+              ...current,
+              [field.key]: event.target.value,
+            }))}
+            className="min-w-0 flex-1 rounded border border-gray-300 px-3 py-1.5 text-sm"
+          />
+        </div>
+        {invalid && (
+          <p id={errorId} role="alert" className="mt-1 text-xs text-red-600">
+            {ROOM_ID_FORMAT_ERROR}
+          </p>
+        )}
+      </div>
+    )
+  }
 
   const runMutation = async (
     operationKey: string,
@@ -564,39 +622,44 @@ export default function StaffNotificationSettingsPanel({
           />
         </div>
 
-        {currentDefinition?.configFields.map((field) => {
-          const id = `staff-notification-config-${field.key}`
-          const existingSecret = field.inputType === 'secret'
-            && Boolean(currentEditing?.config[field.key])
-          return (
-            <div key={field.key}>
-              <label htmlFor={id} className="mb-1 block text-sm text-gray-700">
-                {field.label}
-              </label>
-              <input
-                id={id}
-                type={field.inputType === 'secret' ? 'password' : 'text'}
-                autoComplete={field.inputType === 'secret' ? 'off' : undefined}
-                value={configValues[field.key] ?? ''}
-                maxLength={field.maxLength}
-                pattern={field.pattern}
-                onChange={(event) => setConfigValues((current) => ({
-                  ...current,
-                  [field.key]: event.target.value,
-                }))}
-                placeholder={existingSecret
-                  ? '変更する場合だけ入力'
-                  : field.placeholder}
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
-              />
-              {existingSecret && (
-                <p className="mt-1 text-xs text-gray-500">
-                  保存済み: {currentEditing?.config[field.key]}（空欄なら変更しません）
-                </p>
-              )}
-            </div>
-          )
-        })}
+        {currentDefinition?.configFields
+          .filter((field) => (
+            currentDefinition.channelType !== 'chatwork'
+            || !CHATWORK_CATEGORY_ROOM_FIELD_KEYS.has(field.key)
+          ))
+          .map((field) => {
+            const id = `staff-notification-config-${field.key}`
+            const existingSecret = field.inputType === 'secret'
+              && Boolean(currentEditing?.config[field.key])
+            return (
+              <div key={field.key}>
+                <label htmlFor={id} className="mb-1 block text-sm text-gray-700">
+                  {field.label}
+                </label>
+                <input
+                  id={id}
+                  type={field.inputType === 'secret' ? 'password' : 'text'}
+                  autoComplete={field.inputType === 'secret' ? 'off' : undefined}
+                  value={configValues[field.key] ?? ''}
+                  maxLength={field.maxLength}
+                  pattern={field.pattern}
+                  onChange={(event) => setConfigValues((current) => ({
+                    ...current,
+                    [field.key]: event.target.value,
+                  }))}
+                  placeholder={existingSecret
+                    ? '変更する場合だけ入力'
+                    : field.placeholder}
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                />
+                {existingSecret && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    保存済み: {currentEditing?.config[field.key]}（空欄なら変更しません）
+                  </p>
+                )}
+              </div>
+            )
+          })}
 
         {currentDefinition?.notice && (
           <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -606,30 +669,39 @@ export default function StaffNotificationSettingsPanel({
 
         <fieldset className="space-y-2">
           <legend className="text-sm font-medium text-gray-700">通知するイベント</legend>
-          <label className="flex items-center gap-2 text-sm text-gray-700">
-            <input
-              type="checkbox"
-              checked={notifyInquiry}
-              onChange={(event) => setNotifyInquiry(event.target.checked)}
-            />
-            問い合わせ受信を通知
-          </label>
-          <label className="flex items-center gap-2 text-sm text-gray-700">
-            <input
-              type="checkbox"
-              checked={notifyFormSubmission}
-              onChange={(event) => setNotifyFormSubmission(event.target.checked)}
-            />
-            フォーム申込みを通知
-          </label>
-          <label className="flex items-center gap-2 text-sm text-gray-700">
-            <input
-              type="checkbox"
-              checked={notifyAutoReply}
-              onChange={(event) => setNotifyAutoReply(event.target.checked)}
-            />
-            自動応答で処理されたものも通知する
-          </label>
+          <div className="flex flex-wrap items-start gap-3">
+            <label className="flex min-w-[220px] items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={notifyInquiry}
+                onChange={(event) => setNotifyInquiry(event.target.checked)}
+              />
+              問い合わせ受信を通知
+            </label>
+            {renderCategoryRoomInput('inquiryRoomId')}
+          </div>
+          <div className="flex flex-wrap items-start gap-3">
+            <label className="flex min-w-[220px] items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={notifyFormSubmission}
+                onChange={(event) => setNotifyFormSubmission(event.target.checked)}
+              />
+              フォーム申込みを通知
+            </label>
+            {renderCategoryRoomInput('formSubmissionRoomId')}
+          </div>
+          <div className="flex flex-wrap items-start gap-3">
+            <label className="flex min-w-[220px] items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={notifyAutoReply}
+                onChange={(event) => setNotifyAutoReply(event.target.checked)}
+              />
+              自動応答で処理されたものも通知する
+            </label>
+            {renderCategoryRoomInput('autoReplyRoomId')}
+          </div>
         </fieldset>
 
         <label className="flex items-center gap-2 text-sm text-gray-700">

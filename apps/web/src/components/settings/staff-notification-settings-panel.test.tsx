@@ -51,6 +51,37 @@ const chatworkChannel = {
   capabilities: { testSend: true, setupKind: 'none' as const },
 }
 
+const chatworkChannelWithCategoryRooms = {
+  ...chatworkChannel,
+  configFields: [
+    ...chatworkChannel.configFields,
+    {
+      key: 'inquiryRoomId',
+      label: '問い合わせ用ルームID（任意）',
+      inputType: 'text' as const,
+      required: false,
+      maxLength: 20,
+      pattern: '^\\d+$',
+    },
+    {
+      key: 'formSubmissionRoomId',
+      label: 'フォーム用ルームID（任意）',
+      inputType: 'text' as const,
+      required: false,
+      maxLength: 20,
+      pattern: '^\\d+$',
+    },
+    {
+      key: 'autoReplyRoomId',
+      label: '自動応答用ルームID（任意）',
+      inputType: 'text' as const,
+      required: false,
+      maxLength: 20,
+      pattern: '^\\d+$',
+    },
+  ],
+}
+
 const lineChannel = {
   channelType: 'line',
   label: 'LINE',
@@ -73,6 +104,16 @@ const chatworkDestination = {
   },
   unsupported: false,
   setupState: null,
+}
+
+const chatworkDestinationWithCategoryRooms = {
+  ...chatworkDestination,
+  config: {
+    ...chatworkDestination.config,
+    inquiryRoomId: '111111',
+    formSubmissionRoomId: '222222',
+    autoReplyRoomId: '333333',
+  },
 }
 
 const lineDestination = {
@@ -180,6 +221,74 @@ describe('StaffNotificationSettingsPanel', () => {
     expect((screen.getByLabelText(
       '自動応答で処理されたものも通知する',
     ) as HTMLInputElement).checked).toBe(true)
+  })
+
+  test('Chatworkの各チェック行でカテゴリ別ルームIDを入力し、保存後の再取得値を編集できる', async () => {
+    mocks.listChannels.mockResolvedValue([
+      chatworkChannelWithCategoryRooms,
+      lineChannel,
+    ])
+    mocks.list
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([chatworkDestinationWithCategoryRooms])
+
+    render(<StaffNotificationSettingsPanel accountId="account-1" />)
+    await screen.findByTestId('staff-notification-empty')
+
+    const inquiryCheckbox = screen.getByLabelText('問い合わせ受信を通知')
+    const inquiryRoom = screen.getByLabelText(
+      '問い合わせ用ルームID（任意）',
+    ) as HTMLInputElement
+    const formRoom = screen.getByLabelText(
+      'フォーム用ルームID（任意）',
+    ) as HTMLInputElement
+    const autoReplyRoom = screen.getByLabelText(
+      '自動応答用ルームID（任意）',
+    ) as HTMLInputElement
+    expect(inquiryCheckbox.parentElement?.parentElement?.contains(inquiryRoom)).toBe(true)
+    expect(inquiryRoom.inputMode).toBe('numeric')
+
+    change('通知先名', '受付チーム')
+    change('Chatwork ルームID', '999999')
+    change('Chatwork APIトークン', 'TOKEN_INPUT_ONLY')
+    change('問い合わせ用ルームID（任意）', '12A34')
+    expect(screen.getByText('ルームIDは半角数字のみで入力してください。')).toBeTruthy()
+    expect((screen.getByRole('button', { name: '通知先を追加' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+
+    change('問い合わせ用ルームID（任意）', '111111')
+    change('フォーム用ルームID（任意）', '222222')
+    change('自動応答用ルームID（任意）', '333333')
+    fireEvent.click(screen.getByRole('button', { name: '通知先を追加' }))
+
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith({
+      lineAccountId: 'account-1',
+      label: '受付チーム',
+      channelType: 'chatwork',
+      notifyInquiry: true,
+      notifyFormSubmission: true,
+      notifyAutoReply: false,
+      enabled: true,
+      config: {
+        roomId: '999999',
+        apiToken: 'TOKEN_INPUT_ONLY',
+        inquiryRoomId: '111111',
+        formSubmissionRoomId: '222222',
+        autoReplyRoomId: '333333',
+      },
+    }))
+    await waitFor(() => expect(mocks.list).toHaveBeenCalledTimes(2))
+
+    fireEvent.click(await screen.findByRole('button', { name: '受付チームを編集' }))
+    expect((screen.getByLabelText(
+      '問い合わせ用ルームID（任意）',
+    ) as HTMLInputElement).value).toBe('111111')
+    expect((screen.getByLabelText(
+      'フォーム用ルームID（任意）',
+    ) as HTMLInputElement).value).toBe('222222')
+    expect((screen.getByLabelText(
+      '自動応答用ルームID（任意）',
+    ) as HTMLInputElement).value).toBe('333333')
   })
 
   test('編集で自動応答通知をOFFに戻し、空tokenを維持してGET再取得値を表示する', async () => {
