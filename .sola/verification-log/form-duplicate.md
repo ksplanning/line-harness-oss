@@ -16,10 +16,19 @@ case-scope-echo: caseId=form-duplicate target_paths=["/root/.openclaw/line-harne
 - hidden-build GREEN — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate.test.ts src/services/formaloo-sync-preserve.test.ts` → 2 files / 13 tests passed；完成まで hidden、最後に可視化する経路を検証 (exit 0)
 - web race RED — `pnpm --filter web test -- src/app/forms-advanced/forms-advanced-duplicate.test.tsx` → folder/account 切替競合と再取得失敗の 3 tests failed / 4 passed (exit 1)
 - web race GREEN — `pnpm --filter web test -- src/app/forms-advanced/forms-advanced-duplicate.test.tsx` → 1 file / 7 tests passed (exit 0)
+- choice hydration RED — `pnpm --filter worker test -- src/services/formaloo-sync.test.ts` → 新規 choice slug の取得・同名選択肢 fail-close 未実装により 3 tests failed / 25 passed (exit 1)
+- choice hydration GREEN — `pnpm --filter worker test -- src/services/formaloo-sync.test.ts` → 1 file / 28 tests passed (exit 0)
+- duplicate logic fidelity RED — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate.test.ts src/services/formaloo-sync-preserve.test.ts` → 再複製 raw template・legacy field 参照の新 slug 変換未実装により 3 tests failed / 12 passed (exit 1)
+- duplicate logic fidelity GREEN — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate.test.ts src/services/formaloo-sync-preserve.test.ts` → 2 files / 15 tests passed (exit 0)
+- first-sync seed RED — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate-first-sync.test.ts` → 複製元の未操作設定を初回 remote form へ seed できず 1 test failed / 1 passed (exit 1)
+- first-sync seed GREEN — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate-first-sync.test.ts` → 1 file / 2 tests passed (exit 0)
+- retry-marker regression RED — `pnpm --filter worker test` → 通常フォームの再保存と既存 reapply を初回同期扱いする回帰により 2 files failed / 305 passed、2 tests failed / 3835 passed (exit 1)
+- retry-marker GREEN — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate-first-sync.test.ts src/routes/forms-advanced.test.ts src/routes/internal-forms-admin.test.ts` → 3 files / 174 tests passed；初回同期だけを durable marker で識別し既存経路を維持 (exit 0)
+- integrated duplicate GREEN — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate.test.ts src/routes/forms-advanced.duplicate-first-sync.test.ts src/services/formaloo-sync.test.ts src/services/formaloo-sync-preserve.test.ts` → 4 files / 49 tests passed (exit 0)
 
 ## done_conditions
 
-- D-1: PASS — `pnpm --filter worker test -- src/services/formaloo-sync-preserve.test.ts src/routes/forms-advanced.duplicate.test.ts` → 2 files / 13 tests passed；定義一致、下書き・未公開・回答0件・連携なし、元フォーム完全不変、choice/matrix/provider identity 除去、複合 logic の新 slug 解決、cleanup 失敗を含む部分フォーム不可視化を検証 (exit 0)
-- D-2: PASS — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate.test.ts` → 1 file / 7 tests passed；複製→account・folder 別一覧→詳細の往復、タイトル「〜 のコピー」、同一項目/分岐、A/B分離と cross-account 404 を検証 (exit 0)
+- D-1: PASS — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate.test.ts src/routes/forms-advanced.duplicate-first-sync.test.ts src/services/formaloo-sync.test.ts src/services/formaloo-sync-preserve.test.ts` → 4 files / 49 tests passed；定義一致、下書き・未公開・回答0件・連携なし、元フォーム完全不変、choice/matrix/provider identity 除去、複合 logic の新 slug 解決、cleanup 失敗時の不可視化、初回同期の重複作成防止を検証 (exit 0)
+- D-2: PASS — `pnpm --filter worker test -- src/routes/forms-advanced.duplicate.test.ts` → 1 file / 8 tests passed；複製→account・folder 別一覧→詳細の往復、タイトル「〜 のコピー」、同一項目/分岐、A/B分離と cross-account 404 を検証 (exit 0)
 - D-3: PASS — `pnpm --filter web test -- src/app/forms-advanced/forms-advanced-duplicate.test.tsx src/lib/formaloo-advanced-api.scope.test.ts` → 2 files / 23 tests passed；API呼出、成功時の現在 folder 一覧反映、失敗時日本語エラー、A→B→A・folder 切替 race、再取得失敗時の既存一覧維持を検証 (exit 0)
-- D-4: PASS — `pnpm --filter worker test` / `pnpm --filter web test` / `pnpm --filter @line-crm/db test` / `pnpm -r --if-present typecheck` / `pnpm --filter web exec tsc -p tsconfig.json --noEmit` → worker 306 files・3827 tests、web 248 files・1873 tests、db 115 files・713 tests、workspace typecheck と web tsc が全て green (exit 0)
+- D-4: PASS — `pnpm --filter worker test` / `pnpm --filter web test` / `pnpm --filter @line-crm/db test` / `pnpm -r --if-present typecheck` / `pnpm --filter web exec tsc -p tsconfig.json --noEmit` → worker 307 files・3837 tests、web 248 files・1873 tests、db 115 files・713 tests、workspace 11 projects typecheck と web tsc が全て green (exit 0)
