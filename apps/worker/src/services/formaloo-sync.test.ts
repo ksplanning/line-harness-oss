@@ -47,15 +47,47 @@ const logic: HarnessLogicRule[] = [
 
 describe('pushDefinitionToFormaloo — 新規 form', () => {
   test('form 作成 → field を mapped payload で push → logic を slug ベースで push', async () => {
+    const twoRulesForOneChoiceField: HarnessLogicRule[] = [
+      ...logic,
+      {
+        id: 'r2',
+        sourceFieldId: 'h2',
+        operator: 'not_equals',
+        value: '女',
+        action: 'hide',
+        targetFieldId: 'h1',
+      },
+    ];
     const { client, calls } = mockClient({
       post: [
         () => ({ ok: true, status: 201, data: { data: { form: { slug: 'FORMSLUG', full_form_address: 'https://demo-forms.formaloo.me/f/FORMSLUG' } } } }),
         () => ({ ok: true, status: 201, data: { data: { field: { slug: 'FS1' } } } }),
         () => ({ ok: true, status: 201, data: { data: { field: { slug: 'FS2' } } } }),
       ],
+      request: [
+        () => ({
+          ok: true,
+          status: 200,
+          data: {
+            data: {
+              field: {
+                choice_items: [
+                  { title: '男', slug: 'MALE_NEW' },
+                  { title: '女', slug: 'FEMALE_NEW' },
+                ],
+              },
+            },
+          },
+        }),
+      ],
       put: [() => ({ ok: true, status: 200, data: {} })],
     });
-    const r = await pushDefinitionToFormaloo(client, { formalooSlug: null, title: 'テスト', fields, logic });
+    const r = await pushDefinitionToFormaloo(client, {
+      formalooSlug: null,
+      title: 'テスト',
+      fields,
+      logic: twoRulesForOneChoiceField,
+    });
     expect(r.ok).toBe(true);
     expect(r.formalooSlug).toBe('FORMSLUG');
     expect(r.fieldSlugs).toEqual({ h1: 'FS1', h2: 'FS2' });
@@ -75,7 +107,10 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
     expect((calls[2].body as Record<string, unknown>).choices).toBeUndefined();
     // form-route-branching T-C1: 編集 logic は R0 bare-array を PATCH で送る (旧 PUT {logic:{rules}} は本番 500)。
     expect(calls.some((c) => c.method === 'PUT' && c.path === '/v3.0/forms/FORMSLUG/')).toBe(false);
+    const choiceGets = calls.filter((c) => c.method === 'GET' && c.path === '/v3.0/fields/FS2/');
+    expect(choiceGets).toHaveLength(1);
     const patchCall = calls.find((c) => c.method === 'PATCH' && c.path === '/v3.0/forms/FORMSLUG/')!;
+    expect(calls.indexOf(choiceGets[0]!)).toBeLessThan(calls.indexOf(patchCall));
     const arr = (patchCall.body as { logic: unknown[] }).logic;
     // R0 item: source(FS2) identifier / actions.args identifier=target(FS1) / when.args value=source(FS2)
     expect(arr).toEqual([
@@ -85,12 +120,99 @@ describe('pushDefinitionToFormaloo — 新規 form', () => {
           {
             action: 'show',
             args: [{ type: 'field', identifier: 'FS1' }],
-            // h2 は choice だが新規 form で choiceItems 無 (case-b) → constant 近似
-            when: { operation: 'is', args: [{ type: 'field', value: 'FS2' }, { type: 'constant', value: '男' }] },
+            // h2 は新規 field なので、作成後 GET で採番済み choice slug を解決して hosted 発火形にする。
+            when: { operation: 'is', args: [{ type: 'field', value: 'FS2' }, { type: 'choice', value: 'MALE_NEW' }] },
+          },
+          {
+            action: 'hide',
+            args: [{ type: 'field', identifier: 'FS1' }],
+            when: { operation: 'is_not', args: [{ type: 'field', value: 'FS2' }, { type: 'choice', value: 'FEMALE_NEW' }] },
           },
         ],
       },
     ]);
+  });
+
+  test('choice slug の GET 後も canonical rule の title が見つからなければ logic を送らず fail-closed', async () => {
+    const { client, calls } = mockClient({
+      post: [
+        () => ({ ok: true, status: 201, data: { data: { form: { slug: 'FORM_MISSING', full_form_address: 'https://example.test/f/FORM_MISSING' } } } }),
+        () => ({ ok: true, status: 201, data: { data: { field: { slug: 'TARGET_NEW' } } } }),
+        () => ({ ok: true, status: 201, data: { data: { field: { slug: 'CHOICE_NEW' } } } }),
+      ],
+      request: [
+        () => ({
+          ok: true,
+          status: 200,
+          data: {
+            data: {
+              field: {
+                choice_items: [{ title: '女', slug: 'FEMALE_NEW' }],
+              },
+            },
+          },
+        }),
+      ],
+    });
+
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: null,
+      title: '複製フォーム',
+      fields,
+      logic,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('logic choice unresolved: h2/男');
+    expect(calls.filter(
+      (call) => call.method === 'GET' && call.path === '/v3.0/fields/CHOICE_NEW/',
+    )).toHaveLength(1);
+    expect(calls.some(
+      (call) => call.method === 'PATCH' && call.path === '/v3.0/forms/FORM_MISSING/',
+    )).toBe(false);
+  });
+
+  test('provider が同じ choice title に複数 slug を返したら曖昧な logic を送らず fail-closed', async () => {
+    const { client, calls } = mockClient({
+      post: [
+        () => ({ ok: true, status: 201, data: { data: { form: { slug: 'FORM_DUPLICATE', full_form_address: 'https://example.test/f/FORM_DUPLICATE' } } } }),
+        () => ({ ok: true, status: 201, data: { data: { field: { slug: 'TARGET_NEW' } } } }),
+        () => ({ ok: true, status: 201, data: { data: { field: { slug: 'CHOICE_NEW' } } } }),
+      ],
+      request: [
+        () => ({
+          ok: true,
+          status: 200,
+          data: {
+            data: {
+              field: {
+                choice_items: [
+                  { title: '男', slug: 'MALE_NEW_1' },
+                  { title: '男', slug: 'MALE_NEW_2' },
+                  { title: '女', slug: 'FEMALE_NEW' },
+                ],
+              },
+            },
+          },
+        }),
+      ],
+    });
+
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: null,
+      title: '複製フォーム',
+      fields,
+      logic,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('logic choice title duplicate: h2/男');
+    expect(calls.filter(
+      (call) => call.method === 'GET' && call.path === '/v3.0/fields/CHOICE_NEW/',
+    )).toHaveLength(1);
+    expect(calls.some(
+      (call) => call.method === 'PATCH' && call.path === '/v3.0/forms/FORM_DUPLICATE/',
+    )).toBe(false);
   });
 
   test('⑤(a): create 応答に full_form_address 欠落 → GET /v3.0/forms/{slug}/ を 1 回叩いて正本を取込む', async () => {
@@ -206,6 +328,26 @@ describe('pushDefinitionToFormaloo — fail-soft (N-6)', () => {
     expect(r.formalooSlug).toBe('S');
     expect(r.error).toContain('field push failed');
   });
+  test('後続 field の作成失敗でも先に作成済みの field slug を返して再試行の重複を防ぐ', async () => {
+    const { client } = mockClient({
+      post: [
+        () => ({ ok: true, status: 201, data: { data: { form: { slug: 'S' } } } }),
+        () => ({ ok: true, status: 201, data: { data: { field: { slug: 'FIRST_FIELD' } } } }),
+        () => ({ ok: false, status: 400, error: 'second field failed' }),
+      ],
+    });
+
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: null,
+      title: 't',
+      fields,
+      logic: [],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.formalooSlug).toBe('S');
+    expect(result.fieldSlugs).toEqual({ h1: 'FIRST_FIELD' });
+  });
   test('既存 form + 未知 field は form 作成をスキップし probe(404)→POST で作成 (top-level endpoint / body で form 紐づけ)', async () => {
     // 冪等化後: formalooSlug 既存 (formPreExisted) かつ existingFieldSlugs 未渡し → 各 field を probe。
     // probe 404 (真の新規) → POST /v3.0/fields/ で作成 (form 作成は skip)。旧「常に POST」の spirit を継承しつつ probe 経路化。
@@ -215,7 +357,7 @@ describe('pushDefinitionToFormaloo — fail-soft (N-6)', () => {
       if (method === 'PUT') return { ok: true, status: 200, data: {} };
       return { ok: true, status: 200, data: {} };
     });
-    const r = await pushDefinitionToFormaloo(client, { formalooSlug: 'EXISTING', title: 't', fields, logic });
+    const r = await pushDefinitionToFormaloo(client, { formalooSlug: 'EXISTING', title: 't', fields, logic: [] });
     expect(r.ok).toBe(true);
     expect(r.formalooSlug).toBe('EXISTING');
     // form 作成 (POST /v3.0/forms/) は叩かない
@@ -363,6 +505,84 @@ describe('pushDefinitionToFormaloo — upsert 冪等化 (T-A1)', () => {
     const post = calls.find((c) => c.method === 'POST' && c.path === '/v3.0/fields/')!;
     expect((post.body as Record<string, unknown>).form).toBe('FSLUG'); // self-heal は full payload (choices 込み)
     expect(r.fieldSlugs).toEqual({ h1: 'REBORN' }); // 新 slug へ置換
+  });
+
+  test('(c2) choice field self-heal 後は旧 choiceItems を使わず新 field の choice slug を取得する', async () => {
+    const staleChoiceField: HarnessField = {
+      ...choiceField,
+      config: {
+        choices: ['男', '女'],
+        choiceItems: [
+          { title: '男', slug: 'OLD_MALE' },
+          { title: '女', slug: 'OLD_FEMALE' },
+        ],
+      },
+    };
+    const selfRule: HarnessLogicRule = {
+      id: 'self-rule',
+      sourceFieldId: 'h2',
+      operator: 'equals',
+      value: '男',
+      action: 'show',
+      targetFieldId: 'h2',
+    };
+    const { client, calls } = upsertMock(({ method, path }) => {
+      if (method === 'PATCH' && path === '/v3.0/fields/OLD_CHOICE/') {
+        return { ok: false, status: 404, error: 'gone' };
+      }
+      if (method === 'POST' && path === '/v3.0/fields/') {
+        return { ok: true, status: 201, data: { data: { field: { slug: 'NEW_CHOICE' } } } };
+      }
+      if (method === 'GET' && path === '/v3.0/fields/NEW_CHOICE/') {
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            data: {
+              field: {
+                choice_items: [
+                  { title: '男', slug: 'NEW_MALE' },
+                  { title: '女', slug: 'NEW_FEMALE' },
+                ],
+              },
+            },
+          },
+        };
+      }
+      return { ok: true, status: 200, data: {} };
+    });
+
+    const result = await pushDefinitionToFormaloo(client, {
+      formalooSlug: 'FSLUG',
+      title: 't',
+      fields: [staleChoiceField],
+      logic: [selfRule],
+      existingFieldSlugs: { h2: 'OLD_CHOICE' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.fieldSlugs).toEqual({ h2: 'NEW_CHOICE' });
+    expect(calls.filter(
+      (call) => call.method === 'GET' && call.path === '/v3.0/fields/NEW_CHOICE/',
+    )).toHaveLength(1);
+    const logicPatch = calls.find(
+      (call) => call.method === 'PATCH' && call.path === '/v3.0/forms/FSLUG/',
+    );
+    expect((logicPatch?.body as { logic: unknown[] }).logic).toEqual([{
+      type: 'field',
+      identifier: 'NEW_CHOICE',
+      actions: [{
+        action: 'show',
+        args: [{ type: 'field', identifier: 'NEW_CHOICE' }],
+        when: {
+          operation: 'is',
+          args: [
+            { type: 'field', value: 'NEW_CHOICE' },
+            { type: 'choice', value: 'NEW_MALE' },
+          ],
+        },
+      }],
+    }]);
   });
 
   test('(d) formalooSlug=null (初回・form 新規作成) は probe 0 回で全 field POST (従来挙動同値)', async () => {

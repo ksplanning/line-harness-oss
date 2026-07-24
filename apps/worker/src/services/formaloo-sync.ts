@@ -261,9 +261,25 @@ export async function pushDefinitionToFormaloo(
     // type-specific endpoint は path 自体が type discriminator。OpenAPI Request schema に readOnly type は無いため送らない。
     if (field.type === 'matrix' || field.type === 'repeating_section') delete payload.type;
     const res = await client.post<FieldCreateResp>(createPath, payload);
-    if (!res.ok) return { ok: false, formalooSlug: slug, error: `field push failed (${field.id}): HTTP ${res.status}` };
+    if (!res.ok) {
+      return {
+        ok: false,
+        formalooSlug: slug,
+        fieldSlugs: { ...fieldSlugs },
+        publicAddress,
+        error: `field push failed (${field.id}): HTTP ${res.status}`,
+      };
+    }
     const fslug = res.data?.data?.field?.slug ?? res.data?.data?.slug ?? res.data?.slug;
-    if (!fslug) return { ok: false, formalooSlug: slug, error: `field push: slug missing (${field.id})` };
+    if (!fslug) {
+      return {
+        ok: false,
+        formalooSlug: slug,
+        fieldSlugs: { ...fieldSlugs },
+        publicAddress,
+        error: `field push: slug missing (${field.id})`,
+      };
+    }
     // fr-id-hardening-round2 (③ alias=slug 標準付与): Formaloo hosted の URL prefill は field の alias 一致でのみ発火し、
     //   /fo は本人再入場の回答 prefill を field slug をキーに組む (?<slug>=<value>)。既定 field は alias=null ゆえ prefill が
     //   全滅する (owner 実機の「真っ白」真因)。slug は POST 応答で判明ゆえ **POST 後に PATCH {alias:slug}** で標準付与する
@@ -296,7 +312,13 @@ export async function pushDefinitionToFormaloo(
       } else if (probe.status === 404) {
         fieldSlug = undefined;
       } else {
-        return { ok: false, formalooSlug: slug, error: `field probe failed (${field.id}): HTTP ${probe.status}` };
+        return {
+          ok: false,
+          formalooSlug: slug,
+          fieldSlugs: { ...fieldSlugs },
+          publicAddress,
+          error: `field probe failed (${field.id}): HTTP ${probe.status}`,
+        };
       }
     }
 
@@ -311,7 +333,13 @@ export async function pushDefinitionToFormaloo(
         if ('ok' in created) return created;
         fieldSlugs[field.id] = created.fslug;
       } else if (!r.ok) {
-        return { ok: false, formalooSlug: slug, error: `field update failed (${field.id}): HTTP ${r.status}` };
+        return {
+          ok: false,
+          formalooSlug: slug,
+          fieldSlugs: { ...fieldSlugs },
+          publicAddress,
+          error: `field update failed (${field.id}): HTTP ${r.status}`,
+        };
       } else {
         fieldSlugs[field.id] = fieldSlug; // PATCH は slug 既知 = 応答 parse 不要
       }
@@ -351,8 +379,17 @@ export async function pushDefinitionToFormaloo(
     const spRes = await pushSuccessPages(client, slug, params.successPages, params.prevSuccessPages ?? []);
     reconciledSuccessPages = spRes.successPages;
     Object.assign(spSlugById, spRes.slugById); // reconcile 後の slug が prev を上書き
-    if (!spRes.ok) return { ok: false, formalooSlug: slug, fieldSlugs, successPages: reconciledSuccessPages, successPageSlugs: spSlugById, error: spRes.error };
+    if (!spRes.ok) return { ok: false, formalooSlug: slug, fieldSlugs, publicAddress, successPages: reconciledSuccessPages, successPageSlugs: spSlugById, error: spRes.error };
   }
+  const failAfterSuccessPageReconcile = (error: string): PushResult => ({
+    ok: false,
+    formalooSlug: slug,
+    fieldSlugs,
+    publicAddress,
+    ...(reconciledSuccessPages !== undefined ? { successPages: reconciledSuccessPages } : {}),
+    successPageSlugs: spSlugById,
+    error,
+  });
 
   // 複製された raw template は、field upsert で採番された新 slug と、新 choice slug を使って
   // 初回 push の直前に rehydrate する。解決不能なら元 provider slug を送らず fail-safe で止める。
@@ -365,23 +402,24 @@ export async function pushDefinitionToFormaloo(
     for (const fieldId of choiceFieldIds) {
       const fieldSlug = resolveFieldSlug(fieldId);
       if (!fieldSlug) {
-        return {
-          ok: false,
-          formalooSlug: slug,
-          fieldSlugs,
-          error: `raw logic choice field unresolved: ${fieldId}`,
-        };
+        return failAfterSuccessPageReconcile(`raw logic choice field unresolved: ${fieldId}`);
       }
       const fetched = await client.request('GET', `/v3.0/fields/${fieldSlug}/`);
       if (!fetched.ok) {
-        return {
-          ok: false,
-          formalooSlug: slug,
-          fieldSlugs,
-          error: `raw logic choice fetch failed (${fieldId}): HTTP ${fetched.status}`,
-        };
+        return failAfterSuccessPageReconcile(
+          `raw logic choice fetch failed (${fieldId}): HTTP ${fetched.status}`,
+        );
       }
       const choices = extractChoiceItems(fetched.data);
+      const seenChoiceTitles = new Set<string>();
+      for (const choice of choices) {
+        if (seenChoiceTitles.has(choice.title)) {
+          return failAfterSuccessPageReconcile(
+            `raw logic choice title duplicate: ${fieldId}/${choice.title}`,
+          );
+        }
+        seenChoiceTitles.add(choice.title);
+      }
       choiceSlugsByFieldId.set(
         fieldId,
         new Map(choices.map((choice) => [choice.title, choice.slug])),
@@ -395,9 +433,14 @@ export async function pushDefinitionToFormaloo(
       if (!value || typeof value !== 'object') return value;
       const source = value as JsonObject;
       const result: JsonObject = {};
+      const hasRuleIdentity = source.type !== 'field' && Array.isArray(source.actions);
       for (const [key, child] of Object.entries(source)) {
         if (key === '__harnessChoiceFieldId') continue;
-        if (key === 'identifier' && typeof child === 'string') {
+        if ((key === 'identifier' || key === 'field') && typeof child === 'string') {
+          if (key === 'identifier' && hasRuleIdentity) {
+            result[key] = child;
+            continue;
+          }
           const resolved = resolveReference(child);
           if (!resolved) {
             throw new Error(`raw logic field reference unresolved: ${child}`);
@@ -444,12 +487,9 @@ export async function pushDefinitionToFormaloo(
     try {
       resolvedRawLogic = resolveNode(templateArray) as unknown[];
     } catch (error) {
-      return {
-        ok: false,
-        formalooSlug: slug,
-        fieldSlugs,
-        error: error instanceof Error ? error.message : 'raw logic template resolve failed',
-      };
+      return failAfterSuccessPageReconcile(
+        error instanceof Error ? error.message : 'raw logic template resolve failed',
+      );
     }
   }
 
@@ -461,19 +501,101 @@ export async function pushDefinitionToFormaloo(
   const preserveArray = resolvedRawLogic ?? serializeRawLogicForPush(params.preserveRawLogic);
   if (preserveArray) {
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: preserveArray });
-    if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic push failed: HTTP ${res.status}` };
+    if (!res.ok) return failAfterSuccessPageReconcile(`logic push failed: HTTP ${res.status}`);
   } else if (params.logic.length > 0) {
+    // 新規/複製 choice field は provider が choice slug を POST 後に採番するため、definition 側の
+    // config.choices(title) だけでは hosted 発火形を作れない。比較 rule が参照する field だけを
+    // 1 field 1 GET で read-back し、一時的な choiceItems を変換器へ渡す。解決不能・title 重複時に
+    // constant へ弱化すると保存成功に見えて分岐が発火しないため、logic PATCH 前に fail-closed にする。
+    const fieldsById = new Map(params.fields.map((field) => [field.id, field]));
+    const choiceValuesByFieldId = new Map<string, Set<string>>();
+    for (const rule of params.logic) {
+      if (rule.action === 'submit') continue;
+      const field = fieldsById.get(rule.sourceFieldId);
+      if (
+        !field
+        || (
+          field.type !== 'choice'
+          && field.type !== 'dropdown'
+          && field.type !== 'multiple_select'
+        )
+      ) {
+        continue;
+      }
+      const existingItems = field.config.choiceItems ?? [];
+      const currentFieldSlug = fieldSlugs[field.id];
+      const fieldIdentityChanged = currentFieldSlug !== undefined
+        && currentFieldSlug !== existingFieldSlugs[field.id];
+      if (
+        !fieldIdentityChanged
+        && existingItems.some((item) => item.slug === rule.value || item.title === rule.value)
+      ) {
+        continue;
+      }
+      const values = choiceValuesByFieldId.get(field.id) ?? new Set<string>();
+      values.add(rule.value);
+      choiceValuesByFieldId.set(field.id, values);
+    }
+
+    const hydratedChoiceItems = new Map<string, Array<{ title: string; slug: string }>>();
+    for (const [fieldId, values] of choiceValuesByFieldId) {
+      const field = fieldsById.get(fieldId)!;
+      const configuredTitles = field.config.choices ?? [];
+      const configuredSeen = new Set<string>();
+      for (const title of configuredTitles) {
+        if (configuredSeen.has(title)) {
+          return failAfterSuccessPageReconcile(
+            `logic choice title duplicate: ${fieldId}/${title}`,
+          );
+        }
+        configuredSeen.add(title);
+      }
+
+      const fieldSlug = resolveFieldSlug(fieldId);
+      if (!fieldSlug) {
+        return failAfterSuccessPageReconcile(`logic choice field unresolved: ${fieldId}`);
+      }
+      const fetched = await client.request('GET', `/v3.0/fields/${fieldSlug}/`);
+      if (!fetched.ok) {
+        return failAfterSuccessPageReconcile(
+          `logic choice fetch failed (${fieldId}): HTTP ${fetched.status}`,
+        );
+      }
+      const items = extractChoiceItems(fetched.data);
+      const seenTitles = new Set<string>();
+      for (const item of items) {
+        if (seenTitles.has(item.title)) {
+          return failAfterSuccessPageReconcile(
+            `logic choice title duplicate: ${fieldId}/${item.title}`,
+          );
+        }
+        seenTitles.add(item.title);
+      }
+      for (const value of values) {
+        if (!items.some((item) => item.slug === value || item.title === value)) {
+          return failAfterSuccessPageReconcile(`logic choice unresolved: ${fieldId}/${value}`);
+        }
+      }
+      hydratedChoiceItems.set(fieldId, items);
+    }
+
     // choice source の choice_slug 解決のため fieldById (params.fields) を渡す。src/tgt slug は fieldSlugs で解決。
     //   route-terminal-phase2 (Track 2): submit rule の target が SP を指す時は spSlugById で slug を解決する
     //   (jump_to_success_page.args.identifier に載る = ルート別完了ページへの着地)。
-    const fieldById = (hid: string): HarnessField | undefined => params.fields.find((f) => f.id === hid);
+    const fieldById = (hid: string): HarnessField | undefined => {
+      const field = fieldsById.get(hid);
+      const choiceItems = hydratedChoiceItems.get(hid);
+      return field && choiceItems
+        ? { ...field, config: { ...field.config, choiceItems } }
+        : field;
+    };
     const logicArray = toFormalooRawLogic(params.logic, (hid) => fieldSlugs[hid] ?? spSlugById[hid], fieldById);
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: logicArray });
-    if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic push failed: HTTP ${res.status}` };
+    if (!res.ok) return failAfterSuccessPageReconcile(`logic push failed: HTTP ${res.status}`);
   } else if (params.clearLogicIfEmpty) {
     // route-terminal-submit (T-C5): 編集で logic 空 → 明示クリア (最後の submit 削除で remote 早期送信を消す)。
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { logic: [] });
-    if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `logic clear failed: HTTP ${res.status}` };
+    if (!res.ok) return failAfterSuccessPageReconcile(`logic clear failed: HTTP ${res.status}`);
   }
 
   // 3.5) route-terminal-phase2 (Track 2 / CI-2): desired から外れた SP を明示 DELETE (logic push **後** =
@@ -486,7 +608,7 @@ export async function pushDefinitionToFormaloo(
       .map((sp) => sp.slug!);
     if (removedSlugs.length) {
       const del = await deleteSuccessPages(client, removedSlugs);
-      if (!del.ok) return { ok: false, formalooSlug: slug, fieldSlugs, successPages: reconciledSuccessPages, successPageSlugs: spSlugById, error: del.error };
+      if (!del.ok) return { ok: false, formalooSlug: slug, fieldSlugs, publicAddress, successPages: reconciledSuccessPages, successPageSlugs: spSlugById, error: del.error };
     }
   }
 
@@ -494,7 +616,7 @@ export async function pushDefinitionToFormaloo(
   //    未渡し (design 側だけの save 等) や未変化フォームは byte 不変 = 後方互換 (failure_observable 防御)。
   if (params.formType !== undefined && params.formType !== params.prevFormType) {
     const res = await client.request('PATCH', `/v3.0/forms/${slug}/`, { form_type: params.formType });
-    if (!res.ok) return { ok: false, formalooSlug: slug, fieldSlugs, error: `form_type push failed: HTTP ${res.status}` };
+    if (!res.ok) return failAfterSuccessPageReconcile(`form_type push failed: HTTP ${res.status}`);
   }
 
   return {

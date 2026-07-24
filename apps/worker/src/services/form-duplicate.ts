@@ -120,6 +120,10 @@ function buildRawLogicTemplate(
   const source = value as JsonObject;
   const result: JsonObject = {};
   let mappedCount = 0;
+  // Legacy/bare-array logic may use identifier as the rule's own provider
+  // identity, while nested identifier values point at fields. Give copied
+  // rules a fresh identity and let the resolver preserve it verbatim.
+  const hasRuleIdentity = source.type !== 'field' && Array.isArray(source.actions);
 
   let choiceFieldRef: string | null = null;
   if (Array.isArray(source.args)) {
@@ -134,6 +138,20 @@ function buildRawLogicTemplate(
   }
 
   for (const [key, child] of Object.entries(source)) {
+    if (key === 'identifier' && typeof child === 'string' && hasRuleIdentity) {
+      result[key] = newInternalId('raw_logic');
+      mappedCount++;
+      continue;
+    }
+    if (
+      (key === 'field' || key === '__harnessChoiceFieldId')
+      && typeof child === 'string'
+      && referenceIds.has(child)
+    ) {
+      result[key] = referenceIds.get(child);
+      mappedCount++;
+      continue;
+    }
     if (key === 'identifier' && typeof child === 'string' && referenceIds.has(child)) {
       result[key] = referenceIds.get(child);
       mappedCount++;
@@ -333,7 +351,10 @@ export function duplicateFormDefinition(
       referenceIds.set(sourcePage.slug, ids.get(sourcePage.id)!);
     }
   }
-  const rawTemplate = buildRawLogicTemplate(source.rawLogic, referenceIds, choiceTitlesByFieldRef);
+  const rawTemplateSource = Array.isArray(source.rawLogic)
+    ? source.rawLogic
+    : source.rawLogicTemplate;
+  const rawTemplate = buildRawLogicTemplate(rawTemplateSource, referenceIds, choiceTitlesByFieldRef);
 
   // These values bind the cache to the source provider form.
   delete definition.formalooAddress;

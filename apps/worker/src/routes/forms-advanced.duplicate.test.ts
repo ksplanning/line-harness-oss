@@ -617,6 +617,103 @@ describe('POST /api/forms-advanced/:id/duplicate', () => {
     );
     expect(matrix?.config.matrixChoiceGroups).toEqual([{ title: '接客' }]);
     expect(matrix?.config.matrixChoiceItems).toEqual({ column_1: { title: '良い' } });
+
+    const secondResponse = await call(
+      'POST',
+      `/api/forms-advanced/${created.id}/duplicate`,
+      { lineAccountId: 'account-a' },
+    );
+    expect(secondResponse.status).toBe(201);
+    const secondCreated = (await secondResponse.json() as { data: { id: string } }).data;
+    const secondDefinition = JSON.parse(String(readForm(secondCreated.id).definition_json)) as {
+      fields: Array<{ id: string; label: string }>;
+      rawLogicTemplate?: unknown;
+    };
+    const secondIdsByLabel = new Map(
+      secondDefinition.fields.map((field) => [field.label, field.id]),
+    );
+    const secondChoiceId = secondIdsByLabel.get('参加プラン');
+    const secondNameId = secondIdsByLabel.get('氏名');
+    expect(secondChoiceId).toBeTruthy();
+    expect(secondNameId).toBeTruthy();
+
+    const secondTemplate = secondDefinition.rawLogicTemplate as Array<{
+      identifier: string;
+      actions: Array<{
+        args: Array<{ type: string; identifier: string }>;
+        when: {
+          args: Array<{
+            args?: Array<Record<string, unknown>>;
+          }>;
+        };
+      }>;
+    }>;
+    expect(secondTemplate[0]?.identifier).toBe(secondChoiceId);
+    expect(secondTemplate[0]?.actions[0]?.args).toEqual([
+      { type: 'field', identifier: secondNameId },
+    ]);
+    expect(secondTemplate[0]?.actions[0]?.when.args[0]?.args).toEqual([
+      { type: 'field', value: secondChoiceId },
+      {
+        type: 'choice',
+        value: '夜',
+        __harnessChoiceFieldId: secondChoiceId,
+      },
+    ]);
+    const secondTemplateJson = JSON.stringify(secondDefinition.rawLogicTemplate);
+    for (const firstField of definition.fields) {
+      expect(secondTemplateJson).not.toContain(firstField.id);
+    }
+    expect(secondTemplateJson).not.toMatch(/remote-plan|remote-name|remote-night/);
+  });
+
+  test('D-1: legacy bare-array の field キー参照も複製先 internal id へ隔離する', async () => {
+    const legacyDefinition = structuredClone(SOURCE_DEFINITION) as Record<string, unknown> & {
+      fields: Array<{
+        id: string;
+        type: string;
+        label: string;
+        position: number;
+        config: Record<string, unknown>;
+      }>;
+      rawLogic: unknown[];
+    };
+    legacyDefinition.rawLogic = [{
+      identifier: 'L1',
+      conditions: [
+        { field: 'remote-name', operator: 'equals', value: '山田' },
+      ],
+      actions: [
+        { type: 'show', field: 'remote-plan' },
+      ],
+    }];
+
+    seedSource('source-legacy-raw', 'account-a', 'legacy raw', legacyDefinition);
+    seedFieldMap('source-legacy-raw', legacyDefinition);
+
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/source-legacy-raw/duplicate',
+      { lineAccountId: 'account-a' },
+    );
+
+    expect(response.status).toBe(201);
+    const created = (await response.json() as { data: { id: string } }).data;
+    const definition = JSON.parse(String(readForm(created.id).definition_json)) as {
+      fields: Array<{ id: string; label: string }>;
+      rawLogicTemplate?: unknown;
+    };
+    const idsByLabel = new Map(definition.fields.map((field) => [field.label, field.id]));
+    expect(definition.rawLogicTemplate).toEqual([{
+      identifier: expect.stringMatching(/^raw_logic_/),
+      conditions: [
+        { field: idsByLabel.get('氏名'), operator: 'equals', value: '山田' },
+      ],
+      actions: [
+        { type: 'show', field: idsByLabel.get('参加プラン') },
+      ],
+    }]);
+    expect(JSON.stringify(definition.rawLogicTemplate)).not.toMatch(/L1|remote-name|remote-plan/);
   });
 
   test('D-1: 途中失敗と子行 cleanup 失敗が重なっても部分フォームを一覧へ残さない', async () => {
