@@ -10,7 +10,7 @@ import { AutoReplyCenterEmbed } from '@/components/auto-reply-center/embed-conte
 
 type CenterView = 'settings' | 'knowledge' | 'rules' | 'drafts'
 type KnowledgeSource = 'faq' | 'documents'
-type WorkflowStep = 1 | 2 | 3 | 4 | 5
+type WorkflowStep = 1 | 2 | 3 | 4
 
 const CENTER_VIEWS: CenterView[] = ['settings', 'knowledge', 'rules', 'drafts']
 const KNOWLEDGE_SOURCES: KnowledgeSource[] = ['faq', 'documents']
@@ -22,11 +22,10 @@ const workflow: Array<{
   view: CenterView
   permission: 'faq' | 'auto_reply'
 }> = [
-  { step: 1, title: '受付をON/OFF', description: '自動応答を使うか決める', view: 'settings', permission: 'faq' },
-  { step: 2, title: '返信方法', description: 'すぐ送る／下書きにする', view: 'settings', permission: 'faq' },
-  { step: 3, title: 'ナレッジ', description: 'FAQ・資料を答えの材料にする', view: 'knowledge', permission: 'faq' },
-  { step: 4, title: '例外ルール', description: 'AIより先にキーワードで返す', view: 'rules', permission: 'auto_reply' },
-  { step: 5, title: '下書き受信箱', description: '送る前の回答案を確認する', view: 'drafts', permission: 'faq' },
+  { step: 1, title: '受付と返信方法', description: '自動応答を使うか・すぐ送るか下書きか', view: 'settings', permission: 'faq' },
+  { step: 2, title: '答えの材料（ナレッジ）', description: 'FAQ・資料を答えの材料にする', view: 'knowledge', permission: 'faq' },
+  { step: 3, title: 'AIより先に動く例外ルール', description: 'AIより先にキーワードで返す', view: 'rules', permission: 'auto_reply' },
+  { step: 4, title: '下書き受信箱', description: '送る前の回答案を確認する', view: 'drafts', permission: 'faq' },
 ]
 
 function isCenterView(value: string | null): value is CenterView {
@@ -37,11 +36,19 @@ function isKnowledgeSource(value: string | null): value is KnowledgeSource {
   return value !== null && KNOWLEDGE_SOURCES.includes(value as KnowledgeSource)
 }
 
-function stepForView(view: CenterView, requestedStep?: string | null): WorkflowStep {
-  if (view === 'settings') return requestedStep === '2' ? 2 : 1
-  if (view === 'knowledge') return 3
-  if (view === 'rules') return 4
-  return 5
+function stepForView(view: CenterView): WorkflowStep {
+  if (view === 'settings') return 1
+  if (view === 'knowledge') return 2
+  if (view === 'rules') return 3
+  return 4
+}
+
+function viewForLegacyStep(step: string | null): CenterView | null {
+  if (step === '1' || step === '2') return 'settings'
+  if (step === '3') return 'knowledge'
+  if (step === '4') return 'rules'
+  if (step === '5') return 'drafts'
+  return null
 }
 
 function replaceCenterLocation(view: CenterView, source: KnowledgeSource, step: WorkflowStep) {
@@ -49,8 +56,7 @@ function replaceCenterLocation(view: CenterView, source: KnowledgeSource, step: 
   params.set('view', view)
   if (view === 'knowledge') params.set('source', source)
   else params.delete('source')
-  if (view === 'settings' && step === 2) params.set('step', '2')
-  else params.delete('step')
+  params.set('step', String(step))
   window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`)
 }
 
@@ -76,15 +82,19 @@ export default function AutoReplyCenterPage() {
     const params = new URLSearchParams(window.location.search)
     const requestedView = params.get('view')
     const requestedSource = params.get('source')
-    if (isCenterView(requestedView)) {
-      setView(requestedView)
-      setActiveStep(stepForView(requestedView, params.get('step')))
-      setVisitedViews((current) => current.includes(requestedView) ? current : [...current, requestedView])
+    const nextView = isCenterView(requestedView) ? requestedView : viewForLegacyStep(params.get('step'))
+    const nextSource = isKnowledgeSource(requestedSource) ? requestedSource : 'faq'
+    if (nextView) {
+      const nextStep = stepForView(nextView)
+      setView(nextView)
+      setActiveStep(nextStep)
+      setVisitedViews((current) => current.includes(nextView) ? current : [...current, nextView])
+      replaceCenterLocation(nextView, nextSource, nextStep)
     }
     if (isKnowledgeSource(requestedSource)) {
       setKnowledgeSource(requestedSource)
       setVisitedKnowledgeSources((current) => current.includes(requestedSource) ? current : [...current, requestedSource])
-    } else if (requestedView === 'knowledge') {
+    } else if (nextView === 'knowledge') {
       setVisitedKnowledgeSources((current) => current.includes('faq') ? current : [...current, 'faq'])
     }
   }, [])
@@ -97,9 +107,9 @@ export default function AutoReplyCenterPage() {
       replaceCenterLocation('settings', knowledgeSource, 1)
     } else if (view !== 'rules' && !canUseFaq && canUseRules) {
       setView('rules')
-      setActiveStep(4)
+      setActiveStep(3)
       rememberView('rules')
-      replaceCenterLocation('rules', knowledgeSource, 4)
+      replaceCenterLocation('rules', knowledgeSource, 3)
     }
   }, [canUseFaq, canUseRules, knowledgeSource, view])
 
@@ -114,10 +124,10 @@ export default function AutoReplyCenterPage() {
   const openKnowledgeSource = (source: KnowledgeSource) => {
     setKnowledgeSource(source)
     setView('knowledge')
-    setActiveStep(3)
+    setActiveStep(2)
     rememberView('knowledge')
     rememberKnowledgeSource(source)
-    replaceCenterLocation('knowledge', source, 3)
+    replaceCenterLocation('knowledge', source, 2)
   }
 
   const hasPermission = (permission: 'faq' | 'auto_reply') => (
@@ -138,7 +148,7 @@ export default function AutoReplyCenterPage() {
         </p>
       </div>
 
-      <nav aria-label="自動応答の受付順" className="mb-8 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+      <nav aria-label="自動応答の受付順" className="mb-8 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {workflow.map((item) => {
           const selected = activeStep === item.step
           const allowed = hasPermission(item.permission)
@@ -176,7 +186,7 @@ export default function AutoReplyCenterPage() {
           hidden={view !== 'settings'}
         >
           <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
-            <h2 id="center-settings-heading" className="text-base font-semibold text-blue-950">1–2. 受付と返信方法</h2>
+            <h2 id="center-settings-heading" className="text-base font-semibold text-blue-950">1. 受付と返信方法</h2>
             <p className="mt-1 text-sm leading-relaxed text-blue-800">
               主スイッチと「自動で送信する／下書きにする」を、上から順に設定できます。
             </p>
@@ -195,7 +205,7 @@ export default function AutoReplyCenterPage() {
           hidden={view !== 'knowledge'}
         >
           <div className="mb-4">
-            <h2 id="center-knowledge-heading" className="text-lg font-semibold text-gray-900">3. 答えの材料（ナレッジ）</h2>
+            <h2 id="center-knowledge-heading" className="text-lg font-semibold text-gray-900">2. 答えの材料（ナレッジ）</h2>
             <p className="mt-1 text-sm text-gray-600">AIが答えるときに参照する情報を選んで整えます。</p>
           </div>
 
@@ -246,7 +256,7 @@ export default function AutoReplyCenterPage() {
           hidden={view !== 'rules'}
         >
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
-            <h2 id="center-rules-heading" className="text-base font-semibold text-amber-950">4. AIより先に動く例外ルール</h2>
+            <h2 id="center-rules-heading" className="text-base font-semibold text-amber-950">3. AIより先に動く例外ルール</h2>
             <p className="mt-1 text-sm leading-relaxed text-amber-800">
               キーワードが一致したときは、AI（文章を考える機能）より先に、ここで決めた内容を返します。
             </p>
@@ -264,7 +274,7 @@ export default function AutoReplyCenterPage() {
           hidden={view !== 'drafts'}
         >
           <div className="mb-4 rounded-lg border border-purple-200 bg-purple-50 p-4">
-            <h2 id="center-drafts-heading" className="text-base font-semibold text-purple-950">5. 下書き受信箱</h2>
+            <h2 id="center-drafts-heading" className="text-base font-semibold text-purple-950">4. 下書き受信箱</h2>
             <p className="mt-1 text-sm leading-relaxed text-purple-800">
               AIが作った、お客さまへ送る前の回答案をここで確認できます。
             </p>
