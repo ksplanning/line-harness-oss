@@ -32,7 +32,6 @@ export default function InquiryConsoleClient({ friendId }: { friendId: string })
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
   const [completing, setCompleting] = useState(false)
-  const [savingPreference, setSavingPreference] = useState(false)
   const [error, setError] = useState('')
   const [sentNotice, setSentNotice] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -140,21 +139,6 @@ export default function InquiryConsoleClient({ friendId }: { friendId: string })
     }
   }
 
-  async function updateSignature(enabled: boolean) {
-    if (!preferences?.canUpdate || savingPreference) return
-    setSavingPreference(true)
-    setError('')
-    try {
-      const response = await api.chats.inquiryPreferences.update(enabled)
-      if (!response.success) throw new Error(response.error)
-      setPreferences(response.data)
-    } catch {
-      setError('担当名の設定を変更できませんでした。もう一度お試しください。')
-    } finally {
-      setSavingPreference(false)
-    }
-  }
-
   return (
     <main
       data-testid="inquiry-console"
@@ -255,19 +239,6 @@ export default function InquiryConsoleClient({ friendId }: { friendId: string })
           />
 
           <footer className="border-t border-gray-200 bg-white px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
-            <label className="mb-3 flex min-h-11 items-center gap-3 text-sm text-gray-700">
-              <input
-                type="checkbox"
-                aria-label="返信の文頭に担当名を付ける"
-                checked={preferences.replySignatureEnabled}
-                disabled={!preferences.canUpdate || savingPreference}
-                onChange={(event) => void updateSignature(event.target.checked)}
-                className="h-5 w-5 accent-green-600"
-              />
-              <span className="flex-1">返信の文頭に「担当: {preferences.staffName}」を付ける</span>
-              {savingPreference && <span className="text-xs text-gray-500">保存中…</span>}
-            </label>
-
             <label htmlFor="inquiry-reply" className="sr-only">返信内容</label>
             <textarea
               id="inquiry-reply"

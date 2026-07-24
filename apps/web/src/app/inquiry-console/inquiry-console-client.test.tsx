@@ -76,7 +76,7 @@ beforeEach(() => {
         id: 'message-2',
         direction: 'outgoing',
         messageType: 'text',
-        content: '担当: 山田\n承知しました',
+        content: '担当: 予約窓口\n承知しました',
         staffMemberId: 'staff-1',
         staffMemberName: '山田',
         createdAt: '2026-07-23T10:01:00+09:00',
@@ -99,7 +99,7 @@ afterEach(() => {
 })
 
 describe('問い合わせ対応コンソール', () => {
-  it('開いた時に対応開始し、送信先・担当・既存履歴・担当名設定をスマホ画面に出す', async () => {
+  it('開いた時に対応開始し、送信先・担当・既存履歴をスマホ画面に出す', async () => {
     render(<InquiryConsoleClient friendId="friend-1" />)
 
     expect(await screen.findByRole('heading', { name: '佐藤 花子' })).toBeTruthy()
@@ -110,9 +110,10 @@ describe('問い合わせ対応コンソール', () => {
     expect(screen.getByText('対応中')).toBeTruthy()
     expect(screen.getByText('担当: 山田')).toBeTruthy()
     expect(within(screen.getByTestId('chat-message-history')).getByText('予約を変更したいです')).toBeTruthy()
-    expect((screen.getByRole('checkbox', {
+    expect(screen.queryByRole('checkbox', {
       name: '返信の文頭に担当名を付ける',
-    }) as HTMLInputElement).checked).toBe(true)
+    })).toBeNull()
+    expect(apiMocks.updatePreferences).not.toHaveBeenCalled()
 
     const shell = screen.getByTestId('inquiry-console')
     expect(shell.className).toContain('h-[100dvh]')
@@ -138,7 +139,7 @@ describe('問い合わせ対応コンソール', () => {
     expect((screen.getByRole('button', { name: '対応完了' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('既存送信経路で返信し、実際に担当名が付いた本文を履歴へ反映してから完了できる', async () => {
+  it('既存送信経路で返信し、アカウント設定の返信者名が付いた本文を履歴へ反映してから完了できる', async () => {
     render(<InquiryConsoleClient friendId="friend-1" />)
 
     const input = await screen.findByRole('textbox', { name: '返信内容' })
@@ -153,7 +154,7 @@ describe('問い合わせ対応コンソール', () => {
     })
     await waitFor(() => {
       expect(screen.getAllByTestId('chat-message-bubble').some(
-        (bubble) => bubble.textContent === '担当: 山田\n承知しました',
+        (bubble) => bubble.textContent === '担当: 予約窓口\n承知しました',
       )).toBe(true)
     })
     expect(screen.getByText('送信済み')).toBeTruthy()
@@ -164,14 +165,14 @@ describe('問い合わせ対応コンソール', () => {
     expect((screen.getByRole('button', { name: '送信' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('担当名の自動付与を本人設定として切り替える', async () => {
+  it('個人別の担当名切替を表示せず、旧更新APIを呼ばない', async () => {
     render(<InquiryConsoleClient friendId="friend-1" />)
 
-    const toggle = await screen.findByRole('checkbox', { name: '返信の文頭に担当名を付ける' })
-    fireEvent.click(toggle)
-
-    await waitFor(() => expect(apiMocks.updatePreferences).toHaveBeenCalledWith(false))
-    expect((toggle as HTMLInputElement).checked).toBe(false)
+    expect(await screen.findByRole('heading', { name: '佐藤 花子' })).toBeTruthy()
+    expect(screen.queryByRole('checkbox', {
+      name: '返信の文頭に担当名を付ける',
+    })).toBeNull()
+    expect(apiMocks.updatePreferences).not.toHaveBeenCalled()
   })
 
   it('open・送信・完了の失敗を画面へ出し、操作中表示を解除する', async () => {

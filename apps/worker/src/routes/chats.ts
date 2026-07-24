@@ -27,6 +27,7 @@ import {
   listInlineAiFaqDrafts,
 } from '../services/faq-draft-review.js';
 import { getUnansweredFriendIds } from '../services/unanswered-inbox.js';
+import { loadDefaultReplyName } from './account-settings.js';
 
 const chats = new Hono<Env>();
 
@@ -813,10 +814,11 @@ chats.post('/api/chats/:id/send', async (c) => {
     const { LineClient } = await import('@line-crm/line-sdk');
     const lineClient = new LineClient(accessToken);
     const messageType = body.messageType ?? 'text';
-    const staff = await getStaffById(c.env.DB, actor.id);
-    const signatureEnabled = staff?.reply_signature_enabled !== 0;
-    const deliveredContent = messageType === 'text' && signatureEnabled
-      ? `担当: ${actor.name}\n${body.content}`
+    const defaultReplyName = messageType === 'text' && friend.line_account_id
+      ? await loadDefaultReplyName(c.env.DB, friend.line_account_id)
+      : '';
+    const deliveredContent = messageType === 'text' && defaultReplyName
+      ? `担当: ${defaultReplyName}\n${body.content}`
       : body.content;
 
     if (messageType === 'text') {

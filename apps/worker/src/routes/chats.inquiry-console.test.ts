@@ -7,6 +7,18 @@ import { adminAuth } from './admin-auth.js';
 
 const lineState = vi.hoisted(() => ({
   calls: [] as Array<{ token: string; to: string; text: string }>,
+  flexCalls: [] as Array<{
+    token: string;
+    to: string;
+    altText: string;
+    contents: unknown;
+  }>,
+  imageCalls: [] as Array<{
+    token: string;
+    to: string;
+    originalContentUrl: string;
+    previewImageUrl: string;
+  }>,
 }));
 
 vi.mock('@line-crm/line-sdk', () => ({
@@ -27,12 +39,23 @@ vi.mock('@line-crm/line-sdk', () => ({
       return {};
     }
 
-    async pushFlexMessage() {
-      throw new Error('unexpected flex send');
+    async pushFlexMessage(to: string, altText: string, contents: unknown) {
+      lineState.flexCalls.push({ token: this.token, to, altText, contents });
+      return {};
     }
 
-    async pushImageMessage() {
-      throw new Error('unexpected image send');
+    async pushImageMessage(
+      to: string,
+      originalContentUrl: string,
+      previewImageUrl: string,
+    ) {
+      lineState.imageCalls.push({
+        token: this.token,
+        to,
+        originalContentUrl,
+        previewImageUrl,
+      });
+      return {};
     }
   },
 }));
@@ -145,6 +168,16 @@ function setUpSchema(raw: Database.Database): void {
       name TEXT NOT NULL,
       channel_access_token TEXT NOT NULL,
       is_active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE account_settings (
+      id TEXT PRIMARY KEY,
+      line_account_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT 'now',
+      updated_at TEXT NOT NULL DEFAULT 'now',
+      UNIQUE(line_account_id, key)
     );
 
     CREATE TABLE friends (
@@ -265,6 +298,8 @@ let app: ReturnType<typeof createApp>;
 
 beforeEach(() => {
   lineState.calls.length = 0;
+  lineState.flexCalls.length = 0;
+  lineState.imageCalls.length = 0;
   raw = new Database(':memory:');
   setUpSchema(raw);
   seedBaseRows(raw);
@@ -458,7 +493,46 @@ describe('operator replies from the inquiry console', () => {
     ).get()).toEqual({ reply_signature_enabled: 0 });
   });
 
-  test('the default preference prefixes the staff name and records the staff member on the delivered message', async () => {
+  test.each([
+    ['missing', null],
+    ['empty', ''],
+  ])('a %s account reply name sends the original text even when the personal flag is ON', async (_case, value) => {
+    if (value !== null) {
+      raw.prepare(
+        `INSERT INTO account_settings (id, line_account_id, key, value)
+         VALUES ('reply-name-1', 'acc-1', 'chat_reply_sender_name', ?)`,
+      ).run(value);
+    }
+
+    const response = await app.postAs('staff-a-key', '/api/chats/friend-1/send', {
+      messageType: 'text',
+      content: '設定が空の返信です',
+    });
+
+    expect(response.status).toBe(200);
+    expect(lineState.calls).toEqual([{
+      token: 'token-1',
+      to: 'U-one',
+      text: '設定が空の返信です',
+    }]);
+    expect(raw.prepare(
+      `SELECT content, staff_member_id
+         FROM messages_log WHERE direction = 'outgoing'`,
+    ).get()).toEqual({
+      content: '設定が空の返信です',
+      staff_member_id: 'staff-a',
+    });
+  });
+
+  test('the account reply name is prefixed independently of the actor name and personal flag', async () => {
+    raw.prepare(
+      `INSERT INTO account_settings (id, line_account_id, key, value)
+       VALUES ('reply-name-1', 'acc-1', 'chat_reply_sender_name', '共通窓口')`,
+    ).run();
+    raw.prepare(
+      `UPDATE staff_members SET reply_signature_enabled = 0 WHERE id = 'staff-a'`,
+    ).run();
+
     const response = await app.postAs('staff-a-key', '/api/chats/friend-1/send', {
       messageType: 'text',
       content: '確認して折り返します',
@@ -468,42 +542,97 @@ describe('operator replies from the inquiry console', () => {
     expect(lineState.calls).toEqual([{
       token: 'token-1',
       to: 'U-one',
-      text: '担当: 担当A\n確認して折り返します',
+      text: '担当: 共通窓口\n確認して折り返します',
     }]);
+    expect(lineState.calls[0]?.text).not.toContain('担当A');
     expect(raw.prepare(
       `SELECT friend_id, content, source, staff_member_id
          FROM messages_log WHERE direction = 'outgoing'`,
     ).get()).toEqual({
       friend_id: 'friend-1',
-      content: '担当: 担当A\n確認して折り返します',
+      content: '担当: 共通窓口\n確認して折り返します',
       source: 'manual',
       staff_member_id: 'staff-a',
     });
   });
 
-  test('an OFF preference sends the original text but still records who replied', async () => {
+  test('an account A reply name does not affect replies from account B', async () => {
     raw.prepare(
-      `UPDATE staff_members SET reply_signature_enabled = 0 WHERE id = 'staff-a'`,
+      `INSERT INTO account_settings (id, line_account_id, key, value)
+       VALUES ('reply-name-1', 'acc-1', 'chat_reply_sender_name', 'A窓口')`,
     ).run();
 
-    const response = await app.postAs('staff-a-key', '/api/chats/friend-1/send', {
+    const response = await app.postAs('staff-a-key', '/api/chats/friend-2/send', {
       messageType: 'text',
-      content: '署名なしの返信です',
+      content: 'Bアカウントからの返信です',
     });
 
     expect(response.status).toBe(200);
     expect(lineState.calls).toEqual([{
-      token: 'token-1',
-      to: 'U-one',
-      text: '署名なしの返信です',
+      token: 'token-2',
+      to: 'U-two',
+      text: 'Bアカウントからの返信です',
     }]);
     expect(raw.prepare(
-      `SELECT content, staff_member_id
+      `SELECT line_account_id, content
          FROM messages_log WHERE direction = 'outgoing'`,
     ).get()).toEqual({
-      content: '署名なしの返信です',
-      staff_member_id: 'staff-a',
+      line_account_id: 'acc-2',
+      content: 'Bアカウントからの返信です',
     });
+  });
+
+  test('a configured reply name leaves flex and image SDK arguments and log content unchanged', async () => {
+    raw.prepare(
+      `INSERT INTO account_settings (id, line_account_id, key, value)
+       VALUES ('reply-name-1', 'acc-1', 'chat_reply_sender_name', '共通窓口')`,
+    ).run();
+    const flexContents = {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [{ type: 'text', text: 'カード本文' }],
+      },
+    };
+    const flexContent = JSON.stringify(flexContents);
+    const imageContent = JSON.stringify({
+      originalContentUrl: 'https://cdn.example.com/original.png',
+      previewImageUrl: 'https://cdn.example.com/preview.png',
+    });
+
+    const flexResponse = await app.postAs('staff-a-key', '/api/chats/friend-1/send', {
+      messageType: 'flex',
+      content: flexContent,
+    });
+    const imageResponse = await app.postAs('staff-a-key', '/api/chats/friend-1/send', {
+      messageType: 'image',
+      content: imageContent,
+    });
+
+    expect([flexResponse.status, imageResponse.status]).toEqual([200, 200]);
+    expect(lineState.calls).toEqual([]);
+    expect(lineState.flexCalls).toEqual([{
+      token: 'token-1',
+      to: 'U-one',
+      altText: 'カード本文',
+      contents: flexContents,
+    }]);
+    expect(lineState.imageCalls).toEqual([{
+      token: 'token-1',
+      to: 'U-one',
+      originalContentUrl: 'https://cdn.example.com/original.png',
+      previewImageUrl: 'https://cdn.example.com/preview.png',
+    }]);
+    expect(raw.prepare(
+      `SELECT message_type, content
+         FROM messages_log
+        WHERE direction = 'outgoing'
+        ORDER BY rowid`,
+    ).all()).toEqual([
+      { message_type: 'flex', content: flexContent },
+      { message_type: 'image', content: imageContent },
+    ]);
   });
 
   test('recipient-like body fields cannot override the friend and official account fixed by the path', async () => {
