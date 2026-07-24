@@ -39,6 +39,10 @@ const baseSettings = (answerMode: 'auto' | 'draft') => ({
   autoReplyNotice: '※この返信は自動応答です',
   maxRepliesPerDay: 7,
   answerMode,
+  replyStyle: {
+    instructions: '',
+    greeting: '',
+  },
   personalContext: {
     enabled: true,
     selectedCustomFieldIds: null,
@@ -141,6 +145,10 @@ describe('/faqs 設定タブ — 回答モード切替 (下書き / 自動送信
       autoReplyNotice: '※この返信は自動応答です',
       maxRepliesPerDay: 7,
       answerMode: 'draft',
+      replyStyle: {
+        instructions: '',
+        greeting: '',
+      },
       personalContext: {
         enabled: true,
         selectedCustomFieldIds: null,

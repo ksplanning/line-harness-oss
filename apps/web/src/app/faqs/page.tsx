@@ -45,6 +45,10 @@ interface FaqBotSettings {
   maxRepliesPerDay: number
   // 'draft'=AIは草案を作るだけで送信しない / 'auto'=お客さまへ自動送信。
   answerMode: 'draft' | 'auto'
+  replyStyle: {
+    instructions: string
+    greeting: string
+  }
   personalContext: {
     enabled: boolean
     /** null=有効な全項目、[]=対象なし。 */
@@ -63,6 +67,10 @@ const DEFAULT_SETTINGS: FaqBotSettings = {
   // 安全側の既定。未取得状態で誤って自動送信化しないよう 'draft' 始点
   // (実値は GET 応答で上書きされる — settings.get の answerMode をそのまま保持)。
   answerMode: 'draft',
+  replyStyle: {
+    instructions: '',
+    greeting: '',
+  },
   personalContext: {
     enabled: true,
     selectedCustomFieldIds: null,
@@ -142,6 +150,10 @@ export default function FaqsPage() {
           setSettings({
             ...DEFAULT_SETTINGS,
             ...setRes.data,
+            replyStyle: {
+              ...DEFAULT_SETTINGS.replyStyle,
+              ...setRes.data.replyStyle,
+            },
             personalContext: {
               ...DEFAULT_SETTINGS.personalContext,
               ...setRes.data.personalContext,
@@ -588,6 +600,67 @@ export default function FaqsPage() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* AI 生成の表現だけを account ごとに調整する。事実の根拠設定とは分離する。 */}
+          <div className="bg-white border border-gray-200 rounded-lg p-5">
+            <h3 className="text-sm font-semibold text-gray-800">返信スタイル</h3>
+            <p className="mt-1 text-xs text-gray-500 leading-relaxed">
+              この LINE アカウントのAI自動返信とAI下書きに共通で使います。
+            </p>
+
+            <div className="mt-4">
+              <label
+                htmlFor="faq-reply-style-instructions"
+                className="block text-xs font-medium text-gray-700"
+              >
+                返信スタイルの指示（任意）
+              </label>
+              <textarea
+                id="faq-reply-style-instructions"
+                value={settings.replyStyle.instructions}
+                onChange={(event) => setSettings((current) => ({
+                  ...current,
+                  replyStyle: {
+                    ...current.replyStyle,
+                    instructions: event.target.value,
+                  },
+                }))}
+                rows={4}
+                placeholder="例: です・ます調で、親しみやすく簡潔に。専門用語は避け、絵文字は1個まで。"
+                className="mt-2 w-full resize-y rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+              />
+            </div>
+
+            <div className="mt-4">
+              <label
+                htmlFor="faq-reply-style-greeting"
+                className="block text-xs font-medium text-gray-700"
+              >
+                名乗り（冒頭文・任意）
+              </label>
+              <input
+                id="faq-reply-style-greeting"
+                type="text"
+                value={settings.replyStyle.greeting}
+                onChange={(event) => setSettings((current) => ({
+                  ...current,
+                  replyStyle: {
+                    ...current.replyStyle,
+                    greeting: event.target.value,
+                  },
+                }))}
+                placeholder="例: ◯◎です。"
+                className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+              />
+              <p className="mt-1 text-[11px] text-gray-500">
+                設定すると、生成した返信の先頭へこの一文を付けます。
+              </p>
+            </div>
+
+            <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+              言葉遣い・口調・文章の形だけを指定してください。資料やFAQの事実を変える指示、顧客情報や秘密情報は入力しないでください。回答内容は登録済みナレッジを優先します。
+            </p>
           </div>
 
           {/* 質問者本人の登録情報 */}

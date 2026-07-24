@@ -42,6 +42,10 @@ const baseSettings = {
   autoReplyNotice: '※この返信は自動応答です',
   maxRepliesPerDay: 7,
   answerMode: 'draft' as const,
+  replyStyle: {
+    instructions: '',
+    greeting: '',
+  },
   personalContext: {
     enabled: true,
     selectedCustomFieldIds: null,

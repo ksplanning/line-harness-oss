@@ -151,6 +151,11 @@ export interface FaqPersonalContextSettingsPayload {
   maxTokens: number
 }
 
+export interface FaqReplyStylePayload {
+  instructions: string
+  greeting: string
+}
+
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
   targetType: BroadcastTargetType;
@@ -1402,6 +1407,7 @@ export const api = {
           maxRepliesPerDay: number;
           // 'draft'=草案保存のみ / 'auto'=自動送信 (worker faqs.ts:27)。
           answerMode: 'draft' | 'auto';
+          replyStyle: FaqReplyStylePayload;
           personalContext: FaqPersonalContextSettingsPayload;
         }>>(`/api/account-settings/faq-bot?accountId=${encodeURIComponent(params.accountId)}`),
       put: (body: {
@@ -1413,6 +1419,7 @@ export const api = {
         maxRepliesPerDay: number;
         // PUT は部分更新でない — 全フィールド (answerMode 含む) を現在値のまま送る。
         answerMode: 'draft' | 'auto';
+        replyStyle: FaqReplyStylePayload;
         personalContext: FaqPersonalContextSettingsPayload;
       }) =>
         fetchApi<ApiResponse<{
@@ -1422,6 +1429,7 @@ export const api = {
           autoReplyNotice: string;
           maxRepliesPerDay: number;
           answerMode: 'draft' | 'auto';
+          replyStyle: FaqReplyStylePayload;
           personalContext: FaqPersonalContextSettingsPayload;
         }>>('/api/account-settings/faq-bot', {
           method: 'PUT',
