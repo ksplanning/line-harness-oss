@@ -437,6 +437,31 @@ describe('submission-keyed answers write-back', () => {
     }))!;
   });
 
+  test('does not mark an unchanged results-row save for external review', async () => {
+    const guard = await lease();
+    const updated = await updateInternalFormSubmissionAnswersForSheetsBySubmissionId(db, {
+      lineAccountId: 'acc-1',
+      connectionId: connection.id,
+      connectionVersion: connection.configVersion,
+      formId: 'form-1',
+      submissionId: 'ifs-old',
+      expectedAnswersJson: JSON.stringify({ q1: '古い回答' }),
+      answers: { q1: '古い回答' },
+      lease: guard,
+    });
+    expect(updated).toBe(true);
+    expect(raw.prepare(
+      `SELECT external_edit_source, external_edited_at, external_edit_approved_at,
+              external_edit_changes_json
+       FROM internal_form_submissions WHERE id = ?`,
+    ).get('ifs-old')).toEqual({
+      external_edit_source: null,
+      external_edited_at: null,
+      external_edit_approved_at: null,
+      external_edit_changes_json: null,
+    });
+  });
+
   test('updates an OLDER submission by id — no latest-submission guard', async () => {
     raw.prepare(
       `UPDATE internal_form_submissions

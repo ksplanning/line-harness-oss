@@ -135,6 +135,10 @@ async function queryInternalSubmissions(
   if (params.externalEdit === 'pending') {
     where.push('external_edit_source IS NOT NULL');
     where.push('external_edit_approved_at IS NULL');
+    where.push(`COALESCE(json_array_length(
+      CASE WHEN json_valid(external_edit_changes_json)
+        THEN external_edit_changes_json ELSE '[]' END
+    ), 0) > 0`);
   }
 
   const whereSql = where.join(' AND ');

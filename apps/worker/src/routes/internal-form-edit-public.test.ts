@@ -1817,6 +1817,57 @@ describe('POST /ife/:token', () => {
     expect(JSON.parse(stored.answers_json)).toEqual(originalAnswers);
   });
 
+  test('does not mark a no-op edit URL save for external review', async () => {
+    seedForm();
+    seedSubmission();
+
+    const saved = await app().request(`/ife/${await token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        editVersion: '3',
+        a_0: originalAnswers.name,
+        a_1: originalAnswers.email,
+      }),
+    }, bindings());
+    expect(saved.status).toBe(200);
+
+    const stored = raw.prepare(
+      `SELECT answers_json, edit_version, external_edit_source,
+              external_edited_at, external_edit_approved_at,
+              external_edit_changes_json
+       FROM internal_form_submissions WHERE id = 'ifs-1'`,
+    ).get() as {
+      answers_json: string;
+      edit_version: number;
+      external_edit_source: string | null;
+      external_edited_at: string | null;
+      external_edit_approved_at: string | null;
+      external_edit_changes_json: string | null;
+    };
+    expect(JSON.parse(stored.answers_json)).toEqual(originalAnswers);
+    expect(stored).toMatchObject({
+      edit_version: 4,
+      external_edit_source: null,
+      external_edited_at: null,
+      external_edit_approved_at: null,
+      external_edit_changes_json: null,
+    });
+
+    const pending = await adminApp().request(
+      '/api/forms-advanced/form-1/rows?externalEdit=pending&page=1&pageSize=25',
+      {},
+      bindings(),
+    );
+    expect((await pending.json() as {
+      data: { rows: unknown[]; total: number; externalEditPendingCount: number };
+    }).data).toMatchObject({
+      rows: [],
+      total: 0,
+      externalEditPendingCount: 0,
+    });
+  });
+
   test('round-trips edit URL save through pending review and approval APIs', async () => {
     seedForm();
     seedSubmission();

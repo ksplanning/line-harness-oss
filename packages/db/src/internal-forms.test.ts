@@ -269,6 +269,21 @@ describe('internal form persistence', () => {
     await expect(updateLatestInternalFormSubmissionAnswersForSheets(DB, {
       lineAccountId: 'acc-1', connectionId: connection.id, connectionVersion: connection.configVersion,
       formId: 'fa_internal', friendId: 'friend-1', submissionId: original.id,
+      expectedAnswersJson: original.answers_json, answers: { name: '初回', keep: '保持' }, lease,
+    })).resolves.toBe(true);
+    expect(raw.prepare(
+      `SELECT external_edit_source, external_edited_at, external_edit_approved_at,
+              external_edit_changes_json
+       FROM internal_form_submissions WHERE id = ?`,
+    ).get(original.id)).toEqual({
+      external_edit_source: null,
+      external_edited_at: null,
+      external_edit_approved_at: null,
+      external_edit_changes_json: null,
+    });
+    await expect(updateLatestInternalFormSubmissionAnswersForSheets(DB, {
+      lineAccountId: 'acc-1', connectionId: connection.id, connectionVersion: connection.configVersion,
+      formId: 'fa_internal', friendId: 'friend-1', submissionId: original.id,
       expectedAnswersJson: original.answers_json, answers: { name: 'シート編集', keep: '保持' }, lease,
     })).resolves.toBe(true);
     expect(raw.prepare(
@@ -847,12 +862,20 @@ describe('internal form persistence', () => {
       formId: 'fa_internal',
       answers: { name: '管理画面だけ' },
     });
+    const unchanged = await createInternalFormSubmission(DB, {
+      formId: 'fa_internal',
+      answers: { name: '変更なし' },
+    });
     raw.prepare(
       `UPDATE internal_form_submissions
        SET external_edit_source = 'edit_link',
-           external_edited_at = '2026-07-23T10:00:00+09:00'
+           external_edited_at = '2026-07-23T10:00:00+09:00',
+           external_edit_changes_json = ?
        WHERE id = ?`,
-    ).run(pending.id);
+    ).run(
+      JSON.stringify([{ fieldId: 'name', before: '変更前', after: '編集URLから変更' }]),
+      pending.id,
+    );
     raw.prepare(
       `UPDATE internal_form_submissions
        SET external_edit_source = 'sheet',
@@ -860,11 +883,18 @@ describe('internal form persistence', () => {
            external_edit_approved_at = '2026-07-23T10:02:00+09:00'
        WHERE id = ?`,
     ).run(approved.id);
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-23T10:03:00+09:00',
+           external_edit_changes_json = '[]'
+       WHERE id = ?`,
+    ).run(unchanged.id);
 
     await expect(listInternalFormSubmissions(DB, 'fa_internal', {
       limit: 20,
       offset: 0,
-    })).resolves.toMatchObject({ total: 3 });
+    })).resolves.toMatchObject({ total: 4 });
     await expect(listInternalFormSubmissions(DB, 'fa_internal', {
       limit: 20,
       offset: 0,

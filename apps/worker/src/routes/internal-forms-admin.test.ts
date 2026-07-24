@@ -1204,15 +1204,25 @@ describe('internal answer admin read path', () => {
     raw.prepare(
       `UPDATE internal_form_submissions
        SET external_edit_source = 'edit_link',
-           external_edited_at = '2026-07-23T10:00:00+09:00'
+           external_edited_at = '2026-07-23T10:00:00+09:00',
+           external_edit_changes_json = ?
        WHERE id = 'sub-1'`,
-    ).run();
+    ).run(JSON.stringify([
+      { fieldId: 'name', before: '変更前', after: '一郎' },
+    ]));
     raw.prepare(
       `UPDATE internal_form_submissions
        SET external_edit_source = 'sheet',
            external_edited_at = '2026-07-23T10:01:00+09:00',
            external_edit_approved_at = '2026-07-23T10:02:00+09:00'
        WHERE id = 'sub-2'`,
+    ).run();
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET external_edit_source = 'edit_link',
+           external_edited_at = '2026-07-23T10:03:00+09:00',
+           external_edit_changes_json = '[]'
+       WHERE id = 'sub-3'`,
     ).run();
 
     const unfiltered = await call(
@@ -1227,6 +1237,7 @@ describe('internal answer admin read path', () => {
           externalEditSource: string | null;
           externalEditedAt: string | null;
           externalEditApprovedAt: string | null;
+          externalEditChanges: Array<{ fieldId: string; before: unknown; after: unknown }>;
         }>;
         total: number;
         externalEditPendingCount: number;
@@ -1239,6 +1250,9 @@ describe('internal answer admin read path', () => {
       externalEditSource: 'edit_link',
       externalEditedAt: '2026-07-23T10:00:00+09:00',
       externalEditApprovedAt: null,
+      externalEditChanges: [
+        { fieldId: 'name', before: '変更前', after: '一郎' },
+      ],
     });
     const pendingStats = await call('GET', '/api/forms-advanced/internal-form/stats');
     expect((await pendingStats.json() as { data: { externalEditPending: number } }).data)

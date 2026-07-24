@@ -124,7 +124,7 @@ function parseAnswerSnapshot(value: string): Record<string, unknown> {
 function externalEditChangesJson(
   beforeAnswers: Record<string, unknown>,
   afterAnswers: Record<string, unknown>,
-): string {
+): string | null {
   const fieldIds = new Set([
     ...Object.keys(beforeAnswers),
     ...Object.keys(afterAnswers),
@@ -140,7 +140,7 @@ function externalEditChangesJson(
     if (JSON.stringify(before) === JSON.stringify(after)) continue;
     changes.push({ fieldId, before, after });
   }
-  return JSON.stringify(changes);
+  return changes.length > 0 ? JSON.stringify(changes) : null;
 }
 
 export async function setFormRenderBackend(
@@ -511,7 +511,12 @@ export async function listInternalFormSubmissions(
   const limit = Math.max(1, Math.min(100, Math.trunc(params.limit)));
   const offset = Math.max(0, Math.trunc(params.offset));
   const reviewWhere = params.externalEditReview === 'pending'
-    ? ' AND external_edit_source IS NOT NULL AND external_edit_approved_at IS NULL'
+    ? ` AND external_edit_source IS NOT NULL
+        AND external_edit_approved_at IS NULL
+        AND COALESCE(json_array_length(
+          CASE WHEN json_valid(external_edit_changes_json)
+            THEN external_edit_changes_json ELSE '[]' END
+        ), 0) > 0`
     : '';
   const totalRow = await db
     .prepare(
@@ -587,18 +592,19 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
   db: D1Database,
   input: UpdateLatestInternalFormSubmissionAnswersForSheetsInput,
 ): Promise<boolean> {
-  const externalEditedAt = jstNow();
   const changesJson = externalEditChangesJson(
     parseAnswerSnapshot(input.expectedAnswersJson),
     input.answers,
   );
+  const externalEditedAt = changesJson === null ? null : jstNow();
   const result = await db.prepare(
     `UPDATE internal_form_submissions
      SET answers_json = ?,
-         external_edit_source = 'sheet',
-         external_edited_at = ?,
-         external_edit_approved_at = NULL,
-         external_edit_changes_json = ?
+         external_edit_source = COALESCE(?, external_edit_source),
+         external_edited_at = COALESCE(?, external_edited_at),
+         external_edit_approved_at = CASE
+           WHEN ? IS NULL THEN external_edit_approved_at ELSE NULL END,
+         external_edit_changes_json = COALESCE(?, external_edit_changes_json)
      WHERE id = ? AND form_id = ? AND friend_id = ? AND answers_json = ?
        AND deleted_at IS NULL
        AND EXISTS (
@@ -637,7 +643,9 @@ export async function updateLatestInternalFormSubmissionAnswersForSheets(
        )`,
   ).bind(
     JSON.stringify(input.answers),
+    changesJson === null ? null : 'sheet',
     externalEditedAt,
+    changesJson,
     changesJson,
     input.submissionId,
     input.formId,
@@ -862,18 +870,19 @@ export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId
   db: D1Database,
   input: UpdateInternalFormSubmissionAnswersForSheetsBySubmissionIdInput,
 ): Promise<boolean> {
-  const externalEditedAt = jstNow();
   const changesJson = externalEditChangesJson(
     parseAnswerSnapshot(input.expectedAnswersJson),
     input.answers,
   );
+  const externalEditedAt = changesJson === null ? null : jstNow();
   const result = await db.prepare(
     `UPDATE internal_form_submissions
      SET answers_json = ?,
-         external_edit_source = 'sheet',
-         external_edited_at = ?,
-         external_edit_approved_at = NULL,
-         external_edit_changes_json = ?
+         external_edit_source = COALESCE(?, external_edit_source),
+         external_edited_at = COALESCE(?, external_edited_at),
+         external_edit_approved_at = CASE
+           WHEN ? IS NULL THEN external_edit_approved_at ELSE NULL END,
+         external_edit_changes_json = COALESCE(?, external_edit_changes_json)
      WHERE id = ? AND form_id = ? AND answers_json = ?
        AND deleted_at IS NULL
        AND (
@@ -902,7 +911,9 @@ export async function updateInternalFormSubmissionAnswersForSheetsBySubmissionId
        )`,
   ).bind(
     JSON.stringify(input.answers),
+    changesJson === null ? null : 'sheet',
     externalEditedAt,
+    changesJson,
     changesJson,
     input.submissionId,
     input.formId,
@@ -1012,10 +1023,11 @@ export async function updateInternalFormSubmissionAnswers(
           `UPDATE internal_form_submissions
            SET answers_json = ?,
                edit_version = edit_version + 1,
-               external_edit_source = 'edit_link',
-               external_edited_at = ?,
-               external_edit_approved_at = NULL,
-               external_edit_changes_json = ?
+               external_edit_source = COALESCE(?, external_edit_source),
+               external_edited_at = COALESCE(?, external_edited_at),
+               external_edit_approved_at = CASE
+                 WHEN ? IS NULL THEN external_edit_approved_at ELSE NULL END,
+               external_edit_changes_json = COALESCE(?, external_edit_changes_json)
            WHERE id = ? AND form_id = ? AND edit_version = ?
              AND deleted_at IS NULL
              AND EXISTS (
@@ -1028,7 +1040,9 @@ export async function updateInternalFormSubmissionAnswers(
         )
         .bind(
           JSON.stringify(input.answers),
-          jstNow(),
+          changesJson === null ? null : 'edit_link',
+          changesJson === null ? null : jstNow(),
+          changesJson,
           changesJson,
           input.submissionId,
           input.formId,
@@ -1064,7 +1078,11 @@ export async function countPendingInternalFormExternalEdits(
        FROM internal_form_submissions
        WHERE form_id = ? AND deleted_at IS NULL
          AND external_edit_source IS NOT NULL
-         AND external_edit_approved_at IS NULL`,
+         AND external_edit_approved_at IS NULL
+         AND COALESCE(json_array_length(
+           CASE WHEN json_valid(external_edit_changes_json)
+             THEN external_edit_changes_json ELSE '[]' END
+         ), 0) > 0`,
     )
     .bind(formId)
     .first<{ n: number }>();
