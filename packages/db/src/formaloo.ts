@@ -111,6 +111,7 @@ export interface CreateFormalooFormInput {
   description?: string | null;
   onSubmitTagId?: string | null;
   onSubmitScenarioId?: string | null;
+  onSubmitActionsJson?: string | null;
   submitMessage?: string | null;
   // F6-2: 表示スコープ + 作成先 workspace。workspaceId は route 側で §3.4 解決順序を経た確定値のみ渡す
   // (client body を無条件採用しない = server 権威 / Codex B#1)。未指定は両 NULL (env 鍵 / 共通表示)。
@@ -122,6 +123,10 @@ export interface CreateFormalooFormInput {
   //   DAO は「渡された object を JSON へ直列化するだけ」に留め、canonical 型は route/web 側が保持する。
   //   未指定 / 空 object は旧リテラルを byte 維持 (既存 caller 後方互換)。
   design?: Record<string, string | null | undefined>;
+  // 複製時だけ、provider identity を除去・内部参照を再採番済みの定義を渡す。
+  // 通常の新規作成は従来どおり design seed を使う。
+  definitionJson?: string;
+  renderBackend?: FormalooForm['render_backend'];
 }
 
 export async function createFormalooForm(
@@ -132,15 +137,18 @@ export async function createFormalooForm(
   const now = jstNow();
   // design が非空のときだけ definition に seed する。未指定 / 空 object は旧リテラルと byte 完全一致
   // (既存 caller = POST route + db test 群は無改変で従来挙動 / 既存 design=null フォーム不可触)。
-  const definitionJson = input.design && Object.keys(input.design).length > 0
-    ? JSON.stringify({ fields: [], logic: [], design: input.design })
-    : '{"fields":[],"logic":[]}';
+  const definitionJson = input.definitionJson ?? (
+    input.design && Object.keys(input.design).length > 0
+      ? JSON.stringify({ fields: [], logic: [], design: input.design })
+      : '{"fields":[],"logic":[]}'
+  );
   await db
     .prepare(
       `INSERT INTO formaloo_forms
-         (id, title, description, definition_json, on_submit_tag_id, on_submit_scenario_id, submit_message,
-          submit_count, deleted, builder_status, line_account_id, workspace_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'draft', ?, ?, ?, ?)`,
+         (id, title, description, definition_json, on_submit_tag_id, on_submit_scenario_id,
+          on_submit_actions_json, submit_message, submit_count, deleted, builder_status,
+          line_account_id, workspace_id, render_backend, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'draft', ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -149,9 +157,11 @@ export async function createFormalooForm(
       definitionJson,
       input.onSubmitTagId ?? null,
       input.onSubmitScenarioId ?? null,
+      input.onSubmitActionsJson ?? null,
       input.submitMessage ?? null,
       input.lineAccountId ?? null,
       input.workspaceId ?? null,
+      input.renderBackend ?? 'formaloo',
       now,
       now,
     )

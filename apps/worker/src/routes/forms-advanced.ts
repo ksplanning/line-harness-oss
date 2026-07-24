@@ -1,6 +1,7 @@
 import { Hono, type Context, type Next } from 'hono';
 import {
   beginFormalooDefinitionSave,
+  createFormalooChoiceList,
   createFormalooForm,
   listFormalooForms,
   getFormalooForm,
@@ -10,6 +11,7 @@ import {
   setFormalooSyncState,
   getFormalooSyncState,
   listFormalooDriftEvents,
+  listFormalooChoiceLists,
   markFormalooSubmissionDuplicateReviewed,
   queryFormalooSubmissions,
   countFormalooSubmissionsForForm,
@@ -124,6 +126,11 @@ import {
   evaluateInternalFormAvailability,
   parseInternalFormDefinition,
 } from '../services/internal-form-runtime.js';
+import {
+  attachDuplicatedChoiceLists,
+  duplicateFormDefinition,
+  serializeDuplicatedDefinition,
+} from '../services/form-duplicate.js';
 import type { Env } from '../index.js';
 
 // =============================================================================
@@ -362,6 +369,16 @@ async function serializeForm(db: D1Database, form: FormalooForm, isOwner: boolea
   };
 }
 
+async function resolveImplicitCreateWorkspace(
+  db: D1Database,
+  lineAccountId: string | null,
+): Promise<string | null> {
+  const accountDefault = lineAccountId
+    ? await resolveDefaultWorkspace(db, lineAccountId)
+    : null;
+  return accountDefault ?? resolveSoleActiveWorkspace(db);
+}
+
 // GET /api/forms-advanced — 一覧 (F6-2: ?lineAccountId= 表示スコープ / F6-3: ?folderId= フォルダ絞り込み)
 //   folderId は account 絞りに **重ねる** (§3.3b 3 状態: 無指定=全フォルダ+未分類 / 実 id=特定 / none=未分類)。
 formsAdvanced.get('/api/forms-advanced', async (c) => {
@@ -405,14 +422,9 @@ formsAdvanced.post('/api/forms-advanced', async (c) => {
         return c.json({ success: false, error: '指定されたワークスペースは登録されていないか無効です' }, 400);
       }
       workspaceId = explicitWorkspaceId;
-    } else if (lineAccountId) {
-      // 明示無 + account 有 → account_binding の既定 (active のみ / 無効・未 binding は NULL で孤立させない)。
-      workspaceId = await resolveDefaultWorkspace(c.env.DB, lineAccountId);
-    }
-    // ④ workspace 自動紐付け: 明示選択も binding 解決も無く workspace_id が NULL のまま孤立する UX 穴の恒久修正。
-    //   active workspace が正確に 1 件だけなら自動採用 (0 件 / 2 件以上は曖昧 → NULL 維持 = env 単一鍵 fallback)。
-    if (workspaceId === null) {
-      workspaceId = await resolveSoleActiveWorkspace(c.env.DB);
+    } else {
+      // 明示無 → account binding、続いて唯一 active workspace の既存解決順序。
+      workspaceId = await resolveImplicitCreateWorkspace(c.env.DB, lineAccountId);
     }
 
     const form = await createFormalooForm(c.env.DB, {
@@ -434,6 +446,94 @@ formsAdvanced.post('/api/forms-advanced', async (c) => {
   } catch (err) {
     console.error('POST /api/forms-advanced error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/forms-advanced/:id/duplicate — 現在の LINE account に独立した draft を作る。
+// provider identity / 回答 / 公開状態 / 外部連携は引き継がず、ユーザー可視の定義と送信後設定だけをコピーする。
+formsAdvanced.post('/api/forms-advanced/:id/duplicate', async (c) => {
+  let createdFormId: string | null = null;
+  try {
+    const body = await c.req
+      .json<{ lineAccountId?: string | null }>()
+      .catch(() => ({} as { lineAccountId?: string | null }));
+    const lineAccountId = typeof body.lineAccountId === 'string' && body.lineAccountId.trim()
+      ? body.lineAccountId.trim()
+      : null;
+    if (!lineAccountId) {
+      return c.json({ success: false, error: 'LINEアカウントを選択してください' }, 400);
+    }
+
+    const source = await getFormalooForm(c.env.DB, c.req.param('id')!);
+    if (
+      !source
+      || source.deleted
+      || (source.line_account_id !== null && source.line_account_id !== lineAccountId)
+    ) {
+      return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    }
+
+    const duplicated = duplicateFormDefinition(source.definition_json);
+    const workspaceId = await resolveImplicitCreateWorkspace(c.env.DB, lineAccountId);
+    const created = await createFormalooForm(c.env.DB, {
+      title: `${source.title} のコピー`,
+      description: source.description,
+      onSubmitTagId: source.on_submit_tag_id,
+      onSubmitScenarioId: source.on_submit_scenario_id,
+      onSubmitActionsJson: source.on_submit_actions_json,
+      submitMessage: source.submit_message,
+      lineAccountId,
+      workspaceId,
+      definitionJson: serializeDuplicatedDefinition(duplicated),
+      renderBackend: source.render_backend,
+    });
+    createdFormId = created.id;
+
+    const origin = c.env.WORKER_URL?.trim().replace(/\/+$/, '') || new URL(c.req.url).origin;
+    const choiceListTargets = new Map<string, { id: string; sourceUrl: string }>();
+    for (const sourceList of await listFormalooChoiceLists(c.env.DB, source.id)) {
+      const targetList = await createFormalooChoiceList(c.env.DB, created.id, {
+        name: sourceList.name,
+        items: sourceList.items,
+      });
+      choiceListTargets.set(sourceList.id, {
+        id: targetList.id,
+        sourceUrl: `${origin}/formaloo/choices/${encodeURIComponent(created.id)}/${encodeURIComponent(targetList.id)}`,
+      });
+    }
+    attachDuplicatedChoiceLists(duplicated, choiceListTargets);
+
+    const definitionJson = serializeDuplicatedDefinition(duplicated);
+    await saveFormalooDefinition(c.env.DB, created.id, {
+      definitionJson,
+      fields: duplicated.fields.map((field, index) => ({
+        id: field.id,
+        fieldType: field.type,
+        label: field.label,
+        position: Number.isInteger(field.position) ? field.position : index,
+        configJson: JSON.stringify(field.config ?? {}),
+      })),
+    });
+
+    const saved = await getFormalooForm(c.env.DB, created.id);
+    return c.json({
+      success: true,
+      data: await serializeForm(c.env.DB, saved!, isOwnerCtx(c)),
+    }, 201);
+  } catch (err) {
+    if (createdFormId) {
+      try {
+        await c.env.DB
+          .prepare('DELETE FROM formaloo_choice_lists WHERE form_id = ?')
+          .bind(createdFormId)
+          .run();
+        await softDeleteFormalooForm(c.env.DB, createdFormId);
+      } catch {
+        console.error('POST /api/forms-advanced/:id/duplicate cleanup failed');
+      }
+    }
+    console.error('POST /api/forms-advanced/:id/duplicate error:', err);
+    return c.json({ success: false, error: 'フォームの複製に失敗しました' }, 500);
   }
 });
 
