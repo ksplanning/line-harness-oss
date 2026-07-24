@@ -124,7 +124,7 @@ describe('T-D2 回答詳細 編集モード', () => {
     fetchApiMock.mockClear()
 
     const changes = screen.getByTestId('detail-external-edit-changes')
-    fireEvent.click(within(changes).getByRole('button', { name: '差分を確認して承認' }))
+    fireEvent.click(within(changes).getByRole('button', { name: '差分を確認' }))
     expect(fetchApiMock).not.toHaveBeenCalled()
     let dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     expect(dialog.getAttribute('data-testid')).toBe('external-edit-approval-dialog')
@@ -138,9 +138,9 @@ describe('T-D2 回答詳細 編集モード', () => {
     expect(fetchApiMock).not.toHaveBeenCalled()
     expect(screen.getByText('回答の詳細')).toBeTruthy()
 
-    fireEvent.click(within(changes).getByRole('button', { name: '差分を確認して承認' }))
+    fireEvent.click(within(changes).getByRole('button', { name: '差分を確認' }))
     dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
-    fireEvent.click(within(dialog).getByRole('button', { name: '確認して承認' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '確認済みにする' }))
 
     await waitFor(() => expect(fetchApiMock).toHaveBeenCalledWith(
       '/api/forms-advanced/fa1/rows/row1/approve-external-edit',
@@ -159,7 +159,7 @@ describe('T-D2 回答詳細 編集モード', () => {
     expect(screen.queryByText('回答の詳細')).toBeNull()
   })
 
-  it('差分0件の未承認回答も詳細から確認して承認できる', async () => {
+  it('差分0件の未確認回答も詳細から確認済みにできる', async () => {
     fetchApiMock.mockImplementation(async (path: string) => (
       path === '/api/staff/me'
         ? { data: { role: 'owner' } }
@@ -180,10 +180,10 @@ describe('T-D2 回答詳細 編集モード', () => {
     fetchApiMock.mockClear()
 
     const changes = screen.getByTestId('detail-external-edit-changes')
-    fireEvent.click(within(changes).getByRole('button', { name: '差分を確認して承認' }))
+    fireEvent.click(within(changes).getByRole('button', { name: '差分を確認' }))
     const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     expect(within(dialog).getByText('変更された項目はありません')).toBeTruthy()
-    fireEvent.click(within(dialog).getByRole('button', { name: '確認して承認' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '確認済みにする' }))
 
     await waitFor(() => expect(fetchApiMock).toHaveBeenCalledTimes(1))
   })

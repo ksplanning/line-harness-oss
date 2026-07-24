@@ -361,11 +361,11 @@ export default function DataCockpit(props: DataCockpitProps) {
                           {external.externalEditSource === 'edit_link' ? '編集URL' : 'シート'}
                         </span>
                         {approved ? (
-                          <span className="text-xs text-gray-500">承認済み</span>
+                          <span className="text-xs text-gray-500">確認済み</span>
                         ) : (
                           <button
                             type="button"
-                            aria-label={`${r.id} の外部編集を承認`}
+                            aria-label={`${r.id} の外部編集を確認`}
                             disabled={!external.formId}
                             onClick={() => setReviewingExternalEdit(external)}
                             className="min-h-[44px] rounded-lg border border-amber-400 bg-white px-3 text-sm font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50"

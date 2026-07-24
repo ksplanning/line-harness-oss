@@ -649,7 +649,7 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
                     onClick={() => setReviewingExternalEdit(true)}
                     className="mt-3 min-h-[44px] rounded-lg border border-amber-400 bg-white px-3 text-sm font-medium text-amber-800 hover:bg-amber-100"
                   >
-                    差分を確認して承認
+                    差分を確認
                   </button>
                 )}
               </section>

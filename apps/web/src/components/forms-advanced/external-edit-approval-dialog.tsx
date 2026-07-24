@@ -163,7 +163,7 @@ export default function ExternalEditApprovalDialog({
           外部編集の差分を確認
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-gray-600">
-          変更前と変更後を確認してください。「確認して承認」を押すまで承認されません。
+          編集内容はすでに回答へ反映されています。確認済みにすると、外部編集の絞り込みから外れます。
         </p>
 
         <dl className="mt-4 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 rounded-xl bg-gray-50 p-4 text-sm">
@@ -234,7 +234,7 @@ export default function ExternalEditApprovalDialog({
             className="min-h-12 rounded-lg px-5 text-sm font-bold text-white disabled:opacity-50"
             style={{ backgroundColor: LINE_GREEN }}
           >
-            {approving ? '承認中…' : '確認して承認'}
+            {approving ? '処理中…' : '確認済みにする'}
           </button>
         </div>
       </div>

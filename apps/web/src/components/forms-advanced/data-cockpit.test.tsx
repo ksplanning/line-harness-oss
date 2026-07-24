@@ -244,7 +244,7 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     expect(screen.queryByLabelText('normal-row の詳細')).toBeNull()
   })
 
-  it('承認ボタンの初回クリックでは API を呼ばず、経路・日時・全差分の確認ポップアップを開く', () => {
+  it('確認ボタンの初回クリックでは API を呼ばず、反映済みの説明と経路・日時・全差分を表示する', () => {
     const changedRow: SubmissionRow = {
       ...externalRows[0],
       externalEditChanges: [
@@ -258,11 +258,15 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
       fieldLabels: [{ slug: 'name', label: 'お名前' }],
     })} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を確認' }))
 
     expect(apiMocks.fetchApi).not.toHaveBeenCalled()
     const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     expect(dialog.getAttribute('data-testid')).toBe('external-edit-approval-dialog')
+    expect(within(dialog).getByText(
+      '編集内容はすでに回答へ反映されています。確認済みにすると、外部編集の絞り込みから外れます。',
+    )).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: '確認済みにする' })).toBeTruthy()
     expect(within(dialog).getByText('編集URL')).toBeTruthy()
     expect(within(dialog).getByText('2026-07-23 10:00')).toBeTruthy()
     expect(within(dialog).getByText('お名前')).toBeTruthy()
@@ -286,7 +290,7 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
       } as DataCockpitProps['stats'],
     })} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を確認' }))
     const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     fireEvent.click(within(dialog).getByRole('button', { name: '閉じる' }))
 
@@ -306,10 +310,10 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
       total: 1,
     })} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を確認' }))
     const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     expect(within(dialog).getByText('変更された項目はありません')).toBeTruthy()
-    fireEvent.click(within(dialog).getByRole('button', { name: '確認して承認' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '確認済みにする' }))
 
     await waitFor(() => expect(apiMocks.fetchApi).toHaveBeenCalledTimes(1))
   })
@@ -329,7 +333,7 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
       fieldLabels: [{ slug: 'attachment', label: '添付資料' }],
     })} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を確認' }))
     const dialog = screen.getByRole('dialog', { name: '外部編集の差分を確認' })
     expect(within(dialog).getByText('変更前.pdf')).toBeTruthy()
     expect(within(dialog).getByText('変更後.pdf')).toBeTruthy()
@@ -339,14 +343,14 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
 
   it('ポップアップ表示中は背景スクロールを止め、Escapeで閉じた後に入口へフォーカスを戻す', async () => {
     render(<DataCockpit {...base({ rows: [externalRows[0]], total: 1 })} />)
-    const trigger = screen.getByRole('button', { name: 's1 の外部編集を承認' })
+    const trigger = screen.getByRole('button', { name: 's1 の外部編集を確認' })
     const previousOverflow = document.body.style.overflow
     trigger.focus()
 
     fireEvent.click(trigger)
 
     expect(document.body.style.overflow).toBe('hidden')
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: '確認して承認' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '確認済みにする' }))
     fireEvent.keyDown(document, { key: 'Escape' })
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '外部編集の差分を確認' })).toBeNull())
@@ -373,9 +377,9 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     render(<DataCockpit {...p} />)
 
     fireEvent.click(screen.getByRole('button', { name: '外部編集（未承認） 1件' }))
-    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を確認' }))
     expect(apiMocks.fetchApi).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認済みにする' }))
 
     await waitFor(() => expect(apiMocks.fetchApi).toHaveBeenCalledWith(
       '/api/forms-advanced/form-1/rows/s1/approve-external-edit',
@@ -417,8 +421,8 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
       } as DataCockpitProps['stats'],
     })} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
-    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を確認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認済みにする' }))
 
     expect((await screen.findByRole('alert')).textContent)
       .toContain('回答が更新されたため、内容を確認し直してください')
@@ -444,8 +448,8 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
       } as DataCockpitProps['stats'],
     })} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
-    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を確認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認済みにする' }))
 
     expect((await screen.findByRole('alert')).textContent)
       .toContain('他の操作で回答の状態が変わりました。再読み込みして、差分を確認し直してください。')
@@ -472,8 +476,8 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     fireEvent.click(screen.getByLabelText('s1 を選択'))
     expect(screen.getByText('選択削除（1）')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
-    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を確認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認済みにする' }))
 
     await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
     expect(screen.queryByText('選択削除（1）')).toBeNull()
@@ -497,8 +501,8 @@ describe('DataCockpit — 外部編集レビュー (D-3)', () => {
     })
     const view = render(<DataCockpit {...initial} />)
     fireEvent.click(screen.getByRole('button', { name: '外部編集（未承認） 1件' }))
-    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を承認' }))
-    fireEvent.click(screen.getByRole('button', { name: '確認して承認' }))
+    fireEvent.click(screen.getByRole('button', { name: 's1 の外部編集を確認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認済みにする' }))
     await waitFor(() => expect(screen.queryByLabelText('s1 の詳細')).toBeNull())
 
     const otherPending = {
