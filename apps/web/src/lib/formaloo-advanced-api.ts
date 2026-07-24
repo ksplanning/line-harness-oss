@@ -300,6 +300,15 @@ export interface SubmissionRow {
   duplicateReviewedAt?: string | null
   duplicateReviewRevision?: string | null
 }
+export interface FriendColumnData {
+  tags: Array<{ id: string; name: string; color: string }>
+  metadata: Record<string, unknown>
+}
+export interface FriendColumnField {
+  id: string
+  name: string
+  defaultValue: string
+}
 export interface RowsPage {
   rows: SubmissionRow[]
   total: number
@@ -308,6 +317,8 @@ export interface RowsPage {
   // form-response-display-fix (T-A1): 列ヘッダーを質問名で描画するための slug→label 対応 (additive・後方互換)。
   //   field_map(formaloo_field_slug) × 定義(label) の join。旧 worker は返さない → optional。
   fields?: Array<{ slug: string; label: string }>
+  friendData?: Record<string, FriendColumnData>
+  friendFields?: FriendColumnField[]
   duplicateReviewPendingCount?: number
 }
 /** 弾M (form-post-edit): 編集保存レスポンス (merge 後 answers + ④最終編集情報)。 */
@@ -389,7 +400,11 @@ export interface RowsQuery {
   duplicateReview?: 'pending'
 }
 
-function toQueryString(q: RowsQuery): string {
+export interface RowsOptions {
+  lineAccountId?: string
+}
+
+function toQueryString(q: RowsQuery, options: RowsOptions = {}): string {
   const p = new URLSearchParams()
   if (q.q) p.set('q', q.q)
   if (q.from) p.set('from', q.from)
@@ -399,13 +414,14 @@ function toQueryString(q: RowsQuery): string {
   if (q.pageSize) p.set('pageSize', String(q.pageSize))
   if (q.externalEdit) p.set('externalEdit', q.externalEdit)
   if (q.duplicateReview) p.set('duplicateReview', q.duplicateReview)
+  if (options.lineAccountId) p.set('lineAccountId', options.lineAccountId)
   const s = p.toString()
   return s ? `?${s}` : ''
 }
 
 export const formalooDataApi = {
-  async rows(id: string, q: RowsQuery = {}): Promise<RowsPage> {
-    return (await fetchApi<Envelope<RowsPage>>(`/api/forms-advanced/${id}/rows${toQueryString(q)}`)).data
+  async rows(id: string, q: RowsQuery = {}, options: RowsOptions = {}): Promise<RowsPage> {
+    return (await fetchApi<Envelope<RowsPage>>(`/api/forms-advanced/${id}/rows${toQueryString(q, options)}`)).data
   },
   async row(id: string, rowId: string): Promise<RowDetail> {
     return (await fetchApi<Envelope<RowDetail>>(`/api/forms-advanced/${id}/rows/${rowId}`)).data

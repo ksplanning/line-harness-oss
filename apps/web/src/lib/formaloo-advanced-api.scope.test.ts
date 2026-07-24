@@ -120,6 +120,23 @@ describe('formalooDataApi — external edit review metadata', () => {
     )
   })
 
+  it('keeps the selected account scope separate from saved row filters', async () => {
+    fetchApi.mockResolvedValueOnce({
+      success: true,
+      data: { rows: [], total: 0, page: 2, pageSize: 25 },
+    })
+
+    await formalooDataApi.rows(
+      'form-1',
+      { q: '田中', page: 2, pageSize: 25 },
+      { lineAccountId: 'acc/A?x' },
+    )
+
+    expect(fetchApi).toHaveBeenCalledWith(
+      '/api/forms-advanced/form-1/rows?q=%E7%94%B0%E4%B8%AD&page=2&pageSize=25&lineAccountId=acc%2FA%3Fx',
+    )
+  })
+
   it('keeps review metadata on list and detail rows', async () => {
     fetchApi
       .mockResolvedValueOnce({

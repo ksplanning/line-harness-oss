@@ -236,11 +236,13 @@ export default function DataCockpitClient({ id, initialRowId }: { id: string; in
 
   const loadRows = useCallback(async (q: RowsQuery) => {
     try {
-      setRowsPage(await formalooDataApi.rows(id, q))
+      setRowsPage(await formalooDataApi.rows(id, q, {
+        lineAccountId: selectedAccountId ?? undefined,
+      }))
     } catch {
       setRowsPage({ rows: [], total: 0, page: 1, pageSize: q.pageSize ?? 25 })
     }
-  }, [id])
+  }, [id, selectedAccountId])
 
   const refreshStats = useCallback(async () => {
     try { setStats(await formalooDataApi.stats(id)) } catch { /* fail-soft */ }

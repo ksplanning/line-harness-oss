@@ -36,6 +36,7 @@ import {
   getLatestEdit,
   updateSubmissionRowSlug,
   getStaffById,
+  listFriendFieldDefinitions,
   jstNow,
   acquireFormalooFormOperationLock,
   releaseFormalooFormOperationLock,
@@ -86,6 +87,7 @@ import {
   computeRouteTerminalWarnings,
   isExpandableMultiJumpItem,
   isExpandableTerminalItem,
+  isReservedFriendMetadataKey,
   type HarnessField,
   type HarnessLogicRule,
   type FormDesign,
@@ -1713,6 +1715,85 @@ function serializeSubmissionRow(
   };
 }
 
+interface FriendColumnData {
+  tags: Array<{ id: string; name: string; color: string }>;
+  metadata: Record<string, unknown>;
+}
+
+interface FriendColumnQueryRow {
+  friend_id: string;
+  metadata: string | null;
+  tag_id: string | null;
+  tag_name: string | null;
+  tag_color: string | null;
+}
+
+function visibleFriendMetadata(raw: string | null): Record<string, unknown> {
+  const parsed = safeParseJson(raw ?? '');
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+  const visible: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!isReservedFriendMetadataKey(key)) visible[key] = value;
+  }
+  return visible;
+}
+
+async function loadSubmissionFriendData(
+  db: D1Database,
+  rows: FormalooSubmissionRow[],
+  formLineAccountId: string | null,
+  requestedLineAccountId: string | undefined,
+): Promise<Record<string, FriendColumnData>> {
+  if (
+    !requestedLineAccountId
+    || (formLineAccountId !== null && formLineAccountId !== requestedLineAccountId)
+  ) {
+    return {};
+  }
+
+  const friendIds = Array.from(new Set(
+    rows.flatMap((row) => row.friend_id ? [row.friend_id] : []),
+  ));
+  if (friendIds.length === 0) return {};
+
+  const placeholders = friendIds.map(() => '?').join(', ');
+  const result = await db
+    .prepare(
+      `SELECT
+         f.id AS friend_id,
+         f.metadata AS metadata,
+         t.id AS tag_id,
+         t.name AS tag_name,
+         t.color AS tag_color
+       FROM friends f
+       LEFT JOIN friend_tags ft ON ft.friend_id = f.id
+       LEFT JOIN tags t ON t.id = ft.tag_id
+       WHERE f.line_account_id = ?
+         AND f.id IN (${placeholders})
+       ORDER BY f.id ASC, ft.assigned_at ASC, t.id ASC`,
+    )
+    .bind(requestedLineAccountId, ...friendIds)
+    .all<FriendColumnQueryRow>();
+
+  const byFriendId: Record<string, FriendColumnData> = {};
+  for (const row of result.results) {
+    const friend = byFriendId[row.friend_id] ?? {
+      tags: [],
+      metadata: visibleFriendMetadata(row.metadata),
+    };
+    if (row.tag_id && row.tag_name) {
+      friend.tags.push({
+        id: row.tag_id,
+        name: row.tag_name,
+        color: row.tag_color ?? '#3B82F6',
+      });
+    }
+    byFriendId[row.friend_id] = friend;
+  }
+  return byFriendId;
+}
+
 function formalooDuplicateFields(
   fieldMap: Awaited<ReturnType<typeof getFormalooFieldMap>>,
 ): DuplicateReviewField[] {
@@ -1879,6 +1960,25 @@ formsAdvanced.get('/api/forms-advanced/:id/rows', async (c) => {
       console.error('GET /api/forms-advanced/:id/rows field label build failed (fail-soft):', labelErr);
     }
 
+    let friendData: Record<string, FriendColumnData> = {};
+    try {
+      friendData = await loadSubmissionFriendData(
+        c.env.DB,
+        rows,
+        form.line_account_id,
+        c.req.query('lineAccountId'),
+      );
+    } catch (friendDataErr) {
+      console.error('GET /api/forms-advanced/:id/rows friend enrichment failed (fail-soft):', friendDataErr);
+    }
+
+    let friendFields: Awaited<ReturnType<typeof listFriendFieldDefinitions>> = [];
+    try {
+      friendFields = await listFriendFieldDefinitions(c.env.DB, { activeOnly: true });
+    } catch (friendFieldsErr) {
+      console.error('GET /api/forms-advanced/:id/rows friend fields failed (fail-soft):', friendFieldsErr);
+    }
+
     return c.json({
       success: true,
       data: {
@@ -1890,6 +1990,8 @@ formsAdvanced.get('/api/forms-advanced/:id/rows', async (c) => {
         page,
         pageSize,
         fields,
+        friendData,
+        friendFields,
         duplicateReviewPendingCount: duplicateReviewResult.pendingCount,
       },
     });

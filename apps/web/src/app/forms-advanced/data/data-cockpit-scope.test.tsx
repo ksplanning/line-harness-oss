@@ -124,7 +124,11 @@ describe('自前配信の回答表示', () => {
     expect(screen.getByTestId('header-description').textContent).toContain('自前回答')
     expect(cockpitProps.current?.isOwner).toBe(false)
     expect(getRenderBackendMock).not.toHaveBeenCalled()
-    expect(rowsMock).toHaveBeenCalledWith('fa1', expect.objectContaining({ page: 1, pageSize: 25 }))
+    expect(rowsMock).toHaveBeenCalledWith(
+      'fa1',
+      expect.objectContaining({ page: 1, pageSize: 25 }),
+      { lineAccountId: 'acc_A' },
+    )
     expect(statsMock).toHaveBeenCalledWith('fa1')
   })
 

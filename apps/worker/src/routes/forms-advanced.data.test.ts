@@ -22,7 +22,10 @@ const BENIGN = /duplicate column name|already exists/i;
 
 function d1(
   db: Database.Database,
-  options: { beforeRun?: (sql: string) => void } = {},
+  options: {
+    beforeRun?: (sql: string) => void;
+    beforeAll?: (sql: string) => void;
+  } = {},
 ): D1Database {
   return {
     prepare(sql: string) {
@@ -31,7 +34,10 @@ function d1(
       const api = {
         bind(...args: unknown[]) { params = args; return api; },
         async first<T>() { return (s.get(...(params as never[])) as T) ?? null; },
-        async all<T>() { return { results: s.all(...(params as never[])) as T[] }; },
+        async all<T>() {
+          options.beforeAll?.(sql);
+          return { results: s.all(...(params as never[])) as T[] };
+        },
         async run() {
           options.beforeRun?.(sql);
           const info = s.run(...(params as never[]));
@@ -89,12 +95,31 @@ function seedStaff(id: string, role: string, apiKey: string, roleId: string | nu
      VALUES (?,?,?,?,?,1,?,?,?)`,
   ).run(id, id, null, role, apiKey, now, now, roleId);
 }
-function seedForm(id: string) {
-  raw.prepare(`INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status) VALUES (?,?,?,?)`).run(id, `slug_${id}`, 'テスト', 'published');
+function seedForm(id: string, lineAccountId: string | null = null) {
+  raw.prepare(
+    `INSERT INTO formaloo_forms (id, formaloo_slug, title, builder_status, line_account_id)
+     VALUES (?,?,?,?,?)`,
+  ).run(id, `slug_${id}`, 'テスト', 'published', lineAccountId);
+}
+function seedLineAccount(id: string) {
+  raw.prepare(
+    `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+     VALUES (?,?,?,?,?)`,
+  ).run(id, `channel_${id}`, id, 'token', 'secret');
 }
 function seedSub(id: string, formId: string, answers: Record<string, unknown>, submittedAt: string, friendId: string | null = null) {
   raw.prepare(`INSERT INTO formaloo_submissions (id, form_id, friend_id, answers_json, submitted_at) VALUES (?,?,?,?,?)`)
     .run(id, formId, friendId, JSON.stringify(answers), submittedAt);
+}
+function seedFriend(id: string, lineAccountId: string, metadata: Record<string, unknown>) {
+  raw.prepare(
+    `INSERT INTO friends (id, line_user_id, display_name, line_account_id, metadata)
+     VALUES (?,?,?,?,?)`,
+  ).run(id, `U_${id}`, id, lineAccountId, JSON.stringify(metadata));
+}
+function seedFriendTag(friendId: string, tagId: string, name: string) {
+  raw.prepare('INSERT INTO tags (id, name, color) VALUES (?,?,?)').run(tagId, name, '#06C755');
+  raw.prepare('INSERT INTO friend_tags (friend_id, tag_id) VALUES (?,?)').run(friendId, tagId);
 }
 
 beforeEach(() => {
@@ -138,6 +163,118 @@ describe('T-D1 rows 検索/ページング', () => {
 
   test('unknown form → 404', async () => {
     expect((await call('GET', '/api/forms-advanced/nope/rows')).status).toBe(404);
+  });
+});
+
+describe('D-3 rows 友だち情報 enrichment', () => {
+  beforeEach(() => {
+    seedLineAccount('account-a');
+    seedLineAccount('account-b');
+    seedForm('common-form');
+    seedFriend('friend-a', 'account-a', {
+      '会員ランク': 'ゴールド',
+      __formaloo_friend_metadata_sync: { internal: 'A-secret' },
+    });
+    seedFriend('friend-b', 'account-b', {
+      '会員ランク': 'シルバー',
+      '別アカウント印': 'B-secret',
+    });
+    seedFriendTag('friend-a', 'tag-a', 'A限定タグ');
+    seedFriendTag('friend-b', 'tag-b', 'B限定タグ');
+    seedSub('row-a', 'common-form', { name: 'A回答' }, '2026-07-24T10:00:00+09:00', 'friend-a');
+    seedSub('row-b', 'common-form', { name: 'B回答' }, '2026-07-24T11:00:00+09:00', 'friend-b');
+    raw.prepare(
+      `INSERT INTO friend_field_definitions
+         (id, name, default_value, display_order, is_active)
+       VALUES ('field-rank', '会員ランク', '未設定', 0, 1)`,
+    ).run();
+  });
+
+  test('common form は回答本流を変えず、要求アカウントのタグ/metadata だけを返す', async () => {
+    const response = await call(
+      'GET',
+      '/api/forms-advanced/common-form/rows?lineAccountId=account-a',
+    );
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    const data = (JSON.parse(body) as {
+      data: {
+        rows: Array<{ id: string }>;
+        total: number;
+        friendData: Record<string, {
+          tags: Array<{ name: string }>;
+          metadata: Record<string, unknown>;
+        }>;
+        friendFields: Array<{ id: string; name: string; defaultValue: string }>;
+      };
+    }).data;
+
+    expect(data.total).toBe(2);
+    expect(data.rows.map((row) => row.id)).toEqual(['row-b', 'row-a']);
+    expect(data.friendData).toEqual({
+      'friend-a': {
+        tags: [expect.objectContaining({ name: 'A限定タグ' })],
+        metadata: { '会員ランク': 'ゴールド' },
+      },
+    });
+    expect(data.friendFields).toEqual([
+      expect.objectContaining({
+        id: 'field-rank',
+        name: '会員ランク',
+        defaultValue: '未設定',
+      }),
+    ]);
+    expect(body).not.toContain('B-secret');
+    expect(body).not.toContain('B限定タグ');
+    expect(body).not.toContain('A-secret');
+  });
+
+  test('account-scoped form は要求アカウント不一致・未指定の enrichment を空に倒す', async () => {
+    seedForm('scoped-form', 'account-a');
+    seedSub('scoped-row', 'scoped-form', { name: 'A回答' }, '2026-07-24T12:00:00+09:00', 'friend-a');
+
+    for (const suffix of ['?lineAccountId=account-b', '']) {
+      const response = await call('GET', `/api/forms-advanced/scoped-form/rows${suffix}`);
+      expect(response.status).toBe(200);
+      const data = (await response.json() as {
+        data: { rows: Array<{ id: string }>; total: number; friendData: Record<string, unknown> };
+      }).data;
+      expect(data.rows).toEqual([expect.objectContaining({ id: 'scoped-row' })]);
+      expect(data.total).toBe(1);
+      expect(data.friendData).toEqual({});
+    }
+  });
+
+  test('友だち情報取得だけが失敗しても検索・ページング済みの回答一覧を200で返す', async () => {
+    DB = d1(raw, {
+      beforeAll(sql) {
+        if (/FROM friends f[\s\S]*friend_tags/i.test(sql)) {
+          throw new Error('friend enrichment unavailable');
+        }
+      },
+    });
+
+    const response = await call(
+      'GET',
+      '/api/forms-advanced/common-form/rows?lineAccountId=account-a&q=A%E5%9B%9E%E7%AD%94&page=1&pageSize=1',
+    );
+    expect(response.status).toBe(200);
+    const data = (await response.json() as {
+      data: {
+        rows: Array<{ id: string; answers: { name: string } }>;
+        total: number;
+        page: number;
+        pageSize: number;
+        friendData: Record<string, unknown>;
+      };
+    }).data;
+    expect(data).toMatchObject({
+      rows: [{ id: 'row-a', answers: { name: 'A回答' } }],
+      total: 1,
+      page: 1,
+      pageSize: 1,
+      friendData: {},
+    });
   });
 });
 
