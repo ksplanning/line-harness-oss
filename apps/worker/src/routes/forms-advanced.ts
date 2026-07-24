@@ -10,6 +10,7 @@ import {
   setFormalooSyncState,
   getFormalooSyncState,
   listFormalooDriftEvents,
+  markFormalooSubmissionDuplicateReviewed,
   queryFormalooSubmissions,
   countFormalooSubmissionsForForm,
   countInternalFormSubmissionsForForm,
@@ -39,6 +40,13 @@ import {
   type FormalooForm,
   type FormalooSubmissionRow,
 } from '@line-crm/db';
+import {
+  buildFormSubmissionDuplicateReview,
+  groupPendingDuplicateReviewRows,
+  type DuplicateReviewField,
+  type DuplicateReviewMetadata,
+  type FormSubmissionDuplicateReview,
+} from '../services/form-submission-duplicate-review.js';
 import {
   buildFlatRowPatchBody,
   findEmptyRequired,
@@ -1466,14 +1474,65 @@ function safeParseJson(json: string): unknown {
   }
 }
 
-function serializeSubmissionRow(row: FormalooSubmissionRow) {
+function serializeSubmissionRow(
+  row: FormalooSubmissionRow,
+  duplicate: DuplicateReviewMetadata | null = null,
+) {
   return {
     id: row.id,
     friendId: row.friend_id,
     answers: safeParseJson(row.answers_json),
     submittedAt: row.submitted_at,
     verified: row.verified === 1,
+    duplicateGroupId: duplicate?.groupId ?? null,
+    duplicateGroupSize: duplicate?.groupSize ?? null,
+    duplicateContentMatch: duplicate?.contentMatch ?? null,
+    duplicateReviewedAt: row.duplicate_reviewed_at,
+    duplicateReviewRevision: duplicate?.revision ?? null,
   };
+}
+
+function formalooDuplicateFields(
+  fieldMap: Awaited<ReturnType<typeof getFormalooFieldMap>>,
+): DuplicateReviewField[] {
+  return fieldMap.flatMap((field) => (
+    field.formaloo_field_slug
+      ? [{
+          answerKey: field.formaloo_field_slug,
+          type: field.field_type,
+          label: field.label,
+        }]
+      : []
+  ));
+}
+
+async function formalooDuplicateReview(
+  db: D1Database,
+  formId: string,
+  fields: DuplicateReviewField[],
+): Promise<FormSubmissionDuplicateReview> {
+  try {
+    const { rows } = await queryFormalooSubmissions(db, {
+      formId,
+      sortDir: 'desc',
+      limit: -1,
+      offset: 0,
+    });
+    return await buildFormSubmissionDuplicateReview(
+      rows.map((row) => ({
+        id: row.id,
+        formId: row.form_id,
+        friendId: row.friend_id,
+        answersJson: row.answers_json,
+        submittedAt: row.submitted_at,
+        reviewedAt: row.duplicate_reviewed_at,
+      })),
+      fields,
+    );
+  } catch (error) {
+    console.error('Formaloo duplicate review calculation failed (fail-soft):', error);
+    return { byRowId: new Map(), pendingCount: 0 };
+  }
 }
 
 function parseIntSafe(v: string | undefined, fallback: number): number {
@@ -1541,30 +1600,134 @@ formsAdvanced.get('/api/forms-advanced/:id/rows', async (c) => {
 
     const page = Math.max(1, parseIntSafe(c.req.query('page'), 1));
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, parseIntSafe(c.req.query('pageSize'), DEFAULT_PAGE_SIZE)));
-    const { rows, total } = await queryFormalooSubmissions(c.env.DB, {
+    let fieldMap: Awaited<ReturnType<typeof getFormalooFieldMap>> = [];
+    try {
+      fieldMap = await getFormalooFieldMap(c.env.DB, id);
+    } catch (labelErr) {
+      console.error('GET /api/forms-advanced/:id/rows field map failed (fail-soft):', labelErr);
+    }
+    const duplicateReviewResult = await formalooDuplicateReview(
+      c.env.DB,
+      id,
+      formalooDuplicateFields(fieldMap),
+    );
+    const duplicateOnly = c.req.query('duplicateReview') === 'pending';
+    const queried = await queryFormalooSubmissions(c.env.DB, {
       formId: id,
       q: c.req.query('q') ?? null,
       from: c.req.query('from') ?? null,
       to: c.req.query('to') ?? null,
       sortDir: c.req.query('sort') === 'asc' ? 'asc' : 'desc',
-      limit: pageSize,
-      offset: (page - 1) * pageSize,
+      limit: duplicateOnly ? -1 : pageSize,
+      offset: duplicateOnly ? 0 : (page - 1) * pageSize,
     });
+    const pendingRows = duplicateOnly
+      ? groupPendingDuplicateReviewRows(
+          queried.rows,
+          duplicateReviewResult,
+          (row) => row.id,
+        )
+      : queried.rows;
+    const rows = duplicateOnly
+      ? pendingRows.slice((page - 1) * pageSize, page * pageSize)
+      : pendingRows;
+    const total = duplicateOnly ? pendingRows.length : queried.total;
 
     // form-response-display-fix (T-A1): 列ヘッダー label 化用に fields:[{slug,label}] を additive 付与。
     //   field_map(formaloo_field_slug) × 定義(label) の join (装飾/slug 無し除外・定義順)。
     //   fail-soft: label 解決に失敗しても一覧本体は返す (web はヘッダーを slug へ fallback する)。
     let fields: Array<{ slug: string; label: string }> = [];
     try {
-      const fieldMap = await getFormalooFieldMap(c.env.DB, id);
       fields = buildFieldLabelList(fieldMap, parseDefinition(form.definition_json).fields);
     } catch (labelErr) {
       console.error('GET /api/forms-advanced/:id/rows field label build failed (fail-soft):', labelErr);
     }
 
-    return c.json({ success: true, data: { rows: rows.map(serializeSubmissionRow), total, page, pageSize, fields } });
+    return c.json({
+      success: true,
+      data: {
+        rows: rows.map((row) => serializeSubmissionRow(
+          row,
+          duplicateReviewResult.byRowId.get(row.id) ?? null,
+        )),
+        total,
+        page,
+        pageSize,
+        fields,
+        duplicateReviewPendingCount: duplicateReviewResult.pendingCount,
+      },
+    });
   } catch (err) {
     console.error('GET /api/forms-advanced/:id/rows error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+formsAdvanced.post('/api/forms-advanced/:id/rows/:rowId/confirm-duplicate', async (c) => {
+  try {
+    const id = c.req.param('id')!;
+    const rowId = c.req.param('rowId')!;
+    const form = await getFormalooForm(c.env.DB, id);
+    if (!form || form.deleted) {
+      return c.json({ success: false, error: 'フォームが見つかりません' }, 404);
+    }
+    const body = await c.req.json<{
+      expectedDuplicateReviewRevision?: unknown;
+    }>().catch(() => null);
+    const expectedRevision = body?.expectedDuplicateReviewRevision;
+    if (typeof expectedRevision !== 'string' || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
+      return c.json({
+        success: false,
+        error: '画面を再読み込みしてから確認してください',
+      }, 400);
+    }
+
+    const row = await getFormalooSubmission(c.env.DB, rowId);
+    if (!row || row.form_id !== id) {
+      return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    }
+    const fieldMap = await getFormalooFieldMap(c.env.DB, id).catch(() => []);
+    const review = await formalooDuplicateReview(
+      c.env.DB,
+      id,
+      formalooDuplicateFields(fieldMap),
+    );
+    const duplicate = review.byRowId.get(rowId);
+    if (!duplicate || duplicate.reviewedAt !== null) {
+      return c.json({ success: false, error: '未確認の重複候補ではありません' }, 409);
+    }
+    if (duplicate.revision !== expectedRevision) {
+      return c.json({
+        success: false,
+        error: '重複候補が更新されたため、内容を確認し直してください',
+      }, 409);
+    }
+
+    const marked = await markFormalooSubmissionDuplicateReviewed(c.env.DB, {
+      formId: id,
+      submissionId: rowId,
+      expectedFriendId: row.friend_id,
+      expectedAnswersJson: row.answers_json,
+    });
+    if (!marked) {
+      return c.json({
+        success: false,
+        error: '回答の状態が更新されたため、再読み込みしてください',
+      }, 409);
+    }
+    const readback = await getFormalooSubmission(c.env.DB, rowId);
+    if (!readback || readback.form_id !== id) {
+      return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    }
+    return c.json({
+      success: true,
+      data: serializeSubmissionRow(readback, {
+        ...duplicate,
+        reviewedAt: readback.duplicate_reviewed_at,
+      }),
+    });
+  } catch (error) {
+    console.error('POST /api/forms-advanced/:id/rows/:rowId/confirm-duplicate error:', error);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1843,6 +2006,12 @@ formsAdvanced.get('/api/forms-advanced/:id/stats', async (c) => {
     const { total } = await queryFormalooSubmissions(c.env.DB, { formId: id, limit: 1, offset: 0 });
     const daily = await formalooSubmissionsDailyCounts(c.env.DB, id);
     const verifiedRow = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM formaloo_submissions WHERE form_id = ? AND verified = 1').bind(id).first<{ n: number }>();
+    const fieldMap = await getFormalooFieldMap(c.env.DB, id).catch(() => []);
+    const duplicateReview = await formalooDuplicateReview(
+      c.env.DB,
+      id,
+      formalooDuplicateFields(fieldMap),
+    );
 
     // Formaloo 側 stats を drill (fail-soft): client 未配備/失敗は null。上で解決済 client を再利用。
     let formaloo: unknown = null;
@@ -1850,7 +2019,16 @@ formsAdvanced.get('/api/forms-advanced/:id/stats', async (c) => {
       const r = await client.get<{ data?: unknown }>(`/v3.0/forms/${form.formaloo_slug}/stats/`);
       if (r.ok) formaloo = r.data?.data ?? null;
     }
-    return c.json({ success: true, data: { total, verified: verifiedRow?.n ?? 0, daily, formaloo } });
+    return c.json({
+      success: true,
+      data: {
+        total,
+        verified: verifiedRow?.n ?? 0,
+        daily,
+        formaloo,
+        duplicateReviewPending: duplicateReview.pendingCount,
+      },
+    });
   } catch (err) {
     console.error('GET /api/forms-advanced/:id/stats error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);

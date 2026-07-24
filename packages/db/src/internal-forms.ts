@@ -24,6 +24,7 @@ export interface InternalFormSubmission {
   external_edit_changes_json: string | null;
   external_edit_notification_claimed_for_at: string | null;
   external_edit_notification_claimed_for_version: number | null;
+  duplicate_reviewed_at: string | null;
   deleted_at: string | null;
   submitted_at: string;
   created_at: string;
@@ -493,6 +494,7 @@ function insertedInternalFormSubmission(
     external_edit_changes_json: null,
     external_edit_notification_claimed_for_at: null,
     external_edit_notification_claimed_for_version: null,
+    duplicate_reviewed_at: null,
     deleted_at: null,
     submitted_at: now,
     created_at: now,
@@ -717,6 +719,21 @@ export async function listInternalFormSubmissions(
     .bind(formId, limit, offset)
     .all<InternalFormSubmission>();
   return { rows: rows.results, total: totalRow?.n ?? 0 };
+}
+
+export async function listInternalFormSubmissionsForDuplicateReview(
+  db: D1Database,
+  formId: string,
+): Promise<InternalFormSubmission[]> {
+  const rows = await db
+    .prepare(
+      `SELECT * FROM internal_form_submissions
+       WHERE form_id = ? AND deleted_at IS NULL
+       ORDER BY julianday(submitted_at) DESC, rowid DESC`,
+    )
+    .bind(formId)
+    .all<InternalFormSubmission>();
+  return rows.results;
 }
 
 /**
@@ -1340,6 +1357,36 @@ export async function approveInternalFormSubmissionExternalEdit(
       input.formId,
       input.expectedSource,
       input.expectedEditedAt,
+      input.expectedAnswersJson,
+    )
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+export async function markInternalFormSubmissionDuplicateReviewed(
+  db: D1Database,
+  input: {
+    formId: string;
+    submissionId: string;
+    expectedFriendId: string | null;
+    expectedAnswersJson: string;
+    reviewedAt?: string;
+  },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE internal_form_submissions
+       SET duplicate_reviewed_at = ?
+       WHERE id = ? AND form_id = ? AND deleted_at IS NULL
+         AND duplicate_reviewed_at IS NULL
+         AND friend_id IS ?
+         AND answers_json = ?`,
+    )
+    .bind(
+      input.reviewedAt ?? jstNow(),
+      input.submissionId,
+      input.formId,
+      input.expectedFriendId,
       input.expectedAnswersJson,
     )
     .run();

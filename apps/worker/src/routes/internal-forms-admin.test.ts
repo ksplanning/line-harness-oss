@@ -1401,6 +1401,177 @@ describe('internal answer admin read path', () => {
     });
   });
 
+  test('filters, marks, and dynamically resolves duplicate-review rows within one form', async () => {
+    seedInternalSubmission(
+      'sub-4',
+      'internal-form',
+      { name: '二郎（再送）', contact: 'two@example.test' },
+      '2026-07-03T09:00:00+09:00',
+      'friend-1',
+    );
+    seedInternalSubmission(
+      'sub-5',
+      'internal-form',
+      { name: '一郎', contact: 'one@example.test' },
+      '2026-07-04T09:00:00+09:00',
+    );
+    seedInternalSubmission(
+      'other-form-same-friend',
+      'other-internal-form',
+      { name: '別フォーム', contact: 'two@example.test' },
+      '2026-07-05T09:00:00+09:00',
+      'friend-1',
+    );
+
+    const unfiltered = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?page=1&pageSize=25',
+    );
+    expect(unfiltered.status).toBe(200);
+    const unfilteredData = (await unfiltered.json() as {
+      data: {
+        rows: Array<{
+          id: string;
+          duplicateGroupId: string | null;
+          duplicateGroupSize: number | null;
+          duplicateContentMatch: 'identical' | 'different' | null;
+          duplicateReviewedAt: string | null;
+          duplicateReviewRevision: string | null;
+        }>;
+        duplicateReviewPendingCount: number;
+      };
+    }).data;
+    expect(unfilteredData.duplicateReviewPendingCount).toBe(4);
+    expect(unfilteredData.rows.find((row) => row.id === 'sub-1')).toMatchObject({
+      duplicateGroupSize: 2,
+      duplicateContentMatch: 'identical',
+      duplicateReviewedAt: null,
+      duplicateReviewRevision: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(unfilteredData.rows.find((row) => row.id === 'sub-2')).toMatchObject({
+      duplicateGroupSize: 2,
+      duplicateContentMatch: 'different',
+    });
+
+    const stats = await call('GET', '/api/forms-advanced/internal-form/stats');
+    expect((await stats.json() as { data: { duplicateReviewPending: number } }).data)
+      .toMatchObject({ duplicateReviewPending: 4 });
+
+    const filtered = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    const filteredData = (await filtered.json() as {
+      data: {
+        rows: Array<{
+          id: string;
+          duplicateGroupId: string;
+          duplicateReviewRevision: string;
+        }>;
+        total: number;
+        duplicateReviewPendingCount: number;
+      };
+    }).data;
+    expect(filteredData.total).toBe(4);
+    expect(filteredData.duplicateReviewPendingCount).toBe(4);
+    expect(filteredData.rows.map((row) => row.id)).toEqual([
+      'sub-5',
+      'sub-1',
+      'sub-4',
+      'sub-2',
+    ]);
+    expect(filteredData.rows[0]?.duplicateGroupId).toBe(filteredData.rows[1]?.duplicateGroupId);
+    expect(filteredData.rows[2]?.duplicateGroupId).toBe(filteredData.rows[3]?.duplicateGroupId);
+    expect(filteredData.rows[0]?.duplicateGroupId).not.toBe(filteredData.rows[2]?.duplicateGroupId);
+
+    const displayed = filteredData.rows.find((row) => row.id === 'sub-4');
+    expect(displayed).toBeTruthy();
+    const answersBefore = raw.prepare(
+      `SELECT answers_json FROM internal_form_submissions WHERE id = 'sub-4'`,
+    ).pluck().get() as string;
+    const confirmed = await call(
+      'POST',
+      '/api/forms-advanced/internal-form/rows/sub-4/confirm-duplicate',
+      { expectedDuplicateReviewRevision: displayed!.duplicateReviewRevision },
+    );
+    expect(confirmed.status).toBe(200);
+    expect(await confirmed.json()).toMatchObject({
+      success: true,
+      data: {
+        id: 'sub-4',
+        duplicateGroupSize: 2,
+        duplicateReviewedAt: expect.any(String),
+      },
+    });
+    expect(raw.prepare(
+      `SELECT answers_json FROM internal_form_submissions WHERE id = 'sub-4'`,
+    ).pluck().get()).toBe(answersBefore);
+    expect(sheetsSyncMocks.syncSheetsAfterFormMutation).not.toHaveBeenCalled();
+
+    const afterConfirmation = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    expect((await afterConfirmation.json() as {
+      data: { rows: Array<{ id: string }>; total: number; duplicateReviewPendingCount: number };
+    }).data).toMatchObject({
+      rows: [{ id: 'sub-5' }, { id: 'sub-1' }, { id: 'sub-2' }],
+      total: 3,
+      duplicateReviewPendingCount: 3,
+    });
+
+    expect((await call(
+      'DELETE',
+      '/api/forms-advanced/internal-form/rows/sub-5',
+    )).status).toBe(200);
+    const afterDelete = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    expect((await afterDelete.json() as {
+      data: { rows: Array<{ id: string }>; total: number; duplicateReviewPendingCount: number };
+    }).data).toMatchObject({
+      rows: [{ id: 'sub-2' }],
+      total: 1,
+      duplicateReviewPendingCount: 1,
+    });
+  });
+
+  test('returns 409 instead of confirming a duplicate group that changed after display', async () => {
+    seedInternalSubmission(
+      'sub-4',
+      'internal-form',
+      { name: '二郎（再送）', contact: 'two@example.test' },
+      '2026-07-03T09:00:00+09:00',
+      'friend-1',
+    );
+    const listed = await call(
+      'GET',
+      '/api/forms-advanced/internal-form/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    const displayed = (await listed.json() as {
+      data: { rows: Array<{ id: string; duplicateReviewRevision: string }> };
+    }).data.rows.find((row) => row.id === 'sub-4');
+    expect(displayed).toBeTruthy();
+
+    raw.prepare(
+      `UPDATE internal_form_submissions
+       SET answers_json = '{"name":"表示後に変更","contact":"two@example.test"}'
+       WHERE id = 'sub-4'`,
+    ).run();
+    const response = await call(
+      'POST',
+      '/api/forms-advanced/internal-form/rows/sub-4/confirm-duplicate',
+      { expectedDuplicateReviewRevision: displayed!.duplicateReviewRevision },
+    );
+
+    expect(response.status).toBe(409);
+    expect(raw.prepare(
+      `SELECT duplicate_reviewed_at
+       FROM internal_form_submissions WHERE id = 'sub-4'`,
+    ).get()).toEqual({ duplicate_reviewed_at: null });
+  });
+
   test('DELETE soft-deletes only the requested form-scoped answer and hides it from admin reads', async () => {
     const crossed = await call('DELETE', '/api/forms-advanced/internal-form/rows/not-in-this-form');
     expect(crossed.status).toBe(404);
@@ -2268,6 +2439,7 @@ describe('internal answer admin read path', () => {
         ],
         formaloo: null,
         externalEditPending: 0,
+        duplicateReviewPending: 0,
       },
     });
   });

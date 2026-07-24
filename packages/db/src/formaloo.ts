@@ -1088,6 +1088,7 @@ export interface FormalooSubmissionRow {
   tracking_code: string | null;
   submit_number: string | null;
   pdf_link: string | null;
+  duplicate_reviewed_at: string | null;
 }
 
 /** webhook 経路: formaloo_slug から台帳を引く (回答をどの harness form に紐付けるか)。 */
@@ -1613,6 +1614,36 @@ export async function queryFormalooSubmissions(
     .bind(...binds, params.limit, params.offset)
     .all<FormalooSubmissionRow>();
   return { rows: rowsRes.results, total: totalRow?.n ?? 0 };
+}
+
+export async function markFormalooSubmissionDuplicateReviewed(
+  db: D1Database,
+  input: {
+    formId: string;
+    submissionId: string;
+    expectedFriendId: string | null;
+    expectedAnswersJson: string;
+    reviewedAt?: string;
+  },
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE formaloo_submissions
+       SET duplicate_reviewed_at = ?
+       WHERE id = ? AND form_id = ?
+         AND duplicate_reviewed_at IS NULL
+         AND friend_id IS ?
+         AND answers_json = ?`,
+    )
+    .bind(
+      input.reviewedAt ?? jstNow(),
+      input.submissionId,
+      input.formId,
+      input.expectedFriendId,
+      input.expectedAnswersJson,
+    )
+    .run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 /** 期間別の日次集計 (統計カード用 / T-D2)。JST 日付でグルーピング。 */

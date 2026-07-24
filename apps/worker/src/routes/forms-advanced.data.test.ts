@@ -134,6 +134,131 @@ describe('T-D1 rows 検索/ページング', () => {
   });
 });
 
+describe('duplicate-review — Formaloo mirror rows', () => {
+  beforeEach(() => {
+    seedForm('fa1');
+    seedForm('fa2');
+    raw.prepare(
+      `INSERT INTO formaloo_field_map
+         (id, form_id, formaloo_field_slug, field_type, label, position)
+       VALUES ('email-field', 'fa1', 'email', 'email', 'メールアドレス', 0)`,
+    ).run();
+    seedSub(
+      'duplicate-1',
+      'fa1',
+      { email: ' ASK@Example.COM ', plan: 'A' },
+      '2026-07-01T10:00:00+09:00',
+    );
+    seedSub(
+      'duplicate-2',
+      'fa1',
+      { email: 'ask@example.com', plan: 'B' },
+      '2026-07-01T11:00:00+09:00',
+    );
+    seedSub(
+      'other-form-row',
+      'fa2',
+      { email: 'ask@example.com', plan: 'C' },
+      '2026-07-01T12:00:00+09:00',
+    );
+  });
+
+  test('marks one row, keeps its peer pending, then auto-resolves the peer after deletion', async () => {
+    const listed = await call(
+      'GET',
+      '/api/forms-advanced/fa1/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    expect(listed.status).toBe(200);
+    const listedData = (await listed.json() as {
+      data: {
+        rows: Array<{
+          id: string;
+          duplicateGroupId: string;
+          duplicateGroupSize: number;
+          duplicateContentMatch: 'identical' | 'different';
+          duplicateReviewedAt: string | null;
+          duplicateReviewRevision: string;
+        }>;
+        total: number;
+        duplicateReviewPendingCount: number;
+      };
+    }).data;
+    expect(listedData).toMatchObject({
+      total: 2,
+      duplicateReviewPendingCount: 2,
+    });
+    expect(listedData.rows.map((row) => row.id)).toEqual(['duplicate-2', 'duplicate-1']);
+    expect(listedData.rows[0]).toMatchObject({
+      duplicateGroupSize: 2,
+      duplicateContentMatch: 'different',
+      duplicateReviewedAt: null,
+      duplicateReviewRevision: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(listedData.rows[0]?.duplicateGroupId).toBe(listedData.rows[1]?.duplicateGroupId);
+
+    const answersBefore = raw.prepare(
+      `SELECT answers_json FROM formaloo_submissions WHERE id = 'duplicate-2'`,
+    ).pluck().get() as string;
+    const confirmed = await call(
+      'POST',
+      '/api/forms-advanced/fa1/rows/duplicate-2/confirm-duplicate',
+      { expectedDuplicateReviewRevision: listedData.rows[0]!.duplicateReviewRevision },
+    );
+    expect(confirmed.status).toBe(200);
+    expect(await confirmed.json()).toMatchObject({
+      success: true,
+      data: {
+        id: 'duplicate-2',
+        duplicateGroupSize: 2,
+        duplicateReviewedAt: expect.any(String),
+      },
+    });
+    expect(raw.prepare(
+      `SELECT answers_json FROM formaloo_submissions WHERE id = 'duplicate-2'`,
+    ).pluck().get()).toBe(answersBefore);
+
+    const afterConfirmation = await call(
+      'GET',
+      '/api/forms-advanced/fa1/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    expect((await afterConfirmation.json() as {
+      data: { rows: Array<{ id: string }>; total: number; duplicateReviewPendingCount: number };
+    }).data).toMatchObject({
+      rows: [{ id: 'duplicate-1' }],
+      total: 1,
+      duplicateReviewPendingCount: 1,
+    });
+    const stats = await call('GET', '/api/forms-advanced/fa1/stats');
+    expect((await stats.json() as { data: { duplicateReviewPending: number } }).data)
+      .toMatchObject({ duplicateReviewPending: 1 });
+
+    const crossed = await call(
+      'POST',
+      '/api/forms-advanced/fa1/rows/other-form-row/confirm-duplicate',
+      { expectedDuplicateReviewRevision: listedData.rows[0]!.duplicateReviewRevision },
+    );
+    expect(crossed.status).toBe(404);
+
+    const deleted = await call(
+      'POST',
+      '/api/forms-advanced/fa1/rows/bulk-delete',
+      { ids: ['duplicate-2'] },
+    );
+    expect(deleted.status).toBe(200);
+    const afterDelete = await call(
+      'GET',
+      '/api/forms-advanced/fa1/rows?duplicateReview=pending&page=1&pageSize=25',
+    );
+    expect((await afterDelete.json() as {
+      data: { rows: unknown[]; total: number; duplicateReviewPendingCount: number };
+    }).data).toMatchObject({
+      rows: [],
+      total: 0,
+      duplicateReviewPendingCount: 0,
+    });
+  });
+});
+
 describe('T-D1 rows ドリルスルー (dev fail-soft = mirror)', () => {
   test('GET rows/:rowId → dev (client なし) は mirror 回答を返す', async () => {
     seedForm('fa1');

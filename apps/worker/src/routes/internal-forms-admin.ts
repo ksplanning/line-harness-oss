@@ -9,7 +9,9 @@ import {
   getInternalFormSubmission,
   hasBlockingFormalooRecurringSubmissions,
   jstNow,
+  listInternalFormSubmissionsForDuplicateReview,
   listInternalFormSubmissions,
+  markInternalFormSubmissionDuplicateReviewed,
   publishInternalFormDefinition,
   saveFormalooDefinition,
   saveInternalFormDefinition,
@@ -39,6 +41,12 @@ import {
 import { uploadImageDataUrlToR2, resolveInBodyImageUploads } from '../services/form-image-upload.js';
 import { syncSheetsAfterFormMutation } from '../services/sheets-sync-jobs.js';
 import { parseAllowedOrigins } from '../middleware/admin-auth-config.js';
+import {
+  buildFormSubmissionDuplicateReview,
+  groupPendingDuplicateReviewRows,
+  type DuplicateReviewMetadata,
+  type FormSubmissionDuplicateReview,
+} from '../services/form-submission-duplicate-review.js';
 import {
   evaluateInternalFormAvailability,
   parseInternalFormDefinition,
@@ -112,6 +120,8 @@ async function queryInternalSubmissions(
     from?: string | null;
     to?: string | null;
     externalEdit?: 'pending';
+    duplicateReview?: 'pending';
+    duplicateReviewResult?: FormSubmissionDuplicateReview;
     sortDir: 'asc' | 'desc';
     limit: number;
     offset: number;
@@ -143,6 +153,25 @@ async function queryInternalSubmissions(
 
   const whereSql = where.join(' AND ');
   const direction = params.sortDir === 'asc' ? 'ASC' : 'DESC';
+  if (params.duplicateReview === 'pending') {
+    const candidates = await db
+      .prepare(
+        `SELECT * FROM internal_form_submissions
+         WHERE ${whereSql}
+         ORDER BY julianday(submitted_at) ${direction}, rowid ${direction}`,
+      )
+      .bind(...binds)
+      .all<InternalFormSubmission>();
+    const grouped = groupPendingDuplicateReviewRows(
+      candidates.results,
+      params.duplicateReviewResult ?? { byRowId: new Map(), pendingCount: 0 },
+      (row) => row.id,
+    );
+    return {
+      rows: grouped.slice(params.offset, params.offset + params.limit),
+      total: grouped.length,
+    };
+  }
   const totalRow = await db
     .prepare(`SELECT COUNT(*) AS n FROM internal_form_submissions WHERE ${whereSql}`)
     .bind(...binds)
@@ -176,6 +205,34 @@ function definitionFields(definitionJson: string): DefinitionField[] {
     });
   } catch {
     return [];
+  }
+}
+
+async function internalDuplicateReview(
+  db: D1Database,
+  formId: string,
+  fields: DefinitionField[],
+): Promise<FormSubmissionDuplicateReview> {
+  try {
+    const rows = await listInternalFormSubmissionsForDuplicateReview(db, formId);
+    return await buildFormSubmissionDuplicateReview(
+      rows.map((row) => ({
+        id: row.id,
+        formId: row.form_id,
+        friendId: row.friend_id,
+        answersJson: row.answers_json,
+        submittedAt: row.submitted_at,
+        reviewedAt: row.duplicate_reviewed_at,
+      })),
+      fields.map((field) => ({
+        answerKey: field.id,
+        type: field.type,
+        label: field.label,
+      })),
+    );
+  } catch (error) {
+    console.error('Internal form duplicate review calculation failed (fail-soft):', error);
+    return { byRowId: new Map(), pendingCount: 0 };
   }
 }
 
@@ -463,7 +520,10 @@ function parseExternalEditChanges(value: string | null): InternalFormExternalEdi
   }
 }
 
-function serializeRow(row: InternalFormSubmission) {
+function serializeRow(
+  row: InternalFormSubmission,
+  duplicate: DuplicateReviewMetadata | null = null,
+) {
   return {
     id: row.id,
     formId: row.form_id,
@@ -474,6 +534,11 @@ function serializeRow(row: InternalFormSubmission) {
     externalEditedAt: row.external_edited_at,
     externalEditApprovedAt: row.external_edit_approved_at,
     externalEditChanges: parseExternalEditChanges(row.external_edit_changes_json),
+    duplicateGroupId: duplicate?.groupId ?? null,
+    duplicateGroupSize: duplicate?.groupSize ?? null,
+    duplicateContentMatch: duplicate?.contentMatch ?? null,
+    duplicateReviewedAt: row.duplicate_reviewed_at,
+    duplicateReviewRevision: duplicate?.revision ?? null,
     // A friend id is persisted only after the signed fr_id is verified and the
     // friend exists, so this is the internal equivalent of Formaloo `verified`.
     verified: row.friend_id !== null,
@@ -1229,6 +1294,65 @@ internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/approve-external-ed
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
+internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/confirm-duplicate', async (c, next) => {
+  try {
+    const id = c.req.param('id');
+    const form = await getInternalForm(c.env.DB, id);
+    if (!form) return next();
+    const rowId = c.req.param('rowId');
+    const body = await c.req.json<{
+      expectedDuplicateReviewRevision?: unknown;
+    }>().catch(() => null);
+    const expectedRevision = body?.expectedDuplicateReviewRevision;
+    if (typeof expectedRevision !== 'string' || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
+      return c.json({
+        success: false,
+        error: '画面を再読み込みしてから確認してください',
+      }, 400);
+    }
+
+    const fields = definitionFields(form.definition_json);
+    const review = await internalDuplicateReview(c.env.DB, id, fields);
+    const rows = await listInternalFormSubmissionsForDuplicateReview(c.env.DB, id);
+    const row = rows.find((candidate) => candidate.id === rowId);
+    if (!row) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    const duplicate = review.byRowId.get(rowId);
+    if (!duplicate || duplicate.reviewedAt !== null) {
+      return c.json({ success: false, error: '未確認の重複候補ではありません' }, 409);
+    }
+    if (duplicate.revision !== expectedRevision) {
+      return c.json({
+        success: false,
+        error: '重複候補が更新されたため、内容を確認し直してください',
+      }, 409);
+    }
+
+    const marked = await markInternalFormSubmissionDuplicateReviewed(c.env.DB, {
+      formId: id,
+      submissionId: rowId,
+      expectedFriendId: row.friend_id,
+      expectedAnswersJson: row.answers_json,
+    });
+    if (!marked) {
+      return c.json({
+        success: false,
+        error: '回答の状態が更新されたため、再読み込みしてください',
+      }, 409);
+    }
+    const readback = await getInternalFormSubmission(c.env.DB, id, rowId);
+    if (!readback) return c.json({ success: false, error: '回答が見つかりません' }, 404);
+    return c.json({
+      success: true,
+      data: serializeRow(readback, {
+        ...duplicate,
+        reviewedAt: readback.duplicate_reviewed_at,
+      }),
+    });
+  } catch (error) {
+    console.error('POST internal confirm duplicate error:', error);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
 internalFormsAdmin.post('/api/forms-advanced/:id/rows/:rowId/admin-edit-url', async (c, next) => {
   try {
     const id = c.req.param('id');
@@ -1473,28 +1597,35 @@ internalFormsAdmin.get('/api/forms-advanced/:id/rows', async (c, next) => {
       MAX_PAGE_SIZE,
       Math.max(1, parseIntSafe(c.req.query('pageSize'), DEFAULT_PAGE_SIZE)),
     );
+    const fields = definitionFields(form.definition_json);
+    const duplicateReviewResult = await internalDuplicateReview(c.env.DB, id, fields);
     const { rows, total } = await queryInternalSubmissions(c.env.DB, id, {
       q: c.req.query('q') ?? null,
       from: c.req.query('from') ?? null,
       to: c.req.query('to') ?? null,
       externalEdit: c.req.query('externalEdit') === 'pending' ? 'pending' : undefined,
+      duplicateReview: c.req.query('duplicateReview') === 'pending' ? 'pending' : undefined,
+      duplicateReviewResult,
       sortDir: c.req.query('sort') === 'asc' ? 'asc' : 'desc',
       limit: pageSize,
       offset: (page - 1) * pageSize,
     });
-    const fields = definitionFields(form.definition_json)
-      .map((field) => ({ slug: field.id, label: field.label }));
+    const fieldLabels = fields.map((field) => ({ slug: field.id, label: field.label }));
     const externalEditPendingCount = await countPendingInternalFormExternalEdits(c.env.DB, id);
 
     return c.json({
       success: true,
       data: {
-        rows: rows.map(serializeRow),
+        rows: rows.map((row) => serializeRow(
+          row,
+          duplicateReviewResult.byRowId.get(row.id) ?? null,
+        )),
         total,
         page,
         pageSize,
-        fields,
+        fields: fieldLabels,
         externalEditPendingCount,
+        duplicateReviewPendingCount: duplicateReviewResult.pendingCount,
       },
     });
   } catch (error) {
@@ -1633,6 +1764,11 @@ internalFormsAdmin.get('/api/forms-advanced/:id/stats', async (c, next) => {
       .all<{ day: string; count: number }>();
     const { total } = await listInternalFormSubmissions(c.env.DB, id, { limit: 1, offset: 0 });
     const externalEditPending = await countPendingInternalFormExternalEdits(c.env.DB, id);
+    const duplicateReview = await internalDuplicateReview(
+      c.env.DB,
+      id,
+      definitionFields(form.definition_json),
+    );
 
     return c.json({
       success: true,
@@ -1642,6 +1778,7 @@ internalFormsAdmin.get('/api/forms-advanced/:id/stats', async (c, next) => {
         daily: dailyRows.results,
         formaloo: null,
         externalEditPending,
+        duplicateReviewPending: duplicateReview.pendingCount,
       },
     });
   } catch (error) {
